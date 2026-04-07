@@ -93,13 +93,23 @@ export function InvoiceDetailPage() {
             </button>
           )}
 
-          <a
-            href={`/v1/invoices/${invoice.id}/pdf`}
-            target="_blank"
+          <button
+            onClick={async () => {
+              const res = await fetch(`/v1/invoices/${invoice.id}/pdf`, {
+                headers: { Authorization: `Bearer ${localStorage.getItem('velox_api_key') || ''}` },
+              })
+              const blob = await res.blob()
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = `${invoice.invoice_number}.pdf`
+              a.click()
+              URL.revokeObjectURL(url)
+            }}
             className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 transition-colors"
           >
             Download PDF
-          </a>
+          </button>
         </div>
       </div>
 
