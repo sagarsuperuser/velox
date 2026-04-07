@@ -33,7 +33,7 @@ func TestRenderPDF(t *testing.T) {
 	lineItems := []domain.InvoiceLineItem{
 		{
 			LineType:         domain.LineTypeBaseFee,
-			Description:      "Pro Plan — base fee",
+			Description:      "Pro Plan - base fee",
 			Quantity:         1,
 			UnitAmountCents:  4900,
 			AmountCents:      4900,
@@ -43,7 +43,7 @@ func TestRenderPDF(t *testing.T) {
 		{
 			LineType:         domain.LineTypeUsage,
 			MeterID:          "mtr_api",
-			Description:      "API Calls — 1,500 calls",
+			Description:      "API Calls - 1,500 calls",
 			Quantity:         1500,
 			UnitAmountCents:  8,
 			AmountCents:      12500,
@@ -54,7 +54,7 @@ func TestRenderPDF(t *testing.T) {
 		{
 			LineType:         domain.LineTypeUsage,
 			MeterID:          "mtr_storage",
-			Description:      "Storage — 50 GB",
+			Description:      "Storage - 50 GB",
 			Quantity:         50,
 			UnitAmountCents:  2500,
 			AmountCents:      2500,

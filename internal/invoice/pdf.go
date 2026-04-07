@@ -47,7 +47,7 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, customerN
 	}
 
 	infoRow(pdf, "Billing Period",
-		fmt.Sprintf("%s — %s",
+		fmt.Sprintf("%s - %s",
 			inv.BillingPeriodStart.Format("Jan 2, 2006"),
 			inv.BillingPeriodEnd.Format("Jan 2, 2006")))
 

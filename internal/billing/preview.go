@@ -65,7 +65,7 @@ func (e *Engine) Preview(ctx context.Context, sub domain.Subscription) (PreviewR
 	if plan.BaseAmountCents > 0 {
 		result.Lines = append(result.Lines, PreviewLine{
 			LineType:        "base_fee",
-			Description:     fmt.Sprintf("%s — base fee", plan.Name),
+			Description:     fmt.Sprintf("%s - base fee", plan.Name),
 			Quantity:        1,
 			UnitAmountCents: plan.BaseAmountCents,
 			AmountCents:     plan.BaseAmountCents,
@@ -107,7 +107,7 @@ func (e *Engine) Preview(ctx context.Context, sub domain.Subscription) (PreviewR
 
 		result.Lines = append(result.Lines, PreviewLine{
 			LineType:        "usage",
-			Description:     fmt.Sprintf("%s — %d %s", meter.Name, quantity, meter.Unit),
+			Description:     fmt.Sprintf("%s - %d %s", meter.Name, quantity, meter.Unit),
 			MeterID:         meterID,
 			Quantity:        quantity,
 			UnitAmountCents: unitAmount,
