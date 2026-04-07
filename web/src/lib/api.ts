@@ -142,6 +142,18 @@ export const api = {
 
   // Audit Log
   listAuditLog: (params?: string) => request<{ data: AuditEntry[] }>('GET', `/audit-log${params ? '?' + params : ''}`),
+
+  // Webhooks
+  listWebhookEndpoints: () => request<{ data: WebhookEndpoint[] }>('GET', '/webhook-endpoints/endpoints'),
+  createWebhookEndpoint: (data: { url: string; description?: string; events?: string[] }) => request<{ endpoint: WebhookEndpoint; secret: string }>('POST', '/webhook-endpoints/endpoints', data),
+  deleteWebhookEndpoint: (id: string) => request<{ status: string }>('DELETE', `/webhook-endpoints/endpoints/${id}`),
+  listWebhookEvents: () => request<{ data: WebhookEvent[] }>('GET', '/webhook-endpoints/events'),
+  replayWebhookEvent: (id: string) => request<{ status: string }>('POST', `/webhook-endpoints/events/${id}/replay`),
+
+  // API Keys
+  listApiKeys: () => request<{ data: ApiKeyInfo[] }>('GET', '/api-keys'),
+  createApiKey: (data: { name: string; key_type: string }) => request<{ key: ApiKeyInfo; raw_key: string }>('POST', '/api-keys', data),
+  revokeApiKey: (id: string) => request<ApiKeyInfo>('DELETE', `/api-keys/${id}`),
 }
 
 // Types
@@ -365,6 +377,33 @@ export interface AuditEntry {
   resource_id: string
   metadata?: Record<string, unknown>
   created_at: string
+}
+
+export interface WebhookEndpoint {
+  id: string
+  url: string
+  description: string
+  events: string[]
+  active: boolean
+  created_at: string
+}
+
+export interface WebhookEvent {
+  id: string
+  event_type: string
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+export interface ApiKeyInfo {
+  id: string
+  key_prefix: string
+  key_type: string
+  name: string
+  created_at: string
+  expires_at?: string
+  revoked_at?: string
+  last_used_at?: string
 }
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {

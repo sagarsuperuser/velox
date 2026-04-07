@@ -1,7 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
-  Receipt, AlertTriangle, ScrollText,
+  Receipt, AlertTriangle, ScrollText, Globe, Key,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { clearApiKey } from '@/lib/api'
@@ -22,6 +22,8 @@ const configNav = [
 
 const bottomNav = [
   { to: '/audit-log', icon: ScrollText, label: 'Audit Log' },
+  { to: '/webhooks', icon: Globe, label: 'Webhooks' },
+  { to: '/api-keys', icon: Key, label: 'API Keys' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 
