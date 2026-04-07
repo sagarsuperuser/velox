@@ -32,7 +32,7 @@ const variants: Record<string, string> = {
   revoked: 'bg-red-50 text-red-600 border-red-200',
 }
 
-export function Badge({ status }: { status: string }) {
+export function Badge({ status, label }: { status: string; label?: string }) {
   return (
     <span
       className={cn(
@@ -40,7 +40,7 @@ export function Badge({ status }: { status: string }) {
         variants[status] || 'bg-gray-50 text-gray-600 border-gray-200'
       )}
     >
-      {status}
+      {label || status}
     </span>
   )
 }

@@ -108,9 +108,19 @@ export function ApiKeysPage() {
           <div className="space-y-3">
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
               <p className="text-xs text-amber-700 font-medium mb-2">Save this key — it will not be shown again.</p>
-              <p className="font-mono text-sm text-amber-900 break-all select-all">{createdKey}</p>
+              <div className="flex items-start gap-2">
+                <p className="font-mono text-sm text-amber-900 break-all select-all flex-1">{createdKey}</p>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(createdKey)
+                    toast.success('Copied to clipboard')
+                  }}
+                  className="shrink-0 px-2 py-1 text-xs font-medium text-amber-700 border border-amber-300 rounded-md hover:bg-amber-100 transition-colors"
+                >
+                  Copy
+                </button>
+              </div>
             </div>
-            <p className="text-xs text-gray-400">Copy the key above and store it securely.</p>
             <div className="flex justify-end pt-2">
               <button onClick={() => setCreatedKey(null)}
                 className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700">

@@ -5,6 +5,7 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
+import { useToast } from '@/components/Toast'
 
 const STATUS_OPTIONS = ['All', 'draft', 'finalized', 'paid', 'voided'] as const
 
@@ -14,6 +15,7 @@ export function InvoicesPage() {
   const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState<string>('All')
+  const toast = useToast()
 
   useEffect(() => {
     Promise.all([
@@ -38,7 +40,9 @@ export function InvoicesPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Invoices</h1>
-          <p className="text-sm text-gray-500 mt-1">{total} total</p>
+          <p className="text-sm text-gray-500 mt-1">
+            {statusFilter !== 'All' ? `${filtered.length} of ${total} invoices` : `${total} total`}
+          </p>
         </div>
         <select
           value={statusFilter}
@@ -93,7 +97,13 @@ export function InvoicesPage() {
                   </td>
                   <td className="px-6 py-3 text-right">
                     <button
-                      onClick={() => downloadPDF(inv.id, inv.invoice_number)}
+                      onClick={async () => {
+                        try {
+                          await downloadPDF(inv.id, inv.invoice_number)
+                        } catch (err) {
+                          toast.error(err instanceof Error ? err.message : 'Failed to download PDF')
+                        }
+                      }}
                       className="text-xs text-velox-600 hover:underline"
                     >
                       Download

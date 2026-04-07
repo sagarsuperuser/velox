@@ -5,6 +5,7 @@ import { setApiKey } from '@/lib/api'
 export function LoginPage() {
   const [key, setKey] = useState('')
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -12,11 +13,12 @@ export function LoginPage() {
     setError('')
 
     if (!key.startsWith('vlx_')) {
-      setError('API key must start with vlx_secret_ or vlx_pub_')
+      setError('Invalid API key format')
       return
     }
 
     setApiKey(key)
+    setLoading(true)
 
     try {
       const res = await fetch('/v1/customers', {
@@ -29,6 +31,8 @@ export function LoginPage() {
       navigate('/')
     } catch {
       setError('Cannot connect to Velox API')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -57,9 +61,10 @@ export function LoginPage() {
           )}
           <button
             type="submit"
-            className="w-full mt-4 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 transition-colors"
+            disabled={loading}
+            className="w-full mt-4 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50 transition-colors"
           >
-            Sign In
+            {loading ? 'Signing in...' : 'Sign In'}
           </button>
           <p className="text-xs text-gray-400 mt-3 text-center">
             Run <code className="bg-gray-100 px-1 py-0.5 rounded">make bootstrap</code> to get an API key
