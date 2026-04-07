@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, formatDate, type Subscription, type Customer, type Plan } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { useToast } from '@/components/Toast'
 import { Plus } from 'lucide-react'
 
@@ -11,6 +13,7 @@ export function SubscriptionsPage() {
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [customers, setCustomers] = useState<Customer[]>([])
+  const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [plans, setPlans] = useState<Plan[]>([])
   const toast = useToast()
 
@@ -20,7 +23,12 @@ export function SubscriptionsPage() {
 
   useEffect(() => {
     loadSubs()
-    api.listCustomers().then(res => setCustomers(res.data))
+    api.listCustomers().then(res => {
+      setCustomers(res.data)
+      const cMap: Record<string, Customer> = {}
+      res.data.forEach(c => { cMap[c.id] = c })
+      setCustomerMap(cMap)
+    })
     api.listPlans().then(res => setPlans(res.data))
   }, [])
 
@@ -39,7 +47,7 @@ export function SubscriptionsPage() {
 
       <div className="bg-white rounded-xl border border-gray-200 mt-6">
         {loading ? (
-          <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
+          <LoadingSkeleton rows={5} columns={6} />
         ) : subs.length === 0 ? (
           <div className="p-12 text-center">
             <p className="text-gray-400 text-sm">No subscriptions yet</p>
@@ -52,6 +60,7 @@ export function SubscriptionsPage() {
             <thead>
               <tr className="border-b border-gray-100">
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
+                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Customer</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Code</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Billing Period</th>
@@ -61,13 +70,20 @@ export function SubscriptionsPage() {
             <tbody className="divide-y divide-gray-50">
               {subs.map(sub => (
                 <tr key={sub.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900">{sub.display_name}</td>
+                  <td className="px-6 py-3">
+                    <Link to={`/subscriptions/${sub.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">
+                      {sub.display_name}
+                    </Link>
+                  </td>
+                  <td className="px-6 py-3 text-sm text-gray-600">
+                    {customerMap[sub.customer_id]?.display_name || 'Unknown'}
+                  </td>
                   <td className="px-6 py-3 text-sm text-gray-500 font-mono">{sub.code}</td>
                   <td className="px-6 py-3"><Badge status={sub.status} /></td>
                   <td className="px-6 py-3 text-sm text-gray-500">
                     {sub.current_billing_period_start && sub.current_billing_period_end
                       ? `${formatDate(sub.current_billing_period_start)} — ${formatDate(sub.current_billing_period_end)}`
-                      : '—'}
+                      : '\u2014'}
                   </td>
                   <td className="px-6 py-3 text-sm text-gray-400">{formatDate(sub.created_at)}</td>
                 </tr>

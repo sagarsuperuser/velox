@@ -1,17 +1,20 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCents, formatDate, type Invoice, type Subscription } from '@/lib/api'
+import { api, formatCents, formatDate, type Invoice, type Subscription, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { StatCard } from '@/components/StatCard'
 import { Badge } from '@/components/Badge'
+import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 
 export function DashboardPage() {
   const [stats, setStats] = useState({ customers: 0, subscriptions: 0, invoices: 0, revenue: 0 })
   const [recentInvoices, setRecentInvoices] = useState<Invoice[]>([])
   const [activeSubs, setActiveSubs] = useState<Subscription[]>([])
+  const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [loading, setLoading] = useState(true)
   const [billingResult, setBillingResult] = useState<string | null>(null)
   const [runningBilling, setRunningBilling] = useState(false)
+  const [devToolsOpen, setDevToolsOpen] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -21,6 +24,10 @@ export function DashboardPage() {
           api.listInvoices('limit=10'),
           api.listSubscriptions('status=active'),
         ])
+
+        const cMap: Record<string, Customer> = {}
+        customers.data.forEach(c => { cMap[c.id] = c })
+        setCustomerMap(cMap)
 
         const revenue = invoices.data
           .filter(i => i.status === 'paid')
@@ -43,17 +50,12 @@ export function DashboardPage() {
     load()
   }, [])
 
-  if (loading) {
-    return <Layout><div className="animate-pulse text-gray-400">Loading...</div></Layout>
-  }
-
   const handleTriggerBilling = async () => {
     setRunningBilling(true)
     setBillingResult(null)
     try {
       const res = await api.triggerBilling()
       setBillingResult(`Generated ${res.invoices_generated} invoice(s)`)
-      // Reload data after billing
       const invoices = await api.listInvoices('limit=10')
       const revenue = invoices.data.filter(i => i.status === 'paid').reduce((s, i) => s + i.total_amount_cents, 0)
       setStats(prev => ({ ...prev, invoices: invoices.total, revenue }))
@@ -67,101 +69,124 @@ export function DashboardPage() {
 
   return (
     <Layout>
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
-          <p className="text-sm text-gray-500 mt-1">Billing overview</p>
+      <div>
+        <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
+        <p className="text-sm text-gray-500 mt-1">Billing overview</p>
+      </div>
+
+      {loading ? (
+        <div className="bg-white rounded-xl border border-gray-200 mt-6">
+          <LoadingSkeleton rows={6} columns={4} />
         </div>
-        <div className="flex items-center gap-3">
-          {billingResult && (
-            <span className="text-xs text-gray-500">{billingResult}</span>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+            <StatCard title="Customers" value={String(stats.customers)} />
+            <StatCard title="Active Subscriptions" value={String(stats.subscriptions)} />
+            <StatCard title="Total Invoices" value={String(stats.invoices)} />
+            <StatCard title="Revenue" value={formatCents(stats.revenue)} subtitle="Paid invoices" />
+          </div>
+
+          {stats.customers === 0 && (
+            <div className="bg-velox-50 border border-velox-100 rounded-xl p-6 mt-6">
+              <h3 className="text-sm font-semibold text-velox-900">Get Started</h3>
+              <p className="text-sm text-velox-700 mt-1">Set up your billing in 3 steps:</p>
+              <ol className="mt-3 space-y-2 text-sm text-velox-700">
+                <li className="flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-velox-600 text-white flex items-center justify-center text-xs font-bold">1</span>
+                  <Link to="/pricing" className="hover:underline">Configure pricing</Link> — create meters, rating rules, and plans
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-velox-600 text-white flex items-center justify-center text-xs font-bold">2</span>
+                  <Link to="/customers" className="hover:underline">Add customers</Link> — create your first customer and subscription
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-velox-600 text-white flex items-center justify-center text-xs font-bold">3</span>
+                  Ingest usage events via the API, then run a billing cycle
+                </li>
+              </ol>
+            </div>
           )}
-          <button
-            onClick={handleTriggerBilling}
-            disabled={runningBilling}
-            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50 transition-colors"
-          >
-            {runningBilling ? 'Running...' : 'Run Billing Cycle'}
-          </button>
-        </div>
-      </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-        <StatCard title="Customers" value={String(stats.customers)} />
-        <StatCard title="Active Subscriptions" value={String(stats.subscriptions)} />
-        <StatCard title="Total Invoices" value={String(stats.invoices)} />
-        <StatCard title="Revenue" value={formatCents(stats.revenue)} subtitle="Paid invoices" />
-      </div>
-
-      {stats.customers === 0 && (
-        <div className="bg-velox-50 border border-velox-100 rounded-xl p-6 mt-6">
-          <h3 className="text-sm font-semibold text-velox-900">Get Started</h3>
-          <p className="text-sm text-velox-700 mt-1">Set up your billing in 3 steps:</p>
-          <ol className="mt-3 space-y-2 text-sm text-velox-700">
-            <li className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-velox-600 text-white flex items-center justify-center text-xs font-bold">1</span>
-              <Link to="/pricing" className="hover:underline">Configure pricing</Link> — create meters, rating rules, and plans
-            </li>
-            <li className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-velox-600 text-white flex items-center justify-center text-xs font-bold">2</span>
-              <Link to="/customers" className="hover:underline">Add customers</Link> — create your first customer and subscription
-            </li>
-            <li className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-velox-600 text-white flex items-center justify-center text-xs font-bold">3</span>
-              Ingest usage events via the API, then run a billing cycle
-            </li>
-          </ol>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
-        {/* Recent invoices */}
-        <div className="bg-white rounded-xl border border-gray-200">
-          <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
-            <h2 className="text-sm font-semibold text-gray-900">Recent Invoices</h2>
-            <Link to="/invoices" className="text-xs text-velox-600 hover:underline">View all</Link>
-          </div>
-          <div className="divide-y divide-gray-50">
-            {recentInvoices.map(inv => (
-              <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50 transition-colors">
-                <div>
-                  <p className="text-sm font-medium text-gray-900">{inv.invoice_number}</p>
-                  <p className="text-xs text-gray-400">{formatDate(inv.created_at)}</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Badge status={inv.status} />
-                  <span className="text-sm font-medium text-gray-900">{formatCents(inv.total_amount_cents)}</span>
-                </div>
-              </Link>
-            ))}
-            {recentInvoices.length === 0 && (
-              <p className="px-6 py-4 text-sm text-gray-400">No invoices yet</p>
-            )}
-          </div>
-        </div>
-
-        {/* Active subscriptions */}
-        <div className="bg-white rounded-xl border border-gray-200">
-          <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
-            <h2 className="text-sm font-semibold text-gray-900">Active Subscriptions</h2>
-            <Link to="/subscriptions" className="text-xs text-velox-600 hover:underline">View all</Link>
-          </div>
-          <div className="divide-y divide-gray-50">
-            {activeSubs.map(sub => (
-              <div key={sub.id} className="flex items-center justify-between px-6 py-3">
-                <div>
-                  <p className="text-sm font-medium text-gray-900">{sub.display_name}</p>
-                  <p className="text-xs text-gray-400">{sub.code}</p>
-                </div>
-                <Badge status={sub.status} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
+            {/* Recent invoices */}
+            <div className="bg-white rounded-xl border border-gray-200">
+              <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+                <h2 className="text-sm font-semibold text-gray-900">Recent Invoices</h2>
+                <Link to="/invoices" className="text-xs text-velox-600 hover:underline">View all</Link>
               </div>
-            ))}
-            {activeSubs.length === 0 && (
-              <p className="px-6 py-4 text-sm text-gray-400">No active subscriptions</p>
+              <div className="divide-y divide-gray-50">
+                {recentInvoices.map(inv => (
+                  <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50 transition-colors">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">{inv.invoice_number}</p>
+                      <p className="text-xs text-gray-400">
+                        {customerMap[inv.customer_id]?.display_name || 'Unknown customer'} &middot; {formatDate(inv.created_at)}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Badge status={inv.status} />
+                      <span className="text-sm font-medium text-gray-900">{formatCents(inv.total_amount_cents)}</span>
+                    </div>
+                  </Link>
+                ))}
+                {recentInvoices.length === 0 && (
+                  <p className="px-6 py-4 text-sm text-gray-400">No invoices yet</p>
+                )}
+              </div>
+            </div>
+
+            {/* Active subscriptions */}
+            <div className="bg-white rounded-xl border border-gray-200">
+              <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+                <h2 className="text-sm font-semibold text-gray-900">Active Subscriptions</h2>
+                <Link to="/subscriptions" className="text-xs text-velox-600 hover:underline">View all</Link>
+              </div>
+              <div className="divide-y divide-gray-50">
+                {activeSubs.map(sub => (
+                  <div key={sub.id} className="flex items-center justify-between px-6 py-3">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">{sub.display_name}</p>
+                      <p className="text-xs text-gray-400">
+                        {customerMap[sub.customer_id]?.display_name || 'Unknown customer'}
+                      </p>
+                    </div>
+                    <Badge status={sub.status} />
+                  </div>
+                ))}
+                {activeSubs.length === 0 && (
+                  <p className="px-6 py-4 text-sm text-gray-400">No active subscriptions</p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Developer Tools */}
+          <div className="mt-8 border border-gray-200 rounded-xl bg-white">
+            <button
+              onClick={() => setDevToolsOpen(!devToolsOpen)}
+              className="w-full px-6 py-3 flex items-center justify-between text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors rounded-xl"
+            >
+              <span>Developer Tools</span>
+              <span className="text-gray-400">{devToolsOpen ? '\u25B2' : '\u25BC'}</span>
+            </button>
+            {devToolsOpen && (
+              <div className="px-6 py-4 border-t border-gray-100 flex items-center gap-3">
+                <button
+                  onClick={handleTriggerBilling}
+                  disabled={runningBilling}
+                  className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50 transition-colors"
+                >
+                  {runningBilling ? 'Running...' : 'Run Billing Cycle'}
+                </button>
+                {billingResult && (
+                  <span className="text-xs text-gray-500">{billingResult}</span>
+                )}
+              </div>
             )}
           </div>
-        </div>
-      </div>
+        </>
+      )}
     </Layout>
   )
 }

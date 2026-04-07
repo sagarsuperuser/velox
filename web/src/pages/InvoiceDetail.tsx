@@ -1,28 +1,48 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { api, formatCents, formatDate, type Invoice, type LineItem } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, type Invoice, type LineItem, type Customer, type Subscription } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
+import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { useToast } from '@/components/Toast'
 
 export function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [invoice, setInvoice] = useState<Invoice | null>(null)
   const [lineItems, setLineItems] = useState<LineItem[]>([])
+  const [customer, setCustomer] = useState<Customer | null>(null)
+  const [subscription, setSubscription] = useState<Subscription | null>(null)
   const [loading, setLoading] = useState(true)
   const [acting, setActing] = useState(false)
   const toast = useToast()
 
-  const loadInvoice = () => {
+  useEffect(() => {
     if (!id) return
-    api.getInvoice(id).then(res => {
+    api.getInvoice(id).then(async (res) => {
       setInvoice(res.invoice)
       setLineItems(res.line_items)
+
+      // Fetch customer name
+      try {
+        const c = await api.getCustomer(res.invoice.customer_id)
+        setCustomer(c)
+      } catch {
+        // customer may not be accessible
+      }
+
+      // Fetch subscription name if present
+      if (res.invoice.subscription_id) {
+        try {
+          const s = await api.getSubscription(res.invoice.subscription_id)
+          setSubscription(s)
+        } catch {
+          // subscription may not be accessible
+        }
+      }
+
       setLoading(false)
     })
-  }
-
-  useEffect(() => { loadInvoice() }, [id])
+  }, [id])
 
   const handleFinalize = async () => {
     if (!id || !invoice) return
@@ -53,7 +73,19 @@ export function InvoiceDetailPage() {
     }
   }
 
-  if (loading) return <Layout><div className="animate-pulse text-gray-400">Loading...</div></Layout>
+  if (loading) {
+    return (
+      <Layout>
+        <div className="flex items-center gap-3 mb-6">
+          <Link to="/invoices" className="text-sm text-gray-400 hover:text-gray-600">&larr; Invoices</Link>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200">
+          <LoadingSkeleton rows={8} columns={5} />
+        </div>
+      </Layout>
+    )
+  }
+
   if (!invoice) return <Layout><p>Invoice not found</p></Layout>
 
   return (
@@ -65,18 +97,28 @@ export function InvoiceDetailPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">{invoice.invoice_number}</h1>
+          {customer && (
+            <p className="text-sm text-gray-600 mt-0.5">
+              <Link to={`/customers/${customer.id}`} className="text-velox-600 hover:underline">
+                {customer.display_name}
+              </Link>
+            </p>
+          )}
+          {subscription && (
+            <p className="text-xs text-gray-400 mt-0.5">
+              Subscription: {subscription.display_name}
+            </p>
+          )}
           <p className="text-sm text-gray-500 mt-0.5">
             {formatDate(invoice.billing_period_start)} — {formatDate(invoice.billing_period_end)}
           </p>
         </div>
         <div className="flex items-center gap-4">
-          {/* Status badges */}
           <div className="flex items-center gap-2">
             <Badge status={invoice.status} />
             <Badge status={invoice.payment_status} />
           </div>
 
-          {/* Action buttons — visually separated */}
           <div className="flex items-center gap-2 border-l border-gray-200 pl-4">
             {invoice.status === 'draft' && (
               <button onClick={handleFinalize} disabled={acting}
@@ -93,18 +135,7 @@ export function InvoiceDetailPage() {
             )}
 
             <button
-              onClick={async () => {
-                const res = await fetch(`/v1/invoices/${invoice.id}/pdf`, {
-                  headers: { Authorization: `Bearer ${localStorage.getItem('velox_api_key') || ''}` },
-                })
-                const blob = await res.blob()
-                const url = URL.createObjectURL(blob)
-                const a = document.createElement('a')
-                a.href = url
-                a.download = `${invoice.invoice_number}.pdf`
-                a.click()
-                URL.revokeObjectURL(url)
-              }}
+              onClick={() => downloadPDF(invoice.id, invoice.invoice_number)}
               className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 transition-colors">
               Download PDF
             </button>
