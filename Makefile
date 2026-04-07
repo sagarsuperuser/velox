@@ -25,6 +25,10 @@ test-unit:
 lint:
 	golangci-lint run ./...
 
+# Run benchmarks
+bench:
+	go test ./internal/domain/ -bench=. -benchmem -count=1
+
 # Tidy dependencies
 tidy:
 	go mod tidy

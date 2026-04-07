@@ -119,6 +119,18 @@ The billing engine:
 5. Generates a draft invoice with itemized line items
 6. Advances the subscription to the next billing period
 
+## Performance
+
+Pricing engine benchmarks (Apple M2, zero allocations):
+
+```
+BenchmarkComputeAmountCents_Flat              283M     4.2 ns/op    0 B/op    0 allocs/op
+BenchmarkComputeAmountCents_Graduated_5Tiers  137M     8.7 ns/op    0 B/op    0 allocs/op
+BenchmarkComputeAmountCents_Package           269M     4.5 ns/op    0 B/op    0 allocs/op
+```
+
+The pricing engine computes ~150M prices per second per core.
+
 ## Features
 
 | Feature | Description |
