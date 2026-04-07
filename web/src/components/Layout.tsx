@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, FileText, CreditCard, Tag, LogOut,
+  LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { clearApiKey } from '@/lib/api'
@@ -11,6 +11,7 @@ const nav = [
   { to: '/invoices', icon: FileText, label: 'Invoices' },
   { to: '/subscriptions', icon: CreditCard, label: 'Subscriptions' },
   { to: '/pricing', icon: Tag, label: 'Pricing' },
+  { to: '/credits', icon: Wallet, label: 'Credits' },
 ]
 
 export function Layout({ children }: { children: React.ReactNode }) {

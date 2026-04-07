@@ -84,6 +84,10 @@ export const api = {
   // Credits
   getBalance: (customerId: string) =>
     request<CreditBalance>('GET', `/credits/balance/${customerId}`),
+  grantCredits: (data: { customer_id: string; amount_cents: number; description: string }) =>
+    request<CreditLedgerEntry>('POST', '/credits/grant', data),
+  listLedger: (customerId: string) =>
+    request<{ data: CreditLedgerEntry[] }>('GET', `/credits/ledger/${customerId}`),
 
   // Customer portal
   customerOverview: (customerId: string) =>
@@ -150,6 +154,17 @@ export interface CreditBalance {
   balance_cents: number
   total_granted: number
   total_used: number
+}
+
+export interface CreditLedgerEntry {
+  id: string
+  customer_id: string
+  entry_type: string
+  amount_cents: number
+  balance_after: number
+  description: string
+  invoice_id: string
+  created_at: string
 }
 
 export interface CustomerOverview {
