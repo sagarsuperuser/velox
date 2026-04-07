@@ -50,6 +50,8 @@ export const api = {
   // Subscriptions
   listSubscriptions: (params?: string) =>
     request<{ data: Subscription[] }>('GET', `/subscriptions${params ? '?' + params : ''}`),
+  createSubscription: (data: { code: string; display_name: string; customer_id: string; plan_id: string; start_now?: boolean }) =>
+    request<Subscription>('POST', '/subscriptions', data),
 
   // Pricing
   listMeters: () =>

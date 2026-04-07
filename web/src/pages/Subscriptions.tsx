@@ -1,27 +1,52 @@
 import { useEffect, useState } from 'react'
-import { api, formatDate, type Subscription } from '@/lib/api'
+import { api, formatDate, type Subscription, type Customer, type Plan } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
+import { Modal } from '@/components/Modal'
+import { useToast } from '@/components/Toast'
+import { Plus } from 'lucide-react'
 
 export function SubscriptionsPage() {
   const [subs, setSubs] = useState<Subscription[]>([])
   const [loading, setLoading] = useState(true)
+  const [showCreate, setShowCreate] = useState(false)
+  const [customers, setCustomers] = useState<Customer[]>([])
+  const [plans, setPlans] = useState<Plan[]>([])
+  const toast = useToast()
+
+  const loadSubs = () => {
+    api.listSubscriptions().then(res => { setSubs(res.data); setLoading(false) })
+  }
 
   useEffect(() => {
-    api.listSubscriptions().then(res => {
-      setSubs(res.data)
-      setLoading(false)
-    })
+    loadSubs()
+    api.listCustomers().then(res => setCustomers(res.data))
+    api.listPlans().then(res => setPlans(res.data))
   }, [])
 
   return (
     <Layout>
-      <h1 className="text-2xl font-semibold text-gray-900">Subscriptions</h1>
-      <p className="text-sm text-gray-500 mt-1">{subs.length} total</p>
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Subscriptions</h1>
+          <p className="text-sm text-gray-500 mt-1">{subs.length} total</p>
+        </div>
+        <button onClick={() => setShowCreate(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 transition-colors">
+          <Plus size={16} /> Add Subscription
+        </button>
+      </div>
 
       <div className="bg-white rounded-xl border border-gray-200 mt-6">
         {loading ? (
           <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
+        ) : subs.length === 0 ? (
+          <div className="p-12 text-center">
+            <p className="text-gray-400 text-sm">No subscriptions yet</p>
+            <button onClick={() => setShowCreate(true)} className="mt-3 text-sm text-velox-600 hover:underline">
+              Create your first subscription
+            </button>
+          </div>
         ) : (
           <table className="w-full">
             <thead>
@@ -50,10 +75,90 @@ export function SubscriptionsPage() {
             </tbody>
           </table>
         )}
-        {!loading && subs.length === 0 && (
-          <p className="px-6 py-8 text-sm text-gray-400 text-center">No subscriptions yet</p>
-        )}
       </div>
+
+      {showCreate && (
+        <CreateSubscriptionModal
+          onClose={() => setShowCreate(false)}
+          customers={customers}
+          plans={plans}
+          onCreated={(sub) => {
+            setShowCreate(false)
+            toast.success(`Subscription "${sub.display_name}" created`)
+            loadSubs()
+          }}
+        />
+      )}
     </Layout>
+  )
+}
+
+function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
+  onClose: () => void; onCreated: (sub: Subscription) => void; customers: Customer[]; plans: Plan[]
+}) {
+  const [form, setForm] = useState({
+    code: '', display_name: '', customer_id: '', plan_id: '', start_now: true,
+  })
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true); setError('')
+    try {
+      const sub = await api.createSubscription(form)
+      onCreated(sub)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Create Subscription">
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
+          <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+            placeholder="Acme Pro Monthly" required />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Code</label>
+          <input type="text" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 font-mono"
+            placeholder="acme-pro" required />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Customer</label>
+          <select value={form.customer_id} onChange={e => setForm(f => ({ ...f, customer_id: e.target.value }))}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" required>
+            <option value="">Select customer...</option>
+            {customers.map(c => <option key={c.id} value={c.id}>{c.display_name} ({c.external_id})</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Plan</label>
+          <select value={form.plan_id} onChange={e => setForm(f => ({ ...f, plan_id: e.target.value }))}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" required>
+            <option value="">Select plan...</option>
+            {plans.map(p => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
+          </select>
+        </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={form.start_now} onChange={e => setForm(f => ({ ...f, start_now: e.target.checked }))} />
+          Start immediately (activate + set billing period)
+        </label>
+        {error && <p className="text-red-600 text-xs">{error}</p>}
+        <div className="flex justify-end gap-3 pt-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+          <button type="submit" disabled={saving}
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50">
+            {saving ? 'Creating...' : 'Create Subscription'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
