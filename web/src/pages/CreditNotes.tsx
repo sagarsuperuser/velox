@@ -106,6 +106,7 @@ export function CreditNotesPage() {
 
 function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [invoiceId, setInvoiceId] = useState('')
+  const [invoices, setInvoices] = useState<{ id: string; invoice_number: string; status: string; total_amount_cents: number }[]>([])
   const [reason, setReason] = useState('')
   const [refundType, setRefundType] = useState('credit')
   const [description, setDescription] = useState('')
@@ -113,6 +114,18 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
   const [unitAmountCents, setUnitAmountCents] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    api.listInvoices('status=finalized').then(res => {
+      // Include both finalized and paid invoices
+      api.listInvoices('status=paid').then(paidRes => {
+        setInvoices([...res.data, ...paidRes.data])
+      })
+    }).catch(() => {
+      // Fallback: load all invoices
+      api.listInvoices().then(res => setInvoices(res.data))
+    })
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -140,10 +153,17 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
     <Modal open onClose={onClose} title="Create Credit Note">
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Invoice ID</label>
-          <input type="text" value={invoiceId} onChange={e => setInvoiceId(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-velox-500"
-            placeholder="inv_..." required />
+          <label className="block text-sm font-medium text-gray-700 mb-1">Invoice</label>
+          <select value={invoiceId} onChange={e => setInvoiceId(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
+            required>
+            <option value="">Select invoice...</option>
+            {invoices.map(inv => (
+              <option key={inv.id} value={inv.id}>
+                {inv.invoice_number} ({inv.status}) - {formatCents(inv.total_amount_cents)}
+              </option>
+            ))}
+          </select>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Reason</label>
