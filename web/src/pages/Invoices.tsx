@@ -54,13 +54,23 @@ export function InvoicesPage() {
                     {formatCents(inv.total_amount_cents)}
                   </td>
                   <td className="px-6 py-3 text-right">
-                    <a
-                      href={`/v1/invoices/${inv.id}/pdf`}
-                      target="_blank"
+                    <button
+                      onClick={async () => {
+                        const res = await fetch(`/v1/invoices/${inv.id}/pdf`, {
+                          headers: { Authorization: `Bearer ${localStorage.getItem('velox_api_key') || ''}` },
+                        })
+                        const blob = await res.blob()
+                        const url = URL.createObjectURL(blob)
+                        const a = document.createElement('a')
+                        a.href = url
+                        a.download = `${inv.invoice_number}.pdf`
+                        a.click()
+                        URL.revokeObjectURL(url)
+                      }}
                       className="text-xs text-velox-600 hover:underline"
                     >
                       Download
-                    </a>
+                    </button>
                   </td>
                 </tr>
               ))}
