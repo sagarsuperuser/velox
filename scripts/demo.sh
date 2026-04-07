@@ -131,26 +131,43 @@ curl -s "$BASE/v1/credits/balance/$CUSTOMER_ID" -H "$AUTH" | jq .
 step "10. List Customers"
 curl -s "$BASE/v1/customers" -H "$AUTH" | jq '.data[] | {id, display_name, status}'
 
-step "11. List Invoices"
-curl -s "$BASE/v1/invoices" -H "$AUTH" | jq .
+step "11. Trigger Billing Cycle"
+BILLING=$(curl -s -X POST "$BASE/v1/billing/run" -H "$AUTH")
+green "Billing result:"
+echo "$BILLING" | jq .
+
+step "12. View Generated Invoice"
+INVOICES=$(curl -s "$BASE/v1/invoices" -H "$AUTH")
+INV_ID=$(echo "$INVOICES" | jq -r '.data[0].id // empty')
+if [ -n "$INV_ID" ]; then
+  green "Invoice generated!"
+  echo "$INVOICES" | jq '.data[0] | {id, invoice_number, status, payment_status, currency, total_amount_cents}'
+
+  step "13. View Invoice Detail + Line Items"
+  curl -s "$BASE/v1/invoices/$INV_ID" -H "$AUTH" | jq '{
+    invoice: {number: .invoice.invoice_number, total: .invoice.total_amount_cents, status: .invoice.status},
+    line_items: [.line_items[] | {type: .line_type, description, quantity, amount_cents}]
+  }'
+
+  step "14. Download Invoice PDF"
+  curl -s "$BASE/v1/invoices/$INV_ID/pdf" -H "$AUTH" -o "/tmp/velox-invoice.pdf"
+  PDF_SIZE=$(wc -c < /tmp/velox-invoice.pdf | tr -d ' ')
+  green "PDF saved to /tmp/velox-invoice.pdf ($PDF_SIZE bytes)"
+else
+  echo "  No invoice yet (subscription may need a billing period set)"
+fi
 
 echo ""
 green "━━━ Demo Complete ━━━"
 echo ""
 echo "What was demonstrated:"
-echo "  ✓ API key authentication"
-echo "  ✓ Rating rule (graduated pricing: \$0.10/call up to 1000, \$0.05 after)"
+echo "  ✓ API key authentication (vlx_secret_ key)"
+echo "  ✓ Rating rule (graduated: \$0.10/call up to 1000, \$0.05 after)"
 echo "  ✓ Meter + Plan configuration"
 echo "  ✓ Customer creation"
 echo "  ✓ Subscription with immediate activation"
 echo "  ✓ Usage event ingestion (5 × 300 = 1,500 API calls)"
 echo "  ✓ Customer credit grant (\$50)"
-echo ""
-echo "The billing scheduler runs every 5 minutes in local mode."
-echo "When it runs, it will generate an invoice for \$199:"
-echo "  Base fee:  \$49.00"
-echo "  API calls: 1000 × \$0.10 + 500 × \$0.05 = \$125.00"
-echo "  Storage:   \$25.00 (if configured)"
-echo "  Total:     \$199.00"
-echo ""
-echo "Try: curl -s $BASE/v1/invoices -H '$AUTH' | jq ."
+echo "  ✓ Billing cycle → Invoice generation"
+echo "  ✓ Invoice detail with line items"
+echo "  ✓ PDF invoice download"

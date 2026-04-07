@@ -12,6 +12,7 @@ import (
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/auth"
+	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
@@ -29,11 +30,8 @@ import (
 type Server struct {
 	router chi.Router
 
-	// Exported for main.go to access for wiring the billing engine
-	InvoiceStore      *invoice.PostgresStore
-	SubscriptionStore *subscription.PostgresStore
-	UsageStore        *usage.PostgresStore
-	PricingStore      *pricing.PostgresStore
+	// Exported for main.go to wire the billing scheduler
+	BillingEngine *billing.Engine
 }
 
 func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
@@ -64,11 +62,13 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	stripeAdapter := payment.NewStripe(nil, invoiceStore, webhookStore)
 	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
 
+	// Billing engine + manual trigger
+	engine := billing.NewEngine(subStore, usageStore, pricingStore,
+		&invoiceWriterAdapter{store: invoiceStore})
+	billingH := billing.NewHandler(engine)
+
 	s := &Server{
-		InvoiceStore:      invoiceStore,
-		SubscriptionStore: subStore,
-		UsageStore:        usageStore,
-		PricingStore:      pricingStore,
+		BillingEngine: engine,
 	}
 
 	rateLimiter := mw.NewRateLimiter(100, time.Minute)
@@ -112,6 +112,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/price-overrides", pricingH.OverrideRoutes())
 		r.With(auth.Require(auth.PermCustomerWrite)).Mount("/credits", creditH.Routes())
 		r.With(auth.Require(auth.PermDunningRead)).Mount("/dunning", dunningH.Routes())
+		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/billing", billingH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/webhook-endpoints", webhookOutH.Routes())
 	})
 

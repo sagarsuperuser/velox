@@ -15,7 +15,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/api"
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/config"
-	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
@@ -51,18 +50,11 @@ func main() {
 	server := api.NewServer(db, webhookSecret)
 
 	// Billing cycle scheduler
-	engine := billing.NewEngine(
-		server.SubscriptionStore,
-		server.UsageStore,
-		server.PricingStore,
-		&invoiceAdapter{s: server.InvoiceStore},
-	)
-
 	billingInterval := 1 * time.Hour
 	if cfg.Env == "local" {
 		billingInterval = 5 * time.Minute
 	}
-	scheduler := billing.NewScheduler(engine, billingInterval, 50)
+	scheduler := billing.NewScheduler(server.BillingEngine, billingInterval, 50)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.Port),
@@ -93,20 +85,4 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "error", err)
 	}
-}
-
-// invoiceAdapter bridges invoice.PostgresStore → billing.InvoiceWriter.
-type invoiceAdapter struct {
-	s interface {
-		Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error)
-		CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
-	}
-}
-
-func (a *invoiceAdapter) CreateInvoice(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
-	return a.s.Create(ctx, tenantID, inv)
-}
-
-func (a *invoiceAdapter) CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error) {
-	return a.s.CreateLineItem(ctx, tenantID, item)
 }
