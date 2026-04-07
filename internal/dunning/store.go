@@ -1,0 +1,36 @@
+package dunning
+
+import (
+	"context"
+	"time"
+
+	"github.com/sagarsuperuser/velox/internal/domain"
+)
+
+type Store interface {
+	// Policy
+	GetPolicy(ctx context.Context, tenantID string) (domain.DunningPolicy, error)
+	UpsertPolicy(ctx context.Context, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error)
+
+	// Runs
+	CreateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error)
+	GetRun(ctx context.Context, tenantID, id string) (domain.InvoiceDunningRun, error)
+	GetActiveRunByInvoice(ctx context.Context, tenantID, invoiceID string) (domain.InvoiceDunningRun, error)
+	ListRuns(ctx context.Context, filter RunListFilter) ([]domain.InvoiceDunningRun, error)
+	UpdateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error)
+	ListDueRuns(ctx context.Context, tenantID string, dueBefore time.Time, limit int) ([]domain.InvoiceDunningRun, error)
+
+	// Events
+	CreateEvent(ctx context.Context, tenantID string, event domain.InvoiceDunningEvent) (domain.InvoiceDunningEvent, error)
+	ListEvents(ctx context.Context, tenantID, runID string) ([]domain.InvoiceDunningEvent, error)
+}
+
+type RunListFilter struct {
+	TenantID   string
+	InvoiceID  string
+	CustomerID string
+	State      string
+	ActiveOnly bool
+	Limit      int
+	Offset     int
+}

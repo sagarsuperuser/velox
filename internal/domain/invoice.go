@@ -1,0 +1,86 @@
+package domain
+
+import "time"
+
+type InvoiceStatus string
+
+const (
+	InvoiceDraft     InvoiceStatus = "draft"
+	InvoiceFinalized InvoiceStatus = "finalized"
+	InvoicePaid      InvoiceStatus = "paid"
+	InvoiceVoided    InvoiceStatus = "voided"
+)
+
+type InvoicePaymentStatus string
+
+const (
+	PaymentPending    InvoicePaymentStatus = "pending"
+	PaymentProcessing InvoicePaymentStatus = "processing"
+	PaymentSucceeded  InvoicePaymentStatus = "succeeded"
+	PaymentFailed     InvoicePaymentStatus = "failed"
+)
+
+type Invoice struct {
+	ID                    string               `json:"id"`
+	TenantID              string               `json:"tenant_id,omitempty"`
+	CustomerID            string               `json:"customer_id"`
+	SubscriptionID        string               `json:"subscription_id"`
+	InvoiceNumber         string               `json:"invoice_number"`
+	Status                InvoiceStatus        `json:"status"`
+	PaymentStatus         InvoicePaymentStatus `json:"payment_status"`
+	Currency              string               `json:"currency"`
+	SubtotalCents         int64                `json:"subtotal_cents"`
+	DiscountCents         int64                `json:"discount_cents"`
+	TaxAmountCents        int64                `json:"tax_amount_cents"`
+	TotalAmountCents      int64                `json:"total_amount_cents"`
+	AmountDueCents        int64                `json:"amount_due_cents"`
+	AmountPaidCents       int64                `json:"amount_paid_cents"`
+	BillingPeriodStart    time.Time            `json:"billing_period_start"`
+	BillingPeriodEnd      time.Time            `json:"billing_period_end"`
+	IssuedAt              *time.Time           `json:"issued_at,omitempty"`
+	DueAt                 *time.Time           `json:"due_at,omitempty"`
+	PaidAt                *time.Time           `json:"paid_at,omitempty"`
+	VoidedAt              *time.Time           `json:"voided_at,omitempty"`
+	StripePaymentIntentID string               `json:"stripe_payment_intent_id,omitempty"`
+	LastPaymentError      string               `json:"last_payment_error,omitempty"`
+	PaymentOverdue        bool                 `json:"payment_overdue"`
+	PDFObjectKey          string               `json:"-"`
+	NetPaymentTermDays    int                  `json:"net_payment_term_days"`
+	Memo                  string               `json:"memo,omitempty"`
+	Footer                string               `json:"footer,omitempty"`
+	Metadata              map[string]any       `json:"metadata,omitempty"`
+	CreatedAt             time.Time            `json:"created_at"`
+	UpdatedAt             time.Time            `json:"updated_at"`
+}
+
+type InvoiceLineItemType string
+
+const (
+	LineTypeBaseFee  InvoiceLineItemType = "base_fee"
+	LineTypeUsage    InvoiceLineItemType = "usage"
+	LineTypeAddOn    InvoiceLineItemType = "add_on"
+	LineTypeDiscount InvoiceLineItemType = "discount"
+	LineTypeTax      InvoiceLineItemType = "tax"
+)
+
+type InvoiceLineItem struct {
+	ID                  string              `json:"id"`
+	InvoiceID           string              `json:"invoice_id"`
+	TenantID            string              `json:"tenant_id,omitempty"`
+	LineType            InvoiceLineItemType `json:"line_type"`
+	MeterID             string              `json:"meter_id,omitempty"`
+	Description         string              `json:"description"`
+	Quantity            int64               `json:"quantity"`
+	UnitAmountCents     int64               `json:"unit_amount_cents"`
+	AmountCents         int64               `json:"amount_cents"`
+	TaxRate             float64             `json:"tax_rate"`
+	TaxAmountCents      int64               `json:"tax_amount_cents"`
+	TotalAmountCents    int64               `json:"total_amount_cents"`
+	Currency            string              `json:"currency"`
+	PricingMode         string              `json:"pricing_mode,omitempty"`
+	RatingRuleVersionID string              `json:"rating_rule_version_id,omitempty"`
+	BillingPeriodStart  *time.Time          `json:"billing_period_start,omitempty"`
+	BillingPeriodEnd    *time.Time          `json:"billing_period_end,omitempty"`
+	Metadata            map[string]any      `json:"metadata,omitempty"`
+	CreatedAt           time.Time           `json:"created_at"`
+}

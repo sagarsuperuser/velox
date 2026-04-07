@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: velox
+      POSTGRES_USER: velox
+      POSTGRES_PASSWORD: velox
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U velox"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  velox:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      APP_ENV: local
+      DATABASE_URL: postgres://velox_app:velox_app@postgres:5432/velox?sslmode=disable
+      RUN_MIGRATIONS_ON_BOOT: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

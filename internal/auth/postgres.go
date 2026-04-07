@@ -1,0 +1,156 @@
+package auth
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+
+	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+)
+
+type PostgresStore struct {
+	db *postgres.DB
+}
+
+func NewPostgresStore(db *postgres.DB) *PostgresStore {
+	return &PostgresStore{db: db}
+}
+
+const keyCols = `id, key_prefix, key_type, name, tenant_id, created_at, expires_at, revoked_at, last_used_at`
+
+func scanKey(row interface{ Scan(...any) error }) (domain.APIKey, error) {
+	var k domain.APIKey
+	err := row.Scan(&k.ID, &k.KeyPrefix, &k.KeyType, &k.Name, &k.TenantID,
+		&k.CreatedAt, &k.ExpiresAt, &k.RevokedAt, &k.LastUsedAt)
+	return k, err
+}
+
+func (s *PostgresStore) Create(ctx context.Context, key domain.APIKey) (domain.APIKey, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, key.TenantID)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	k, err := scanKey(tx.QueryRowContext(ctx, `
+		INSERT INTO api_keys (id, key_prefix, key_hash, key_type, name, tenant_id, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING `+keyCols,
+		key.ID, key.KeyPrefix, key.KeyHash, key.KeyType, key.Name, key.TenantID, now,
+		postgres.NullableTime(key.ExpiresAt),
+	))
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.APIKey{}, err
+	}
+	return k, nil
+}
+
+func (s *PostgresStore) GetByPrefix(ctx context.Context, prefix string) (domain.APIKey, error) {
+	// API key lookup bypasses RLS — we need to find the key to determine the tenant.
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var key domain.APIKey
+	err = tx.QueryRowContext(ctx, `
+		SELECT `+keyCols+`, key_hash
+		FROM api_keys
+		WHERE key_prefix = $1 AND revoked_at IS NULL
+	`, prefix).Scan(&key.ID, &key.KeyPrefix, &key.KeyType, &key.Name, &key.TenantID,
+		&key.CreatedAt, &key.ExpiresAt, &key.RevokedAt, &key.LastUsedAt, &key.KeyHash)
+
+	if err == sql.ErrNoRows {
+		return domain.APIKey{}, errs.ErrNotFound
+	}
+	return key, err
+}
+
+func (s *PostgresStore) Revoke(ctx context.Context, tenantID, id string) (domain.APIKey, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	k, err := scanKey(tx.QueryRowContext(ctx, `
+		UPDATE api_keys SET revoked_at = $1
+		WHERE id = $2 AND revoked_at IS NULL
+		RETURNING `+keyCols, now, id))
+
+	if err == sql.ErrNoRows {
+		return domain.APIKey{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.APIKey{}, err
+	}
+	return k, nil
+}
+
+func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.APIKey, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, filter.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	query := `SELECT ` + keyCols + ` FROM api_keys`
+	args := []any{}
+	idx := 1
+
+	if filter.Role != "" {
+		query += fmt.Sprintf(" WHERE key_type = $%d", idx)
+		args = append(args, filter.Role)
+		idx++
+	}
+
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", idx, idx+1)
+	args = append(args, limit, filter.Offset)
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var keys []domain.APIKey
+	for rows.Next() {
+		k, err := scanKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
+func (s *PostgresStore) TouchLastUsed(ctx context.Context, id string, usedAt time.Time) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	_, err = tx.ExecContext(ctx, `UPDATE api_keys SET last_used_at = $1 WHERE id = $2`, usedAt, id)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
