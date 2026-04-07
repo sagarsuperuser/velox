@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/credit"
@@ -57,6 +58,9 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	creditNoteH := creditnote.NewHandler(creditnote.NewService(nil, invoiceStore))
 	creditH := credit.NewHandler(credit.NewService(credit.NewPostgresStore(db)))
 	webhookOutH := webhook.NewHandler(webhook.NewService(nil, nil))
+	auditLogger := audit.NewLogger(db)
+	auditH := audit.NewHandler(auditLogger)
+	settingsH := tenant.NewSettingsHandler(tenant.NewSettingsStore(db))
 
 	// Payment / webhook handler (no auth — Stripe authenticates via signature)
 	stripeAdapter := payment.NewStripe(nil, invoiceStore, webhookStore)
@@ -114,6 +118,9 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 		r.With(auth.Require(auth.PermDunningRead)).Mount("/dunning", dunningH.Routes())
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/billing", billingH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/webhook-endpoints", webhookOutH.Routes())
+		r.With(auth.Require(auth.PermAPIKeyRead)).Mount("/audit-log", auditH.Routes())
+		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
+		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
 	})
 
 	s.router = r
