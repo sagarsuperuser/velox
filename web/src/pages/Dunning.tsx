@@ -43,19 +43,25 @@ function PolicyTab() {
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [savedForm, setSavedForm] = useState<string>('')
+  const [isExisting, setIsExisting] = useState(false)
   const toast = useToast()
 
   useEffect(() => {
     api.getDunningPolicy()
-      .then(p => { setForm(p); setLoading(false) })
+      .then(p => { setForm(p); setSavedForm(JSON.stringify(p)); setIsExisting(true); setLoading(false) })
       .catch(() => setLoading(false))
   }, [])
+
+  const hasChanges = JSON.stringify(form) !== savedForm
 
   const handleSave = async () => {
     setSaving(true)
     try {
       const updated = await api.upsertDunningPolicy(form)
       setForm(updated)
+      setSavedForm(JSON.stringify(updated))
+      setIsExisting(true)
       toast.success('Dunning policy saved')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save policy')
@@ -109,11 +115,20 @@ function PolicyTab() {
         </select>
       </div>
 
-      <div className="pt-2">
-        <button onClick={handleSave} disabled={saving}
+      <div className="pt-2 flex items-center gap-3">
+        <button onClick={handleSave} disabled={saving || !hasChanges}
           className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50 transition-colors">
-          {saving ? 'Saving...' : 'Save Policy'}
+          {saving ? 'Saving...' : hasChanges ? 'Save Changes' : 'Saved'}
         </button>
+        {isExisting && !hasChanges && (
+          <span className="text-xs text-emerald-600 flex items-center gap-1">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+            Policy is active
+          </span>
+        )}
+        {hasChanges && (
+          <span className="text-xs text-amber-600">Unsaved changes</span>
+        )}
       </div>
     </div>
   )
