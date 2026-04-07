@@ -69,47 +69,46 @@ export function InvoiceDetailPage() {
             {formatDate(invoice.billing_period_start)} — {formatDate(invoice.billing_period_end)}
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <Badge status={invoice.status} />
-          <Badge status={invoice.payment_status} />
+        <div className="flex items-center gap-4">
+          {/* Status badges */}
+          <div className="flex items-center gap-2">
+            <Badge status={invoice.status} />
+            <Badge status={invoice.payment_status} />
+          </div>
 
-          {invoice.status === 'draft' && (
+          {/* Action buttons — visually separated */}
+          <div className="flex items-center gap-2 border-l border-gray-200 pl-4">
+            {invoice.status === 'draft' && (
+              <button onClick={handleFinalize} disabled={acting}
+                className="px-3 py-1.5 border border-blue-600 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-50 disabled:opacity-50 transition-colors">
+                Finalize
+              </button>
+            )}
+
+            {invoice.status !== 'voided' && invoice.status !== 'paid' && (
+              <button onClick={handleVoid} disabled={acting}
+                className="px-3 py-1.5 border border-red-300 text-red-600 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
+                Void
+              </button>
+            )}
+
             <button
-              onClick={handleFinalize}
-              disabled={acting}
-              className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
-            >
-              Finalize
+              onClick={async () => {
+                const res = await fetch(`/v1/invoices/${invoice.id}/pdf`, {
+                  headers: { Authorization: `Bearer ${localStorage.getItem('velox_api_key') || ''}` },
+                })
+                const blob = await res.blob()
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = `${invoice.invoice_number}.pdf`
+                a.click()
+                URL.revokeObjectURL(url)
+              }}
+              className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 transition-colors">
+              Download PDF
             </button>
-          )}
-
-          {invoice.status !== 'voided' && invoice.status !== 'paid' && (
-            <button
-              onClick={handleVoid}
-              disabled={acting}
-              className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 disabled:opacity-50 transition-colors"
-            >
-              Void
-            </button>
-          )}
-
-          <button
-            onClick={async () => {
-              const res = await fetch(`/v1/invoices/${invoice.id}/pdf`, {
-                headers: { Authorization: `Bearer ${localStorage.getItem('velox_api_key') || ''}` },
-              })
-              const blob = await res.blob()
-              const url = URL.createObjectURL(blob)
-              const a = document.createElement('a')
-              a.href = url
-              a.download = `${invoice.invoice_number}.pdf`
-              a.click()
-              URL.revokeObjectURL(url)
-            }}
-            className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 transition-colors"
-          >
-            Download PDF
-          </button>
+          </div>
         </div>
       </div>
 
