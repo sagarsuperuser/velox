@@ -80,6 +80,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	r.Use(mw.CORS([]string{"*"})) // Configure per-environment in production
 	r.Use(mw.Metrics())
 	r.Use(requestLogger)
 	r.Use(middleware.Recoverer)
