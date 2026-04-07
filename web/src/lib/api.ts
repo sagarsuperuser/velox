@@ -54,10 +54,16 @@ export const api = {
   // Pricing
   listMeters: () =>
     request<{ data: Meter[] }>('GET', '/meters'),
+  createMeter: (data: { key: string; name: string; unit?: string; aggregation?: string; rating_rule_version_id?: string }) =>
+    request<Meter>('POST', '/meters', data),
   listPlans: () =>
     request<{ data: Plan[] }>('GET', '/plans'),
+  createPlan: (data: { code: string; name: string; currency: string; billing_interval: string; base_amount_cents: number; meter_ids?: string[] }) =>
+    request<Plan>('POST', '/plans', data),
   listRatingRules: () =>
     request<{ data: RatingRule[] }>('GET', '/rating-rules'),
+  createRatingRule: (data: { rule_key: string; name: string; mode: string; currency: string; flat_amount_cents?: number; graduated_tiers?: { up_to: number; unit_amount_cents: number }[]; package_size?: number; package_amount_cents?: number }) =>
+    request<RatingRule>('POST', '/rating-rules', data),
 
   // Invoices
   listInvoices: (params?: string) =>

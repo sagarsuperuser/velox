@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react'
 import { api, formatCents, formatDate, type Meter, type Plan, type RatingRule } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
+import { Modal } from '@/components/Modal'
+import { useToast } from '@/components/Toast'
+import { Plus } from 'lucide-react'
 
 export function PricingPage() {
   const [meters, setMeters] = useState<Meter[]>([])
@@ -9,133 +12,200 @@ export function PricingPage() {
   const [rules, setRules] = useState<RatingRule[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<'plans' | 'meters' | 'rules'>('plans')
+  const [showCreate, setShowCreate] = useState(false)
+  const toast = useToast()
 
-  useEffect(() => {
-    Promise.all([
-      api.listPlans(),
-      api.listMeters(),
-      api.listRatingRules(),
-    ]).then(([p, m, r]) => {
-      setPlans(p.data)
-      setMeters(m.data)
-      setRules(r.data)
-      setLoading(false)
-    })
-  }, [])
+  const loadAll = () => {
+    Promise.all([api.listPlans(), api.listMeters(), api.listRatingRules()])
+      .then(([p, m, r]) => { setPlans(p.data); setMeters(m.data); setRules(r.data); setLoading(false) })
+  }
+
+  useEffect(() => { loadAll() }, [])
 
   return (
     <Layout>
-      <h1 className="text-2xl font-semibold text-gray-900">Pricing</h1>
-      <p className="text-sm text-gray-500 mt-1">Plans, meters, and rating rules</p>
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Pricing</h1>
+          <p className="text-sm text-gray-500 mt-1">Plans, meters, and rating rules</p>
+        </div>
+        <button onClick={() => setShowCreate(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 transition-colors">
+          <Plus size={16} />
+          {tab === 'plans' ? 'Add Plan' : tab === 'meters' ? 'Add Meter' : 'Add Rule'}
+        </button>
+      </div>
 
-      {/* Tabs */}
       <div className="flex gap-1 mt-6 bg-gray-100 rounded-lg p-1 w-fit">
         {(['plans', 'meters', 'rules'] as const).map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
+          <button key={t} onClick={() => { setTab(t); setShowCreate(false) }}
             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
               tab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            {t === 'plans' ? `Plans (${plans.length})` :
-             t === 'meters' ? `Meters (${meters.length})` :
-             `Rating Rules (${rules.length})`}
+            }`}>
+            {t === 'plans' ? `Plans (${plans.length})` : t === 'meters' ? `Meters (${meters.length})` : `Rules (${rules.length})`}
           </button>
         ))}
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 mt-4">
-        {loading ? (
-          <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
-        ) : tab === 'plans' ? (
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Code</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Interval</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Base Price</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Meters</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {plans.map(p => (
-                <tr key={p.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900">{p.name}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500 font-mono">{p.code}</td>
-                  <td className="px-6 py-3"><Badge status={p.billing_interval} /></td>
-                  <td className="px-6 py-3"><Badge status={p.status} /></td>
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">{formatCents(p.base_amount_cents)}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500 text-right">{p.meter_ids?.length || 0}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : tab === 'meters' ? (
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Key</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Unit</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Aggregation</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Created</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {meters.map(m => (
-                <tr key={m.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900">{m.name}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500 font-mono">{m.key}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{m.unit}</td>
-                  <td className="px-6 py-3"><Badge status={m.aggregation} /></td>
-                  <td className="px-6 py-3 text-sm text-gray-400">{formatDate(m.created_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Rule Key</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Mode</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Version</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Currency</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Price</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {rules.map(r => (
-                <tr key={r.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900">{r.name}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500 font-mono">{r.rule_key}</td>
-                  <td className="px-6 py-3"><Badge status={r.mode} /></td>
-                  <td className="px-6 py-3 text-sm text-gray-500">v{r.version}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{r.currency}</td>
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">
-                    {r.mode === 'flat' ? formatCents(r.flat_amount_cents) :
-                     r.mode === 'graduated' ? `${r.graduated_tiers?.length || 0} tiers` :
-                     `${r.package_size} per pkg`}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        {!loading && (
-          (tab === 'plans' && plans.length === 0) ||
-          (tab === 'meters' && meters.length === 0) ||
-          (tab === 'rules' && rules.length === 0)
-        ) && (
-          <p className="px-6 py-8 text-sm text-gray-400 text-center">
-            No {tab} configured yet
-          </p>
-        )}
+        {loading ? <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
+        : tab === 'plans' ? (plans.length === 0 ? <Empty label="plans" /> :
+          <table className="w-full"><thead><tr className="border-b border-gray-100">
+            <Th>Name</Th><Th>Code</Th><Th>Interval</Th><Th>Status</Th><Th right>Base Price</Th><Th right>Meters</Th>
+          </tr></thead><tbody className="divide-y divide-gray-50">
+            {plans.map(p => <tr key={p.id} className="hover:bg-gray-50">
+              <Td bold>{p.name}</Td><Td mono>{p.code}</Td><Td><Badge status={p.billing_interval} /></Td>
+              <Td><Badge status={p.status} /></Td><Td right bold>{formatCents(p.base_amount_cents)}</Td>
+              <Td right>{p.meter_ids?.length || 0}</Td>
+            </tr>)}
+          </tbody></table>)
+        : tab === 'meters' ? (meters.length === 0 ? <Empty label="meters" /> :
+          <table className="w-full"><thead><tr className="border-b border-gray-100">
+            <Th>Name</Th><Th>Key</Th><Th>Unit</Th><Th>Aggregation</Th><Th>Created</Th>
+          </tr></thead><tbody className="divide-y divide-gray-50">
+            {meters.map(m => <tr key={m.id} className="hover:bg-gray-50">
+              <Td bold>{m.name}</Td><Td mono>{m.key}</Td><Td>{m.unit}</Td>
+              <Td><Badge status={m.aggregation} /></Td><Td muted>{formatDate(m.created_at)}</Td>
+            </tr>)}
+          </tbody></table>)
+        : (rules.length === 0 ? <Empty label="rating rules" /> :
+          <table className="w-full"><thead><tr className="border-b border-gray-100">
+            <Th>Name</Th><Th>Rule Key</Th><Th>Mode</Th><Th>Version</Th><Th right>Price</Th>
+          </tr></thead><tbody className="divide-y divide-gray-50">
+            {rules.map(r => <tr key={r.id} className="hover:bg-gray-50">
+              <Td bold>{r.name}</Td><Td mono>{r.rule_key}</Td><Td><Badge status={r.mode} /></Td>
+              <Td>v{r.version}</Td>
+              <Td right bold>{r.mode === 'flat' ? formatCents(r.flat_amount_cents) : r.mode === 'graduated' ? `${r.graduated_tiers?.length || 0} tiers` : `${r.package_size}/pkg`}</Td>
+            </tr>)}
+          </tbody></table>)}
       </div>
+
+      {showCreate && tab === 'rules' && <CreateRuleModal onClose={() => setShowCreate(false)}
+        onCreated={() => { setShowCreate(false); loadAll(); toast.success('Rating rule created') }} />}
+      {showCreate && tab === 'meters' && <CreateMeterModal onClose={() => setShowCreate(false)} rules={rules}
+        onCreated={() => { setShowCreate(false); loadAll(); toast.success('Meter created') }} />}
+      {showCreate && tab === 'plans' && <CreatePlanModal onClose={() => setShowCreate(false)} meters={meters}
+        onCreated={() => { setShowCreate(false); loadAll(); toast.success('Plan created') }} />}
     </Layout>
   )
+}
+
+function Empty({ label }: { label: string }) {
+  return <p className="px-6 py-8 text-sm text-gray-400 text-center">No {label} yet</p>
+}
+
+function Th({ children, right }: { children: React.ReactNode; right?: boolean }) {
+  return <th className={`${right ? 'text-right' : 'text-left'} text-xs font-medium text-gray-500 px-6 py-3`}>{children}</th>
+}
+
+function Td({ children, bold, mono, right, muted }: { children: React.ReactNode; bold?: boolean; mono?: boolean; right?: boolean; muted?: boolean }) {
+  return <td className={`px-6 py-3 text-sm ${right ? 'text-right' : ''} ${bold ? 'font-medium text-gray-900' : ''} ${mono ? 'font-mono text-gray-500' : ''} ${muted ? 'text-gray-400' : ''} ${!bold && !mono && !muted ? 'text-gray-500' : ''}`}>{children}</td>
+}
+
+function Field({ label, value, onChange, placeholder, required, mono, type }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; required?: boolean; mono?: boolean; type?: string
+}) {
+  return (<div>
+    <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+    <input type={type || 'text'} value={value} onChange={e => onChange(e.target.value)}
+      className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 ${mono ? 'font-mono' : ''}`}
+      placeholder={placeholder} required={required} />
+  </div>)
+}
+
+function Select({ label, value, onChange, options }: {
+  label: string; value: string; onChange: (v: string) => void; options: string[][]
+}) {
+  return (<div>
+    <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+    <select value={value} onChange={e => onChange(e.target.value)}
+      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
+      {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+    </select>
+  </div>)
+}
+
+function Buttons({ onClose, saving, label }: { onClose: () => void; saving: boolean; label: string }) {
+  return (<div className="flex justify-end gap-3 pt-2">
+    <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+    <button type="submit" disabled={saving}
+      className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50">
+      {saving ? 'Saving...' : label}
+    </button>
+  </div>)
+}
+
+function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [form, setForm] = useState({ rule_key: '', name: '', mode: 'flat', currency: 'USD', flat_amount_cents: 0 })
+  const [error, setError] = useState(''); const [saving, setSaving] = useState(false)
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault(); setSaving(true); setError('')
+    try { await api.createRatingRule(form); onCreated() }
+    catch (err) { setError(err instanceof Error ? err.message : 'Failed') }
+    finally { setSaving(false) }
+  }
+  return (<Modal open onClose={onClose} title="Create Rating Rule"><form onSubmit={submit} className="space-y-3">
+    <Field label="Name" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="API Call Pricing" required />
+    <Field label="Rule Key" value={form.rule_key} onChange={v => setForm(f => ({ ...f, rule_key: v }))} placeholder="api_calls" mono required />
+    <div className="grid grid-cols-2 gap-3">
+      <Select label="Mode" value={form.mode} onChange={v => setForm(f => ({ ...f, mode: v }))} options={[['flat', 'Flat'], ['graduated', 'Graduated'], ['package', 'Package']]} />
+      <Field label="Currency" value={form.currency} onChange={v => setForm(f => ({ ...f, currency: v }))} />
+    </div>
+    {form.mode === 'flat' && <Field label="Amount (cents)" value={String(form.flat_amount_cents)} type="number" onChange={v => setForm(f => ({ ...f, flat_amount_cents: parseInt(v) || 0 }))} />}
+    {error && <p className="text-red-600 text-xs">{error}</p>}
+    <Buttons onClose={onClose} saving={saving} label="Create Rule" />
+  </form></Modal>)
+}
+
+function CreateMeterModal({ onClose, onCreated, rules }: { onClose: () => void; onCreated: () => void; rules: RatingRule[] }) {
+  const [form, setForm] = useState({ key: '', name: '', unit: 'unit', aggregation: 'sum', rating_rule_version_id: '' })
+  const [error, setError] = useState(''); const [saving, setSaving] = useState(false)
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault(); setSaving(true); setError('')
+    try { await api.createMeter(form); onCreated() }
+    catch (err) { setError(err instanceof Error ? err.message : 'Failed') }
+    finally { setSaving(false) }
+  }
+  return (<Modal open onClose={onClose} title="Create Meter"><form onSubmit={submit} className="space-y-3">
+    <Field label="Name" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="API Calls" required />
+    <Field label="Key" value={form.key} onChange={v => setForm(f => ({ ...f, key: v }))} placeholder="api_calls" mono required />
+    <div className="grid grid-cols-2 gap-3">
+      <Field label="Unit" value={form.unit} onChange={v => setForm(f => ({ ...f, unit: v }))} />
+      <Select label="Aggregation" value={form.aggregation} onChange={v => setForm(f => ({ ...f, aggregation: v }))} options={[['sum', 'Sum'], ['count', 'Count'], ['max', 'Max'], ['last', 'Last']]} />
+    </div>
+    {rules.length > 0 && <Select label="Rating Rule" value={form.rating_rule_version_id} onChange={v => setForm(f => ({ ...f, rating_rule_version_id: v }))} options={[['', '(none)'], ...rules.map(r => [r.id, `${r.name} (${r.mode})`])]} />}
+    {error && <p className="text-red-600 text-xs">{error}</p>}
+    <Buttons onClose={onClose} saving={saving} label="Create Meter" />
+  </form></Modal>)
+}
+
+function CreatePlanModal({ onClose, onCreated, meters }: { onClose: () => void; onCreated: () => void; meters: Meter[] }) {
+  const [form, setForm] = useState({ code: '', name: '', currency: 'USD', billing_interval: 'monthly', base_amount_cents: 0, meter_ids: [] as string[] })
+  const [error, setError] = useState(''); const [saving, setSaving] = useState(false)
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault(); setSaving(true); setError('')
+    try { await api.createPlan(form); onCreated() }
+    catch (err) { setError(err instanceof Error ? err.message : 'Failed') }
+    finally { setSaving(false) }
+  }
+  return (<Modal open onClose={onClose} title="Create Plan"><form onSubmit={submit} className="space-y-3">
+    <Field label="Name" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="Pro Plan" required />
+    <Field label="Code" value={form.code} onChange={v => setForm(f => ({ ...f, code: v }))} placeholder="pro" mono required />
+    <div className="grid grid-cols-2 gap-3">
+      <Select label="Interval" value={form.billing_interval} onChange={v => setForm(f => ({ ...f, billing_interval: v }))} options={[['monthly', 'Monthly'], ['yearly', 'Yearly']]} />
+      <Field label="Base Price (cents)" value={String(form.base_amount_cents)} type="number" onChange={v => setForm(f => ({ ...f, base_amount_cents: parseInt(v) || 0 }))} />
+    </div>
+    {meters.length > 0 && <div>
+      <label className="block text-sm font-medium text-gray-700 mb-1">Meters</label>
+      <div className="space-y-1">{meters.map(m => (
+        <label key={m.id} className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={form.meter_ids.includes(m.id)}
+            onChange={e => setForm(f => ({ ...f, meter_ids: e.target.checked ? [...f.meter_ids, m.id] : f.meter_ids.filter(id => id !== m.id) }))} />
+          {m.name} ({m.key})
+        </label>
+      ))}</div>
+    </div>}
+    {error && <p className="text-red-600 text-xs">{error}</p>}
+    <Buttons onClose={onClose} saving={saving} label="Create Plan" />
+  </form></Modal>)
 }
