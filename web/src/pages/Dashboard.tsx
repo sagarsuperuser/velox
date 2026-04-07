@@ -10,6 +10,8 @@ export function DashboardPage() {
   const [recentInvoices, setRecentInvoices] = useState<Invoice[]>([])
   const [activeSubs, setActiveSubs] = useState<Subscription[]>([])
   const [loading, setLoading] = useState(true)
+  const [billingResult, setBillingResult] = useState<string | null>(null)
+  const [runningBilling, setRunningBilling] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -44,9 +46,6 @@ export function DashboardPage() {
   if (loading) {
     return <Layout><div className="animate-pulse text-gray-400">Loading...</div></Layout>
   }
-
-  const [billingResult, setBillingResult] = useState<string | null>(null)
-  const [runningBilling, setRunningBilling] = useState(false)
 
   const handleTriggerBilling = async () => {
     setRunningBilling(true)
