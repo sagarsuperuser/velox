@@ -80,6 +80,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	r.Use(mw.Metrics())
 	r.Use(requestLogger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
@@ -88,6 +89,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	// Public
 	r.Get("/health", handleHealth)
 	r.Get("/health/ready", handleDeepHealth(db))
+	r.Handle("/metrics", mw.MetricsHandler())
 
 	// Stripe webhooks — no API key auth (verified by signature)
 	r.Mount("/v1/webhooks", webhookH.Routes())
