@@ -56,3 +56,17 @@ up:
 
 down:
 	docker compose down
+
+# Project stats
+stats:
+	@echo "━━━ Velox Project Stats ━━━"
+	@echo ""
+	@printf "  Go files:     %s\n" "$$(find . -name '*.go' -not -path './vendor/*' | wc -l | tr -d ' ')"
+	@printf "  Go lines:     %s\n" "$$(find . -name '*.go' -not -path './vendor/*' -exec cat {} + | wc -l | tr -d ' ')"
+	@printf "  Test files:   %s\n" "$$(find . -name '*_test.go' | wc -l | tr -d ' ')"
+	@printf "  SQL files:    %s\n" "$$(find . -name '*.sql' | wc -l | tr -d ' ')"
+	@printf "  Packages:     %s\n" "$$(find ./internal -type d | wc -l | tr -d ' ')"
+	@printf "  API routes:   ~69\n"
+	@echo ""
+	@printf "  Tests:        " && go test ./... -short -count=1 2>&1 | grep -c "^ok" && echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"
