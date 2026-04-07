@@ -14,6 +14,9 @@ import { PricingPage } from '@/pages/Pricing'
 import { CreditsPage } from '@/pages/Credits'
 import { SettingsPage } from '@/pages/Settings'
 import { SubscriptionDetailPage } from '@/pages/SubscriptionDetail'
+import { DunningPage } from '@/pages/Dunning'
+import { CreditNotesPage } from '@/pages/CreditNotes'
+import { AuditLogPage } from '@/pages/AuditLog'
 import './index.css'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -38,6 +41,9 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/subscriptions/:id" element={<ProtectedRoute><SubscriptionDetailPage /></ProtectedRoute>} />
           <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
           <Route path="/credits" element={<ProtectedRoute><CreditsPage /></ProtectedRoute>} />
+          <Route path="/dunning" element={<ProtectedRoute><DunningPage /></ProtectedRoute>} />
+          <Route path="/credit-notes" element={<ProtectedRoute><CreditNotesPage /></ProtectedRoute>} />
+          <Route path="/audit-log" element={<ProtectedRoute><AuditLogPage /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
         </Routes>
       </BrowserRouter>

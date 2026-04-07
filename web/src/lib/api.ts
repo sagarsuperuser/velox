@@ -126,6 +126,22 @@ export const api = {
     request<TenantSettings>('GET', '/settings'),
   updateSettings: (data: Partial<TenantSettings>) =>
     request<TenantSettings>('PUT', '/settings', data),
+
+  // Dunning
+  getDunningPolicy: () => request<DunningPolicy>('GET', '/dunning/policy'),
+  upsertDunningPolicy: (data: Partial<DunningPolicy>) => request<DunningPolicy>('PUT', '/dunning/policy', data),
+  listDunningRuns: (params?: string) => request<{ data: DunningRun[] }>('GET', `/dunning/runs${params ? '?' + params : ''}`),
+  getDunningRun: (id: string) => request<{ run: DunningRun; events: DunningEvent[] }>('GET', `/dunning/runs/${id}`),
+  resolveDunningRun: (id: string, resolution: string) => request<DunningRun>('POST', `/dunning/runs/${id}/resolve`, { resolution }),
+
+  // Credit Notes
+  listCreditNotes: (params?: string) => request<{ data: CreditNote[] }>('GET', `/credit-notes${params ? '?' + params : ''}`),
+  createCreditNote: (data: { invoice_id: string; reason: string; refund_type?: string; lines: { description: string; quantity: number; unit_amount_cents: number }[] }) => request<CreditNote>('POST', '/credit-notes', data),
+  issueCreditNote: (id: string) => request<CreditNote>('POST', `/credit-notes/${id}/issue`),
+  voidCreditNote: (id: string) => request<CreditNote>('POST', `/credit-notes/${id}/void`),
+
+  // Audit Log
+  listAuditLog: (params?: string) => request<{ data: AuditEntry[] }>('GET', `/audit-log${params ? '?' + params : ''}`),
 }
 
 // Types
@@ -285,6 +301,70 @@ export interface InvoicePreview {
   lines: { line_type: string; description: string; meter_id?: string; quantity: number; unit_amount_cents: number; amount_cents: number; pricing_mode?: string }[]
   subtotal_cents: number
   generated_at: string
+}
+
+export interface DunningPolicy {
+  id: string
+  name: string
+  enabled: boolean
+  retry_schedule: string[]
+  max_retry_attempts: number
+  final_action: string
+  grace_period_days: number
+}
+
+export interface DunningRun {
+  id: string
+  invoice_id: string
+  customer_id: string
+  policy_id: string
+  state: string
+  reason: string
+  attempt_count: number
+  last_attempt_at?: string
+  next_action_at?: string
+  paused: boolean
+  resolved_at?: string
+  resolution: string
+  created_at: string
+}
+
+export interface DunningEvent {
+  id: string
+  run_id: string
+  event_type: string
+  state: string
+  reason: string
+  attempt_count: number
+  created_at: string
+}
+
+export interface CreditNote {
+  id: string
+  invoice_id: string
+  customer_id: string
+  credit_note_number: string
+  status: string
+  reason: string
+  subtotal_cents: number
+  total_cents: number
+  refund_amount_cents: number
+  credit_amount_cents: number
+  currency: string
+  issued_at?: string
+  voided_at?: string
+  created_at: string
+}
+
+export interface AuditEntry {
+  id: string
+  actor_type: string
+  actor_id: string
+  action: string
+  resource_type: string
+  resource_id: string
+  metadata?: Record<string, unknown>
+  created_at: string
 }
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {
