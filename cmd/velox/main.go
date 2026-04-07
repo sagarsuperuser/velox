@@ -20,6 +20,28 @@ import (
 )
 
 func main() {
+	cmd := "serve"
+	if len(os.Args) > 1 {
+		cmd = os.Args[1]
+	}
+
+	switch cmd {
+	case "serve":
+		serve()
+	case "migrate":
+		runMigrate()
+	case "version":
+		fmt.Println("velox 2026-04-07")
+	case "help", "-h", "--help":
+		printUsage()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func serve() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	cfg, err := config.Load()
@@ -49,7 +71,6 @@ func main() {
 
 	server := api.NewServer(db, webhookSecret)
 
-	// Billing cycle scheduler
 	billingInterval := 1 * time.Hour
 	if cfg.Env == "local" {
 		billingInterval = 5 * time.Minute
@@ -85,4 +106,43 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "error", err)
 	}
+}
+
+func runMigrate() {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	pool, err := config.OpenPostgres(cfg.DB)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open database: %v\n", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	if err := migrate.NewRunner(pool).Run(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "migration failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("migrations applied successfully")
+}
+
+func printUsage() {
+	fmt.Println(`velox — usage-based billing engine
+
+Commands:
+  serve       Start the API server (default)
+  migrate     Run database migrations
+  version     Print version
+  help        Show this help
+
+Environment:
+  DATABASE_URL              PostgreSQL connection string (required)
+  PORT                      HTTP port (default: 8080)
+  APP_ENV                   Environment: local, staging, production (default: local)
+  RUN_MIGRATIONS_ON_BOOT    Run migrations on server start (default: false)
+  STRIPE_WEBHOOK_SECRET     Stripe webhook signing secret
+  VELOX_BOOTSTRAP_TOKEN     Token for POST /v1/bootstrap endpoint`)
 }
