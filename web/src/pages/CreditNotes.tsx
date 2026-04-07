@@ -230,10 +230,13 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Unit Amount (cents)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Unit Amount</label>
                 <input type="number" min={0} value={unitAmountCents} onChange={e => setUnitAmountCents(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
                   placeholder="1000" required />
+                <p className="text-xs text-gray-400 mt-1">
+                  Enter amount in cents{unitAmountCents ? ` = $${(parseInt(unitAmountCents) / 100).toFixed(2)}` : ''}
+                </p>
               </div>
             </div>
           </div>

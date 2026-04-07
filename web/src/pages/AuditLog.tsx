@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, Fragment } from 'react'
 import { api, formatDate, type AuditEntry } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -10,6 +10,7 @@ export function AuditLogPage() {
   const [loading, setLoading] = useState(true)
   const [resourceType, setResourceType] = useState('all')
   const [action, setAction] = useState('all')
+  const [expandedMeta, setExpandedMeta] = useState<Set<string>>(new Set())
 
   const loadEntries = () => {
     setLoading(true)
@@ -72,18 +73,46 @@ export function AuditLogPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {entries.map(entry => (
-                <tr key={entry.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-3 text-sm text-gray-500">{formatDate(entry.created_at)}</td>
-                  <td className="px-6 py-3"><Badge status={entry.actor_type} /></td>
-                  <td className="px-6 py-3"><Badge status={entry.action} /></td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{entry.resource_type}</td>
-                  <td className="px-6 py-3 text-sm font-mono text-gray-500">{entry.resource_id.slice(0, 12)}...</td>
-                  <td className="px-6 py-3 text-sm text-gray-400">
-                    {entry.metadata ? JSON.stringify(entry.metadata) : '\u2014'}
-                  </td>
-                </tr>
-              ))}
+              {entries.map(entry => {
+                const hasMeta = entry.metadata && Object.keys(entry.metadata).length > 0
+                const isExpanded = expandedMeta.has(entry.id)
+                const metaPath = hasMeta && typeof entry.metadata === 'object' && 'path' in entry.metadata
+                  ? (entry.metadata as Record<string, unknown>).path as string
+                  : null
+                return (
+                  <Fragment key={entry.id}>
+                    <tr className="hover:bg-gray-50">
+                      <td className="px-6 py-3 text-sm text-gray-500">{formatDate(entry.created_at)}</td>
+                      <td className="px-6 py-3"><Badge status={entry.actor_type} /></td>
+                      <td className="px-6 py-3"><Badge status={entry.action} /></td>
+                      <td className="px-6 py-3 text-sm text-gray-500">{entry.resource_type}</td>
+                      <td className="px-6 py-3 text-sm font-mono text-gray-500">{entry.resource_id.slice(0, 12)}...</td>
+                      <td className="px-6 py-3 text-sm text-gray-400">
+                        {!hasMeta ? '\u2014' : metaPath && !isExpanded ? (
+                          <span className="flex items-center gap-2">
+                            <span className="font-mono text-xs">{metaPath}</span>
+                            <button onClick={() => setExpandedMeta(prev => { const next = new Set(prev); next.add(entry.id); return next })}
+                              className="text-xs text-velox-600 hover:underline">View</button>
+                          </span>
+                        ) : !isExpanded ? (
+                          <button onClick={() => setExpandedMeta(prev => { const next = new Set(prev); next.add(entry.id); return next })}
+                            className="text-xs text-velox-600 hover:underline">View</button>
+                        ) : (
+                          <button onClick={() => setExpandedMeta(prev => { const next = new Set(prev); next.delete(entry.id); return next })}
+                            className="text-xs text-velox-600 hover:underline">Hide</button>
+                        )}
+                      </td>
+                    </tr>
+                    {isExpanded && hasMeta && (
+                      <tr>
+                        <td colSpan={6} className="px-6 py-3 bg-gray-50">
+                          <pre className="text-xs text-gray-600 font-mono whitespace-pre-wrap">{JSON.stringify(entry.metadata, null, 2)}</pre>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })}
             </tbody>
           </table>
         )}

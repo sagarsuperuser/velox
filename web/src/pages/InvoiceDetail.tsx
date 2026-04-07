@@ -8,6 +8,18 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
 
+const LINE_TYPE_LABELS: Record<string, string> = {
+  base_fee: 'Base Fee',
+  usage: 'Usage',
+  add_on: 'Add-On',
+  discount: 'Discount',
+  tax: 'Tax',
+}
+
+function formatLineType(raw: string): string {
+  return LINE_TYPE_LABELS[raw] || raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
 export function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [invoice, setInvoice] = useState<Invoice | null>(null)
@@ -181,7 +193,7 @@ export function InvoiceDetailPage() {
             {lineItems.map(item => (
               <tr key={item.id}>
                 <td className="px-6 py-3 text-sm text-gray-900">{item.description}</td>
-                <td className="px-6 py-3"><Badge status={item.line_type} /></td>
+                <td className="px-6 py-3"><Badge status={item.line_type} label={formatLineType(item.line_type)} /></td>
                 <td className="px-6 py-3 text-sm text-gray-500 text-right">{item.quantity}</td>
                 <td className="px-6 py-3 text-sm text-gray-500 text-right">{formatCents(item.unit_amount_cents)}</td>
                 <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">{formatCents(item.total_amount_cents)}</td>

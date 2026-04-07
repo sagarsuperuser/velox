@@ -133,9 +133,19 @@ function EndpointsTab() {
             </p>
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
               <p className="text-xs text-amber-700 font-medium mb-1">Signing Secret</p>
-              <p className="font-mono text-sm text-amber-900 break-all select-all">{createdSecret}</p>
+              <div className="flex items-start gap-2">
+                <p className="font-mono text-sm text-amber-900 break-all select-all flex-1">{createdSecret}</p>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(createdSecret)
+                    toast.success('Copied to clipboard')
+                  }}
+                  className="shrink-0 px-2 py-1 text-xs font-medium text-amber-700 border border-amber-300 rounded-md hover:bg-amber-100 transition-colors"
+                >
+                  Copy
+                </button>
+              </div>
             </div>
-            <p className="text-xs text-gray-400">Copy the secret above and store it securely.</p>
             <div className="flex justify-end pt-2">
               <button onClick={() => setCreatedSecret(null)}
                 className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700">

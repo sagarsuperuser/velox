@@ -139,6 +139,7 @@ export function SettingsPage() {
                 <input type="number" value={invoiceForm.net_payment_terms}
                   onChange={e => setInvoiceForm(f => ({ ...f, net_payment_terms: parseInt(e.target.value) || 0 }))}
                   className={fieldClass} min={0} />
+                <p className="text-xs text-gray-400 mt-1">Invoices will be due this many days after issue date</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Default Currency</label>
