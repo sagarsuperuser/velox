@@ -92,6 +92,10 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	r.Get("/health/ready", handleDeepHealth(db))
 	r.Handle("/metrics", mw.MetricsHandler())
 
+	// Bootstrap — one-time setup (no auth, only works when no tenants exist)
+	bootstrapH := tenant.NewBootstrapHandler(db)
+	r.Mount("/v1/bootstrap", bootstrapH.Routes())
+
 	// Stripe webhooks — no API key auth (verified by signature)
 	r.Mount("/v1/webhooks", webhookH.Routes())
 
