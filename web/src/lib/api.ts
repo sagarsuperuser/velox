@@ -96,6 +96,26 @@ export const api = {
   // Usage
   usageSummary: (customerId: string) =>
     request<UsageSummary>('GET', `/usage-summary/${customerId}`),
+
+  // Customer updates
+  updateCustomer: (id: string, data: { display_name?: string; email?: string }) =>
+    request<Customer>('PATCH', `/customers/${id}`, data),
+
+  // Subscription detail
+  getSubscription: (id: string) =>
+    request<Subscription>('GET', `/subscriptions/${id}`),
+
+  // Billing profile
+  getBillingProfile: (customerId: string) =>
+    request<BillingProfile>('GET', `/customers/${customerId}/billing-profile`),
+  upsertBillingProfile: (customerId: string, data: Partial<BillingProfile>) =>
+    request<BillingProfile>('PUT', `/customers/${customerId}/billing-profile`, data),
+
+  // Settings
+  getSettings: () =>
+    request<TenantSettings>('GET', '/settings'),
+  updateSettings: (data: Partial<TenantSettings>) =>
+    request<TenantSettings>('PUT', '/settings', data),
 }
 
 // Types
@@ -213,6 +233,49 @@ export interface UsageSummary {
   customer_id: string
   meters: Record<string, number>
   total_events: number
+}
+
+export interface BillingProfile {
+  customer_id: string
+  legal_name: string
+  email: string
+  phone: string
+  address_line1: string
+  address_line2: string
+  city: string
+  state: string
+  postal_code: string
+  country: string
+  currency: string
+  tax_identifier: string
+  profile_status: string
+}
+
+export interface TenantSettings {
+  tenant_id: string
+  default_currency: string
+  timezone: string
+  invoice_prefix: string
+  invoice_next_seq: number
+  net_payment_terms: number
+  company_name: string
+  company_address: string
+  company_email: string
+  company_phone: string
+  logo_url: string
+}
+
+export async function downloadPDF(invoiceId: string, invoiceNumber: string) {
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/pdf`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  })
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${invoiceNumber}.pdf`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 export function formatCents(cents: number): string {
