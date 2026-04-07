@@ -8,7 +8,7 @@ Open-source usage-based billing engine. Built in Go.
 
 Velox handles the complete billing lifecycle: pricing configuration, subscription management, usage metering, invoice generation with PDF rendering, payment collection via Stripe, customer credits, and automated dunning for failed payments.
 
-**110 Go files | 15,500+ lines | 275 tests | 68 API endpoints**
+**136 Go files | 18,200+ lines | 324 tests | 76 API endpoints**
 
 ## Quick Start
 
