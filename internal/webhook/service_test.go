@@ -362,3 +362,42 @@ func TestDelivery_FailedHTTP(t *testing.T) {
 		t.Errorf("http_status: got %d, want 500", store.deliveries[0].HTTPStatusCode)
 	}
 }
+
+func TestReplay(t *testing.T) {
+	store := newMemStore()
+	httpClient := &mockHTTPClient{statusCode: 200}
+	svc := NewTestService(store, httpClient)
+	ctx := context.Background()
+
+	// Setup: create endpoint + dispatch event
+	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+		URL:    "https://example.com/hook",
+		Events: []string{"invoice.created"},
+	})
+	svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{"id": "inv_1"})
+
+	if len(store.deliveries) != 1 {
+		t.Fatalf("initial deliveries: got %d, want 1", len(store.deliveries))
+	}
+
+	// Replay the event
+	eventID := store.events[0].ID
+	err := svc.Replay(ctx, "t1", eventID)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+
+	// Should have 2 deliveries now (original + replay)
+	if len(store.deliveries) != 2 {
+		t.Errorf("deliveries after replay: got %d, want 2", len(store.deliveries))
+	}
+}
+
+func TestReplay_NotFound(t *testing.T) {
+	svc := NewTestService(newMemStore(), &mockHTTPClient{statusCode: 200})
+
+	err := svc.Replay(context.Background(), "t1", "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent event")
+	}
+}

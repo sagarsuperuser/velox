@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 type Service struct {
@@ -240,4 +241,42 @@ func (s *Service) ListEvents(ctx context.Context, tenantID string, limit int) ([
 // ListDeliveries returns deliveries for a specific event.
 func (s *Service) ListDeliveries(ctx context.Context, tenantID, eventID string) ([]domain.WebhookDelivery, error) {
 	return s.store.ListDeliveries(ctx, tenantID, eventID)
+}
+
+// Replay re-delivers a webhook event to all matching active endpoints.
+func (s *Service) Replay(ctx context.Context, tenantID, eventID string) error {
+	events, err := s.store.ListEvents(ctx, tenantID, 1000)
+	if err != nil {
+		return err
+	}
+
+	var event *domain.WebhookEvent
+	for i := range events {
+		if events[i].ID == eventID {
+			event = &events[i]
+			break
+		}
+	}
+	if event == nil {
+		return fmt.Errorf("%w: webhook event", errs.ErrNotFound)
+	}
+
+	endpoints, err := s.store.ListEndpoints(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+
+	for _, ep := range endpoints {
+		if !ep.Active || !matchesEvent(ep.Events, event.EventType) {
+			continue
+		}
+		if s.syncDeliver {
+			s.deliver(ctx, tenantID, ep, *event)
+		} else {
+			go s.deliver(context.Background(), tenantID, ep, *event)
+		}
+	}
+
+	slog.Info("webhook event replayed", "event_id", eventID, "event_type", event.EventType)
+	return nil
 }

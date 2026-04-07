@@ -29,6 +29,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Delete("/endpoints/{id}", h.deleteEndpoint)
 	r.Get("/events", h.listEvents)
 	r.Get("/events/{id}/deliveries", h.listDeliveries)
+	r.Post("/events/{id}/replay", h.replayEvent)
 	return r
 }
 
@@ -114,4 +115,22 @@ func (h *Handler) listDeliveries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]any{"data": deliveries})
+}
+
+func (h *Handler) replayEvent(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	eventID := chi.URLParam(r, "id")
+
+	err := h.svc.Replay(r.Context(), tenantID, eventID)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "webhook event")
+		return
+	}
+	if err != nil {
+		respond.InternalError(w, r)
+		slog.Error("replay webhook event", "error", err)
+		return
+	}
+
+	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "replayed"})
 }
