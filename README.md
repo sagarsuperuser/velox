@@ -14,11 +14,32 @@ Velox handles the complete billing lifecycle: pricing configuration, subscriptio
 
 ```bash
 git clone https://github.com/sagarsuperuser/velox.git && cd velox
+
+# Backend
 docker compose up -d postgres
 make bootstrap    # Creates demo tenant + API keys
-make dev          # Starts server on :8080
+make dev          # Starts API server on :8080
+
+# Frontend (new terminal)
+cd web && npm install && npm run dev
+# → http://localhost:3000 (paste your API key to login)
+```
+
+Or run the full billing cycle via CLI:
+```bash
 ./scripts/demo.sh <YOUR_SECRET_KEY>
 ```
+
+## Dashboard Screenshots
+
+The operator dashboard provides real-time views of your billing data:
+
+- **Dashboard** — KPI cards (customers, subscriptions, revenue) + recent invoices + active subscriptions
+- **Customers** — searchable table with status badges, click-through to detail
+- **Customer Detail** — credit balance, active subscriptions, recent invoices
+- **Invoices** — status + payment badges, billing period, amount, PDF download
+- **Invoice Detail** — line items breakdown (base fee, usage charges) with pricing mode
+- **Subscriptions** — billing period tracking, status management
 
 ## API Examples
 
@@ -93,6 +114,11 @@ internal/
   audit/                    — Immutable append-only audit log
   platform/postgres/        — RLS-aware database layer
   platform/migrate/         — Embedded SQL migrations
+
+web/                        — Operator dashboard (React + TypeScript)
+  src/pages/                — 6 pages (Dashboard, Customers, Invoices, etc.)
+  src/components/           — Shared components (Layout, Badge, StatCard)
+  src/lib/api.ts            — Typed API client with auth
 ```
 
 **Key design decisions:**
@@ -269,10 +295,18 @@ make bootstrap          # Create demo tenant + API keys
 
 ## Tech Stack
 
+**Backend:**
 - **Go 1.25** — API server (chi/v5 router)
 - **PostgreSQL 16** — System of record with Row-Level Security
-- **Stripe** — Payment execution (PaymentIntents only)
+- **Stripe** — Payment execution (PaymentIntents + Checkout Sessions)
 - **go-pdf/fpdf** — Invoice PDF rendering
+- **Prometheus** — Metrics endpoint
+
+**Frontend:**
+- **React 19** + **TypeScript** — Operator dashboard
+- **Vite** — Build tooling
+- **TailwindCSS** — Styling
+- **Lucide** — Icons
 
 ## License
 

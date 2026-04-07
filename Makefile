@@ -50,6 +50,16 @@ demo:
 test-integration:
 	go test -p 1 ./... -v -count=1 -short=false
 
+# Frontend
+web-install:
+	cd web && npm install
+
+web-dev:
+	cd web && npm run dev
+
+web-build:
+	cd web && npm run build
+
 # Docker compose for local dev
 up:
 	docker compose up -d
@@ -66,7 +76,8 @@ stats:
 	@printf "  Test files:   %s\n" "$$(find . -name '*_test.go' | wc -l | tr -d ' ')"
 	@printf "  SQL files:    %s\n" "$$(find . -name '*.sql' | wc -l | tr -d ' ')"
 	@printf "  Packages:     %s\n" "$$(find ./internal -type d | wc -l | tr -d ' ')"
-	@printf "  API routes:   ~69\n"
+	@printf "  API routes:   ~76\n"
+	@printf "  TS/TSX files: %s\n" "$$(find ./web/src -name '*.ts' -o -name '*.tsx' 2>/dev/null | wc -l | tr -d ' ')"
 	@echo ""
 	@printf "  Tests:        " && go test ./... -short -count=1 2>&1 | grep -c "^ok" && echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"
