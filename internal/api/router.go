@@ -131,6 +131,10 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 		r.With(auth.Require(auth.PermAPIKeyRead)).Mount("/audit-log", auditH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
+
+		// Customer portal — consolidated views across domains
+		portal := newCustomerPortalHandler(subStore, invoiceStore, usageStore)
+		r.With(auth.Require(auth.PermCustomerRead)).Mount("/customer-portal", portal.Routes())
 	})
 
 	s.router = r

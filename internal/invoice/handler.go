@@ -1,6 +1,7 @@
 package invoice
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -24,12 +25,31 @@ func NewHandler(svc *Service) *Handler {
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
+	r.Post("/", h.create)
 	r.Get("/", h.list)
 	r.Get("/{id}", h.get)
 	r.Get("/{id}/pdf", h.downloadPDF)
 	r.Post("/{id}/finalize", h.finalize)
 	r.Post("/{id}/void", h.void)
 	return r
+}
+
+func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+
+	var input CreateInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	inv, err := h.svc.Create(r.Context(), tenantID, input)
+	if err != nil {
+		respond.FromError(w, r, err, "invoice")
+		return
+	}
+
+	respond.JSON(w, r, http.StatusCreated, inv)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
