@@ -4,6 +4,8 @@ import { api, downloadPDF, formatCents, formatDate, type Invoice, type LineItem,
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
 
 export function InvoiceDetailPage() {
@@ -14,6 +16,7 @@ export function InvoiceDetailPage() {
   const [subscription, setSubscription] = useState<Subscription | null>(null)
   const [loading, setLoading] = useState(true)
   const [acting, setActing] = useState(false)
+  const [showVoidConfirm, setShowVoidConfirm] = useState(false)
   const toast = useToast()
 
   useEffect(() => {
@@ -60,7 +63,6 @@ export function InvoiceDetailPage() {
 
   const handleVoid = async () => {
     if (!id || !invoice) return
-    if (!confirm('Are you sure you want to void this invoice?')) return
     setActing(true)
     try {
       const updated = await api.voidInvoice(id)
@@ -70,15 +72,14 @@ export function InvoiceDetailPage() {
       toast.error(err instanceof Error ? err.message : 'Failed to void')
     } finally {
       setActing(false)
+      setShowVoidConfirm(false)
     }
   }
 
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center gap-3 mb-6">
-          <Link to="/invoices" className="text-sm text-gray-400 hover:text-gray-600">&larr; Invoices</Link>
-        </div>
+        <Breadcrumbs items={[{ label: 'Invoices', to: '/invoices' }, { label: 'Loading...' }]} />
         <div className="bg-white rounded-xl border border-gray-200">
           <LoadingSkeleton rows={8} columns={5} />
         </div>
@@ -90,9 +91,7 @@ export function InvoiceDetailPage() {
 
   return (
     <Layout>
-      <div className="flex items-center gap-3 mb-6">
-        <Link to="/invoices" className="text-sm text-gray-400 hover:text-gray-600">&larr; Invoices</Link>
-      </div>
+      <Breadcrumbs items={[{ label: 'Invoices', to: '/invoices' }, { label: invoice.invoice_number }]} />
 
       <div className="flex items-center justify-between">
         <div>
@@ -128,7 +127,7 @@ export function InvoiceDetailPage() {
             )}
 
             {invoice.status !== 'voided' && invoice.status !== 'paid' && (
-              <button onClick={handleVoid} disabled={acting}
+              <button onClick={() => setShowVoidConfirm(true)} disabled={acting}
                 className="px-3 py-1.5 border border-red-300 text-red-600 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
                 Void
               </button>
@@ -197,6 +196,16 @@ export function InvoiceDetailPage() {
           </tfoot>
         </table>
       </div>
+
+      <ConfirmDialog
+        open={showVoidConfirm}
+        title="Void Invoice"
+        message="Are you sure you want to void this invoice? This action cannot be undone."
+        confirmLabel="Void Invoice"
+        variant="danger"
+        onConfirm={handleVoid}
+        onCancel={() => setShowVoidConfirm(false)}
+      />
     </Layout>
   )
 }

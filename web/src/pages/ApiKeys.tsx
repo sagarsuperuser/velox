@@ -3,6 +3,7 @@ import { api, formatDate, type ApiKeyInfo } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { useToast } from '@/components/Toast'
@@ -120,26 +121,15 @@ export function ApiKeysPage() {
         </Modal>
       )}
 
-      {revokeTarget && (
-        <Modal open onClose={() => setRevokeTarget(null)} title="Revoke API Key">
-          <div className="space-y-3">
-            <p className="text-sm text-gray-600">
-              Are you sure you want to revoke this API key? This action cannot be undone.
-            </p>
-            <p className="text-sm text-gray-500">
-              Key: <span className="font-mono">{revokeTarget.key_prefix}...</span> ({revokeTarget.name})
-            </p>
-            <div className="flex justify-end gap-3 pt-2">
-              <button onClick={() => setRevokeTarget(null)}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
-              <button onClick={handleRevoke}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700">
-                Revoke Key
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      <ConfirmDialog
+        open={!!revokeTarget}
+        title="Revoke API Key"
+        message={revokeTarget ? `Are you sure you want to revoke the API key "${revokeTarget.name}" (${revokeTarget.key_prefix}...)? This action cannot be undone.` : ''}
+        confirmLabel="Revoke Key"
+        variant="danger"
+        onConfirm={handleRevoke}
+        onCancel={() => setRevokeTarget(null)}
+      />
     </Layout>
   )
 }

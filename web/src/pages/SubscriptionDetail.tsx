@@ -5,6 +5,8 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
 
 export function SubscriptionDetailPage() {
@@ -17,6 +19,7 @@ export function SubscriptionDetailPage() {
   const [previewError, setPreviewError] = useState('')
   const [loading, setLoading] = useState(true)
   const [acting, setActing] = useState(false)
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   const toast = useToast()
 
   useEffect(() => {
@@ -92,7 +95,6 @@ export function SubscriptionDetailPage() {
 
   const handleCancel = async () => {
     if (!id || !sub) return
-    if (!window.confirm('Are you sure you want to cancel this subscription? This cannot be undone.')) return
     setActing(true)
     try {
       const updated = await api.cancelSubscription(id)
@@ -102,15 +104,14 @@ export function SubscriptionDetailPage() {
       toast.error(err instanceof Error ? err.message : 'Failed to cancel')
     } finally {
       setActing(false)
+      setShowCancelConfirm(false)
     }
   }
 
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center gap-3 mb-6">
-          <Link to="/subscriptions" className="text-sm text-gray-400 hover:text-gray-600">&larr; Subscriptions</Link>
-        </div>
+        <Breadcrumbs items={[{ label: 'Subscriptions', to: '/subscriptions' }, { label: 'Loading...' }]} />
         <div className="bg-white rounded-xl border border-gray-200">
           <LoadingSkeleton rows={8} columns={4} />
         </div>
@@ -122,10 +123,7 @@ export function SubscriptionDetailPage() {
 
   return (
     <Layout>
-      {/* Back link */}
-      <div className="flex items-center gap-3 mb-6">
-        <Link to="/subscriptions" className="text-sm text-gray-400 hover:text-gray-600">&larr; Subscriptions</Link>
-      </div>
+      <Breadcrumbs items={[{ label: 'Subscriptions', to: '/subscriptions' }, { label: sub.display_name }]} />
 
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -140,7 +138,7 @@ export function SubscriptionDetailPage() {
                 className="px-3 py-1.5 border border-amber-300 text-amber-600 rounded-lg text-xs font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors">
                 Pause
               </button>
-              <button onClick={handleCancel} disabled={acting}
+              <button onClick={() => setShowCancelConfirm(true)} disabled={acting}
                 className="px-3 py-1.5 border border-red-300 text-red-600 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
                 Cancel
               </button>
@@ -152,7 +150,7 @@ export function SubscriptionDetailPage() {
                 className="px-3 py-1.5 border border-emerald-300 text-emerald-600 rounded-lg text-xs font-medium hover:bg-emerald-50 disabled:opacity-50 transition-colors">
                 Resume
               </button>
-              <button onClick={handleCancel} disabled={acting}
+              <button onClick={() => setShowCancelConfirm(true)} disabled={acting}
                 className="px-3 py-1.5 border border-red-300 text-red-600 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
                 Cancel
               </button>
@@ -267,6 +265,16 @@ export function SubscriptionDetailPage() {
           <EmptyState title="No invoices" description="Invoices will appear here after billing runs" />
         )}
       </div>
+
+      <ConfirmDialog
+        open={showCancelConfirm}
+        title="Cancel Subscription"
+        message="Are you sure you want to cancel this subscription? This action cannot be undone."
+        confirmLabel="Cancel Subscription"
+        variant="danger"
+        onConfirm={handleCancel}
+        onCancel={() => setShowCancelConfirm(false)}
+      />
     </Layout>
   )
 }
