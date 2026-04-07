@@ -128,7 +128,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	if plan.BaseAmountCents > 0 {
 		lineItems = append(lineItems, domain.InvoiceLineItem{
 			LineType:        domain.LineTypeBaseFee,
-			Description:     fmt.Sprintf("%s — base fee", plan.Name),
+			Description:     fmt.Sprintf("%s - base fee", plan.Name),
 			Quantity:        1,
 			UnitAmountCents: plan.BaseAmountCents,
 			AmountCents:     plan.BaseAmountCents,
@@ -178,7 +178,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		lineItems = append(lineItems, domain.InvoiceLineItem{
 			LineType:            domain.LineTypeUsage,
 			MeterID:             meterID,
-			Description:         fmt.Sprintf("%s — %d %s", meter.Name, quantity, meter.Unit),
+			Description:         fmt.Sprintf("%s - %d %s", meter.Name, quantity, meter.Unit),
 			Quantity:            quantity,
 			UnitAmountCents:     unitAmount,
 			AmountCents:         amount,
