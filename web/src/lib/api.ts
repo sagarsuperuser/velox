@@ -51,6 +51,14 @@ export const api = {
   listSubscriptions: (params?: string) =>
     request<{ data: Subscription[] }>('GET', `/subscriptions${params ? '?' + params : ''}`),
 
+  // Pricing
+  listMeters: () =>
+    request<{ data: Meter[] }>('GET', '/meters'),
+  listPlans: () =>
+    request<{ data: Plan[] }>('GET', '/plans'),
+  listRatingRules: () =>
+    request<{ data: RatingRule[] }>('GET', '/rating-rules'),
+
   // Invoices
   listInvoices: (params?: string) =>
     request<{ data: Invoice[]; total: number }>('GET', `/invoices${params ? '?' + params : ''}`),
@@ -140,6 +148,42 @@ export interface CustomerOverview {
   customer_id: string
   active_subscriptions: Subscription[]
   recent_invoices: Invoice[]
+}
+
+export interface Meter {
+  id: string
+  key: string
+  name: string
+  unit: string
+  aggregation: string
+  rating_rule_version_id: string
+  created_at: string
+}
+
+export interface Plan {
+  id: string
+  code: string
+  name: string
+  currency: string
+  billing_interval: string
+  status: string
+  base_amount_cents: number
+  meter_ids: string[]
+  created_at: string
+}
+
+export interface RatingRule {
+  id: string
+  rule_key: string
+  name: string
+  version: number
+  mode: string
+  currency: string
+  flat_amount_cents: number
+  graduated_tiers?: { up_to: number; unit_amount_cents: number }[]
+  package_size: number
+  package_amount_cents: number
+  created_at: string
 }
 
 export interface UsageSummary {
