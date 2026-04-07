@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -35,21 +36,21 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 
 	var input IngestInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	event, err := h.svc.Ingest(r.Context(), tenantID, input)
 	if errors.Is(err, errs.ErrDuplicateKey) {
-		writeError(w, http.StatusConflict, "duplicate", err.Error())
+		respond.Conflict(w, r, err.Error())
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, event)
+	respond.JSON(w, r, http.StatusCreated, event)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +67,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		Offset:     offset,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list usage events")
+		respond.InternalError(w, r)
 		slog.Error("list usage events", "error", err)
 		return
 	}
@@ -74,7 +75,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		events = []domain.UsageEvent{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": events})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": events})
 }
 
 func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
@@ -82,16 +83,16 @@ func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 
 	var events []IngestInput
 	if err := json.NewDecoder(r.Body).Decode(&events); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "expected JSON array of events")
+		respond.BadRequest(w, r, "expected JSON array of events")
 		return
 	}
 
 	if len(events) == 0 {
-		writeError(w, http.StatusBadRequest, "invalid_request", "at least one event is required")
+		respond.BadRequest(w, r, "at least one event is required")
 		return
 	}
 	if len(events) > 1000 {
-		writeError(w, http.StatusBadRequest, "invalid_request", "maximum 1000 events per batch")
+		respond.BadRequest(w, r, "maximum 1000 events per batch")
 		return
 	}
 
@@ -107,19 +108,9 @@ func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusPartialContent
 	}
 
-	writeJSON(w, status, map[string]any{
+	respond.JSON(w, r, status, map[string]any{
 		"ingested": ingested,
 		"errors":   errStrings,
 		"total":    len(events),
 	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]string{"error": code, "message": message})
 }

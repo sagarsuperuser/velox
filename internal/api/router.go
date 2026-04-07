@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/billing"
@@ -132,7 +132,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func handleDeepHealth(db *postgres.DB) http.HandlerFunc {
@@ -144,7 +144,7 @@ func handleDeepHealth(db *postgres.DB) http.HandlerFunc {
 
 		if err := db.Pool.PingContext(ctx); err != nil {
 			checks["database"] = "error: " + err.Error()
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			respond.JSON(w, r, http.StatusServiceUnavailable, map[string]any{
 				"status": "degraded",
 				"checks": checks,
 			})
@@ -152,7 +152,7 @@ func handleDeepHealth(db *postgres.DB) http.HandlerFunc {
 		}
 		checks["database"] = "ok"
 
-		writeJSON(w, http.StatusOK, map[string]any{
+		respond.JSON(w, r, http.StatusOK, map[string]any{
 			"status": "ok",
 			"checks": checks,
 		})
@@ -171,10 +171,4 @@ func requestLogger(next http.Handler) http.Handler {
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
 }

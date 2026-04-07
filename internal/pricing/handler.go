@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -58,17 +59,17 @@ func (h *Handler) createOverride(w http.ResponseWriter, r *http.Request) {
 
 	var input CreateOverrideInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	override, err := h.svc.CreateOverride(r.Context(), tenantID, input)
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, override)
+	respond.JSON(w, r, http.StatusCreated, override)
 }
 
 func (h *Handler) listOverrides(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +78,7 @@ func (h *Handler) listOverrides(w http.ResponseWriter, r *http.Request) {
 
 	overrides, err := h.svc.ListOverrides(r.Context(), tenantID, customerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list overrides")
+		respond.InternalError(w, r)
 		slog.Error("list overrides", "error", err)
 		return
 	}
@@ -85,7 +86,7 @@ func (h *Handler) listOverrides(w http.ResponseWriter, r *http.Request) {
 		overrides = []domain.CustomerPriceOverride{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": overrides})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": overrides})
 }
 
 // ---------------------------------------------------------------------------
@@ -97,21 +98,21 @@ func (h *Handler) createRatingRule(w http.ResponseWriter, r *http.Request) {
 
 	var input CreateRatingRuleInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	rule, err := h.svc.CreateRatingRule(r.Context(), tenantID, input)
 	if errors.Is(err, errs.ErrAlreadyExists) {
-		writeError(w, http.StatusConflict, "already_exists", err.Error())
+		respond.Conflict(w, r, err.Error())
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, rule)
+	respond.JSON(w, r, http.StatusCreated, rule)
 }
 
 func (h *Handler) listRatingRules(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +127,7 @@ func (h *Handler) listRatingRules(w http.ResponseWriter, r *http.Request) {
 
 	rules, err := h.svc.ListRatingRules(r.Context(), filter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list rating rules")
+		respond.InternalError(w, r)
 		slog.Error("list rating rules", "error", err)
 		return
 	}
@@ -134,7 +135,7 @@ func (h *Handler) listRatingRules(w http.ResponseWriter, r *http.Request) {
 		rules = []domain.RatingRuleVersion{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": rules})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": rules})
 }
 
 func (h *Handler) getRatingRule(w http.ResponseWriter, r *http.Request) {
@@ -143,16 +144,16 @@ func (h *Handler) getRatingRule(w http.ResponseWriter, r *http.Request) {
 
 	rule, err := h.svc.GetRatingRule(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "rating rule not found")
+		respond.NotFound(w, r, "rating rule")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get rating rule")
+		respond.InternalError(w, r)
 		slog.Error("get rating rule", "error", err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, rule)
+	respond.JSON(w, r, http.StatusOK, rule)
 }
 
 // ---------------------------------------------------------------------------
@@ -164,21 +165,21 @@ func (h *Handler) createMeter(w http.ResponseWriter, r *http.Request) {
 
 	var input CreateMeterInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	meter, err := h.svc.CreateMeter(r.Context(), tenantID, input)
 	if errors.Is(err, errs.ErrAlreadyExists) {
-		writeError(w, http.StatusConflict, "already_exists", err.Error())
+		respond.Conflict(w, r, err.Error())
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, meter)
+	respond.JSON(w, r, http.StatusCreated, meter)
 }
 
 func (h *Handler) listMeters(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +187,7 @@ func (h *Handler) listMeters(w http.ResponseWriter, r *http.Request) {
 
 	meters, err := h.svc.ListMeters(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list meters")
+		respond.InternalError(w, r)
 		slog.Error("list meters", "error", err)
 		return
 	}
@@ -194,7 +195,7 @@ func (h *Handler) listMeters(w http.ResponseWriter, r *http.Request) {
 		meters = []domain.Meter{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": meters})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": meters})
 }
 
 func (h *Handler) getMeter(w http.ResponseWriter, r *http.Request) {
@@ -203,16 +204,16 @@ func (h *Handler) getMeter(w http.ResponseWriter, r *http.Request) {
 
 	meter, err := h.svc.GetMeter(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "meter not found")
+		respond.NotFound(w, r, "meter")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get meter")
+		respond.InternalError(w, r)
 		slog.Error("get meter", "error", err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, meter)
+	respond.JSON(w, r, http.StatusOK, meter)
 }
 
 // ---------------------------------------------------------------------------
@@ -224,21 +225,21 @@ func (h *Handler) createPlan(w http.ResponseWriter, r *http.Request) {
 
 	var input CreatePlanInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	plan, err := h.svc.CreatePlan(r.Context(), tenantID, input)
 	if errors.Is(err, errs.ErrAlreadyExists) {
-		writeError(w, http.StatusConflict, "already_exists", err.Error())
+		respond.Conflict(w, r, err.Error())
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, plan)
+	respond.JSON(w, r, http.StatusCreated, plan)
 }
 
 func (h *Handler) listPlans(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +247,7 @@ func (h *Handler) listPlans(w http.ResponseWriter, r *http.Request) {
 
 	plans, err := h.svc.ListPlans(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list plans")
+		respond.InternalError(w, r)
 		slog.Error("list plans", "error", err)
 		return
 	}
@@ -254,7 +255,7 @@ func (h *Handler) listPlans(w http.ResponseWriter, r *http.Request) {
 		plans = []domain.Plan{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": plans})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": plans})
 }
 
 func (h *Handler) getPlan(w http.ResponseWriter, r *http.Request) {
@@ -263,16 +264,16 @@ func (h *Handler) getPlan(w http.ResponseWriter, r *http.Request) {
 
 	plan, err := h.svc.GetPlan(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "plan not found")
+		respond.NotFound(w, r, "plan")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get plan")
+		respond.InternalError(w, r)
 		slog.Error("get plan", "error", err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, plan)
+	respond.JSON(w, r, http.StatusOK, plan)
 }
 
 func (h *Handler) updatePlan(w http.ResponseWriter, r *http.Request) {
@@ -281,30 +282,19 @@ func (h *Handler) updatePlan(w http.ResponseWriter, r *http.Request) {
 
 	var input CreatePlanInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	plan, err := h.svc.UpdatePlan(r.Context(), tenantID, id, input)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "plan not found")
+		respond.NotFound(w, r, "plan")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, plan)
-}
-
-// JSON helpers
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]string{"error": code, "message": message})
+	respond.JSON(w, r, http.StatusOK, plan)
 }

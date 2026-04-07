@@ -2,9 +2,10 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 )
 
 type contextKey string
@@ -24,13 +25,13 @@ func Middleware(svc *Service) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rawKey := extractBearerToken(r)
 			if rawKey == "" {
-				writeAuthError(w, http.StatusUnauthorized, "missing api key — use Authorization: Bearer vlx_secret_...")
+				respond.Unauthorized(w, r, "missing api key — use Authorization: Bearer vlx_secret_...")
 				return
 			}
 
 			key, err := svc.ValidateKey(r.Context(), rawKey)
 			if err != nil {
-				writeAuthError(w, http.StatusUnauthorized, err.Error())
+				respond.Unauthorized(w, r, err.Error())
 				return
 			}
 
@@ -51,7 +52,7 @@ func Require(perm Permission) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			kt := GetKeyType(r.Context())
 			if !HasPermission(kt, perm) {
-				writeAuthError(w, http.StatusForbidden,
+				respond.Forbidden(w, r,
 					"insufficient permissions: this key type does not have "+string(perm)+" access")
 				return
 			}
@@ -83,13 +84,4 @@ func extractBearerToken(r *http.Request) string {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
 	return r.Header.Get("X-API-Key")
-}
-
-func writeAuthError(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{
-		"error":   "unauthorized",
-		"message": message,
-	})
 }

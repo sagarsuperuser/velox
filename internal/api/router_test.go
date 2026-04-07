@@ -46,10 +46,11 @@ func TestAuthRequired_Customers(t *testing.T) {
 		t.Errorf("status: got %d, want 401", rec.Code)
 	}
 
-	var body map[string]string
+	var body map[string]any
 	json.NewDecoder(rec.Body).Decode(&body)
-	if body["error"] != "unauthorized" {
-		t.Errorf("error: got %q, want unauthorized", body["error"])
+	errObj, _ := body["error"].(map[string]any)
+	if errObj == nil || errObj["type"] != "authentication_error" {
+		t.Errorf("error type: got %v, want authentication_error", body["error"])
 	}
 }
 

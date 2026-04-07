@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -36,17 +37,17 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	var input CreateInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	cn, err := h.svc.Create(r.Context(), tenantID, input)
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, cn)
+	respond.JSON(w, r, http.StatusCreated, cn)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +59,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		Status:    r.URL.Query().Get("status"),
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list credit notes")
+		respond.InternalError(w, r)
 		slog.Error("list credit notes", "error", err)
 		return
 	}
@@ -66,7 +67,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		cns = []domain.CreditNote{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": cns})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": cns})
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
@@ -75,15 +76,15 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 
 	cn, err := h.svc.Get(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "credit note not found")
+		respond.NotFound(w, r, "credit note")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get credit note")
+		respond.InternalError(w, r)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, cn)
+	respond.JSON(w, r, http.StatusOK, cn)
 }
 
 func (h *Handler) issue(w http.ResponseWriter, r *http.Request) {
@@ -92,15 +93,15 @@ func (h *Handler) issue(w http.ResponseWriter, r *http.Request) {
 
 	cn, err := h.svc.Issue(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "credit note not found")
+		respond.NotFound(w, r, "credit note")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, cn)
+	respond.JSON(w, r, http.StatusOK, cn)
 }
 
 func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
@@ -109,23 +110,13 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 
 	cn, err := h.svc.Void(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "credit note not found")
+		respond.NotFound(w, r, "credit note")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, cn)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]string{"error": code, "message": message})
+	respond.JSON(w, r, http.StatusOK, cn)
 }

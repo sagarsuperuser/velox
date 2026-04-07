@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -31,35 +32,35 @@ func (h *Handler) Routes() chi.Router {
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	tenantID := TenantID(r.Context())
 	if tenantID == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "not authenticated")
+		respond.Unauthorized(w, r, "not authenticated")
 		return
 	}
 
 	var input CreateKeyInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	result, err := h.svc.CreateKey(r.Context(), tenantID, input)
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, result)
+	respond.JSON(w, r, http.StatusCreated, result)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	tenantID := TenantID(r.Context())
 	if tenantID == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "not authenticated")
+		respond.Unauthorized(w, r, "not authenticated")
 		return
 	}
 
 	keys, err := h.svc.ListKeys(r.Context(), ListFilter{TenantID: tenantID})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list keys")
+		respond.InternalError(w, r)
 		slog.Error("list api keys", "error", err)
 		return
 	}
@@ -67,7 +68,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		keys = []domain.APIKey{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": keys})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": keys})
 }
 
 func (h *Handler) revoke(w http.ResponseWriter, r *http.Request) {
@@ -76,24 +77,14 @@ func (h *Handler) revoke(w http.ResponseWriter, r *http.Request) {
 
 	key, err := h.svc.RevokeKey(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "api key not found")
+		respond.NotFound(w, r, "api key")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to revoke key")
+		respond.InternalError(w, r)
 		slog.Error("revoke api key", "error", err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, key)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]string{"error": code, "message": message})
+	respond.JSON(w, r, http.StatusOK, key)
 }

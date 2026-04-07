@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -40,21 +41,21 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	var input CreateInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	sub, err := h.svc.Create(r.Context(), tenantID, input)
 	if errors.Is(err, errs.ErrAlreadyExists) {
-		writeError(w, http.StatusConflict, "already_exists", err.Error())
+		respond.Conflict(w, r, err.Error())
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, sub)
+	respond.JSON(w, r, http.StatusCreated, sub)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +73,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		Offset:     offset,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list subscriptions")
+		respond.InternalError(w, r)
 		slog.Error("list subscriptions", "error", err)
 		return
 	}
@@ -80,7 +81,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		subs = []domain.Subscription{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": subs})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": subs})
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
@@ -89,16 +90,16 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.Get(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		respond.NotFound(w, r, "subscription")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get subscription")
+		respond.InternalError(w, r)
 		slog.Error("get subscription", "error", err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, sub)
+	respond.JSON(w, r, http.StatusOK, sub)
 }
 
 func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
@@ -107,15 +108,15 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.Activate(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		respond.NotFound(w, r, "subscription")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, sub)
+	respond.JSON(w, r, http.StatusOK, sub)
 }
 
 func (h *Handler) pause(w http.ResponseWriter, r *http.Request) {
@@ -124,14 +125,14 @@ func (h *Handler) pause(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.Pause(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		respond.NotFound(w, r, "subscription")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, sub)
+	respond.JSON(w, r, http.StatusOK, sub)
 }
 
 func (h *Handler) resume(w http.ResponseWriter, r *http.Request) {
@@ -140,14 +141,14 @@ func (h *Handler) resume(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.Resume(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		respond.NotFound(w, r, "subscription")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, sub)
+	respond.JSON(w, r, http.StatusOK, sub)
 }
 
 func (h *Handler) changePlan(w http.ResponseWriter, r *http.Request) {
@@ -156,20 +157,20 @@ func (h *Handler) changePlan(w http.ResponseWriter, r *http.Request) {
 
 	var input ChangePlanInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	result, err := h.svc.ChangePlan(r.Context(), tenantID, id, input)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		respond.NotFound(w, r, "subscription")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	respond.JSON(w, r, http.StatusOK, result)
 }
 
 func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
@@ -178,23 +179,13 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.Cancel(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		respond.NotFound(w, r, "subscription")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, sub)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]string{"error": code, "message": message})
+	respond.JSON(w, r, http.StatusOK, sub)
 }

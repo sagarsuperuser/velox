@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -43,16 +44,16 @@ func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
 
 	policy, err := h.svc.GetPolicy(r.Context(), tenantID)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "no dunning policy configured")
+		respond.NotFound(w, r, "dunning policy")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get policy")
+		respond.InternalError(w, r)
 		slog.Error("get dunning policy", "error", err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, policy)
+	respond.JSON(w, r, http.StatusOK, policy)
 }
 
 func (h *Handler) upsertPolicy(w http.ResponseWriter, r *http.Request) {
@@ -60,17 +61,17 @@ func (h *Handler) upsertPolicy(w http.ResponseWriter, r *http.Request) {
 
 	var policy domain.DunningPolicy
 	if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	result, err := h.svc.UpsertPolicy(r.Context(), tenantID, policy)
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, result)
+	respond.JSON(w, r, http.StatusOK, result)
 }
 
 func (h *Handler) listRuns(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +83,7 @@ func (h *Handler) listRuns(w http.ResponseWriter, r *http.Request) {
 		State:     r.URL.Query().Get("state"),
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list runs")
+		respond.InternalError(w, r)
 		slog.Error("list dunning runs", "error", err)
 		return
 	}
@@ -90,7 +91,7 @@ func (h *Handler) listRuns(w http.ResponseWriter, r *http.Request) {
 		runs = []domain.InvoiceDunningRun{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": runs})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": runs})
 }
 
 func (h *Handler) getRun(w http.ResponseWriter, r *http.Request) {
@@ -99,11 +100,11 @@ func (h *Handler) getRun(w http.ResponseWriter, r *http.Request) {
 
 	run, err := h.svc.store.GetRun(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "dunning run not found")
+		respond.NotFound(w, r, "dunning run")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get run")
+		respond.InternalError(w, r)
 		slog.Error("get dunning run", "error", err)
 		return
 	}
@@ -113,7 +114,7 @@ func (h *Handler) getRun(w http.ResponseWriter, r *http.Request) {
 		events = []domain.InvoiceDunningEvent{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	respond.JSON(w, r, http.StatusOK, map[string]any{
 		"run":    run,
 		"events": events,
 	})
@@ -129,29 +130,19 @@ func (h *Handler) resolveRun(w http.ResponseWriter, r *http.Request) {
 
 	var input resolveInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	run, err := h.svc.ResolveRun(r.Context(), tenantID, id, domain.DunningResolution(input.Resolution))
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "dunning run not found")
+		respond.NotFound(w, r, "dunning run")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, run)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]string{"error": code, "message": message})
+	respond.JSON(w, r, http.StatusOK, run)
 }

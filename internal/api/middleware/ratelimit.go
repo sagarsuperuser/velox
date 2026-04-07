@@ -1,11 +1,12 @@
 package middleware
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 )
 
 // RateLimiter is a simple in-memory token bucket rate limiter.
@@ -53,14 +54,7 @@ func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 
 			if remaining < 0 {
 				w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(resetAt).Seconds())+1))
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusTooManyRequests)
-				json.NewEncoder(w).Encode(map[string]any{
-					"error": map[string]string{
-						"type":    "rate_limit_error",
-						"message": "Too many requests. Please retry after the rate limit resets.",
-					},
-				})
+				respond.RateLimited(w, r)
 				return
 			}
 

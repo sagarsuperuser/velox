@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -31,17 +32,17 @@ func (h *Handler) Routes() chi.Router {
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	var input CreateInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	tenant, err := h.svc.Create(r.Context(), input)
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, tenant)
+	respond.JSON(w, r, http.StatusCreated, tenant)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +52,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 
 	tenants, err := h.svc.List(r.Context(), filter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list tenants")
+		respond.InternalError(w, r)
 		slog.Error("list tenants", "error", err)
 		return
 	}
@@ -60,7 +61,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		tenants = []domain.Tenant{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	respond.JSON(w, r, http.StatusOK, map[string]any{
 		"data": tenants,
 	})
 }
@@ -70,26 +71,14 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 
 	tenant, err := h.svc.Get(r.Context(), id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "tenant not found")
+		respond.NotFound(w, r, "tenant")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get tenant")
+		respond.InternalError(w, r)
 		slog.Error("get tenant", "error", err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, tenant)
-}
-
-// JSON helpers — each domain handler has its own to stay self-contained.
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]string{"error": code, "message": message})
+	respond.JSON(w, r, http.StatusOK, tenant)
 }

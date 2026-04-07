@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -36,17 +37,17 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	var input CreateEndpointInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
 	result, err := h.svc.CreateEndpoint(r.Context(), tenantID, input)
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, result)
+	respond.JSON(w, r, http.StatusCreated, result)
 }
 
 func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +55,7 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 
 	endpoints, err := h.svc.ListEndpoints(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list endpoints")
+		respond.InternalError(w, r)
 		slog.Error("list webhook endpoints", "error", err)
 		return
 	}
@@ -62,7 +63,7 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 		endpoints = []domain.WebhookEndpoint{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": endpoints})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": endpoints})
 }
 
 func (h *Handler) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -71,15 +72,15 @@ func (h *Handler) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	err := h.svc.DeleteEndpoint(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "endpoint not found")
+		respond.NotFound(w, r, "endpoint")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to delete endpoint")
+		respond.InternalError(w, r)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +88,7 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 
 	events, err := h.svc.ListEvents(r.Context(), tenantID, 50)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list events")
+		respond.InternalError(w, r)
 		slog.Error("list webhook events", "error", err)
 		return
 	}
@@ -95,7 +96,7 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 		events = []domain.WebhookEvent{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": events})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": events})
 }
 
 func (h *Handler) listDeliveries(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +105,7 @@ func (h *Handler) listDeliveries(w http.ResponseWriter, r *http.Request) {
 
 	deliveries, err := h.svc.ListDeliveries(r.Context(), tenantID, eventID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list deliveries")
+		respond.InternalError(w, r)
 		slog.Error("list webhook deliveries", "error", err)
 		return
 	}
@@ -112,15 +113,5 @@ func (h *Handler) listDeliveries(w http.ResponseWriter, r *http.Request) {
 		deliveries = []domain.WebhookDelivery{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": deliveries})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]string{"error": code, "message": message})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": deliveries})
 }
