@@ -56,6 +56,10 @@ export const api = {
     request<{ data: Invoice[]; total: number }>('GET', `/invoices${params ? '?' + params : ''}`),
   getInvoice: (id: string) =>
     request<{ invoice: Invoice; line_items: LineItem[] }>('GET', `/invoices/${id}`),
+  finalizeInvoice: (id: string) =>
+    request<Invoice>('POST', `/invoices/${id}/finalize`),
+  voidInvoice: (id: string) =>
+    request<Invoice>('POST', `/invoices/${id}/void`),
 
   // Billing
   triggerBilling: () =>

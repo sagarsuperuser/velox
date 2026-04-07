@@ -4,6 +4,7 @@ import { api, formatDate, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { useToast } from '@/components/Toast'
 import { Plus } from 'lucide-react'
 
 export function CustomersPage() {
@@ -14,6 +15,7 @@ export function CustomersPage() {
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ external_id: '', display_name: '', email: '' })
   const [error, setError] = useState('')
+  const toast = useToast()
 
   const loadCustomers = () => {
     api.listCustomers().then(res => {
@@ -30,9 +32,10 @@ export function CustomersPage() {
     setError('')
     setCreating(true)
     try {
-      await api.createCustomer(form)
+      const created = await api.createCustomer(form)
       setShowCreate(false)
       setForm({ external_id: '', display_name: '', email: '' })
+      toast.success(`Customer "${created.display_name}" created`)
       loadCustomers()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create customer')
