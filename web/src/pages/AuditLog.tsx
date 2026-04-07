@@ -35,7 +35,7 @@ export function AuditLogPage() {
       {/* Filters */}
       <div className="flex gap-3 mt-6">
         <select value={resourceType} onChange={e => setResourceType(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
+          className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
           <option value="all">All Resources</option>
           <option value="customer">Customer</option>
           <option value="subscription">Subscription</option>
@@ -45,7 +45,7 @@ export function AuditLogPage() {
           <option value="api_key">API Key</option>
         </select>
         <select value={action} onChange={e => setAction(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
+          className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
           <option value="all">All Actions</option>
           <option value="create">Create</option>
           <option value="update">Update</option>
@@ -57,7 +57,7 @@ export function AuditLogPage() {
         </select>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 mt-4">
+      <div className="bg-white rounded-xl shadow-card mt-4">
         {loading ? <LoadingSkeleton rows={8} columns={6} />
         : entries.length === 0 ? <EmptyState title="No audit entries" description="Actions will be recorded here automatically" />
         : (

@@ -45,12 +45,12 @@ export function ApiKeysPage() {
           <p className="text-sm text-gray-500 mt-1">Manage API keys for programmatic access</p>
         </div>
         <button onClick={() => setShowCreate(true)}
-          className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 transition-colors">
+          className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
           Create API Key
         </button>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 mt-6">
+      <div className="bg-white rounded-xl shadow-card mt-6">
         {loading ? <LoadingSkeleton rows={5} columns={6} />
         : keys.length === 0 ? <EmptyState title="No API keys" description="Create an API key to start using the Velox API" />
         : (
@@ -123,7 +123,7 @@ export function ApiKeysPage() {
             </div>
             <div className="flex justify-end pt-2">
               <button onClick={() => setCreatedKey(null)}
-                className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700">
+                className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow">
                 Done
               </button>
             </div>
@@ -170,12 +170,12 @@ function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated
           <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
           <input type="text" value={name} onChange={e => setName(e.target.value)} required
             placeholder="Production API Key"
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Key Type</label>
           <select value={keyType} onChange={e => setKeyType(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
             <option value="secret">Secret</option>
             <option value="publishable">Publishable</option>
           </select>
@@ -184,7 +184,7 @@ function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
           <button type="submit" disabled={saving}
-            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50">
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
             {saving ? 'Creating...' : 'Create Key'}
           </button>
         </div>

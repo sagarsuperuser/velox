@@ -63,12 +63,12 @@ export function CreditNotesPage() {
           <p className="text-sm text-gray-500 mt-1">Issue credits and refunds against invoices</p>
         </div>
         <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 transition-colors">
+          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
           <Plus size={16} /> Create Credit Note
         </button>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 mt-6">
+      <div className="bg-white rounded-xl shadow-card mt-6">
         {loading ? <LoadingSkeleton rows={5} columns={6} />
         : notes.length === 0 ? <EmptyState title="No credit notes" description="Credit notes will appear here once created" />
         : (
@@ -189,7 +189,7 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Invoice</label>
           <select value={invoiceId} onChange={e => setInvoiceId(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
             required>
             <option value="">Select invoice...</option>
             {invoices.map(inv => (
@@ -202,13 +202,13 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Reason</label>
           <input type="text" value={reason} onChange={e => setReason(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
             placeholder="Billing error" required />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Refund Type</label>
           <select value={refundType} onChange={e => setRefundType(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
             <option value="credit">Credit</option>
             <option value="refund">Refund</option>
           </select>
@@ -220,19 +220,19 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
               <input type="text" value={description} onChange={e => setDescription(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
                 placeholder="Credit for overcharge" />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Quantity</label>
                 <input type="number" min={1} value={quantity} onChange={e => setQuantity(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Unit Amount</label>
                 <input type="number" min={0} value={unitAmountCents} onChange={e => setUnitAmountCents(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
                   placeholder="1000" required />
                 <p className="text-xs text-gray-400 mt-1">
                   Enter amount in cents{unitAmountCents ? ` = $${(parseInt(unitAmountCents) / 100).toFixed(2)}` : ''}
@@ -246,7 +246,7 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
           <button type="submit" disabled={saving}
-            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50">
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
             {saving ? 'Creating...' : 'Create Credit Note'}
           </button>
         </div>

@@ -67,12 +67,12 @@ function EndpointsTab() {
     <>
       <div className="flex justify-end mt-4">
         <button onClick={() => setShowCreate(true)}
-          className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 transition-colors">
+          className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
           Add Endpoint
         </button>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 mt-4">
+      <div className="bg-white rounded-xl shadow-card mt-4">
         {loading ? <LoadingSkeleton rows={5} columns={5} />
         : endpoints.length === 0 ? <EmptyState title="No webhook endpoints" description="Add an endpoint to receive event notifications" />
         : (
@@ -148,7 +148,7 @@ function EndpointsTab() {
             </div>
             <div className="flex justify-end pt-2">
               <button onClick={() => setCreatedSecret(null)}
-                className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700">
+                className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow">
                 Done
               </button>
             </div>
@@ -212,19 +212,19 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
           <label className="block text-sm font-medium text-gray-700 mb-1">URL</label>
           <input type="text" value={url} onChange={e => setUrl(e.target.value)} required
             placeholder="https://example.com/webhooks"
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
           <input type="text" value={description} onChange={e => setDescription(e.target.value)}
             placeholder="Production webhook"
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Events (comma-separated)</label>
           <input type="text" value={events} onChange={e => setEvents(e.target.value)}
             placeholder="invoice.created, payment.succeeded"
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
           <div className="flex flex-wrap gap-1 mt-2">
             {suggestedEvents.map(ev => (
               <button key={ev} type="button"
@@ -244,7 +244,7 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
           <button type="submit" disabled={saving}
-            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50">
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
             {saving ? 'Creating...' : 'Create Endpoint'}
           </button>
         </div>
@@ -277,7 +277,7 @@ function EventsTab() {
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 mt-4">
+    <div className="bg-white rounded-xl shadow-card mt-4">
       {loading ? <LoadingSkeleton rows={5} columns={4} />
       : events.length === 0 ? <EmptyState title="No webhook events" description="Events will appear here as they are sent to your endpoints" />
       : (

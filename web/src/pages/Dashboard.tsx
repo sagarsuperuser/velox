@@ -78,7 +78,7 @@ export function DashboardPage() {
       </div>
 
       {loading ? (
-        <div className="bg-white rounded-xl border border-gray-200 mt-6">
+        <div className="bg-white rounded-xl shadow-card mt-6">
           <LoadingSkeleton rows={6} columns={4} />
         </div>
       ) : (
@@ -113,7 +113,7 @@ export function DashboardPage() {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
             {/* Recent invoices */}
-            <div className="bg-white rounded-xl border border-gray-200">
+            <div className="bg-white rounded-xl shadow-card">
               <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
                 <h2 className="text-sm font-semibold text-gray-900">Recent Invoices</h2>
                 <Link to="/invoices" className="text-xs text-velox-600 hover:underline">View all</Link>
@@ -140,7 +140,7 @@ export function DashboardPage() {
             </div>
 
             {/* Active subscriptions */}
-            <div className="bg-white rounded-xl border border-gray-200">
+            <div className="bg-white rounded-xl shadow-card">
               <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
                 <h2 className="text-sm font-semibold text-gray-900">Active Subscriptions</h2>
                 <Link to="/subscriptions" className="text-xs text-velox-600 hover:underline">View all</Link>
@@ -165,7 +165,7 @@ export function DashboardPage() {
           </div>
 
           {/* Recent Activity */}
-          <div className="bg-white rounded-xl border border-gray-200 mt-8">
+          <div className="bg-white rounded-xl shadow-card mt-8">
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
               <h2 className="text-sm font-semibold text-gray-900">Recent Activity</h2>
               <Link to="/audit-log" className="text-xs text-velox-600 hover:underline">View all</Link>
@@ -199,7 +199,7 @@ export function DashboardPage() {
           </div>
 
           {/* Developer Tools */}
-          <div className="mt-8 border border-gray-200 rounded-xl bg-white">
+          <div className="mt-8 shadow-card rounded-xl bg-white">
             <button
               onClick={() => setDevToolsOpen(!devToolsOpen)}
               className="w-full px-6 py-3 flex items-center justify-between text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors rounded-xl"
@@ -212,7 +212,7 @@ export function DashboardPage() {
                 <button
                   onClick={handleTriggerBilling}
                   disabled={runningBilling}
-                  className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50 transition-colors"
+                  className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50 transition-colors"
                 >
                   {runningBilling ? 'Running...' : 'Run Billing Cycle'}
                 </button>

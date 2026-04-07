@@ -44,7 +44,7 @@ export function CustomerDetailPage() {
     return (
       <Layout>
         <Breadcrumbs items={[{ label: 'Customers', to: '/customers' }, { label: 'Loading...' }]} />
-        <div className="bg-white rounded-xl border border-gray-200">
+        <div className="bg-white rounded-xl shadow-card">
           <LoadingSkeleton rows={8} columns={3} />
         </div>
       </Layout>
@@ -80,7 +80,7 @@ export function CustomerDetailPage() {
       </div>
 
       {/* Billing Profile */}
-      <div className="bg-white rounded-xl border border-gray-200 mt-6">
+      <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
           <h2 className="text-sm font-semibold text-gray-900">Billing Profile</h2>
           {billingProfile && (
@@ -132,7 +132,7 @@ export function CustomerDetailPage() {
       </div>
 
       {/* Usage This Period */}
-      <div className="bg-white rounded-xl border border-gray-200 mt-6">
+      <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100">
           <h2 className="text-sm font-semibold text-gray-900">Usage This Period</h2>
         </div>
@@ -158,7 +158,7 @@ export function CustomerDetailPage() {
 
       <div className="grid grid-cols-2 gap-6 mt-8">
         {/* Subscriptions */}
-        <div className="bg-white rounded-xl border border-gray-200">
+        <div className="bg-white rounded-xl shadow-card">
           <div className="px-6 py-4 border-b border-gray-100">
             <h2 className="text-sm font-semibold text-gray-900">Subscriptions</h2>
           </div>
@@ -179,7 +179,7 @@ export function CustomerDetailPage() {
         </div>
 
         {/* Recent invoices */}
-        <div className="bg-white rounded-xl border border-gray-200">
+        <div className="bg-white rounded-xl shadow-card">
           <div className="px-6 py-4 border-b border-gray-100">
             <h2 className="text-sm font-semibold text-gray-900">Recent Invoices</h2>
           </div>
@@ -259,18 +259,18 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
           <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" required />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" required />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
           <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
         </div>
         {error && <p className="text-red-600 text-xs">{error}</p>}
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
           <button type="submit" disabled={saving}
-            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50">
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
             {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
@@ -311,7 +311,7 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
     }
   }
 
-  const fieldClass = "w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+  const fieldClass = "w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
 
   return (
     <Modal open onClose={onClose} title="Billing Profile">
@@ -380,7 +380,7 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
           <button type="submit" disabled={saving}
-            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50">
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
             {saving ? 'Saving...' : 'Save'}
           </button>
         </div>

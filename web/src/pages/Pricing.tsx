@@ -30,7 +30,7 @@ export function PricingPage() {
           <p className="text-sm text-gray-500 mt-1">Plans, meters, and rating rules</p>
         </div>
         <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 transition-colors">
+          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
           <Plus size={16} />
           {tab === 'plans' ? 'Add Plan' : tab === 'meters' ? 'Add Meter' : 'Add Rule'}
         </button>
@@ -47,7 +47,7 @@ export function PricingPage() {
         ))}
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 mt-4">
+      <div className="bg-white rounded-xl shadow-card mt-4">
         {loading ? <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
         : tab === 'plans' ? (plans.length === 0 ? <Empty label="plans" /> :
           <table className="w-full"><thead><tr className="border-b border-gray-100">
@@ -108,7 +108,7 @@ function Field({ label, value, onChange, placeholder, required, mono, type }: {
   return (<div>
     <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
     <input type={type || 'text'} value={value} onChange={e => onChange(e.target.value)}
-      className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 ${mono ? 'font-mono' : ''}`}
+      className={`w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 ${mono ? 'font-mono' : ''}`}
       placeholder={placeholder} required={required} />
   </div>)
 }
@@ -119,7 +119,7 @@ function Select({ label, value, onChange, options }: {
   return (<div>
     <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
     <select value={value} onChange={e => onChange(e.target.value)}
-      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
+      className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
       {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
     </select>
   </div>)
@@ -129,7 +129,7 @@ function Buttons({ onClose, saving, label }: { onClose: () => void; saving: bool
   return (<div className="flex justify-end gap-3 pt-2">
     <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
     <button type="submit" disabled={saving}
-      className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50">
+      className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
       {saving ? 'Saving...' : label}
     </button>
   </div>)
@@ -176,13 +176,13 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
             <div key={idx} className="flex items-center gap-2">
               <div className="flex-1">
                 <input type="number" value={tier.up_to} onChange={e => updateTier(idx, 'up_to', parseInt(e.target.value) || 0)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
                   placeholder="Up to (0 = unlimited)" />
                 <span className="text-xs text-gray-400">{tier.up_to === 0 ? 'Unlimited' : `Up to ${tier.up_to}`}</span>
               </div>
               <div className="flex-1">
                 <input type="number" value={tier.unit_amount_cents} onChange={e => updateTier(idx, 'unit_amount_cents', parseInt(e.target.value) || 0)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
                   placeholder="Unit amount (cents)" />
                 <span className="text-xs text-gray-400">cents/unit</span>
               </div>

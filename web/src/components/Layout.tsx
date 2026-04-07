@@ -36,8 +36,8 @@ function NavLink({ to, icon: Icon, label, pathname, onClick }: { to: string; ico
       className={cn(
         'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
         pathname === to
-          ? 'bg-white/10 text-white'
-          : 'text-white/60 hover:text-white hover:bg-white/5'
+          ? 'bg-velox-50 text-velox-700'
+          : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
       )}
     >
       <Icon size={18} />
@@ -54,38 +54,38 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   const sidebarContent = (
     <>
-      <div className="p-5 border-b border-white/10 flex items-center justify-between">
+      <div className="p-5 border-b border-gray-100 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold tracking-tight">Velox</h1>
-          <p className="text-xs text-white/50 mt-0.5">Billing Dashboard</p>
+          <h1 className="text-xl font-bold tracking-tight text-gray-900">Velox</h1>
+          <p className="text-xs text-gray-400 mt-0.5">Billing Dashboard</p>
         </div>
-        <button onClick={closeSidebar} className="md:hidden text-white/60 hover:text-white">
+        <button onClick={closeSidebar} className="md:hidden text-gray-400 hover:text-gray-600">
           <X size={20} />
         </button>
       </div>
 
       <nav className="flex-1 p-3 space-y-1">
-        <p className="text-xs uppercase text-white/30 tracking-wider px-3 pt-2 pb-1">Billing</p>
+        <p className="text-xs uppercase text-gray-400 tracking-wider px-3 pt-2 pb-1">Billing</p>
         {billingNav.map(item => (
           <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} />
         ))}
 
-        <p className="text-xs uppercase text-white/30 tracking-wider px-3 pt-4 pb-1">Configuration</p>
+        <p className="text-xs uppercase text-gray-400 tracking-wider px-3 pt-4 pb-1">Configuration</p>
         {configNav.map(item => (
           <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} />
         ))}
 
-        <div className="border-t border-white/10 my-2" />
+        <div className="border-t border-gray-100 my-2" />
 
         {bottomNav.map(item => (
           <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} />
         ))}
       </nav>
 
-      <div className="p-3 border-t border-white/10">
+      <div className="p-3 border-t border-gray-100">
         <button
           onClick={() => { clearApiKey(); window.location.href = '/login' }}
-          className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-white/60 hover:text-white hover:bg-white/5 w-full transition-colors"
+          className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-gray-500 hover:text-gray-900 hover:bg-gray-50 w-full transition-colors"
         >
           <LogOut size={18} />
           Sign Out
@@ -99,20 +99,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 bg-black/40 z-30 md:hidden"
+          className="fixed inset-0 bg-black/20 backdrop-blur-sm z-30 md:hidden"
           onClick={closeSidebar}
         />
       )}
 
       {/* Sidebar - desktop */}
-      <aside className="hidden md:flex w-60 bg-velox-900 text-white flex-col flex-shrink-0">
+      <aside className="hidden md:flex w-60 bg-white border-r border-gray-200 flex-col flex-shrink-0">
         {sidebarContent}
       </aside>
 
       {/* Sidebar - mobile */}
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-40 w-60 bg-velox-900 text-white flex flex-col transition-transform duration-200 md:hidden',
+          'fixed inset-y-0 left-0 z-40 w-60 bg-white border-r border-gray-200 flex flex-col transition-transform duration-200 md:hidden',
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         )}
       >
