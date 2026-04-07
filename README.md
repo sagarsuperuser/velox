@@ -35,11 +35,23 @@ internal/
 ## Quick Start
 
 ```bash
-# Start Postgres + Velox
-docker compose up -d
+# Start Postgres
+docker compose up -d postgres
 
-# Health check
-curl http://localhost:8080/health
+# Bootstrap: create a demo tenant + API keys
+make bootstrap
+
+# Start Velox
+make dev
+
+# Run the demo (full billing cycle walkthrough)
+./scripts/demo.sh <YOUR_SECRET_KEY>
+```
+
+Or with Docker Compose (full stack):
+
+```bash
+docker compose up -d
 ```
 
 ## API Key Types

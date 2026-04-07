@@ -37,6 +37,19 @@ tidy:
 clean:
 	rm -rf bin/
 
+# Bootstrap: create demo tenant + API keys
+bootstrap:
+	DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
+	go run ./cmd/velox-bootstrap
+
+# Run demo script (requires: make up, make bootstrap, make dev)
+demo:
+	@echo "Run: ./scripts/demo.sh <YOUR_SECRET_KEY>"
+
+# Integration tests (requires running postgres)
+test-integration:
+	go test -p 1 ./... -v -count=1 -short=false
+
 # Docker compose for local dev
 up:
 	docker compose up -d
