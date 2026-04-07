@@ -12,6 +12,8 @@ import { InvoiceDetailPage } from '@/pages/InvoiceDetail'
 import { SubscriptionsPage } from '@/pages/Subscriptions'
 import { PricingPage } from '@/pages/Pricing'
 import { CreditsPage } from '@/pages/Credits'
+import { SettingsPage } from '@/pages/Settings'
+import { SubscriptionDetailPage } from '@/pages/SubscriptionDetail'
 import './index.css'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -33,8 +35,10 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/invoices" element={<ProtectedRoute><InvoicesPage /></ProtectedRoute>} />
           <Route path="/invoices/:id" element={<ProtectedRoute><InvoiceDetailPage /></ProtectedRoute>} />
           <Route path="/subscriptions" element={<ProtectedRoute><SubscriptionsPage /></ProtectedRoute>} />
+          <Route path="/subscriptions/:id" element={<ProtectedRoute><SubscriptionDetailPage /></ProtectedRoute>} />
           <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
           <Route path="/credits" element={<ProtectedRoute><CreditsPage /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
         </Routes>
       </BrowserRouter>
     </ToastProvider>

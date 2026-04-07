@@ -104,6 +104,16 @@ export const api = {
   // Subscription detail
   getSubscription: (id: string) =>
     request<Subscription>('GET', `/subscriptions/${id}`),
+  pauseSubscription: (id: string) =>
+    request<Subscription>('POST', `/subscriptions/${id}/pause`),
+  resumeSubscription: (id: string) =>
+    request<Subscription>('POST', `/subscriptions/${id}/resume`),
+  cancelSubscription: (id: string) =>
+    request<Subscription>('POST', `/subscriptions/${id}/cancel`),
+  changePlan: (id: string, data: { new_plan_id: string; immediate?: boolean }) =>
+    request<{ subscription: Subscription; proration_factor?: number }>('POST', `/subscriptions/${id}/change-plan`, data),
+  invoicePreview: (subscriptionId: string) =>
+    request<InvoicePreview>('GET', `/billing/preview/${subscriptionId}`),
 
   // Billing profile
   getBillingProfile: (customerId: string) =>
@@ -263,6 +273,18 @@ export interface TenantSettings {
   company_email: string
   company_phone: string
   logo_url: string
+}
+
+export interface InvoicePreview {
+  customer_id: string
+  subscription_id: string
+  plan_name: string
+  currency: string
+  billing_period_start: string
+  billing_period_end: string
+  lines: { line_type: string; description: string; meter_id?: string; quantity: number; unit_amount_cents: number; amount_cents: number; pricing_mode?: string }[]
+  subtotal_cents: number
+  generated_at: string
 }
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {

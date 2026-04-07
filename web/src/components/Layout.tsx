@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut,
+  LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { clearApiKey } from '@/lib/api'
@@ -42,6 +42,21 @@ export function Layout({ children }: { children: React.ReactNode }) {
               {label}
             </Link>
           ))}
+
+          <div className="border-t border-white/10 my-2" />
+
+          <Link
+            to="/settings"
+            className={cn(
+              'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
+              location.pathname === '/settings'
+                ? 'bg-white/10 text-white'
+                : 'text-white/60 hover:text-white hover:bg-white/5'
+            )}
+          >
+            <Settings size={18} />
+            Settings
+          </Link>
         </nav>
 
         <div className="p-3 border-t border-white/10">
