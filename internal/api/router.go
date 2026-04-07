@@ -64,10 +64,14 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	auditH := audit.NewHandler(auditLogger)
 	settingsH := tenant.NewSettingsHandler(tenant.NewSettingsStore(db))
 
-	// Payment / webhook handler (no auth — Stripe authenticates via signature)
-	stripeClient := payment.NewLiveStripeClient(strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")))
+	// Payment / webhook / checkout handlers
+	stripeKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
+	stripeClient := payment.NewLiveStripeClient(stripeKey)
 	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore)
 	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
+	checkoutH := payment.NewCheckoutHandler(stripeKey,
+		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")),
+		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")))
 
 	// Billing engine + manual trigger
 	engine := billing.NewEngine(subStore, usageStore, pricingStore,
@@ -131,6 +135,9 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 		r.With(auth.Require(auth.PermAPIKeyRead)).Mount("/audit-log", auditH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
+		if checkoutH != nil {
+			r.With(auth.Require(auth.PermCustomerWrite)).Mount("/checkout", checkoutH.Routes())
+		}
 
 		// Customer portal — consolidated views across domains
 		portal := newCustomerPortalHandler(subStore, invoiceStore, usageStore)
