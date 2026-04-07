@@ -355,11 +355,21 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
-            <input type="text" value={form.country} onChange={e => setForm(f => ({ ...f, country: e.target.value }))} className={fieldClass} />
+            <select value={form.country} onChange={e => setForm(f => ({ ...f, country: e.target.value }))} className={fieldClass + ' bg-white'}>
+              <option value="">Select country...</option>
+              {[['US', 'United States'], ['CA', 'Canada'], ['GB', 'United Kingdom'], ['DE', 'Germany'], ['FR', 'France'], ['IN', 'India'], ['JP', 'Japan'], ['AU', 'Australia'], ['BR', 'Brazil'], ['MX', 'Mexico'], ['SG', 'Singapore'], ['NL', 'Netherlands'], ['SE', 'Sweden'], ['CH', 'Switzerland']].map(([code, name]) => (
+                <option key={code} value={code}>{name} ({code})</option>
+              ))}
+            </select>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Currency</label>
-            <input type="text" value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))} className={fieldClass} />
+            <select value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))} className={fieldClass + ' bg-white'}>
+              <option value="">Select currency...</option>
+              {['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'CHF'].map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
           </div>
         </div>
         <div>

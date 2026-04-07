@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { api, formatDate, type DunningPolicy, type DunningRun } from '@/lib/api'
+import { Link } from 'react-router-dom'
+import { api, formatDate, type DunningPolicy, type DunningRun, type Invoice } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
@@ -136,15 +137,23 @@ function PolicyTab() {
 
 function RunsTab() {
   const [runs, setRuns] = useState<DunningRun[]>([])
+  const [invoiceMap, setInvoiceMap] = useState<Record<string, Invoice>>({})
   const [loading, setLoading] = useState(true)
   const [resolveTarget, setResolveTarget] = useState<DunningRun | null>(null)
   const toast = useToast()
 
   const loadRuns = () => {
     setLoading(true)
-    api.listDunningRuns()
-      .then(res => { setRuns(res.data || []); setLoading(false) })
-      .catch(() => { setRuns([]); setLoading(false) })
+    Promise.all([
+      api.listDunningRuns(),
+      api.listInvoices().catch(() => ({ data: [] as Invoice[], total: 0 })),
+    ]).then(([runsRes, invoicesRes]) => {
+      setRuns(runsRes.data || [])
+      const map: Record<string, Invoice> = {}
+      invoicesRes.data.forEach(inv => { map[inv.id] = inv })
+      setInvoiceMap(map)
+      setLoading(false)
+    }).catch(() => { setRuns([]); setLoading(false) })
   }
 
   useEffect(() => { loadRuns() }, [])
@@ -170,7 +179,11 @@ function RunsTab() {
             <tbody className="divide-y divide-gray-50">
               {runs.map(run => (
                 <tr key={run.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-3 text-sm font-mono text-gray-500">{run.invoice_id.slice(0, 8)}...</td>
+                  <td className="px-6 py-3 text-sm">
+                    <Link to={`/invoices/${run.invoice_id}`} className="text-velox-600 hover:underline">
+                      {invoiceMap[run.invoice_id]?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
+                    </Link>
+                  </td>
                   <td className="px-6 py-3"><Badge status={run.state} /></td>
                   <td className="px-6 py-3 text-sm text-gray-500">{run.attempt_count}</td>
                   <td className="px-6 py-3 text-sm text-gray-500">{run.next_action_at ? formatDate(run.next_action_at) : '—'}</td>
@@ -190,14 +203,14 @@ function RunsTab() {
       </div>
 
       {resolveTarget && (
-        <ResolveModal run={resolveTarget} onClose={() => setResolveTarget(null)}
+        <ResolveModal run={resolveTarget} invoiceMap={invoiceMap} onClose={() => setResolveTarget(null)}
           onResolved={() => { setResolveTarget(null); loadRuns(); toast.success('Dunning run resolved') }} />
       )}
     </>
   )
 }
 
-function ResolveModal({ run, onClose, onResolved }: { run: DunningRun; onClose: () => void; onResolved: () => void }) {
+function ResolveModal({ run, invoiceMap, onClose, onResolved }: { run: DunningRun; invoiceMap: Record<string, Invoice>; onClose: () => void; onResolved: () => void }) {
   const [resolution, setResolution] = useState('payment_succeeded')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -218,7 +231,7 @@ function ResolveModal({ run, onClose, onResolved }: { run: DunningRun; onClose: 
   return (
     <Modal open onClose={onClose} title="Resolve Dunning Run">
       <form onSubmit={handleSubmit} className="space-y-3">
-        <p className="text-sm text-gray-500">Invoice: <span className="font-mono">{run.invoice_id.slice(0, 8)}...</span></p>
+        <p className="text-sm text-gray-500">Invoice: <span className="font-mono">{invoiceMap[run.invoice_id]?.invoice_number || run.invoice_id.slice(0, 8) + '...'}</span></p>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Resolution</label>
           <select value={resolution} onChange={e => setResolution(e.target.value)}

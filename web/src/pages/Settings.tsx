@@ -142,15 +142,25 @@ export function SettingsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Default Currency</label>
-                <input type="text" value={invoiceForm.default_currency}
+                <select value={invoiceForm.default_currency}
                   onChange={e => setInvoiceForm(f => ({ ...f, default_currency: e.target.value }))}
-                  className={fieldClass + ' font-mono uppercase'} placeholder="usd" />
+                  className={fieldClass + ' bg-white'}>
+                  <option value="">Select currency...</option>
+                  {['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'CHF'].map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Timezone</label>
-                <input type="text" value={invoiceForm.timezone}
+                <select value={invoiceForm.timezone}
                   onChange={e => setInvoiceForm(f => ({ ...f, timezone: e.target.value }))}
-                  className={fieldClass} placeholder="America/New_York" />
+                  className={fieldClass + ' bg-white'}>
+                  <option value="">Select timezone...</option>
+                  {['UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'Europe/London', 'Europe/Berlin', 'Europe/Paris', 'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Kolkata', 'Australia/Sydney'].map(tz => (
+                    <option key={tz} value={tz}>{tz}</option>
+                  ))}
+                </select>
               </div>
             </div>
           </div>

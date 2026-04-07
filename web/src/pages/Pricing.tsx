@@ -136,14 +136,30 @@ function Buttons({ onClose, saving, label }: { onClose: () => void; saving: bool
 }
 
 function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const [form, setForm] = useState({ rule_key: '', name: '', mode: 'flat', currency: 'USD', flat_amount_cents: 0 })
+  const [form, setForm] = useState({
+    rule_key: '', name: '', mode: 'flat', currency: 'USD', flat_amount_cents: 0,
+    graduated_tiers: [{ up_to: 100, unit_amount_cents: 10 }, { up_to: 0, unit_amount_cents: 5 }] as { up_to: number; unit_amount_cents: number }[],
+    package_size: 100, package_amount_cents: 1000,
+  })
   const [error, setError] = useState(''); const [saving, setSaving] = useState(false)
   const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setSaving(true); setError('')
-    try { await api.createRatingRule(form); onCreated() }
+    try {
+      const payload: Record<string, unknown> = { rule_key: form.rule_key, name: form.name, mode: form.mode, currency: form.currency }
+      if (form.mode === 'flat') { payload.flat_amount_cents = form.flat_amount_cents }
+      if (form.mode === 'graduated') { payload.graduated_tiers = form.graduated_tiers }
+      if (form.mode === 'package') { payload.package_size = form.package_size; payload.package_amount_cents = form.package_amount_cents }
+      await api.createRatingRule(payload as Parameters<typeof api.createRatingRule>[0]); onCreated()
+    }
     catch (err) { setError(err instanceof Error ? err.message : 'Failed') }
     finally { setSaving(false) }
   }
+
+  const addTier = () => setForm(f => ({ ...f, graduated_tiers: [...f.graduated_tiers, { up_to: 0, unit_amount_cents: 0 }] }))
+  const removeTier = (idx: number) => setForm(f => ({ ...f, graduated_tiers: f.graduated_tiers.filter((_, i) => i !== idx) }))
+  const updateTier = (idx: number, field: 'up_to' | 'unit_amount_cents', value: number) =>
+    setForm(f => ({ ...f, graduated_tiers: f.graduated_tiers.map((t, i) => i === idx ? { ...t, [field]: value } : t) }))
+
   return (<Modal open onClose={onClose} title="Create Rating Rule"><form onSubmit={submit} className="space-y-3">
     <Field label="Name" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="API Call Pricing" required />
     <Field label="Rule Key" value={form.rule_key} onChange={v => setForm(f => ({ ...f, rule_key: v }))} placeholder="api_calls" mono required />
@@ -152,6 +168,39 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
       <Field label="Currency" value={form.currency} onChange={v => setForm(f => ({ ...f, currency: v }))} />
     </div>
     {form.mode === 'flat' && <Field label="Amount (cents)" value={String(form.flat_amount_cents)} type="number" onChange={v => setForm(f => ({ ...f, flat_amount_cents: parseInt(v) || 0 }))} />}
+    {form.mode === 'graduated' && (
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">Graduated Tiers</label>
+        <div className="space-y-2">
+          {form.graduated_tiers.map((tier, idx) => (
+            <div key={idx} className="flex items-center gap-2">
+              <div className="flex-1">
+                <input type="number" value={tier.up_to} onChange={e => updateTier(idx, 'up_to', parseInt(e.target.value) || 0)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+                  placeholder="Up to (0 = unlimited)" />
+                <span className="text-xs text-gray-400">{tier.up_to === 0 ? 'Unlimited' : `Up to ${tier.up_to}`}</span>
+              </div>
+              <div className="flex-1">
+                <input type="number" value={tier.unit_amount_cents} onChange={e => updateTier(idx, 'unit_amount_cents', parseInt(e.target.value) || 0)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+                  placeholder="Unit amount (cents)" />
+                <span className="text-xs text-gray-400">cents/unit</span>
+              </div>
+              {form.graduated_tiers.length > 1 && (
+                <button type="button" onClick={() => removeTier(idx)} className="text-red-400 hover:text-red-600 text-sm px-1">&times;</button>
+              )}
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={addTier} className="mt-2 text-xs text-velox-600 hover:underline">+ Add tier</button>
+      </div>
+    )}
+    {form.mode === 'package' && (
+      <div className="space-y-3">
+        <Field label="Package size" value={String(form.package_size)} type="number" onChange={v => setForm(f => ({ ...f, package_size: parseInt(v) || 0 }))} placeholder="100" />
+        <Field label="Package amount (cents)" value={String(form.package_amount_cents)} type="number" onChange={v => setForm(f => ({ ...f, package_amount_cents: parseInt(v) || 0 }))} placeholder="1000" />
+      </div>
+    )}
     {error && <p className="text-red-600 text-xs">{error}</p>}
     <Buttons onClose={onClose} saving={saving} label="Create Rule" />
   </form></Modal>)

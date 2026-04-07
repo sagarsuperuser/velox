@@ -147,7 +147,7 @@ export function DashboardPage() {
               </div>
               <div className="divide-y divide-gray-50">
                 {activeSubs.map(sub => (
-                  <div key={sub.id} className="flex items-center justify-between px-6 py-3">
+                  <Link key={sub.id} to={`/subscriptions/${sub.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50 transition-colors">
                     <div>
                       <p className="text-sm font-medium text-gray-900">{sub.display_name}</p>
                       <p className="text-xs text-gray-400">
@@ -155,7 +155,7 @@ export function DashboardPage() {
                       </p>
                     </div>
                     <Badge status={sub.status} />
-                  </div>
+                  </Link>
                 ))}
                 {activeSubs.length === 0 && (
                   <p className="px-6 py-4 text-sm text-gray-400">No active subscriptions</p>

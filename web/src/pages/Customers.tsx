@@ -86,38 +86,45 @@ export function CustomersPage() {
             </button>
           </div>
         ) : (
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">External ID</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Email</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Created</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {customers.filter(c => {
-                if (!search) return true
-                const q = search.toLowerCase()
-                return c.display_name.toLowerCase().includes(q) ||
-                  c.external_id.toLowerCase().includes(q) ||
-                  (c.email && c.email.toLowerCase().includes(q))
-              }).map(c => (
-                <tr key={c.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-3">
-                    <Link to={`/customers/${c.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">
-                      {c.display_name}
-                    </Link>
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-500 font-mono">{c.external_id}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{c.email || '—'}</td>
-                  <td className="px-6 py-3"><Badge status={c.status} /></td>
-                  <td className="px-6 py-3 text-sm text-gray-400">{formatDate(c.created_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          (() => {
+            const filtered = customers.filter(c => {
+              if (!search) return true
+              const q = search.toLowerCase()
+              return c.display_name.toLowerCase().includes(q) ||
+                c.external_id.toLowerCase().includes(q) ||
+                (c.email && c.email.toLowerCase().includes(q))
+            })
+            return filtered.length === 0 ? (
+              <p className="px-6 py-8 text-sm text-gray-400 text-center">No customers match &lsquo;{search}&rsquo;</p>
+            ) : (
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-gray-100">
+                    <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
+                    <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">External ID</th>
+                    <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Email</th>
+                    <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
+                    <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Created</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {filtered.map(c => (
+                    <tr key={c.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-6 py-3">
+                        <Link to={`/customers/${c.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">
+                          {c.display_name}
+                        </Link>
+                      </td>
+                      <td className="px-6 py-3 text-sm text-gray-500 font-mono">{c.external_id}</td>
+                      <td className="px-6 py-3 text-sm text-gray-500">{c.email || '\u2014'}</td>
+                      <td className="px-6 py-3"><Badge status={c.status} /></td>
+                      <td className="px-6 py-3 text-sm text-gray-400">{formatDate(c.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          })()
         )}
       </div>
 

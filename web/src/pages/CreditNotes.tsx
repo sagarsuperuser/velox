@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { api, formatCents, formatDate, type CreditNote } from '@/lib/api'
+import { Link } from 'react-router-dom'
+import { api, formatCents, formatDate, type CreditNote, type Invoice } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { useToast } from '@/components/Toast'
@@ -10,15 +12,25 @@ import { Plus } from 'lucide-react'
 
 export function CreditNotesPage() {
   const [notes, setNotes] = useState<CreditNote[]>([])
+  const [invoiceMap, setInvoiceMap] = useState<Record<string, Invoice>>({})
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
+  const [confirmIssue, setConfirmIssue] = useState<string | null>(null)
+  const [confirmVoid, setConfirmVoid] = useState<string | null>(null)
   const toast = useToast()
 
   const loadNotes = () => {
     setLoading(true)
-    api.listCreditNotes()
-      .then(res => { setNotes(res.data || []); setLoading(false) })
-      .catch(() => { setNotes([]); setLoading(false) })
+    Promise.all([
+      api.listCreditNotes(),
+      api.listInvoices().catch(() => ({ data: [] as Invoice[], total: 0 })),
+    ]).then(([notesRes, invoicesRes]) => {
+      setNotes(notesRes.data || [])
+      const map: Record<string, Invoice> = {}
+      invoicesRes.data.forEach(inv => { map[inv.id] = inv })
+      setInvoiceMap(map)
+      setLoading(false)
+    }).catch(() => { setNotes([]); setLoading(false) })
   }
 
   useEffect(() => { loadNotes() }, [])
@@ -76,17 +88,21 @@ export function CreditNotesPage() {
               {notes.map(note => (
                 <tr key={note.id} className="hover:bg-gray-50">
                   <td className="px-6 py-3 text-sm font-medium text-gray-900">{note.credit_note_number}</td>
-                  <td className="px-6 py-3 text-sm font-mono text-gray-500">{note.invoice_id.slice(0, 8)}...</td>
+                  <td className="px-6 py-3 text-sm">
+                    <Link to={`/invoices/${note.invoice_id}`} className="text-velox-600 hover:underline">
+                      {invoiceMap[note.invoice_id]?.invoice_number || note.invoice_id.slice(0, 8) + '...'}
+                    </Link>
+                  </td>
                   <td className="px-6 py-3"><Badge status={note.status} /></td>
                   <td className="px-6 py-3 text-sm text-gray-500">{note.reason.length > 30 ? note.reason.slice(0, 30) + '...' : note.reason}</td>
                   <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">{formatCents(note.total_cents)}</td>
                   <td className="px-6 py-3 text-sm text-gray-400">{formatDate(note.created_at)}</td>
                   <td className="px-6 py-3 text-right space-x-2">
                     {note.status === 'draft' && (
-                      <button onClick={() => handleIssue(note.id)} className="text-xs text-velox-600 hover:underline">Issue</button>
+                      <button onClick={() => setConfirmIssue(note.id)} className="text-xs text-velox-600 hover:underline">Issue</button>
                     )}
                     {note.status !== 'voided' && (
-                      <button onClick={() => handleVoid(note.id)} className="text-xs text-red-600 hover:underline">Void</button>
+                      <button onClick={() => setConfirmVoid(note.id)} className="text-xs text-red-600 hover:underline">Void</button>
                     )}
                   </td>
                 </tr>
@@ -100,6 +116,24 @@ export function CreditNotesPage() {
         <CreateCreditNoteModal onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); loadNotes(); toast.success('Credit note created') }} />
       )}
+
+      <ConfirmDialog
+        open={confirmIssue !== null}
+        title="Issue Credit Note"
+        message="Issue this credit note? This cannot be undone."
+        confirmLabel="Issue"
+        onConfirm={() => { if (confirmIssue) handleIssue(confirmIssue); setConfirmIssue(null) }}
+        onCancel={() => setConfirmIssue(null)}
+      />
+      <ConfirmDialog
+        open={confirmVoid !== null}
+        title="Void Credit Note"
+        message="Void this credit note? This cannot be undone."
+        confirmLabel="Void"
+        variant="danger"
+        onConfirm={() => { if (confirmVoid) handleVoid(confirmVoid); setConfirmVoid(null) }}
+        onCancel={() => setConfirmVoid(null)}
+      />
     </Layout>
   )
 }
