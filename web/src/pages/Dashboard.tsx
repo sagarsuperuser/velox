@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCents, formatDate, type Invoice, type Subscription, type Customer } from '@/lib/api'
+import { api, formatCents, formatDate, formatRelativeTime, type Invoice, type Subscription, type Customer, type AuditEntry } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { StatCard } from '@/components/StatCard'
 import { Badge } from '@/components/Badge'
@@ -11,6 +11,7 @@ export function DashboardPage() {
   const [recentInvoices, setRecentInvoices] = useState<Invoice[]>([])
   const [activeSubs, setActiveSubs] = useState<Subscription[]>([])
   const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
+  const [recentActivity, setRecentActivity] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [billingResult, setBillingResult] = useState<string | null>(null)
   const [runningBilling, setRunningBilling] = useState(false)
@@ -19,11 +20,13 @@ export function DashboardPage() {
   useEffect(() => {
     async function load() {
       try {
-        const [customers, invoices, subs] = await Promise.all([
+        const [customers, invoices, subs, auditRes] = await Promise.all([
           api.listCustomers(),
           api.listInvoices('limit=10'),
           api.listSubscriptions('status=active'),
+          api.listAuditLog('limit=8').catch(() => ({ data: [] })),
         ])
+        setRecentActivity(auditRes.data || [])
 
         const cMap: Record<string, Customer> = {}
         customers.data.forEach(c => { cMap[c.id] = c })
@@ -158,6 +161,40 @@ export function DashboardPage() {
                   <p className="px-6 py-4 text-sm text-gray-400">No active subscriptions</p>
                 )}
               </div>
+            </div>
+          </div>
+
+          {/* Recent Activity */}
+          <div className="bg-white rounded-xl border border-gray-200 mt-8">
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+              <h2 className="text-sm font-semibold text-gray-900">Recent Activity</h2>
+              <Link to="/audit-log" className="text-xs text-velox-600 hover:underline">View all</Link>
+            </div>
+            <div className="divide-y divide-gray-50">
+              {recentActivity.length > 0 ? recentActivity.map(entry => {
+                const dotColor = entry.action.startsWith('create')
+                  ? 'bg-emerald-500'
+                  : entry.action.startsWith('update')
+                  ? 'bg-blue-500'
+                  : entry.action.startsWith('delete') || entry.action.startsWith('revoke') || entry.action.startsWith('void')
+                  ? 'bg-red-500'
+                  : 'bg-gray-400'
+
+                const actionLabel = entry.action.charAt(0).toUpperCase() + entry.action.slice(1)
+                const resourceLabel = entry.resource_type.replace(/_/g, ' ')
+
+                return (
+                  <div key={entry.id} className="flex items-center gap-3 px-6 py-3">
+                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor}`} />
+                    <span className="text-sm text-gray-700">
+                      {actionLabel}d {resourceLabel}
+                    </span>
+                    <span className="text-xs text-gray-400 ml-auto">{formatRelativeTime(entry.created_at)}</span>
+                  </div>
+                )
+              }) : (
+                <p className="px-6 py-4 text-sm text-gray-400">No recent activity</p>
+              )}
             </div>
           </div>
 

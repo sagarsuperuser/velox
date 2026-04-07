@@ -5,6 +5,7 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { StatCard } from '@/components/StatCard'
 import { Modal } from '@/components/Modal'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { useToast } from '@/components/Toast'
@@ -42,9 +43,7 @@ export function CustomerDetailPage() {
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center gap-3 mb-6">
-          <Link to="/customers" className="text-sm text-gray-400 hover:text-gray-600">&larr; Customers</Link>
-        </div>
+        <Breadcrumbs items={[{ label: 'Customers', to: '/customers' }, { label: 'Loading...' }]} />
         <div className="bg-white rounded-xl border border-gray-200">
           <LoadingSkeleton rows={8} columns={3} />
         </div>
@@ -56,9 +55,7 @@ export function CustomerDetailPage() {
 
   return (
     <Layout>
-      <div className="flex items-center gap-3 mb-6">
-        <Link to="/customers" className="text-sm text-gray-400 hover:text-gray-600">&larr; Customers</Link>
-      </div>
+      <Breadcrumbs items={[{ label: 'Customers', to: '/customers' }, { label: customer.display_name }]} />
 
       <div className="flex items-center justify-between">
         <div>

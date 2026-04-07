@@ -3,6 +3,7 @@ import { api, formatDate, type WebhookEndpoint, type WebhookEvent } from '@/lib/
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { useToast } from '@/components/Toast'
@@ -145,24 +146,15 @@ function EndpointsTab() {
         </Modal>
       )}
 
-      {deleteTarget && (
-        <Modal open onClose={() => setDeleteTarget(null)} title="Delete Endpoint">
-          <div className="space-y-3">
-            <p className="text-sm text-gray-600">
-              Are you sure you want to delete this endpoint?
-            </p>
-            <p className="text-sm font-mono text-gray-500 truncate">{deleteTarget.url}</p>
-            <div className="flex justify-end gap-3 pt-2">
-              <button onClick={() => setDeleteTarget(null)}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
-              <button onClick={handleDelete}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700">
-                Delete
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Delete Endpoint"
+        message={deleteTarget ? `Are you sure you want to delete the endpoint "${deleteTarget.url}"?` : ''}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </>
   )
 }
