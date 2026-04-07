@@ -189,7 +189,7 @@ func TestCreateEndpoint(t *testing.T) {
 func TestDispatch(t *testing.T) {
 	store := newMemStore()
 	httpClient := &mockHTTPClient{statusCode: 200}
-	svc := NewService(store, httpClient)
+	svc := NewTestService(store, httpClient)
 	ctx := context.Background()
 
 	// Register an endpoint
@@ -208,7 +208,7 @@ func TestDispatch(t *testing.T) {
 	}
 
 	// Give async delivery goroutine time to complete
-	time.Sleep(100 * time.Millisecond)
+	// Delivery is synchronous in test mode
 
 	// Verify event was created
 	if len(store.events) != 1 {
@@ -279,7 +279,7 @@ func TestDispatch(t *testing.T) {
 func TestDispatch_NonMatchingEvent(t *testing.T) {
 	store := newMemStore()
 	httpClient := &mockHTTPClient{statusCode: 200}
-	svc := NewService(store, httpClient)
+	svc := NewTestService(store, httpClient)
 	ctx := context.Background()
 
 	// Register endpoint for invoice events only
@@ -291,7 +291,7 @@ func TestDispatch_NonMatchingEvent(t *testing.T) {
 	// Dispatch a payment event — should NOT trigger delivery
 	svc.Dispatch(ctx, "t1", "payment.succeeded", map[string]any{})
 
-	time.Sleep(50 * time.Millisecond)
+	// Delivery is synchronous in test mode
 
 	if len(store.deliveries) != 0 {
 		t.Errorf("no delivery expected for non-matching event, got %d", len(store.deliveries))
@@ -301,7 +301,7 @@ func TestDispatch_NonMatchingEvent(t *testing.T) {
 func TestDispatch_WildcardEndpoint(t *testing.T) {
 	store := newMemStore()
 	httpClient := &mockHTTPClient{statusCode: 200}
-	svc := NewService(store, httpClient)
+	svc := NewTestService(store, httpClient)
 	ctx := context.Background()
 
 	// Register endpoint for all events
@@ -311,7 +311,7 @@ func TestDispatch_WildcardEndpoint(t *testing.T) {
 	})
 
 	svc.Dispatch(ctx, "t1", "dunning.started", map[string]any{})
-	time.Sleep(50 * time.Millisecond)
+	// Delivery is synchronous in test mode
 
 	if len(store.deliveries) != 1 {
 		t.Errorf("wildcard should match any event, got %d deliveries", len(store.deliveries))
@@ -345,12 +345,12 @@ func TestMatchesEvent(t *testing.T) {
 func TestDelivery_FailedHTTP(t *testing.T) {
 	store := newMemStore()
 	httpClient := &mockHTTPClient{statusCode: 500}
-	svc := NewService(store, httpClient)
+	svc := NewTestService(store, httpClient)
 	ctx := context.Background()
 
 	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{URL: "https://example.com/hook"})
 	svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{})
-	time.Sleep(50 * time.Millisecond)
+	// Delivery is synchronous in test mode
 
 	if len(store.deliveries) != 1 {
 		t.Fatalf("deliveries: got %d", len(store.deliveries))

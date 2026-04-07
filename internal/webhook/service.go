@@ -19,8 +19,9 @@ import (
 )
 
 type Service struct {
-	store  Store
-	client HTTPClient
+	store      Store
+	client     HTTPClient
+	syncDeliver bool // When true, deliver synchronously (for tests)
 }
 
 // HTTPClient is the interface for making HTTP requests (mockable in tests).
@@ -33,6 +34,13 @@ func NewService(store Store, client HTTPClient) *Service {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	return &Service{store: store, client: client}
+}
+
+// NewTestService creates a service with synchronous delivery (no goroutines).
+func NewTestService(store Store, client HTTPClient) *Service {
+	svc := NewService(store, client)
+	svc.syncDeliver = true
+	return svc
 }
 
 type CreateEndpointInput struct {
@@ -110,7 +118,11 @@ func (s *Service) Dispatch(ctx context.Context, tenantID, eventType string, payl
 			continue
 		}
 
-		go s.deliver(context.Background(), tenantID, ep, event)
+		if s.syncDeliver {
+			s.deliver(ctx, tenantID, ep, event)
+		} else {
+			go s.deliver(context.Background(), tenantID, ep, event)
+		}
 	}
 
 	return nil
