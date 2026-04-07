@@ -33,6 +33,8 @@ type Subscription struct {
 	StartedAt                 *time.Time              `json:"started_at,omitempty"`
 	ActivatedAt               *time.Time              `json:"activated_at,omitempty"`
 	CanceledAt                *time.Time              `json:"canceled_at,omitempty"`
+	PreviousPlanID            string                  `json:"previous_plan_id,omitempty"`
+	PlanChangedAt             *time.Time              `json:"plan_changed_at,omitempty"`
 	CurrentBillingPeriodStart *time.Time              `json:"current_billing_period_start,omitempty"`
 	CurrentBillingPeriodEnd   *time.Time              `json:"current_billing_period_end,omitempty"`
 	NextBillingAt             *time.Time              `json:"next_billing_at,omitempty"`

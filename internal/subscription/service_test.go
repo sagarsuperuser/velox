@@ -184,3 +184,94 @@ func TestActivateAndCancel(t *testing.T) {
 		}
 	})
 }
+
+func TestChangePlan(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	sub, _ := svc.Create(ctx, "t1", CreateInput{
+		Code: "sub-change", DisplayName: "Test", CustomerID: "c", PlanID: "plan_old", StartNow: true,
+	})
+
+	// Set billing period for proration calculation
+	store := svc.store.(*memStore)
+	s := store.subs[sub.ID]
+	start := time.Now().UTC().AddDate(0, 0, -15)
+	end := time.Now().UTC().AddDate(0, 0, 15)
+	s.CurrentBillingPeriodStart = &start
+	s.CurrentBillingPeriodEnd = &end
+	store.subs[sub.ID] = s
+
+	t.Run("immediate change with proration", func(t *testing.T) {
+		result, err := svc.ChangePlan(ctx, "t1", sub.ID, ChangePlanInput{
+			NewPlanID: "plan_new",
+			Immediate: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Subscription.PlanID != "plan_new" {
+			t.Errorf("plan_id: got %q, want plan_new", result.Subscription.PlanID)
+		}
+		if result.Subscription.PreviousPlanID != "plan_old" {
+			t.Errorf("previous_plan_id: got %q, want plan_old", result.Subscription.PreviousPlanID)
+		}
+		if result.ProrationFactor <= 0 || result.ProrationFactor > 1 {
+			t.Errorf("proration_factor: got %f, should be between 0 and 1", result.ProrationFactor)
+		}
+		if result.Subscription.PlanChangedAt == nil {
+			t.Error("plan_changed_at should be set")
+		}
+	})
+
+	t.Run("same plan rejected", func(t *testing.T) {
+		_, err := svc.ChangePlan(ctx, "t1", sub.ID, ChangePlanInput{NewPlanID: "plan_new"})
+		if err == nil {
+			t.Fatal("expected error for same plan")
+		}
+	})
+
+	t.Run("missing new_plan_id", func(t *testing.T) {
+		_, err := svc.ChangePlan(ctx, "t1", sub.ID, ChangePlanInput{})
+		if err == nil {
+			t.Fatal("expected error for missing plan")
+		}
+	})
+}
+
+func TestPauseAndResume(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	sub, _ := svc.Create(ctx, "t1", CreateInput{
+		Code: "sub-pause", DisplayName: "Test", CustomerID: "c", PlanID: "p", StartNow: true,
+	})
+
+	t.Run("pause active", func(t *testing.T) {
+		paused, err := svc.Pause(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if paused.Status != domain.SubscriptionPaused {
+			t.Errorf("status: got %q, want paused", paused.Status)
+		}
+	})
+
+	t.Run("resume paused", func(t *testing.T) {
+		resumed, err := svc.Resume(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resumed.Status != domain.SubscriptionActive {
+			t.Errorf("status: got %q, want active", resumed.Status)
+		}
+	})
+
+	t.Run("cannot pause non-active", func(t *testing.T) {
+		svc.Cancel(ctx, "t1", sub.ID)
+		_, err := svc.Pause(ctx, "t1", sub.ID)
+		if err == nil {
+			t.Fatal("expected error pausing canceled sub")
+		}
+	})
+}

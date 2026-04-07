@@ -28,6 +28,9 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/", h.list)
 	r.Get("/{id}", h.get)
 	r.Post("/{id}/activate", h.activate)
+	r.Post("/{id}/pause", h.pause)
+	r.Post("/{id}/resume", h.resume)
+	r.Post("/{id}/change-plan", h.changePlan)
 	r.Post("/{id}/cancel", h.cancel)
 	return r
 }
@@ -113,6 +116,60 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, sub)
+}
+
+func (h *Handler) pause(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := h.svc.Pause(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sub)
+}
+
+func (h *Handler) resume(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := h.svc.Resume(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sub)
+}
+
+func (h *Handler) changePlan(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	var input ChangePlanInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+
+	result, err := h.svc.ChangePlan(r.Context(), tenantID, id, input)
+	if errors.Is(err, errs.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {

@@ -107,6 +107,98 @@ func (s *Service) Activate(ctx context.Context, tenantID, id string) (domain.Sub
 	return s.store.Update(ctx, tenantID, sub)
 }
 
+type ChangePlanInput struct {
+	NewPlanID string `json:"new_plan_id"`
+	Immediate bool   `json:"immediate"` // true = change now with proration, false = change at period end
+}
+
+type ChangePlanResult struct {
+	Subscription    domain.Subscription `json:"subscription"`
+	ProrationFactor float64             `json:"proration_factor,omitempty"`
+	EffectiveAt     time.Time           `json:"effective_at"`
+}
+
+// ChangePlan upgrades or downgrades a subscription's plan.
+// If immediate=true, calculates proration based on remaining days in the billing period.
+// If immediate=false, the plan change takes effect at the next billing cycle.
+func (s *Service) ChangePlan(ctx context.Context, tenantID, id string, input ChangePlanInput) (ChangePlanResult, error) {
+	sub, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return ChangePlanResult{}, err
+	}
+	if sub.Status != domain.SubscriptionActive {
+		return ChangePlanResult{}, fmt.Errorf("can only change plan for active subscriptions, current status: %s", sub.Status)
+	}
+	if input.NewPlanID == "" {
+		return ChangePlanResult{}, fmt.Errorf("new_plan_id is required")
+	}
+	if input.NewPlanID == sub.PlanID {
+		return ChangePlanResult{}, fmt.Errorf("new plan is the same as current plan")
+	}
+
+	now := time.Now().UTC()
+	result := ChangePlanResult{}
+
+	if input.Immediate {
+		// Calculate proration factor: remaining days / total days in period
+		if sub.CurrentBillingPeriodStart != nil && sub.CurrentBillingPeriodEnd != nil {
+			totalDays := sub.CurrentBillingPeriodEnd.Sub(*sub.CurrentBillingPeriodStart).Hours() / 24
+			remainingDays := sub.CurrentBillingPeriodEnd.Sub(now).Hours() / 24
+			if totalDays > 0 && remainingDays > 0 {
+				result.ProrationFactor = remainingDays / totalDays
+			}
+		}
+		result.EffectiveAt = now
+	} else {
+		// Change at next billing cycle
+		if sub.CurrentBillingPeriodEnd != nil {
+			result.EffectiveAt = *sub.CurrentBillingPeriodEnd
+		} else {
+			result.EffectiveAt = now
+		}
+	}
+
+	sub.PreviousPlanID = sub.PlanID
+	sub.PlanID = input.NewPlanID
+	planChangedAt := now
+	sub.PlanChangedAt = &planChangedAt
+
+	updated, err := s.store.Update(ctx, tenantID, sub)
+	if err != nil {
+		return ChangePlanResult{}, err
+	}
+	result.Subscription = updated
+	return result, nil
+}
+
+// Pause pauses an active subscription. Can be resumed later.
+func (s *Service) Pause(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	sub, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if sub.Status != domain.SubscriptionActive {
+		return domain.Subscription{}, fmt.Errorf("can only pause active subscriptions, current status: %s", sub.Status)
+	}
+
+	sub.Status = domain.SubscriptionPaused
+	return s.store.Update(ctx, tenantID, sub)
+}
+
+// Resume resumes a paused subscription.
+func (s *Service) Resume(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	sub, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if sub.Status != domain.SubscriptionPaused {
+		return domain.Subscription{}, fmt.Errorf("can only resume paused subscriptions, current status: %s", sub.Status)
+	}
+
+	sub.Status = domain.SubscriptionActive
+	return s.store.Update(ctx, tenantID, sub)
+}
+
 func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
 	sub, err := s.store.Get(ctx, tenantID, id)
 	if err != nil {

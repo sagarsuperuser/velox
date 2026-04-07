@@ -2,22 +2,28 @@ package billing
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/sagarsuperuser/velox/internal/auth"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 type Handler struct {
 	engine *Engine
+	subs   SubscriptionReader
 }
 
-func NewHandler(engine *Engine) *Handler {
-	return &Handler{engine: engine}
+func NewHandler(engine *Engine, subs SubscriptionReader) *Handler {
+	return &Handler{engine: engine, subs: subs}
 }
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/run", h.triggerCycle)
+	r.Get("/preview/{subscription_id}", h.preview)
 	return r
 }
 
@@ -40,4 +46,35 @@ func (h *Handler) triggerCycle(w http.ResponseWriter, r *http.Request) {
 		"invoices_generated": generated,
 		"errors":             errStrings,
 	})
+}
+
+func (h *Handler) preview(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	subID := chi.URLParam(r, "subscription_id")
+
+	sub, err := h.subs.Get(r.Context(), tenantID, subID)
+	if errors.Is(err, errs.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get subscription")
+		return
+	}
+
+	preview, err := h.engine.Preview(r.Context(), sub)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "preview_error", err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(preview)
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
 }

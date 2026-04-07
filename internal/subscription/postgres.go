@@ -21,6 +21,7 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 
 const subCols = `id, tenant_id, code, display_name, customer_id, plan_id, status, billing_time,
 	trial_start_at, trial_end_at, started_at, activated_at, canceled_at,
+	COALESCE(previous_plan_id,''), plan_changed_at,
 	current_billing_period_start, current_billing_period_end, next_billing_at,
 	created_at, updated_at`
 
@@ -115,11 +116,15 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 	now := time.Now().UTC()
 	err = tx.QueryRowContext(ctx, `
 		UPDATE subscriptions SET status = $1, activated_at = $2, canceled_at = $3,
-			trial_start_at = $4, trial_end_at = $5, updated_at = $6
-		WHERE id = $7
+			trial_start_at = $4, trial_end_at = $5,
+			plan_id = $6, previous_plan_id = $7, plan_changed_at = $8,
+			updated_at = $9
+		WHERE id = $10
 		RETURNING `+subCols,
 		sub.Status, postgres.NullableTime(sub.ActivatedAt), postgres.NullableTime(sub.CanceledAt),
-		postgres.NullableTime(sub.TrialStartAt), postgres.NullableTime(sub.TrialEndAt), now, sub.ID,
+		postgres.NullableTime(sub.TrialStartAt), postgres.NullableTime(sub.TrialEndAt),
+		sub.PlanID, postgres.NullableString(sub.PreviousPlanID), postgres.NullableTime(sub.PlanChangedAt),
+		now, sub.ID,
 	).Scan(scanSubDest(&sub)...)
 
 	if err == sql.ErrNoRows {
@@ -193,7 +198,8 @@ func scanSubDest(s *domain.Subscription) []any {
 	return []any{
 		&s.ID, &s.TenantID, &s.Code, &s.DisplayName, &s.CustomerID, &s.PlanID,
 		&s.Status, &s.BillingTime, &s.TrialStartAt, &s.TrialEndAt, &s.StartedAt,
-		&s.ActivatedAt, &s.CanceledAt, &s.CurrentBillingPeriodStart,
+		&s.ActivatedAt, &s.CanceledAt, &s.PreviousPlanID, &s.PlanChangedAt,
+		&s.CurrentBillingPeriodStart,
 		&s.CurrentBillingPeriodEnd, &s.NextBillingAt, &s.CreatedAt, &s.UpdatedAt,
 	}
 }

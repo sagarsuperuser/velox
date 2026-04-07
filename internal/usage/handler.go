@@ -25,6 +25,7 @@ func NewHandler(svc *Service) *Handler {
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.ingest)
+	r.Post("/batch", h.batchIngest)
 	r.Get("/", h.list)
 	return r
 }
@@ -74,6 +75,43 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"data": events})
+}
+
+func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+
+	var events []IngestInput
+	if err := json.NewDecoder(r.Body).Decode(&events); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "expected JSON array of events")
+		return
+	}
+
+	if len(events) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "at least one event is required")
+		return
+	}
+	if len(events) > 1000 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "maximum 1000 events per batch")
+		return
+	}
+
+	ingested, errs := h.svc.BatchIngest(r.Context(), tenantID, events)
+
+	errStrings := make([]string, len(errs))
+	for i, e := range errs {
+		errStrings[i] = e.Error()
+	}
+
+	status := http.StatusCreated
+	if len(errs) > 0 {
+		status = http.StatusPartialContent
+	}
+
+	writeJSON(w, status, map[string]any{
+		"ingested": ingested,
+		"errors":   errStrings,
+		"total":    len(events),
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

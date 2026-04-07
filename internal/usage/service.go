@@ -54,6 +54,24 @@ func (s *Service) Ingest(ctx context.Context, tenantID string, input IngestInput
 	})
 }
 
+// BatchIngest ingests multiple usage events. Returns successfully ingested count
+// and any individual errors (partial success is allowed).
+func (s *Service) BatchIngest(ctx context.Context, tenantID string, events []IngestInput) (int, []error) {
+	var errs []error
+	ingested := 0
+
+	for _, input := range events {
+		_, err := s.Ingest(ctx, tenantID, input)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		ingested++
+	}
+
+	return ingested, errs
+}
+
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.UsageEvent, error) {
 	return s.store.List(ctx, filter)
 }
