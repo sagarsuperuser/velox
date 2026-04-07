@@ -1,0 +1,723 @@
+openapi: 3.0.3
+info:
+  title: Velox Billing API
+  description: |
+    Open-source usage-based billing engine. Handles pricing, subscriptions,
+    usage metering, invoice generation, Stripe payments, dunning, and credits.
+  version: "2026-04-07"
+  license:
+    name: MIT
+    url: https://github.com/sagarsuperuser/velox/blob/main/LICENSE
+  contact:
+    name: Velox
+    url: https://github.com/sagarsuperuser/velox
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        API key authentication. Use `Authorization: Bearer vlx_secret_...`
+        Key types: vlx_platform_ (tenant mgmt), vlx_secret_ (full access), vlx_pub_ (restricted)
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [invalid_request_error, authentication_error, rate_limit_error, api_error]
+            code:
+              type: string
+            message:
+              type: string
+            request_id:
+              type: string
+
+    Customer:
+      type: object
+      properties:
+        id:
+          type: string
+          example: vlx_cus_42014438d82ddf33
+        external_id:
+          type: string
+        display_name:
+          type: string
+        email:
+          type: string
+        status:
+          type: string
+          enum: [active, archived]
+        created_at:
+          type: string
+          format: date-time
+
+    Meter:
+      type: object
+      properties:
+        id:
+          type: string
+        key:
+          type: string
+        name:
+          type: string
+        unit:
+          type: string
+        aggregation:
+          type: string
+          enum: [sum, count, max, last]
+        rating_rule_version_id:
+          type: string
+
+    Plan:
+      type: object
+      properties:
+        id:
+          type: string
+        code:
+          type: string
+        name:
+          type: string
+        currency:
+          type: string
+        billing_interval:
+          type: string
+          enum: [monthly, yearly]
+        status:
+          type: string
+          enum: [draft, active, archived]
+        base_amount_cents:
+          type: integer
+          format: int64
+        meter_ids:
+          type: array
+          items:
+            type: string
+
+    RatingRule:
+      type: object
+      properties:
+        id:
+          type: string
+        rule_key:
+          type: string
+        name:
+          type: string
+        version:
+          type: integer
+        mode:
+          type: string
+          enum: [flat, graduated, package]
+        currency:
+          type: string
+        flat_amount_cents:
+          type: integer
+          format: int64
+        graduated_tiers:
+          type: array
+          items:
+            type: object
+            properties:
+              up_to:
+                type: integer
+              unit_amount_cents:
+                type: integer
+
+    Subscription:
+      type: object
+      properties:
+        id:
+          type: string
+        code:
+          type: string
+        display_name:
+          type: string
+        customer_id:
+          type: string
+        plan_id:
+          type: string
+        status:
+          type: string
+          enum: [draft, active, paused, canceled, archived]
+        billing_time:
+          type: string
+          enum: [calendar, anniversary]
+        trial_start_at:
+          type: string
+          format: date-time
+        trial_end_at:
+          type: string
+          format: date-time
+
+    UsageEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        customer_id:
+          type: string
+        meter_id:
+          type: string
+        quantity:
+          type: integer
+          format: int64
+        properties:
+          type: object
+        idempotency_key:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    Invoice:
+      type: object
+      properties:
+        id:
+          type: string
+        invoice_number:
+          type: string
+        status:
+          type: string
+          enum: [draft, finalized, paid, voided]
+        payment_status:
+          type: string
+          enum: [pending, processing, succeeded, failed]
+        currency:
+          type: string
+        subtotal_cents:
+          type: integer
+          format: int64
+        total_amount_cents:
+          type: integer
+          format: int64
+        billing_period_start:
+          type: string
+          format: date-time
+        billing_period_end:
+          type: string
+          format: date-time
+
+    CreditBalance:
+      type: object
+      properties:
+        customer_id:
+          type: string
+        balance_cents:
+          type: integer
+          format: int64
+        total_granted:
+          type: integer
+          format: int64
+        total_used:
+          type: integer
+          format: int64
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+
+  /v1/customers:
+    post:
+      tags: [Customers]
+      summary: Create customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id, display_name]
+              properties:
+                external_id:
+                  type: string
+                display_name:
+                  type: string
+                email:
+                  type: string
+      responses:
+        "201":
+          description: Customer created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "409":
+          description: Customer already exists
+    get:
+      tags: [Customers]
+      summary: List customers
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Customer list
+
+  /v1/meters:
+    post:
+      tags: [Pricing]
+      summary: Create meter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, name]
+              properties:
+                key:
+                  type: string
+                name:
+                  type: string
+                unit:
+                  type: string
+                  default: unit
+                aggregation:
+                  type: string
+                  enum: [sum, count, max, last]
+                  default: sum
+                rating_rule_version_id:
+                  type: string
+      responses:
+        "201":
+          description: Meter created
+    get:
+      tags: [Pricing]
+      summary: List meters
+      responses:
+        "200":
+          description: Meter list
+
+  /v1/plans:
+    post:
+      tags: [Pricing]
+      summary: Create plan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name, currency, billing_interval]
+              properties:
+                code:
+                  type: string
+                name:
+                  type: string
+                currency:
+                  type: string
+                billing_interval:
+                  type: string
+                  enum: [monthly, yearly]
+                base_amount_cents:
+                  type: integer
+                meter_ids:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "201":
+          description: Plan created
+    get:
+      tags: [Pricing]
+      summary: List plans
+      responses:
+        "200":
+          description: Plan list
+
+  /v1/rating-rules:
+    post:
+      tags: [Pricing]
+      summary: Create rating rule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rule_key, name, mode, currency]
+              properties:
+                rule_key:
+                  type: string
+                name:
+                  type: string
+                mode:
+                  type: string
+                  enum: [flat, graduated, package]
+                currency:
+                  type: string
+                flat_amount_cents:
+                  type: integer
+                graduated_tiers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      up_to:
+                        type: integer
+                      unit_amount_cents:
+                        type: integer
+                package_size:
+                  type: integer
+                package_amount_cents:
+                  type: integer
+      responses:
+        "201":
+          description: Rating rule created
+    get:
+      tags: [Pricing]
+      summary: List rating rules
+      responses:
+        "200":
+          description: Rating rule list
+
+  /v1/subscriptions:
+    post:
+      tags: [Subscriptions]
+      summary: Create subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, display_name, customer_id, plan_id]
+              properties:
+                code:
+                  type: string
+                display_name:
+                  type: string
+                customer_id:
+                  type: string
+                plan_id:
+                  type: string
+                billing_time:
+                  type: string
+                  enum: [calendar, anniversary]
+                  default: calendar
+                trial_days:
+                  type: integer
+                start_now:
+                  type: boolean
+      responses:
+        "201":
+          description: Subscription created
+    get:
+      tags: [Subscriptions]
+      summary: List subscriptions
+      responses:
+        "200":
+          description: Subscription list
+
+  /v1/subscriptions/{id}/activate:
+    post:
+      tags: [Subscriptions]
+      summary: Activate draft subscription
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Subscription activated
+
+  /v1/subscriptions/{id}/change-plan:
+    post:
+      tags: [Subscriptions]
+      summary: Change subscription plan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_plan_id]
+              properties:
+                new_plan_id:
+                  type: string
+                immediate:
+                  type: boolean
+      responses:
+        "200":
+          description: Plan changed
+
+  /v1/usage-events:
+    post:
+      tags: [Usage]
+      summary: Ingest usage event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_id, meter_id, quantity]
+              properties:
+                customer_id:
+                  type: string
+                meter_id:
+                  type: string
+                subscription_id:
+                  type: string
+                quantity:
+                  type: integer
+                  format: int64
+                properties:
+                  type: object
+                idempotency_key:
+                  type: string
+                timestamp:
+                  type: string
+                  format: date-time
+      responses:
+        "201":
+          description: Event ingested
+    get:
+      tags: [Usage]
+      summary: List usage events
+      responses:
+        "200":
+          description: Event list
+
+  /v1/usage-events/batch:
+    post:
+      tags: [Usage]
+      summary: Batch ingest usage events (max 1000)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                required: [customer_id, meter_id, quantity]
+                properties:
+                  customer_id:
+                    type: string
+                  meter_id:
+                    type: string
+                  quantity:
+                    type: integer
+      responses:
+        "201":
+          description: All events ingested
+        "206":
+          description: Partial success
+
+  /v1/invoices:
+    get:
+      tags: [Invoices]
+      summary: List invoices
+      responses:
+        "200":
+          description: Invoice list
+
+  /v1/invoices/{id}:
+    get:
+      tags: [Invoices]
+      summary: Get invoice with line items
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invoice detail
+
+  /v1/invoices/{id}/pdf:
+    get:
+      tags: [Invoices]
+      summary: Download invoice PDF
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: PDF file
+          content:
+            application/pdf: {}
+
+  /v1/invoices/{id}/finalize:
+    post:
+      tags: [Invoices]
+      summary: Finalize draft invoice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invoice finalized
+
+  /v1/billing/run:
+    post:
+      tags: [Billing]
+      summary: Trigger billing cycle
+      responses:
+        "200":
+          description: Billing cycle result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoices_generated:
+                    type: integer
+                  errors:
+                    type: array
+                    items:
+                      type: string
+
+  /v1/billing/preview/{subscription_id}:
+    get:
+      tags: [Billing]
+      summary: Invoice preview (dry run)
+      parameters:
+        - name: subscription_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invoice preview
+
+  /v1/credits/grant:
+    post:
+      tags: [Credits]
+      summary: Grant credits to customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_id, amount_cents]
+              properties:
+                customer_id:
+                  type: string
+                amount_cents:
+                  type: integer
+                  format: int64
+                description:
+                  type: string
+      responses:
+        "201":
+          description: Credits granted
+
+  /v1/credits/balance/{customer_id}:
+    get:
+      tags: [Credits]
+      summary: Get customer credit balance
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Credit balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreditBalance"
+
+  /v1/dunning/policy:
+    get:
+      tags: [Dunning]
+      summary: Get dunning policy
+      responses:
+        "200":
+          description: Dunning policy
+    put:
+      tags: [Dunning]
+      summary: Configure dunning policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                enabled:
+                  type: boolean
+                retry_schedule:
+                  type: array
+                  items:
+                    type: string
+                max_retry_attempts:
+                  type: integer
+                final_action:
+                  type: string
+                  enum: [manual_review, pause, write_off_later]
+      responses:
+        "200":
+          description: Policy updated
+
+  /v1/webhooks/stripe:
+    post:
+      tags: [Webhooks]
+      summary: Stripe webhook receiver
+      security: []
+      description: Receives Stripe webhook events. Verified via Stripe-Signature header.
+      responses:
+        "200":
+          description: Event processed
+
+  /v1/metrics:
+    get:
+      tags: [System]
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200":
+          description: Prometheus metrics
+          content:
+            text/plain: {}

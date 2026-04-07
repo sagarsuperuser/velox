@@ -8,13 +8,9 @@ build:
 run: build
 	./bin/velox
 
-# Run with live reload (requires air: go install github.com/air-verse/air@latest)
+# Run server locally (bootstrap first to create DB schema + tenant)
 dev:
-	DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
-	RUN_MIGRATIONS_ON_BOOT=true \
-	air -c .air.toml 2>/dev/null || \
-	DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
-	RUN_MIGRATIONS_ON_BOOT=true \
+	DATABASE_URL="postgres://velox_app:velox_app@localhost:5432/velox?sslmode=disable" \
 	go run ./cmd/velox
 
 # Run all tests
