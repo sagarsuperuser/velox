@@ -87,7 +87,7 @@ export function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-4 mt-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
         <StatCard title="Customers" value={String(stats.customers)} />
         <StatCard title="Active Subscriptions" value={String(stats.subscriptions)} />
         <StatCard title="Total Invoices" value={String(stats.invoices)} />
@@ -115,7 +115,7 @@ export function DashboardPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-6 mt-8">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
         {/* Recent invoices */}
         <div className="bg-white rounded-xl border border-gray-200">
           <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
