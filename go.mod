@@ -7,6 +7,7 @@ require (
 	github.com/go-pdf/fpdf v0.9.0
 	github.com/jackc/pgx/v5 v5.7.4
 	github.com/prometheus/client_golang v1.23.2
+	github.com/stripe/stripe-go/v82 v82.5.1
 )
 
 require (

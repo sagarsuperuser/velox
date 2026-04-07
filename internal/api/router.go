@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -63,7 +65,8 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	settingsH := tenant.NewSettingsHandler(tenant.NewSettingsStore(db))
 
 	// Payment / webhook handler (no auth — Stripe authenticates via signature)
-	stripeAdapter := payment.NewStripe(nil, invoiceStore, webhookStore)
+	stripeClient := payment.NewLiveStripeClient(strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")))
+	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore)
 	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
 
 	// Billing engine + manual trigger
