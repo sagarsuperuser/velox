@@ -13,6 +13,19 @@ const variants: Record<string, string> = {
   succeeded: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   failed: 'bg-red-50 text-red-600 border-red-200',
   archived: 'bg-gray-50 text-gray-500 border-gray-200',
+  retry_due: 'bg-orange-50 text-orange-700 border-orange-200',
+  escalated: 'bg-purple-50 text-purple-700 border-purple-200',
+  exhausted: 'bg-gray-50 text-gray-500 border-gray-200',
+  resolved: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  issued: 'bg-blue-50 text-blue-700 border-blue-200',
+  scheduled: 'bg-blue-50 text-blue-600 border-blue-200',
+  manual_review: 'bg-amber-50 text-amber-700 border-amber-200',
+  grant: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  usage: 'bg-blue-50 text-blue-700 border-blue-200',
+  adjustment: 'bg-amber-50 text-amber-700 border-amber-200',
+  create: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  update: 'bg-blue-50 text-blue-700 border-blue-200',
+  delete: 'bg-red-50 text-red-600 border-red-200',
 }
 
 export function Badge({ status }: { status: string }) {
