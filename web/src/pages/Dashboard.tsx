@@ -45,10 +45,47 @@ export function DashboardPage() {
     return <Layout><div className="animate-pulse text-gray-400">Loading...</div></Layout>
   }
 
+  const [billingResult, setBillingResult] = useState<string | null>(null)
+  const [runningBilling, setRunningBilling] = useState(false)
+
+  const handleTriggerBilling = async () => {
+    setRunningBilling(true)
+    setBillingResult(null)
+    try {
+      const res = await api.triggerBilling()
+      setBillingResult(`Generated ${res.invoices_generated} invoice(s)`)
+      // Reload data after billing
+      const invoices = await api.listInvoices('limit=10')
+      const revenue = invoices.data.filter(i => i.status === 'paid').reduce((s, i) => s + i.total_amount_cents, 0)
+      setStats(prev => ({ ...prev, invoices: invoices.total, revenue }))
+      setRecentInvoices(invoices.data.slice(0, 5))
+    } catch (err) {
+      setBillingResult('Failed: ' + (err instanceof Error ? err.message : 'unknown error'))
+    } finally {
+      setRunningBilling(false)
+    }
+  }
+
   return (
     <Layout>
-      <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
-      <p className="text-sm text-gray-500 mt-1">Billing overview</p>
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
+          <p className="text-sm text-gray-500 mt-1">Billing overview</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {billingResult && (
+            <span className="text-xs text-gray-500">{billingResult}</span>
+          )}
+          <button
+            onClick={handleTriggerBilling}
+            disabled={runningBilling}
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50 transition-colors"
+          >
+            {runningBilling ? 'Running...' : 'Run Billing Cycle'}
+          </button>
+        </div>
+      </div>
 
       <div className="grid grid-cols-4 gap-4 mt-6">
         <StatCard title="Customers" value={String(stats.customers)} />
