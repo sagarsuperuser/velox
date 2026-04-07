@@ -117,6 +117,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(authSvc))
 		r.Use(mw.Idempotency(db))
+		r.Use(mw.AuditLog(db))
 
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/api-keys", authH.Routes())
 		r.With(auth.Require(auth.PermCustomerRead)).Mount("/customers", customerH.Routes())
