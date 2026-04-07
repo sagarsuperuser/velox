@@ -5,12 +5,13 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
 import { useToast } from '@/components/Toast'
-import { Plus } from 'lucide-react'
+import { Plus, Search } from 'lucide-react'
 
 export function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ external_id: '', display_name: '', email: '' })
@@ -60,7 +61,21 @@ export function CustomersPage() {
         </button>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 mt-6">
+      {/* Search */}
+      {customers.length > 0 && (
+        <div className="relative mt-6">
+          <Search size={16} className="absolute left-3 top-2.5 text-gray-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search customers..."
+            className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 focus:border-transparent bg-white"
+          />
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl border border-gray-200 mt-4">
         {loading ? (
           <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
         ) : customers.length === 0 ? (
@@ -82,7 +97,13 @@ export function CustomersPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {customers.map(c => (
+              {customers.filter(c => {
+                if (!search) return true
+                const q = search.toLowerCase()
+                return c.display_name.toLowerCase().includes(q) ||
+                  c.external_id.toLowerCase().includes(q) ||
+                  (c.email && c.email.toLowerCase().includes(q))
+              }).map(c => (
                 <tr key={c.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-3">
                     <Link to={`/customers/${c.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">

@@ -94,6 +94,27 @@ export function DashboardPage() {
         <StatCard title="Revenue" value={formatCents(stats.revenue)} subtitle="Paid invoices" />
       </div>
 
+      {stats.customers === 0 && (
+        <div className="bg-velox-50 border border-velox-100 rounded-xl p-6 mt-6">
+          <h3 className="text-sm font-semibold text-velox-900">Get Started</h3>
+          <p className="text-sm text-velox-700 mt-1">Set up your billing in 3 steps:</p>
+          <ol className="mt-3 space-y-2 text-sm text-velox-700">
+            <li className="flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-velox-600 text-white flex items-center justify-center text-xs font-bold">1</span>
+              <Link to="/pricing" className="hover:underline">Configure pricing</Link> — create meters, rating rules, and plans
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-velox-600 text-white flex items-center justify-center text-xs font-bold">2</span>
+              <Link to="/customers" className="hover:underline">Add customers</Link> — create your first customer and subscription
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-velox-600 text-white flex items-center justify-center text-xs font-bold">3</span>
+              Ingest usage events via the API, then run a billing cycle
+            </li>
+          </ol>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-6 mt-8">
         {/* Recent invoices */}
         <div className="bg-white rounded-xl border border-gray-200">
