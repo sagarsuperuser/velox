@@ -112,7 +112,7 @@ export function SubscriptionDetailPage() {
     return (
       <Layout>
         <Breadcrumbs items={[{ label: 'Subscriptions', to: '/subscriptions' }, { label: 'Loading...' }]} />
-        <div className="bg-white rounded-xl border border-gray-200">
+        <div className="bg-white rounded-xl shadow-card">
           <LoadingSkeleton rows={8} columns={4} />
         </div>
       </Layout>
@@ -162,7 +162,7 @@ export function SubscriptionDetailPage() {
 
       {/* Info cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Customer</p>
           {customer ? (
             <Link to={`/customers/${customer.id}`} className="text-sm font-semibold text-velox-600 hover:underline mt-0.5 block">
@@ -172,11 +172,11 @@ export function SubscriptionDetailPage() {
             <p className="text-sm font-semibold mt-0.5">{sub.customer_id.slice(0, 8)}...</p>
           )}
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Plan</p>
           <p className="text-sm font-semibold mt-0.5">{plan?.name || sub.plan_id.slice(0, 8) + '...'}</p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Billing Period</p>
           <p className="text-sm font-semibold mt-0.5">
             {sub.current_billing_period_start && sub.current_billing_period_end
@@ -184,14 +184,14 @@ export function SubscriptionDetailPage() {
               : 'Not set'}
           </p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Created</p>
           <p className="text-sm font-semibold mt-0.5">{formatDate(sub.created_at)}</p>
         </div>
       </div>
 
       {/* Invoice Preview */}
-      <div className="bg-white rounded-xl border border-gray-200 mt-6">
+      <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100">
           <h2 className="text-sm font-semibold text-gray-900">Next Invoice Preview</h2>
         </div>
@@ -232,7 +232,7 @@ export function SubscriptionDetailPage() {
       </div>
 
       {/* Related Invoices */}
-      <div className="bg-white rounded-xl border border-gray-200 mt-6">
+      <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100">
           <h2 className="text-sm font-semibold text-gray-900">Related Invoices</h2>
         </div>

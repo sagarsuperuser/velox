@@ -47,7 +47,7 @@ export function InvoicesPage() {
         <select
           value={statusFilter}
           onChange={e => setStatusFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
+          className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
         >
           {STATUS_OPTIONS.map(s => (
             <option key={s} value={s}>{s === 'All' ? 'All statuses' : s.charAt(0).toUpperCase() + s.slice(1)}</option>
@@ -55,7 +55,7 @@ export function InvoicesPage() {
         </select>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 mt-6">
+      <div className="bg-white rounded-xl shadow-card mt-6">
         {loading ? (
           <LoadingSkeleton rows={6} columns={6} />
         ) : filtered.length === 0 ? (

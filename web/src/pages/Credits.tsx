@@ -51,7 +51,7 @@ export function CreditsPage() {
         </div>
         {selectedCustomer && (
           <button onClick={() => setShowGrant(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 transition-colors">
+            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
             <Plus size={16} /> Grant Credits
           </button>
         )}
@@ -60,7 +60,7 @@ export function CreditsPage() {
       {/* Customer selector */}
       <div className="mt-6">
         <select value={selectedCustomer} onChange={e => handleSelectCustomer(e.target.value)}
-          className="w-full max-w-sm px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
+          className="w-full max-w-sm px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
           <option value="">Select a customer...</option>
           {customers.map(c => <option key={c.id} value={c.id}>{c.display_name} ({c.external_id})</option>)}
         </select>
@@ -70,22 +70,22 @@ export function CreditsPage() {
         <>
           {/* Balance cards */}
           <div className="grid grid-cols-3 gap-4 mt-6">
-            <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <div className="bg-white rounded-xl shadow-card p-5">
               <p className="text-xs text-gray-500">Current Balance</p>
               <p className="text-2xl font-semibold mt-1 text-gray-900">{formatCents(balance.balance_cents)}</p>
             </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <div className="bg-white rounded-xl shadow-card p-5">
               <p className="text-xs text-gray-500">Total Granted</p>
               <p className="text-2xl font-semibold mt-1 text-emerald-600">{formatCents(balance.total_granted)}</p>
             </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <div className="bg-white rounded-xl shadow-card p-5">
               <p className="text-xs text-gray-500">Total Used</p>
               <p className="text-2xl font-semibold mt-1 text-gray-500">{formatCents(balance.total_used)}</p>
             </div>
           </div>
 
           {/* Ledger */}
-          <div className="bg-white rounded-xl border border-gray-200 mt-6">
+          <div className="bg-white rounded-xl shadow-card mt-6">
             <div className="px-6 py-4 border-b border-gray-100">
               <h2 className="text-sm font-semibold text-gray-900">Credit Ledger</h2>
             </div>
@@ -167,20 +167,20 @@ function GrantModal({ customerId, onClose, onGranted }: { customerId: string; on
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Amount ($)</label>
             <input type="number" step="0.01" min="0.01" value={amount} onChange={e => setAmount(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
               placeholder="50.00" required />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
             <input type="text" value={description} onChange={e => setDescription(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
               placeholder="Welcome credit" />
           </div>
           {error && <p className="text-red-600 text-xs">{error}</p>}
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
             <button type="submit" disabled={saving}
-              className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 disabled:opacity-50">
+              className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
               {saving ? 'Granting...' : 'Grant Credits'}
             </button>
           </div>

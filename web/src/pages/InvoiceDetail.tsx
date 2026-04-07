@@ -92,7 +92,7 @@ export function InvoiceDetailPage() {
     return (
       <Layout>
         <Breadcrumbs items={[{ label: 'Invoices', to: '/invoices' }, { label: 'Loading...' }]} />
-        <div className="bg-white rounded-xl border border-gray-200">
+        <div className="bg-white rounded-xl shadow-card">
           <LoadingSkeleton rows={8} columns={5} />
         </div>
       </Layout>
@@ -147,7 +147,7 @@ export function InvoiceDetailPage() {
 
             <button
               onClick={() => downloadPDF(invoice.id, invoice.invoice_number)}
-              className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 transition-colors">
+              className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
               Download PDF
             </button>
           </div>
@@ -156,26 +156,26 @@ export function InvoiceDetailPage() {
 
       {/* Summary */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Subtotal</p>
           <p className="text-lg font-semibold mt-0.5">{formatCents(invoice.subtotal_cents)}</p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Total</p>
           <p className="text-lg font-semibold mt-0.5">{formatCents(invoice.total_amount_cents)}</p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Amount Due</p>
           <p className="text-lg font-semibold mt-0.5">{formatCents(invoice.amount_due_cents)}</p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Currency</p>
           <p className="text-lg font-semibold mt-0.5">{invoice.currency}</p>
         </div>
       </div>
 
       {/* Line items */}
-      <div className="bg-white rounded-xl border border-gray-200 mt-6">
+      <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100">
           <h2 className="text-sm font-semibold text-gray-900">Line Items</h2>
         </div>
