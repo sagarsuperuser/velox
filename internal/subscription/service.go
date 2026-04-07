@@ -58,6 +58,8 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	var trialStart, trialEnd *time.Time
 	var startedAt *time.Time
 
+	var periodStart, periodEnd, nextBilling *time.Time
+
 	if input.TrialDays > 0 {
 		ts := now
 		te := now.AddDate(0, 0, input.TrialDays)
@@ -65,21 +67,38 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		trialEnd = &te
 		status = domain.SubscriptionActive
 		startedAt = &now
+		// Billing starts after trial ends
+		ps := te
+		pe := te.AddDate(0, 1, 0)
+		periodStart = &ps
+		periodEnd = &pe
+		nextBilling = &pe
 	} else if input.StartNow {
 		status = domain.SubscriptionActive
 		startedAt = &now
+		// First billing period: beginning of current month → end of month
+		// next_billing_at = end of period (billed when period closes)
+		ps := beginningOfMonth(now)
+		pe := ps.AddDate(0, 1, 0)
+		nb := now // Immediately billable for the current partial period
+		periodStart = &ps
+		periodEnd = &pe
+		nextBilling = &nb
 	}
 
 	return s.store.Create(ctx, tenantID, domain.Subscription{
-		Code:         code,
-		DisplayName:  displayName,
-		CustomerID:   input.CustomerID,
-		PlanID:       input.PlanID,
-		Status:       status,
-		BillingTime:  billingTime,
-		TrialStartAt: trialStart,
-		TrialEndAt:   trialEnd,
-		StartedAt:    startedAt,
+		Code:                      code,
+		DisplayName:               displayName,
+		CustomerID:                input.CustomerID,
+		PlanID:                    input.PlanID,
+		Status:                    status,
+		BillingTime:               billingTime,
+		TrialStartAt:              trialStart,
+		TrialEndAt:                trialEnd,
+		StartedAt:                 startedAt,
+		CurrentBillingPeriodStart: periodStart,
+		CurrentBillingPeriodEnd:   periodEnd,
+		NextBillingAt:             nextBilling,
 	})
 }
 
@@ -104,6 +123,16 @@ func (s *Service) Activate(ctx context.Context, tenantID, id string) (domain.Sub
 	sub.Status = domain.SubscriptionActive
 	sub.ActivatedAt = &now
 	sub.StartedAt = &now
+
+	// Set billing period if not already set
+	if sub.CurrentBillingPeriodStart == nil {
+		ps := beginningOfMonth(now)
+		pe := ps.AddDate(0, 1, 0)
+		sub.CurrentBillingPeriodStart = &ps
+		sub.CurrentBillingPeriodEnd = &pe
+		sub.NextBillingAt = &pe
+	}
+
 	return s.store.Update(ctx, tenantID, sub)
 }
 
@@ -212,4 +241,8 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 	sub.Status = domain.SubscriptionCanceled
 	sub.CanceledAt = &now
 	return s.store.Update(ctx, tenantID, sub)
+}
+
+func beginningOfMonth(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
 }

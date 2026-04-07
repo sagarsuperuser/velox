@@ -37,12 +37,17 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO subscriptions (id, tenant_id, code, display_name, customer_id, plan_id, status,
-			billing_time, trial_start_at, trial_end_at, started_at, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
+			billing_time, trial_start_at, trial_end_at, started_at,
+			current_billing_period_start, current_billing_period_end, next_billing_at,
+			created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)
 		RETURNING `+subCols,
 		id, tenantID, sub.Code, sub.DisplayName, sub.CustomerID, sub.PlanID,
 		sub.Status, sub.BillingTime, postgres.NullableTime(sub.TrialStartAt),
-		postgres.NullableTime(sub.TrialEndAt), postgres.NullableTime(sub.StartedAt), now,
+		postgres.NullableTime(sub.TrialEndAt), postgres.NullableTime(sub.StartedAt),
+		postgres.NullableTime(sub.CurrentBillingPeriodStart),
+		postgres.NullableTime(sub.CurrentBillingPeriodEnd),
+		postgres.NullableTime(sub.NextBillingAt), now,
 	).Scan(scanSubDest(&sub)...)
 
 	if err != nil {
