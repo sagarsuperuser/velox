@@ -59,7 +59,7 @@ export function PricingPage() {
         {error ? <ErrorState message={error} onRetry={loadAll} />
         : loading ? <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
         : tab === 'plans' ? (plans.length === 0 ? <Empty label="plans" /> :
-          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100">
+          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100 bg-gray-50">
             <Th>Name</Th><Th>Code</Th><Th>Interval</Th><Th>Status</Th><Th right>Base Price</Th><Th right>Meters</Th>
           </tr></thead><tbody className="divide-y divide-gray-50">
             {plans.map(p => <tr key={p.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
@@ -74,7 +74,7 @@ export function PricingPage() {
             </tr>)}
           </tbody></table></div>)
         : tab === 'meters' ? (meters.length === 0 ? <Empty label="meters" /> :
-          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100">
+          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100 bg-gray-50">
             <Th>Name</Th><Th>Key</Th><Th>Unit</Th><Th>Aggregation</Th><Th>Created</Th>
           </tr></thead><tbody className="divide-y divide-gray-50">
             {meters.map(m => <tr key={m.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
@@ -88,7 +88,7 @@ export function PricingPage() {
             </tr>)}
           </tbody></table></div>)
         : (rules.length === 0 ? <Empty label="rating rules" /> :
-          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100">
+          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100 bg-gray-50">
             <Th>Name</Th><Th>Rule Key</Th><Th>Mode</Th><Th>Version</Th><Th right>Price</Th>
           </tr></thead><tbody className="divide-y divide-gray-50">
             {rules.map(r => <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">

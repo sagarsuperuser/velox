@@ -85,7 +85,7 @@ function EndpointsTab() {
           <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-gray-100">
+              <tr className="border-b border-gray-100 bg-gray-50">
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">URL</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Description</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Events</th>
@@ -289,7 +289,7 @@ function EventsTab() {
         <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
-            <tr className="border-b border-gray-100">
+            <tr className="border-b border-gray-100 bg-gray-50">
               <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Event Type</th>
               <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Event ID</th>
               <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Created</th>
