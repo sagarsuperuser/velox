@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCents, formatDate, formatRelativeTime, type Invoice, type Subscription, type Customer, type AuditEntry, type Plan } from '@/lib/api'
+import { api, formatCents, formatRelativeTime, type Invoice, type Subscription, type Customer, type AuditEntry, type Plan } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { StatCard } from '@/components/StatCard'
 import { Badge } from '@/components/Badge'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
+import { AlertTriangle, FileText, Users, CreditCard, CheckCircle, Clock, DollarSign, Settings, Shield } from 'lucide-react'
 
 export function DashboardPage() {
   const [stats, setStats] = useState({ customers: 0, subscriptions: 0, invoices: 0, revenue: 0, mrr: 0 })
-  const [recentInvoices, setRecentInvoices] = useState<Invoice[]>([])
+  const [attentionItems, setAttentionItems] = useState<Invoice[]>([])
   const [activeSubs, setActiveSubs] = useState<Subscription[]>([])
   const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [recentActivity, setRecentActivity] = useState<AuditEntry[]>([])
@@ -24,9 +25,9 @@ export function DashboardPage() {
     try {
       const [customers, invoices, subs, auditRes, plansRes] = await Promise.all([
         api.listCustomers(),
-        api.listInvoices('limit=10'),
+        api.listInvoices(),
         api.listSubscriptions('status=active'),
-        api.listAuditLog('limit=8').catch(() => ({ data: [] })),
+        api.listAuditLog('limit=10').catch(() => ({ data: [] })),
         api.listPlans().catch(() => ({ data: [] as Plan[] })),
       ])
       setRecentActivity(auditRes.data || [])
@@ -51,6 +52,13 @@ export function DashboardPage() {
         }
       })
 
+      // Needs Attention: failed payments, draft invoices, overdue
+      const attention = invoices.data.filter(inv =>
+        inv.payment_status === 'failed' ||
+        inv.status === 'draft' ||
+        (inv.status === 'finalized' && inv.payment_status === 'pending')
+      ).slice(0, 5)
+
       setStats({
         customers: customers.total,
         subscriptions: subs.data.length,
@@ -58,7 +66,7 @@ export function DashboardPage() {
         revenue,
         mrr,
       })
-      setRecentInvoices(invoices.data.slice(0, 5))
+      setAttentionItems(attention)
       setActiveSubs(subs.data.slice(0, 5))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load dashboard')
@@ -75,10 +83,7 @@ export function DashboardPage() {
     try {
       const res = await api.triggerBilling()
       setBillingResult(`Generated ${res.invoices_generated} invoice(s)`)
-      const invoices = await api.listInvoices('limit=10')
-      const revenue = invoices.data.filter(i => i.status === 'paid').reduce((s, i) => s + i.total_amount_cents, 0)
-      setStats(prev => ({ ...prev, invoices: invoices.total, revenue }))
-      setRecentInvoices(invoices.data.slice(0, 5))
+      loadDashboard()
     } catch (err) {
       setBillingResult('Failed: ' + (err instanceof Error ? err.message : 'unknown error'))
     } finally {
@@ -118,6 +123,7 @@ export function DashboardPage() {
         </div>
       ) : (
         <>
+          {/* KPI Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mt-6">
             <StatCard title="Customers" value={String(stats.customers)} />
             <StatCard title="Active Subscriptions" value={String(stats.subscriptions)} />
@@ -126,8 +132,9 @@ export function DashboardPage() {
             <StatCard title="MRR" value={formatCents(stats.mrr)} subtitle="Monthly recurring" />
           </div>
 
+          {/* Get Started (only when empty) */}
           {stats.customers === 0 && (
-            <div className="bg-velox-50 border border-velox-100 rounded-xl p-6 mt-6">
+            <div className="bg-velox-50/50 rounded-xl shadow-card p-6 mt-6">
               <h3 className="text-sm font-semibold text-velox-900">Get Started</h3>
               <p className="text-sm text-velox-700 mt-1">Set up your billing in 3 steps:</p>
               <ol className="mt-3 space-y-2 text-sm text-velox-700">
@@ -141,41 +148,73 @@ export function DashboardPage() {
                 </li>
                 <li className="flex items-center gap-2">
                   <span className="w-5 h-5 rounded-full bg-velox-600 text-white flex items-center justify-center text-xs font-bold">3</span>
-                  Ingest usage events via the API, then run a billing cycle
+                  Ingest usage events via the API, then generate invoices
                 </li>
               </ol>
             </div>
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
-            {/* Recent invoices */}
+            {/* Needs Attention */}
             <div className="bg-white rounded-xl shadow-card">
               <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
-                <h2 className="text-sm font-semibold text-gray-900">Recent Invoices</h2>
+                <div className="flex items-center gap-2">
+                  {attentionItems.length > 0 ? (
+                    <AlertTriangle size={15} className="text-amber-500" />
+                  ) : (
+                    <CheckCircle size={15} className="text-emerald-500" />
+                  )}
+                  <h2 className="text-sm font-semibold text-gray-900">
+                    {attentionItems.length > 0 ? `Needs Attention` : 'All Clear'}
+                  </h2>
+                  {attentionItems.length > 0 && (
+                    <span className="bg-amber-100 text-amber-700 text-xs font-medium px-1.5 py-0.5 rounded-full">
+                      {attentionItems.length}
+                    </span>
+                  )}
+                </div>
                 <Link to="/invoices" className="text-xs text-velox-600 hover:underline">View all</Link>
               </div>
               <div className="divide-y divide-gray-50">
-                {recentInvoices.map(inv => (
-                  <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50 transition-colors">
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">{inv.invoice_number}</p>
-                      <p className="text-xs text-gray-400">
-                        {customerMap[inv.customer_id]?.display_name || 'Unknown customer'} &middot; {formatDate(inv.created_at)}
-                      </p>
+                {attentionItems.length > 0 ? attentionItems.map(inv => (
+                  <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50/80 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                        inv.payment_status === 'failed' ? 'bg-rose-50 text-rose-500' :
+                        inv.status === 'draft' ? 'bg-gray-100 text-gray-500' :
+                        'bg-amber-50 text-amber-500'
+                      }`}>
+                        {inv.payment_status === 'failed' ? <AlertTriangle size={14} /> :
+                         inv.status === 'draft' ? <FileText size={14} /> :
+                         <Clock size={14} />}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">{inv.invoice_number}</p>
+                        <p className="text-xs text-gray-400">
+                          {customerMap[inv.customer_id]?.display_name || 'Unknown'} · {
+                            inv.payment_status === 'failed' ? 'Payment failed' :
+                            inv.status === 'draft' ? 'Awaiting finalization' :
+                            'Awaiting payment'
+                          }
+                        </p>
+                      </div>
                     </div>
                     <div className="flex items-center gap-3">
-                      <Badge status={inv.status} />
+                      <Badge status={inv.payment_status === 'failed' ? 'failed' : inv.status} />
                       <span className="text-sm font-medium text-gray-900">{formatCents(inv.total_amount_cents)}</span>
                     </div>
                   </Link>
-                ))}
-                {recentInvoices.length === 0 && (
-                  <p className="px-6 py-4 text-sm text-gray-400">No invoices yet</p>
+                )) : (
+                  <div className="px-6 py-8 text-center">
+                    <CheckCircle size={24} className="text-emerald-400 mx-auto mb-2" />
+                    <p className="text-sm text-gray-500">No items need attention</p>
+                    <p className="text-xs text-gray-400 mt-0.5">All invoices are finalized and paid</p>
+                  </div>
                 )}
               </div>
             </div>
 
-            {/* Active subscriptions */}
+            {/* Active Subscriptions */}
             <div className="bg-white rounded-xl shadow-card">
               <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
                 <h2 className="text-sm font-semibold text-gray-900">Active Subscriptions</h2>
@@ -183,59 +222,108 @@ export function DashboardPage() {
               </div>
               <div className="divide-y divide-gray-50">
                 {activeSubs.map(sub => (
-                  <Link key={sub.id} to={`/subscriptions/${sub.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50 transition-colors">
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">{sub.display_name}</p>
-                      <p className="text-xs text-gray-400">
-                        {customerMap[sub.customer_id]?.display_name || 'Unknown customer'}
-                      </p>
+                  <Link key={sub.id} to={`/subscriptions/${sub.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50/80 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-500 flex items-center justify-center">
+                        <CreditCard size={14} />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">{sub.display_name}</p>
+                        <p className="text-xs text-gray-400">
+                          {customerMap[sub.customer_id]?.display_name || 'Unknown'}
+                        </p>
+                      </div>
                     </div>
                     <Badge status={sub.status} />
                   </Link>
                 ))}
                 {activeSubs.length === 0 && (
-                  <p className="px-6 py-4 text-sm text-gray-400">No active subscriptions</p>
+                  <p className="px-6 py-8 text-sm text-gray-400 text-center">No active subscriptions</p>
                 )}
               </div>
             </div>
           </div>
 
-          {/* Recent Activity */}
-          <div className="bg-white rounded-xl shadow-card mt-8">
+          {/* Recent Activity — unified timeline */}
+          <div className="bg-white rounded-xl shadow-card mt-6">
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
               <h2 className="text-sm font-semibold text-gray-900">Recent Activity</h2>
               <Link to="/audit-log" className="text-xs text-velox-600 hover:underline">View all</Link>
             </div>
             <div className="divide-y divide-gray-50">
               {recentActivity.length > 0 ? recentActivity.map(entry => {
-                const dotColor = entry.action.startsWith('create')
-                  ? 'bg-emerald-500'
-                  : entry.action.startsWith('update')
-                  ? 'bg-blue-500'
-                  : entry.action.startsWith('delete') || entry.action.startsWith('revoke') || entry.action.startsWith('void')
-                  ? 'bg-red-500'
-                  : 'bg-gray-400'
-
-                const actionLabel = entry.action.charAt(0).toUpperCase() + entry.action.slice(1)
-                const resourceLabel = entry.resource_type.replace(/_/g, ' ')
+                const { icon: Icon, bg, color } = getActivityStyle(entry.action, entry.resource_type)
+                const label = formatActivityLabel(entry.action, entry.resource_type)
 
                 return (
                   <div key={entry.id} className="flex items-center gap-3 px-6 py-3">
-                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor}`} />
-                    <span className="text-sm text-gray-700">
-                      {actionLabel}d {resourceLabel}
-                    </span>
-                    <span className="text-xs text-gray-400 ml-auto">{formatRelativeTime(entry.created_at)}</span>
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${bg}`}>
+                      <Icon size={14} className={color} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-gray-700">{label}</p>
+                      {entry.resource_id && (
+                        <p className="text-xs text-gray-400 truncate font-mono">{entry.resource_id}</p>
+                      )}
+                    </div>
+                    <span className="text-xs text-gray-400 flex-shrink-0">{formatRelativeTime(entry.created_at)}</span>
                   </div>
                 )
               }) : (
-                <p className="px-6 py-4 text-sm text-gray-400">No recent activity</p>
+                <p className="px-6 py-8 text-sm text-gray-400 text-center">No recent activity</p>
               )}
             </div>
           </div>
-
         </>
       )}
     </Layout>
   )
+}
+
+function getActivityStyle(action: string, resourceType: string) {
+  if (action === 'create') {
+    switch (resourceType) {
+      case 'customer': return { icon: Users, bg: 'bg-emerald-50', color: 'text-emerald-500' }
+      case 'invoice': return { icon: FileText, bg: 'bg-sky-50', color: 'text-sky-500' }
+      case 'subscription': return { icon: CreditCard, bg: 'bg-violet-50', color: 'text-violet-500' }
+      case 'api_key': return { icon: Shield, bg: 'bg-amber-50', color: 'text-amber-500' }
+      default: return { icon: CheckCircle, bg: 'bg-emerald-50', color: 'text-emerald-500' }
+    }
+  }
+  if (action === 'finalize') return { icon: FileText, bg: 'bg-sky-50', color: 'text-sky-500' }
+  if (action === 'void' || action === 'cancel' || action === 'delete' || action === 'revoke') {
+    return { icon: AlertTriangle, bg: 'bg-rose-50', color: 'text-rose-500' }
+  }
+  if (action === 'grant') return { icon: DollarSign, bg: 'bg-emerald-50', color: 'text-emerald-500' }
+  if (action === 'run') return { icon: Clock, bg: 'bg-sky-50', color: 'text-sky-500' }
+  if (action === 'update') return { icon: Settings, bg: 'bg-gray-100', color: 'text-gray-500' }
+  if (action === 'pause') return { icon: Clock, bg: 'bg-amber-50', color: 'text-amber-500' }
+  if (action === 'resume' || action === 'activate') return { icon: CheckCircle, bg: 'bg-emerald-50', color: 'text-emerald-500' }
+  return { icon: Settings, bg: 'bg-gray-100', color: 'text-gray-500' }
+}
+
+function formatActivityLabel(action: string, resourceType: string): string {
+  const resource = resourceType.replace(/_/g, ' ')
+  switch (action) {
+    case 'create': return `New ${resource} created`
+    case 'update': return `${capitalize(resource)} updated`
+    case 'delete': return `${capitalize(resource)} deleted`
+    case 'finalize': return `Invoice finalized`
+    case 'void': return `Invoice voided`
+    case 'cancel': return `Subscription canceled`
+    case 'pause': return `Subscription paused`
+    case 'resume': return `Subscription resumed`
+    case 'activate': return `Subscription activated`
+    case 'grant': return `Credits granted`
+    case 'adjust': return `Credits adjusted`
+    case 'revoke': return `API key revoked`
+    case 'run': return `Billing cycle executed`
+    case 'issue': return `Credit note issued`
+    case 'resolve': return `Dunning run resolved`
+    default: return `${capitalize(action)} ${resource}`
+  }
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1)
 }
