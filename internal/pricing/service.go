@@ -59,7 +59,7 @@ func (s *Service) CreateRatingRule(ctx context.Context, tenantID string, input C
 		RuleKey:                input.RuleKey,
 		Name:                   input.Name,
 		Version:                nextVersion,
-		LifecycleState:         domain.RatingRuleDraft,
+		LifecycleState:         domain.RatingRuleActive,
 		Mode:                   input.Mode,
 		Currency:               strings.ToUpper(input.Currency),
 		FlatAmountCents:        input.FlatAmountCents,
@@ -221,7 +221,7 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 		Description:     strings.TrimSpace(input.Description),
 		Currency:        currency,
 		BillingInterval: input.BillingInterval,
-		Status:          domain.PlanDraft,
+		Status:          domain.PlanActive,
 		BaseAmountCents: input.BaseAmountCents,
 		MeterIDs:        input.MeterIDs,
 	})
