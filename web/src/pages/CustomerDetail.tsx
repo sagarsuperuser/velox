@@ -11,7 +11,8 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Copy, Check, CreditCard, Pencil } from 'lucide-react'
+import { CreditCard, Pencil } from 'lucide-react'
+import { CopyButton } from '@/components/CopyButton'
 
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -28,28 +29,7 @@ export function CustomerDetailPage() {
   const [showEditCustomer, setShowEditCustomer] = useState(false)
   const [showEditBilling, setShowEditBilling] = useState(false)
   const [showCreateSub, setShowCreateSub] = useState(false)
-  const [copiedField, setCopiedField] = useState<string | null>(null)
   const toast = useToast()
-
-  const copyToClipboard = (value: string, field: string) => {
-    navigator.clipboard.writeText(value)
-    setCopiedField(field)
-    setTimeout(() => setCopiedField(null), 2000)
-  }
-
-  const CopyButton = ({ value, field }: { value: string; field: string }) => (
-    <button
-      onClick={() => copyToClipboard(value, field)}
-      className="inline-flex items-center justify-center w-6 h-6 rounded hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600"
-      title="Copy to clipboard"
-    >
-      {copiedField === field ? (
-        <Check className="w-3.5 h-3.5 text-green-500" />
-      ) : (
-        <Copy className="w-3.5 h-3.5" />
-      )}
-    </button>
-  )
 
   const loadData = () => {
     if (!id) return
@@ -106,7 +86,7 @@ export function CustomerDetailPage() {
           <h1 className="text-2xl font-semibold text-gray-900">{customer.display_name}</h1>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="text-xs text-gray-500 font-mono">{customer.id}</span>
-            <CopyButton value={customer.id} field="header-id" />
+            <CopyButton text={customer.id} />
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -169,7 +149,7 @@ export function CustomerDetailPage() {
             <span className="text-sm text-gray-500">ID</span>
             <div className="flex items-center gap-1.5">
               <span className="text-sm text-gray-900 font-mono">{customer.id}</span>
-              <CopyButton value={customer.id} field="props-id" />
+              <CopyButton text={customer.id} />
             </div>
           </div>
         </div>

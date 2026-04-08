@@ -7,7 +7,7 @@ import { Badge } from '@/components/Badge'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { EmptyState } from '@/components/EmptyState'
-import { Copy, Check } from 'lucide-react'
+import { CopyButton } from '@/components/CopyButton'
 
 export function MeterDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -16,14 +16,7 @@ export function MeterDetailPage() {
   const [plans, setPlans] = useState<Plan[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [copiedField, setCopiedField] = useState<string | null>(null)
   const navigate = useNavigate()
-
-  const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard.writeText(text)
-    setCopiedField(field)
-    setTimeout(() => setCopiedField(null), 2000)
-  }
 
   const loadData = () => {
     if (!id) return
@@ -74,19 +67,6 @@ export function MeterDetailPage() {
 
   if (!meter) return <Layout><p>Meter not found</p></Layout>
 
-  const CopyButton = ({ text, field }: { text: string; field: string }) => (
-    <button
-      onClick={() => copyToClipboard(text, field)}
-      className="inline-flex items-center justify-center w-6 h-6 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-    >
-      {copiedField === field ? (
-        <Check className="w-3.5 h-3.5 text-emerald-500" />
-      ) : (
-        <Copy className="w-3.5 h-3.5" />
-      )}
-    </button>
-  )
-
   const graduatedTierLabel = (tier: { up_to: number }, index: number, tiers: { up_to: number }[]) => {
     const prev = index > 0 ? tiers[index - 1].up_to : 0
     if (tier.up_to === 0 || tier.up_to === -1) {
@@ -108,7 +88,7 @@ export function MeterDetailPage() {
           <h1 className="text-2xl font-semibold text-gray-900">{meter.name}</h1>
           <div className="flex items-center gap-2 mt-1">
             <span className="text-sm text-gray-500 font-mono">{meter.id}</span>
-            <CopyButton text={meter.id} field="header-id" />
+            <CopyButton text={meter.id} />
           </div>
         </div>
         <Badge status={meter.aggregation} />
@@ -140,7 +120,7 @@ export function MeterDetailPage() {
             <span className="text-sm text-gray-500">ID</span>
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-900 font-medium font-mono truncate max-w-xs">{meter.id}</span>
-              <CopyButton text={meter.id} field="props-id" />
+              <CopyButton text={meter.id} />
             </div>
           </div>
         </div>

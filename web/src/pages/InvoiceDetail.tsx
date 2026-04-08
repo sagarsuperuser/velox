@@ -12,7 +12,8 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Mail, CreditCard, Copy, Check } from 'lucide-react'
+import { Mail, CreditCard } from 'lucide-react'
+import { CopyButton } from '@/components/CopyButton'
 
 const LINE_TYPE_LABELS: Record<string, string> = {
   base_fee: 'Base Fee',
@@ -38,27 +39,7 @@ export function InvoiceDetailPage() {
   const [showVoidConfirm, setShowVoidConfirm] = useState(false)
   const [showEmailModal, setShowEmailModal] = useState(false)
   const [showCreditModal, setShowCreditModal] = useState(false)
-  const [copiedField, setCopiedField] = useState<string | null>(null)
   const toast = useToast()
-
-  const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard.writeText(text)
-    setCopiedField(field)
-    setTimeout(() => setCopiedField(null), 2000)
-  }
-
-  const CopyButton = ({ text, field }: { text: string; field: string }) => (
-    <button
-      onClick={() => copyToClipboard(text, field)}
-      className="inline-flex items-center justify-center w-6 h-6 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-    >
-      {copiedField === field ? (
-        <Check className="w-3.5 h-3.5 text-emerald-500" />
-      ) : (
-        <Copy className="w-3.5 h-3.5" />
-      )}
-    </button>
-  )
 
   const loadData = () => {
     if (!id) return
@@ -146,7 +127,7 @@ export function InvoiceDetailPage() {
           <h1 className="text-2xl font-semibold text-gray-900">{invoice.invoice_number}</h1>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="text-xs font-mono text-gray-400">{invoice.id}</span>
-            <CopyButton text={invoice.id} field="header-id" />
+            <CopyButton text={invoice.id} />
           </div>
         </div>
         <div className="flex items-center gap-2 border-l border-gray-200 pl-4">
@@ -262,7 +243,7 @@ export function InvoiceDetailPage() {
             <span className="text-sm text-gray-500">ID</span>
             <div className="flex items-center gap-1.5">
               <span className="text-sm font-mono text-gray-500">{invoice.id}</span>
-              <CopyButton text={invoice.id} field="props-id" />
+              <CopyButton text={invoice.id} />
             </div>
           </div>
         </div>

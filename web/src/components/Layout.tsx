@@ -37,7 +37,7 @@ function NavLink({ to, icon: Icon, label, pathname, onClick }: { to: string; ico
       className={cn(
         'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
         pathname === to
-          ? 'bg-velox-50 text-velox-700'
+          ? 'bg-velox-50 text-velox-700 font-medium'
           : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
       )}
     >
