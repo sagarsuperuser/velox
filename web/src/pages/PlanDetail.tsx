@@ -396,6 +396,10 @@ function EditPlanModal({ plan, onClose, onSaved }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  const hasChanges = name !== plan.name ||
+    basePrice !== (plan.base_amount_cents / 100).toFixed(2) ||
+    status !== plan.status
+
   const fieldRules = useMemo(() => ({
     name: [rules.required('Name')],
   }), [])
@@ -449,9 +453,9 @@ function EditPlanModal({ plan, onClose, onSaved }: {
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={saving || !hasChanges}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Saving...' : 'Save'}
+            {saving ? 'Saving...' : hasChanges ? 'Save' : 'No changes'}
           </button>
         </div>
       </form>

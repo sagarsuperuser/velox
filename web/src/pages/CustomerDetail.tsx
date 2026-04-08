@@ -381,6 +381,8 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  const hasChanges = form.display_name !== customer.display_name || form.email !== (customer.email || '')
+
   const fieldRules = useMemo(() => ({
     display_name: [rules.required('Display name')],
     email: [rules.email()],
@@ -389,6 +391,7 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!hasChanges) return
     if (!validateAll(form)) return
     setSaving(true); setError('')
     try {
@@ -415,9 +418,9 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={saving || !hasChanges}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Saving...' : 'Save'}
+            {saving ? 'Saving...' : hasChanges ? 'Save' : 'No changes'}
           </button>
         </div>
       </form>
@@ -444,6 +447,14 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  const initialForm = useMemo(() => JSON.stringify({
+    legal_name: profile?.legal_name || '', email: profile?.email || '', phone: profile?.phone || '',
+    address_line1: profile?.address_line1 || '', address_line2: profile?.address_line2 || '',
+    city: profile?.city || '', state: profile?.state || '', postal_code: profile?.postal_code || '',
+    country: profile?.country || '', currency: profile?.currency || 'usd', tax_identifier: profile?.tax_identifier || '',
+  }), [profile])
+  const hasChanges = JSON.stringify(form) !== initialForm
+
   const fieldRules = useMemo(() => ({
     email: [rules.email()],
     phone: [rules.phone()],
@@ -452,6 +463,7 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!hasChanges) return
     if (!validateAll(form)) return
     setSaving(true); setError('')
     try {
@@ -542,9 +554,9 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-4">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={saving || !hasChanges}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Saving...' : 'Save'}
+            {saving ? 'Saving...' : hasChanges ? 'Save' : 'No changes'}
           </button>
         </div>
       </form>
