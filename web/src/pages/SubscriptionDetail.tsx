@@ -175,15 +175,15 @@ export function SubscriptionDetailPage() {
           {sub.status === 'active' && (
             <>
               <button onClick={() => setShowChangePlan(true)} disabled={acting}
-                className="px-3 py-1.5 border border-velox-300 text-velox-600 rounded-lg text-xs font-medium hover:bg-velox-50 disabled:opacity-50 transition-colors">
+                className="px-4 py-2 border border-velox-300 text-velox-600 rounded-lg text-sm font-medium hover:bg-velox-50 disabled:opacity-50 transition-colors">
                 Change Plan
               </button>
               <button onClick={handlePause} disabled={acting}
-                className="px-3 py-1.5 border border-amber-300 text-amber-600 rounded-lg text-xs font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors">
+                className="px-4 py-2 border border-amber-300 text-amber-600 rounded-lg text-sm font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors">
                 Pause
               </button>
               <button onClick={() => setShowCancelConfirm(true)} disabled={acting}
-                className="px-3 py-1.5 border border-red-300 text-red-600 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
+                className="px-4 py-2 border border-red-300 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
                 Cancel
               </button>
             </>
@@ -191,11 +191,11 @@ export function SubscriptionDetailPage() {
           {sub.status === 'paused' && (
             <>
               <button onClick={handleResume} disabled={acting}
-                className="px-3 py-1.5 border border-emerald-300 text-emerald-600 rounded-lg text-xs font-medium hover:bg-emerald-50 disabled:opacity-50 transition-colors">
+                className="px-4 py-2 border border-emerald-300 text-emerald-600 rounded-lg text-sm font-medium hover:bg-emerald-50 disabled:opacity-50 transition-colors">
                 Resume
               </button>
               <button onClick={() => setShowCancelConfirm(true)} disabled={acting}
-                className="px-3 py-1.5 border border-red-300 text-red-600 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
+                className="px-4 py-2 border border-red-300 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
                 Cancel
               </button>
             </>

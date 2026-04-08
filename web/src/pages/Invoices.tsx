@@ -172,7 +172,7 @@ export function InvoicesPage() {
                           toast.error(err instanceof Error ? err.message : 'Failed to download PDF')
                         }
                       }}
-                      className="text-xs text-velox-600 hover:underline"
+                      className="text-xs font-medium text-velox-600 hover:text-velox-700 bg-velox-50 hover:bg-velox-100 px-2.5 py-1 rounded-md transition-colors"
                     >
                       Download
                     </button>

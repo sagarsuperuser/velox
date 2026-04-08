@@ -109,7 +109,7 @@ export function CustomerDetailPage() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => setShowEditCustomer(true)}
-            className="px-3 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-50 transition-colors"
+            className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
           >
             Edit Customer
           </button>
@@ -276,7 +276,7 @@ export function CustomerDetailPage() {
             <h2 className="text-sm font-semibold text-gray-900">Subscriptions</h2>
             <button
               onClick={() => setShowCreateSub(true)}
-              className="text-xs text-velox-600 hover:underline"
+              className="text-xs font-medium text-velox-600 hover:text-velox-700 transition-colors"
             >
               + Add subscription
             </button>
@@ -294,7 +294,7 @@ export function CustomerDetailPage() {
             {(!overview?.active_subscriptions.length) && (
               <div className="px-6 py-4 text-center">
                 <p className="text-sm text-gray-400">No subscriptions</p>
-                <button onClick={() => setShowCreateSub(true)} className="mt-2 text-xs text-velox-600 hover:underline">
+                <button onClick={() => setShowCreateSub(true)} className="mt-2 text-xs font-medium text-velox-600 hover:text-velox-700 transition-colors">
                   Create subscription
                 </button>
               </div>

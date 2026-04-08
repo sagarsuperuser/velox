@@ -92,7 +92,7 @@ export function ApiKeysPage() {
                           setIsRevokingSelf(currentKey.startsWith(k.key_prefix))
                           setRevokeTarget(k)
                         }}
-                          className="text-xs text-red-600 hover:underline">Revoke</button>
+                          className="text-xs font-medium text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-md transition-colors">Revoke</button>
                       )}
                     </td>
                   </tr>

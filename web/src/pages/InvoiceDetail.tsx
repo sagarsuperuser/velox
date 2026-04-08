@@ -152,27 +152,27 @@ export function InvoiceDetailPage() {
         <div className="flex items-center gap-2 border-l border-gray-200 pl-4">
           {invoice.status === 'draft' && (
             <button onClick={handleFinalize} disabled={acting}
-              className="px-3 py-1.5 border border-blue-600 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-50 disabled:opacity-50 transition-colors">
+              className="px-4 py-2 border border-blue-600 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 disabled:opacity-50 transition-colors">
               Finalize
             </button>
           )}
 
           {invoice.status !== 'voided' && invoice.status !== 'paid' && (
             <button onClick={() => setShowVoidConfirm(true)} disabled={acting}
-              className="px-3 py-1.5 border border-red-300 text-red-600 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
+              className="px-4 py-2 border border-red-300 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
               Void
             </button>
           )}
 
           <button onClick={() => setShowEmailModal(true)} disabled={acting}
-            className="px-3 py-1.5 border border-gray-300 text-gray-600 rounded-lg text-xs font-medium hover:bg-gray-50 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
+            className="px-4 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
             <Mail size={14} />
             Email Invoice
           </button>
 
           {(invoice.status === 'finalized' || invoice.status === 'paid') && (
             <button onClick={() => setShowCreditModal(true)} disabled={acting}
-              className="px-3 py-1.5 border border-amber-300 text-amber-600 rounded-lg text-xs font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
+              className="px-4 py-2 border border-amber-300 text-amber-600 rounded-lg text-sm font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
               <CreditCard size={14} />
               Issue Credit
             </button>
@@ -180,7 +180,7 @@ export function InvoiceDetailPage() {
 
           <button
             onClick={() => downloadPDF(invoice.id, invoice.invoice_number)}
-            className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
             Download PDF
           </button>
         </div>

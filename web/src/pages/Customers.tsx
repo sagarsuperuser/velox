@@ -123,7 +123,7 @@ export function CustomersPage() {
         ) : customers.length === 0 ? (
           <div className="p-12 text-center">
             <p className="text-gray-400 text-sm">No customers yet</p>
-            <button onClick={() => setShowCreate(true)} className="mt-3 text-sm text-velox-600 hover:underline">
+            <button onClick={() => setShowCreate(true)} className="mt-3 px-4 py-2 text-sm font-medium text-velox-600 hover:text-velox-700 transition-colors">
               Create your first customer
             </button>
           </div>
