@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 
 export function SettingsPage() {
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const toast = useToast()
 
@@ -23,7 +25,9 @@ export function SettingsPage() {
     timezone: '',
   })
 
-  useEffect(() => {
+  const loadSettings = () => {
+    setLoading(true)
+    setError(null)
     api.getSettings().then(s => {
       setCompanyForm({
         company_name: s.company_name || '',
@@ -38,8 +42,10 @@ export function SettingsPage() {
         timezone: s.timezone || '',
       })
       setLoading(false)
-    }).catch(() => setLoading(false))
-  }, [])
+    }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load settings'); setLoading(false) })
+  }
+
+  useEffect(() => { loadSettings() }, [])
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -77,6 +83,17 @@ export function SettingsPage() {
         <h1 className="text-2xl font-semibold text-gray-900">Settings</h1>
         <div className="bg-white rounded-xl shadow-card mt-6">
           <LoadingSkeleton rows={6} columns={2} />
+        </div>
+      </Layout>
+    )
+  }
+
+  if (error) {
+    return (
+      <Layout>
+        <h1 className="text-2xl font-semibold text-gray-900">Settings</h1>
+        <div className="bg-white rounded-xl shadow-card mt-6">
+          <ErrorState message={error} onRetry={loadSettings} />
         </div>
       </Layout>
     )

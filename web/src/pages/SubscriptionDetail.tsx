@@ -3,8 +3,10 @@ import { useParams, Link } from 'react-router-dom'
 import { api, formatCents, formatDate, type Subscription, type Customer, type Plan, type Invoice, type InvoicePreview } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
+import { Modal } from '@/components/Modal'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
+import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
@@ -14,16 +16,21 @@ export function SubscriptionDetailPage() {
   const [sub, setSub] = useState<Subscription | null>(null)
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [plan, setPlan] = useState<Plan | null>(null)
+  const [allPlans, setAllPlans] = useState<Plan[]>([])
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [preview, setPreview] = useState<InvoicePreview | null>(null)
   const [previewError, setPreviewError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [acting, setActing] = useState(false)
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
+  const [showChangePlan, setShowChangePlan] = useState(false)
   const toast = useToast()
 
-  useEffect(() => {
+  const loadData = () => {
     if (!id) return
+    setLoading(true)
+    setError(null)
     api.getSubscription(id).then(async (s) => {
       setSub(s)
 
@@ -36,10 +43,11 @@ export function SubscriptionDetailPage() {
           .catch(() => {})
       )
 
-      // Fetch plan
+      // Fetch plans
       promises.push(
         api.listPlans()
           .then(res => {
+            setAllPlans(res.data)
             const found = res.data.find(p => p.id === s.plan_id)
             if (found) setPlan(found)
           })
@@ -62,8 +70,10 @@ export function SubscriptionDetailPage() {
 
       await Promise.all(promises)
       setLoading(false)
-    }).catch(() => setLoading(false))
-  }, [id])
+    }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load subscription'); setLoading(false) })
+  }
+
+  useEffect(() => { loadData() }, [id])
 
   const handlePause = async () => {
     if (!id || !sub) return
@@ -119,6 +129,8 @@ export function SubscriptionDetailPage() {
     )
   }
 
+  if (error) return <Layout><ErrorState message={error} onRetry={loadData} /></Layout>
+
   if (!sub) return <Layout><p>Subscription not found</p></Layout>
 
   return (
@@ -134,6 +146,10 @@ export function SubscriptionDetailPage() {
         <div className="flex items-center gap-3">
           {sub.status === 'active' && (
             <>
+              <button onClick={() => setShowChangePlan(true)} disabled={acting}
+                className="px-3 py-1.5 border border-velox-300 text-velox-600 rounded-lg text-xs font-medium hover:bg-velox-50 disabled:opacity-50 transition-colors">
+                Change Plan
+              </button>
               <button onClick={handlePause} disabled={acting}
                 className="px-3 py-1.5 border border-amber-300 text-amber-600 rounded-lg text-xs font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors">
                 Pause
@@ -275,6 +291,100 @@ export function SubscriptionDetailPage() {
         onConfirm={handleCancel}
         onCancel={() => setShowCancelConfirm(false)}
       />
+
+      {showChangePlan && (
+        <ChangePlanModal
+          subscriptionId={sub.id}
+          currentPlanId={sub.plan_id}
+          currentPlanName={plan?.name || 'Unknown'}
+          plans={allPlans}
+          onClose={() => setShowChangePlan(false)}
+          onChanged={(updated) => {
+            setSub(updated)
+            const newPlan = allPlans.find(p => p.id === updated.plan_id)
+            if (newPlan) setPlan(newPlan)
+            setShowChangePlan(false)
+            toast.success('Plan changed successfully')
+            loadData()
+          }}
+        />
+      )}
     </Layout>
+  )
+}
+
+function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans, onClose, onChanged }: {
+  subscriptionId: string
+  currentPlanId: string
+  currentPlanName: string
+  plans: Plan[]
+  onClose: () => void
+  onChanged: (sub: Subscription) => void
+}) {
+  const [newPlanId, setNewPlanId] = useState('')
+  const [immediate, setImmediate] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const availablePlans = plans.filter(p => p.id !== currentPlanId && p.status === 'active')
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true); setError('')
+    try {
+      const res = await api.changePlan(subscriptionId, { new_plan_id: newPlanId, immediate })
+      onChanged(res.subscription)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to change plan')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Change Plan">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <p className="text-sm text-gray-500">Current plan</p>
+          <p className="text-sm font-semibold text-gray-900 mt-0.5">{currentPlanName}</p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">New Plan</label>
+          <select value={newPlanId} onChange={e => setNewPlanId(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
+            required>
+            <option value="">Select a plan...</option>
+            {availablePlans.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.code}) - {formatCents(p.base_amount_cents)}/{p.billing_interval}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" checked={immediate} onChange={e => setImmediate(e.target.checked)}
+            className="mt-0.5" />
+          <div>
+            <span className="font-medium text-gray-700">Apply immediately (with proration)</span>
+            {immediate && (
+              <p className="text-xs text-gray-400 mt-1">
+                The remaining time on the current billing period will be prorated. A credit or charge will be applied based on the price difference between plans.
+              </p>
+            )}
+          </div>
+        </label>
+
+        {error && <p className="text-red-600 text-xs">{error}</p>}
+        <div className="flex justify-end gap-3 pt-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+          <button type="submit" disabled={saving || !newPlanId}
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
+            {saving ? 'Changing...' : 'Change Plan'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }

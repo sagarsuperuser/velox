@@ -5,12 +5,14 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Plus } from 'lucide-react'
 
 export function SubscriptionsPage() {
   const [subs, setSubs] = useState<Subscription[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [customers, setCustomers] = useState<Customer[]>([])
   const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
@@ -18,7 +20,10 @@ export function SubscriptionsPage() {
   const toast = useToast()
 
   const loadSubs = () => {
+    setLoading(true)
+    setError(null)
     api.listSubscriptions().then(res => { setSubs(res.data); setLoading(false) })
+      .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load subscriptions'); setLoading(false) })
   }
 
   useEffect(() => {
@@ -46,7 +51,9 @@ export function SubscriptionsPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-card mt-6">
-        {loading ? (
+        {error ? (
+          <ErrorState message={error} onRetry={loadSubs} />
+        ) : loading ? (
           <LoadingSkeleton rows={5} columns={6} />
         ) : subs.length === 0 ? (
           <div className="p-12 text-center">

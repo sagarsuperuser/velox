@@ -5,6 +5,7 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 
 const STATUS_OPTIONS = ['All', 'draft', 'finalized', 'paid', 'voided'] as const
@@ -14,10 +15,13 @@ export function InvoicesPage() {
   const [total, setTotal] = useState(0)
   const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<string>('All')
   const toast = useToast()
 
-  useEffect(() => {
+  const loadInvoices = () => {
+    setLoading(true)
+    setError(null)
     Promise.all([
       api.listInvoices(),
       api.listCustomers(),
@@ -28,8 +32,10 @@ export function InvoicesPage() {
       custRes.data.forEach(c => { cMap[c.id] = c })
       setCustomerMap(cMap)
       setLoading(false)
-    })
-  }, [])
+    }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load invoices'); setLoading(false) })
+  }
+
+  useEffect(() => { loadInvoices() }, [])
 
   const filtered = statusFilter === 'All'
     ? invoices
@@ -56,7 +62,9 @@ export function InvoicesPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-card mt-6">
-        {loading ? (
+        {error ? (
+          <ErrorState message={error} onRetry={loadInvoices} />
+        ) : loading ? (
           <LoadingSkeleton rows={6} columns={6} />
         ) : filtered.length === 0 ? (
           <EmptyState

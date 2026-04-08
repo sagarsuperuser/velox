@@ -3,6 +3,7 @@ import { api, formatCents, formatDate, type Meter, type Plan, type RatingRule } 
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Plus } from 'lucide-react'
 
@@ -11,13 +12,17 @@ export function PricingPage() {
   const [plans, setPlans] = useState<Plan[]>([])
   const [rules, setRules] = useState<RatingRule[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<'plans' | 'meters' | 'rules'>('plans')
   const [showCreate, setShowCreate] = useState(false)
   const toast = useToast()
 
   const loadAll = () => {
+    setLoading(true)
+    setError(null)
     Promise.all([api.listPlans(), api.listMeters(), api.listRatingRules()])
       .then(([p, m, r]) => { setPlans(p.data); setMeters(m.data); setRules(r.data); setLoading(false) })
+      .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load pricing data'); setLoading(false) })
   }
 
   useEffect(() => { loadAll() }, [])
@@ -48,7 +53,8 @@ export function PricingPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-card mt-4">
-        {loading ? <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
+        {error ? <ErrorState message={error} onRetry={loadAll} />
+        : loading ? <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
         : tab === 'plans' ? (plans.length === 0 ? <Empty label="plans" /> :
           <table className="w-full"><thead><tr className="border-b border-gray-100">
             <Th>Name</Th><Th>Code</Th><Th>Interval</Th><Th>Status</Th><Th right>Base Price</Th><Th right>Meters</Th>
@@ -167,7 +173,7 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
       <Select label="Mode" value={form.mode} onChange={v => setForm(f => ({ ...f, mode: v }))} options={[['flat', 'Flat'], ['graduated', 'Graduated'], ['package', 'Package']]} />
       <Field label="Currency" value={form.currency} onChange={v => setForm(f => ({ ...f, currency: v }))} />
     </div>
-    {form.mode === 'flat' && <Field label="Amount (cents)" value={String(form.flat_amount_cents)} type="number" onChange={v => setForm(f => ({ ...f, flat_amount_cents: parseInt(v) || 0 }))} />}
+    {form.mode === 'flat' && <Field label="Amount ($)" value={String((form.flat_amount_cents / 100).toFixed(2))} type="number" onChange={v => setForm(f => ({ ...f, flat_amount_cents: Math.round(parseFloat(v) * 100) || 0 }))} />}
     {form.mode === 'graduated' && (
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">Graduated Tiers</label>
@@ -181,10 +187,10 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
                 <span className="text-xs text-gray-400">{tier.up_to === 0 ? 'Unlimited' : `Up to ${tier.up_to}`}</span>
               </div>
               <div className="flex-1">
-                <input type="number" value={tier.unit_amount_cents} onChange={e => updateTier(idx, 'unit_amount_cents', parseInt(e.target.value) || 0)}
+                <input type="number" step="0.01" min="0" value={(tier.unit_amount_cents / 100).toFixed(2)} onChange={e => updateTier(idx, 'unit_amount_cents', Math.round(parseFloat(e.target.value) * 100) || 0)}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-                  placeholder="Unit amount (cents)" />
-                <span className="text-xs text-gray-400">cents/unit</span>
+                  placeholder="Price per unit ($)" />
+                <span className="text-xs text-gray-400">$/unit</span>
               </div>
               {form.graduated_tiers.length > 1 && (
                 <button type="button" onClick={() => removeTier(idx)} className="text-red-400 hover:text-red-600 text-sm px-1">&times;</button>
@@ -198,7 +204,7 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
     {form.mode === 'package' && (
       <div className="space-y-3">
         <Field label="Package size" value={String(form.package_size)} type="number" onChange={v => setForm(f => ({ ...f, package_size: parseInt(v) || 0 }))} placeholder="100" />
-        <Field label="Package amount (cents)" value={String(form.package_amount_cents)} type="number" onChange={v => setForm(f => ({ ...f, package_amount_cents: parseInt(v) || 0 }))} placeholder="1000" />
+        <Field label="Package amount ($)" value={String((form.package_amount_cents / 100).toFixed(2))} type="number" onChange={v => setForm(f => ({ ...f, package_amount_cents: Math.round(parseFloat(v) * 100) || 0 }))} placeholder="10.00" />
       </div>
     )}
     {error && <p className="text-red-600 text-xs">{error}</p>}
@@ -242,7 +248,7 @@ function CreatePlanModal({ onClose, onCreated, meters }: { onClose: () => void; 
     <Field label="Code" value={form.code} onChange={v => setForm(f => ({ ...f, code: v }))} placeholder="pro" mono required />
     <div className="grid grid-cols-2 gap-3">
       <Select label="Interval" value={form.billing_interval} onChange={v => setForm(f => ({ ...f, billing_interval: v }))} options={[['monthly', 'Monthly'], ['yearly', 'Yearly']]} />
-      <Field label="Base Price (cents)" value={String(form.base_amount_cents)} type="number" onChange={v => setForm(f => ({ ...f, base_amount_cents: parseInt(v) || 0 }))} />
+      <Field label="Base Price ($)" value={String((form.base_amount_cents / 100).toFixed(2))} type="number" onChange={v => setForm(f => ({ ...f, base_amount_cents: Math.round(parseFloat(v) * 100) || 0 }))} />
     </div>
     {meters.length > 0 && <div>
       <label className="block text-sm font-medium text-gray-700 mb-1">Meters</label>

@@ -6,11 +6,13 @@ import { Modal } from '@/components/Modal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 
 export function ApiKeysPage() {
   const [keys, setKeys] = useState<ApiKeyInfo[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null)
@@ -18,9 +20,10 @@ export function ApiKeysPage() {
 
   const loadKeys = () => {
     setLoading(true)
+    setError(null)
     api.listApiKeys()
       .then(res => { setKeys(res.data || []); setLoading(false) })
-      .catch(() => { setKeys([]); setLoading(false) })
+      .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load API keys'); setKeys([]); setLoading(false) })
   }
 
   useEffect(() => { loadKeys() }, [])
@@ -51,7 +54,8 @@ export function ApiKeysPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-card mt-6">
-        {loading ? <LoadingSkeleton rows={5} columns={6} />
+        {error ? <ErrorState message={error} onRetry={loadKeys} />
+        : loading ? <LoadingSkeleton rows={5} columns={6} />
         : keys.length === 0 ? <EmptyState title="No API keys" description="Create an API key to start using the Velox API" />
         : (
           <table className="w-full">

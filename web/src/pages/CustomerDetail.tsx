@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { api, formatCents, formatDate, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary } from '@/lib/api'
+import { api, formatCents, formatDate, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary, type Meter } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { StatCard } from '@/components/StatCard'
@@ -8,6 +8,7 @@ import { Modal } from '@/components/Modal'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 
 export function CustomerDetailPage() {
@@ -17,28 +18,38 @@ export function CustomerDetailPage() {
   const [balance, setBalance] = useState(0)
   const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null)
   const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null)
+  const [meterMap, setMeterMap] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [showEditCustomer, setShowEditCustomer] = useState(false)
   const [showEditBilling, setShowEditBilling] = useState(false)
   const toast = useToast()
 
-  useEffect(() => {
+  const loadData = () => {
     if (!id) return
+    setLoading(true)
+    setError(null)
     Promise.all([
       api.getCustomer(id),
       api.customerOverview(id),
       api.getBalance(id).catch(() => ({ balance_cents: 0 })),
       api.getBillingProfile(id).catch(() => null),
       api.usageSummary(id).catch(() => null),
-    ]).then(([c, o, b, bp, us]) => {
+      api.listMeters().catch(() => ({ data: [] as Meter[] })),
+    ]).then(([c, o, b, bp, us, metersRes]) => {
       setCustomer(c)
       setOverview(o)
       setBalance(b.balance_cents)
       setBillingProfile(bp)
       setUsageSummary(us)
+      const mm: Record<string, string> = {}
+      metersRes.data.forEach(m => { mm[m.key] = m.name })
+      setMeterMap(mm)
       setLoading(false)
-    })
-  }, [id])
+    }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load customer'); setLoading(false) })
+  }
+
+  useEffect(() => { loadData() }, [id])
 
   if (loading) {
     return (
@@ -50,6 +61,8 @@ export function CustomerDetailPage() {
       </Layout>
     )
   }
+
+  if (error) return <Layout><ErrorState message={error} onRetry={loadData} /></Layout>
 
   if (!customer) return <Layout><p>Customer not found</p></Layout>
 
@@ -141,7 +154,7 @@ export function CustomerDetailPage() {
             <div className="space-y-2">
               {Object.entries(usageSummary.meters).map(([meter, qty]) => (
                 <div key={meter} className="flex items-center justify-between py-1">
-                  <span className="text-sm text-gray-700 font-mono">{meter}</span>
+                  <span className="text-sm text-gray-700">{meterMap[meter] || meter}</span>
                   <span className="text-sm font-medium text-gray-900">{qty.toLocaleString()}</span>
                 </div>
               ))}
