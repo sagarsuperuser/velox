@@ -117,7 +117,7 @@ export function CreditsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                   {ledger.map(entry => (
-                    <tr key={entry.id}>
+                    <tr key={entry.id} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-6 py-3"><Badge status={entry.entry_type} /></td>
                       <td className="px-6 py-3 text-sm text-gray-900">{entry.description}</td>
                       <td className={`px-6 py-3 text-sm font-medium text-right ${entry.amount_cents >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>

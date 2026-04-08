@@ -97,7 +97,7 @@ export function AuditLogPage() {
                   : null
                 return (
                   <Fragment key={entry.id}>
-                    <tr className="hover:bg-gray-50">
+                    <tr className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-6 py-3 text-sm text-gray-500">{formatDate(entry.created_at)}</td>
                       <td className="px-6 py-3 text-sm text-gray-500">{entry.actor_type === 'api_key' ? 'API Key' : entry.actor_type === 'system' ? 'System' : entry.actor_type}</td>
                       <td className="px-6 py-3"><Badge status={entry.action} /></td>

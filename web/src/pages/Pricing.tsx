@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api, formatCents, formatDate, type Meter, type Plan, type RatingRule } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -18,6 +18,7 @@ export function PricingPage() {
   const [tab, setTab] = useState<'plans' | 'meters' | 'rules'>('plans')
   const [showCreate, setShowCreate] = useState(false)
   const toast = useToast()
+  const navigate = useNavigate()
 
   const loadAll = () => {
     setLoading(true)
@@ -61,7 +62,11 @@ export function PricingPage() {
           <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100">
             <Th>Name</Th><Th>Code</Th><Th>Interval</Th><Th>Status</Th><Th right>Base Price</Th><Th right>Meters</Th>
           </tr></thead><tbody className="divide-y divide-gray-50">
-            {plans.map(p => <tr key={p.id} className="hover:bg-gray-50 cursor-pointer transition-colors group">
+            {plans.map(p => <tr key={p.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+              const target = e.target as HTMLElement
+              if (target.closest('button, a, input, select')) return
+              navigate(`/plans/${p.id}`)
+            }}>
               <Td bold><Link to={`/plans/${p.id}`} className="text-gray-900 group-hover:text-velox-600 transition-colors">{p.name}</Link></Td>
               <Td mono>{p.code}</Td><Td><Badge status={p.billing_interval} /></Td>
               <Td><Badge status={p.status} /></Td><Td right bold>{formatCents(p.base_amount_cents)}</Td>
@@ -72,7 +77,11 @@ export function PricingPage() {
           <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100">
             <Th>Name</Th><Th>Key</Th><Th>Unit</Th><Th>Aggregation</Th><Th>Created</Th>
           </tr></thead><tbody className="divide-y divide-gray-50">
-            {meters.map(m => <tr key={m.id} className="hover:bg-gray-50 cursor-pointer transition-colors group">
+            {meters.map(m => <tr key={m.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+              const target = e.target as HTMLElement
+              if (target.closest('button, a, input, select')) return
+              navigate(`/meters/${m.id}`)
+            }}>
               <Td bold><Link to={`/meters/${m.id}`} className="text-gray-900 group-hover:text-velox-600 transition-colors">{m.name}</Link></Td>
               <Td mono>{m.key}</Td><Td>{m.unit}</Td>
               <Td><Badge status={m.aggregation} /></Td><Td muted>{formatDate(m.created_at)}</Td>
@@ -82,7 +91,7 @@ export function PricingPage() {
           <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100">
             <Th>Name</Th><Th>Rule Key</Th><Th>Mode</Th><Th>Version</Th><Th right>Price</Th>
           </tr></thead><tbody className="divide-y divide-gray-50">
-            {rules.map(r => <tr key={r.id} className="hover:bg-gray-50">
+            {rules.map(r => <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">
               <Td bold>{r.name}</Td><Td mono>{r.rule_key}</Td><Td><Badge status={r.mode} /></Td>
               <Td>v{r.version}</Td>
               <Td right bold>{r.mode === 'flat' ? formatCents(r.flat_amount_cents) : r.mode === 'graduated' ? `${r.graduated_tiers?.length || 0} tiers` : `${r.package_size}/pkg`}</Td>

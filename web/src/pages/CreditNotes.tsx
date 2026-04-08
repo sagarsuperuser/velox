@@ -93,7 +93,7 @@ export function CreditNotesPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {notes.map(note => (
-                <tr key={note.id} className="hover:bg-gray-50">
+                <tr key={note.id} className="hover:bg-gray-50/50 transition-colors">
                   <td className="px-6 py-3 text-sm font-medium text-gray-900">{note.credit_note_number}</td>
                   <td className="px-6 py-3 text-sm">
                     <Link to={`/invoices/${note.invoice_id}`} className="text-velox-600 hover:underline">

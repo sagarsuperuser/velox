@@ -221,7 +221,7 @@ export function InvoiceDetailPage() {
           </thead>
           <tbody className="divide-y divide-gray-50">
             {lineItems.map(item => (
-              <tr key={item.id}>
+              <tr key={item.id} className="hover:bg-gray-50/50">
                 <td className="px-6 py-3 text-sm text-gray-900">{item.description}</td>
                 <td className="px-6 py-3"><Badge status={item.line_type} label={formatLineType(item.line_type)} /></td>
                 <td className="px-6 py-3 text-sm text-gray-500 text-right">{item.quantity}</td>

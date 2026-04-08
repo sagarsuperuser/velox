@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api, downloadPDF, formatCents, formatDate, type Invoice, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -24,6 +24,7 @@ export function InvoicesPage() {
   const [page, setPage] = useState(1)
   const pageSize = 25
   const toast = useToast()
+  const navigate = useNavigate()
 
   const loadInvoices = () => {
     setLoading(true)
@@ -141,9 +142,13 @@ export function InvoicesPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {paginated.map(inv => (
-                <tr key={inv.id} className="hover:bg-gray-50 transition-colors">
+                <tr key={inv.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+                  const target = e.target as HTMLElement
+                  if (target.closest('button, a, input, select')) return
+                  navigate(`/invoices/${inv.id}`)
+                }}>
                   <td className="px-6 py-3">
-                    <Link to={`/invoices/${inv.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">
+                    <Link to={`/invoices/${inv.id}`} className="text-sm font-medium text-gray-900 group-hover:text-velox-600 transition-colors">
                       {inv.invoice_number}
                     </Link>
                   </td>
