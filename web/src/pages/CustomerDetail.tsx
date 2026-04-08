@@ -24,6 +24,7 @@ export function CustomerDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [plans, setPlans] = useState<Plan[]>([])
+  const [allSubs, setAllSubs] = useState<Subscription[]>([])
   const [showEditCustomer, setShowEditCustomer] = useState(false)
   const [showEditBilling, setShowEditBilling] = useState(false)
   const [showCreateSub, setShowCreateSub] = useState(false)
@@ -62,7 +63,8 @@ export function CustomerDetailPage() {
       api.usageSummary(id).catch(() => null),
       api.listMeters().catch(() => ({ data: [] as Meter[] })),
       api.listPlans().catch(() => ({ data: [] as Plan[] })),
-    ]).then(([c, o, b, bp, us, metersRes, plansRes]) => {
+      api.listSubscriptions().catch(() => ({ data: [] as Subscription[] })),
+    ]).then(([c, o, b, bp, us, metersRes, plansRes, subsRes]) => {
       setCustomer(c)
       setOverview(o)
       setBalance(b.balance_cents)
@@ -72,6 +74,7 @@ export function CustomerDetailPage() {
       metersRes.data.forEach(m => { mm[m.key] = m.name })
       setMeterMap(mm)
       setPlans(plansRes.data.filter(p => p.status === 'active'))
+      setAllSubs(subsRes.data.filter(s => s.customer_id === id))
       setLoading(false)
     }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load customer'); setLoading(false) })
   }
@@ -130,8 +133,8 @@ export function CustomerDetailPage() {
             <p className="text-sm font-medium text-gray-900 mt-1">{formatCents(balance)}</p>
           </div>
           <div className="flex-1 px-6 py-4">
-            <p className="text-sm text-gray-500">Active Subscriptions</p>
-            <p className="text-sm font-medium text-gray-900 mt-1">{overview?.active_subscriptions.length || 0}</p>
+            <p className="text-sm text-gray-500">Subscriptions</p>
+            <p className="text-sm font-medium text-gray-900 mt-1">{allSubs.length}</p>
           </div>
           <div className="flex-1 px-6 py-4">
             <p className="text-sm text-gray-500">Created</p>
@@ -278,7 +281,7 @@ export function CustomerDetailPage() {
         {/* Subscriptions */}
         <div className="bg-white rounded-xl shadow-card">
           <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
-            <h2 className="text-sm font-semibold text-gray-900">Subscriptions</h2>
+            <h2 className="text-sm font-semibold text-gray-900">Subscriptions ({allSubs.length})</h2>
             <button
               onClick={() => setShowCreateSub(true)}
               className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 shadow-sm transition-colors"
@@ -287,7 +290,7 @@ export function CustomerDetailPage() {
             </button>
           </div>
           <div className="divide-y divide-gray-50">
-            {overview?.active_subscriptions.map(sub => (
+            {allSubs.map(sub => (
               <Link key={sub.id} to={`/subscriptions/${sub.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50 transition-colors">
                 <div>
                   <p className="text-sm font-medium text-gray-900">{sub.display_name}</p>
@@ -296,8 +299,8 @@ export function CustomerDetailPage() {
                 <Badge status={sub.status} />
               </Link>
             ))}
-            {(!overview?.active_subscriptions.length) && (
-              <p className="px-6 py-6 text-sm text-gray-400 text-center">No active subscriptions</p>
+            {allSubs.length === 0 && (
+              <p className="px-6 py-6 text-sm text-gray-500 text-center">No subscriptions</p>
             )}
           </div>
         </div>
