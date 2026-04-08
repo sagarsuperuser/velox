@@ -3,11 +3,11 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api, formatCents, formatDate, type Meter, type Plan, type RatingRule } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
-import { StatCard } from '@/components/StatCard'
 import { Badge } from '@/components/Badge'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { EmptyState } from '@/components/EmptyState'
+import { Copy, Check } from 'lucide-react'
 
 export function MeterDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -16,7 +16,14 @@ export function MeterDetailPage() {
   const [plans, setPlans] = useState<Plan[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [copiedField, setCopiedField] = useState<string | null>(null)
   const navigate = useNavigate()
+
+  const copyToClipboard = (text: string, field: string) => {
+    navigator.clipboard.writeText(text)
+    setCopiedField(field)
+    setTimeout(() => setCopiedField(null), 2000)
+  }
 
   const loadData = () => {
     if (!id) return
@@ -67,129 +74,153 @@ export function MeterDetailPage() {
 
   if (!meter) return <Layout><p>Meter not found</p></Layout>
 
+  const CopyButton = ({ text, field }: { text: string; field: string }) => (
+    <button
+      onClick={() => copyToClipboard(text, field)}
+      className="inline-flex items-center justify-center w-6 h-6 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+    >
+      {copiedField === field ? (
+        <Check className="w-3.5 h-3.5 text-emerald-500" />
+      ) : (
+        <Copy className="w-3.5 h-3.5" />
+      )}
+    </button>
+  )
+
+  const graduatedTierLabel = (tier: { up_to: number }, index: number, tiers: { up_to: number }[]) => {
+    const prev = index > 0 ? tiers[index - 1].up_to : 0
+    if (tier.up_to === 0 || tier.up_to === -1) {
+      return `Beyond ${prev.toLocaleString()} units`
+    }
+    if (index === 0) {
+      return `First ${tier.up_to.toLocaleString()} units`
+    }
+    return `Next ${(tier.up_to - prev).toLocaleString()} units`
+  }
+
   return (
     <Layout>
       <Breadcrumbs items={[{ label: 'Pricing', to: '/pricing' }, { label: meter.name }]} />
 
-      {/* Header */}
+      {/* Header row */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">{meter.name}</h1>
           <div className="flex items-center gap-2 mt-1">
-            <span className="text-sm text-gray-500 font-mono bg-gray-100 px-2 py-0.5 rounded">{meter.key}</span>
-            <Badge status={meter.aggregation} />
+            <span className="text-sm text-gray-500 font-mono">{meter.id}</span>
+            <CopyButton text={meter.id} field="header-id" />
           </div>
         </div>
+        <Badge status={meter.aggregation} />
       </div>
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-4 gap-4 mt-6">
-        <StatCard title="Key" value={meter.key} />
-        <StatCard title="Unit" value={meter.unit} />
-        <StatCard title="Aggregation" value={meter.aggregation} />
-        <StatCard title="Created" value={formatDate(meter.created_at)} />
-      </div>
-
-      {/* Two-column grid */}
-      <div className="grid grid-cols-2 gap-6 mt-6">
-        {/* Meter Configuration */}
-        <div className="bg-white rounded-xl shadow-card">
-          <div className="px-6 py-4 border-b border-gray-100">
-            <h2 className="text-sm font-semibold text-gray-900">Meter Configuration</h2>
-          </div>
-          <div className="px-6 py-4 grid grid-cols-2 gap-4">
-            <div>
-              <p className="text-xs text-gray-500">Key</p>
-              <p className="text-sm text-gray-900 mt-0.5 font-mono">{meter.key}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Unit</p>
-              <p className="text-sm text-gray-900 mt-0.5">{meter.unit}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Aggregation</p>
-              <p className="text-sm text-gray-900 mt-0.5">{meter.aggregation}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Created</p>
-              <p className="text-sm text-gray-900 mt-0.5">{formatDate(meter.created_at)}</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Linked Rating Rule */}
-        <div className="bg-white rounded-xl shadow-card">
-          <div className="px-6 py-4 border-b border-gray-100">
-            <h2 className="text-sm font-semibold text-gray-900">Linked Rating Rule</h2>
-          </div>
-          {ratingRule ? (
-            <div className="px-6 py-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-xs text-gray-500">Name</p>
-                  <p className="text-sm text-gray-900 mt-0.5">{ratingRule.name}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500">Mode</p>
-                  <p className="text-sm text-gray-900 mt-0.5">{ratingRule.mode}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500">Currency</p>
-                  <p className="text-sm text-gray-900 mt-0.5">{ratingRule.currency?.toUpperCase() || '\u2014'}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500">Version</p>
-                  <p className="text-sm text-gray-900 mt-0.5">{ratingRule.version}</p>
-                </div>
-              </div>
-
-              {/* Pricing details */}
-              <div className="mt-4 pt-4 border-t border-gray-100">
-                <p className="text-xs text-gray-500 mb-2">Pricing</p>
-                {ratingRule.mode === 'flat' && (
-                  <p className="text-sm text-gray-900">{formatCents(ratingRule.flat_amount_cents)} per unit</p>
-                )}
-                {ratingRule.mode === 'graduated' && ratingRule.graduated_tiers && (
-                  <div className="overflow-x-auto">
-                    <table className="w-full">
-                      <thead>
-                        <tr className="border-b border-gray-100">
-                          <th className="text-left text-xs font-medium text-gray-500 py-2 pr-4">Up to</th>
-                          <th className="text-right text-xs font-medium text-gray-500 py-2">Price/unit</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-50">
-                        {ratingRule.graduated_tiers.map((tier, i) => (
-                          <tr key={i}>
-                            <td className="py-2 pr-4 text-sm text-gray-900">
-                              {tier.up_to === 0 || tier.up_to === -1 ? '\u221E' : tier.up_to.toLocaleString()}
-                            </td>
-                            <td className="py-2 text-sm font-medium text-gray-900 text-right">
-                              {formatCents(tier.unit_amount_cents)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                {ratingRule.mode === 'package' && (
-                  <p className="text-sm text-gray-900">
-                    {ratingRule.package_size.toLocaleString()} units for {formatCents(ratingRule.package_amount_cents)}
-                  </p>
-                )}
-              </div>
-            </div>
-          ) : (
-            <EmptyState title="No rating rule linked" description="Link a rating rule to define how usage is priced" />
-          )}
-        </div>
-      </div>
-
-      {/* Plans using this meter */}
+      {/* Properties card */}
       <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Plans Using This Meter</h2>
+          <h2 className="text-sm font-semibold text-gray-900">Properties</h2>
+        </div>
+        <div className="px-6">
+          <div className="flex items-center justify-between py-3 border-b border-gray-50">
+            <span className="text-sm text-gray-500">Key</span>
+            <span className="text-sm text-gray-900 font-medium font-mono">{meter.key}</span>
+          </div>
+          <div className="flex items-center justify-between py-3 border-b border-gray-50">
+            <span className="text-sm text-gray-500">Unit</span>
+            <span className="text-sm text-gray-900 font-medium">{meter.unit}</span>
+          </div>
+          <div className="flex items-center justify-between py-3 border-b border-gray-50">
+            <span className="text-sm text-gray-500">Aggregation</span>
+            <Badge status={meter.aggregation} />
+          </div>
+          <div className="flex items-center justify-between py-3 border-b border-gray-50">
+            <span className="text-sm text-gray-500">Created</span>
+            <span className="text-sm text-gray-900 font-medium">{formatDate(meter.created_at)}</span>
+          </div>
+          <div className="flex items-center justify-between py-3">
+            <span className="text-sm text-gray-500">ID</span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-900 font-medium font-mono truncate max-w-xs">{meter.id}</span>
+              <CopyButton text={meter.id} field="props-id" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Rating Rule card */}
+      <div className="bg-white rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">Pricing Rule</h2>
+              {ratingRule && (
+                <p className="text-sm text-gray-500 mt-0.5">{ratingRule.name}</p>
+              )}
+            </div>
+            {ratingRule && (
+              <Badge status={ratingRule.mode} label={`v${ratingRule.version}`} />
+            )}
+          </div>
+        </div>
+        {ratingRule ? (
+          <div className="px-6 py-5">
+            <div className="flex items-center gap-2 mb-4">
+              <Badge status={ratingRule.mode} />
+              {ratingRule.currency && (
+                <span className="text-xs text-gray-400 font-medium uppercase">{ratingRule.currency}</span>
+              )}
+            </div>
+
+            {ratingRule.mode === 'flat' && (
+              <div>
+                <span className="text-3xl font-semibold text-gray-900">{formatCents(ratingRule.flat_amount_cents)}</span>
+                <span className="text-sm text-gray-500 ml-2">per unit</span>
+              </div>
+            )}
+
+            {ratingRule.mode === 'graduated' && ratingRule.graduated_tiers && (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-gray-100">
+                      <th className="text-left text-xs font-medium text-gray-500 py-2 pr-4">Tier</th>
+                      <th className="text-right text-xs font-medium text-gray-500 py-2">Price / unit</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {ratingRule.graduated_tiers.map((tier, i) => (
+                      <tr key={i}>
+                        <td className="py-2.5 pr-4 text-sm text-gray-900">
+                          {graduatedTierLabel(tier, i, ratingRule.graduated_tiers!)}
+                        </td>
+                        <td className="py-2.5 text-sm font-medium text-gray-900 text-right">
+                          {formatCents(tier.unit_amount_cents)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {ratingRule.mode === 'package' && (
+              <div>
+                <span className="text-3xl font-semibold text-gray-900">{ratingRule.package_size.toLocaleString()}</span>
+                <span className="text-sm text-gray-500 ml-2">units per package at</span>
+                <span className="text-lg font-semibold text-gray-900 ml-1">{formatCents(ratingRule.package_amount_cents)}</span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <EmptyState title="No pricing rule linked" description="Link a pricing rule to define how usage is priced" />
+        )}
+      </div>
+
+      {/* Plans table */}
+      <div className="bg-white rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-sm font-semibold text-gray-900">
+            Used by {plans.length} plan{plans.length !== 1 ? 's' : ''}
+          </h2>
         </div>
         {plans.length > 0 ? (
           <div className="overflow-x-auto">

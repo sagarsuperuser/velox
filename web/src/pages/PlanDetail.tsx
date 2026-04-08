@@ -3,7 +3,6 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api, formatCents, formatDate, type Plan, type Meter, type Subscription, type RatingRule } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
-import { StatCard } from '@/components/StatCard'
 import { Modal } from '@/components/Modal'
 import { FormField, FormSelect } from '@/components/FormField'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
@@ -12,6 +11,27 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
+import { Copy, Check } from 'lucide-react'
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="inline-flex items-center justify-center w-6 h-6 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+      title="Copy to clipboard"
+    >
+      {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+    </button>
+  )
+}
 
 export function PlanDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -85,82 +105,119 @@ export function PlanDetailPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">{plan.name}</h1>
-          <p className="text-sm text-gray-500 mt-0.5 font-mono">{plan.code}</p>
+          <div className="flex items-center gap-2 mt-1">
+            <span className="text-xs text-gray-400 font-mono bg-gray-50 border border-gray-100 px-2 py-0.5 rounded">{plan.id}</span>
+            <CopyButton text={plan.id} />
+            <span className="text-xs font-medium text-gray-600 bg-gray-100 px-2.5 py-0.5 rounded-full">{plan.code}</span>
+          </div>
         </div>
         <div className="flex items-center gap-3">
+          <Badge status={plan.status} />
           <button
             onClick={() => setShowEdit(true)}
-            className="px-3 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-50 transition-colors"
+            className="px-3.5 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
           >
             Edit
           </button>
-          <Badge status={plan.status} />
         </div>
       </div>
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-4 gap-4 mt-6">
-        <StatCard title="Base Price" value={formatCents(plan.base_amount_cents)} />
-        <StatCard title="Billing Interval" value={plan.billing_interval === 'yearly' ? 'Yearly' : 'Monthly'} />
-        <StatCard title="Currency" value={plan.currency.toUpperCase()} />
-        <StatCard title="Active Subscriptions" value={String(activeSubscriptions.length)} />
+      {/* Key metrics row */}
+      <div className="bg-white rounded-xl shadow-card flex divide-x divide-gray-100 mt-6">
+        <div className="flex-1 px-6 py-4">
+          <p className="text-xs text-gray-500">Base Price</p>
+          <p className="text-lg font-semibold text-gray-900 mt-1">{formatCents(plan.base_amount_cents)}</p>
+        </div>
+        <div className="flex-1 px-6 py-4">
+          <p className="text-xs text-gray-500">Interval</p>
+          <p className="text-lg font-semibold text-gray-900 mt-1">{plan.billing_interval === 'yearly' ? 'Yearly' : 'Monthly'}</p>
+        </div>
+        <div className="flex-1 px-6 py-4">
+          <p className="text-xs text-gray-500">Currency</p>
+          <p className="text-lg font-semibold text-gray-900 mt-1">{plan.currency.toUpperCase()}</p>
+        </div>
+        <div className="flex-1 px-6 py-4">
+          <p className="text-xs text-gray-500">Active Subscriptions</p>
+          <p className="text-lg font-semibold text-gray-900 mt-1">{activeSubscriptions.length}</p>
+        </div>
       </div>
 
-      {/* Two-column grid */}
-      <div className="grid grid-cols-2 gap-6 mt-6">
-        {/* Plan Details */}
-        <div className="bg-white rounded-xl shadow-card">
-          <div className="px-6 py-4 border-b border-gray-100">
-            <h2 className="text-sm font-semibold text-gray-900">Plan Details</h2>
+      {/* Properties card */}
+      <div className="bg-white rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-sm font-semibold text-gray-900">Properties</h2>
+        </div>
+        <div className="divide-y divide-gray-50">
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Code</span>
+            <span className="text-sm text-gray-900 font-mono">{plan.code}</span>
           </div>
-          <div className="px-6 py-4 space-y-3">
-            <div>
-              <p className="text-xs text-gray-500">Code</p>
-              <p className="text-sm text-gray-900 mt-0.5 font-mono">{plan.code}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Status</p>
-              <div className="mt-0.5"><Badge status={plan.status} /></div>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Created</p>
-              <p className="text-sm text-gray-900 mt-0.5">{formatDate(plan.created_at)}</p>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Billing Interval</span>
+            <Badge status={plan.billing_interval === 'yearly' ? 'yearly' : 'monthly'} />
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Currency</span>
+            <span className="text-sm text-gray-900 font-medium">{plan.currency.toUpperCase()}</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Status</span>
+            <Badge status={plan.status} />
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Created</span>
+            <span className="text-sm text-gray-900">{formatDate(plan.created_at)}</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">ID</span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-900 font-mono">{plan.id}</span>
+              <CopyButton text={plan.id} />
             </div>
           </div>
         </div>
+      </div>
 
-        {/* Attached Meters */}
-        <div className="bg-white rounded-xl shadow-card">
-          <div className="px-6 py-4 border-b border-gray-100">
-            <h2 className="text-sm font-semibold text-gray-900">Attached Meters</h2>
-          </div>
-          {attachedMeters.length > 0 ? (
-            <div className="divide-y divide-gray-50">
-              {attachedMeters.map(meter => {
-                const rule = meter.rating_rule_version_id ? ruleMap[meter.rating_rule_version_id] : null
-                return (
-                  <Link key={meter.id} to={`/meters/${meter.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50 transition-colors">
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">{meter.name}</p>
-                      <p className="text-xs text-gray-400">{meter.key} &middot; {meter.aggregation} &middot; {meter.unit}</p>
-                    </div>
+      {/* Attached Meters */}
+      <div className="bg-white rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-sm font-semibold text-gray-900">Meters ({attachedMeters.length})</h2>
+        </div>
+        {attachedMeters.length > 0 ? (
+          <div className="divide-y divide-gray-50">
+            {attachedMeters.map(meter => {
+              const rule = meter.rating_rule_version_id ? ruleMap[meter.rating_rule_version_id] : null
+              return (
+                <Link key={meter.id} to={`/meters/${meter.id}`} className="flex items-center justify-between px-6 py-3.5 hover:bg-gray-50 transition-colors group">
+                  <div>
+                    <p className="text-sm font-medium text-gray-900 group-hover:text-velox-600 transition-colors">{meter.name}</p>
+                    <p className="text-xs text-gray-400 font-mono mt-0.5">{meter.key}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge status={meter.aggregation} />
+                    <span className="text-xs text-gray-500">{meter.unit}</span>
                     {rule && (
                       <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">{rule.name}</span>
                     )}
-                  </Link>
-                )
-              })}
-            </div>
-          ) : (
-            <EmptyState title="No meters attached" description="This plan has no meters linked to it" />
-          )}
-        </div>
+                  </div>
+                </Link>
+              )
+            })}
+          </div>
+        ) : (
+          <EmptyState title="No meters attached" description="This plan has no meters linked to it" />
+        )}
       </div>
 
-      {/* Subscriptions on this plan */}
+      {/* Subscriptions */}
       <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Subscriptions on this Plan</h2>
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-gray-900">Subscriptions ({subscriptions.length})</h2>
+          {subscriptions.length > 0 && (
+            <Link to="/subscriptions" className="text-xs font-medium text-velox-600 hover:text-velox-700 transition-colors">
+              View all
+            </Link>
+          )}
         </div>
         {subscriptions.length > 0 ? (
           <div className="overflow-x-auto">

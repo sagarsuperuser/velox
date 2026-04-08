@@ -3,7 +3,6 @@ import { useParams, Link } from 'react-router-dom'
 import { api, formatCents, formatDate, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary, type Meter, type Plan, type Subscription } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
-import { StatCard } from '@/components/StatCard'
 import { Modal } from '@/components/Modal'
 import { FormField, FormSelect } from '@/components/FormField'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
@@ -12,6 +11,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
+import { Copy, Check } from 'lucide-react'
 
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -27,7 +27,28 @@ export function CustomerDetailPage() {
   const [showEditCustomer, setShowEditCustomer] = useState(false)
   const [showEditBilling, setShowEditBilling] = useState(false)
   const [showCreateSub, setShowCreateSub] = useState(false)
+  const [copiedField, setCopiedField] = useState<string | null>(null)
   const toast = useToast()
+
+  const copyToClipboard = (value: string, field: string) => {
+    navigator.clipboard.writeText(value)
+    setCopiedField(field)
+    setTimeout(() => setCopiedField(null), 2000)
+  }
+
+  const CopyButton = ({ value, field }: { value: string; field: string }) => (
+    <button
+      onClick={() => copyToClipboard(value, field)}
+      className="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600"
+      title="Copy to clipboard"
+    >
+      {copiedField === field ? (
+        <Check className="w-3.5 h-3.5 text-green-500" />
+      ) : (
+        <Copy className="w-3.5 h-3.5" />
+      )}
+    </button>
+  )
 
   const loadData = () => {
     if (!id) return
@@ -76,10 +97,14 @@ export function CustomerDetailPage() {
     <Layout>
       <Breadcrumbs items={[{ label: 'Customers', to: '/customers' }, { label: customer.display_name }]} />
 
-      <div className="flex items-center justify-between">
+      {/* Header */}
+      <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">{customer.display_name}</h1>
-          <p className="text-sm text-gray-500 mt-0.5 font-mono">{customer.external_id}</p>
+          <div className="flex items-center gap-1.5 mt-1">
+            <span className="text-xs text-gray-500 font-mono">{customer.id}</span>
+            <CopyButton value={customer.id} field="header-id" />
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -92,13 +117,61 @@ export function CustomerDetailPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mt-6">
-        <StatCard title="Email" value={customer.email || '\u2014'} />
-        <StatCard title="Credit Balance" value={formatCents(balance)} />
-        <StatCard title="Active Subscriptions" value={String(overview?.active_subscriptions.length || 0)} />
+      {/* Key Metrics Row */}
+      <div className="bg-white rounded-xl shadow-card mt-6">
+        <div className="flex divide-x divide-gray-100">
+          <div className="flex-1 px-6 py-4">
+            <p className="text-xs text-gray-500">Email</p>
+            <p className="text-sm font-medium text-gray-900 mt-1">{customer.email || '\u2014'}</p>
+          </div>
+          <div className="flex-1 px-6 py-4">
+            <p className="text-xs text-gray-500">Credit Balance</p>
+            <p className="text-sm font-medium text-gray-900 mt-1">{formatCents(balance)}</p>
+          </div>
+          <div className="flex-1 px-6 py-4">
+            <p className="text-xs text-gray-500">Active Subs</p>
+            <p className="text-sm font-medium text-gray-900 mt-1">{overview?.active_subscriptions.length || 0}</p>
+          </div>
+          <div className="flex-1 px-6 py-4">
+            <p className="text-xs text-gray-500">Created</p>
+            <p className="text-sm font-medium text-gray-900 mt-1">{formatDate(customer.created_at)}</p>
+          </div>
+        </div>
       </div>
 
-      {/* Billing Profile */}
+      {/* Properties Card */}
+      <div className="bg-white rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-sm font-semibold text-gray-900">Properties</h2>
+        </div>
+        <div className="divide-y divide-gray-50">
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-36 shrink-0">External ID</span>
+            <span className="text-sm text-gray-900 font-mono">{customer.external_id}</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-36 shrink-0">Email</span>
+            <span className="text-sm text-gray-900">{customer.email || '\u2014'}</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-36 shrink-0">Status</span>
+            <Badge status={customer.status} />
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-36 shrink-0">Created</span>
+            <span className="text-sm text-gray-900">{formatDate(customer.created_at)}</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-36 shrink-0">ID</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm text-gray-900 font-mono">{customer.id}</span>
+              <CopyButton value={customer.id} field="props-id" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Billing Profile Card */}
       <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
           <h2 className="text-sm font-semibold text-gray-900">Billing Profile</h2>
@@ -112,32 +185,32 @@ export function CustomerDetailPage() {
           )}
         </div>
         {billingProfile ? (
-          <div className="px-6 py-4 grid grid-cols-2 lg:grid-cols-3 gap-4">
-            <div>
-              <p className="text-xs text-gray-500">Legal Name</p>
-              <p className="text-sm text-gray-900 mt-0.5">{billingProfile.legal_name || '\u2014'}</p>
+          <div className="divide-y divide-gray-50">
+            <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-xs text-gray-500 w-36 shrink-0">Legal Name</span>
+              <span className="text-sm text-gray-900">{billingProfile.legal_name || '\u2014'}</span>
             </div>
-            <div>
-              <p className="text-xs text-gray-500">Email</p>
-              <p className="text-sm text-gray-900 mt-0.5">{billingProfile.email || '\u2014'}</p>
+            <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-xs text-gray-500 w-36 shrink-0">Email</span>
+              <span className="text-sm text-gray-900">{billingProfile.email || '\u2014'}</span>
             </div>
-            <div>
-              <p className="text-xs text-gray-500">Phone</p>
-              <p className="text-sm text-gray-900 mt-0.5">{billingProfile.phone || '\u2014'}</p>
+            <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-xs text-gray-500 w-36 shrink-0">Phone</span>
+              <span className="text-sm text-gray-900">{billingProfile.phone || '\u2014'}</span>
             </div>
-            <div>
-              <p className="text-xs text-gray-500">Address</p>
-              <p className="text-sm text-gray-900 mt-0.5">
+            <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-xs text-gray-500 w-36 shrink-0">Address</span>
+              <span className="text-sm text-gray-900">
                 {[billingProfile.address_line1, billingProfile.address_line2, billingProfile.city, billingProfile.state, billingProfile.postal_code, billingProfile.country].filter(Boolean).join(', ') || '\u2014'}
-              </p>
+              </span>
             </div>
-            <div>
-              <p className="text-xs text-gray-500">Tax ID</p>
-              <p className="text-sm text-gray-900 mt-0.5">{billingProfile.tax_identifier || '\u2014'}</p>
+            <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-xs text-gray-500 w-36 shrink-0">Tax ID</span>
+              <span className="text-sm text-gray-900">{billingProfile.tax_identifier || '\u2014'}</span>
             </div>
-            <div>
-              <p className="text-xs text-gray-500">Currency</p>
-              <p className="text-sm text-gray-900 mt-0.5">{billingProfile.currency || '\u2014'}</p>
+            <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-xs text-gray-500 w-36 shrink-0">Currency</span>
+              <span className="text-sm text-gray-900">{billingProfile.currency || '\u2014'}</span>
             </div>
           </div>
         ) : (
