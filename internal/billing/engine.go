@@ -185,7 +185,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		lineItems = append(lineItems, domain.InvoiceLineItem{
 			LineType:            domain.LineTypeUsage,
 			MeterID:             meterID,
-			Description:         fmt.Sprintf("%s - %d %s", meter.Name, quantity, meter.Unit),
+			Description:         fmt.Sprintf("%s (%s)", meter.Name, meter.Unit),
 			Quantity:            quantity,
 			UnitAmountCents:     unitAmount,
 			AmountCents:         amount,
