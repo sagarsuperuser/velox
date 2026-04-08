@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api, formatCents, formatDate, type Plan, type Meter, type Subscription, type RatingRule } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -23,6 +23,7 @@ export function PlanDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [showEdit, setShowEdit] = useState(false)
   const toast = useToast()
+  const navigate = useNavigate()
 
   const loadData = () => {
     if (!id) return
@@ -175,9 +176,13 @@ export function PlanDetailPage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {subscriptions.map(sub => (
-                  <tr key={sub.id} className="hover:bg-gray-50 transition-colors">
+                  <tr key={sub.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+                    const target = e.target as HTMLElement
+                    if (target.closest('button, a, input, select')) return
+                    navigate(`/subscriptions/${sub.id}`)
+                  }}>
                     <td className="px-6 py-3">
-                      <Link to={`/subscriptions/${sub.id}`} className="text-sm font-medium text-velox-600 hover:underline">
+                      <Link to={`/subscriptions/${sub.id}`} className="text-sm font-medium text-velox-600 group-hover:text-velox-600 transition-colors hover:underline">
                         {sub.display_name}
                       </Link>
                       <p className="text-xs text-gray-400 font-mono">{sub.code}</p>

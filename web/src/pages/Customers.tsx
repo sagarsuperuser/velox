@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api, formatDate, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -25,6 +25,7 @@ export function CustomersPage() {
   const [page, setPage] = useState(1)
   const pageSize = 25
   const toast = useToast()
+  const navigate = useNavigate()
 
   const fieldRules = useMemo(() => ({
     display_name: [rules.required('Display name')],
@@ -155,9 +156,13 @@ export function CustomersPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                   {paginated.map(c => (
-                    <tr key={c.id} className="hover:bg-gray-50 transition-colors">
+                    <tr key={c.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+                      const target = e.target as HTMLElement
+                      if (target.closest('button, a, input, select')) return
+                      navigate(`/customers/${c.id}`)
+                    }}>
                       <td className="px-6 py-3">
-                        <Link to={`/customers/${c.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">
+                        <Link to={`/customers/${c.id}`} className="text-sm font-medium text-gray-900 group-hover:text-velox-600 transition-colors">
                           {c.display_name}
                         </Link>
                       </td>

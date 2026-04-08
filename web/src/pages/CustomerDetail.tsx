@@ -215,7 +215,7 @@ export function CustomerDetailPage() {
           </div>
           <div className="divide-y divide-gray-50">
             {overview?.recent_invoices.map(inv => (
-              <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50">
+              <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50 transition-colors">
                 <div>
                   <p className="text-sm font-medium text-gray-900">{inv.invoice_number}</p>
                   <p className="text-xs text-gray-400">{formatDate(inv.created_at)}</p>

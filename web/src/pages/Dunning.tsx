@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api, formatDate, type DunningPolicy, type DunningRun, type Invoice } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -157,6 +157,7 @@ function RunsTab() {
   const [error, setError] = useState<string | null>(null)
   const [resolveTarget, setResolveTarget] = useState<DunningRun | null>(null)
   const toast = useToast()
+  const navigate = useNavigate()
 
   const loadRuns = () => {
     setLoading(true)
@@ -197,9 +198,13 @@ function RunsTab() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {runs.map(run => (
-                <tr key={run.id} className="hover:bg-gray-50">
+                <tr key={run.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+                  const target = e.target as HTMLElement
+                  if (target.closest('button, a, input, select')) return
+                  navigate(`/invoices/${run.invoice_id}`)
+                }}>
                   <td className="px-6 py-3 text-sm">
-                    <Link to={`/invoices/${run.invoice_id}`} className="text-velox-600 hover:underline">
+                    <Link to={`/invoices/${run.invoice_id}`} className="text-velox-600 group-hover:text-velox-600 transition-colors hover:underline">
                       {invoiceMap[run.invoice_id]?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
                     </Link>
                   </td>

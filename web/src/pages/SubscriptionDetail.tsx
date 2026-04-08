@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api, formatCents, formatDate, type Subscription, type Customer, type Plan, type Invoice, type InvoicePreview } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -28,6 +28,7 @@ export function SubscriptionDetailPage() {
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   const [showChangePlan, setShowChangePlan] = useState(false)
   const toast = useToast()
+  const navigate = useNavigate()
 
   const loadData = () => {
     if (!id) return
@@ -278,9 +279,13 @@ export function SubscriptionDetailPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {invoices.map(inv => (
-                <tr key={inv.id} className="hover:bg-gray-50 transition-colors">
+                <tr key={inv.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+                  const target = e.target as HTMLElement
+                  if (target.closest('button, a, input, select')) return
+                  navigate(`/invoices/${inv.id}`)
+                }}>
                   <td className="px-6 py-3">
-                    <Link to={`/invoices/${inv.id}`} className="text-sm font-medium text-velox-600 hover:underline">
+                    <Link to={`/invoices/${inv.id}`} className="text-sm font-medium text-velox-600 group-hover:text-velox-600 transition-colors hover:underline">
                       {inv.invoice_number}
                     </Link>
                   </td>

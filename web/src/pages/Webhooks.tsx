@@ -96,7 +96,7 @@ function EndpointsTab() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {endpoints.map(ep => (
-                <tr key={ep.id} className="hover:bg-gray-50">
+                <tr key={ep.id} className="hover:bg-gray-50/50 transition-colors">
                   <td className="px-6 py-3 text-sm font-mono text-gray-700 max-w-xs truncate">{ep.url}</td>
                   <td className="px-6 py-3 text-sm text-gray-500">{ep.description || '\u2014'}</td>
                   <td className="px-6 py-3">
@@ -298,7 +298,7 @@ function EventsTab() {
           </thead>
           <tbody className="divide-y divide-gray-50">
             {events.map(ev => (
-              <tr key={ev.id} className="hover:bg-gray-50">
+              <tr key={ev.id} className="hover:bg-gray-50/50 transition-colors">
                 <td className="px-6 py-3"><Badge status={ev.event_type} /></td>
                 <td className="px-6 py-3 text-sm font-mono text-gray-500">{ev.id.slice(0, 12)}...</td>
                 <td className="px-6 py-3 text-sm text-gray-400">{formatDate(ev.created_at)}</td>

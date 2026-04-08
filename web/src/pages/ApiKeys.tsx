@@ -78,7 +78,7 @@ export function ApiKeysPage() {
               {keys.map(k => {
                 const isRevoked = !!k.revoked_at
                 return (
-                  <tr key={k.id} className={`hover:bg-gray-50 ${isRevoked ? 'opacity-50' : ''}`}>
+                  <tr key={k.id} className={`hover:bg-gray-50/50 transition-colors ${isRevoked ? 'opacity-50' : ''}`}>
                     <td className={`px-6 py-3 text-sm text-gray-700 ${isRevoked ? 'line-through' : ''}`}>{k.name}</td>
                     <td className="px-6 py-3 text-sm font-mono text-gray-500">{k.key_prefix}...</td>
                     <td className="px-6 py-3"><Badge status={k.key_type} /></td>

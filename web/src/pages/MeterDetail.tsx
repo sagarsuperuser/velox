@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api, formatCents, formatDate, type Meter, type Plan, type RatingRule } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
@@ -16,6 +16,7 @@ export function MeterDetailPage() {
   const [plans, setPlans] = useState<Plan[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const navigate = useNavigate()
 
   const loadData = () => {
     if (!id) return
@@ -204,9 +205,13 @@ export function MeterDetailPage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {plans.map(plan => (
-                  <tr key={plan.id} className="hover:bg-gray-50 transition-colors">
+                  <tr key={plan.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+                    const target = e.target as HTMLElement
+                    if (target.closest('button, a, input, select')) return
+                    navigate(`/plans/${plan.id}`)
+                  }}>
                     <td className="px-6 py-3">
-                      <Link to={`/plans/${plan.id}`} className="text-sm font-medium text-velox-600 hover:underline">
+                      <Link to={`/plans/${plan.id}`} className="text-sm font-medium text-velox-600 group-hover:text-velox-600 transition-colors hover:underline">
                         {plan.name}
                       </Link>
                     </td>
