@@ -191,6 +191,11 @@ export function SubscriptionDetailPage() {
         <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Plan</p>
           <p className="text-sm font-semibold mt-0.5">{plan?.name || sub.plan_id.slice(0, 8) + '...'}</p>
+          {plan && (
+            <p className="text-xs text-gray-400 mt-0.5">
+              {formatCents(plan.base_amount_cents)}/{plan.billing_interval === 'yearly' ? 'yr' : 'mo'} &middot; {plan.meter_ids?.length || 0} meters
+            </p>
+          )}
         </div>
         <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Billing Period</p>
