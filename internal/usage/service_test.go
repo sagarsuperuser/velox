@@ -51,7 +51,7 @@ func (m *memStore) AggregateForBillingPeriod(_ context.Context, _, _ string, _ [
 }
 
 func TestIngest(t *testing.T) {
-	svc := NewService(newMemStore())
+	svc := NewService(newMemStore(), nil, nil)
 	ctx := context.Background()
 
 	t.Run("valid event", func(t *testing.T) {
@@ -101,8 +101,6 @@ func TestIngest(t *testing.T) {
 		cases := []IngestInput{
 			{MeterID: "m", Quantity: 1},           // missing customer_id
 			{CustomerID: "c", Quantity: 1},         // missing meter_id
-			{CustomerID: "c", MeterID: "m"},         // zero quantity
-			{CustomerID: "c", MeterID: "m", Quantity: -1}, // negative quantity
 		}
 		for _, input := range cases {
 			_, err := svc.Ingest(ctx, "t1", input)

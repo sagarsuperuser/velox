@@ -80,6 +80,15 @@ func (m *memStore) GetMeter(_ context.Context, tenantID, id string) (domain.Mete
 	return meter, nil
 }
 
+func (m *memStore) GetMeterByKey(_ context.Context, tenantID, key string) (domain.Meter, error) {
+	for _, meter := range m.meters {
+		if meter.TenantID == tenantID && meter.Key == key {
+			return meter, nil
+		}
+	}
+	return domain.Meter{}, errs.ErrNotFound
+}
+
 func (m *memStore) ListMeters(_ context.Context, tenantID string) ([]domain.Meter, error) {
 	var result []domain.Meter
 	for _, meter := range m.meters {
@@ -180,8 +189,8 @@ func TestCreateRatingRule_Flat(t *testing.T) {
 	if rule.Currency != "USD" {
 		t.Errorf("got currency %q, want USD", rule.Currency)
 	}
-	if rule.LifecycleState != domain.RatingRuleDraft {
-		t.Errorf("got lifecycle %q, want draft", rule.LifecycleState)
+	if rule.LifecycleState != domain.RatingRuleActive {
+		t.Errorf("got lifecycle %q, want active", rule.LifecycleState)
 	}
 }
 
@@ -322,8 +331,8 @@ func TestCreatePlan(t *testing.T) {
 		if p.Code != "pro" {
 			t.Errorf("got code %q, want %q", p.Code, "pro")
 		}
-		if p.Status != domain.PlanDraft {
-			t.Errorf("got status %q, want draft", p.Status)
+		if p.Status != domain.PlanActive {
+			t.Errorf("got status %q, want active", p.Status)
 		}
 		if p.Currency != "USD" {
 			t.Errorf("got currency %q, want USD", p.Currency)
