@@ -169,6 +169,10 @@ func (s *Service) GetMeter(ctx context.Context, tenantID, id string) (domain.Met
 	return s.store.GetMeter(ctx, tenantID, id)
 }
 
+func (s *Service) GetMeterByKey(ctx context.Context, tenantID, key string) (domain.Meter, error) {
+	return s.store.GetMeterByKey(ctx, tenantID, key)
+}
+
 func (s *Service) ListMeters(ctx context.Context, tenantID string) ([]domain.Meter, error) {
 	return s.store.ListMeters(ctx, tenantID)
 }

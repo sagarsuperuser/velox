@@ -51,10 +51,12 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 
 	// Domain handlers
 	tenantH := tenant.NewHandler(tenant.NewService(tenant.NewPostgresStore(db)))
-	customerH := customer.NewHandler(customer.NewService(customer.NewPostgresStore(db)))
-	pricingH := pricing.NewHandler(pricing.NewService(pricingStore))
+	customerStore := customer.NewPostgresStore(db)
+	pricingSvc := pricing.NewService(pricingStore)
+	customerH := customer.NewHandler(customer.NewService(customerStore))
+	pricingH := pricing.NewHandler(pricingSvc)
 	subH := subscription.NewHandler(subscription.NewService(subStore))
-	usageH := usage.NewHandler(usage.NewService(usageStore))
+	usageH := usage.NewHandler(usage.NewService(usageStore, customerStore, pricingSvc))
 	invoiceH := invoice.NewHandler(invoice.NewService(invoiceStore))
 	creditH := credit.NewHandler(credit.NewService(credit.NewPostgresStore(db)))
 	webhookOutH := webhook.NewHandler(webhook.NewService(webhook.NewPostgresStore(db), nil))

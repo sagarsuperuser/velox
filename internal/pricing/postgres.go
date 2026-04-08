@@ -193,6 +193,25 @@ func (s *PostgresStore) GetMeter(ctx context.Context, tenantID, id string) (doma
 	return m, err
 }
 
+func (s *PostgresStore) GetMeterByKey(ctx context.Context, tenantID, key string) (domain.Meter, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Meter{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var m domain.Meter
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, key, name, unit, aggregation, COALESCE(rating_rule_version_id,''), created_at, updated_at
+		FROM meters WHERE key = $1
+	`, key).Scan(&m.ID, &m.TenantID, &m.Key, &m.Name, &m.Unit, &m.Aggregation,
+		&m.RatingRuleVersionID, &m.CreatedAt, &m.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return domain.Meter{}, errs.ErrNotFound
+	}
+	return m, err
+}
+
 func (s *PostgresStore) ListMeters(ctx context.Context, tenantID string) ([]domain.Meter, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

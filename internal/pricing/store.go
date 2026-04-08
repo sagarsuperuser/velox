@@ -15,6 +15,7 @@ type Store interface {
 	// Meters
 	CreateMeter(ctx context.Context, tenantID string, m domain.Meter) (domain.Meter, error)
 	GetMeter(ctx context.Context, tenantID, id string) (domain.Meter, error)
+	GetMeterByKey(ctx context.Context, tenantID, key string) (domain.Meter, error)
 	ListMeters(ctx context.Context, tenantID string) ([]domain.Meter, error)
 	UpdateMeter(ctx context.Context, tenantID string, m domain.Meter) (domain.Meter, error)
 
