@@ -35,6 +35,7 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, customerN
 	pdf.SetFont("Helvetica", "", 10)
 	pdf.SetTextColor(60, 60, 60)
 	infoRow(pdf, "Invoice Number", inv.InvoiceNumber)
+	infoRow(pdf, "Invoice ID", inv.ID)
 	infoRow(pdf, "Customer", customerName)
 	infoRow(pdf, "Currency", inv.Currency)
 	infoRow(pdf, "Status", string(inv.Status))
@@ -154,14 +155,31 @@ func formatCents(cents int64) string {
 		sign = "-"
 		cents = -cents
 	}
-	return fmt.Sprintf("%s$%d.%02d", sign, cents/100, cents%100)
+	dollars := cents / 100
+	remainder := cents % 100
+	return fmt.Sprintf("%s$%s.%02d", sign, formatNumber(dollars), remainder)
 }
 
 func formatQuantity(qty int64, lineType domain.InvoiceLineItemType) string {
 	if lineType == domain.LineTypeBaseFee {
 		return "1"
 	}
-	return fmt.Sprintf("%d", qty)
+	return formatNumber(qty)
+}
+
+func formatNumber(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var result []byte
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result = append(result, ',')
+		}
+		result = append(result, byte(c))
+	}
+	return string(result)
 }
 
 func truncate(s string, max int) string {
