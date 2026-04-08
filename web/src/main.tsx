@@ -11,6 +11,8 @@ import { InvoicesPage } from '@/pages/Invoices'
 import { InvoiceDetailPage } from '@/pages/InvoiceDetail'
 import { SubscriptionsPage } from '@/pages/Subscriptions'
 import { PricingPage } from '@/pages/Pricing'
+import { PlanDetailPage } from '@/pages/PlanDetail'
+import { MeterDetailPage } from '@/pages/MeterDetail'
 import { CreditsPage } from '@/pages/Credits'
 import { SettingsPage } from '@/pages/Settings'
 import { SubscriptionDetailPage } from '@/pages/SubscriptionDetail'
@@ -44,6 +46,8 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/subscriptions/:id" element={<ProtectedRoute><SubscriptionDetailPage /></ProtectedRoute>} />
           <Route path="/usage" element={<ProtectedRoute><UsageEventsPage /></ProtectedRoute>} />
           <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
+          <Route path="/plans/:id" element={<ProtectedRoute><PlanDetailPage /></ProtectedRoute>} />
+          <Route path="/meters/:id" element={<ProtectedRoute><MeterDetailPage /></ProtectedRoute>} />
           <Route path="/credits" element={<ProtectedRoute><CreditsPage /></ProtectedRoute>} />
           <Route path="/dunning" element={<ProtectedRoute><DunningPage /></ProtectedRoute>} />
           <Route path="/credit-notes" element={<ProtectedRoute><CreditNotesPage /></ProtectedRoute>} />
