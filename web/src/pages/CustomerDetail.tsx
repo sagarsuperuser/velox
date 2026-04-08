@@ -468,42 +468,56 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
 
   return (
     <Modal open onClose={onClose} title="Billing Profile" wide>
-      <form onSubmit={handleSubmit} noValidate className="space-y-4 max-h-[70vh] overflow-y-auto -mx-6 px-6 pb-1">
-        <FormField label="Legal Name" value={form.legal_name} maxLength={255} placeholder="Acme Corporation Inc."
-          onChange={e => setForm(f => ({ ...f, legal_name: e.target.value }))} />
-        <div className="grid grid-cols-2 gap-4">
-          <FormField label="Email" type="email" value={form.email} maxLength={254} placeholder="billing@acme.com"
-            ref={registerRef('email')} error={fieldError('email')}
-            onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-            onBlur={() => onBlur('email', form.email)} />
-          <FormField label="Phone" type="tel" value={form.phone} placeholder="+1 (555) 123-4567" maxLength={20}
-            ref={registerRef('phone')} error={fieldError('phone')}
-            onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
-            onBlur={() => onBlur('phone', form.phone)} />
+      <form onSubmit={handleSubmit} noValidate className="max-h-[70vh] overflow-y-auto -mx-6 px-6 pb-1">
+        {/* Contact */}
+        <div className="space-y-3">
+          <FormField label="Legal Name" value={form.legal_name} maxLength={255} placeholder="Acme Corporation Inc."
+            onChange={e => setForm(f => ({ ...f, legal_name: e.target.value }))} />
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Email" type="email" value={form.email} maxLength={254} placeholder="billing@acme.com"
+              ref={registerRef('email')} error={fieldError('email')}
+              onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+              onBlur={() => onBlur('email', form.email)} />
+            <FormField label="Phone" type="tel" value={form.phone} placeholder="+1 (555) 123-4567" maxLength={20}
+              ref={registerRef('phone')} error={fieldError('phone')}
+              onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
+              onBlur={() => onBlur('phone', form.phone)} />
+          </div>
         </div>
-        <FormField label="Address" value={form.address_line1} maxLength={200} placeholder="123 Main Street, Suite 100"
-          onChange={e => setForm(f => ({ ...f, address_line1: e.target.value }))} />
-        <div className="grid grid-cols-3 gap-4">
-          <FormField label="City" value={form.city} maxLength={100} placeholder="San Francisco"
-            onChange={e => setForm(f => ({ ...f, city: e.target.value }))} />
-          <FormField label="State" value={form.state} placeholder="CA" maxLength={50}
-            onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
-          <FormField label="ZIP" value={form.postal_code} placeholder="94105" maxLength={10}
-            onChange={e => setForm(f => ({ ...f, postal_code: e.target.value }))} />
-        </div>
-        <div className="grid grid-cols-2 gap-4">
+
+        {/* Address */}
+        <div className="space-y-3 mt-5">
+          <FormField label="Address" value={form.address_line1} maxLength={200} placeholder="123 Main Street"
+            onChange={e => setForm(f => ({ ...f, address_line1: e.target.value }))} />
+          <FormField label="Address Line 2" value={form.address_line2} maxLength={200} placeholder="Suite 100, Floor 2"
+            onChange={e => setForm(f => ({ ...f, address_line2: e.target.value }))} />
+          <div className="grid grid-cols-3 gap-4">
+            <FormField label="City" value={form.city} maxLength={100} placeholder="San Francisco"
+              onChange={e => setForm(f => ({ ...f, city: e.target.value }))} />
+            <FormField label="State" value={form.state} placeholder="CA" maxLength={50}
+              onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
+            <FormField label="ZIP" value={form.postal_code} placeholder="94105" maxLength={10}
+              onChange={e => setForm(f => ({ ...f, postal_code: e.target.value }))} />
+          </div>
           <FormSelect label="Country" value={form.country}
             onChange={e => setForm(f => ({ ...f, country: e.target.value }))}
             placeholder="Select country..."
             options={[['US', 'United States'], ['CA', 'Canada'], ['GB', 'United Kingdom'], ['DE', 'Germany'], ['FR', 'France'], ['IN', 'India'], ['JP', 'Japan'], ['AU', 'Australia'], ['BR', 'Brazil'], ['MX', 'Mexico'], ['SG', 'Singapore'], ['NL', 'Netherlands'], ['SE', 'Sweden'], ['CH', 'Switzerland']].map(([code, name]) => ({ value: code, label: `${name} (${code})` }))} />
-          <FormSelect label="Currency" value={form.currency}
-            onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}
-            placeholder="Select currency..."
-            options={['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'CHF'].map(c => ({ value: c, label: c }))} />
         </div>
-        <FormField label="Tax ID" value={form.tax_identifier} maxLength={30} placeholder="VAT / EIN / GST number" mono
-          onChange={e => setForm(f => ({ ...f, tax_identifier: e.target.value }))} />
-        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
+
+        {/* Billing */}
+        <div className="space-y-3 mt-5">
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Tax ID" value={form.tax_identifier} maxLength={30} placeholder="VAT / EIN / GST number" mono
+              onChange={e => setForm(f => ({ ...f, tax_identifier: e.target.value }))} />
+            <FormSelect label="Currency" value={form.currency}
+              onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}
+              placeholder="Select currency..."
+              options={['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'CHF'].map(c => ({ value: c, label: c }))} />
+          </div>
+        </div>
+
+        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-4">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
