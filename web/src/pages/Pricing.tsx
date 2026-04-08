@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, formatCents, formatDate, type Meter, type Plan, type RatingRule } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -60,8 +61,9 @@ export function PricingPage() {
           <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100">
             <Th>Name</Th><Th>Code</Th><Th>Interval</Th><Th>Status</Th><Th right>Base Price</Th><Th right>Meters</Th>
           </tr></thead><tbody className="divide-y divide-gray-50">
-            {plans.map(p => <tr key={p.id} className="hover:bg-gray-50">
-              <Td bold>{p.name}</Td><Td mono>{p.code}</Td><Td><Badge status={p.billing_interval} /></Td>
+            {plans.map(p => <tr key={p.id} className="hover:bg-gray-50 cursor-pointer transition-colors group">
+              <Td bold><Link to={`/plans/${p.id}`} className="text-gray-900 group-hover:text-velox-600 transition-colors">{p.name}</Link></Td>
+              <Td mono>{p.code}</Td><Td><Badge status={p.billing_interval} /></Td>
               <Td><Badge status={p.status} /></Td><Td right bold>{formatCents(p.base_amount_cents)}</Td>
               <Td right>{p.meter_ids?.length || 0}</Td>
             </tr>)}
@@ -70,8 +72,9 @@ export function PricingPage() {
           <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100">
             <Th>Name</Th><Th>Key</Th><Th>Unit</Th><Th>Aggregation</Th><Th>Created</Th>
           </tr></thead><tbody className="divide-y divide-gray-50">
-            {meters.map(m => <tr key={m.id} className="hover:bg-gray-50">
-              <Td bold>{m.name}</Td><Td mono>{m.key}</Td><Td>{m.unit}</Td>
+            {meters.map(m => <tr key={m.id} className="hover:bg-gray-50 cursor-pointer transition-colors group">
+              <Td bold><Link to={`/meters/${m.id}`} className="text-gray-900 group-hover:text-velox-600 transition-colors">{m.name}</Link></Td>
+              <Td mono>{m.key}</Td><Td>{m.unit}</Td>
               <Td><Badge status={m.aggregation} /></Td><Td muted>{formatDate(m.created_at)}</Td>
             </tr>)}
           </tbody></table></div>)
