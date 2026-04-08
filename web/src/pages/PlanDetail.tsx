@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, Plus, X } from 'lucide-react'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -42,6 +42,8 @@ export function PlanDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showEdit, setShowEdit] = useState(false)
+  const [showAttachMeter, setShowAttachMeter] = useState(false)
+  const [updatingMeters, setUpdatingMeters] = useState(false)
   const toast = useToast()
   const navigate = useNavigate()
 
@@ -81,6 +83,39 @@ export function PlanDetailPage() {
   const activeSubscriptions = useMemo(() =>
     subscriptions.filter(s => s.status === 'active'),
   [subscriptions])
+
+  const unattachedMeters = useMemo(() =>
+    meters.filter(m => !plan?.meter_ids?.includes(m.id)),
+  [meters, plan])
+
+  const handleAttachMeter = async (meterId: string) => {
+    if (!plan || !id) return
+    setUpdatingMeters(true)
+    try {
+      const updated = await api.updatePlan(id, { meter_ids: [...(plan.meter_ids || []), meterId] })
+      setPlan(updated)
+      setShowAttachMeter(false)
+      toast.success('Meter attached')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to attach meter')
+    } finally {
+      setUpdatingMeters(false)
+    }
+  }
+
+  const handleDetachMeter = async (meterId: string) => {
+    if (!plan || !id) return
+    setUpdatingMeters(true)
+    try {
+      const updated = await api.updatePlan(id, { meter_ids: (plan.meter_ids || []).filter(mid => mid !== meterId) })
+      setPlan(updated)
+      toast.success('Meter detached')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to detach meter')
+    } finally {
+      setUpdatingMeters(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -180,34 +215,82 @@ export function PlanDetailPage() {
 
       {/* Attached Meters */}
       <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100">
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-900">Meters ({attachedMeters.length})</h2>
+          {unattachedMeters.length > 0 && (
+            <button
+              onClick={() => setShowAttachMeter(true)}
+              disabled={updatingMeters}
+              className="inline-flex items-center gap-1 text-xs font-medium text-velox-600 hover:text-velox-700 transition-colors disabled:opacity-50"
+            >
+              <Plus size={14} />
+              Attach Meter
+            </button>
+          )}
         </div>
         {attachedMeters.length > 0 ? (
           <div className="divide-y divide-gray-50">
             {attachedMeters.map(meter => {
               const rule = meter.rating_rule_version_id ? ruleMap[meter.rating_rule_version_id] : null
               return (
-                <Link key={meter.id} to={`/meters/${meter.id}`} className="flex items-center justify-between px-6 py-3.5 hover:bg-gray-50 transition-colors group">
-                  <div>
+                <div key={meter.id} className="flex items-center justify-between px-6 py-3.5 hover:bg-gray-50 transition-colors group">
+                  <Link to={`/meters/${meter.id}`} className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 group-hover:text-velox-600 transition-colors">{meter.name}</p>
                     <p className="text-xs text-gray-400 font-mono mt-0.5">{meter.key}</p>
-                  </div>
+                  </Link>
                   <div className="flex items-center gap-2">
                     <Badge status={meter.aggregation} />
                     <span className="text-xs text-gray-500">{meter.unit}</span>
                     {rule && (
                       <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">{rule.name}</span>
                     )}
+                    <button
+                      onClick={() => handleDetachMeter(meter.id)}
+                      disabled={updatingMeters}
+                      className="ml-1 w-6 h-6 flex items-center justify-center rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-50"
+                      title="Detach meter"
+                    >
+                      <X size={14} />
+                    </button>
                   </div>
-                </Link>
+                </div>
               )
             })}
           </div>
         ) : (
-          <EmptyState title="No meters attached" description="This plan has no meters linked to it" />
+          <EmptyState title="No meters attached" description="Attach meters to track usage on this plan" />
         )}
       </div>
+
+      {/* Attach Meter Picker */}
+      {showAttachMeter && (
+        <Modal open onClose={() => setShowAttachMeter(false)} title="Attach Meter">
+          <p className="text-sm text-gray-500 mb-4">Select a meter to attach to this plan.</p>
+          {unattachedMeters.length > 0 ? (
+            <div className="divide-y divide-gray-50 border border-gray-100 rounded-lg overflow-hidden">
+              {unattachedMeters.map(meter => (
+                <button
+                  key={meter.id}
+                  onClick={() => handleAttachMeter(meter.id)}
+                  disabled={updatingMeters}
+                  className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors text-left disabled:opacity-50"
+                >
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{meter.name}</p>
+                    <p className="text-xs text-gray-400 font-mono mt-0.5">{meter.key}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge status={meter.aggregation} />
+                    <span className="text-xs text-gray-500">{meter.unit}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-400 text-center py-4">All meters are already attached</p>
+          )}
+        </Modal>
+      )}
 
       {/* Subscriptions */}
       <div className="bg-white rounded-xl shadow-card mt-6">
