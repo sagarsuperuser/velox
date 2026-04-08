@@ -12,8 +12,8 @@ interface EmptyStateProps {
 export function EmptyState({ icon, title, description, actionLabel, onAction, className }: EmptyStateProps) {
   return (
     <div className={cn('py-12 text-center', className)}>
-      {icon && <div className="text-gray-300 mb-3 flex justify-center">{icon}</div>}
-      <p className="text-sm font-medium text-gray-500">{title}</p>
+      {icon && <div className="text-gray-400 mb-3 flex justify-center">{icon}</div>}
+      <p className="text-sm font-medium text-gray-900">{title}</p>
       {description && <p className="text-sm text-gray-500 mt-1">{description}</p>}
       {actionLabel && onAction && (
         <button onClick={onAction} className="mt-3 text-sm text-velox-600 hover:underline">
