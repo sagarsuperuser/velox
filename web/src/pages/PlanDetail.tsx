@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Copy, Check, Plus, X, Pencil } from 'lucide-react'
+import { Copy, Check, Plus, Pencil } from 'lucide-react'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -253,10 +253,9 @@ export function PlanDetailPage() {
                     <button
                       onClick={() => handleDetachMeter(meter.id)}
                       disabled={updatingMeters}
-                      className="ml-1 w-6 h-6 flex items-center justify-center rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-50"
-                      title="Detach meter"
+                      className="ml-2 text-xs font-medium text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-md transition-colors disabled:opacity-50"
                     >
-                      <X size={14} />
+                      Detach
                     </button>
                   </div>
                 </div>
