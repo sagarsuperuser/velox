@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, CreditCard } from 'lucide-react'
 
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -173,74 +173,84 @@ export function CustomerDetailPage() {
 
       {/* Billing Profile */}
       <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
-          <h2 className="text-sm font-semibold text-gray-900">Billing Profile</h2>
-          <button
-            onClick={() => setShowEditBilling(true)}
-            className="text-xs font-medium text-velox-600 hover:text-velox-700 transition-colors"
-          >
-            {billingProfile ? 'Edit' : 'Set up'}
-          </button>
-        </div>
         {billingProfile ? (
-          <div className="px-6 py-5">
-            {/* Contact & Legal */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
-              <div>
-                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Legal Name</p>
-                <p className="text-sm text-gray-900 mt-1">{billingProfile.legal_name || '\u2014'}</p>
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Email</p>
-                <p className="text-sm text-gray-900 mt-1">{billingProfile.email || '\u2014'}</p>
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Phone</p>
-                <p className="text-sm text-gray-900 mt-1">{billingProfile.phone || '\u2014'}</p>
-              </div>
+          <>
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+              <h2 className="text-sm font-semibold text-gray-900">Billing Profile</h2>
+              <button
+                onClick={() => setShowEditBilling(true)}
+                className="px-3 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-50 transition-colors"
+              >
+                Edit
+              </button>
             </div>
-
-            {/* Address */}
-            <div className="mt-5 pt-5 border-t border-gray-100">
-              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Address</p>
-              {billingProfile.address_line1 || billingProfile.city ? (
-                <div className="text-sm text-gray-900 leading-relaxed">
-                  {billingProfile.address_line1 && <p>{billingProfile.address_line1}</p>}
-                  {billingProfile.address_line2 && <p>{billingProfile.address_line2}</p>}
-                  <p>
-                    {[billingProfile.city, billingProfile.state].filter(Boolean).join(', ')}
-                    {billingProfile.postal_code && ` ${billingProfile.postal_code}`}
-                  </p>
-                  {billingProfile.country && <p>{billingProfile.country}</p>}
+            <div className="px-6 py-5">
+              {/* Contact & Legal */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Legal Name</p>
+                  <p className="text-sm text-gray-900 mt-1">{billingProfile.legal_name || '\u2014'}</p>
                 </div>
-              ) : (
-                <p className="text-sm text-gray-400">No address on file</p>
-              )}
-            </div>
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Email</p>
+                  <p className="text-sm text-gray-900 mt-1">{billingProfile.email || '\u2014'}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Phone</p>
+                  <p className="text-sm text-gray-900 mt-1">{billingProfile.phone || '\u2014'}</p>
+                </div>
+              </div>
 
-            {/* Tax & Currency */}
-            <div className="mt-5 pt-5 border-t border-gray-100 grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
-              <div>
-                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Tax ID</p>
-                <p className="text-sm text-gray-900 mt-1 font-mono">{billingProfile.tax_identifier || '\u2014'}</p>
+              {/* Address */}
+              <div className="mt-5 pt-5 border-t border-gray-100">
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Address</p>
+                {billingProfile.address_line1 || billingProfile.city ? (
+                  <div className="text-sm text-gray-900 leading-relaxed">
+                    {billingProfile.address_line1 && <p>{billingProfile.address_line1}</p>}
+                    {billingProfile.address_line2 && <p>{billingProfile.address_line2}</p>}
+                    <p>
+                      {[billingProfile.city, billingProfile.state].filter(Boolean).join(', ')}
+                      {billingProfile.postal_code && ` ${billingProfile.postal_code}`}
+                    </p>
+                    {billingProfile.country && <p>{billingProfile.country}</p>}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-400">No address on file</p>
+                )}
               </div>
-              <div>
-                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Currency</p>
-                <p className="text-sm text-gray-900 mt-1">{(billingProfile.currency || '\u2014').toUpperCase()}</p>
+
+              {/* Tax & Currency */}
+              <div className="mt-5 pt-5 border-t border-gray-100 grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Tax ID</p>
+                  <p className="text-sm text-gray-900 mt-1 font-mono">{billingProfile.tax_identifier || '\u2014'}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Currency</p>
+                  <p className="text-sm text-gray-900 mt-1">{(billingProfile.currency || '\u2014').toUpperCase()}</p>
+                </div>
               </div>
             </div>
-          </div>
+          </>
         ) : (
-          <div className="px-6 py-10 text-center">
-            <p className="text-sm text-gray-500">No billing profile configured</p>
-            <p className="text-xs text-gray-400 mt-1">Set up a billing profile to enable invoicing for this customer</p>
-            <button
-              onClick={() => setShowEditBilling(true)}
-              className="mt-4 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm transition-colors"
-            >
-              Set Up Billing Profile
-            </button>
-          </div>
+          <>
+            <div className="px-6 py-4 border-b border-gray-100">
+              <h2 className="text-sm font-semibold text-gray-900">Billing Profile</h2>
+            </div>
+            <div className="px-6 py-10 text-center">
+              <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
+                <CreditCard size={18} className="text-gray-400" />
+              </div>
+              <p className="text-sm font-medium text-gray-900">No billing profile</p>
+              <p className="text-xs text-gray-400 mt-1 max-w-xs mx-auto">Set up billing details to enable invoicing and payments for this customer</p>
+              <button
+                onClick={() => setShowEditBilling(true)}
+                className="mt-4 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm transition-colors"
+              >
+                Set Up Billing Profile
+              </button>
+            </div>
+          </>
         )}
       </div>
 
@@ -276,9 +286,9 @@ export function CustomerDetailPage() {
             <h2 className="text-sm font-semibold text-gray-900">Subscriptions</h2>
             <button
               onClick={() => setShowCreateSub(true)}
-              className="text-xs font-medium text-velox-600 hover:text-velox-700 transition-colors"
+              className="px-3 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-50 transition-colors"
             >
-              + Add subscription
+              Add
             </button>
           </div>
           <div className="divide-y divide-gray-50">
@@ -292,12 +302,7 @@ export function CustomerDetailPage() {
               </Link>
             ))}
             {(!overview?.active_subscriptions.length) && (
-              <div className="px-6 py-4 text-center">
-                <p className="text-sm text-gray-400">No subscriptions</p>
-                <button onClick={() => setShowCreateSub(true)} className="mt-2 text-xs font-medium text-velox-600 hover:text-velox-700 transition-colors">
-                  Create subscription
-                </button>
-              </div>
+              <p className="px-6 py-6 text-sm text-gray-400 text-center">No active subscriptions</p>
             )}
           </div>
         </div>
