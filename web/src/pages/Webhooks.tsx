@@ -1,13 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { api, formatDate, type WebhookEndpoint, type WebhookEvent } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { FormField } from '@/components/FormField'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { useFormValidation, rules } from '@/hooks/useFormValidation'
 
 export function WebhooksPage() {
   const [tab, setTab] = useState<'endpoints' | 'events'>('endpoints')
@@ -182,6 +184,11 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  const fieldRules = useMemo(() => ({
+    url: [rules.required('URL'), rules.url()],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+
   const suggestedEvents = [
     'invoice.created', 'invoice.finalized', 'invoice.voided',
     'payment.succeeded', 'payment.failed',
@@ -191,10 +198,7 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!url.startsWith('https://') && !url.startsWith('http://localhost')) {
-      setError('URL must start with https:// or http://localhost')
-      return
-    }
+    if (!validateAll({ url })) return
     setSaving(true); setError('')
     try {
       const eventList = events.split(',').map(s => s.trim()).filter(Boolean)
@@ -214,26 +218,15 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
   return (
     <Modal open onClose={onClose} title="Add Webhook Endpoint">
       <form onSubmit={handleSubmit} noValidate className="space-y-3">
+        <FormField label="URL" required type="url" value={url} placeholder="https://example.com/webhooks" maxLength={2048}
+          ref={registerRef('url')} error={fieldError('url')}
+          onChange={e => setUrl(e.target.value)}
+          onBlur={() => onBlur('url', url)} />
+        <FormField label="Description" value={description} placeholder="Production webhook" maxLength={500}
+          onChange={e => setDescription(e.target.value)} />
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">URL <span className="text-red-500">*</span></label>
-          <input type="url" value={url} onChange={e => setUrl(e.target.value)} required
-            placeholder="https://example.com/webhooks"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            maxLength={2048} />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-          <input type="text" value={description} onChange={e => setDescription(e.target.value)}
-            placeholder="Production webhook"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            maxLength={500} />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Events (comma-separated)</label>
-          <input type="text" value={events} onChange={e => setEvents(e.target.value)}
-            placeholder="invoice.created, payment.succeeded"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            maxLength={500} />
+          <FormField label="Events (comma-separated)" value={events} placeholder="invoice.created, payment.succeeded" maxLength={500}
+            onChange={e => setEvents(e.target.value)} />
           <div className="flex flex-wrap gap-1 mt-2">
             {suggestedEvents.map(ev => (
               <button key={ev} type="button"
@@ -249,7 +242,7 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
             ))}
           </div>
         </div>
-        {error && <p className="text-red-600 text-xs">{error}</p>}
+        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}

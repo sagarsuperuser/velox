@@ -59,6 +59,15 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		return domain.CreditNote{}, fmt.Errorf("at least one line item is required")
 	}
 
+	for i, line := range input.Lines {
+		if line.Quantity <= 0 {
+			return domain.CreditNote{}, fmt.Errorf("line %d: quantity must be positive", i+1)
+		}
+		if line.UnitAmountCents <= 0 {
+			return domain.CreditNote{}, fmt.Errorf("line %d: unit_amount_cents must be positive", i+1)
+		}
+	}
+
 	// Verify invoice exists and is finalized or paid
 	inv, err := s.invoices.Get(ctx, tenantID, input.InvoiceID)
 	if err != nil {

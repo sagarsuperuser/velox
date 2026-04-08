@@ -3,10 +3,13 @@ package pricing
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
+
+var slugPattern = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 type Service struct {
 	store Store
@@ -86,6 +89,9 @@ func validateRatingRuleInput(input CreateRatingRuleInput) error {
 	if strings.TrimSpace(input.RuleKey) == "" {
 		return fmt.Errorf("rule_key is required")
 	}
+	if !slugPattern.MatchString(input.RuleKey) {
+		return fmt.Errorf("rule_key must contain only alphanumeric characters, hyphens, and underscores")
+	}
 	if strings.TrimSpace(input.Name) == "" {
 		return fmt.Errorf("name is required")
 	}
@@ -130,6 +136,9 @@ func (s *Service) CreateMeter(ctx context.Context, tenantID string, input Create
 	name := strings.TrimSpace(input.Name)
 	if key == "" {
 		return domain.Meter{}, fmt.Errorf("key is required")
+	}
+	if !slugPattern.MatchString(key) {
+		return domain.Meter{}, fmt.Errorf("key must contain only alphanumeric characters, hyphens, and underscores")
 	}
 	if name == "" {
 		return domain.Meter{}, fmt.Errorf("name is required")
@@ -186,6 +195,9 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 	if code == "" {
 		return domain.Plan{}, fmt.Errorf("code is required")
 	}
+	if !slugPattern.MatchString(code) {
+		return domain.Plan{}, fmt.Errorf("code must contain only alphanumeric characters, hyphens, and underscores")
+	}
 	if name == "" {
 		return domain.Plan{}, fmt.Errorf("name is required")
 	}
@@ -194,6 +206,9 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 	}
 	if input.BillingInterval != domain.BillingMonthly && input.BillingInterval != domain.BillingYearly {
 		return domain.Plan{}, fmt.Errorf("billing_interval must be monthly or yearly")
+	}
+	if input.BaseAmountCents < 0 {
+		return domain.Plan{}, fmt.Errorf("base_amount_cents must be >= 0")
 	}
 
 	if input.MeterIDs == nil {

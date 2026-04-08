@@ -1,15 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api, formatCents, formatDate, type Subscription, type Customer, type Plan, type Invoice, type InvoicePreview } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { FormSelect } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
+import { useFormValidation, rules } from '@/hooks/useFormValidation'
 
 export function SubscriptionDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -339,10 +341,16 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  const fieldRules = useMemo(() => ({
+    plan_id: [rules.required('Plan')],
+  }), [])
+  const { onBlur, validateAll, fieldError } = useFormValidation(fieldRules)
+
   const availablePlans = plans.filter(p => p.id !== currentPlanId && p.status === 'active')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll({ plan_id: newPlanId })) return
     setSaving(true); setError('')
     try {
       const res = await api.changePlan(subscriptionId, { new_plan_id: newPlanId, immediate })
@@ -362,19 +370,10 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
           <p className="text-sm font-semibold text-gray-900 mt-0.5">{currentPlanName}</p>
         </div>
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">New Plan</label>
-          <select value={newPlanId} onChange={e => setNewPlanId(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
-            required>
-            <option value="">Select a plan...</option>
-            {availablePlans.map(p => (
-              <option key={p.id} value={p.id}>
-                {p.name} ({p.code}) - {formatCents(p.base_amount_cents)}/{p.billing_interval}
-              </option>
-            ))}
-          </select>
-        </div>
+        <FormSelect label="New Plan" required value={newPlanId} error={fieldError('plan_id')}
+          onChange={e => { setNewPlanId(e.target.value); onBlur('plan_id', e.target.value) }}
+          placeholder="Select a plan..."
+          options={availablePlans.map(p => ({ value: p.id, label: `${p.name} (${p.code}) - ${formatCents(p.base_amount_cents)}/${p.billing_interval}` }))} />
 
         <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" checked={immediate} onChange={e => setImmediate(e.target.checked)}
@@ -389,7 +388,7 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
           </div>
         </label>
 
-        {error && <p className="text-red-600 text-xs">{error}</p>}
+        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving || !newPlanId}

@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -56,11 +57,15 @@ type CreateEndpointResult struct {
 }
 
 func (s *Service) CreateEndpoint(ctx context.Context, tenantID string, input CreateEndpointInput) (CreateEndpointResult, error) {
-	url := strings.TrimSpace(input.URL)
-	if url == "" {
+	rawURL := strings.TrimSpace(input.URL)
+	if rawURL == "" {
 		return CreateEndpointResult{}, fmt.Errorf("url is required")
 	}
-	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://localhost") {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return CreateEndpointResult{}, fmt.Errorf("url must be a valid URL")
+	}
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && strings.HasPrefix(parsed.Host, "localhost")) {
 		return CreateEndpointResult{}, fmt.Errorf("webhook URL must use HTTPS (except localhost)")
 	}
 
@@ -75,7 +80,7 @@ func (s *Service) CreateEndpoint(ctx context.Context, tenantID string, input Cre
 	secret := "whsec_" + hex.EncodeToString(secretBytes)
 
 	ep, err := s.store.CreateEndpoint(ctx, tenantID, domain.WebhookEndpoint{
-		URL:         url,
+		URL:         rawURL,
 		Description: strings.TrimSpace(input.Description),
 		Secret:      secret,
 		Events:      events,

@@ -3,10 +3,13 @@ package customer
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
+
+var phonePattern = regexp.MustCompile(`^[\+\d\s\-\(\)]{7,20}$`)
 
 type Service struct {
 	store Store
@@ -32,6 +35,11 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	}
 	if input.DisplayName == "" {
 		return domain.Customer{}, fmt.Errorf("display_name is required")
+	}
+	if input.Email != "" {
+		if err := validateEmail(input.Email); err != nil {
+			return domain.Customer{}, err
+		}
 	}
 
 	return s.store.Create(ctx, tenantID, domain.Customer{
@@ -65,6 +73,9 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateI
 		existing.DisplayName = name
 	}
 	if email := strings.TrimSpace(input.Email); email != "" {
+		if err := validateEmail(email); err != nil {
+			return domain.Customer{}, err
+		}
 		existing.Email = email
 	}
 	if status := domain.CustomerStatus(input.Status); status != "" {
@@ -78,6 +89,16 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 	if bp.CustomerID == "" {
 		return domain.CustomerBillingProfile{}, fmt.Errorf("customer_id is required")
 	}
+	if email := strings.TrimSpace(bp.Email); email != "" {
+		if err := validateEmail(email); err != nil {
+			return domain.CustomerBillingProfile{}, err
+		}
+	}
+	if phone := strings.TrimSpace(bp.Phone); phone != "" {
+		if !phonePattern.MatchString(phone) {
+			return domain.CustomerBillingProfile{}, fmt.Errorf("phone must be 7-20 characters and contain only digits, spaces, +, -, (, )")
+		}
+	}
 	if bp.ProfileStatus == "" {
 		bp.ProfileStatus = domain.BillingProfileIncomplete
 	}
@@ -86,4 +107,16 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 
 func (s *Service) GetBillingProfile(ctx context.Context, tenantID, customerID string) (domain.CustomerBillingProfile, error) {
 	return s.store.GetBillingProfile(ctx, tenantID, customerID)
+}
+
+func validateEmail(email string) error {
+	at := strings.Index(email, "@")
+	if at < 1 {
+		return fmt.Errorf("invalid email: must contain @")
+	}
+	domainPart := email[at+1:]
+	if !strings.Contains(domainPart, ".") || strings.HasSuffix(domainPart, ".") {
+		return fmt.Errorf("invalid email: domain must contain a dot")
+	}
+	return nil
 }

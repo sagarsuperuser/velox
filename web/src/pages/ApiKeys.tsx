@@ -1,13 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { api, formatDate, type ApiKeyInfo } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { FormField, FormSelect } from '@/components/FormField'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { useFormValidation, rules } from '@/hooks/useFormValidation'
 
 export function ApiKeysPage() {
   const [keys, setKeys] = useState<ApiKeyInfo[]>([])
@@ -165,8 +167,14 @@ function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  const fieldRules = useMemo(() => ({
+    name: [rules.required('Name')],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll({ name })) return
     setSaving(true); setError('')
     try {
       const res = await api.createApiKey({ name, key_type: keyType })
@@ -181,22 +189,14 @@ function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated
   return (
     <Modal open onClose={onClose} title="Create API Key">
       <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Name <span className="text-red-500">*</span></label>
-          <input type="text" value={name} onChange={e => setName(e.target.value)} required
-            placeholder="Production API Key"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            maxLength={100} />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Key Type</label>
-          <select value={keyType} onChange={e => setKeyType(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
-            <option value="secret">Secret</option>
-            <option value="publishable">Publishable</option>
-          </select>
-        </div>
-        {error && <p className="text-red-600 text-xs">{error}</p>}
+        <FormField label="Name" required value={name} placeholder="Production API Key" maxLength={100}
+          ref={registerRef('name')} error={fieldError('name')}
+          onChange={e => setName(e.target.value)}
+          onBlur={() => onBlur('name', name)} />
+        <FormSelect label="Key Type" value={keyType}
+          onChange={e => setKeyType(e.target.value)}
+          options={[{ value: 'secret', label: 'Secret' }, { value: 'publishable', label: 'Publishable' }]} />
+        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}

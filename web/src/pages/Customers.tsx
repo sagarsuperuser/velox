@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatDate, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { FormField } from '@/components/FormField'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus, Search, Download } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
 import { Pagination } from '@/components/Pagination'
@@ -24,6 +26,13 @@ export function CustomersPage() {
   const pageSize = 25
   const toast = useToast()
 
+  const fieldRules = useMemo(() => ({
+    display_name: [rules.required('Display name')],
+    external_id: [rules.required('External ID'), rules.slug()],
+    email: [rules.email()],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef, clearErrors } = useFormValidation(fieldRules)
+
   const loadCustomers = () => {
     setLoading(true)
     setLoadError(null)
@@ -38,12 +47,14 @@ export function CustomersPage() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll(form)) return
     setError('')
     setCreating(true)
     try {
       const created = await api.createCustomer(form)
       setShowCreate(false)
       setForm({ external_id: '', display_name: '', email: '' })
+      clearErrors()
       toast.success(`Customer "${created.display_name}" created`)
       loadCustomers()
     } catch (err) {
@@ -168,27 +179,20 @@ export function CustomersPage() {
 
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="Create Customer">
         <form onSubmit={handleCreate} noValidate className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
-            <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-              placeholder="Acme Corporation" required maxLength={255} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">External ID <span className="text-red-500">*</span></label>
-            <input type="text" value={form.external_id} onChange={e => setForm(f => ({ ...f, external_id: e.target.value }))}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 font-mono"
-              placeholder="acme_corp" required maxLength={100}
-              />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-              placeholder="billing@acme.com" maxLength={254}
-              />
-          </div>
-          {error && <p className="text-red-600 text-xs">{error}</p>}
+          <FormField label="Display Name" required value={form.display_name} placeholder="Acme Corporation" maxLength={255}
+            ref={registerRef('display_name')} error={fieldError('display_name')}
+            onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
+            onBlur={() => onBlur('display_name', form.display_name)} />
+          <FormField label="External ID" required value={form.external_id} placeholder="acme_corp" maxLength={100} mono
+            ref={registerRef('external_id')} error={fieldError('external_id')}
+            onChange={e => setForm(f => ({ ...f, external_id: e.target.value }))}
+            onBlur={() => onBlur('external_id', form.external_id)}
+            hint="Only letters, numbers, hyphens, and underscores" />
+          <FormField label="Email" type="email" value={form.email} placeholder="billing@acme.com" maxLength={254}
+            ref={registerRef('email')} error={fieldError('email')}
+            onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+            onBlur={() => onBlur('email', form.email)} />
+          {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
           <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
             <button type="button" onClick={() => setShowCreate(false)} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
             <button type="submit" disabled={creating}

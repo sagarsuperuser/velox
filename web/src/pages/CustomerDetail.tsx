@@ -1,15 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api, formatCents, formatDate, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary, type Meter, type Plan, type Subscription } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { StatCard } from '@/components/StatCard'
 import { Modal } from '@/components/Modal'
+import { FormField, FormSelect } from '@/components/FormField'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { useFormValidation, rules } from '@/hooks/useFormValidation'
 
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -282,8 +284,15 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  const fieldRules = useMemo(() => ({
+    display_name: [rules.required('Display name')],
+    email: [rules.email()],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll(form)) return
     setSaving(true); setError('')
     try {
       const updated = await api.updateCustomer(customer.id, form)
@@ -298,18 +307,15 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
   return (
     <Modal open onClose={onClose} title="Edit Customer">
       <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
-          <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" required maxLength={255} />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-          <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            maxLength={254} />
-        </div>
-        {error && <p className="text-red-600 text-xs">{error}</p>}
+        <FormField label="Display Name" required value={form.display_name} maxLength={255}
+          ref={registerRef('display_name')} error={fieldError('display_name')}
+          onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
+          onBlur={() => onBlur('display_name', form.display_name)} />
+        <FormField label="Email" type="email" value={form.email} maxLength={254}
+          ref={registerRef('email')} error={fieldError('email')}
+          onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+          onBlur={() => onBlur('email', form.email)} />
+        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
@@ -341,8 +347,15 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  const fieldRules = useMemo(() => ({
+    email: [rules.email()],
+    phone: [rules.phone()],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll(form)) return
     setSaving(true); setError('')
     try {
       const updated = await api.upsertBillingProfile(customerId, form)
@@ -354,77 +367,46 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
     }
   }
 
-  const fieldClass = "w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-
   return (
     <Modal open onClose={onClose} title="Billing Profile">
       <form onSubmit={handleSubmit} noValidate className="space-y-3 max-h-[70vh] overflow-y-auto">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Legal Name</label>
-          <input type="text" value={form.legal_name} onChange={e => setForm(f => ({ ...f, legal_name: e.target.value }))} className={fieldClass} maxLength={255} />
-        </div>
+        <FormField label="Legal Name" value={form.legal_name} maxLength={255}
+          onChange={e => setForm(f => ({ ...f, legal_name: e.target.value }))} />
         <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} className={fieldClass}
-              maxLength={254} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-            <input type="tel" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} className={fieldClass}
-              placeholder="+1 (555) 123-4567" maxLength={20} />
-          </div>
+          <FormField label="Email" type="email" value={form.email} maxLength={254}
+            ref={registerRef('email')} error={fieldError('email')}
+            onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+            onBlur={() => onBlur('email', form.email)} />
+          <FormField label="Phone" type="tel" value={form.phone} placeholder="+1 (555) 123-4567" maxLength={20}
+            ref={registerRef('phone')} error={fieldError('phone')}
+            onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
+            onBlur={() => onBlur('phone', form.phone)} />
         </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Address Line 1</label>
-          <input type="text" value={form.address_line1} onChange={e => setForm(f => ({ ...f, address_line1: e.target.value }))} className={fieldClass} maxLength={200} />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Address Line 2</label>
-          <input type="text" value={form.address_line2} onChange={e => setForm(f => ({ ...f, address_line2: e.target.value }))} className={fieldClass} maxLength={200} />
-        </div>
+        <FormField label="Address Line 1" value={form.address_line1} maxLength={200}
+          onChange={e => setForm(f => ({ ...f, address_line1: e.target.value }))} />
+        <FormField label="Address Line 2" value={form.address_line2} maxLength={200}
+          onChange={e => setForm(f => ({ ...f, address_line2: e.target.value }))} />
         <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">City</label>
-            <input type="text" value={form.city} onChange={e => setForm(f => ({ ...f, city: e.target.value }))} className={fieldClass} maxLength={100} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">State</label>
-            <input type="text" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} className={fieldClass}
-              placeholder="e.g., CA, NY, TX" maxLength={50} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Postal Code</label>
-            <input type="text" value={form.postal_code} onChange={e => setForm(f => ({ ...f, postal_code: e.target.value }))} className={fieldClass}
-              placeholder="e.g., 10001 or SW1A 1AA" maxLength={10} />
-          </div>
+          <FormField label="City" value={form.city} maxLength={100}
+            onChange={e => setForm(f => ({ ...f, city: e.target.value }))} />
+          <FormField label="State" value={form.state} placeholder="e.g., CA, NY, TX" maxLength={50}
+            onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
+          <FormField label="Postal Code" value={form.postal_code} placeholder="e.g., 10001 or SW1A 1AA" maxLength={10}
+            onChange={e => setForm(f => ({ ...f, postal_code: e.target.value }))} />
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
-            <select value={form.country} onChange={e => setForm(f => ({ ...f, country: e.target.value }))} className={fieldClass + ' bg-white'}>
-              <option value="">Select country...</option>
-              {[['US', 'United States'], ['CA', 'Canada'], ['GB', 'United Kingdom'], ['DE', 'Germany'], ['FR', 'France'], ['IN', 'India'], ['JP', 'Japan'], ['AU', 'Australia'], ['BR', 'Brazil'], ['MX', 'Mexico'], ['SG', 'Singapore'], ['NL', 'Netherlands'], ['SE', 'Sweden'], ['CH', 'Switzerland']].map(([code, name]) => (
-                <option key={code} value={code}>{name} ({code})</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Currency</label>
-            <select value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))} className={fieldClass + ' bg-white'}>
-              <option value="">Select currency...</option>
-              {['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'CHF'].map(c => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-          </div>
+          <FormSelect label="Country" value={form.country}
+            onChange={e => setForm(f => ({ ...f, country: e.target.value }))}
+            placeholder="Select country..."
+            options={[['US', 'United States'], ['CA', 'Canada'], ['GB', 'United Kingdom'], ['DE', 'Germany'], ['FR', 'France'], ['IN', 'India'], ['JP', 'Japan'], ['AU', 'Australia'], ['BR', 'Brazil'], ['MX', 'Mexico'], ['SG', 'Singapore'], ['NL', 'Netherlands'], ['SE', 'Sweden'], ['CH', 'Switzerland']].map(([code, name]) => ({ value: code, label: `${name} (${code})` }))} />
+          <FormSelect label="Currency" value={form.currency}
+            onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}
+            placeholder="Select currency..."
+            options={['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'CHF'].map(c => ({ value: c, label: c }))} />
         </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Tax ID (VAT / EIN / GST)</label>
-          <input type="text" value={form.tax_identifier} onChange={e => setForm(f => ({ ...f, tax_identifier: e.target.value }))} className={fieldClass}
-            maxLength={30} placeholder="e.g., US12-3456789" />
-        </div>
-        {error && <p className="text-red-600 text-xs">{error}</p>}
+        <FormField label="Tax ID (VAT / EIN / GST)" value={form.tax_identifier} maxLength={30} placeholder="e.g., US12-3456789"
+          onChange={e => setForm(f => ({ ...f, tax_identifier: e.target.value }))} />
+        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
@@ -446,8 +428,16 @@ function CreateSubscriptionFromCustomerModal({ customerId, plans, onClose, onCre
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
+  const fieldRules = useMemo(() => ({
+    display_name: [rules.required('Display name')],
+    code: [rules.required('Code'), rules.slug()],
+    plan_id: [rules.required('Plan')],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll(form)) return
     setSaving(true); setError('')
     try {
       const sub = await api.createSubscription({
@@ -465,32 +455,23 @@ function CreateSubscriptionFromCustomerModal({ customerId, plans, onClose, onCre
   return (
     <Modal open onClose={onClose} title="Create Subscription">
       <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
-          <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            placeholder="Pro Monthly" required maxLength={255} />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Code <span className="text-red-500">*</span></label>
-          <input type="text" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 font-mono"
-            placeholder="pro-monthly" required maxLength={100}
- />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Plan <span className="text-red-500">*</span></label>
-          <select value={form.plan_id} onChange={e => setForm(f => ({ ...f, plan_id: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" required>
-            <option value="">Select plan...</option>
-            {plans.map(p => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
-          </select>
-        </div>
+        <FormField label="Display Name" required value={form.display_name} placeholder="Pro Monthly" maxLength={255}
+          ref={registerRef('display_name')} error={fieldError('display_name')}
+          onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
+          onBlur={() => onBlur('display_name', form.display_name)} />
+        <FormField label="Code" required value={form.code} placeholder="pro-monthly" maxLength={100} mono
+          ref={registerRef('code')} error={fieldError('code')}
+          onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
+          onBlur={() => onBlur('code', form.code)} />
+        <FormSelect label="Plan" required value={form.plan_id} error={fieldError('plan_id')}
+          onChange={e => { setForm(f => ({ ...f, plan_id: e.target.value })); onBlur('plan_id', e.target.value) }}
+          placeholder="Select plan..."
+          options={plans.map(p => ({ value: p.id, label: `${p.name} (${p.code})` }))} />
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={form.start_now} onChange={e => setForm(f => ({ ...f, start_now: e.target.checked }))} />
           Start immediately (activate + set billing period)
         </label>
-        {error && <p className="text-red-600 text-xs">{error}</p>}
+        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}

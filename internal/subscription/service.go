@@ -3,11 +3,14 @@ package subscription
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
+
+var slugPattern = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 type Service struct {
 	store Store
@@ -33,6 +36,9 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 
 	if code == "" {
 		return domain.Subscription{}, fmt.Errorf("code is required")
+	}
+	if !slugPattern.MatchString(code) {
+		return domain.Subscription{}, fmt.Errorf("code must contain only alphanumeric characters, hyphens, and underscores")
 	}
 	if displayName == "" {
 		return domain.Subscription{}, fmt.Errorf("display_name is required")
