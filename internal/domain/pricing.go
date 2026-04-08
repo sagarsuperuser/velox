@@ -100,7 +100,7 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity int64) (int64, error) {
 		if quantity == 0 {
 			return 0, nil
 		}
-		return rule.FlatAmountCents, nil
+		return quantity * rule.FlatAmountCents, nil
 
 	case PricingGraduated:
 		if len(rule.GraduatedTiers) == 0 {
