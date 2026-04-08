@@ -1,6 +1,7 @@
 package invoice
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -15,12 +16,22 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
-type Handler struct {
-	svc *Service
+// CustomerGetter resolves customer IDs to names for PDF rendering.
+type CustomerGetter interface {
+	Get(ctx context.Context, tenantID, id string) (domain.Customer, error)
 }
 
-func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+type Handler struct {
+	svc       *Service
+	customers CustomerGetter
+}
+
+func NewHandler(svc *Service, customers ...CustomerGetter) *Handler {
+	h := &Handler{svc: svc}
+	if len(customers) > 0 {
+		h.customers = customers[0]
+	}
+	return h
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -151,7 +162,14 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pdfBytes, err := RenderPDF(inv, items, inv.CustomerID)
+	customerName := inv.CustomerID
+	if h.customers != nil {
+		if cust, err := h.customers.Get(r.Context(), tenantID, inv.CustomerID); err == nil {
+			customerName = cust.DisplayName
+		}
+	}
+
+	pdfBytes, err := RenderPDF(inv, items, customerName)
 	if err != nil {
 		respond.InternalError(w, r)
 		return
