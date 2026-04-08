@@ -16,6 +16,24 @@ export function clearApiKey() {
   localStorage.removeItem('velox_api_key')
 }
 
+function humanizeError(msg: string): string {
+  // "already exists: subscription code "acme-pro"" → "A subscription with code "acme-pro" already exists"
+  const alreadyExists = msg.match(/already exists: (\w+) (?:code|with external_id|key) "(.+?)"/)
+  if (alreadyExists) {
+    const resource = alreadyExists[1].replace(/_/g, ' ')
+    return `A ${resource} with that identifier ("${alreadyExists[2]}") already exists. Please use a different one.`
+  }
+  // "already exists: ..." generic
+  if (msg.startsWith('already exists:')) {
+    return 'This resource already exists. Please use a different identifier.'
+  }
+  // "not found" errors
+  if (msg.includes('not found')) {
+    return msg.replace(/not found/, 'could not be found')
+  }
+  return msg
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -32,7 +50,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: { message: res.statusText } }))
-    throw new Error(err.error?.message || `HTTP ${res.status}`)
+    const raw = err.error?.message || `HTTP ${res.status}`
+    throw new Error(humanizeError(raw))
   }
 
   return res.json()
