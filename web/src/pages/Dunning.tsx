@@ -6,6 +6,7 @@ import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 
 export function DunningPage() {
@@ -43,16 +44,28 @@ function PolicyTab() {
     final_action: 'manual_review',
   })
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [savedForm, setSavedForm] = useState<string>('')
   const [isExisting, setIsExisting] = useState(false)
   const toast = useToast()
 
-  useEffect(() => {
+  const loadPolicy = () => {
+    setLoading(true)
+    setError(null)
     api.getDunningPolicy()
       .then(p => { setForm(p); setSavedForm(JSON.stringify(p)); setIsExisting(true); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
+      .catch(err => {
+        // 404 means no policy yet, which is fine - other errors should show
+        const msg = err instanceof Error ? err.message : 'Failed to load policy'
+        if (!msg.includes('404')) {
+          setError(msg)
+        }
+        setLoading(false)
+      })
+  }
+
+  useEffect(() => { loadPolicy() }, [])
 
   const hasChanges = JSON.stringify(form) !== savedForm
 
@@ -72,6 +85,7 @@ function PolicyTab() {
   }
 
   if (loading) return <div className="mt-6"><LoadingSkeleton rows={4} columns={2} /></div>
+  if (error) return <div className="mt-6"><ErrorState message={error} onRetry={loadPolicy} /></div>
 
   return (
     <div className="bg-white rounded-xl shadow-card mt-4 p-6 max-w-lg space-y-4">
@@ -139,11 +153,13 @@ function RunsTab() {
   const [runs, setRuns] = useState<DunningRun[]>([])
   const [invoiceMap, setInvoiceMap] = useState<Record<string, Invoice>>({})
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [resolveTarget, setResolveTarget] = useState<DunningRun | null>(null)
   const toast = useToast()
 
   const loadRuns = () => {
     setLoading(true)
+    setError(null)
     Promise.all([
       api.listDunningRuns(),
       api.listInvoices().catch(() => ({ data: [] as Invoice[], total: 0 })),
@@ -153,7 +169,7 @@ function RunsTab() {
       invoicesRes.data.forEach(inv => { map[inv.id] = inv })
       setInvoiceMap(map)
       setLoading(false)
-    }).catch(() => { setRuns([]); setLoading(false) })
+    }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load dunning runs'); setRuns([]); setLoading(false) })
   }
 
   useEffect(() => { loadRuns() }, [])
@@ -161,7 +177,8 @@ function RunsTab() {
   return (
     <>
       <div className="bg-white rounded-xl shadow-card mt-4">
-        {loading ? <LoadingSkeleton rows={5} columns={6} />
+        {error ? <ErrorState message={error} onRetry={loadRuns} />
+        : loading ? <LoadingSkeleton rows={5} columns={6} />
         : runs.length === 0 ? <EmptyState title="No dunning runs" description="Dunning runs appear when payment retries are triggered" />
         : (
           <table className="w-full">

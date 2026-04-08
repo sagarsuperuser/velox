@@ -5,6 +5,7 @@ import { Layout } from '@/components/Layout'
 import { StatCard } from '@/components/StatCard'
 import { Badge } from '@/components/Badge'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
+import { ErrorState } from '@/components/ErrorState'
 
 export function DashboardPage() {
   const [stats, setStats] = useState({ customers: 0, subscriptions: 0, invoices: 0, revenue: 0 })
@@ -13,45 +14,47 @@ export function DashboardPage() {
   const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [recentActivity, setRecentActivity] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [billingResult, setBillingResult] = useState<string | null>(null)
   const [runningBilling, setRunningBilling] = useState(false)
   const [devToolsOpen, setDevToolsOpen] = useState(false)
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const [customers, invoices, subs, auditRes] = await Promise.all([
-          api.listCustomers(),
-          api.listInvoices('limit=10'),
-          api.listSubscriptions('status=active'),
-          api.listAuditLog('limit=8').catch(() => ({ data: [] })),
-        ])
-        setRecentActivity(auditRes.data || [])
+  const loadDashboard = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const [customers, invoices, subs, auditRes] = await Promise.all([
+        api.listCustomers(),
+        api.listInvoices('limit=10'),
+        api.listSubscriptions('status=active'),
+        api.listAuditLog('limit=8').catch(() => ({ data: [] })),
+      ])
+      setRecentActivity(auditRes.data || [])
 
-        const cMap: Record<string, Customer> = {}
-        customers.data.forEach(c => { cMap[c.id] = c })
-        setCustomerMap(cMap)
+      const cMap: Record<string, Customer> = {}
+      customers.data.forEach(c => { cMap[c.id] = c })
+      setCustomerMap(cMap)
 
-        const revenue = invoices.data
-          .filter(i => i.status === 'paid')
-          .reduce((sum, i) => sum + i.total_amount_cents, 0)
+      const revenue = invoices.data
+        .filter(i => i.status === 'paid')
+        .reduce((sum, i) => sum + i.total_amount_cents, 0)
 
-        setStats({
-          customers: customers.total,
-          subscriptions: subs.data.length,
-          invoices: invoices.total,
-          revenue,
-        })
-        setRecentInvoices(invoices.data.slice(0, 5))
-        setActiveSubs(subs.data.slice(0, 5))
-      } catch (err) {
-        console.error('Failed to load dashboard:', err)
-      } finally {
-        setLoading(false)
-      }
+      setStats({
+        customers: customers.total,
+        subscriptions: subs.data.length,
+        invoices: invoices.total,
+        revenue,
+      })
+      setRecentInvoices(invoices.data.slice(0, 5))
+      setActiveSubs(subs.data.slice(0, 5))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load dashboard')
+    } finally {
+      setLoading(false)
     }
-    load()
-  }, [])
+  }
+
+  useEffect(() => { loadDashboard() }, [])
 
   const handleTriggerBilling = async () => {
     setRunningBilling(true)
@@ -77,7 +80,11 @@ export function DashboardPage() {
         <p className="text-sm text-gray-500 mt-1">Billing overview</p>
       </div>
 
-      {loading ? (
+      {error ? (
+        <div className="bg-white rounded-xl shadow-card mt-6">
+          <ErrorState message={error} onRetry={loadDashboard} />
+        </div>
+      ) : loading ? (
         <div className="bg-white rounded-xl shadow-card mt-6">
           <LoadingSkeleton rows={6} columns={4} />
         </div>

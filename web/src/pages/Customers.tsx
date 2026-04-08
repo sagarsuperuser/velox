@@ -4,6 +4,7 @@ import { api, formatDate, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Plus, Search } from 'lucide-react'
 
@@ -11,6 +12,7 @@ export function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -19,11 +21,13 @@ export function CustomersPage() {
   const toast = useToast()
 
   const loadCustomers = () => {
+    setLoading(true)
+    setLoadError(null)
     api.listCustomers().then(res => {
       setCustomers(res.data)
       setTotal(res.total)
       setLoading(false)
-    })
+    }).catch(err => { setLoadError(err instanceof Error ? err.message : 'Failed to load customers'); setLoading(false) })
   }
 
   useEffect(() => { loadCustomers() }, [])
@@ -76,7 +80,9 @@ export function CustomersPage() {
       )}
 
       <div className="bg-white rounded-xl shadow-card mt-4">
-        {loading ? (
+        {loadError ? (
+          <ErrorState message={loadError} onRetry={loadCustomers} />
+        ) : loading ? (
           <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
         ) : customers.length === 0 ? (
           <div className="p-12 text-center">

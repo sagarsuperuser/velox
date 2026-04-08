@@ -4,6 +4,7 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Plus } from 'lucide-react'
 
@@ -13,16 +14,18 @@ export function CreditsPage() {
   const [balance, setBalance] = useState<CreditBalance | null>(null)
   const [ledger, setLedger] = useState<CreditLedgerEntry[]>([])
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [showGrant, setShowGrant] = useState(false)
   const toast = useToast()
 
   useEffect(() => {
-    api.listCustomers().then(res => setCustomers(res.data))
+    api.listCustomers().then(res => setCustomers(res.data)).catch(err => setError(err instanceof Error ? err.message : 'Failed to load customers'))
   }, [])
 
   const loadCredits = (customerId: string) => {
     if (!customerId) return
     setLoading(true)
+    setError(null)
     Promise.all([
       api.getBalance(customerId),
       api.listLedger(customerId),
@@ -30,7 +33,8 @@ export function CreditsPage() {
       setBalance(b)
       setLedger(l.data || [])
       setLoading(false)
-    }).catch(() => {
+    }).catch(err => {
+      setError(err instanceof Error ? err.message : 'Failed to load credits')
       setBalance({ customer_id: customerId, balance_cents: 0, total_granted: 0, total_used: 0 })
       setLedger([])
       setLoading(false)
@@ -66,7 +70,13 @@ export function CreditsPage() {
         </select>
       </div>
 
-      {selectedCustomer && balance && !loading && (
+      {error && selectedCustomer && (
+        <div className="mt-6">
+          <ErrorState message={error} onRetry={() => loadCredits(selectedCustomer)} />
+        </div>
+      )}
+
+      {selectedCustomer && balance && !loading && !error && (
         <>
           {/* Balance cards */}
           <div className="grid grid-cols-3 gap-4 mt-6">

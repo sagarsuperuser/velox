@@ -4,6 +4,7 @@ import { api, downloadPDF, formatCents, formatDate, type Invoice, type LineItem,
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
+import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
@@ -27,12 +28,15 @@ export function InvoiceDetailPage() {
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [subscription, setSubscription] = useState<Subscription | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [acting, setActing] = useState(false)
   const [showVoidConfirm, setShowVoidConfirm] = useState(false)
   const toast = useToast()
 
-  useEffect(() => {
+  const loadData = () => {
     if (!id) return
+    setLoading(true)
+    setError(null)
     api.getInvoice(id).then(async (res) => {
       setInvoice(res.invoice)
       setLineItems(res.line_items)
@@ -56,8 +60,10 @@ export function InvoiceDetailPage() {
       }
 
       setLoading(false)
-    })
-  }, [id])
+    }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load invoice'); setLoading(false) })
+  }
+
+  useEffect(() => { loadData() }, [id])
 
   const handleFinalize = async () => {
     if (!id || !invoice) return
@@ -98,6 +104,8 @@ export function InvoiceDetailPage() {
       </Layout>
     )
   }
+
+  if (error) return <Layout><ErrorState message={error} onRetry={loadData} /></Layout>
 
   if (!invoice) return <Layout><p>Invoice not found</p></Layout>
 

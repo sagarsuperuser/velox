@@ -7,6 +7,7 @@ import { Modal } from '@/components/Modal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Plus } from 'lucide-react'
 
@@ -14,6 +15,7 @@ export function CreditNotesPage() {
   const [notes, setNotes] = useState<CreditNote[]>([])
   const [invoiceMap, setInvoiceMap] = useState<Record<string, Invoice>>({})
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [confirmIssue, setConfirmIssue] = useState<string | null>(null)
   const [confirmVoid, setConfirmVoid] = useState<string | null>(null)
@@ -21,6 +23,7 @@ export function CreditNotesPage() {
 
   const loadNotes = () => {
     setLoading(true)
+    setError(null)
     Promise.all([
       api.listCreditNotes(),
       api.listInvoices().catch(() => ({ data: [] as Invoice[], total: 0 })),
@@ -30,7 +33,7 @@ export function CreditNotesPage() {
       invoicesRes.data.forEach(inv => { map[inv.id] = inv })
       setInvoiceMap(map)
       setLoading(false)
-    }).catch(() => { setNotes([]); setLoading(false) })
+    }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load credit notes'); setNotes([]); setLoading(false) })
   }
 
   useEffect(() => { loadNotes() }, [])
@@ -69,7 +72,8 @@ export function CreditNotesPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-card mt-6">
-        {loading ? <LoadingSkeleton rows={5} columns={6} />
+        {error ? <ErrorState message={error} onRetry={loadNotes} />
+        : loading ? <LoadingSkeleton rows={5} columns={6} />
         : notes.length === 0 ? <EmptyState title="No credit notes" description="Credit notes will appear here once created" />
         : (
           <table className="w-full">
@@ -145,7 +149,7 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
   const [refundType, setRefundType] = useState('credit')
   const [description, setDescription] = useState('')
   const [quantity, setQuantity] = useState('1')
-  const [unitAmountCents, setUnitAmountCents] = useState('')
+  const [unitAmountDollars, setUnitAmountDollars] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -172,7 +176,7 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
         lines: [{
           description: description || reason,
           quantity: parseInt(quantity) || 1,
-          unit_amount_cents: parseInt(unitAmountCents) || 0,
+          unit_amount_cents: Math.round(parseFloat(unitAmountDollars) * 100) || 0,
         }],
       })
       onCreated()
@@ -230,13 +234,10 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Unit Amount</label>
-                <input type="number" min={0} value={unitAmountCents} onChange={e => setUnitAmountCents(e.target.value)}
+                <label className="block text-sm font-medium text-gray-700 mb-1">Unit Price ($)</label>
+                <input type="number" step="0.01" min="0" value={unitAmountDollars} onChange={e => setUnitAmountDollars(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-                  placeholder="1000" required />
-                <p className="text-xs text-gray-400 mt-1">
-                  Enter amount in cents{unitAmountCents ? ` = $${(parseInt(unitAmountCents) / 100).toFixed(2)}` : ''}
-                </p>
+                  placeholder="10.00" required />
               </div>
             </div>
           </div>

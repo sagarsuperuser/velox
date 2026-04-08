@@ -6,6 +6,7 @@ import { Modal } from '@/components/Modal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
+import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 
 export function WebhooksPage() {
@@ -37,6 +38,7 @@ export function WebhooksPage() {
 function EndpointsTab() {
   const [endpoints, setEndpoints] = useState<WebhookEndpoint[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [createdSecret, setCreatedSecret] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<WebhookEndpoint | null>(null)
@@ -44,9 +46,10 @@ function EndpointsTab() {
 
   const loadEndpoints = () => {
     setLoading(true)
+    setError(null)
     api.listWebhookEndpoints()
       .then(res => { setEndpoints(res.data || []); setLoading(false) })
-      .catch(() => { setEndpoints([]); setLoading(false) })
+      .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load endpoints'); setEndpoints([]); setLoading(false) })
   }
 
   useEffect(() => { loadEndpoints() }, [])
@@ -73,7 +76,8 @@ function EndpointsTab() {
       </div>
 
       <div className="bg-white rounded-xl shadow-card mt-4">
-        {loading ? <LoadingSkeleton rows={5} columns={5} />
+        {error ? <ErrorState message={error} onRetry={loadEndpoints} />
+        : loading ? <LoadingSkeleton rows={5} columns={5} />
         : endpoints.length === 0 ? <EmptyState title="No webhook endpoints" description="Add an endpoint to receive event notifications" />
         : (
           <table className="w-full">
@@ -256,13 +260,15 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
 function EventsTab() {
   const [events, setEvents] = useState<WebhookEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const toast = useToast()
 
   const loadEvents = () => {
     setLoading(true)
+    setError(null)
     api.listWebhookEvents()
       .then(res => { setEvents(res.data || []); setLoading(false) })
-      .catch(() => { setEvents([]); setLoading(false) })
+      .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load events'); setEvents([]); setLoading(false) })
   }
 
   useEffect(() => { loadEvents() }, [])
@@ -278,7 +284,8 @@ function EventsTab() {
 
   return (
     <div className="bg-white rounded-xl shadow-card mt-4">
-      {loading ? <LoadingSkeleton rows={5} columns={4} />
+      {error ? <ErrorState message={error} onRetry={loadEvents} />
+      : loading ? <LoadingSkeleton rows={5} columns={4} />
       : events.length === 0 ? <EmptyState title="No webhook events" description="Events will appear here as they are sent to your endpoints" />
       : (
         <table className="w-full">

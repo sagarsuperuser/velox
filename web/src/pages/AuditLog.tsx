@@ -4,23 +4,28 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
+import { ErrorState } from '@/components/ErrorState'
+import { useToast } from '@/components/Toast'
 
 export function AuditLogPage() {
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [resourceType, setResourceType] = useState('all')
   const [action, setAction] = useState('all')
   const [expandedMeta, setExpandedMeta] = useState<Set<string>>(new Set())
+  const toast = useToast()
 
   const loadEntries = () => {
     setLoading(true)
+    setError(null)
     const params = new URLSearchParams()
     if (resourceType !== 'all') params.set('resource_type', resourceType)
     if (action !== 'all') params.set('action', action)
     const qs = params.toString()
     api.listAuditLog(qs || undefined)
       .then(res => { setEntries(res.data || []); setLoading(false) })
-      .catch(() => { setEntries([]); setLoading(false) })
+      .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load audit log'); setEntries([]); setLoading(false) })
   }
 
   useEffect(() => { loadEntries() }, [resourceType, action])
@@ -58,7 +63,8 @@ export function AuditLogPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-card mt-4">
-        {loading ? <LoadingSkeleton rows={8} columns={6} />
+        {error ? <ErrorState message={error} onRetry={loadEntries} />
+        : loading ? <LoadingSkeleton rows={8} columns={6} />
         : entries.length === 0 ? <EmptyState title="No audit entries" description="Actions will be recorded here automatically" />
         : (
           <table className="w-full">
@@ -83,10 +89,21 @@ export function AuditLogPage() {
                   <Fragment key={entry.id}>
                     <tr className="hover:bg-gray-50">
                       <td className="px-6 py-3 text-sm text-gray-500">{formatDate(entry.created_at)}</td>
-                      <td className="px-6 py-3"><Badge status={entry.actor_type} /></td>
+                      <td className="px-6 py-3 text-sm text-gray-500">{entry.actor_type === 'api_key' ? 'API Key' : entry.actor_type === 'system' ? 'System' : entry.actor_type}</td>
                       <td className="px-6 py-3"><Badge status={entry.action} /></td>
                       <td className="px-6 py-3 text-sm text-gray-500">{entry.resource_type}</td>
-                      <td className="px-6 py-3 text-sm font-mono text-gray-500">{entry.resource_id.slice(0, 12)}...</td>
+                      <td className="px-6 py-3">
+                        <span
+                          className="text-sm font-mono text-gray-500 cursor-pointer hover:text-gray-700"
+                          title="Click to copy"
+                          onClick={() => {
+                            navigator.clipboard.writeText(entry.resource_id)
+                            toast.success('Copied')
+                          }}
+                        >
+                          {entry.resource_id}
+                        </span>
+                      </td>
                       <td className="px-6 py-3 text-sm text-gray-400">
                         {!hasMeta ? '\u2014' : metaPath && !isExpanded ? (
                           <span className="flex items-center gap-2">
