@@ -122,48 +122,48 @@ export function CustomerDetailPage() {
       <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="flex divide-x divide-gray-100">
           <div className="flex-1 px-6 py-4">
-            <p className="text-xs text-gray-500">Email</p>
+            <p className="text-sm text-gray-500">Email</p>
             <p className="text-sm font-medium text-gray-900 mt-1">{customer.email || '\u2014'}</p>
           </div>
           <div className="flex-1 px-6 py-4">
-            <p className="text-xs text-gray-500">Credit Balance</p>
+            <p className="text-sm text-gray-500">Credit Balance</p>
             <p className="text-sm font-medium text-gray-900 mt-1">{formatCents(balance)}</p>
           </div>
           <div className="flex-1 px-6 py-4">
-            <p className="text-xs text-gray-500">Active Subs</p>
+            <p className="text-sm text-gray-500">Active Subscriptions</p>
             <p className="text-sm font-medium text-gray-900 mt-1">{overview?.active_subscriptions.length || 0}</p>
           </div>
           <div className="flex-1 px-6 py-4">
-            <p className="text-xs text-gray-500">Created</p>
+            <p className="text-sm text-gray-500">Created</p>
             <p className="text-sm font-medium text-gray-900 mt-1">{formatDate(customer.created_at)}</p>
           </div>
         </div>
       </div>
 
-      {/* Properties Card */}
+      {/* Details */}
       <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Properties</h2>
+          <h2 className="text-sm font-semibold text-gray-900">Details</h2>
         </div>
         <div className="divide-y divide-gray-50">
-          <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-36 shrink-0">External ID</span>
+          <div className="flex items-center justify-between px-6 py-3.5">
+            <span className="text-sm text-gray-500">External ID</span>
             <span className="text-sm text-gray-900 font-mono">{customer.external_id}</span>
           </div>
-          <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-36 shrink-0">Email</span>
+          <div className="flex items-center justify-between px-6 py-3.5">
+            <span className="text-sm text-gray-500">Email</span>
             <span className="text-sm text-gray-900">{customer.email || '\u2014'}</span>
           </div>
-          <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-36 shrink-0">Status</span>
+          <div className="flex items-center justify-between px-6 py-3.5">
+            <span className="text-sm text-gray-500">Status</span>
             <Badge status={customer.status} />
           </div>
-          <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-36 shrink-0">Created</span>
+          <div className="flex items-center justify-between px-6 py-3.5">
+            <span className="text-sm text-gray-500">Created</span>
             <span className="text-sm text-gray-900">{formatDate(customer.created_at)}</span>
           </div>
-          <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-36 shrink-0">ID</span>
+          <div className="flex items-center justify-between px-6 py-3.5">
+            <span className="text-sm text-gray-500">ID</span>
             <div className="flex items-center gap-1.5">
               <span className="text-sm text-gray-900 font-mono">{customer.id}</span>
               <CopyButton value={customer.id} field="props-id" />
@@ -187,48 +187,41 @@ export function CustomerDetailPage() {
               </button>
             </div>
             <div className="px-6 py-5">
-              {/* Contact & Legal */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-5">
                 <div>
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Legal Name</p>
+                  <p className="text-sm text-gray-500">Legal Name</p>
                   <p className="text-sm text-gray-900 mt-1">{billingProfile.legal_name || '\u2014'}</p>
                 </div>
                 <div>
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Email</p>
+                  <p className="text-sm text-gray-500">Email</p>
                   <p className="text-sm text-gray-900 mt-1">{billingProfile.email || '\u2014'}</p>
                 </div>
                 <div>
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Phone</p>
+                  <p className="text-sm text-gray-500">Phone</p>
                   <p className="text-sm text-gray-900 mt-1">{billingProfile.phone || '\u2014'}</p>
                 </div>
-              </div>
-
-              {/* Address */}
-              <div className="mt-5 pt-5 border-t border-gray-100">
-                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Address</p>
-                {billingProfile.address_line1 || billingProfile.city ? (
-                  <div className="text-sm text-gray-900 leading-relaxed">
-                    {billingProfile.address_line1 && <p>{billingProfile.address_line1}</p>}
-                    {billingProfile.address_line2 && <p>{billingProfile.address_line2}</p>}
-                    <p>
-                      {[billingProfile.city, billingProfile.state].filter(Boolean).join(', ')}
-                      {billingProfile.postal_code && ` ${billingProfile.postal_code}`}
-                    </p>
-                    {billingProfile.country && <p>{billingProfile.country}</p>}
-                  </div>
-                ) : (
-                  <p className="text-sm text-gray-400">No address on file</p>
-                )}
-              </div>
-
-              {/* Tax & Currency */}
-              <div className="mt-5 pt-5 border-t border-gray-100 grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
                 <div>
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Tax ID</p>
+                  <p className="text-sm text-gray-500">Address</p>
+                  {billingProfile.address_line1 || billingProfile.city ? (
+                    <div className="text-sm text-gray-900 mt-1 leading-relaxed">
+                      {billingProfile.address_line1 && <p>{billingProfile.address_line1}</p>}
+                      {billingProfile.address_line2 && <p>{billingProfile.address_line2}</p>}
+                      <p>
+                        {[billingProfile.city, billingProfile.state].filter(Boolean).join(', ')}
+                        {billingProfile.postal_code && ` ${billingProfile.postal_code}`}
+                      </p>
+                      {billingProfile.country && <p>{billingProfile.country}</p>}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400 mt-1">\u2014</p>
+                  )}
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500">Tax ID</p>
                   <p className="text-sm text-gray-900 mt-1 font-mono">{billingProfile.tax_identifier || '\u2014'}</p>
                 </div>
                 <div>
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Currency</p>
+                  <p className="text-sm text-gray-500">Currency</p>
                   <p className="text-sm text-gray-900 mt-1">{(billingProfile.currency || '\u2014').toUpperCase()}</p>
                 </div>
               </div>
@@ -243,8 +236,8 @@ export function CustomerDetailPage() {
               <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
                 <CreditCard size={18} className="text-gray-400" />
               </div>
-              <p className="text-sm font-medium text-gray-900">No billing profile</p>
-              <p className="text-xs text-gray-400 mt-1 max-w-xs mx-auto">Set up billing details to enable invoicing and payments for this customer</p>
+              <p className="text-sm text-gray-900">No billing profile</p>
+              <p className="text-sm text-gray-400 mt-1 max-w-xs mx-auto">Set up billing details to enable invoicing and payments for this customer</p>
               <button
                 onClick={() => setShowEditBilling(true)}
                 className="mt-4 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm transition-colors"
