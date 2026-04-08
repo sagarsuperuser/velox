@@ -213,13 +213,13 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
 
   return (
     <Modal open onClose={onClose} title="Add Webhook Endpoint">
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit} noValidate className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">URL <span className="text-red-500">*</span></label>
           <input type="url" value={url} onChange={e => setUrl(e.target.value)} required
             placeholder="https://example.com/webhooks"
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            maxLength={2048} title="Enter a valid HTTPS URL" />
+            maxLength={2048} />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>

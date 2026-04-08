@@ -175,7 +175,7 @@ function GrantModal({ customerId, onClose, onGranted }: { customerId: string; on
   return (
     <>
       <Modal open onClose={onClose} title="Grant Credits">
-        <form onSubmit={handleSubmit} className="space-y-3">
+        <form onSubmit={handleSubmit} noValidate className="space-y-3">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Amount ($)</label>
             <input type="number" step="0.01" min="0.01" max={999999.99} value={amount} onChange={e => setAmount(e.target.value)}

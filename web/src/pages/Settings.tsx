@@ -113,7 +113,7 @@ export function SettingsPage() {
       <h1 className="text-2xl font-semibold text-gray-900">Settings</h1>
       <p className="text-sm text-gray-500 mt-1">Configure your billing tenant</p>
 
-      <form onSubmit={handleSave}>
+      <form onSubmit={handleSave} noValidate>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
           {/* Company Information */}
           <div className="bg-white rounded-xl shadow-card">
@@ -132,14 +132,14 @@ export function SettingsPage() {
                 <input type="email" value={companyForm.company_email}
                   onChange={e => setCompanyForm(f => ({ ...f, company_email: e.target.value }))}
                   className={fieldClass} placeholder="billing@acme.com" maxLength={254}
-                  pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" title="Enter a valid email address" />
+                  />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
                 <input type="tel" value={companyForm.company_phone}
                   onChange={e => setCompanyForm(f => ({ ...f, company_phone: e.target.value }))}
                   className={fieldClass} placeholder="+1 (555) 123-4567" maxLength={20}
-                  pattern="[\+\d\s\-\(\)]{7,20}" title="Enter a valid phone number" />
+                  />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Address</label>

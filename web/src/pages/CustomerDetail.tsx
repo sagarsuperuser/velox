@@ -297,7 +297,7 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
 
   return (
     <Modal open onClose={onClose} title="Edit Customer">
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit} noValidate className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
           <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
@@ -307,7 +307,7 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
           <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
           <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            maxLength={254} pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" title="Enter a valid email address" />
+            maxLength={254} />
         </div>
         {error && <p className="text-red-600 text-xs">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
@@ -358,7 +358,7 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
 
   return (
     <Modal open onClose={onClose} title="Billing Profile">
-      <form onSubmit={handleSubmit} className="space-y-3 max-h-[70vh] overflow-y-auto">
+      <form onSubmit={handleSubmit} noValidate className="space-y-3 max-h-[70vh] overflow-y-auto">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Legal Name</label>
           <input type="text" value={form.legal_name} onChange={e => setForm(f => ({ ...f, legal_name: e.target.value }))} className={fieldClass} maxLength={255} />
@@ -367,12 +367,12 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
             <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} className={fieldClass}
-              maxLength={254} pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" title="Enter a valid email address" />
+              maxLength={254} />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
             <input type="tel" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} className={fieldClass}
-              placeholder="+1 (555) 123-4567" maxLength={20} pattern="[\+\d\s\-\(\)]{7,20}" title="Enter a valid phone number" />
+              placeholder="+1 (555) 123-4567" maxLength={20} />
           </div>
         </div>
         <div>
@@ -464,7 +464,7 @@ function CreateSubscriptionFromCustomerModal({ customerId, plans, onClose, onCre
 
   return (
     <Modal open onClose={onClose} title="Create Subscription">
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit} noValidate className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
           <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
@@ -476,7 +476,7 @@ function CreateSubscriptionFromCustomerModal({ customerId, plans, onClose, onCre
           <input type="text" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 font-mono"
             placeholder="pro-monthly" required maxLength={100}
-            pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, underscores, and hyphens" />
+ />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Plan <span className="text-red-500">*</span></label>

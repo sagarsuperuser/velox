@@ -356,7 +356,7 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
 
   return (
     <Modal open onClose={onClose} title="Change Plan">
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit} noValidate className="space-y-4">
         <div>
           <p className="text-sm text-gray-500">Current plan</p>
           <p className="text-sm font-semibold text-gray-900 mt-0.5">{currentPlanName}</p>

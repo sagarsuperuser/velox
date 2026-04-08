@@ -108,15 +108,15 @@ function Td({ children, bold, mono, right, muted }: { children: React.ReactNode;
   return <td className={`px-6 py-3 text-sm ${right ? 'text-right' : ''} ${bold ? 'font-medium text-gray-900' : ''} ${mono ? 'font-mono text-gray-500' : ''} ${muted ? 'text-gray-400' : ''} ${!bold && !mono && !muted ? 'text-gray-500' : ''}`}>{children}</td>
 }
 
-function Field({ label, value, onChange, placeholder, required, mono, type, maxLength, pattern, title, min, max, step }: {
+function Field({ label, value, onChange, placeholder, required, mono, type, maxLength, min, max, step }: {
   label: string; value: string; onChange: (v: string) => void; placeholder?: string; required?: boolean; mono?: boolean; type?: string;
-  maxLength?: number; pattern?: string; title?: string; min?: number; max?: number; step?: string
+  maxLength?: number; min?: number; max?: number; step?: string
 }) {
   return (<div>
     <label className="block text-sm font-medium text-gray-700 mb-1">{label}{required && <span className="text-red-500"> *</span>}</label>
     <input type={type || 'text'} value={value} onChange={e => onChange(e.target.value)}
       className={`w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 ${mono ? 'font-mono' : ''}`}
-      placeholder={placeholder} required={required} maxLength={maxLength} pattern={pattern} title={title} min={min} max={max} step={step} />
+      placeholder={placeholder} required={required} maxLength={maxLength} min={min} max={max} step={step} />
   </div>)
 }
 
@@ -167,9 +167,9 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const updateTier = (idx: number, field: 'up_to' | 'unit_amount_cents', value: number) =>
     setForm(f => ({ ...f, graduated_tiers: f.graduated_tiers.map((t, i) => i === idx ? { ...t, [field]: value } : t) }))
 
-  return (<Modal open onClose={onClose} title="Create Rating Rule"><form onSubmit={submit} className="space-y-3">
+  return (<Modal open onClose={onClose} title="Create Rating Rule"><form onSubmit={submit} noValidate className="space-y-3">
     <Field label="Name" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="API Call Pricing" required maxLength={255} />
-    <Field label="Rule Key" value={form.rule_key} onChange={v => setForm(f => ({ ...f, rule_key: v }))} placeholder="api_calls" mono required maxLength={100} pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, underscores, and hyphens" />
+    <Field label="Rule Key" value={form.rule_key} onChange={v => setForm(f => ({ ...f, rule_key: v }))} placeholder="api_calls" mono required maxLength={100} />
     <div className="grid grid-cols-2 gap-3">
       <Select label="Mode" value={form.mode} onChange={v => setForm(f => ({ ...f, mode: v }))} options={[['flat', 'Flat'], ['graduated', 'Graduated'], ['package', 'Package']]} />
       <Field label="Currency" value={form.currency} onChange={v => setForm(f => ({ ...f, currency: v }))} />
@@ -222,9 +222,9 @@ function CreateMeterModal({ onClose, onCreated, rules }: { onClose: () => void; 
     catch (err) { setError(err instanceof Error ? err.message : 'Failed') }
     finally { setSaving(false) }
   }
-  return (<Modal open onClose={onClose} title="Create Meter"><form onSubmit={submit} className="space-y-3">
+  return (<Modal open onClose={onClose} title="Create Meter"><form onSubmit={submit} noValidate className="space-y-3">
     <Field label="Name" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="API Calls" required maxLength={255} />
-    <Field label="Key" value={form.key} onChange={v => setForm(f => ({ ...f, key: v }))} placeholder="api_calls" mono required maxLength={100} pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, underscores, and hyphens" />
+    <Field label="Key" value={form.key} onChange={v => setForm(f => ({ ...f, key: v }))} placeholder="api_calls" mono required maxLength={100} />
     <div className="grid grid-cols-2 gap-3">
       <Field label="Unit" value={form.unit} onChange={v => setForm(f => ({ ...f, unit: v }))} />
       <Select label="Aggregation" value={form.aggregation} onChange={v => setForm(f => ({ ...f, aggregation: v }))} options={[['sum', 'Sum'], ['count', 'Count'], ['max', 'Max'], ['last', 'Last']]} />
@@ -244,9 +244,9 @@ function CreatePlanModal({ onClose, onCreated, meters }: { onClose: () => void; 
     catch (err) { setError(err instanceof Error ? err.message : 'Failed') }
     finally { setSaving(false) }
   }
-  return (<Modal open onClose={onClose} title="Create Plan"><form onSubmit={submit} className="space-y-3">
+  return (<Modal open onClose={onClose} title="Create Plan"><form onSubmit={submit} noValidate className="space-y-3">
     <Field label="Name" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="Pro Plan" required maxLength={255} />
-    <Field label="Code" value={form.code} onChange={v => setForm(f => ({ ...f, code: v }))} placeholder="pro" mono required maxLength={100} pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, underscores, and hyphens" />
+    <Field label="Code" value={form.code} onChange={v => setForm(f => ({ ...f, code: v }))} placeholder="pro" mono required maxLength={100} />
     <div className="grid grid-cols-2 gap-3">
       <Select label="Interval" value={form.billing_interval} onChange={v => setForm(f => ({ ...f, billing_interval: v }))} options={[['monthly', 'Monthly'], ['yearly', 'Yearly']]} />
       <Field label="Base Price ($)" value={String((form.base_amount_cents / 100).toFixed(2))} type="number" onChange={v => setForm(f => ({ ...f, base_amount_cents: Math.round(parseFloat(v) * 100) || 0 }))} min={0} step="0.01" max={999999.99} />

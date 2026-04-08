@@ -249,7 +249,7 @@ function ResolveModal({ run, invoiceMap, onClose, onResolved }: { run: DunningRu
 
   return (
     <Modal open onClose={onClose} title="Resolve Dunning Run">
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit} noValidate className="space-y-3">
         <p className="text-sm text-gray-500">Invoice: <span className="font-mono">{invoiceMap[run.invoice_id]?.invoice_number || run.invoice_id.slice(0, 8) + '...'}</span></p>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Resolution</label>
