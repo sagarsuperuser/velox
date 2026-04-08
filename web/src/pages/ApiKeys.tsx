@@ -180,7 +180,7 @@ function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated
 
   return (
     <Modal open onClose={onClose} title="Create API Key">
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit} noValidate className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Name <span className="text-red-500">*</span></label>
           <input type="text" value={name} onChange={e => setName(e.target.value)} required

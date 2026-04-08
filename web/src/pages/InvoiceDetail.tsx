@@ -300,13 +300,13 @@ function EmailInvoiceModal({ invoiceId, defaultEmail, onClose, onSent, onError }
 
   return (
     <Modal open onClose={onClose} title="Email Invoice">
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit} noValidate className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Recipient Email <span className="text-red-500">*</span></label>
           <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
             placeholder="customer@example.com"
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            maxLength={254} pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" title="Enter a valid email address" />
+            maxLength={254} />
         </div>
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
@@ -352,7 +352,7 @@ function IssueCreditModal({ invoice, onClose, onCreated, onError }: {
 
   return (
     <Modal open onClose={onClose} title="Issue Credit / Refund">
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit} noValidate className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Invoice</label>
           <p className="text-sm text-gray-500 font-mono">{invoice.invoice_number}</p>

@@ -45,7 +45,7 @@ export function LoginPage() {
           <p className="text-sm text-gray-400 mt-0.5">Open-source usage-based billing</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-card p-6">
+        <form onSubmit={handleSubmit} noValidate className="bg-white rounded-xl shadow-card p-6">
           <label className="block text-sm font-medium text-gray-700 mb-2">
             API Key
           </label>

@@ -175,7 +175,7 @@ function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
 
   return (
     <Modal open onClose={onClose} title="Create Subscription">
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit} noValidate className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
           <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
@@ -187,7 +187,7 @@ function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
           <input type="text" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 font-mono"
             placeholder="acme-pro" required maxLength={100}
-            pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, underscores, and hyphens" />
+            />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Customer <span className="text-red-500">*</span></label>

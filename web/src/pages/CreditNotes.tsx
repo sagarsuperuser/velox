@@ -191,7 +191,7 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
 
   return (
     <Modal open onClose={onClose} title="Create Credit Note">
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit} noValidate className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Invoice <span className="text-red-500">*</span></label>
           <select value={invoiceId} onChange={e => setInvoiceId(e.target.value)}
