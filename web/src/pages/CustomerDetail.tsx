@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Copy, Check, CreditCard } from 'lucide-react'
+import { Copy, Check, CreditCard, Pencil } from 'lucide-react'
 
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -109,9 +109,10 @@ export function CustomerDetailPage() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => setShowEditCustomer(true)}
-            className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
+            className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 hover:border-gray-400 transition-colors"
           >
-            Edit Customer
+            <Pencil size={14} />
+            Edit
           </button>
           <Badge status={customer.status} />
         </div>
@@ -179,8 +180,9 @@ export function CustomerDetailPage() {
               <h2 className="text-sm font-semibold text-gray-900">Billing Profile</h2>
               <button
                 onClick={() => setShowEditBilling(true)}
-                className="px-3 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-50 transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-50 hover:border-gray-400 transition-colors"
               >
+                <Pencil size={12} />
                 Edit
               </button>
             </div>

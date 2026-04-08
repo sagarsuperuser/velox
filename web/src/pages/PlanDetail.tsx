@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Copy, Check, Plus, X } from 'lucide-react'
+import { Copy, Check, Plus, X, Pencil } from 'lucide-react'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -150,8 +150,9 @@ export function PlanDetailPage() {
           <Badge status={plan.status} />
           <button
             onClick={() => setShowEdit(true)}
-            className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
+            className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 hover:border-gray-400 transition-colors"
           >
+            <Pencil size={14} />
             Edit
           </button>
         </div>
