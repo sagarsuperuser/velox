@@ -7,6 +7,8 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { Search, Download } from 'lucide-react'
+import { downloadCSV } from '@/lib/csv'
 
 const STATUS_OPTIONS = ['All', 'draft', 'finalized', 'paid', 'voided'] as const
 
@@ -17,6 +19,7 @@ export function InvoicesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<string>('All')
+  const [search, setSearch] = useState('')
   const toast = useToast()
 
   const loadInvoices = () => {
@@ -37,9 +40,14 @@ export function InvoicesPage() {
 
   useEffect(() => { loadInvoices() }, [])
 
-  const filtered = statusFilter === 'All'
-    ? invoices
-    : invoices.filter(inv => inv.status === statusFilter)
+  const filtered = invoices.filter(inv => {
+    if (statusFilter !== 'All' && inv.status !== statusFilter) return false
+    if (search) {
+      const q = search.toLowerCase()
+      if (!inv.invoice_number.toLowerCase().includes(q)) return false
+    }
+    return true
+  })
 
   return (
     <Layout>
@@ -50,18 +58,56 @@ export function InvoicesPage() {
             {statusFilter !== 'All' ? `${filtered.length} of ${total} invoices` : `${total} total`}
           </p>
         </div>
-        <select
-          value={statusFilter}
-          onChange={e => setStatusFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
-        >
-          {STATUS_OPTIONS.map(s => (
-            <option key={s} value={s}>{s === 'All' ? 'All statuses' : s.charAt(0).toUpperCase() + s.slice(1)}</option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          {invoices.length > 0 && (
+            <button
+              onClick={() => {
+                const rows = filtered.map(inv => [
+                  inv.invoice_number,
+                  customerMap[inv.customer_id]?.display_name || 'Unknown',
+                  inv.status,
+                  inv.payment_status,
+                  (inv.total_amount_cents / 100).toFixed(2),
+                  inv.currency,
+                  inv.billing_period_start,
+                  inv.billing_period_end,
+                  formatDate(inv.created_at),
+                ])
+                downloadCSV('invoices.csv', ['Invoice Number', 'Customer', 'Status', 'Payment Status', 'Amount', 'Currency', 'Period Start', 'Period End', 'Created'], rows)
+              }}
+              className="flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 shadow-sm transition-colors"
+            >
+              <Download size={16} />
+              Export CSV
+            </button>
+          )}
+          <select
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value)}
+            className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
+          >
+            {STATUS_OPTIONS.map(s => (
+              <option key={s} value={s}>{s === 'All' ? 'All statuses' : s.charAt(0).toUpperCase() + s.slice(1)}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-card mt-6">
+      {/* Search */}
+      {invoices.length > 0 && (
+        <div className="relative mt-6">
+          <Search size={16} className="absolute left-3 top-2.5 text-gray-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search invoices..."
+            className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 focus:border-transparent bg-white"
+          />
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl shadow-card mt-4">
         {error ? (
           <ErrorState message={error} onRetry={loadInvoices} />
         ) : loading ? (
