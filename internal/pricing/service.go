@@ -185,6 +185,7 @@ type CreatePlanInput struct {
 	BillingInterval domain.BillingInterval `json:"billing_interval"`
 	BaseAmountCents int64               `json:"base_amount_cents"`
 	MeterIDs        []string            `json:"meter_ids"`
+	Status          string              `json:"status,omitempty"`
 }
 
 func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreatePlanInput) (domain.Plan, error) {
@@ -250,6 +251,9 @@ func (s *Service) UpdatePlan(ctx context.Context, tenantID, id string, input Cre
 	}
 	if input.MeterIDs != nil {
 		existing.MeterIDs = input.MeterIDs
+	}
+	if input.Status != "" {
+		existing.Status = domain.PlanStatus(input.Status)
 	}
 
 	return s.store.UpdatePlan(ctx, tenantID, existing)
