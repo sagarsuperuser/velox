@@ -172,19 +172,21 @@ export function CustomersPage() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
             <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-              placeholder="Acme Corporation" required />
+              placeholder="Acme Corporation" required maxLength={255} />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">External ID <span className="text-red-500">*</span></label>
             <input type="text" value={form.external_id} onChange={e => setForm(f => ({ ...f, external_id: e.target.value }))}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 font-mono"
-              placeholder="acme_corp" required />
+              placeholder="acme_corp" required maxLength={100}
+              pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, underscores, and hyphens" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
             <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-              placeholder="billing@acme.com" />
+              placeholder="billing@acme.com" maxLength={254}
+              pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" title="Enter a valid email address" />
           </div>
           {error && <p className="text-red-600 text-xs">{error}</p>}
           <div className="flex justify-end gap-3 pt-2">

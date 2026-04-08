@@ -125,25 +125,27 @@ export function SettingsPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
                 <input type="text" value={companyForm.company_name}
                   onChange={e => setCompanyForm(f => ({ ...f, company_name: e.target.value }))}
-                  className={fieldClass} placeholder="Acme Inc." />
+                  className={fieldClass} placeholder="Acme Inc." maxLength={255} />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
                 <input type="email" value={companyForm.company_email}
                   onChange={e => setCompanyForm(f => ({ ...f, company_email: e.target.value }))}
-                  className={fieldClass} placeholder="billing@acme.com" />
+                  className={fieldClass} placeholder="billing@acme.com" maxLength={254}
+                  pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" title="Enter a valid email address" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-                <input type="text" value={companyForm.company_phone}
+                <input type="tel" value={companyForm.company_phone}
                   onChange={e => setCompanyForm(f => ({ ...f, company_phone: e.target.value }))}
-                  className={fieldClass} placeholder="+1 (555) 123-4567" />
+                  className={fieldClass} placeholder="+1 (555) 123-4567" maxLength={20}
+                  pattern="[\+\d\s\-\(\)]{7,20}" title="Enter a valid phone number" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Address</label>
                 <textarea value={companyForm.company_address}
                   onChange={e => setCompanyForm(f => ({ ...f, company_address: e.target.value }))}
-                  className={fieldClass} rows={3} placeholder="123 Main St, Suite 100&#10;San Francisco, CA 94105" />
+                  className={fieldClass} rows={3} placeholder="123 Main St, Suite 100&#10;San Francisco, CA 94105" maxLength={500} />
               </div>
             </div>
           </div>
@@ -158,7 +160,7 @@ export function SettingsPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Invoice Prefix</label>
                 <input type="text" value={invoiceForm.invoice_prefix}
                   onChange={e => setInvoiceForm(f => ({ ...f, invoice_prefix: e.target.value }))}
-                  className={fieldClass + ' font-mono'} placeholder="INV-" />
+                  className={fieldClass + ' font-mono'} placeholder="INV-" maxLength={20} />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Net Payment Terms (days)</label>

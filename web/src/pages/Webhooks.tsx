@@ -216,21 +216,24 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">URL <span className="text-red-500">*</span></label>
-          <input type="text" value={url} onChange={e => setUrl(e.target.value)} required
+          <input type="url" value={url} onChange={e => setUrl(e.target.value)} required
             placeholder="https://example.com/webhooks"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+            maxLength={2048} title="Enter a valid HTTPS URL" />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
           <input type="text" value={description} onChange={e => setDescription(e.target.value)}
             placeholder="Production webhook"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+            maxLength={500} />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Events (comma-separated)</label>
           <input type="text" value={events} onChange={e => setEvents(e.target.value)}
             placeholder="invoice.created, payment.succeeded"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+            maxLength={500} />
           <div className="flex flex-wrap gap-1 mt-2">
             {suggestedEvents.map(ev => (
               <button key={ev} type="button"

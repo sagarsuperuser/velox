@@ -25,7 +25,7 @@ func AuditLog(db *postgres.DB) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Skip bootstrap, health, metrics, webhooks
+			// Skip system endpoints (not operator actions)
 			if strings.HasPrefix(r.URL.Path, "/v1/bootstrap") ||
 				strings.HasPrefix(r.URL.Path, "/v1/webhooks/stripe") ||
 				strings.HasPrefix(r.URL.Path, "/health") ||
@@ -66,6 +66,18 @@ func parseAuditPath(method, path string) (action, resourceType, resourceID strin
 	}
 
 	resourceType = parts[0]
+
+	// Handle 2-part paths with known actions: billing/run, credits/grant, etc.
+	if len(parts) == 2 {
+		switch parts[1] {
+		case "run":
+			return "run", parts[0], "" // "run billing"
+		case "grant":
+			return "grant", parts[0], ""
+		case "adjust":
+			return "adjust", parts[0], ""
+		}
+	}
 
 	// Map path actions to audit actions
 	if len(parts) >= 3 {
