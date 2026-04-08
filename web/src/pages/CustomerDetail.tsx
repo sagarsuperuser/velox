@@ -51,7 +51,7 @@ export function CustomerDetailPage() {
       setBillingProfile(bp)
       setUsageSummary(us)
       const mm: Record<string, string> = {}
-      metersRes.data.forEach(m => { mm[m.key] = m.name })
+      metersRes.data.forEach(m => { mm[m.id] = m.name; mm[m.key] = m.name })
       setMeterMap(mm)
       setPlans(plansRes.data.filter(p => p.status === 'active'))
       setAllSubs(subsRes.data.filter(s => s.customer_id === id))
@@ -246,10 +246,6 @@ export function CustomerDetailPage() {
                   <span className="text-sm font-medium text-gray-900">{qty.toLocaleString()}</span>
                 </div>
               ))}
-            </div>
-            <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
-              <span className="text-xs text-gray-500">Total events</span>
-              <span className="text-sm font-medium text-gray-900">{usageSummary.total_events.toLocaleString()}</span>
             </div>
           </div>
         ) : (
