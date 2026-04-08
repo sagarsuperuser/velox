@@ -373,17 +373,19 @@ function CreatePlanModal({ onClose, onCreated, meters }: { onClose: () => void; 
           value={basePrice} onChange={e => setBasePrice(e.target.value)}
           placeholder="49.00" hint={`Fixed ${interval} charge before usage fees`} />
         {meters.length > 0 && (
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Usage Meters</label>
-            <p className="text-xs text-gray-400 mb-2">Select which meters this plan tracks. Usage charges are added on top of the base price.</p>
-            <div className="space-y-1.5 bg-gray-50 rounded-lg border border-gray-200 p-3">
+          <div className="border-t border-gray-100 pt-4">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Usage Meters</p>
+            <div className="space-y-0 rounded-lg border border-gray-200 divide-y divide-gray-100 overflow-hidden">
               {meters.map(m => (
-                <label key={m.id} className="flex items-center gap-2.5 text-sm cursor-pointer hover:text-gray-900">
+                <label key={m.id} className="flex items-center gap-3 px-3 py-2.5 text-sm cursor-pointer hover:bg-gray-50 transition-colors">
                   <input type="checkbox" checked={meterIds.includes(m.id)}
                     className="rounded border-gray-300 text-velox-600 focus:ring-velox-500"
                     onChange={e => setMeterIds(e.target.checked ? [...meterIds, m.id] : meterIds.filter(id => id !== m.id))} />
-                  <span className="text-gray-700">{m.name}</span>
-                  <span className="text-gray-400 font-mono text-xs">({m.key})</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-gray-900">{m.name}</span>
+                    <span className="text-gray-400 font-mono text-xs ml-2">{m.key}</span>
+                  </div>
+                  <span className="text-xs text-gray-400">{m.aggregation} · {m.unit}</span>
                 </label>
               ))}
             </div>
