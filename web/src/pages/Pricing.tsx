@@ -295,7 +295,7 @@ function CreateMeterModal({ onClose, onCreated, rules }: { onClose: () => void; 
           placeholder="API Calls" maxLength={255} />
         <FormField label="Key" required value={form.key} onChange={e => setForm(f => ({ ...f, key: e.target.value }))}
           placeholder="api_calls" maxLength={100} mono
-          hint="Must match the event_name in usage events" />
+          hint="Used to match incoming usage events (e.g. api_calls, messages_sent)" />
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Unit Label" value={form.unit} onChange={e => setForm(f => ({ ...f, unit: e.target.value }))}
             placeholder="unit" hint="e.g. call, request, GB" />
