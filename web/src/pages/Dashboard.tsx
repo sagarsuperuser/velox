@@ -154,65 +154,53 @@ export function DashboardPage() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
-            {/* Needs Attention */}
-            <div className="bg-white rounded-xl shadow-card">
-              <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
-                <div className="flex items-center gap-2">
-                  {attentionItems.length > 0 ? (
+          <div className={`grid grid-cols-1 ${attentionItems.length > 0 ? 'lg:grid-cols-2' : ''} gap-6 mt-8`}>
+            {/* Needs Attention — only shown when items exist */}
+            {attentionItems.length > 0 && (
+              <div className="bg-white rounded-xl shadow-card">
+                <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+                  <div className="flex items-center gap-2">
                     <AlertTriangle size={15} className="text-amber-500" />
-                  ) : (
-                    <CheckCircle size={15} className="text-emerald-500" />
-                  )}
-                  <h2 className="text-sm font-semibold text-gray-900">
-                    {attentionItems.length > 0 ? `Needs Attention` : 'All Clear'}
-                  </h2>
-                  {attentionItems.length > 0 && (
+                    <h2 className="text-sm font-semibold text-gray-900">Needs Attention</h2>
                     <span className="bg-amber-100 text-amber-700 text-xs font-medium px-1.5 py-0.5 rounded-full">
                       {attentionItems.length}
                     </span>
-                  )}
-                </div>
-                <Link to="/invoices" className="text-xs text-velox-600 hover:underline">View all</Link>
-              </div>
-              <div className="divide-y divide-gray-50">
-                {attentionItems.length > 0 ? attentionItems.map(inv => (
-                  <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50/80 transition-colors">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                        inv.payment_status === 'failed' ? 'bg-rose-50 text-rose-500' :
-                        inv.status === 'draft' ? 'bg-gray-100 text-gray-500' :
-                        'bg-amber-50 text-amber-500'
-                      }`}>
-                        {inv.payment_status === 'failed' ? <AlertTriangle size={14} /> :
-                         inv.status === 'draft' ? <FileText size={14} /> :
-                         <Clock size={14} />}
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-gray-900">{inv.invoice_number}</p>
-                        <p className="text-xs text-gray-400">
-                          {customerMap[inv.customer_id]?.display_name || 'Unknown'} · {
-                            inv.payment_status === 'failed' ? 'Payment failed' :
-                            inv.status === 'draft' ? 'Awaiting finalization' :
-                            'Awaiting payment'
-                          }
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <Badge status={inv.payment_status === 'failed' ? 'failed' : inv.status} />
-                      <span className="text-sm font-medium text-gray-900">{formatCents(inv.total_amount_cents)}</span>
-                    </div>
-                  </Link>
-                )) : (
-                  <div className="px-6 py-8 text-center">
-                    <CheckCircle size={24} className="text-emerald-400 mx-auto mb-2" />
-                    <p className="text-sm text-gray-500">No items need attention</p>
-                    <p className="text-xs text-gray-400 mt-0.5">All invoices are finalized and paid</p>
                   </div>
-                )}
+                  <Link to="/invoices" className="text-xs text-velox-600 hover:underline">View all</Link>
+                </div>
+                <div className="divide-y divide-gray-50 max-h-[300px] overflow-y-auto">
+                  {attentionItems.map(inv => (
+                    <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50/80 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                          inv.payment_status === 'failed' ? 'bg-rose-50 text-rose-500' :
+                          inv.status === 'draft' ? 'bg-gray-100 text-gray-500' :
+                          'bg-amber-50 text-amber-500'
+                        }`}>
+                          {inv.payment_status === 'failed' ? <AlertTriangle size={14} /> :
+                           inv.status === 'draft' ? <FileText size={14} /> :
+                           <Clock size={14} />}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">{inv.invoice_number}</p>
+                          <p className="text-xs text-gray-400">
+                            {customerMap[inv.customer_id]?.display_name || 'Unknown'} · {
+                              inv.payment_status === 'failed' ? 'Payment failed' :
+                              inv.status === 'draft' ? 'Awaiting finalization' :
+                              'Awaiting payment'
+                            }
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Badge status={inv.payment_status === 'failed' ? 'failed' : inv.status} />
+                        <span className="text-sm font-medium text-gray-900">{formatCents(inv.total_amount_cents)}</span>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Active Subscriptions */}
             <div className="bg-white rounded-xl shadow-card">
@@ -220,7 +208,7 @@ export function DashboardPage() {
                 <h2 className="text-sm font-semibold text-gray-900">Active Subscriptions</h2>
                 <Link to="/subscriptions" className="text-xs text-velox-600 hover:underline">View all</Link>
               </div>
-              <div className="divide-y divide-gray-50">
+              <div className="divide-y divide-gray-50 max-h-[300px] overflow-y-auto">
                 {activeSubs.map(sub => (
                   <Link key={sub.id} to={`/subscriptions/${sub.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50/80 transition-colors">
                     <div className="flex items-center gap-3">
@@ -250,7 +238,7 @@ export function DashboardPage() {
               <h2 className="text-sm font-semibold text-gray-900">Recent Activity</h2>
               <Link to="/audit-log" className="text-xs text-velox-600 hover:underline">View all</Link>
             </div>
-            <div className="divide-y divide-gray-50">
+            <div className="divide-y divide-gray-50 max-h-[350px] overflow-y-auto">
               {recentActivity.length > 0 ? recentActivity.map(entry => {
                 const { icon: Icon, bg, color } = getActivityStyle(entry.action, entry.resource_type)
                 const label = formatActivityLabel(entry.action, entry.resource_type)
