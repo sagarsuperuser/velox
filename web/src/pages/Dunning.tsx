@@ -59,7 +59,7 @@ function PolicyTab() {
       .catch(err => {
         // "not found" means no policy yet, which is fine - show empty form
         const msg = err instanceof Error ? err.message : 'Failed to load policy'
-        if (!msg.includes('not found') && !msg.includes('404') && !msg.includes('Not Found')) {
+        if (!msg.includes('not found') && !msg.includes('could not be found') && !msg.includes('404') && !msg.includes('Not Found')) {
           setError(msg)
         }
         setLoading(false)
