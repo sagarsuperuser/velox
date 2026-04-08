@@ -12,6 +12,27 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
+import { Copy, Check } from 'lucide-react'
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="inline-flex items-center justify-center w-6 h-6 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+      title="Copy to clipboard"
+    >
+      {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+    </button>
+  )
+}
 
 export function SubscriptionDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -144,7 +165,11 @@ export function SubscriptionDetailPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">{sub.display_name}</h1>
-          <p className="text-sm text-gray-500 mt-0.5 font-mono">{sub.code}</p>
+          <div className="flex items-center gap-2 mt-1">
+            <span className="text-xs text-gray-400 font-mono bg-gray-50 border border-gray-100 px-2 py-0.5 rounded">{sub.id}</span>
+            <CopyButton text={sub.id} />
+            <span className="text-xs font-medium text-gray-600 bg-gray-100 px-2.5 py-0.5 rounded-full">{sub.code}</span>
+          </div>
         </div>
         <div className="flex items-center gap-3">
           {sub.status === 'active' && (
@@ -179,42 +204,101 @@ export function SubscriptionDetailPage() {
         </div>
       </div>
 
-      {/* Info cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mt-6">
-        <div className="bg-white rounded-xl shadow-card p-4">
+      {/* Key metrics row */}
+      <div className="bg-white rounded-xl shadow-card flex divide-x divide-gray-100 mt-6">
+        <div className="flex-1 px-6 py-4">
           <p className="text-xs text-gray-500">Customer</p>
           {customer ? (
-            <Link to={`/customers/${customer.id}`} className="text-sm font-semibold text-velox-600 hover:underline mt-0.5 block">
+            <Link to={`/customers/${customer.id}`} className="text-lg font-semibold text-velox-600 hover:text-velox-700 mt-1 block transition-colors">
               {customer.display_name}
             </Link>
           ) : (
-            <p className="text-sm font-semibold mt-0.5">{sub.customer_id.slice(0, 8)}...</p>
+            <p className="text-lg font-semibold text-gray-900 mt-1">{sub.customer_id.slice(0, 8)}...</p>
           )}
         </div>
-        <div className="bg-white rounded-xl shadow-card p-4">
+        <div className="flex-1 px-6 py-4">
           <p className="text-xs text-gray-500">Plan</p>
-          <p className="text-sm font-semibold mt-0.5">{plan?.name || sub.plan_id.slice(0, 8) + '...'}</p>
+          <p className="text-lg font-semibold text-gray-900 mt-1">{plan?.name || sub.plan_id.slice(0, 8) + '...'}</p>
           {plan && (
             <p className="text-xs text-gray-400 mt-0.5">
-              {formatCents(plan.base_amount_cents)}/{plan.billing_interval === 'yearly' ? 'yr' : 'mo'} &middot; {plan.meter_ids?.length || 0} meters
+              {formatCents(plan.base_amount_cents)}/{plan.billing_interval === 'yearly' ? 'yr' : 'mo'}
             </p>
           )}
         </div>
-        <div className="bg-white rounded-xl shadow-card p-4">
+        <div className="flex-1 px-6 py-4">
           <p className="text-xs text-gray-500">Billing Period</p>
-          <p className="text-sm font-semibold mt-0.5">
+          <p className="text-lg font-semibold text-gray-900 mt-1">
             {sub.current_billing_period_start && sub.current_billing_period_end
-              ? `${formatDate(sub.current_billing_period_start)} - ${formatDate(sub.current_billing_period_end)}`
-              : 'Not set'}
+              ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
+              : '\u2014'}
           </p>
         </div>
-        <div className="bg-white rounded-xl shadow-card p-4">
-          <p className="text-xs text-gray-500">Next Billing</p>
-          <p className="text-sm font-semibold mt-0.5">{sub.next_billing_at ? formatDate(sub.next_billing_at) : 'Not scheduled'}</p>
+        <div className="flex-1 px-6 py-4">
+          <p className="text-xs text-gray-500">Status</p>
+          <div className="mt-1.5">
+            <Badge status={sub.status} />
+          </div>
         </div>
-        <div className="bg-white rounded-xl shadow-card p-4">
-          <p className="text-xs text-gray-500">Created</p>
-          <p className="text-sm font-semibold mt-0.5">{formatDate(sub.created_at)}</p>
+      </div>
+
+      {/* Properties card */}
+      <div className="bg-white rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-sm font-semibold text-gray-900">Properties</h2>
+        </div>
+        <div className="divide-y divide-gray-50">
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Code</span>
+            <span className="text-sm text-gray-900 font-mono">{sub.code}</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Customer</span>
+            {customer ? (
+              <Link to={`/customers/${customer.id}`} className="text-sm font-medium text-velox-600 hover:text-velox-700 hover:underline transition-colors">
+                {customer.display_name}
+              </Link>
+            ) : (
+              <span className="text-sm text-gray-900 font-mono">{sub.customer_id}</span>
+            )}
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Plan</span>
+            <span className="text-sm text-gray-900">
+              {plan ? (
+                <>
+                  {plan.name}
+                  <span className="text-gray-400 ml-1.5">
+                    {formatCents(plan.base_amount_cents)}/{plan.billing_interval === 'yearly' ? 'yr' : 'mo'}
+                  </span>
+                </>
+              ) : (
+                <span className="font-mono">{sub.plan_id}</span>
+              )}
+            </span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Status</span>
+            <Badge status={sub.status} />
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Billing Period</span>
+            <span className="text-sm text-gray-900">
+              {sub.current_billing_period_start && sub.current_billing_period_end
+                ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
+                : '\u2014'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">Created</span>
+            <span className="text-sm text-gray-900">{formatDate(sub.created_at)}</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-xs text-gray-500 w-40 shrink-0">ID</span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-900 font-mono">{sub.id}</span>
+              <CopyButton text={sub.id} />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -264,7 +348,7 @@ export function SubscriptionDetailPage() {
       {/* Related Invoices */}
       <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Related Invoices</h2>
+          <h2 className="text-sm font-semibold text-gray-900">Invoices ({invoices.length})</h2>
         </div>
         {invoices.length > 0 ? (
           <div className="overflow-x-auto">

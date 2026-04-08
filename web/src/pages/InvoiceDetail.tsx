@@ -12,7 +12,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Mail, CreditCard } from 'lucide-react'
+import { Mail, CreditCard, Copy, Check } from 'lucide-react'
 
 const LINE_TYPE_LABELS: Record<string, string> = {
   base_fee: 'Base Fee',
@@ -38,7 +38,27 @@ export function InvoiceDetailPage() {
   const [showVoidConfirm, setShowVoidConfirm] = useState(false)
   const [showEmailModal, setShowEmailModal] = useState(false)
   const [showCreditModal, setShowCreditModal] = useState(false)
+  const [copiedField, setCopiedField] = useState<string | null>(null)
   const toast = useToast()
+
+  const copyToClipboard = (text: string, field: string) => {
+    navigator.clipboard.writeText(text)
+    setCopiedField(field)
+    setTimeout(() => setCopiedField(null), 2000)
+  }
+
+  const CopyButton = ({ text, field }: { text: string; field: string }) => (
+    <button
+      onClick={() => copyToClipboard(text, field)}
+      className="inline-flex items-center justify-center w-6 h-6 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+    >
+      {copiedField === field ? (
+        <Check className="w-3.5 h-3.5 text-emerald-500" />
+      ) : (
+        <Copy className="w-3.5 h-3.5" />
+      )}
+    </button>
+  )
 
   const loadData = () => {
     if (!id) return
@@ -120,86 +140,131 @@ export function InvoiceDetailPage() {
     <Layout>
       <Breadcrumbs items={[{ label: 'Invoices', to: '/invoices' }, { label: invoice.invoice_number }]} />
 
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">{invoice.invoice_number}</h1>
-          {customer && (
-            <p className="text-sm text-gray-600 mt-0.5">
-              <Link to={`/customers/${customer.id}`} className="text-velox-600 hover:underline">
-                {customer.display_name}
-              </Link>
-            </p>
-          )}
-          {subscription && (
-            <p className="text-xs text-gray-400 mt-0.5">
-              Subscription: {subscription.display_name}
-            </p>
-          )}
-          <p className="text-sm text-gray-500 mt-0.5">
-            {formatDate(invoice.billing_period_start)} — {formatDate(invoice.billing_period_end)}
-          </p>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <Badge status={invoice.status} />
-            <Badge status={invoice.payment_status} />
+          <div className="flex items-center gap-1.5 mt-1">
+            <span className="text-xs font-mono text-gray-400">{invoice.id}</span>
+            <CopyButton text={invoice.id} field="header-id" />
           </div>
-
-          <div className="flex items-center gap-2 border-l border-gray-200 pl-4">
-            {invoice.status === 'draft' && (
-              <button onClick={handleFinalize} disabled={acting}
-                className="px-3 py-1.5 border border-blue-600 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-50 disabled:opacity-50 transition-colors">
-                Finalize
-              </button>
-            )}
-
-            {invoice.status !== 'voided' && invoice.status !== 'paid' && (
-              <button onClick={() => setShowVoidConfirm(true)} disabled={acting}
-                className="px-3 py-1.5 border border-red-300 text-red-600 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
-                Void
-              </button>
-            )}
-
-            <button onClick={() => setShowEmailModal(true)} disabled={acting}
-              className="px-3 py-1.5 border border-gray-300 text-gray-600 rounded-lg text-xs font-medium hover:bg-gray-50 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
-              <Mail size={14} />
-              Email Invoice
+        </div>
+        <div className="flex items-center gap-2 border-l border-gray-200 pl-4">
+          {invoice.status === 'draft' && (
+            <button onClick={handleFinalize} disabled={acting}
+              className="px-3 py-1.5 border border-blue-600 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-50 disabled:opacity-50 transition-colors">
+              Finalize
             </button>
+          )}
 
-            {(invoice.status === 'finalized' || invoice.status === 'paid') && (
-              <button onClick={() => setShowCreditModal(true)} disabled={acting}
-                className="px-3 py-1.5 border border-amber-300 text-amber-600 rounded-lg text-xs font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
-                <CreditCard size={14} />
-                Issue Credit
-              </button>
-            )}
-
-            <button
-              onClick={() => downloadPDF(invoice.id, invoice.invoice_number)}
-              className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
-              Download PDF
+          {invoice.status !== 'voided' && invoice.status !== 'paid' && (
+            <button onClick={() => setShowVoidConfirm(true)} disabled={acting}
+              className="px-3 py-1.5 border border-red-300 text-red-600 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
+              Void
             </button>
+          )}
+
+          <button onClick={() => setShowEmailModal(true)} disabled={acting}
+            className="px-3 py-1.5 border border-gray-300 text-gray-600 rounded-lg text-xs font-medium hover:bg-gray-50 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
+            <Mail size={14} />
+            Email Invoice
+          </button>
+
+          {(invoice.status === 'finalized' || invoice.status === 'paid') && (
+            <button onClick={() => setShowCreditModal(true)} disabled={acting}
+              className="px-3 py-1.5 border border-amber-300 text-amber-600 rounded-lg text-xs font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
+              <CreditCard size={14} />
+              Issue Credit
+            </button>
+          )}
+
+          <button
+            onClick={() => downloadPDF(invoice.id, invoice.invoice_number)}
+            className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
+            Download PDF
+          </button>
+        </div>
+      </div>
+
+      {/* Key metrics row */}
+      <div className="bg-white rounded-xl shadow-card mt-6">
+        <div className="flex divide-x divide-gray-100">
+          <div className="flex-1 px-6 py-4">
+            <p className="text-xs text-gray-500">Subtotal</p>
+            <p className="text-lg font-semibold text-gray-900 mt-0.5">{formatCents(invoice.subtotal_cents)}</p>
+          </div>
+          <div className="flex-1 px-6 py-4">
+            <p className="text-xs text-gray-500">Total</p>
+            <p className="text-lg font-semibold text-gray-900 mt-0.5">{formatCents(invoice.total_amount_cents)}</p>
+          </div>
+          <div className="flex-1 px-6 py-4">
+            <p className="text-xs text-gray-500">Amount Due</p>
+            <p className="text-lg font-semibold text-gray-900 mt-0.5">{formatCents(invoice.amount_due_cents)}</p>
+          </div>
+          <div className="flex-1 px-6 py-4">
+            <p className="text-xs text-gray-500">Status</p>
+            <div className="mt-1"><Badge status={invoice.status} /></div>
           </div>
         </div>
       </div>
 
-      {/* Summary */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-        <div className="bg-white rounded-xl shadow-card p-4">
-          <p className="text-xs text-gray-500">Subtotal</p>
-          <p className="text-lg font-semibold mt-0.5">{formatCents(invoice.subtotal_cents)}</p>
+      {/* Properties card */}
+      <div className="bg-white rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="text-sm font-semibold text-gray-900">Properties</h2>
         </div>
-        <div className="bg-white rounded-xl shadow-card p-4">
-          <p className="text-xs text-gray-500">Total</p>
-          <p className="text-lg font-semibold mt-0.5">{formatCents(invoice.total_amount_cents)}</p>
-        </div>
-        <div className="bg-white rounded-xl shadow-card p-4">
-          <p className="text-xs text-gray-500">Amount Due</p>
-          <p className="text-lg font-semibold mt-0.5">{formatCents(invoice.amount_due_cents)}</p>
-        </div>
-        <div className="bg-white rounded-xl shadow-card p-4">
-          <p className="text-xs text-gray-500">Currency</p>
-          <p className="text-lg font-semibold mt-0.5">{invoice.currency}</p>
+        <div className="divide-y divide-gray-50">
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-sm text-gray-500">Invoice Number</span>
+            <span className="text-sm font-medium text-gray-900">{invoice.invoice_number}</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-sm text-gray-500">Customer</span>
+            <span className="text-sm font-medium text-gray-900">
+              {customer ? (
+                <Link to={`/customers/${customer.id}`} className="text-velox-600 hover:underline">
+                  {customer.display_name}
+                </Link>
+              ) : (
+                invoice.customer_id
+              )}
+            </span>
+          </div>
+          {subscription && (
+            <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-sm text-gray-500">Subscription</span>
+              <span className="text-sm font-medium text-gray-900">{subscription.display_name}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-sm text-gray-500">Billing Period</span>
+            <span className="text-sm font-medium text-gray-900">
+              {formatDate(invoice.billing_period_start)} — {formatDate(invoice.billing_period_end)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-sm text-gray-500">Status</span>
+            <Badge status={invoice.status} />
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-sm text-gray-500">Payment Status</span>
+            <Badge status={invoice.payment_status} />
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-sm text-gray-500">Currency</span>
+            <span className="text-sm font-medium text-gray-900 uppercase">{invoice.currency}</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-sm text-gray-500">Created</span>
+            <span className="text-sm font-medium text-gray-900">{formatDate(invoice.created_at)}</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-3">
+            <span className="text-sm text-gray-500">ID</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-mono text-gray-500">{invoice.id}</span>
+              <CopyButton text={invoice.id} field="props-id" />
+            </div>
+          </div>
         </div>
       </div>
 
