@@ -169,7 +169,7 @@ export function CustomersPage() {
                       <td className="px-6 py-3 text-sm text-gray-500 font-mono">{c.external_id}</td>
                       <td className="px-6 py-3 text-sm text-gray-500">{c.email || '\u2014'}</td>
                       <td className="px-6 py-3"><Badge status={c.status} /></td>
-                      <td className="px-6 py-3 text-sm text-gray-400">{formatDate(c.created_at)}</td>
+                      <td className="px-6 py-3 text-sm text-gray-500">{formatDate(c.created_at)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -198,7 +198,7 @@ export function CustomersPage() {
             onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
             onBlur={() => onBlur('email', form.email)} />
           {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-          <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+          <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
             <button type="button" onClick={() => setShowCreate(false)} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
             <button type="submit" disabled={creating}
               className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">

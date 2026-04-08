@@ -120,7 +120,7 @@ export function SubscriptionsPage() {
                         {sub.display_name}
                       </Link>
                     </td>
-                    <td className="px-6 py-3 text-sm text-gray-600">
+                    <td className="px-6 py-3 text-sm text-gray-500">
                       {customerMap[sub.customer_id]?.display_name || 'Unknown'}
                     </td>
                     <td className="px-6 py-3 text-sm text-gray-500 font-mono">{sub.code}</td>
@@ -130,7 +130,7 @@ export function SubscriptionsPage() {
                         ? `${formatDate(sub.current_billing_period_start)} — ${formatDate(sub.current_billing_period_end)}`
                         : '\u2014'}
                     </td>
-                    <td className="px-6 py-3 text-sm text-gray-400">{formatDate(sub.created_at)}</td>
+                    <td className="px-6 py-3 text-sm text-gray-500">{formatDate(sub.created_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -215,7 +215,7 @@ function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
           Start immediately (activate + set billing period)
         </label>
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">

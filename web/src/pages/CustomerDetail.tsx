@@ -39,7 +39,7 @@ export function CustomerDetailPage() {
   const CopyButton = ({ value, field }: { value: string; field: string }) => (
     <button
       onClick={() => copyToClipboard(value, field)}
-      className="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600"
+      className="inline-flex items-center justify-center w-6 h-6 rounded hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600"
       title="Copy to clipboard"
     >
       {copiedField === field ? (
@@ -146,23 +146,23 @@ export function CustomerDetailPage() {
           <h2 className="text-sm font-semibold text-gray-900">Details</h2>
         </div>
         <div className="divide-y divide-gray-50">
-          <div className="flex items-center justify-between px-6 py-3.5">
+          <div className="flex items-center justify-between px-6 py-3">
             <span className="text-sm text-gray-500">External ID</span>
             <span className="text-sm text-gray-900 font-mono">{customer.external_id}</span>
           </div>
-          <div className="flex items-center justify-between px-6 py-3.5">
+          <div className="flex items-center justify-between px-6 py-3">
             <span className="text-sm text-gray-500">Email</span>
             <span className="text-sm text-gray-900">{customer.email || '\u2014'}</span>
           </div>
-          <div className="flex items-center justify-between px-6 py-3.5">
+          <div className="flex items-center justify-between px-6 py-3">
             <span className="text-sm text-gray-500">Status</span>
             <Badge status={customer.status} />
           </div>
-          <div className="flex items-center justify-between px-6 py-3.5">
+          <div className="flex items-center justify-between px-6 py-3">
             <span className="text-sm text-gray-500">Created</span>
             <span className="text-sm text-gray-900">{formatDate(customer.created_at)}</span>
           </div>
-          <div className="flex items-center justify-between px-6 py-3.5">
+          <div className="flex items-center justify-between px-6 py-3">
             <span className="text-sm text-gray-500">ID</span>
             <div className="flex items-center gap-1.5">
               <span className="text-sm text-gray-900 font-mono">{customer.id}</span>
@@ -274,7 +274,7 @@ export function CustomerDetailPage() {
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-6 mt-8">
+      <div className="grid grid-cols-2 gap-6 mt-6">
         {/* Subscriptions */}
         <div className="bg-white rounded-xl shadow-card">
           <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
@@ -410,7 +410,7 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
           onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
           onBlur={() => onBlur('email', form.email)} />
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
@@ -602,7 +602,7 @@ function CreateSubscriptionFromCustomerModal({ customerId, plans, onClose, onCre
           Start immediately (activate + set billing period)
         </label>
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">

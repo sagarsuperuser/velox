@@ -265,7 +265,7 @@ function ResolveModal({ run, invoiceMap, onClose, onResolved }: { run: DunningRu
             { value: 'operator_resolved', label: 'Operator Resolved' },
           ]} />
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">

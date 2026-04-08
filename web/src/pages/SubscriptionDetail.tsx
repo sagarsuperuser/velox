@@ -207,7 +207,7 @@ export function SubscriptionDetailPage() {
       {/* Key metrics row */}
       <div className="bg-white rounded-xl shadow-card flex divide-x divide-gray-100 mt-6">
         <div className="flex-1 px-6 py-4">
-          <p className="text-xs text-gray-500">Customer</p>
+          <p className="text-sm text-gray-500">Customer</p>
           {customer ? (
             <Link to={`/customers/${customer.id}`} className="text-lg font-semibold text-velox-600 hover:text-velox-700 mt-1 block transition-colors">
               {customer.display_name}
@@ -217,7 +217,7 @@ export function SubscriptionDetailPage() {
           )}
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-xs text-gray-500">Plan</p>
+          <p className="text-sm text-gray-500">Plan</p>
           <p className="text-lg font-semibold text-gray-900 mt-1">{plan?.name || sub.plan_id.slice(0, 8) + '...'}</p>
           {plan && (
             <p className="text-xs text-gray-400 mt-0.5">
@@ -226,7 +226,7 @@ export function SubscriptionDetailPage() {
           )}
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-xs text-gray-500">Billing Period</p>
+          <p className="text-sm text-gray-500">Billing Period</p>
           <p className="text-lg font-semibold text-gray-900 mt-1">
             {sub.current_billing_period_start && sub.current_billing_period_end
               ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
@@ -234,7 +234,7 @@ export function SubscriptionDetailPage() {
           </p>
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-xs text-gray-500">Status</p>
+          <p className="text-sm text-gray-500">Status</p>
           <div className="mt-1.5">
             <Badge status={sub.status} />
           </div>
@@ -248,11 +248,11 @@ export function SubscriptionDetailPage() {
         </div>
         <div className="divide-y divide-gray-50">
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Code</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Code</span>
             <span className="text-sm text-gray-900 font-mono">{sub.code}</span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Customer</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Customer</span>
             {customer ? (
               <Link to={`/customers/${customer.id}`} className="text-sm font-medium text-velox-600 hover:text-velox-700 hover:underline transition-colors">
                 {customer.display_name}
@@ -262,7 +262,7 @@ export function SubscriptionDetailPage() {
             )}
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Plan</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Plan</span>
             <span className="text-sm text-gray-900">
               {plan ? (
                 <>
@@ -277,11 +277,11 @@ export function SubscriptionDetailPage() {
             </span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Status</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Status</span>
             <Badge status={sub.status} />
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Billing Period</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Billing Period</span>
             <span className="text-sm text-gray-900">
               {sub.current_billing_period_start && sub.current_billing_period_end
                 ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
@@ -289,11 +289,11 @@ export function SubscriptionDetailPage() {
             </span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Created</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Created</span>
             <span className="text-sm text-gray-900">{formatDate(sub.created_at)}</span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">ID</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">ID</span>
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-900 font-mono">{sub.id}</span>
               <CopyButton text={sub.id} />
@@ -375,7 +375,7 @@ export function SubscriptionDetailPage() {
                   </td>
                   <td className="px-6 py-3"><Badge status={inv.status} /></td>
                   <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">{formatCents(inv.total_amount_cents)}</td>
-                  <td className="px-6 py-3 text-sm text-gray-400">{formatDate(inv.created_at)}</td>
+                  <td className="px-6 py-3 text-sm text-gray-500">{formatDate(inv.created_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -478,7 +478,7 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
         </label>
 
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving || !newPlanId}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
