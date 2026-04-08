@@ -476,11 +476,40 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
     }
   }
 
+  const usStates = [
+    ['AL','Alabama'],['AK','Alaska'],['AZ','Arizona'],['AR','Arkansas'],['CA','California'],
+    ['CO','Colorado'],['CT','Connecticut'],['DE','Delaware'],['DC','District of Columbia'],['FL','Florida'],
+    ['GA','Georgia'],['HI','Hawaii'],['ID','Idaho'],['IL','Illinois'],['IN','Indiana'],
+    ['IA','Iowa'],['KS','Kansas'],['KY','Kentucky'],['LA','Louisiana'],['ME','Maine'],
+    ['MD','Maryland'],['MA','Massachusetts'],['MI','Michigan'],['MN','Minnesota'],['MS','Mississippi'],
+    ['MO','Missouri'],['MT','Montana'],['NE','Nebraska'],['NV','Nevada'],['NH','New Hampshire'],
+    ['NJ','New Jersey'],['NM','New Mexico'],['NY','New York'],['NC','North Carolina'],['ND','North Dakota'],
+    ['OH','Ohio'],['OK','Oklahoma'],['OR','Oregon'],['PA','Pennsylvania'],['RI','Rhode Island'],
+    ['SC','South Carolina'],['SD','South Dakota'],['TN','Tennessee'],['TX','Texas'],['UT','Utah'],
+    ['VT','Vermont'],['VA','Virginia'],['WA','Washington'],['WV','West Virginia'],['WI','Wisconsin'],['WY','Wyoming'],
+  ]
+  const caProvinces = [
+    ['AB','Alberta'],['BC','British Columbia'],['MB','Manitoba'],['NB','New Brunswick'],
+    ['NL','Newfoundland and Labrador'],['NS','Nova Scotia'],['NT','Northwest Territories'],
+    ['NU','Nunavut'],['ON','Ontario'],['PE','Prince Edward Island'],['QC','Quebec'],
+    ['SK','Saskatchewan'],['YT','Yukon'],
+  ]
+  const inStates = [
+    ['AP','Andhra Pradesh'],['AR','Arunachal Pradesh'],['AS','Assam'],['BR','Bihar'],
+    ['CT','Chhattisgarh'],['GA','Goa'],['GJ','Gujarat'],['HR','Haryana'],['HP','Himachal Pradesh'],
+    ['JK','Jammu & Kashmir'],['JH','Jharkhand'],['KA','Karnataka'],['KL','Kerala'],['MP','Madhya Pradesh'],
+    ['MH','Maharashtra'],['MN','Manipur'],['ML','Meghalaya'],['MZ','Mizoram'],['NL','Nagaland'],
+    ['OD','Odisha'],['PB','Punjab'],['RJ','Rajasthan'],['SK','Sikkim'],['TN','Tamil Nadu'],
+    ['TG','Telangana'],['TR','Tripura'],['UP','Uttar Pradesh'],['UK','Uttarakhand'],['WB','West Bengal'],
+    ['DL','Delhi'],['CH','Chandigarh'],['PY','Puducherry'],
+  ]
+
   return (
     <Modal open onClose={onClose} title="Billing Profile" wide>
       <form onSubmit={handleSubmit} noValidate className="max-h-[70vh] overflow-y-auto -mx-6 px-6 pb-1">
         {/* Contact */}
-        <div className="space-y-3">
+        <div className="rounded-lg border border-gray-200 p-4 space-y-3">
+          <p className="text-sm font-medium text-gray-700">Contact</p>
           <FormField label="Legal Name" value={form.legal_name} maxLength={255} placeholder="Acme Corporation Inc."
             onChange={e => setForm(f => ({ ...f, legal_name: e.target.value }))} />
           <div className="grid grid-cols-2 gap-4">
@@ -496,14 +525,15 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
         </div>
 
         {/* Address */}
-        <div className="space-y-3 mt-5">
+        <div className="rounded-lg border border-gray-200 p-4 space-y-3 mt-4">
+          <p className="text-sm font-medium text-gray-700">Address</p>
           <FormSelect label="Country" value={form.country}
             onChange={e => setForm(f => ({ ...f, country: e.target.value, state: '' }))}
             placeholder="Select country..."
-            options={[['US', 'United States'], ['CA', 'Canada'], ['GB', 'United Kingdom'], ['DE', 'Germany'], ['FR', 'France'], ['IN', 'India'], ['JP', 'Japan'], ['AU', 'Australia'], ['BR', 'Brazil'], ['MX', 'Mexico'], ['SG', 'Singapore'], ['NL', 'Netherlands'], ['SE', 'Sweden'], ['CH', 'Switzerland']].map(([code, name]) => ({ value: code, label: `${name} (${code})` }))} />
-          <FormField label="Address" value={form.address_line1} maxLength={200} placeholder="123 Main Street"
+            options={[['US','United States'],['CA','Canada'],['GB','United Kingdom'],['DE','Germany'],['FR','France'],['IN','India'],['JP','Japan'],['AU','Australia'],['BR','Brazil'],['MX','Mexico'],['SG','Singapore'],['NL','Netherlands'],['SE','Sweden'],['CH','Switzerland']].map(([code, name]) => ({ value: code, label: name }))} />
+          <FormField label="Street Address" value={form.address_line1} maxLength={200} placeholder="123 Main Street"
             onChange={e => setForm(f => ({ ...f, address_line1: e.target.value }))} />
-          <FormField label="Address Line 2" value={form.address_line2} maxLength={200} placeholder="Suite 100, Floor 2"
+          <FormField label="Apt / Suite / Floor" value={form.address_line2} maxLength={200} placeholder="Suite 100"
             onChange={e => setForm(f => ({ ...f, address_line2: e.target.value }))} />
           <div className="grid grid-cols-3 gap-4">
             <FormField label="City" value={form.city} maxLength={100} placeholder="San Francisco"
@@ -511,48 +541,53 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
             {form.country === 'US' ? (
               <FormSelect label="State" value={form.state}
                 onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
-                placeholder="Select..."
-                options={[
-                  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD',
-                  'MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC',
-                  'SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
-                ].map(s => ({ value: s, label: s }))} />
+                placeholder="Select state..."
+                options={usStates.map(([code, name]) => ({ value: code, label: name }))} />
             ) : form.country === 'CA' ? (
               <FormSelect label="Province" value={form.state}
                 onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
-                placeholder="Select..."
-                options={['AB','BC','MB','NB','NL','NS','NT','NU','ON','PE','QC','SK','YT'].map(s => ({ value: s, label: s }))} />
+                placeholder="Select province..."
+                options={caProvinces.map(([code, name]) => ({ value: code, label: name }))} />
             ) : form.country === 'IN' ? (
               <FormSelect label="State" value={form.state}
                 onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
-                placeholder="Select..."
-                options={[
-                  'AN','AP','AR','AS','BR','CH','CT','DD','DL','GA','GJ','HP','HR','JH','JK','KA','KL','LA','LD',
-                  'MH','ML','MN','MP','MZ','NL','OD','PB','PY','RJ','SK','TG','TN','TR','UK','UP','WB'
-                ].map(s => ({ value: s, label: s }))} />
+                placeholder="Select state..."
+                options={inStates.map(([code, name]) => ({ value: code, label: name }))} />
             ) : (
-              <FormField label="State / Province" value={form.state} placeholder={form.country === 'GB' ? 'London' : 'State'} maxLength={50}
+              <FormField label="State / Province" value={form.state} placeholder="State" maxLength={50}
                 onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
             )}
-            <FormField label="Postal Code" value={form.postal_code} placeholder={form.country === 'US' ? '94105' : form.country === 'GB' ? 'SW1A 1AA' : form.country === 'IN' ? '400001' : '10001'} maxLength={10}
+            <FormField label="Postal Code" value={form.postal_code}
+              placeholder={form.country === 'US' ? '94105' : form.country === 'GB' ? 'SW1A 1AA' : form.country === 'IN' ? '400001' : 'Postal code'} maxLength={10}
               onChange={e => setForm(f => ({ ...f, postal_code: e.target.value }))} />
           </div>
         </div>
 
-        {/* Billing */}
-        <div className="space-y-3 mt-5">
+        {/* Tax & Billing */}
+        <div className="rounded-lg border border-gray-200 p-4 space-y-3 mt-4">
+          <p className="text-sm font-medium text-gray-700">Tax & Billing</p>
           <div className="grid grid-cols-2 gap-4">
-            <FormField label="Tax ID" value={form.tax_identifier} maxLength={30} placeholder="VAT / EIN / GST number" mono
+            <FormField label="Tax ID" value={form.tax_identifier} maxLength={30}
+              placeholder={form.country === 'US' ? 'EIN (e.g. 12-3456789)' : form.country === 'IN' ? 'GSTIN' : form.country === 'GB' ? 'VAT number' : 'Tax ID'} mono
               onChange={e => setForm(f => ({ ...f, tax_identifier: e.target.value }))} />
-            <FormSelect label="Currency" value={form.currency}
+            <FormSelect label="Billing Currency" value={form.currency}
               onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}
               placeholder="Select currency..."
-              options={['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'CHF'].map(c => ({ value: c, label: c }))} />
+              options={[
+                { value: 'USD', label: 'USD — US Dollar' },
+                { value: 'EUR', label: 'EUR — Euro' },
+                { value: 'GBP', label: 'GBP — British Pound' },
+                { value: 'CAD', label: 'CAD — Canadian Dollar' },
+                { value: 'AUD', label: 'AUD — Australian Dollar' },
+                { value: 'JPY', label: 'JPY — Japanese Yen' },
+                { value: 'INR', label: 'INR — Indian Rupee' },
+                { value: 'CHF', label: 'CHF — Swiss Franc' },
+              ]} />
           </div>
         </div>
 
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-4">{error}</p>}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
+        <div className="flex justify-end gap-3 pt-4 mt-4 border-t border-gray-100">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving || !hasChanges}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
