@@ -3,6 +3,7 @@ package invoice
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-pdf/fpdf"
@@ -11,20 +12,57 @@ import (
 )
 
 // RenderPDF generates a professional PDF invoice and returns the bytes.
-func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, customerName string) ([]byte, error) {
+// CompanyInfo holds tenant company details for the PDF header.
+type CompanyInfo struct {
+	Name    string
+	Email   string
+	Phone   string
+	Address string
+}
+
+func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, customerName string, company ...CompanyInfo) ([]byte, error) {
 	pdf := fpdf.New("P", "mm", "A4", "")
 	pdf.SetAutoPageBreak(true, 20)
 	pdf.AddPage()
 
-	// Header
-	pdf.SetFont("Helvetica", "B", 24)
-	pdf.SetTextColor(30, 30, 30)
-	pdf.CellFormat(0, 12, "VELOX", "", 1, "L", false, 0, "")
+	// Header — company info from settings
+	companyName := "Velox"
+	companyAddr := ""
+	companyContact := ""
+	if len(company) > 0 && company[0].Name != "" {
+		companyName = company[0].Name
+		companyAddr = company[0].Address
+		parts := []string{}
+		if company[0].Email != "" {
+			parts = append(parts, company[0].Email)
+		}
+		if company[0].Phone != "" {
+			parts = append(parts, company[0].Phone)
+		}
+		if len(parts) > 0 {
+			companyContact = strings.Join(parts, "  |  ")
+		}
+	}
 
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(120, 120, 120)
-	pdf.CellFormat(0, 5, "Usage-Based Billing Platform", "", 1, "L", false, 0, "")
-	pdf.Ln(8)
+	pdf.SetFont("Helvetica", "B", 20)
+	pdf.SetTextColor(30, 30, 30)
+	pdf.CellFormat(0, 10, companyName, "", 1, "L", false, 0, "")
+
+	if companyAddr != "" {
+		pdf.SetFont("Helvetica", "", 9)
+		pdf.SetTextColor(100, 100, 100)
+		for _, line := range strings.Split(companyAddr, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				pdf.CellFormat(0, 4, line, "", 1, "L", false, 0, "")
+			}
+		}
+	}
+	if companyContact != "" {
+		pdf.SetFont("Helvetica", "", 8)
+		pdf.SetTextColor(120, 120, 120)
+		pdf.CellFormat(0, 5, companyContact, "", 1, "L", false, 0, "")
+	}
+	pdf.Ln(6)
 
 	// Invoice info box
 	pdf.SetFont("Helvetica", "B", 14)
