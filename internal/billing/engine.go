@@ -19,6 +19,12 @@ type Engine struct {
 	usage   UsageAggregator
 	pricing PricingReader
 	invoices InvoiceWriter
+	credits CreditApplier
+}
+
+// CreditApplier applies customer credits to an invoice before charging.
+type CreditApplier interface {
+	ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64) (int64, error)
 }
 
 // SubscriptionReader reads subscription and plan data for billing.
@@ -47,8 +53,8 @@ type InvoiceWriter interface {
 	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
 }
 
-func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter) *Engine {
-	return &Engine{subs: subs, usage: usage, pricing: pricing, invoices: invoices}
+func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier) *Engine {
+	return &Engine{subs: subs, usage: usage, pricing: pricing, invoices: invoices, credits: credits}
 }
 
 // RunCycle finds all subscriptions due for billing and generates invoices.
@@ -222,6 +228,21 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		item.InvoiceID = inv.ID
 		if _, err := e.invoices.CreateLineItem(ctx, sub.TenantID, item); err != nil {
 			return false, fmt.Errorf("create line item: %w", err)
+		}
+	}
+
+	// Apply customer credits before charging (reduces amount_due)
+	if e.credits != nil && subtotal > 0 {
+		credited, err := e.credits.ApplyToInvoice(ctx, sub.TenantID, sub.CustomerID, inv.ID, subtotal)
+		if err != nil {
+			slog.Warn("failed to apply credits", "invoice_id", inv.ID, "error", err)
+			// Non-fatal: invoice still valid, just won't have credits applied
+		} else if credited > 0 {
+			slog.Info("credits applied to invoice",
+				"invoice_id", inv.ID,
+				"credited_cents", credited,
+				"remaining_due", subtotal-credited,
+			)
 		}
 	}
 

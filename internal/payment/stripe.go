@@ -14,10 +14,16 @@ import (
 //
 // This is NOT an abstract "payment provider" interface. Velox is Stripe-native.
 // If we ever support another provider, we'll refactor — not speculate now.
+// DunningStarter starts dunning for failed payments.
+type DunningStarter interface {
+	StartDunning(ctx context.Context, tenantID string, invoiceID, customerID string) (domain.InvoiceDunningRun, error)
+}
+
 type Stripe struct {
 	client   StripeClient
 	invoices InvoiceUpdater
 	webhooks WebhookStore
+	dunning  DunningStarter
 }
 
 // StripeClient is the interface for Stripe API calls.
@@ -54,8 +60,12 @@ type WebhookStore interface {
 	IngestEvent(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) (domain.StripeWebhookEvent, bool, error)
 }
 
-func NewStripe(client StripeClient, invoices InvoiceUpdater, webhooks WebhookStore) *Stripe {
-	return &Stripe{client: client, invoices: invoices, webhooks: webhooks}
+func NewStripe(client StripeClient, invoices InvoiceUpdater, webhooks WebhookStore, dunning ...DunningStarter) *Stripe {
+	s := &Stripe{client: client, invoices: invoices, webhooks: webhooks}
+	if len(dunning) > 0 {
+		s.dunning = dunning[0]
+	}
+	return s
 }
 
 // ChargeInvoice creates a Stripe PaymentIntent for a finalized invoice.
@@ -181,6 +191,19 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		"payment_intent_id", event.PaymentIntentID,
 		"failure_message", failureMsg,
 	)
+
+	// Auto-start dunning for failed payments
+	if s.dunning != nil {
+		if _, err := s.dunning.StartDunning(ctx, tenantID, inv.ID, inv.CustomerID); err != nil {
+			slog.Warn("failed to start dunning",
+				"invoice_id", inv.ID,
+				"error", err,
+			)
+			// Non-fatal: invoice is already marked failed, dunning can be started manually
+		} else {
+			slog.Info("dunning started for failed payment", "invoice_id", inv.ID)
+		}
+	}
 
 	return nil
 }
