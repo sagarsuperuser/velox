@@ -89,7 +89,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	return events, rows.Err()
 }
 
-func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID, subscriptionID string, meterIDs []string, from, to time.Time) (map[string]int64, error) {
+func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]int64, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return nil, err
@@ -101,7 +101,7 @@ func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID,
 	}
 
 	placeholders := make([]string, len(meterIDs))
-	args := []any{subscriptionID, from, to}
+	args := []any{customerID, from, to}
 	for i, id := range meterIDs {
 		placeholders[i] = fmt.Sprintf("$%d", i+4)
 		args = append(args, id)
@@ -110,7 +110,7 @@ func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID,
 	rows, err := tx.QueryContext(ctx, `
 		SELECT meter_id, COALESCE(SUM(quantity), 0)
 		FROM usage_events
-		WHERE subscription_id = $1 AND timestamp >= $2 AND timestamp < $3
+		WHERE customer_id = $1 AND timestamp >= $2 AND timestamp < $3
 			AND meter_id IN (`+strings.Join(placeholders, ",")+`)
 		GROUP BY meter_id
 	`, args...)

@@ -10,7 +10,7 @@ import (
 type Store interface {
 	Ingest(ctx context.Context, tenantID string, event domain.UsageEvent) (domain.UsageEvent, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.UsageEvent, error)
-	AggregateForBillingPeriod(ctx context.Context, tenantID, subscriptionID string, meterIDs []string, from, to time.Time) (map[string]int64, error)
+	AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]int64, error)
 }
 
 type ListFilter struct {
