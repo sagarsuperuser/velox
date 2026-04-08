@@ -59,14 +59,35 @@ func serve() {
 	defer pool.Close()
 
 	if cfg.Migrate {
-		if err := migrate.NewRunner(pool).Run(context.Background()); err != nil {
+		// Migrations need DDL privileges — use DATABASE_URL (superuser) if
+		// APP_DATABASE_URL is set (meaning DATABASE_URL is the admin connection).
+		migrationPool := pool
+		if appURL := strings.TrimSpace(os.Getenv("APP_DATABASE_URL")); appURL != "" {
+			// DATABASE_URL is already the superuser connection — use it for migrations
+			slog.Info("running migrations with admin connection")
+		}
+		if err := migrate.NewRunner(migrationPool).Run(context.Background()); err != nil {
 			slog.Error("run migrations", "error", err)
 			os.Exit(1)
 		}
 		slog.Info("migrations applied")
 	}
 
-	db := postgres.NewDB(pool, cfg.DB.QueryTimeout)
+	// If APP_DATABASE_URL is set, switch to it for the app (least-privilege)
+	appPool := pool
+	if appURL := strings.TrimSpace(os.Getenv("APP_DATABASE_URL")); appURL != "" {
+		appCfg := cfg.DB
+		appCfg.URL = appURL
+		appPool, err = config.OpenPostgres(appCfg)
+		if err != nil {
+			slog.Error("open app database", "error", err)
+			os.Exit(1)
+		}
+		defer appPool.Close()
+		slog.Info("using separate app database connection (least-privilege)")
+	}
+
+	db := postgres.NewDB(appPool, cfg.DB.QueryTimeout)
 	webhookSecret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
 
 	server := api.NewServer(db, webhookSecret)
@@ -139,7 +160,8 @@ Commands:
   help        Show this help
 
 Environment:
-  DATABASE_URL              PostgreSQL connection string (required)
+  DATABASE_URL              PostgreSQL connection string (required, used for migrations if APP_DATABASE_URL set)
+  APP_DATABASE_URL          App database connection (least-privilege, used at runtime)
   PORT                      HTTP port (default: 8080)
   APP_ENV                   Environment: local, staging, production (default: local)
   RUN_MIGRATIONS_ON_BOOT    Run migrations on server start (default: false)
