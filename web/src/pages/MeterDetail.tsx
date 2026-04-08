@@ -55,7 +55,7 @@ export function MeterDetailPage() {
   if (loading) {
     return (
       <Layout>
-        <Breadcrumbs items={[{ label: 'Pricing', to: '/meters' }, { label: 'Loading...' }]} />
+        <Breadcrumbs items={[{ label: 'Pricing', to: '/pricing' }, { label: 'Loading...' }]} />
         <div className="bg-white rounded-xl shadow-card">
           <LoadingSkeleton rows={8} columns={3} />
         </div>
@@ -69,7 +69,7 @@ export function MeterDetailPage() {
 
   return (
     <Layout>
-      <Breadcrumbs items={[{ label: 'Pricing', to: '/meters' }, { label: meter.name }]} />
+      <Breadcrumbs items={[{ label: 'Pricing', to: '/pricing' }, { label: meter.name }]} />
 
       {/* Header */}
       <div className="flex items-center justify-between">
