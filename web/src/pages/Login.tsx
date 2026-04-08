@@ -42,6 +42,7 @@ export function LoginPage() {
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-velox-900">Velox</h1>
           <p className="text-gray-500 mt-1">Billing Dashboard</p>
+          <p className="text-sm text-gray-400 mt-0.5">Open-source usage-based billing</p>
         </div>
 
         <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-card p-6">

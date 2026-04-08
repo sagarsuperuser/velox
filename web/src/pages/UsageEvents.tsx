@@ -4,6 +4,7 @@ import { Layout } from '@/components/Layout'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
+import { Pagination } from '@/components/Pagination'
 
 export function UsageEventsPage() {
   const [events, setEvents] = useState<UsageEvent[]>([])
@@ -19,6 +20,8 @@ export function UsageEventsPage() {
   const [filterMeter, setFilterMeter] = useState('')
   const [filterFrom, setFilterFrom] = useState('')
   const [filterTo, setFilterTo] = useState('')
+  const [page, setPage] = useState(1)
+  const pageSize = 25
 
   const loadRefs = () => {
     Promise.all([
@@ -98,38 +101,48 @@ export function UsageEventsPage() {
         ) : events.length === 0 ? (
           <EmptyState title="No usage events" description="Usage events will appear here once ingested via the API" />
         ) : (
-          <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Timestamp</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Customer</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Meter</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Quantity</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Subscription</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {events.map(ev => (
-                <tr key={ev.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-3 text-sm text-gray-700">{formatDate(ev.timestamp)}</td>
-                  <td className="px-6 py-3 text-sm text-gray-600">
-                    {customerMap[ev.customer_id]?.display_name || ev.customer_id.slice(0, 8) + '...'}
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-600">
-                    {meterMap[ev.meter_id]?.name || ev.meter_id.slice(0, 8) + '...'}
-                  </td>
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">
-                    {ev.quantity.toLocaleString()}
-                  </td>
-                  <td className="px-6 py-3 text-sm font-mono text-gray-500">
-                    {ev.subscription_id ? ev.subscription_id.slice(0, 12) + '...' : '\u2014'}
-                  </td>
+          (() => {
+            const totalPages = Math.ceil(events.length / pageSize)
+            const currentPage = Math.min(page, totalPages || 1)
+            const paginated = events.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+            return (
+            <>
+            <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-100">
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Timestamp</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Customer</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Meter</th>
+                  <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Quantity</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Subscription</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {paginated.map(ev => (
+                  <tr key={ev.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-6 py-3 text-sm text-gray-700">{formatDate(ev.timestamp)}</td>
+                    <td className="px-6 py-3 text-sm text-gray-600">
+                      {customerMap[ev.customer_id]?.display_name || ev.customer_id.slice(0, 8) + '...'}
+                    </td>
+                    <td className="px-6 py-3 text-sm text-gray-600">
+                      {meterMap[ev.meter_id]?.name || ev.meter_id.slice(0, 8) + '...'}
+                    </td>
+                    <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">
+                      {ev.quantity.toLocaleString()}
+                    </td>
+                    <td className="px-6 py-3 text-sm font-mono text-gray-500">
+                      {ev.subscription_id ? ev.subscription_id.slice(0, 12) + '...' : '\u2014'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            </div>
+            <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} />
+            </>
+            )
+          })()
         )}
       </div>
     </Layout>

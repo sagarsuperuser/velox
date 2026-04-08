@@ -9,6 +9,7 @@ import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Search, Download } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
+import { Pagination } from '@/components/Pagination'
 
 const STATUS_OPTIONS = ['All', 'draft', 'finalized', 'paid', 'voided'] as const
 
@@ -20,6 +21,8 @@ export function InvoicesPage() {
   const [error, setError] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<string>('All')
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const pageSize = 25
   const toast = useToast()
 
   const loadInvoices = () => {
@@ -117,7 +120,12 @@ export function InvoicesPage() {
             title="No invoices found"
             description={statusFilter !== 'All' ? `No ${statusFilter} invoices. Try a different filter.` : 'Trigger a billing cycle to generate invoices.'}
           />
-        ) : (
+        ) : (() => {
+          const totalPages = Math.ceil(filtered.length / pageSize)
+          const currentPage = Math.min(page, totalPages || 1)
+          const paginated = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+          return (
+          <>
           <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
@@ -132,7 +140,7 @@ export function InvoicesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {filtered.map(inv => (
+              {paginated.map(inv => (
                 <tr key={inv.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-3">
                     <Link to={`/invoices/${inv.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">
@@ -169,7 +177,10 @@ export function InvoicesPage() {
             </tbody>
           </table>
           </div>
-        )}
+          <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} />
+          </>
+          )
+        })()}
       </div>
     </Layout>
   )
