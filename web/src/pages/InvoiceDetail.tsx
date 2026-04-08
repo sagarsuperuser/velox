@@ -190,19 +190,19 @@ export function InvoiceDetailPage() {
       <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="flex divide-x divide-gray-100">
           <div className="flex-1 px-6 py-4">
-            <p className="text-xs text-gray-500">Subtotal</p>
+            <p className="text-sm text-gray-500">Subtotal</p>
             <p className="text-lg font-semibold text-gray-900 mt-0.5">{formatCents(invoice.subtotal_cents)}</p>
           </div>
           <div className="flex-1 px-6 py-4">
-            <p className="text-xs text-gray-500">Total</p>
+            <p className="text-sm text-gray-500">Total</p>
             <p className="text-lg font-semibold text-gray-900 mt-0.5">{formatCents(invoice.total_amount_cents)}</p>
           </div>
           <div className="flex-1 px-6 py-4">
-            <p className="text-xs text-gray-500">Amount Due</p>
+            <p className="text-sm text-gray-500">Amount Due</p>
             <p className="text-lg font-semibold text-gray-900 mt-0.5">{formatCents(invoice.amount_due_cents)}</p>
           </div>
           <div className="flex-1 px-6 py-4">
-            <p className="text-xs text-gray-500">Status</p>
+            <p className="text-sm text-gray-500">Status</p>
             <div className="mt-1"><Badge status={invoice.status} /></div>
           </div>
         </div>
@@ -379,7 +379,7 @@ function EmailInvoiceModal({ invoiceId, defaultEmail, onClose, onSent, onError }
           ref={registerRef('email')} error={fieldError('email')}
           onChange={e => setEmail(e.target.value)}
           onBlur={() => onBlur('email', email)} />
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={sending}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
@@ -449,7 +449,7 @@ function IssueCreditModal({ invoice, onClose, onCreated, onError }: {
             { value: 'credit', label: 'Credit' },
             ...(invoice.payment_status === 'paid' ? [{ value: 'refund', label: 'Refund' }] : []),
           ]} />
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">

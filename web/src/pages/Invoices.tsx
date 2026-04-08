@@ -152,7 +152,7 @@ export function InvoicesPage() {
                       {inv.invoice_number}
                     </Link>
                   </td>
-                  <td className="px-6 py-3 text-sm text-gray-600">
+                  <td className="px-6 py-3 text-sm text-gray-500">
                     {customerMap[inv.customer_id]?.display_name || 'Unknown'}
                   </td>
                   <td className="px-6 py-3"><Badge status={inv.status} /></td>

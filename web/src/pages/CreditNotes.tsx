@@ -103,7 +103,7 @@ export function CreditNotesPage() {
                   <td className="px-6 py-3"><Badge status={note.status} /></td>
                   <td className="px-6 py-3 text-sm text-gray-500">{note.reason.length > 30 ? note.reason.slice(0, 30) + '...' : note.reason}</td>
                   <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">{formatCents(note.total_cents)}</td>
-                  <td className="px-6 py-3 text-sm text-gray-400">{formatDate(note.created_at)}</td>
+                  <td className="px-6 py-3 text-sm text-gray-500">{formatDate(note.created_at)}</td>
                   <td className="px-6 py-3 text-right space-x-2">
                     {note.status === 'draft' && (
                       <button onClick={() => setConfirmIssue(note.id)} className="text-xs font-medium text-velox-600 hover:text-velox-700 bg-velox-50 hover:bg-velox-100 px-2.5 py-1 rounded-md transition-colors">Issue</button>
@@ -229,7 +229,7 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
         </div>
 
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">

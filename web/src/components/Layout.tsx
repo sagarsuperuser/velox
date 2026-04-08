@@ -58,7 +58,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <div className="p-5 border-b border-gray-100 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-gray-900">Velox</h1>
-          <p className="text-xs text-gray-400 mt-0.5">Billing Dashboard</p>
+          <p className="text-xs text-gray-500 mt-0.5">Billing Dashboard</p>
         </div>
         <button onClick={closeSidebar} className="md:hidden text-gray-400 hover:text-gray-600">
           <X size={20} />
@@ -66,12 +66,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </div>
 
       <nav className="flex-1 p-3 space-y-1">
-        <p className="text-xs uppercase text-gray-400 tracking-wider px-3 pt-2 pb-1">Billing</p>
+        <p className="text-xs uppercase text-gray-500 tracking-wider px-3 pt-2 pb-1">Billing</p>
         {billingNav.map(item => (
           <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} />
         ))}
 
-        <p className="text-xs uppercase text-gray-400 tracking-wider px-3 pt-4 pb-1">Configuration</p>
+        <p className="text-xs uppercase text-gray-500 tracking-wider px-3 pt-4 pb-1">Configuration</p>
         {configNav.map(item => (
           <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} />
         ))}

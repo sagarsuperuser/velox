@@ -161,19 +161,19 @@ export function PlanDetailPage() {
       {/* Key metrics row */}
       <div className="bg-white rounded-xl shadow-card flex divide-x divide-gray-100 mt-6">
         <div className="flex-1 px-6 py-4">
-          <p className="text-xs text-gray-500">Base Price</p>
+          <p className="text-sm text-gray-500">Base Price</p>
           <p className="text-lg font-semibold text-gray-900 mt-1">{formatCents(plan.base_amount_cents)}</p>
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-xs text-gray-500">Interval</p>
+          <p className="text-sm text-gray-500">Interval</p>
           <p className="text-lg font-semibold text-gray-900 mt-1">{plan.billing_interval === 'yearly' ? 'Yearly' : 'Monthly'}</p>
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-xs text-gray-500">Currency</p>
+          <p className="text-sm text-gray-500">Currency</p>
           <p className="text-lg font-semibold text-gray-900 mt-1">{plan.currency.toUpperCase()}</p>
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-xs text-gray-500">Active Subscriptions</p>
+          <p className="text-sm text-gray-500">Active Subscriptions</p>
           <p className="text-lg font-semibold text-gray-900 mt-1">{activeSubscriptions.length}</p>
         </div>
       </div>
@@ -185,27 +185,27 @@ export function PlanDetailPage() {
         </div>
         <div className="divide-y divide-gray-50">
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Code</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Code</span>
             <span className="text-sm text-gray-900 font-mono">{plan.code}</span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Billing Interval</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Billing Interval</span>
             <Badge status={plan.billing_interval === 'yearly' ? 'yearly' : 'monthly'} />
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Currency</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Currency</span>
             <span className="text-sm text-gray-900 font-medium">{plan.currency.toUpperCase()}</span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Status</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Status</span>
             <Badge status={plan.status} />
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">Created</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">Created</span>
             <span className="text-sm text-gray-900">{formatDate(plan.created_at)}</span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-xs text-gray-500 w-40 shrink-0">ID</span>
+            <span className="text-sm text-gray-500 w-40 shrink-0">ID</span>
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-900 font-mono">{plan.id}</span>
               <CopyButton text={plan.id} />
@@ -339,7 +339,7 @@ export function PlanDetailPage() {
                         ? `${formatDate(sub.current_billing_period_start)} - ${formatDate(sub.current_billing_period_end)}`
                         : '\u2014'}
                     </td>
-                    <td className="px-6 py-3 text-sm text-gray-400">{formatDate(sub.created_at)}</td>
+                    <td className="px-6 py-3 text-sm text-gray-500">{formatDate(sub.created_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -416,7 +416,7 @@ function EditPlanModal({ plan, onClose, onSaved }: {
             { value: 'archived', label: 'Archived' },
           ]} />
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">

@@ -122,10 +122,10 @@ export function UsageEventsPage() {
                 {paginated.map(ev => (
                   <tr key={ev.id} className="hover:bg-gray-50/50 transition-colors">
                     <td className="px-6 py-3 text-sm text-gray-700">{formatDate(ev.timestamp)}</td>
-                    <td className="px-6 py-3 text-sm text-gray-600">
+                    <td className="px-6 py-3 text-sm text-gray-500">
                       {customerMap[ev.customer_id]?.display_name || ev.customer_id.slice(0, 8) + '...'}
                     </td>
-                    <td className="px-6 py-3 text-sm text-gray-600">
+                    <td className="px-6 py-3 text-sm text-gray-500">
                       {meterMap[ev.meter_id]?.name || ev.meter_id.slice(0, 8) + '...'}
                     </td>
                     <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">
