@@ -171,55 +171,76 @@ export function CustomerDetailPage() {
         </div>
       </div>
 
-      {/* Billing Profile Card */}
+      {/* Billing Profile */}
       <div className="bg-white rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
           <h2 className="text-sm font-semibold text-gray-900">Billing Profile</h2>
-          {billingProfile && (
-            <button
-              onClick={() => setShowEditBilling(true)}
-              className="text-xs text-velox-600 hover:underline"
-            >
-              Edit
-            </button>
-          )}
+          <button
+            onClick={() => setShowEditBilling(true)}
+            className="text-xs font-medium text-velox-600 hover:text-velox-700 transition-colors"
+          >
+            {billingProfile ? 'Edit' : 'Set up'}
+          </button>
         </div>
         {billingProfile ? (
-          <div className="divide-y divide-gray-50">
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-xs text-gray-500 w-36 shrink-0">Legal Name</span>
-              <span className="text-sm text-gray-900">{billingProfile.legal_name || '\u2014'}</span>
+          <div className="px-6 py-5">
+            {/* Contact & Legal */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
+              <div>
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Legal Name</p>
+                <p className="text-sm text-gray-900 mt-1">{billingProfile.legal_name || '\u2014'}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Email</p>
+                <p className="text-sm text-gray-900 mt-1">{billingProfile.email || '\u2014'}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Phone</p>
+                <p className="text-sm text-gray-900 mt-1">{billingProfile.phone || '\u2014'}</p>
+              </div>
             </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-xs text-gray-500 w-36 shrink-0">Email</span>
-              <span className="text-sm text-gray-900">{billingProfile.email || '\u2014'}</span>
+
+            {/* Address */}
+            <div className="mt-5 pt-5 border-t border-gray-100">
+              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Address</p>
+              {billingProfile.address_line1 || billingProfile.city ? (
+                <div className="text-sm text-gray-900 leading-relaxed">
+                  {billingProfile.address_line1 && <p>{billingProfile.address_line1}</p>}
+                  {billingProfile.address_line2 && <p>{billingProfile.address_line2}</p>}
+                  <p>
+                    {[billingProfile.city, billingProfile.state].filter(Boolean).join(', ')}
+                    {billingProfile.postal_code && ` ${billingProfile.postal_code}`}
+                  </p>
+                  {billingProfile.country && <p>{billingProfile.country}</p>}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400">No address on file</p>
+              )}
             </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-xs text-gray-500 w-36 shrink-0">Phone</span>
-              <span className="text-sm text-gray-900">{billingProfile.phone || '\u2014'}</span>
-            </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-xs text-gray-500 w-36 shrink-0">Address</span>
-              <span className="text-sm text-gray-900">
-                {[billingProfile.address_line1, billingProfile.address_line2, billingProfile.city, billingProfile.state, billingProfile.postal_code, billingProfile.country].filter(Boolean).join(', ') || '\u2014'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-xs text-gray-500 w-36 shrink-0">Tax ID</span>
-              <span className="text-sm text-gray-900">{billingProfile.tax_identifier || '\u2014'}</span>
-            </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-xs text-gray-500 w-36 shrink-0">Currency</span>
-              <span className="text-sm text-gray-900">{billingProfile.currency || '\u2014'}</span>
+
+            {/* Tax & Currency */}
+            <div className="mt-5 pt-5 border-t border-gray-100 grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
+              <div>
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Tax ID</p>
+                <p className="text-sm text-gray-900 mt-1 font-mono">{billingProfile.tax_identifier || '\u2014'}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Currency</p>
+                <p className="text-sm text-gray-900 mt-1">{(billingProfile.currency || '\u2014').toUpperCase()}</p>
+              </div>
             </div>
           </div>
         ) : (
-          <EmptyState
-            title="No billing profile"
-            description="Set up a billing profile to enable invoicing"
-            actionLabel="Set up billing profile"
-            onAction={() => setShowEditBilling(true)}
-          />
+          <div className="px-6 py-10 text-center">
+            <p className="text-sm text-gray-500">No billing profile configured</p>
+            <p className="text-xs text-gray-400 mt-1">Set up a billing profile to enable invoicing for this customer</p>
+            <button
+              onClick={() => setShowEditBilling(true)}
+              className="mt-4 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm transition-colors"
+            >
+              Set Up Billing Profile
+            </button>
+          </div>
         )}
       </div>
 
