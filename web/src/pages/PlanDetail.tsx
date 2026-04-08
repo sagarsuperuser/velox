@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { api, formatCents, formatDate, type Plan, type Meter, type Subscription, type RatingRule } from '@/lib/api'
+import { api, formatCents, formatDate, type Plan, type Meter, type Subscription, type RatingRule, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
@@ -39,6 +39,7 @@ export function PlanDetailPage() {
   const [meters, setMeters] = useState<Meter[]>([])
   const [ratingRules, setRatingRules] = useState<RatingRule[]>([])
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([])
+  const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showEdit, setShowEdit] = useState(false)
@@ -56,11 +57,15 @@ export function PlanDetailPage() {
       api.listMeters().catch(() => ({ data: [] as Meter[] })),
       api.listRatingRules().catch(() => ({ data: [] as RatingRule[] })),
       api.listSubscriptions().catch(() => ({ data: [] as Subscription[] })),
-    ]).then(([p, metersRes, rulesRes, subsRes]) => {
+      api.listCustomers().catch(() => ({ data: [] as Customer[], total: 0 })),
+    ]).then(([p, metersRes, rulesRes, subsRes, custRes]) => {
       setPlan(p)
       setMeters(metersRes.data)
       setRatingRules(rulesRes.data)
       setSubscriptions(subsRes.data.filter(s => s.plan_id === id))
+      const cMap: Record<string, Customer> = {}
+      custRes.data.forEach(c => { cMap[c.id] = c })
+      setCustomerMap(cMap)
       setLoading(false)
     }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load plan'); setLoading(false) })
   }
@@ -330,7 +335,7 @@ export function PlanDetailPage() {
                     </td>
                     <td className="px-6 py-3">
                       <Link to={`/customers/${sub.customer_id}`} className="text-sm text-velox-600 hover:underline">
-                        {sub.customer_id.slice(0, 8)}...
+                        {customerMap[sub.customer_id]?.display_name || sub.customer_id.slice(0, 8) + '...'}
                       </Link>
                     </td>
                     <td className="px-6 py-3"><Badge status={sub.status} /></td>
