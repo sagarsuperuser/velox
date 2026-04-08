@@ -103,7 +103,7 @@
 
 ## 11. Usage Ingestion (via API)
 ```bash
-# Using external identifiers (industry standard)
+# Single event
 curl -X POST http://localhost:8080/v1/usage-events \
   -H "Authorization: Bearer <secret_key>" \
   -H "Content-Type: application/json" \
@@ -111,16 +111,6 @@ curl -X POST http://localhost:8080/v1/usage-events \
     "external_customer_id": "acme_corp",
     "event_name": "api_calls",
     "quantity": 1500
-  }'
-
-# Using internal IDs (also supported)
-curl -X POST http://localhost:8080/v1/usage-events \
-  -H "Authorization: Bearer <secret_key>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "customer_id": "<vlx_cus_...>",
-    "meter_id": "<vlx_mtr_...>",
-    "quantity": 2500
   }'
 
 # Batch events

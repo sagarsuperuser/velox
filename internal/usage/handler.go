@@ -1,11 +1,15 @@
 package usage
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -15,12 +19,24 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
-type Handler struct {
-	svc *Service
+// CustomerResolver looks up a customer by external ID.
+type CustomerResolver interface {
+	GetByExternalID(ctx context.Context, tenantID, externalID string) (domain.Customer, error)
 }
 
-func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+// MeterResolver looks up a meter by key.
+type MeterResolver interface {
+	GetMeterByKey(ctx context.Context, tenantID, key string) (domain.Meter, error)
+}
+
+type Handler struct {
+	svc       *Service
+	customers CustomerResolver
+	meters    MeterResolver
+}
+
+func NewHandler(svc *Service, customers CustomerResolver, meters MeterResolver) *Handler {
+	return &Handler{svc: svc, customers: customers, meters: meters}
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -31,12 +47,72 @@ func (h *Handler) Routes() chi.Router {
 	return r
 }
 
+// apiEvent is the public API input — developers send external identifiers.
+type apiEvent struct {
+	ExternalCustomerID string         `json:"external_customer_id"`
+	EventName          string         `json:"event_name"`
+	Quantity           int64          `json:"quantity,omitempty"`
+	Properties         map[string]any `json:"properties,omitempty"`
+	IdempotencyKey     string         `json:"idempotency_key,omitempty"`
+	Timestamp          *json.RawMessage `json:"timestamp,omitempty"`
+}
+
+// resolve converts public API identifiers to internal IDs.
+func (h *Handler) resolve(ctx context.Context, tenantID string, evt apiEvent) (IngestInput, error) {
+	extCust := strings.TrimSpace(evt.ExternalCustomerID)
+	eventName := strings.TrimSpace(evt.EventName)
+
+	if extCust == "" {
+		return IngestInput{}, fmt.Errorf("external_customer_id is required")
+	}
+	if eventName == "" {
+		return IngestInput{}, fmt.Errorf("event_name is required")
+	}
+
+	cust, err := h.customers.GetByExternalID(ctx, tenantID, extCust)
+	if err != nil {
+		return IngestInput{}, fmt.Errorf("customer %q not found", extCust)
+	}
+
+	meter, err := h.meters.GetMeterByKey(ctx, tenantID, eventName)
+	if err != nil {
+		return IngestInput{}, fmt.Errorf("meter %q not found", eventName)
+	}
+
+	input := IngestInput{
+		CustomerID:     cust.ID,
+		MeterID:        meter.ID,
+		Quantity:       evt.Quantity,
+		Properties:     evt.Properties,
+		IdempotencyKey: evt.IdempotencyKey,
+	}
+
+	if evt.Timestamp != nil {
+		var ts interface{}
+		if err := json.Unmarshal(*evt.Timestamp, &ts); err == nil {
+			if tsStr, ok := ts.(string); ok {
+				if parsed, err := parseTimestamp(tsStr); err == nil {
+					input.Timestamp = &parsed
+				}
+			}
+		}
+	}
+
+	return input, nil
+}
+
 func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 
-	var input IngestInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	var evt apiEvent
+	if err := json.NewDecoder(r.Body).Decode(&evt); err != nil {
 		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	input, err := h.resolve(r.Context(), tenantID, evt)
+	if err != nil {
+		respond.Validation(w, r, err.Error())
 		return
 	}
 
@@ -81,7 +157,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 
-	var events []IngestInput
+	var events []apiEvent
 	if err := json.NewDecoder(r.Body).Decode(&events); err != nil {
 		respond.BadRequest(w, r, "expected JSON array of events")
 		return
@@ -96,7 +172,17 @@ func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ingested, errs := h.svc.BatchIngest(r.Context(), tenantID, events)
+	var inputs []IngestInput
+	for i, evt := range events {
+		input, err := h.resolve(r.Context(), tenantID, evt)
+		if err != nil {
+			respond.Validation(w, r, fmt.Sprintf("event[%d]: %s", i, err.Error()))
+			return
+		}
+		inputs = append(inputs, input)
+	}
+
+	ingested, errs := h.svc.BatchIngest(r.Context(), tenantID, inputs)
 
 	errStrings := make([]string, len(errs))
 	for i, e := range errs {
@@ -113,4 +199,14 @@ func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 		"errors":   errStrings,
 		"total":    len(events),
 	})
+}
+
+func parseTimestamp(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("invalid timestamp format: %s", s)
 }

@@ -51,7 +51,7 @@ func (m *memStore) AggregateForBillingPeriod(_ context.Context, _, _ string, _ [
 }
 
 func TestIngest(t *testing.T) {
-	svc := NewService(newMemStore(), nil, nil)
+	svc := NewService(newMemStore())
 	ctx := context.Background()
 
 	t.Run("valid event", func(t *testing.T) {
