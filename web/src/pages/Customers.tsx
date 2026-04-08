@@ -91,13 +91,15 @@ export function CustomersPage() {
               Export CSV
             </button>
           )}
-          <button
-            onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors"
-          >
-            <Plus size={16} />
-            Add Customer
-          </button>
+          {customers.length > 0 && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors"
+            >
+              <Plus size={16} />
+              Add Customer
+            </button>
+          )}
         </div>
       </div>
 
@@ -122,9 +124,11 @@ export function CustomersPage() {
           <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
         ) : customers.length === 0 ? (
           <div className="p-12 text-center">
-            <p className="text-gray-400 text-sm">No customers yet</p>
-            <button onClick={() => setShowCreate(true)} className="mt-3 px-4 py-2 text-sm font-medium text-velox-600 hover:text-velox-700 transition-colors">
-              Create your first customer
+            <p className="text-sm text-gray-900">No customers yet</p>
+            <p className="text-sm text-gray-500 mt-1">Add your first customer to start billing</p>
+            <button onClick={() => setShowCreate(true)}
+              className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm transition-colors">
+              <Plus size={16} /> Add Customer
             </button>
           </div>
         ) : (

@@ -52,10 +52,12 @@ export function SubscriptionsPage() {
           <h1 className="text-2xl font-semibold text-gray-900">Subscriptions</h1>
           <p className="text-sm text-gray-500 mt-1">{subs.length} total</p>
         </div>
-        <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
-          <Plus size={16} /> Add Subscription
-        </button>
+        {subs.length > 0 && (
+          <button onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
+            <Plus size={16} /> Add Subscription
+          </button>
+        )}
       </div>
 
       {/* Search */}
@@ -79,9 +81,11 @@ export function SubscriptionsPage() {
           <LoadingSkeleton rows={5} columns={6} />
         ) : subs.length === 0 ? (
           <div className="p-12 text-center">
-            <p className="text-gray-400 text-sm">No subscriptions yet</p>
-            <button onClick={() => setShowCreate(true)} className="mt-3 text-sm text-velox-600 hover:underline">
-              Create your first subscription
+            <p className="text-sm text-gray-900">No subscriptions yet</p>
+            <p className="text-sm text-gray-500 mt-1">Create a subscription to start billing a customer</p>
+            <button onClick={() => setShowCreate(true)}
+              className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm transition-colors">
+              <Plus size={16} /> Add Subscription
             </button>
           </div>
         ) : (
