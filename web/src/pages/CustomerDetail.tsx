@@ -494,9 +494,9 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
           <div className="grid grid-cols-3 gap-4">
             <FormField label="City" value={form.city} maxLength={100} placeholder="San Francisco"
               onChange={e => setForm(f => ({ ...f, city: e.target.value }))} />
-            <FormField label="State" value={form.state} placeholder="CA" maxLength={50}
+            <FormField label="State / Province" value={form.state} placeholder="CA" maxLength={50}
               onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
-            <FormField label="ZIP" value={form.postal_code} placeholder="94105" maxLength={10}
+            <FormField label="Postal Code" value={form.postal_code} placeholder="94105" maxLength={10}
               onChange={e => setForm(f => ({ ...f, postal_code: e.target.value }))} />
           </div>
           <FormSelect label="Country" value={form.country}
