@@ -33,9 +33,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 		"batch_size", s.batch,
 	)
 
-	// Run immediately on start
-	s.runOnce(ctx)
-
+	// Wait for first interval before running (don't bill on startup)
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 

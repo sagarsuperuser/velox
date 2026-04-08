@@ -305,7 +305,8 @@ function EmailInvoiceModal({ invoiceId, defaultEmail, onClose, onSent, onError }
           <label className="block text-sm font-medium text-gray-700 mb-1">Recipient Email <span className="text-red-500">*</span></label>
           <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
             placeholder="customer@example.com"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+            maxLength={254} pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" title="Enter a valid email address" />
         </div>
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
@@ -360,11 +361,12 @@ function IssueCreditModal({ invoice, onClose, onCreated, onError }: {
           <label className="block text-sm font-medium text-gray-700 mb-1">Reason <span className="text-red-500">*</span></label>
           <input type="text" value={reason} onChange={e => setReason(e.target.value)} required
             placeholder="e.g. Service disruption, billing error"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+            maxLength={500} />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Amount ($) <span className="text-red-500">*</span></label>
-          <input type="number" step="0.01" min="0.01" value={amount} onChange={e => setAmount(e.target.value)} required
+          <input type="number" step="0.01" min="0.01" max={999999.99} value={amount} onChange={e => setAmount(e.target.value)} required
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
         </div>
         <div>

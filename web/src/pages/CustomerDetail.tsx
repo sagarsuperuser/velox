@@ -301,12 +301,13 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
           <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" required />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" required maxLength={255} />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
           <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+            maxLength={254} pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" title="Enter a valid email address" />
         </div>
         {error && <p className="text-red-600 text-xs">{error}</p>}
         <div className="flex justify-end gap-3 pt-2">
@@ -360,38 +361,42 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
       <form onSubmit={handleSubmit} className="space-y-3 max-h-[70vh] overflow-y-auto">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Legal Name</label>
-          <input type="text" value={form.legal_name} onChange={e => setForm(f => ({ ...f, legal_name: e.target.value }))} className={fieldClass} />
+          <input type="text" value={form.legal_name} onChange={e => setForm(f => ({ ...f, legal_name: e.target.value }))} className={fieldClass} maxLength={255} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} className={fieldClass} />
+            <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} className={fieldClass}
+              maxLength={254} pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" title="Enter a valid email address" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-            <input type="text" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} className={fieldClass} />
+            <input type="tel" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} className={fieldClass}
+              placeholder="+1 (555) 123-4567" maxLength={20} pattern="[\+\d\s\-\(\)]{7,20}" title="Enter a valid phone number" />
           </div>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Address Line 1</label>
-          <input type="text" value={form.address_line1} onChange={e => setForm(f => ({ ...f, address_line1: e.target.value }))} className={fieldClass} />
+          <input type="text" value={form.address_line1} onChange={e => setForm(f => ({ ...f, address_line1: e.target.value }))} className={fieldClass} maxLength={200} />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Address Line 2</label>
-          <input type="text" value={form.address_line2} onChange={e => setForm(f => ({ ...f, address_line2: e.target.value }))} className={fieldClass} />
+          <input type="text" value={form.address_line2} onChange={e => setForm(f => ({ ...f, address_line2: e.target.value }))} className={fieldClass} maxLength={200} />
         </div>
         <div className="grid grid-cols-3 gap-3">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">City</label>
-            <input type="text" value={form.city} onChange={e => setForm(f => ({ ...f, city: e.target.value }))} className={fieldClass} />
+            <input type="text" value={form.city} onChange={e => setForm(f => ({ ...f, city: e.target.value }))} className={fieldClass} maxLength={100} />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">State</label>
-            <input type="text" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} className={fieldClass} />
+            <input type="text" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} className={fieldClass}
+              placeholder="e.g., CA, NY, TX" maxLength={50} />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Postal Code</label>
-            <input type="text" value={form.postal_code} onChange={e => setForm(f => ({ ...f, postal_code: e.target.value }))} className={fieldClass} />
+            <input type="text" value={form.postal_code} onChange={e => setForm(f => ({ ...f, postal_code: e.target.value }))} className={fieldClass}
+              placeholder="e.g., 10001 or SW1A 1AA" maxLength={10} />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -415,8 +420,9 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
           </div>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Tax Identifier</label>
-          <input type="text" value={form.tax_identifier} onChange={e => setForm(f => ({ ...f, tax_identifier: e.target.value }))} className={fieldClass} />
+          <label className="block text-sm font-medium text-gray-700 mb-1">Tax ID (VAT / EIN / GST)</label>
+          <input type="text" value={form.tax_identifier} onChange={e => setForm(f => ({ ...f, tax_identifier: e.target.value }))} className={fieldClass}
+            maxLength={30} placeholder="e.g., US12-3456789" />
         </div>
         {error && <p className="text-red-600 text-xs">{error}</p>}
         <div className="flex justify-end gap-3 pt-2">
@@ -463,13 +469,14 @@ function CreateSubscriptionFromCustomerModal({ customerId, plans, onClose, onCre
           <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
           <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            placeholder="Pro Monthly" required />
+            placeholder="Pro Monthly" required maxLength={255} />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Code <span className="text-red-500">*</span></label>
           <input type="text" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 font-mono"
-            placeholder="pro-monthly" required />
+            placeholder="pro-monthly" required maxLength={100}
+            pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, underscores, and hyphens" />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Plan <span className="text-red-500">*</span></label>

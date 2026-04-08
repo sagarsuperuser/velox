@@ -56,9 +56,9 @@ function PolicyTab() {
     api.getDunningPolicy()
       .then(p => { setForm(p); setSavedForm(JSON.stringify(p)); setIsExisting(true); setLoading(false) })
       .catch(err => {
-        // 404 means no policy yet, which is fine - other errors should show
+        // "not found" means no policy yet, which is fine - show empty form
         const msg = err instanceof Error ? err.message : 'Failed to load policy'
-        if (!msg.includes('404')) {
+        if (!msg.includes('not found') && !msg.includes('404') && !msg.includes('Not Found')) {
           setError(msg)
         }
         setLoading(false)
@@ -93,7 +93,7 @@ function PolicyTab() {
         <label className="block text-sm font-medium text-gray-700 mb-1">Policy Name</label>
         <input type="text" value={form.name || ''} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
           className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-          placeholder="Default Dunning Policy" />
+          placeholder="Default Dunning Policy" maxLength={100} />
       </div>
 
       <div className="flex items-center gap-3">

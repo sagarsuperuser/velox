@@ -185,7 +185,8 @@ function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated
           <label className="block text-sm font-medium text-gray-700 mb-1">Name <span className="text-red-500">*</span></label>
           <input type="text" value={name} onChange={e => setName(e.target.value)} required
             placeholder="Production API Key"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+            maxLength={100} />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Key Type</label>
