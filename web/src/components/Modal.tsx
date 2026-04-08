@@ -6,9 +6,10 @@ interface ModalProps {
   onClose: () => void
   title: string
   children: React.ReactNode
+  wide?: boolean
 }
 
-export function Modal({ open, onClose, title, children }: ModalProps) {
+export function Modal({ open, onClose, title, children, wide }: ModalProps) {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -24,14 +25,19 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/25 backdrop-blur-[2px] animate-fade-in" onClick={onClose} />
-      <div ref={ref} className="relative bg-white rounded-2xl shadow-modal w-full max-w-md mx-4 p-6 animate-scale-in">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X size={20} />
+      <div ref={ref} className={`relative bg-white rounded-2xl shadow-modal w-full ${wide ? 'max-w-lg' : 'max-w-md'} mx-4 animate-scale-in`}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+          >
+            <X size={18} />
           </button>
         </div>
-        {children}
+        <div className="px-6 py-5">
+          {children}
+        </div>
       </div>
     </div>
   )

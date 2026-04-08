@@ -308,8 +308,8 @@ function EmailInvoiceModal({ invoiceId, defaultEmail, onClose, onSent, onError }
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
             maxLength={254} pattern="[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}" title="Enter a valid email address" />
         </div>
-        <div className="flex justify-end gap-3 pt-2">
-          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+          <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={sending}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
             {sending ? 'Sending...' : 'Send Email'}
@@ -377,8 +377,8 @@ function IssueCreditModal({ invoice, onClose, onCreated, onError }: {
             {invoice.payment_status === 'paid' && <option value="refund">Refund</option>}
           </select>
         </div>
-        <div className="flex justify-end gap-3 pt-2">
-          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
+          <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
             {saving ? 'Creating...' : 'Create Credit Note'}

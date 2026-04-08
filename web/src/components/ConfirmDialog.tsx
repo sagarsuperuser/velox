@@ -1,3 +1,4 @@
+import { AlertTriangle, Info } from 'lucide-react'
 import { Modal } from './Modal'
 
 interface ConfirmDialogProps {
@@ -23,18 +24,28 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   return (
     <Modal open={open} onClose={onCancel} title={title}>
-      <div className="space-y-4">
-        <p className="text-sm text-gray-600">{message}</p>
-        <div className="flex justify-end gap-3">
+      <div className="space-y-5">
+        <div className="flex gap-3">
+          <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+            variant === 'danger' ? 'bg-red-50' : 'bg-velox-50'
+          }`}>
+            {variant === 'danger'
+              ? <AlertTriangle size={20} className="text-red-500" />
+              : <Info size={20} className="text-velox-600" />
+            }
+          </div>
+          <p className="text-sm text-gray-600 leading-relaxed pt-1">{message}</p>
+        </div>
+        <div className="flex justify-end gap-3 pt-1 border-t border-gray-100">
           <button
             onClick={onCancel}
-            className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
+            className="mt-4 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
           >
             {cancelLabel}
           </button>
           <button
             onClick={onConfirm}
-            className={`px-4 py-2 text-white rounded-lg text-sm font-medium transition-colors ${
+            className={`mt-4 px-4 py-2 text-white rounded-lg text-sm font-medium shadow-sm transition-colors ${
               variant === 'danger'
                 ? 'bg-red-600 hover:bg-red-700'
                 : 'bg-velox-600 hover:bg-velox-700'
