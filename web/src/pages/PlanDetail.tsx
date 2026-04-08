@@ -9,6 +9,7 @@ import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Copy, Check, Plus, Pencil } from 'lucide-react'
@@ -44,6 +45,7 @@ export function PlanDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [showEdit, setShowEdit] = useState(false)
   const [showAttachMeter, setShowAttachMeter] = useState(false)
+  const [detachTarget, setDetachTarget] = useState<Meter | null>(null)
   const [updatingMeters, setUpdatingMeters] = useState(false)
   const toast = useToast()
   const navigate = useNavigate()
@@ -251,7 +253,7 @@ export function PlanDetailPage() {
                       <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">{rule.name}</span>
                     )}
                     <button
-                      onClick={() => handleDetachMeter(meter.id)}
+                      onClick={() => setDetachTarget(meter)}
                       disabled={updatingMeters}
                       className="ml-2 text-xs font-medium text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-md transition-colors disabled:opacity-50"
                     >
@@ -353,6 +355,21 @@ export function PlanDetailPage() {
           <EmptyState title="No subscriptions" description="No subscriptions are using this plan yet" />
         )}
       </div>
+
+      <ConfirmDialog
+        open={!!detachTarget}
+        title="Detach Meter"
+        message={`Are you sure you want to detach "${detachTarget?.name}" from this plan? Usage for this meter will no longer be tracked.`}
+        confirmLabel="Detach"
+        variant="danger"
+        onConfirm={() => {
+          if (detachTarget) {
+            handleDetachMeter(detachTarget.id)
+            setDetachTarget(null)
+          }
+        }}
+        onCancel={() => setDetachTarget(null)}
+      />
 
       {/* Edit Modal */}
       {showEdit && (
