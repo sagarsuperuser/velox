@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { api, formatCents, formatDate, type Customer, type CreditBalance, type CreditLedgerEntry } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { FormField } from '@/components/FormField'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus } from 'lucide-react'
 
 export function CreditsPage() {
@@ -150,8 +152,14 @@ function GrantModal({ customerId, onClose, onGranted }: { customerId: string; on
   const [saving, setSaving] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
 
+  const fieldRules = useMemo(() => ({
+    amount: [rules.required('Amount'), rules.minAmount(0.01)],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll({ amount })) return
     setShowConfirm(true)
   }
 
@@ -176,19 +184,14 @@ function GrantModal({ customerId, onClose, onGranted }: { customerId: string; on
     <>
       <Modal open onClose={onClose} title="Grant Credits">
         <form onSubmit={handleSubmit} noValidate className="space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Amount ($)</label>
-            <input type="number" step="0.01" min="0.01" max={999999.99} value={amount} onChange={e => setAmount(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-              placeholder="50.00" required />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-            <input type="text" value={description} onChange={e => setDescription(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-              placeholder="Welcome credit" maxLength={500} />
-          </div>
-          {error && <p className="text-red-600 text-xs">{error}</p>}
+          <FormField label="Amount ($)" required type="number" step="0.01" min="0.01" max={999999.99} value={amount}
+            placeholder="50.00"
+            ref={registerRef('amount')} error={fieldError('amount')}
+            onChange={e => setAmount(e.target.value)}
+            onBlur={() => onBlur('amount', amount)} />
+          <FormField label="Description" value={description} placeholder="Welcome credit" maxLength={500}
+            onChange={e => setDescription(e.target.value)} />
+          {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
           <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
             <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
             <button type="submit" disabled={saving}

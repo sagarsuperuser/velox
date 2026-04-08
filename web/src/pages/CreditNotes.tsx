@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatCents, formatDate, type CreditNote, type Invoice } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { FormField, FormSelect } from '@/components/FormField'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus } from 'lucide-react'
 
 export function CreditNotesPage() {
@@ -155,6 +157,12 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
+  const fieldRules = useMemo(() => ({
+    invoice_id: [rules.required('Invoice')],
+    reason: [rules.required('Reason')],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+
   useEffect(() => {
     api.listInvoices('status=finalized').then(res => {
       // Include both finalized and paid invoices
@@ -169,6 +177,7 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll({ invoice_id: invoiceId, reason })) return
     setSaving(true); setError('')
     try {
       await api.createCreditNote({
@@ -192,60 +201,34 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
   return (
     <Modal open onClose={onClose} title="Create Credit Note">
       <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Invoice <span className="text-red-500">*</span></label>
-          <select value={invoiceId} onChange={e => setInvoiceId(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
-            required>
-            <option value="">Select invoice...</option>
-            {invoices.map(inv => (
-              <option key={inv.id} value={inv.id}>
-                {inv.invoice_number} ({inv.status}) - {formatCents(inv.total_amount_cents)}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Reason <span className="text-red-500">*</span></label>
-          <input type="text" value={reason} onChange={e => setReason(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            placeholder="Billing error" required maxLength={500} />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Refund Type</label>
-          <select value={refundType} onChange={e => setRefundType(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
-            <option value="credit">Credit</option>
-            <option value="refund">Refund</option>
-          </select>
-        </div>
+        <FormSelect label="Invoice" required value={invoiceId} error={fieldError('invoice_id')}
+          onChange={e => { setInvoiceId(e.target.value); onBlur('invoice_id', e.target.value) }}
+          placeholder="Select invoice..."
+          options={invoices.map(inv => ({ value: inv.id, label: `${inv.invoice_number} (${inv.status}) - ${formatCents(inv.total_amount_cents)}` }))} />
+        <FormField label="Reason" required value={reason} placeholder="Billing error" maxLength={500}
+          ref={registerRef('reason')} error={fieldError('reason')}
+          onChange={e => setReason(e.target.value)}
+          onBlur={() => onBlur('reason', reason)} />
+        <FormSelect label="Refund Type" value={refundType}
+          onChange={e => setRefundType(e.target.value)}
+          options={[{ value: 'credit', label: 'Credit' }, { value: 'refund', label: 'Refund' }]} />
 
         <div className="border-t border-gray-100 pt-3">
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Line Item</p>
           <div className="space-y-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-              <input type="text" value={description} onChange={e => setDescription(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-                placeholder="Credit for overcharge" maxLength={500} />
-            </div>
+            <FormField label="Description" value={description} placeholder="Credit for overcharge" maxLength={500}
+              onChange={e => setDescription(e.target.value)} />
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Quantity</label>
-                <input type="number" min={1} value={quantity} onChange={e => setQuantity(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Unit Price ($) <span className="text-red-500">*</span></label>
-                <input type="number" step="0.01" min="0" max={999999.99} value={unitAmountDollars} onChange={e => setUnitAmountDollars(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-                  placeholder="10.00" required />
-              </div>
+              <FormField label="Quantity" type="number" min={1} value={quantity}
+                onChange={e => setQuantity(e.target.value)} />
+              <FormField label="Unit Price ($)" required type="number" step="0.01" min="0" max={999999.99} value={unitAmountDollars}
+                placeholder="10.00"
+                onChange={e => setUnitAmountDollars(e.target.value)} />
             </div>
           </div>
         </div>
 
-        {error && <p className="text-red-600 text-xs">{error}</p>}
+        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}

@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatDate, type Subscription, type Customer, type Plan } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { FormField } from '@/components/FormField'
+import { FormSelect } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus, Search } from 'lucide-react'
 import { Pagination } from '@/components/Pagination'
 
@@ -160,8 +163,17 @@ function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
+  const fieldRules = useMemo(() => ({
+    display_name: [rules.required('Display name')],
+    code: [rules.required('Code'), rules.slug()],
+    customer_id: [rules.required('Customer')],
+    plan_id: [rules.required('Plan')],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll(form)) return
     setSaving(true); setError('')
     try {
       const sub = await api.createSubscription(form)
@@ -176,40 +188,28 @@ function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
   return (
     <Modal open onClose={onClose} title="Create Subscription">
       <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
-          <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            placeholder="Acme Pro Monthly" required maxLength={255} />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Code <span className="text-red-500">*</span></label>
-          <input type="text" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 font-mono"
-            placeholder="acme-pro" required maxLength={100}
-            />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Customer <span className="text-red-500">*</span></label>
-          <select value={form.customer_id} onChange={e => setForm(f => ({ ...f, customer_id: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" required>
-            <option value="">Select customer...</option>
-            {customers.map(c => <option key={c.id} value={c.id}>{c.display_name} ({c.external_id})</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Plan <span className="text-red-500">*</span></label>
-          <select value={form.plan_id} onChange={e => setForm(f => ({ ...f, plan_id: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" required>
-            <option value="">Select plan...</option>
-            {plans.map(p => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
-          </select>
-        </div>
+        <FormField label="Display Name" required value={form.display_name} placeholder="Acme Pro Monthly" maxLength={255}
+          ref={registerRef('display_name')} error={fieldError('display_name')}
+          onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
+          onBlur={() => onBlur('display_name', form.display_name)} />
+        <FormField label="Code" required value={form.code} placeholder="acme-pro" maxLength={100} mono
+          ref={registerRef('code')} error={fieldError('code')}
+          onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
+          onBlur={() => onBlur('code', form.code)}
+          hint="Only letters, numbers, hyphens, and underscores" />
+        <FormSelect label="Customer" required value={form.customer_id} placeholder="Select customer..."
+          error={fieldError('customer_id')}
+          onChange={e => { setForm(f => ({ ...f, customer_id: e.target.value })); onBlur('customer_id', e.target.value) }}
+          options={customers.map(c => ({ value: c.id, label: `${c.display_name} (${c.external_id})` }))} />
+        <FormSelect label="Plan" required value={form.plan_id} placeholder="Select plan..."
+          error={fieldError('plan_id')}
+          onChange={e => { setForm(f => ({ ...f, plan_id: e.target.value })); onBlur('plan_id', e.target.value) }}
+          options={plans.map(p => ({ value: p.id, label: `${p.name} (${p.code})` }))} />
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={form.start_now} onChange={e => setForm(f => ({ ...f, start_now: e.target.checked }))} />
           Start immediately (activate + set billing period)
         </label>
-        {error && <p className="text-red-600 text-xs">{error}</p>}
+        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}

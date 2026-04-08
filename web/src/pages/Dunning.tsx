@@ -4,6 +4,7 @@ import { api, formatDate, type DunningPolicy, type DunningRun, type Invoice } fr
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { FormSelect } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
@@ -251,16 +252,14 @@ function ResolveModal({ run, invoiceMap, onClose, onResolved }: { run: DunningRu
     <Modal open onClose={onClose} title="Resolve Dunning Run">
       <form onSubmit={handleSubmit} noValidate className="space-y-3">
         <p className="text-sm text-gray-500">Invoice: <span className="font-mono">{invoiceMap[run.invoice_id]?.invoice_number || run.invoice_id.slice(0, 8) + '...'}</span></p>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Resolution</label>
-          <select value={resolution} onChange={e => setResolution(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
-            <option value="payment_succeeded">Payment Succeeded</option>
-            <option value="invoice_not_collectible">Invoice Not Collectible</option>
-            <option value="operator_resolved">Operator Resolved</option>
-          </select>
-        </div>
-        {error && <p className="text-red-600 text-xs">{error}</p>}
+        <FormSelect label="Resolution" value={resolution}
+          onChange={e => setResolution(e.target.value)}
+          options={[
+            { value: 'payment_succeeded', label: 'Payment Succeeded' },
+            { value: 'invoice_not_collectible', label: 'Invoice Not Collectible' },
+            { value: 'operator_resolved', label: 'Operator Resolved' },
+          ]} />
+        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}

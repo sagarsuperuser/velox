@@ -1,14 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api, downloadPDF, formatCents, formatDate, type Invoice, type LineItem, type Customer, type Subscription } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
+import { FormField } from '@/components/FormField'
+import { FormSelect } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
+import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Mail, CreditCard } from 'lucide-react'
 
 const LINE_TYPE_LABELS: Record<string, string> = {
@@ -285,8 +288,14 @@ function EmailInvoiceModal({ invoiceId, defaultEmail, onClose, onSent, onError }
   const [email, setEmail] = useState(defaultEmail)
   const [sending, setSending] = useState(false)
 
+  const fieldRules = useMemo(() => ({
+    email: [rules.required('Email'), rules.email()],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll({ email })) return
     setSending(true)
     try {
       await api.sendInvoiceEmail(invoiceId, email)
@@ -301,13 +310,10 @@ function EmailInvoiceModal({ invoiceId, defaultEmail, onClose, onSent, onError }
   return (
     <Modal open onClose={onClose} title="Email Invoice">
       <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Recipient Email <span className="text-red-500">*</span></label>
-          <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
-            placeholder="customer@example.com"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            maxLength={254} />
-        </div>
+        <FormField label="Recipient Email" required type="email" value={email} placeholder="customer@example.com" maxLength={254}
+          ref={registerRef('email')} error={fieldError('email')}
+          onChange={e => setEmail(e.target.value)}
+          onBlur={() => onBlur('email', email)} />
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={sending}
@@ -331,8 +337,15 @@ function IssueCreditModal({ invoice, onClose, onCreated, onError }: {
   const [type, setType] = useState<'credit' | 'refund'>('credit')
   const [saving, setSaving] = useState(false)
 
+  const fieldRules = useMemo(() => ({
+    reason: [rules.required('Reason')],
+    amount: [rules.required('Amount'), rules.minAmount(0.01), rules.maxAmount(999999.99)],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll({ reason, amount })) return
     setSaving(true)
     try {
       const amountCents = Math.round(parseFloat(amount) * 100)
@@ -357,26 +370,20 @@ function IssueCreditModal({ invoice, onClose, onCreated, onError }: {
           <label className="block text-sm font-medium text-gray-700 mb-1">Invoice</label>
           <p className="text-sm text-gray-500 font-mono">{invoice.invoice_number}</p>
         </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Reason <span className="text-red-500">*</span></label>
-          <input type="text" value={reason} onChange={e => setReason(e.target.value)} required
-            placeholder="e.g. Service disruption, billing error"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
-            maxLength={500} />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Amount ($) <span className="text-red-500">*</span></label>
-          <input type="number" step="0.01" min="0.01" max={999999.99} value={amount} onChange={e => setAmount(e.target.value)} required
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
-          <select value={type} onChange={e => setType(e.target.value as 'credit' | 'refund')}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
-            <option value="credit">Credit</option>
-            {invoice.payment_status === 'paid' && <option value="refund">Refund</option>}
-          </select>
-        </div>
+        <FormField label="Reason" required value={reason} placeholder="e.g. Service disruption, billing error" maxLength={500}
+          ref={registerRef('reason')} error={fieldError('reason')}
+          onChange={e => setReason(e.target.value)}
+          onBlur={() => onBlur('reason', reason)} />
+        <FormField label="Amount ($)" required type="number" step="0.01" min={0.01} max={999999.99} value={amount}
+          ref={registerRef('amount')} error={fieldError('amount')}
+          onChange={e => setAmount(e.target.value)}
+          onBlur={() => onBlur('amount', amount)} />
+        <FormSelect label="Type" value={type}
+          onChange={e => setType(e.target.value as 'credit' | 'refund')}
+          options={[
+            { value: 'credit', label: 'Credit' },
+            ...(invoice.payment_status === 'paid' ? [{ value: 'refund', label: 'Refund' }] : []),
+          ]} />
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
