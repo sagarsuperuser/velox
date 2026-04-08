@@ -390,11 +390,9 @@ export function PlanDetailPage() {
 function EditPlanModal({ plan, onClose, onSaved }: {
   plan: Plan; onClose: () => void; onSaved: (p: Plan) => void
 }) {
-  const [form, setForm] = useState({
-    name: plan.name,
-    base_amount_cents: plan.base_amount_cents,
-    status: plan.status,
-  })
+  const [name, setName] = useState(plan.name)
+  const [basePrice, setBasePrice] = useState((plan.base_amount_cents / 100).toFixed(2))
+  const [status, setStatus] = useState(plan.status)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -405,13 +403,13 @@ function EditPlanModal({ plan, onClose, onSaved }: {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!validateAll(form)) return
+    if (!validateAll({ name })) return
     setSaving(true); setError('')
     try {
       const updated = await api.updatePlan(plan.id, {
-        name: form.name,
-        base_amount_cents: form.base_amount_cents,
-        status: form.status,
+        name,
+        base_amount_cents: Math.round(parseFloat(basePrice || '0') * 100),
+        status,
       })
       onSaved(updated)
     } catch (err) {
@@ -423,15 +421,27 @@ function EditPlanModal({ plan, onClose, onSaved }: {
 
   return (
     <Modal open onClose={onClose} title="Edit Plan">
-      <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <FormField label="Name" required value={form.name} maxLength={255}
+      <form onSubmit={handleSubmit} noValidate className="space-y-4">
+        <div className="bg-gray-50 rounded-lg px-4 py-3 flex items-center justify-between">
+          <div>
+            <p className="text-xs text-gray-500">Code</p>
+            <p className="text-sm text-gray-900 font-mono mt-0.5">{plan.code}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-gray-500">Interval</p>
+            <p className="text-sm text-gray-900 mt-0.5">{plan.billing_interval === 'yearly' ? 'Yearly' : 'Monthly'}</p>
+          </div>
+        </div>
+        <FormField label="Plan Name" required value={name} maxLength={255}
           ref={registerRef('name')} error={fieldError('name')}
-          onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-          onBlur={() => onBlur('name', form.name)} />
-        <FormField label="Base Price (dollars)" type="number" value={String(form.base_amount_cents / 100)}
-          onChange={e => setForm(f => ({ ...f, base_amount_cents: Math.round(parseFloat(e.target.value || '0') * 100) }))} />
-        <FormSelect label="Status" value={form.status}
-          onChange={e => setForm(f => ({ ...f, status: e.target.value }))}
+          onChange={e => setName(e.target.value)}
+          onBlur={() => onBlur('name', name)} />
+        <FormField label={`Base Price (${plan.currency.toUpperCase()})`} type="number" step="0.01" min={0} max={999999.99}
+          value={basePrice} placeholder="49.00"
+          onChange={e => setBasePrice(e.target.value)}
+          hint={`${plan.billing_interval === 'yearly' ? 'Yearly' : 'Monthly'} recurring charge`} />
+        <FormSelect label="Status" value={status}
+          onChange={e => setStatus(e.target.value)}
           options={[
             { value: 'active', label: 'Active' },
             { value: 'archived', label: 'Archived' },
