@@ -56,15 +56,16 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	subH := subscription.NewHandler(subscription.NewService(subStore))
 	usageH := usage.NewHandler(usage.NewService(usageStore))
 	invoiceH := invoice.NewHandler(invoice.NewService(invoiceStore))
-	creditNoteH := creditnote.NewHandler(creditnote.NewService(creditnote.NewPostgresStore(db), invoiceStore))
 	creditH := credit.NewHandler(credit.NewService(credit.NewPostgresStore(db)))
 	webhookOutH := webhook.NewHandler(webhook.NewService(webhook.NewPostgresStore(db), nil))
 	auditLogger := audit.NewLogger(db)
 	auditH := audit.NewHandler(auditLogger)
 	settingsH := tenant.NewSettingsHandler(tenant.NewSettingsStore(db))
 
-	// Payment / webhook / checkout handlers
+	// Payment / webhook / checkout / refund handlers
 	stripeKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
+	stripeRefunder := payment.NewStripeRefunder(stripeKey)
+	creditNoteH := creditnote.NewHandler(creditnote.NewService(creditnote.NewPostgresStore(db), invoiceStore, stripeRefunder))
 	stripeClient := payment.NewLiveStripeClient(stripeKey)
 	dunningStore := dunning.NewPostgresStore(db)
 	dunningSvc := dunning.NewService(dunningStore, nil)

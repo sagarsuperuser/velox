@@ -15,13 +15,23 @@ type InvoiceReader interface {
 	ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error)
 }
 
+// Refunder processes refunds via the payment provider.
+type Refunder interface {
+	CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64) (string, error)
+}
+
 type Service struct {
 	store    Store
 	invoices InvoiceReader
+	refunder Refunder
 }
 
-func NewService(store Store, invoices InvoiceReader) *Service {
-	return &Service{store: store, invoices: invoices}
+func NewService(store Store, invoices InvoiceReader, refunder ...Refunder) *Service {
+	s := &Service{store: store, invoices: invoices}
+	if len(refunder) > 0 {
+		s.refunder = refunder[0]
+	}
+	return s
 }
 
 type CreateInput struct {
@@ -126,6 +136,20 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 	if cn.Status != domain.CreditNoteDraft {
 		return domain.CreditNote{}, fmt.Errorf("can only issue draft credit notes")
 	}
+
+	// If this is a refund credit note and we have a refunder, process via Stripe
+	if cn.RefundAmountCents > 0 && s.refunder != nil {
+		inv, err := s.invoices.Get(ctx, tenantID, cn.InvoiceID)
+		if err == nil && inv.StripePaymentIntentID != "" {
+			refundID, err := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents)
+			if err != nil {
+				return domain.CreditNote{}, fmt.Errorf("stripe refund failed: %w", err)
+			}
+			cn.StripeRefundID = refundID
+			cn.RefundStatus = domain.RefundSucceeded
+		}
+	}
+
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.CreditNoteIssued)
 }
 
