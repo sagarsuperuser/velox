@@ -8,6 +8,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Plus, Search } from 'lucide-react'
+import { Pagination } from '@/components/Pagination'
 
 export function SubscriptionsPage() {
   const [subs, setSubs] = useState<Subscription[]>([])
@@ -18,6 +19,8 @@ export function SubscriptionsPage() {
   const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [plans, setPlans] = useState<Plan[]>([])
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const pageSize = 25
   const toast = useToast()
 
   const loadSubs = () => {
@@ -78,46 +81,57 @@ export function SubscriptionsPage() {
             </button>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Customer</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Code</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Billing Period</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Created</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {subs.filter(sub => {
-                if (!search) return true
-                const q = search.toLowerCase()
-                return sub.display_name.toLowerCase().includes(q) || sub.code.toLowerCase().includes(q)
-              }).map(sub => (
-                <tr key={sub.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-3">
-                    <Link to={`/subscriptions/${sub.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">
-                      {sub.display_name}
-                    </Link>
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-600">
-                    {customerMap[sub.customer_id]?.display_name || 'Unknown'}
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-500 font-mono">{sub.code}</td>
-                  <td className="px-6 py-3"><Badge status={sub.status} /></td>
-                  <td className="px-6 py-3 text-sm text-gray-500">
-                    {sub.current_billing_period_start && sub.current_billing_period_end
-                      ? `${formatDate(sub.current_billing_period_start)} — ${formatDate(sub.current_billing_period_end)}`
-                      : '\u2014'}
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-400">{formatDate(sub.created_at)}</td>
+          (() => {
+            const filtered = subs.filter(sub => {
+              if (!search) return true
+              const q = search.toLowerCase()
+              return sub.display_name.toLowerCase().includes(q) || sub.code.toLowerCase().includes(q)
+            })
+            const totalPages = Math.ceil(filtered.length / pageSize)
+            const currentPage = Math.min(page, totalPages || 1)
+            const paginated = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+            return (
+            <>
+            <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-100">
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Customer</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Code</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Billing Period</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Created</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {paginated.map(sub => (
+                  <tr key={sub.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-6 py-3">
+                      <Link to={`/subscriptions/${sub.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">
+                        {sub.display_name}
+                      </Link>
+                    </td>
+                    <td className="px-6 py-3 text-sm text-gray-600">
+                      {customerMap[sub.customer_id]?.display_name || 'Unknown'}
+                    </td>
+                    <td className="px-6 py-3 text-sm text-gray-500 font-mono">{sub.code}</td>
+                    <td className="px-6 py-3"><Badge status={sub.status} /></td>
+                    <td className="px-6 py-3 text-sm text-gray-500">
+                      {sub.current_billing_period_start && sub.current_billing_period_end
+                        ? `${formatDate(sub.current_billing_period_start)} — ${formatDate(sub.current_billing_period_end)}`
+                        : '\u2014'}
+                    </td>
+                    <td className="px-6 py-3 text-sm text-gray-400">{formatDate(sub.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            </div>
+            <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} />
+            </>
+            )
+          })()
         )}
       </div>
 

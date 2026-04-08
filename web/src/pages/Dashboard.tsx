@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCents, formatDate, formatRelativeTime, type Invoice, type Subscription, type Customer, type AuditEntry } from '@/lib/api'
+import { api, formatCents, formatDate, formatRelativeTime, type Invoice, type Subscription, type Customer, type AuditEntry, type Plan } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { StatCard } from '@/components/StatCard'
 import { Badge } from '@/components/Badge'
@@ -8,7 +8,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 
 export function DashboardPage() {
-  const [stats, setStats] = useState({ customers: 0, subscriptions: 0, invoices: 0, revenue: 0 })
+  const [stats, setStats] = useState({ customers: 0, subscriptions: 0, invoices: 0, revenue: 0, mrr: 0 })
   const [recentInvoices, setRecentInvoices] = useState<Invoice[]>([])
   const [activeSubs, setActiveSubs] = useState<Subscription[]>([])
   const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
@@ -22,11 +22,12 @@ export function DashboardPage() {
     setLoading(true)
     setError(null)
     try {
-      const [customers, invoices, subs, auditRes] = await Promise.all([
+      const [customers, invoices, subs, auditRes, plansRes] = await Promise.all([
         api.listCustomers(),
         api.listInvoices('limit=10'),
         api.listSubscriptions('status=active'),
         api.listAuditLog('limit=8').catch(() => ({ data: [] })),
+        api.listPlans().catch(() => ({ data: [] as Plan[] })),
       ])
       setRecentActivity(auditRes.data || [])
 
@@ -38,11 +39,24 @@ export function DashboardPage() {
         .filter(i => i.status === 'paid')
         .reduce((sum, i) => sum + i.total_amount_cents, 0)
 
+      const planMap: Record<string, Plan> = {}
+      plansRes.data.forEach(p => { planMap[p.id] = p })
+      let mrr = 0
+      subs.data.forEach(sub => {
+        const plan = planMap[sub.plan_id]
+        if (plan) {
+          mrr += plan.billing_interval === 'yearly'
+            ? Math.round(plan.base_amount_cents / 12)
+            : plan.base_amount_cents
+        }
+      })
+
       setStats({
         customers: customers.total,
         subscriptions: subs.data.length,
         invoices: invoices.total,
         revenue,
+        mrr,
       })
       setRecentInvoices(invoices.data.slice(0, 5))
       setActiveSubs(subs.data.slice(0, 5))
@@ -86,9 +100,10 @@ export function DashboardPage() {
           <button
             onClick={handleTriggerBilling}
             disabled={runningBilling}
+            title="Generate invoices for subscriptions due for billing"
             className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 shadow-sm disabled:opacity-50 transition-colors"
           >
-            {runningBilling ? 'Running...' : 'Run Billing Cycle'}
+            {runningBilling ? 'Generating...' : 'Generate Invoices'}
           </button>
         </div>
       </div>
@@ -103,11 +118,12 @@ export function DashboardPage() {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mt-6">
             <StatCard title="Customers" value={String(stats.customers)} />
             <StatCard title="Active Subscriptions" value={String(stats.subscriptions)} />
             <StatCard title="Total Invoices" value={String(stats.invoices)} />
             <StatCard title="Revenue" value={formatCents(stats.revenue)} subtitle="Paid invoices" />
+            <StatCard title="MRR" value={formatCents(stats.mrr)} subtitle="Monthly recurring" />
           </div>
 
           {stats.customers === 0 && (

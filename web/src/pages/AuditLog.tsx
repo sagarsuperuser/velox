@@ -6,6 +6,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { Pagination } from '@/components/Pagination'
 
 export function AuditLogPage() {
   const [entries, setEntries] = useState<AuditEntry[]>([])
@@ -14,6 +15,8 @@ export function AuditLogPage() {
   const [resourceType, setResourceType] = useState('all')
   const [action, setAction] = useState('all')
   const [expandedMeta, setExpandedMeta] = useState<Set<string>>(new Set())
+  const [page, setPage] = useState(1)
+  const pageSize = 25
   const toast = useToast()
 
   const loadEntries = () => {
@@ -67,6 +70,12 @@ export function AuditLogPage() {
         : loading ? <LoadingSkeleton rows={8} columns={6} />
         : entries.length === 0 ? <EmptyState title="No audit entries" description="Actions will be recorded here automatically" />
         : (
+          (() => {
+          const totalPages = Math.ceil(entries.length / pageSize)
+          const currentPage = Math.min(page, totalPages || 1)
+          const paginated = entries.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+          return (
+          <>
           <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
@@ -80,7 +89,7 @@ export function AuditLogPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {entries.map(entry => {
+              {paginated.map(entry => {
                 const hasMeta = entry.metadata && Object.keys(entry.metadata).length > 0
                 const isExpanded = expandedMeta.has(entry.id)
                 const metaPath = hasMeta && typeof entry.metadata === 'object' && 'path' in entry.metadata
@@ -134,6 +143,10 @@ export function AuditLogPage() {
             </tbody>
           </table>
           </div>
+          <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} />
+          </>
+          )
+          })()
         )}
       </div>
     </Layout>

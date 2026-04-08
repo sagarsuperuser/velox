@@ -8,6 +8,7 @@ import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Plus, Search, Download } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
+import { Pagination } from '@/components/Pagination'
 
 export function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -19,6 +20,8 @@ export function CustomersPage() {
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ external_id: '', display_name: '', email: '' })
   const [error, setError] = useState('')
+  const [page, setPage] = useState(1)
+  const pageSize = 25
   const toast = useToast()
 
   const loadCustomers = () => {
@@ -121,9 +124,13 @@ export function CustomersPage() {
                 c.external_id.toLowerCase().includes(q) ||
                 (c.email && c.email.toLowerCase().includes(q))
             })
+            const totalPages = Math.ceil(filtered.length / pageSize)
+            const currentPage = Math.min(page, totalPages || 1)
+            const paginated = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize)
             return filtered.length === 0 ? (
               <p className="px-6 py-8 text-sm text-gray-400 text-center">No customers match &lsquo;{search}&rsquo;</p>
             ) : (
+              <>
               <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
@@ -136,7 +143,7 @@ export function CustomersPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {filtered.map(c => (
+                  {paginated.map(c => (
                     <tr key={c.id} className="hover:bg-gray-50 transition-colors">
                       <td className="px-6 py-3">
                         <Link to={`/customers/${c.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">
@@ -152,6 +159,8 @@ export function CustomersPage() {
                 </tbody>
               </table>
               </div>
+              <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} />
+              </>
             )
           })()
         )}
