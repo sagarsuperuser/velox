@@ -79,6 +79,6 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.UsageEv
 	return s.store.List(ctx, filter)
 }
 
-func (s *Service) AggregateForBillingPeriod(ctx context.Context, tenantID, subscriptionID string, meterIDs []string, from, to time.Time) (map[string]int64, error) {
-	return s.store.AggregateForBillingPeriod(ctx, tenantID, subscriptionID, meterIDs, from, to)
+func (s *Service) AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]int64, error) {
+	return s.store.AggregateForBillingPeriod(ctx, tenantID, customerID, meterIDs, from, to)
 }

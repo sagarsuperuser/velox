@@ -120,8 +120,9 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		return false, fmt.Errorf("get plan: %w", err)
 	}
 
-	// Aggregate usage for each meter in the plan
-	usageTotals, err := e.usage.AggregateForBillingPeriod(ctx, sub.TenantID, sub.ID, plan.MeterIDs, periodStart, periodEnd)
+	// Aggregate usage for each meter in the plan (by customer, not subscription —
+	// events are ingested with customer context, not subscription context)
+	usageTotals, err := e.usage.AggregateForBillingPeriod(ctx, sub.TenantID, sub.CustomerID, plan.MeterIDs, periodStart, periodEnd)
 	if err != nil {
 		return false, fmt.Errorf("aggregate usage: %w", err)
 	}
