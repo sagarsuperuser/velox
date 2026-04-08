@@ -475,6 +475,13 @@ export function formatDate(iso: string): string {
   })
 }
 
+export function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  })
+}
+
 export function formatRelativeTime(iso: string): string {
   const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
   if (seconds < 60) return 'just now'
