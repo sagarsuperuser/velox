@@ -116,6 +116,8 @@ export const api = {
   // Subscription detail
   getSubscription: (id: string) =>
     request<Subscription>('GET', `/subscriptions/${id}`),
+  activateSubscription: (id: string) =>
+    request<Subscription>('POST', `/subscriptions/${id}/activate`),
   pauseSubscription: (id: string) =>
     request<Subscription>('POST', `/subscriptions/${id}/pause`),
   resumeSubscription: (id: string) =>

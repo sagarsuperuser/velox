@@ -172,6 +172,17 @@ export function SubscriptionDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {sub.status === 'draft' && (
+            <button onClick={async () => {
+              if (!id) return; setActing(true)
+              try { const updated = await api.activateSubscription(id); setSub(updated); toast.success('Subscription activated'); loadData() }
+              catch (err) { toast.error(err instanceof Error ? err.message : 'Failed to activate') }
+              finally { setActing(false) }
+            }} disabled={acting}
+              className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm disabled:opacity-50 transition-colors">
+              Activate
+            </button>
+          )}
           {sub.status === 'active' && (
             <>
               <button onClick={() => setShowChangePlan(true)} disabled={acting}
@@ -218,7 +229,13 @@ export function SubscriptionDetailPage() {
         </div>
         <div className="flex-1 px-6 py-4">
           <p className="text-sm text-gray-500">Plan</p>
-          <p className="text-lg font-semibold text-gray-900 mt-1">{plan?.name || sub.plan_id.slice(0, 8) + '...'}</p>
+          {plan ? (
+            <Link to={`/plans/${plan.id}`} className="text-lg font-semibold text-velox-600 hover:text-velox-700 mt-1 block transition-colors">
+              {plan.name}
+            </Link>
+          ) : (
+            <p className="text-lg font-semibold text-gray-900 mt-1">{sub.plan_id.slice(0, 8)}...</p>
+          )}
           {plan && (
             <p className="text-xs text-gray-400 mt-0.5">
               {formatCents(plan.base_amount_cents)}/{plan.billing_interval === 'yearly' ? 'yr' : 'mo'}
@@ -263,18 +280,18 @@ export function SubscriptionDetailPage() {
           </div>
           <div className="flex items-center justify-between px-6 py-3">
             <span className="text-sm text-gray-500 w-40 shrink-0">Plan</span>
-            <span className="text-sm text-gray-900">
-              {plan ? (
-                <>
+            {plan ? (
+              <span className="text-sm">
+                <Link to={`/plans/${plan.id}`} className="font-medium text-velox-600 hover:text-velox-700 hover:underline transition-colors">
                   {plan.name}
-                  <span className="text-gray-400 ml-1.5">
-                    {formatCents(plan.base_amount_cents)}/{plan.billing_interval === 'yearly' ? 'yr' : 'mo'}
-                  </span>
-                </>
-              ) : (
-                <span className="font-mono">{sub.plan_id}</span>
-              )}
-            </span>
+                </Link>
+                <span className="text-gray-400 ml-1.5">
+                  {formatCents(plan.base_amount_cents)}/{plan.billing_interval === 'yearly' ? 'yr' : 'mo'}
+                </span>
+              </span>
+            ) : (
+              <span className="text-sm text-gray-900 font-mono">{sub.plan_id}</span>
+            )}
           </div>
           <div className="flex items-center justify-between px-6 py-3">
             <span className="text-sm text-gray-500 w-40 shrink-0">Status</span>
@@ -338,7 +355,8 @@ export function SubscriptionDetailPage() {
           </>
         ) : previewError ? (
           <div className="px-6 py-8 text-center">
-            <p className="text-sm text-gray-400">{previewError}</p>
+            <p className="text-sm text-gray-500">Preview not available</p>
+            <p className="text-sm text-gray-400 mt-1">Activate the subscription and set a billing period to see a preview</p>
           </div>
         ) : (
           <EmptyState title="No preview available" description="Invoice preview will appear once a billing period is set" />
