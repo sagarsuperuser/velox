@@ -67,6 +67,7 @@ export function AuditLogPage() {
         : loading ? <LoadingSkeleton rows={8} columns={6} />
         : entries.length === 0 ? <EmptyState title="No audit entries" description="Actions will be recorded here automatically" />
         : (
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
@@ -132,6 +133,7 @@ export function AuditLogPage() {
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </Layout>

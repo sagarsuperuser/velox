@@ -177,7 +177,7 @@ export function SubscriptionDetailPage() {
       </div>
 
       {/* Info cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mt-6">
         <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Customer</p>
           {customer ? (
@@ -201,6 +201,10 @@ export function SubscriptionDetailPage() {
           </p>
         </div>
         <div className="bg-white rounded-xl shadow-card p-4">
+          <p className="text-xs text-gray-500">Next Billing</p>
+          <p className="text-sm font-semibold mt-0.5">{sub.next_billing_at ? formatDate(sub.next_billing_at) : 'Not scheduled'}</p>
+        </div>
+        <div className="bg-white rounded-xl shadow-card p-4">
           <p className="text-xs text-gray-500">Created</p>
           <p className="text-sm font-semibold mt-0.5">{formatDate(sub.created_at)}</p>
         </div>
@@ -213,6 +217,7 @@ export function SubscriptionDetailPage() {
         </div>
         {preview ? (
           <>
+            <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-100">
@@ -237,6 +242,7 @@ export function SubscriptionDetailPage() {
                 </tr>
               </tfoot>
             </table>
+            </div>
           </>
         ) : previewError ? (
           <div className="px-6 py-8 text-center">
@@ -253,6 +259,7 @@ export function SubscriptionDetailPage() {
           <h2 className="text-sm font-semibold text-gray-900">Related Invoices</h2>
         </div>
         {invoices.length > 0 ? (
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
@@ -277,6 +284,7 @@ export function SubscriptionDetailPage() {
               ))}
             </tbody>
           </table>
+          </div>
         ) : (
           <EmptyState title="No invoices" description="Invoices will appear here after billing runs" />
         )}

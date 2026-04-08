@@ -178,6 +178,7 @@ export interface Subscription {
   billing_time: string
   current_billing_period_start?: string
   current_billing_period_end?: string
+  next_billing_at?: string
   created_at: string
 }
 
