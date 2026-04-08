@@ -508,8 +508,8 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
     <Modal open onClose={onClose} title="Billing Profile" wide>
       <form onSubmit={handleSubmit} noValidate className="max-h-[70vh] overflow-y-auto -mx-6 px-6 pb-1">
         {/* Contact */}
-        <div className="rounded-lg border border-gray-200 p-4 space-y-3">
-          <p className="text-sm font-medium text-gray-700">Contact</p>
+        <div className="space-y-3 pb-5">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Contact</p>
           <FormField label="Legal Name" value={form.legal_name} maxLength={255} placeholder="Acme Corporation Inc."
             onChange={e => setForm(f => ({ ...f, legal_name: e.target.value }))} />
           <div className="grid grid-cols-2 gap-4">
@@ -525,8 +525,8 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
         </div>
 
         {/* Address */}
-        <div className="rounded-lg border border-gray-200 p-4 space-y-3 mt-4">
-          <p className="text-sm font-medium text-gray-700">Address</p>
+        <div className="space-y-3 py-5 border-t border-gray-100">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Address</p>
           <FormSelect label="Country" value={form.country}
             onChange={e => setForm(f => ({ ...f, country: e.target.value, state: '' }))}
             placeholder="Select country..."
@@ -564,8 +564,8 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
         </div>
 
         {/* Tax & Billing */}
-        <div className="rounded-lg border border-gray-200 p-4 space-y-3 mt-4">
-          <p className="text-sm font-medium text-gray-700">Tax & Billing</p>
+        <div className="space-y-3 py-5 border-t border-gray-100">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Tax & Billing</p>
           <div className="grid grid-cols-2 gap-4">
             <FormField label="Tax ID" value={form.tax_identifier} maxLength={30}
               placeholder={form.country === 'US' ? 'EIN (e.g. 12-3456789)' : form.country === 'IN' ? 'GSTIN' : form.country === 'GB' ? 'VAT number' : 'Tax ID'} mono
