@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { api, formatDate, type UsageEvent, type Customer, type Meter } from '@/lib/api'
+import { api, formatDateTime, type UsageEvent, type Customer, type Meter } from '@/lib/api'
 import { Layout } from '@/components/Layout'
+import { FormSelect } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
@@ -18,8 +19,6 @@ export function UsageEventsPage() {
   // Filters
   const [filterCustomer, setFilterCustomer] = useState('')
   const [filterMeter, setFilterMeter] = useState('')
-  const [filterFrom, setFilterFrom] = useState('')
-  const [filterTo, setFilterTo] = useState('')
   const [page, setPage] = useState(1)
   const pageSize = 25
 
@@ -45,8 +44,6 @@ export function UsageEventsPage() {
     const parts: string[] = []
     if (filterCustomer) parts.push(`customer_id=${filterCustomer}`)
     if (filterMeter) parts.push(`meter_id=${filterMeter}`)
-    if (filterFrom) parts.push(`from=${filterFrom}`)
-    if (filterTo) parts.push(`to=${filterTo}`)
     const params = parts.length > 0 ? parts.join('&') : undefined
     api.listUsageEvents(params)
       .then(res => { setEvents(res.data || []); setLoading(false) })
@@ -54,7 +51,9 @@ export function UsageEventsPage() {
   }
 
   useEffect(() => { loadRefs() }, [])
-  useEffect(() => { loadEvents() }, [filterCustomer, filterMeter, filterFrom, filterTo])
+  useEffect(() => { loadEvents() }, [filterCustomer, filterMeter])
+
+  const totalQuantity = events.reduce((sum, e) => sum + e.quantity, 0)
 
   return (
     <Layout>
@@ -64,40 +63,33 @@ export function UsageEventsPage() {
       </div>
 
       {/* Filter bar */}
-      <div className="flex flex-wrap items-end gap-3 mt-6">
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Customer</label>
-          <select value={filterCustomer} onChange={e => setFilterCustomer(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
-            <option value="">All customers</option>
-            {customers.map(c => <option key={c.id} value={c.id}>{c.display_name}</option>)}
-          </select>
+      <div className="flex items-center gap-4 mt-6">
+        <div className="w-48">
+          <FormSelect value={filterCustomer}
+            label=""
+            onChange={e => { setFilterCustomer(e.target.value); setPage(1) }}
+            placeholder="All customers"
+            options={customers.map(c => ({ value: c.id, label: c.display_name }))} />
         </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Meter</label>
-          <select value={filterMeter} onChange={e => setFilterMeter(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
-            <option value="">All meters</option>
-            {meters.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-          </select>
+        <div className="w-48">
+          <FormSelect value={filterMeter}
+            label=""
+            onChange={e => { setFilterMeter(e.target.value); setPage(1) }}
+            placeholder="All meters"
+            options={meters.map(m => ({ value: m.id, label: m.name }))} />
         </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">From</label>
-          <input type="date" value={filterFrom} onChange={e => setFilterFrom(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">To</label>
-          <input type="date" value={filterTo} onChange={e => setFilterTo(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" />
-        </div>
+        {events.length > 0 && (
+          <div className="ml-auto text-sm text-gray-500">
+            {events.length.toLocaleString()} event{events.length !== 1 ? 's' : ''} · {totalQuantity.toLocaleString()} total units
+          </div>
+        )}
       </div>
 
       <div className="bg-white rounded-xl shadow-card mt-4">
         {error ? (
           <ErrorState message={error} onRetry={loadEvents} />
         ) : loading ? (
-          <LoadingSkeleton rows={6} columns={5} />
+          <LoadingSkeleton rows={6} columns={4} />
         ) : events.length === 0 ? (
           <EmptyState title="No usage events" description="Usage events will appear here once ingested via the API" />
         ) : (
@@ -115,24 +107,20 @@ export function UsageEventsPage() {
                   <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Customer</th>
                   <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Meter</th>
                   <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Quantity</th>
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Subscription</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {paginated.map(ev => (
                   <tr key={ev.id} className="hover:bg-gray-50/50 transition-colors">
-                    <td className="px-6 py-3 text-sm text-gray-700">{formatDate(ev.timestamp)}</td>
+                    <td className="px-6 py-3 text-sm text-gray-900">{formatDateTime(ev.timestamp)}</td>
                     <td className="px-6 py-3 text-sm text-gray-500">
                       {customerMap[ev.customer_id]?.display_name || ev.customer_id.slice(0, 8) + '...'}
                     </td>
                     <td className="px-6 py-3 text-sm text-gray-500">
                       {meterMap[ev.meter_id]?.name || ev.meter_id.slice(0, 8) + '...'}
                     </td>
-                    <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">
+                    <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right tabular-nums">
                       {ev.quantity.toLocaleString()}
-                    </td>
-                    <td className="px-6 py-3 text-sm font-mono text-gray-500">
-                      {ev.subscription_id ? ev.subscription_id.slice(0, 12) + '...' : '\u2014'}
                     </td>
                   </tr>
                 ))}
