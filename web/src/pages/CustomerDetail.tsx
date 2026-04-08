@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { api, formatCents, formatDate, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary, type Meter } from '@/lib/api'
+import { api, formatCents, formatDate, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary, type Meter, type Plan, type Subscription } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { StatCard } from '@/components/StatCard'
@@ -21,8 +21,10 @@ export function CustomerDetailPage() {
   const [meterMap, setMeterMap] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [plans, setPlans] = useState<Plan[]>([])
   const [showEditCustomer, setShowEditCustomer] = useState(false)
   const [showEditBilling, setShowEditBilling] = useState(false)
+  const [showCreateSub, setShowCreateSub] = useState(false)
   const toast = useToast()
 
   const loadData = () => {
@@ -36,7 +38,8 @@ export function CustomerDetailPage() {
       api.getBillingProfile(id).catch(() => null),
       api.usageSummary(id).catch(() => null),
       api.listMeters().catch(() => ({ data: [] as Meter[] })),
-    ]).then(([c, o, b, bp, us, metersRes]) => {
+      api.listPlans().catch(() => ({ data: [] as Plan[] })),
+    ]).then(([c, o, b, bp, us, metersRes, plansRes]) => {
       setCustomer(c)
       setOverview(o)
       setBalance(b.balance_cents)
@@ -45,6 +48,7 @@ export function CustomerDetailPage() {
       const mm: Record<string, string> = {}
       metersRes.data.forEach(m => { mm[m.key] = m.name })
       setMeterMap(mm)
+      setPlans(plansRes.data.filter(p => p.status === 'active'))
       setLoading(false)
     }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load customer'); setLoading(false) })
   }
@@ -172,21 +176,32 @@ export function CustomerDetailPage() {
       <div className="grid grid-cols-2 gap-6 mt-8">
         {/* Subscriptions */}
         <div className="bg-white rounded-xl shadow-card">
-          <div className="px-6 py-4 border-b border-gray-100">
+          <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
             <h2 className="text-sm font-semibold text-gray-900">Subscriptions</h2>
+            <button
+              onClick={() => setShowCreateSub(true)}
+              className="text-xs text-velox-600 hover:underline"
+            >
+              + Add subscription
+            </button>
           </div>
           <div className="divide-y divide-gray-50">
             {overview?.active_subscriptions.map(sub => (
-              <div key={sub.id} className="flex items-center justify-between px-6 py-3">
+              <Link key={sub.id} to={`/subscriptions/${sub.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-gray-50 transition-colors">
                 <div>
                   <p className="text-sm font-medium text-gray-900">{sub.display_name}</p>
                   <p className="text-xs text-gray-400">{sub.code}</p>
                 </div>
                 <Badge status={sub.status} />
-              </div>
+              </Link>
             ))}
             {(!overview?.active_subscriptions.length) && (
-              <p className="px-6 py-4 text-sm text-gray-400">No subscriptions</p>
+              <div className="px-6 py-4 text-center">
+                <p className="text-sm text-gray-400">No subscriptions</p>
+                <button onClick={() => setShowCreateSub(true)} className="mt-2 text-xs text-velox-600 hover:underline">
+                  Create subscription
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -225,6 +240,20 @@ export function CustomerDetailPage() {
             setCustomer(updated)
             setShowEditCustomer(false)
             toast.success('Customer updated')
+          }}
+        />
+      )}
+
+      {/* Create Subscription Modal */}
+      {showCreateSub && id && (
+        <CreateSubscriptionFromCustomerModal
+          customerId={id}
+          plans={plans}
+          onClose={() => setShowCreateSub(false)}
+          onCreated={(sub) => {
+            setShowCreateSub(false)
+            toast.success(`Subscription "${sub.display_name}" created`)
+            loadData()
           }}
         />
       )}
@@ -395,6 +424,71 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
           <button type="submit" disabled={saving}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
             {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+function CreateSubscriptionFromCustomerModal({ customerId, plans, onClose, onCreated }: {
+  customerId: string; plans: Plan[]; onClose: () => void; onCreated: (sub: Subscription) => void
+}) {
+  const [form, setForm] = useState({
+    code: '', display_name: '', plan_id: '', start_now: true,
+  })
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true); setError('')
+    try {
+      const sub = await api.createSubscription({
+        ...form,
+        customer_id: customerId,
+      })
+      onCreated(sub)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create subscription')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Create Subscription">
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
+          <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
+            placeholder="Pro Monthly" required />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Code <span className="text-red-500">*</span></label>
+          <input type="text" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 font-mono"
+            placeholder="pro-monthly" required />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Plan <span className="text-red-500">*</span></label>
+          <select value={form.plan_id} onChange={e => setForm(f => ({ ...f, plan_id: e.target.value }))}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" required>
+            <option value="">Select plan...</option>
+            {plans.map(p => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
+          </select>
+        </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={form.start_now} onChange={e => setForm(f => ({ ...f, start_now: e.target.checked }))} />
+          Start immediately (activate + set billing period)
+        </label>
+        {error && <p className="text-red-600 text-xs">{error}</p>}
+        <div className="flex justify-end gap-3 pt-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+          <button type="submit" disabled={saving}
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
+            {saving ? 'Creating...' : 'Create Subscription'}
           </button>
         </div>
       </form>

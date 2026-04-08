@@ -118,6 +118,7 @@ export function InvoicesPage() {
             description={statusFilter !== 'All' ? `No ${statusFilter} invoices. Try a different filter.` : 'Trigger a billing cycle to generate invoices.'}
           />
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
@@ -167,6 +168,7 @@ export function InvoicesPage() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </Layout>

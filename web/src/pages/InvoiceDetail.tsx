@@ -187,6 +187,7 @@ export function InvoiceDetailPage() {
         <div className="px-6 py-4 border-b border-gray-100">
           <h2 className="text-sm font-semibold text-gray-900">Line Items</h2>
         </div>
+        <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-100">
@@ -215,6 +216,7 @@ export function InvoiceDetailPage() {
             </tr>
           </tfoot>
         </table>
+        </div>
       </div>
 
       <ConfirmDialog

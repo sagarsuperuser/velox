@@ -181,6 +181,7 @@ function RunsTab() {
         : loading ? <LoadingSkeleton rows={5} columns={6} />
         : runs.length === 0 ? <EmptyState title="No dunning runs" description="Dunning runs appear when payment retries are triggered" />
         : (
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
@@ -216,6 +217,7 @@ function RunsTab() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

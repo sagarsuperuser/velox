@@ -80,6 +80,7 @@ function EndpointsTab() {
         : loading ? <LoadingSkeleton rows={5} columns={5} />
         : endpoints.length === 0 ? <EmptyState title="No webhook endpoints" description="Add an endpoint to receive event notifications" />
         : (
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
@@ -114,6 +115,7 @@ function EndpointsTab() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 
@@ -288,6 +290,7 @@ function EventsTab() {
       : loading ? <LoadingSkeleton rows={5} columns={4} />
       : events.length === 0 ? <EmptyState title="No webhook events" description="Events will appear here as they are sent to your endpoints" />
       : (
+        <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-100">
@@ -311,6 +314,7 @@ function EventsTab() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   )

@@ -76,6 +76,7 @@ export function CreditNotesPage() {
         : loading ? <LoadingSkeleton rows={5} columns={6} />
         : notes.length === 0 ? <EmptyState title="No credit notes" description="Credit notes will appear here once created" />
         : (
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
@@ -113,6 +114,7 @@ export function CreditNotesPage() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

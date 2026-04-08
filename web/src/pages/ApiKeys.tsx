@@ -58,6 +58,7 @@ export function ApiKeysPage() {
         : loading ? <LoadingSkeleton rows={5} columns={6} />
         : keys.length === 0 ? <EmptyState title="No API keys" description="Create an API key to start using the Velox API" />
         : (
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
@@ -92,6 +93,7 @@ export function ApiKeysPage() {
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

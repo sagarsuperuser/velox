@@ -102,6 +102,7 @@ export function CreditsPage() {
             {ledger.length === 0 ? (
               <p className="px-6 py-8 text-sm text-gray-400 text-center">No credit history</p>
             ) : (
+              <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-gray-100">
@@ -126,6 +127,7 @@ export function CreditsPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         </>

@@ -98,6 +98,7 @@ export function UsageEventsPage() {
         ) : events.length === 0 ? (
           <EmptyState title="No usage events" description="Usage events will appear here once ingested via the API" />
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
@@ -128,6 +129,7 @@ export function UsageEventsPage() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </Layout>
