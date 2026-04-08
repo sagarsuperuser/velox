@@ -21,15 +21,21 @@ type CustomerGetter interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Customer, error)
 }
 
+// SettingsGetter reads tenant settings for PDF company info.
+type SettingsGetter interface {
+	Get(ctx context.Context, tenantID string) (domain.TenantSettings, error)
+}
+
 type Handler struct {
 	svc       *Service
 	customers CustomerGetter
+	settings  SettingsGetter
 }
 
-func NewHandler(svc *Service, customers ...CustomerGetter) *Handler {
-	h := &Handler{svc: svc}
-	if len(customers) > 0 {
-		h.customers = customers[0]
+func NewHandler(svc *Service, customers CustomerGetter, settings ...SettingsGetter) *Handler {
+	h := &Handler{svc: svc, customers: customers}
+	if len(settings) > 0 {
+		h.settings = settings[0]
 	}
 	return h
 }
@@ -169,7 +175,19 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pdfBytes, err := RenderPDF(inv, items, customerName)
+	var ci CompanyInfo
+	if h.settings != nil {
+		if ts, err := h.settings.Get(r.Context(), tenantID); err == nil {
+			ci = CompanyInfo{
+				Name:    ts.CompanyName,
+				Email:   ts.CompanyEmail,
+				Phone:   ts.CompanyPhone,
+				Address: ts.CompanyAddress,
+			}
+		}
+	}
+
+	pdfBytes, err := RenderPDF(inv, items, customerName, ci)
 	if err != nil {
 		respond.InternalError(w, r)
 		return
