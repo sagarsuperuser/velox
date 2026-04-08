@@ -167,7 +167,7 @@ export function DashboardPage() {
                     </span>
                   )}
                 </div>
-                <Link to="/invoices" className="text-xs text-velox-600 hover:underline">View all</Link>
+                <Link to="/invoices" className="text-sm text-gray-500 hover:text-gray-700 transition-colors">View all</Link>
               </div>
               <div className="divide-y divide-gray-50 max-h-[300px] overflow-y-auto">
                 {attentionItems.length > 0 ? attentionItems.map(inv => (
@@ -208,7 +208,7 @@ export function DashboardPage() {
             <div className="bg-white rounded-xl shadow-card">
               <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
                 <h2 className="text-sm font-semibold text-gray-900">Active Subscriptions</h2>
-                <Link to="/subscriptions" className="text-xs text-velox-600 hover:underline">View all</Link>
+                <Link to="/subscriptions" className="text-sm text-gray-500 hover:text-gray-700 transition-colors">View all</Link>
               </div>
               <div className="divide-y divide-gray-50 max-h-[300px] overflow-y-auto">
                 {activeSubs.map(sub => (
@@ -238,7 +238,7 @@ export function DashboardPage() {
           <div className="bg-white rounded-xl shadow-card mt-6">
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
               <h2 className="text-sm font-semibold text-gray-900">Recent Activity</h2>
-              <Link to="/audit-log" className="text-xs text-velox-600 hover:underline">View all</Link>
+              <Link to="/audit-log" className="text-sm text-gray-500 hover:text-gray-700 transition-colors">View all</Link>
             </div>
             <div className="divide-y divide-gray-50 max-h-[350px] overflow-y-auto">
               {recentActivity.length > 0 ? recentActivity.map(entry => {

@@ -229,7 +229,7 @@ export function PlanDetailPage() {
             <button
               onClick={() => setShowAttachMeter(true)}
               disabled={updatingMeters}
-              className="inline-flex items-center gap-1 text-xs font-medium text-velox-600 hover:text-velox-700 transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 shadow-sm transition-colors disabled:opacity-50"
             >
               <Plus size={14} />
               Attach Meter
@@ -304,7 +304,7 @@ export function PlanDetailPage() {
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-900">Subscriptions ({subscriptions.length})</h2>
           {subscriptions.length > 0 && (
-            <Link to="/subscriptions" className="text-xs font-medium text-velox-600 hover:text-velox-700 transition-colors">
+            <Link to="/subscriptions" className="text-sm text-gray-500 hover:text-gray-700 transition-colors">
               View all
             </Link>
           )}

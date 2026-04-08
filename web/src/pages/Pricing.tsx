@@ -244,7 +244,7 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
               ))}
             </div>
             <button type="button" onClick={() => setTiers(t => [...t, { upTo: '', price: '' }])}
-              className="text-xs text-velox-600 hover:text-velox-700 font-medium">
+              className="text-sm font-medium text-velox-600 hover:text-velox-700 transition-colors">
               + Add tier
             </button>
             <p className="text-xs text-gray-400">Leave "Up to" empty on the last tier for unlimited. Tiers are evaluated in order.</p>
