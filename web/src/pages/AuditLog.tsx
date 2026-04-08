@@ -1,20 +1,45 @@
-import { useEffect, useState, Fragment } from 'react'
-import { api, formatDate, type AuditEntry } from '@/lib/api'
+import { useEffect, useState } from 'react'
+import { api, formatDateTime, type AuditEntry } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
+import { FormSelect } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Pagination } from '@/components/Pagination'
 
+function describeAction(entry: AuditEntry): string {
+  const resource = entry.resource_type.replace(/_/g, ' ')
+  const label = entry.resource_label || ''
+
+  switch (entry.action) {
+    case 'create': return `Created ${resource}${label ? ` "${label}"` : ''}`
+    case 'update': return `Updated ${resource}${label ? ` "${label}"` : ''}`
+    case 'delete': return `Deleted ${resource}${label ? ` "${label}"` : ''}`
+    case 'activate': return `Activated ${resource}${label ? ` "${label}"` : ''}`
+    case 'cancel': return `Canceled ${resource}${label ? ` "${label}"` : ''}`
+    case 'pause': return `Paused ${resource}${label ? ` "${label}"` : ''}`
+    case 'resume': return `Resumed ${resource}${label ? ` "${label}"` : ''}`
+    case 'finalize': return `Finalized invoice${label ? ` ${label}` : ''}`
+    case 'void': return `Voided invoice${label ? ` ${label}` : ''}`
+    case 'issue': return `Issued credit note${label ? ` ${label}` : ''}`
+    case 'resolve': return `Resolved dunning run${label ? ` ${label}` : ''}`
+    case 'grant': return `Granted credits${label ? ` to "${label}"` : ''}`
+    case 'adjust': return `Adjusted credits${label ? ` for "${label}"` : ''}`
+    case 'revoke': return `Revoked API key${label ? ` "${label}"` : ''}`
+    case 'run': return 'Billing cycle executed'
+    case 'change_plan': return `Changed plan${label ? ` for "${label}"` : ''}`
+    default: return `${entry.action} ${resource}${label ? ` "${label}"` : ''}`
+  }
+}
+
 export function AuditLogPage() {
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [resourceType, setResourceType] = useState('all')
-  const [action, setAction] = useState('all')
-  const [expandedMeta, setExpandedMeta] = useState<Set<string>>(new Set())
+  const [resourceType, setResourceType] = useState('')
+  const [action, setAction] = useState('')
   const [page, setPage] = useState(1)
   const pageSize = 25
   const toast = useToast()
@@ -23,8 +48,8 @@ export function AuditLogPage() {
     setLoading(true)
     setError(null)
     const params = new URLSearchParams()
-    if (resourceType !== 'all') params.set('resource_type', resourceType)
-    if (action !== 'all') params.set('action', action)
+    if (resourceType) params.set('resource_type', resourceType)
+    if (action) params.set('action', action)
     const qs = params.toString()
     api.listAuditLog(qs || undefined)
       .then(res => { setEntries(res.data || []); setLoading(false) })
@@ -41,33 +66,50 @@ export function AuditLogPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-3 mt-6">
-        <select value={resourceType} onChange={e => setResourceType(e.target.value)}
-          className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
-          <option value="all">All Resources</option>
-          <option value="customer">Customer</option>
-          <option value="subscription">Subscription</option>
-          <option value="invoice">Invoice</option>
-          <option value="plan">Plan</option>
-          <option value="meter">Meter</option>
-          <option value="api_key">API Key</option>
-        </select>
-        <select value={action} onChange={e => setAction(e.target.value)}
-          className="px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
-          <option value="all">All Actions</option>
-          <option value="create">Create</option>
-          <option value="update">Update</option>
-          <option value="delete">Delete</option>
-          <option value="activate">Activate</option>
-          <option value="cancel">Cancel</option>
-          <option value="finalize">Finalize</option>
-          <option value="void">Void</option>
-        </select>
+      <div className="flex items-center gap-4 mt-6">
+        <div className="w-48">
+          <FormSelect label="" value={resourceType}
+            onChange={e => { setResourceType(e.target.value); setPage(1) }}
+            placeholder="All resources"
+            options={[
+              { value: 'customer', label: 'Customer' },
+              { value: 'subscription', label: 'Subscription' },
+              { value: 'invoice', label: 'Invoice' },
+              { value: 'plan', label: 'Plan' },
+              { value: 'meter', label: 'Meter' },
+              { value: 'credit_note', label: 'Credit Note' },
+              { value: 'api_key', label: 'API Key' },
+              { value: 'billing', label: 'Billing' },
+              { value: 'billing_profile', label: 'Billing Profile' },
+            ]} />
+        </div>
+        <div className="w-48">
+          <FormSelect label="" value={action}
+            onChange={e => { setAction(e.target.value); setPage(1) }}
+            placeholder="All actions"
+            options={[
+              { value: 'create', label: 'Create' },
+              { value: 'update', label: 'Update' },
+              { value: 'delete', label: 'Delete' },
+              { value: 'activate', label: 'Activate' },
+              { value: 'cancel', label: 'Cancel' },
+              { value: 'pause', label: 'Pause' },
+              { value: 'resume', label: 'Resume' },
+              { value: 'finalize', label: 'Finalize' },
+              { value: 'void', label: 'Void' },
+              { value: 'run', label: 'Billing Run' },
+              { value: 'grant', label: 'Grant' },
+              { value: 'revoke', label: 'Revoke' },
+            ]} />
+        </div>
+        {entries.length > 0 && (
+          <span className="ml-auto text-sm text-gray-500">{entries.length} entries</span>
+        )}
       </div>
 
       <div className="bg-white rounded-xl shadow-card mt-4">
         {error ? <ErrorState message={error} onRetry={loadEntries} />
-        : loading ? <LoadingSkeleton rows={8} columns={6} />
+        : loading ? <LoadingSkeleton rows={8} columns={3} />
         : entries.length === 0 ? <EmptyState title="No audit entries" description="Actions will be recorded here automatically" />
         : (
           (() => {
@@ -81,72 +123,34 @@ export function AuditLogPage() {
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Timestamp</th>
+                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Event</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Actor</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Action</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Resource Type</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Resource ID</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Metadata</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {paginated.map(entry => {
-                const hasMeta = entry.metadata && Object.keys(entry.metadata).length > 0
-                const isExpanded = expandedMeta.has(entry.id)
-                const metaPath = hasMeta && typeof entry.metadata === 'object' && 'path' in entry.metadata
-                  ? (entry.metadata as Record<string, unknown>).path as string
-                  : null
-                return (
-                  <Fragment key={entry.id}>
-                    <tr className="hover:bg-gray-50/50 transition-colors">
-                      <td className="px-6 py-3 text-sm text-gray-500">{formatDate(entry.created_at)}</td>
-                      <td className="px-6 py-3 text-sm text-gray-500">{entry.actor_type === 'api_key' ? 'API Key' : entry.actor_type === 'system' ? 'System' : entry.actor_type}</td>
-                      <td className="px-6 py-3"><Badge status={entry.action} /></td>
-                      <td className="px-6 py-3 text-sm text-gray-500">{entry.resource_type}</td>
-                      <td className="px-6 py-3">
-                        {entry.resource_label ? (
-                          <div>
-                            <p className="text-sm text-gray-900">{entry.resource_label}</p>
-                            <p className="text-xs text-gray-400 font-mono cursor-pointer hover:text-gray-600"
-                              title="Click to copy ID"
-                              onClick={() => { navigator.clipboard.writeText(entry.resource_id); toast.success('Copied') }}>
-                              {entry.resource_id}
-                            </p>
-                          </div>
-                        ) : (
-                          <span
-                            className="text-sm font-mono text-gray-500 cursor-pointer hover:text-gray-700"
-                            title="Click to copy"
+              {paginated.map(entry => (
+                <tr key={entry.id} className="hover:bg-gray-50/50 transition-colors">
+                  <td className="px-6 py-3 text-sm text-gray-500 whitespace-nowrap">{formatDateTime(entry.created_at)}</td>
+                  <td className="px-6 py-3">
+                    <div className="flex items-center gap-3">
+                      <Badge status={entry.action} />
+                      <div className="min-w-0">
+                        <p className="text-sm text-gray-900">{describeAction(entry)}</p>
+                        {entry.resource_id && (
+                          <p className="text-xs text-gray-400 font-mono truncate cursor-pointer hover:text-gray-600"
+                            title="Click to copy ID"
                             onClick={() => { navigator.clipboard.writeText(entry.resource_id); toast.success('Copied') }}>
                             {entry.resource_id}
-                          </span>
+                          </p>
                         )}
-                      </td>
-                      <td className="px-6 py-3 text-sm text-gray-400">
-                        {!hasMeta ? '\u2014' : metaPath && !isExpanded ? (
-                          <span className="flex items-center gap-2">
-                            <span className="font-mono text-xs">{metaPath}</span>
-                            <button onClick={() => setExpandedMeta(prev => { const next = new Set(prev); next.add(entry.id); return next })}
-                              className="text-xs text-velox-600 hover:underline">View</button>
-                          </span>
-                        ) : !isExpanded ? (
-                          <button onClick={() => setExpandedMeta(prev => { const next = new Set(prev); next.add(entry.id); return next })}
-                            className="text-xs text-velox-600 hover:underline">View</button>
-                        ) : (
-                          <button onClick={() => setExpandedMeta(prev => { const next = new Set(prev); next.delete(entry.id); return next })}
-                            className="text-xs text-velox-600 hover:underline">Hide</button>
-                        )}
-                      </td>
-                    </tr>
-                    {isExpanded && hasMeta && (
-                      <tr>
-                        <td colSpan={6} className="px-6 py-3 bg-gray-50">
-                          <pre className="text-xs text-gray-600 font-mono whitespace-pre-wrap">{JSON.stringify(entry.metadata, null, 2)}</pre>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                )
-              })}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-3 text-sm text-gray-500">
+                    {entry.actor_type === 'api_key' ? 'API Key' : entry.actor_type === 'system' ? 'System' : entry.actor_type}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
           </div>
