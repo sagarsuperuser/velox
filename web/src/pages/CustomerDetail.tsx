@@ -286,9 +286,9 @@ export function CustomerDetailPage() {
             <h2 className="text-sm font-semibold text-gray-900">Subscriptions</h2>
             <button
               onClick={() => setShowCreateSub(true)}
-              className="px-3 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-50 transition-colors"
+              className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 shadow-sm transition-colors"
             >
-              Add
+              + Add
             </button>
           </div>
           <div className="divide-y divide-gray-50">
