@@ -487,6 +487,10 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
 
         {/* Address */}
         <div className="space-y-3 mt-5">
+          <FormSelect label="Country" value={form.country}
+            onChange={e => setForm(f => ({ ...f, country: e.target.value, state: '' }))}
+            placeholder="Select country..."
+            options={[['US', 'United States'], ['CA', 'Canada'], ['GB', 'United Kingdom'], ['DE', 'Germany'], ['FR', 'France'], ['IN', 'India'], ['JP', 'Japan'], ['AU', 'Australia'], ['BR', 'Brazil'], ['MX', 'Mexico'], ['SG', 'Singapore'], ['NL', 'Netherlands'], ['SE', 'Sweden'], ['CH', 'Switzerland']].map(([code, name]) => ({ value: code, label: `${name} (${code})` }))} />
           <FormField label="Address" value={form.address_line1} maxLength={200} placeholder="123 Main Street"
             onChange={e => setForm(f => ({ ...f, address_line1: e.target.value }))} />
           <FormField label="Address Line 2" value={form.address_line2} maxLength={200} placeholder="Suite 100, Floor 2"
@@ -494,15 +498,35 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
           <div className="grid grid-cols-3 gap-4">
             <FormField label="City" value={form.city} maxLength={100} placeholder="San Francisco"
               onChange={e => setForm(f => ({ ...f, city: e.target.value }))} />
-            <FormField label="State / Province" value={form.state} placeholder="CA" maxLength={50}
-              onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
-            <FormField label="Postal Code" value={form.postal_code} placeholder="94105" maxLength={10}
+            {form.country === 'US' ? (
+              <FormSelect label="State" value={form.state}
+                onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
+                placeholder="Select..."
+                options={[
+                  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD',
+                  'MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC',
+                  'SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+                ].map(s => ({ value: s, label: s }))} />
+            ) : form.country === 'CA' ? (
+              <FormSelect label="Province" value={form.state}
+                onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
+                placeholder="Select..."
+                options={['AB','BC','MB','NB','NL','NS','NT','NU','ON','PE','QC','SK','YT'].map(s => ({ value: s, label: s }))} />
+            ) : form.country === 'IN' ? (
+              <FormSelect label="State" value={form.state}
+                onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
+                placeholder="Select..."
+                options={[
+                  'AN','AP','AR','AS','BR','CH','CT','DD','DL','GA','GJ','HP','HR','JH','JK','KA','KL','LA','LD',
+                  'MH','ML','MN','MP','MZ','NL','OD','PB','PY','RJ','SK','TG','TN','TR','UK','UP','WB'
+                ].map(s => ({ value: s, label: s }))} />
+            ) : (
+              <FormField label="State / Province" value={form.state} placeholder={form.country === 'GB' ? 'London' : 'State'} maxLength={50}
+                onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
+            )}
+            <FormField label="Postal Code" value={form.postal_code} placeholder={form.country === 'US' ? '94105' : form.country === 'GB' ? 'SW1A 1AA' : form.country === 'IN' ? '400001' : '10001'} maxLength={10}
               onChange={e => setForm(f => ({ ...f, postal_code: e.target.value }))} />
           </div>
-          <FormSelect label="Country" value={form.country}
-            onChange={e => setForm(f => ({ ...f, country: e.target.value }))}
-            placeholder="Select country..."
-            options={[['US', 'United States'], ['CA', 'Canada'], ['GB', 'United Kingdom'], ['DE', 'Germany'], ['FR', 'France'], ['IN', 'India'], ['JP', 'Japan'], ['AU', 'Australia'], ['BR', 'Brazil'], ['MX', 'Mexico'], ['SG', 'Singapore'], ['NL', 'Netherlands'], ['SE', 'Sweden'], ['CH', 'Switzerland']].map(([code, name]) => ({ value: code, label: `${name} (${code})` }))} />
         </div>
 
         {/* Billing */}
