@@ -2,69 +2,69 @@ import { cn } from '@/lib/cn'
 
 const variants: Record<string, string> = {
   // Green: active, paid, succeeded, resolved, grant, create
-  active: 'bg-emerald-50 text-emerald-600',
-  paid: 'bg-emerald-50 text-emerald-600',
-  succeeded: 'bg-emerald-50 text-emerald-600',
-  resolved: 'bg-emerald-50 text-emerald-600',
-  grant: 'bg-emerald-50 text-emerald-600',
-  create: 'bg-emerald-50 text-emerald-600',
+  active: 'bg-emerald-100 text-emerald-700 ring-emerald-600/20',
+  paid: 'bg-emerald-100 text-emerald-700 ring-emerald-600/20',
+  succeeded: 'bg-emerald-100 text-emerald-700 ring-emerald-600/20',
+  resolved: 'bg-emerald-100 text-emerald-700 ring-emerald-600/20',
+  grant: 'bg-emerald-100 text-emerald-700 ring-emerald-600/20',
+  create: 'bg-emerald-100 text-emerald-700 ring-emerald-600/20',
 
   // Blue: finalized, processing, issued, update, usage, scheduled
-  finalized: 'bg-sky-50 text-sky-600',
-  processing: 'bg-sky-50 text-sky-600',
-  issued: 'bg-sky-50 text-sky-600',
-  update: 'bg-sky-50 text-sky-600',
-  usage: 'bg-sky-50 text-sky-600',
-  scheduled: 'bg-sky-50 text-sky-600',
+  finalized: 'bg-blue-100 text-blue-700 ring-blue-600/20',
+  processing: 'bg-blue-100 text-blue-700 ring-blue-600/20',
+  issued: 'bg-blue-100 text-blue-700 ring-blue-600/20',
+  update: 'bg-blue-100 text-blue-700 ring-blue-600/20',
+  usage: 'bg-blue-100 text-blue-700 ring-blue-600/20',
+  scheduled: 'bg-blue-100 text-blue-700 ring-blue-600/20',
 
   // Red: voided, canceled, failed, delete, revoked
-  voided: 'bg-rose-50 text-rose-600',
-  canceled: 'bg-rose-50 text-rose-600',
-  failed: 'bg-rose-50 text-rose-600',
-  delete: 'bg-rose-50 text-rose-600',
-  revoked: 'bg-rose-50 text-rose-600',
+  voided: 'bg-red-100 text-red-700 ring-red-600/20',
+  canceled: 'bg-red-100 text-red-700 ring-red-600/20',
+  failed: 'bg-red-100 text-red-700 ring-red-600/20',
+  delete: 'bg-red-100 text-red-700 ring-red-600/20',
+  revoked: 'bg-red-100 text-red-700 ring-red-600/20',
 
   // Amber: paused, pending, manual_review, adjustment
-  paused: 'bg-amber-50 text-amber-600',
-  pending: 'bg-amber-50 text-amber-600',
-  manual_review: 'bg-amber-50 text-amber-600',
-  adjustment: 'bg-amber-50 text-amber-600',
+  paused: 'bg-amber-100 text-amber-700 ring-amber-600/20',
+  pending: 'bg-amber-100 text-amber-700 ring-amber-600/20',
+  manual_review: 'bg-amber-100 text-amber-700 ring-amber-600/20',
+  adjustment: 'bg-amber-100 text-amber-700 ring-amber-600/20',
 
   // Gray: draft, archived, exhausted
-  draft: 'bg-gray-100 text-gray-500',
-  archived: 'bg-gray-100 text-gray-500',
-  exhausted: 'bg-gray-100 text-gray-500',
+  draft: 'bg-gray-200 text-gray-700 ring-gray-600/20',
+  archived: 'bg-gray-200 text-gray-700 ring-gray-600/20',
+  exhausted: 'bg-gray-200 text-gray-700 ring-gray-600/20',
 
   // Purple: escalated, secret
-  escalated: 'bg-violet-50 text-violet-600',
-  secret: 'bg-violet-50 text-violet-600',
+  escalated: 'bg-violet-100 text-violet-700 ring-violet-600/20',
+  secret: 'bg-violet-100 text-violet-700 ring-violet-600/20',
 
   // Orange: retry_due, platform
-  retry_due: 'bg-orange-50 text-orange-600',
-  platform: 'bg-orange-50 text-orange-600',
+  retry_due: 'bg-orange-100 text-orange-700 ring-orange-600/20',
+  platform: 'bg-orange-100 text-orange-700 ring-orange-600/20',
 
   // Cyan: publishable
-  publishable: 'bg-cyan-50 text-cyan-600',
+  publishable: 'bg-cyan-100 text-cyan-700 ring-cyan-600/20',
 
   // Additional
-  monthly: 'bg-sky-50 text-sky-600',
-  yearly: 'bg-violet-50 text-violet-600',
-  sum: 'bg-gray-100 text-gray-500',
-  count: 'bg-gray-100 text-gray-500',
-  max: 'bg-gray-100 text-gray-500',
-  last: 'bg-gray-100 text-gray-500',
-  flat: 'bg-sky-50 text-sky-600',
-  graduated: 'bg-sky-50 text-sky-600',
-  package: 'bg-sky-50 text-sky-600',
-  base_fee: 'bg-gray-100 text-gray-500',
+  monthly: 'bg-blue-100 text-blue-700 ring-blue-600/20',
+  yearly: 'bg-violet-100 text-violet-700 ring-violet-600/20',
+  sum: 'bg-gray-200 text-gray-700 ring-gray-600/20',
+  count: 'bg-gray-200 text-gray-700 ring-gray-600/20',
+  max: 'bg-gray-200 text-gray-700 ring-gray-600/20',
+  last: 'bg-gray-200 text-gray-700 ring-gray-600/20',
+  flat: 'bg-blue-100 text-blue-700 ring-blue-600/20',
+  graduated: 'bg-blue-100 text-blue-700 ring-blue-600/20',
+  package: 'bg-blue-100 text-blue-700 ring-blue-600/20',
+  base_fee: 'bg-gray-200 text-gray-700 ring-gray-600/20',
 }
 
 export function Badge({ status, label }: { status: string; label?: string }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
-        variants[status] || 'bg-gray-100 text-gray-500'
+        'inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ring-inset',
+        variants[status] || 'bg-gray-200 text-gray-700 ring-gray-600/20'
       )}
     >
       {label || status}
