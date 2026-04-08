@@ -171,7 +171,7 @@ function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated
     <Modal open onClose={onClose} title="Create API Key">
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Name <span className="text-red-500">*</span></label>
           <input type="text" value={name} onChange={e => setName(e.target.value)} required
             placeholder="Production API Key"
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />

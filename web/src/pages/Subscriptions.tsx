@@ -7,7 +7,7 @@ import { Modal } from '@/components/Modal'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
-import { Plus } from 'lucide-react'
+import { Plus, Search } from 'lucide-react'
 
 export function SubscriptionsPage() {
   const [subs, setSubs] = useState<Subscription[]>([])
@@ -17,6 +17,7 @@ export function SubscriptionsPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [plans, setPlans] = useState<Plan[]>([])
+  const [search, setSearch] = useState('')
   const toast = useToast()
 
   const loadSubs = () => {
@@ -50,7 +51,21 @@ export function SubscriptionsPage() {
         </button>
       </div>
 
-      <div className="bg-white rounded-xl shadow-card mt-6">
+      {/* Search */}
+      {subs.length > 0 && (
+        <div className="relative mt-6">
+          <Search size={16} className="absolute left-3 top-2.5 text-gray-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search subscriptions..."
+            className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 focus:border-transparent bg-white"
+          />
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl shadow-card mt-4">
         {error ? (
           <ErrorState message={error} onRetry={loadSubs} />
         ) : loading ? (
@@ -75,7 +90,11 @@ export function SubscriptionsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {subs.map(sub => (
+              {subs.filter(sub => {
+                if (!search) return true
+                const q = search.toLowerCase()
+                return sub.display_name.toLowerCase().includes(q) || sub.code.toLowerCase().includes(q)
+              }).map(sub => (
                 <tr key={sub.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-3">
                     <Link to={`/subscriptions/${sub.id}`} className="text-sm font-medium text-gray-900 hover:text-velox-600">
@@ -142,19 +161,19 @@ function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
     <Modal open onClose={onClose} title="Create Subscription">
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Display Name <span className="text-red-500">*</span></label>
           <input type="text" value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
             placeholder="Acme Pro Monthly" required />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Code</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Code <span className="text-red-500">*</span></label>
           <input type="text" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 font-mono"
             placeholder="acme-pro" required />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Customer</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Customer <span className="text-red-500">*</span></label>
           <select value={form.customer_id} onChange={e => setForm(f => ({ ...f, customer_id: e.target.value }))}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" required>
             <option value="">Select customer...</option>
@@ -162,7 +181,7 @@ function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
           </select>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Plan</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Plan <span className="text-red-500">*</span></label>
           <select value={form.plan_id} onChange={e => setForm(f => ({ ...f, plan_id: e.target.value }))}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" required>
             <option value="">Select plan...</option>

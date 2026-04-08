@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
-  Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X,
+  Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { clearApiKey } from '@/lib/api'
@@ -12,6 +12,7 @@ const billingNav = [
   { to: '/customers', icon: Users, label: 'Customers' },
   { to: '/invoices', icon: FileText, label: 'Invoices' },
   { to: '/subscriptions', icon: CreditCard, label: 'Subscriptions' },
+  { to: '/usage', icon: BarChart3, label: 'Usage' },
 ]
 
 const configNav = [

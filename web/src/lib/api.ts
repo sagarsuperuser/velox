@@ -96,6 +96,8 @@ export const api = {
   // Usage
   usageSummary: (customerId: string) =>
     request<UsageSummary>('GET', `/usage-summary/${customerId}`),
+  listUsageEvents: (params?: string) =>
+    request<{ data: UsageEvent[] }>('GET', `/usage-events${params ? '?' + params : ''}`),
 
   // Customer updates
   updateCustomer: (id: string, data: { display_name?: string; email?: string }) =>
@@ -265,6 +267,16 @@ export interface RatingRule {
   package_size: number
   package_amount_cents: number
   created_at: string
+}
+
+export interface UsageEvent {
+  id: string
+  customer_id: string
+  meter_id: string
+  subscription_id: string
+  quantity: number
+  idempotency_key: string
+  timestamp: string
 }
 
 export interface UsageSummary {

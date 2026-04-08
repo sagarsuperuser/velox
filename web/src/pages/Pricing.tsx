@@ -112,7 +112,7 @@ function Field({ label, value, onChange, placeholder, required, mono, type }: {
   label: string; value: string; onChange: (v: string) => void; placeholder?: string; required?: boolean; mono?: boolean; type?: string
 }) {
   return (<div>
-    <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+    <label className="block text-sm font-medium text-gray-700 mb-1">{label}{required && <span className="text-red-500"> *</span>}</label>
     <input type={type || 'text'} value={value} onChange={e => onChange(e.target.value)}
       className={`w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 ${mono ? 'font-mono' : ''}`}
       placeholder={placeholder} required={required} />

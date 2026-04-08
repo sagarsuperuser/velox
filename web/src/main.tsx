@@ -19,6 +19,7 @@ import { CreditNotesPage } from '@/pages/CreditNotes'
 import { AuditLogPage } from '@/pages/AuditLog'
 import { WebhooksPage } from '@/pages/Webhooks'
 import { ApiKeysPage } from '@/pages/ApiKeys'
+import { UsageEventsPage } from '@/pages/UsageEvents'
 import './index.css'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -41,6 +42,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/invoices/:id" element={<ProtectedRoute><InvoiceDetailPage /></ProtectedRoute>} />
           <Route path="/subscriptions" element={<ProtectedRoute><SubscriptionsPage /></ProtectedRoute>} />
           <Route path="/subscriptions/:id" element={<ProtectedRoute><SubscriptionDetailPage /></ProtectedRoute>} />
+          <Route path="/usage" element={<ProtectedRoute><UsageEventsPage /></ProtectedRoute>} />
           <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
           <Route path="/credits" element={<ProtectedRoute><CreditsPage /></ProtectedRoute>} />
           <Route path="/dunning" element={<ProtectedRoute><DunningPage /></ProtectedRoute>} />

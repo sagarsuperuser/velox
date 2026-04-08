@@ -191,7 +191,7 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
     <Modal open onClose={onClose} title="Create Credit Note">
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Invoice</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Invoice <span className="text-red-500">*</span></label>
           <select value={invoiceId} onChange={e => setInvoiceId(e.target.value)}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white"
             required>
@@ -204,7 +204,7 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
           </select>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Reason</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Reason <span className="text-red-500">*</span></label>
           <input type="text" value={reason} onChange={e => setReason(e.target.value)}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
             placeholder="Billing error" required />
@@ -234,7 +234,7 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Unit Price ($)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Unit Price ($) <span className="text-red-500">*</span></label>
                 <input type="number" step="0.01" min="0" value={unitAmountDollars} onChange={e => setUnitAmountDollars(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500"
                   placeholder="10.00" required />
