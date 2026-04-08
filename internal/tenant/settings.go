@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,6 +19,8 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
+
+var settingsPhonePattern = regexp.MustCompile(`^[\+\d\s\-\(\)]{7,20}$`)
 
 // SettingsStore handles tenant settings CRUD.
 type SettingsStore struct {
@@ -162,6 +166,32 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ts.TenantID = tenantID
+
+	// Validate email and phone
+	if email := strings.TrimSpace(ts.CompanyEmail); email != "" {
+		at := strings.Index(email, "@")
+		if at < 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("invalid email: must contain @")})
+			return
+		}
+		domain := email[at+1:]
+		if !strings.Contains(domain, ".") || strings.HasSuffix(domain, ".") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid email: domain must contain a dot"})
+			return
+		}
+	}
+	if phone := strings.TrimSpace(ts.CompanyPhone); phone != "" {
+		if !settingsPhonePattern.MatchString(phone) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]string{"error": "phone must be 7-20 characters and contain only digits, spaces, +, -, (, )"})
+			return
+		}
+	}
 
 	if ts.DefaultCurrency == "" {
 		ts.DefaultCurrency = "USD"

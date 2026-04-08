@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
+import { FormField } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { useFormValidation, rules } from '@/hooks/useFormValidation'
 
 export function SettingsPage() {
   const [loading, setLoading] = useState(true)
@@ -27,6 +29,12 @@ export function SettingsPage() {
   })
 
   const hasChanges = savedForm !== '' && JSON.stringify({ ...companyForm, ...invoiceForm }) !== savedForm
+
+  const fieldRules = useMemo(() => ({
+    company_email: [rules.email()],
+    company_phone: [rules.phone()],
+  }), [])
+  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
 
   const loadSettings = () => {
     setLoading(true)
@@ -55,6 +63,7 @@ export function SettingsPage() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!validateAll(companyForm)) return
     setSaving(true)
     try {
       const updated = await api.updateSettings({
@@ -127,20 +136,14 @@ export function SettingsPage() {
                   onChange={e => setCompanyForm(f => ({ ...f, company_name: e.target.value }))}
                   className={fieldClass} placeholder="Acme Inc." maxLength={255} />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                <input type="email" value={companyForm.company_email}
-                  onChange={e => setCompanyForm(f => ({ ...f, company_email: e.target.value }))}
-                  className={fieldClass} placeholder="billing@acme.com" maxLength={254}
-                  />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-                <input type="tel" value={companyForm.company_phone}
-                  onChange={e => setCompanyForm(f => ({ ...f, company_phone: e.target.value }))}
-                  className={fieldClass} placeholder="+1 (555) 123-4567" maxLength={20}
-                  />
-              </div>
+              <FormField label="Email" type="email" value={companyForm.company_email} placeholder="billing@acme.com" maxLength={254}
+                ref={registerRef('company_email')} error={fieldError('company_email')}
+                onChange={e => setCompanyForm(f => ({ ...f, company_email: e.target.value }))}
+                onBlur={() => onBlur('company_email', companyForm.company_email)} />
+              <FormField label="Phone" type="tel" value={companyForm.company_phone} placeholder="+1 (555) 123-4567" maxLength={20}
+                ref={registerRef('company_phone')} error={fieldError('company_phone')}
+                onChange={e => setCompanyForm(f => ({ ...f, company_phone: e.target.value }))}
+                onBlur={() => onBlur('company_phone', companyForm.company_phone)} />
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Address</label>
                 <textarea value={companyForm.company_address}
