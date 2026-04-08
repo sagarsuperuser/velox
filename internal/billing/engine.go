@@ -14,12 +14,19 @@ import (
 //
 // It coordinates across domain boundaries (subscription, usage, pricing, invoice)
 // without those domains knowing about each other.
+// SettingsReader reads tenant settings for invoice configuration.
+type SettingsReader interface {
+	NextInvoiceNumber(ctx context.Context, tenantID string) (string, error)
+	Get(ctx context.Context, tenantID string) (domain.TenantSettings, error)
+}
+
 type Engine struct {
-	subs    SubscriptionReader
-	usage   UsageAggregator
-	pricing PricingReader
+	subs     SubscriptionReader
+	usage    UsageAggregator
+	pricing  PricingReader
 	invoices InvoiceWriter
-	credits CreditApplier
+	credits  CreditApplier
+	settings SettingsReader
 }
 
 // CreditApplier applies customer credits to an invoice before charging.
@@ -53,8 +60,8 @@ type InvoiceWriter interface {
 	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
 }
 
-func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier) *Engine {
-	return &Engine{subs: subs, usage: usage, pricing: pricing, invoices: invoices, credits: credits}
+func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader) *Engine {
+	return &Engine{subs: subs, usage: usage, pricing: pricing, invoices: invoices, credits: credits, settings: settings}
 }
 
 // RunCycle finds all subscriptions due for billing and generates invoices.
@@ -199,10 +206,23 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		subtotal += amount
 	}
 
-	// Create invoice
+	// Create invoice — pull settings for invoice number + payment terms
 	now := time.Now().UTC()
-	dueAt := now.AddDate(0, 0, 30)
+	netDays := 30
 	invoiceNumber := fmt.Sprintf("VLX-%s-%04d", now.Format("200601"), now.UnixMilli()%10000)
+
+	if e.settings != nil {
+		if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil {
+			if ts.NetPaymentTerms > 0 {
+				netDays = ts.NetPaymentTerms
+			}
+		}
+		if num, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID); err == nil && num != "" {
+			invoiceNumber = num
+		}
+	}
+
+	dueAt := now.AddDate(0, 0, netDays)
 
 	inv, err := e.invoices.CreateInvoice(ctx, sub.TenantID, domain.Invoice{
 		CustomerID:         sub.CustomerID,
@@ -218,7 +238,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		BillingPeriodEnd:   periodEnd,
 		IssuedAt:           &now,
 		DueAt:              &dueAt,
-		NetPaymentTermDays: 30,
+		NetPaymentTermDays: netDays,
 	})
 	if err != nil {
 		return false, fmt.Errorf("create invoice: %w", err)
