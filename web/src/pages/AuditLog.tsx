@@ -103,16 +103,23 @@ export function AuditLogPage() {
                       <td className="px-6 py-3"><Badge status={entry.action} /></td>
                       <td className="px-6 py-3 text-sm text-gray-500">{entry.resource_type}</td>
                       <td className="px-6 py-3">
-                        <span
-                          className="text-sm font-mono text-gray-500 cursor-pointer hover:text-gray-700"
-                          title="Click to copy"
-                          onClick={() => {
-                            navigator.clipboard.writeText(entry.resource_id)
-                            toast.success('Copied')
-                          }}
-                        >
-                          {entry.resource_id}
-                        </span>
+                        {entry.resource_label ? (
+                          <div>
+                            <p className="text-sm text-gray-900">{entry.resource_label}</p>
+                            <p className="text-xs text-gray-400 font-mono cursor-pointer hover:text-gray-600"
+                              title="Click to copy ID"
+                              onClick={() => { navigator.clipboard.writeText(entry.resource_id); toast.success('Copied') }}>
+                              {entry.resource_id}
+                            </p>
+                          </div>
+                        ) : (
+                          <span
+                            className="text-sm font-mono text-gray-500 cursor-pointer hover:text-gray-700"
+                            title="Click to copy"
+                            onClick={() => { navigator.clipboard.writeText(entry.resource_id); toast.success('Copied') }}>
+                            {entry.resource_id}
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-3 text-sm text-gray-400">
                         {!hasMeta ? '\u2014' : metaPath && !isExpanded ? (

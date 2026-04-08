@@ -9,8 +9,9 @@ type AuditEntry struct {
 	ActorID      string         `json:"actor_id"`
 	Action       string         `json:"action"`
 	ResourceType string         `json:"resource_type"`
-	ResourceID   string         `json:"resource_id"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
+	ResourceID    string         `json:"resource_id"`
+	ResourceLabel string         `json:"resource_label,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
 	IPAddress    string         `json:"ip_address,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 }

@@ -419,6 +419,7 @@ export interface AuditEntry {
   action: string
   resource_type: string
   resource_id: string
+  resource_label?: string
   metadata?: Record<string, unknown>
   created_at: string
 }
