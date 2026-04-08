@@ -199,29 +199,32 @@ function CreateCreditNoteModal({ onClose, onCreated }: { onClose: () => void; on
   }
 
   return (
-    <Modal open onClose={onClose} title="Create Credit Note">
-      <form onSubmit={handleSubmit} noValidate className="space-y-3">
+    <Modal open onClose={onClose} title="Create Credit Note" wide>
+      <form onSubmit={handleSubmit} noValidate className="space-y-4">
         <FormSelect label="Invoice" required value={invoiceId} error={fieldError('invoice_id')}
           onChange={e => { setInvoiceId(e.target.value); onBlur('invoice_id', e.target.value) }}
           placeholder="Select invoice..."
-          options={invoices.map(inv => ({ value: inv.id, label: `${inv.invoice_number} (${inv.status}) - ${formatCents(inv.total_amount_cents)}` }))} />
-        <FormField label="Reason" required value={reason} placeholder="Billing error" maxLength={500}
-          ref={registerRef('reason')} error={fieldError('reason')}
-          onChange={e => setReason(e.target.value)}
-          onBlur={() => onBlur('reason', reason)} />
-        <FormSelect label="Refund Type" value={refundType}
-          onChange={e => setRefundType(e.target.value)}
-          options={[{ value: 'credit', label: 'Credit' }, { value: 'refund', label: 'Refund' }]} />
+          options={invoices.map(inv => ({ value: inv.id, label: `${inv.invoice_number} — ${inv.status} — ${formatCents(inv.total_amount_cents)}` }))} />
+        <div className="grid grid-cols-2 gap-4">
+          <FormField label="Reason" required value={reason} placeholder="e.g. Service disruption, billing error" maxLength={500}
+            ref={registerRef('reason')} error={fieldError('reason')}
+            onChange={e => setReason(e.target.value)}
+            onBlur={() => onBlur('reason', reason)} />
+          <FormSelect label="Type" value={refundType}
+            onChange={e => setRefundType(e.target.value)}
+            options={[{ value: 'credit', label: 'Credit — apply to balance' }, { value: 'refund', label: 'Refund — return to payment method' }]} />
+        </div>
 
-        <div className="border-t border-gray-100 pt-3">
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Line Item</p>
+        <div className="border-t border-gray-100 pt-4">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Line Item</p>
           <div className="space-y-3">
             <FormField label="Description" value={description} placeholder="Credit for overcharge" maxLength={500}
+              hint="Defaults to reason if left blank"
               onChange={e => setDescription(e.target.value)} />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-4">
               <FormField label="Quantity" type="number" min={1} value={quantity}
                 onChange={e => setQuantity(e.target.value)} />
-              <FormField label="Unit Price ($)" required type="number" step="0.01" min="0" max={999999.99} value={unitAmountDollars}
+              <FormField label="Amount ($)" required type="number" step="0.01" min="0" max={999999.99} value={unitAmountDollars}
                 placeholder="10.00"
                 onChange={e => setUnitAmountDollars(e.target.value)} />
             </div>
