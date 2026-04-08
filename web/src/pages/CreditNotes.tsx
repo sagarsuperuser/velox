@@ -106,10 +106,10 @@ export function CreditNotesPage() {
                   <td className="px-6 py-3 text-sm text-gray-400">{formatDate(note.created_at)}</td>
                   <td className="px-6 py-3 text-right space-x-2">
                     {note.status === 'draft' && (
-                      <button onClick={() => setConfirmIssue(note.id)} className="text-xs text-velox-600 hover:underline">Issue</button>
+                      <button onClick={() => setConfirmIssue(note.id)} className="text-xs font-medium text-velox-600 hover:text-velox-700 bg-velox-50 hover:bg-velox-100 px-2.5 py-1 rounded-md transition-colors">Issue</button>
                     )}
                     {note.status !== 'voided' && (
-                      <button onClick={() => setConfirmVoid(note.id)} className="text-xs text-red-600 hover:underline">Void</button>
+                      <button onClick={() => setConfirmVoid(note.id)} className="text-xs font-medium text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-md transition-colors">Void</button>
                     )}
                   </td>
                 </tr>

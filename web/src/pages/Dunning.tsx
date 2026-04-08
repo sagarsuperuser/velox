@@ -216,7 +216,7 @@ function RunsTab() {
                   <td className="px-6 py-3 text-right">
                     {run.state !== 'resolved' && run.state !== 'exhausted' && (
                       <button onClick={() => setResolveTarget(run)}
-                        className="text-xs text-velox-600 hover:underline">Resolve</button>
+                        className="text-xs font-medium text-velox-600 hover:text-velox-700 bg-velox-50 hover:bg-velox-100 px-2.5 py-1 rounded-md transition-colors">Resolve</button>
                     )}
                   </td>
                 </tr>

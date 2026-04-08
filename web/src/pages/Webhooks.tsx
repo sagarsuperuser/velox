@@ -111,7 +111,7 @@ function EndpointsTab() {
                   <td className="px-6 py-3 text-sm text-gray-400">{formatDate(ep.created_at)}</td>
                   <td className="px-6 py-3 text-right">
                     <button onClick={() => setDeleteTarget(ep)}
-                      className="text-xs text-red-600 hover:underline">Delete</button>
+                      className="text-xs font-medium text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-md transition-colors">Delete</button>
                   </td>
                 </tr>
               ))}
@@ -304,7 +304,7 @@ function EventsTab() {
                 <td className="px-6 py-3 text-sm text-gray-400">{formatDate(ev.created_at)}</td>
                 <td className="px-6 py-3 text-right">
                   <button onClick={() => handleReplay(ev.id)}
-                    className="text-xs text-velox-600 hover:underline">Replay</button>
+                    className="text-xs font-medium text-velox-600 hover:text-velox-700 bg-velox-50 hover:bg-velox-100 px-2.5 py-1 rounded-md transition-colors">Replay</button>
                 </td>
               </tr>
             ))}
