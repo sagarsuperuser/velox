@@ -73,7 +73,7 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 	}
 
 	query := `SELECT id, tenant_id, actor_type, actor_id, action, resource_type,
-		resource_id, metadata, COALESCE(ip_address,''), created_at
+		resource_id, COALESCE(resource_label,''), metadata, COALESCE(ip_address,''), created_at
 		FROM audit_log`
 	args := []any{}
 	idx := 1
@@ -108,7 +108,7 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 		var e domain.AuditEntry
 		var metaJSON []byte
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.ActorType, &e.ActorID,
-			&e.Action, &e.ResourceType, &e.ResourceID,
+			&e.Action, &e.ResourceType, &e.ResourceID, &e.ResourceLabel,
 			&metaJSON, &e.IPAddress, &e.CreatedAt); err != nil {
 			return nil, err
 		}

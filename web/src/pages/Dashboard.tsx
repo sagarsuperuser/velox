@@ -252,9 +252,6 @@ export function DashboardPage() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-gray-700">{label}</p>
-                      {entry.resource_id && (
-                        <p className="text-xs text-gray-400 truncate font-mono">{entry.resource_id}</p>
-                      )}
                     </div>
                     <span className="text-xs text-gray-400 flex-shrink-0">{formatRelativeTime(entry.created_at)}</span>
                   </div>
