@@ -21,7 +21,7 @@ export function Breadcrumbs({ items }: BreadcrumbsProps) {
             {isLast || !item.to ? (
               <span className="text-gray-700 font-medium">{item.label}</span>
             ) : (
-              <Link to={item.to} className="text-gray-400 hover:text-gray-600 transition-colors">
+              <Link to={item.to} className="text-gray-500 hover:text-gray-900 transition-colors">
                 {item.label}
               </Link>
             )}
