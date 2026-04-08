@@ -76,6 +76,8 @@ export const api = {
     request<Invoice>('POST', `/invoices/${id}/finalize`),
   voidInvoice: (id: string) =>
     request<Invoice>('POST', `/invoices/${id}/void`),
+  sendInvoiceEmail: (invoiceId: string, email: string) =>
+    request<{ status: string }>('POST', `/invoices/${invoiceId}/send`, { email }),
 
   // Billing
   triggerBilling: () =>

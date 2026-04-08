@@ -3,11 +3,13 @@ import { useParams, Link } from 'react-router-dom'
 import { api, downloadPDF, formatCents, formatDate, type Invoice, type LineItem, type Customer, type Subscription } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
+import { Modal } from '@/components/Modal'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { useToast } from '@/components/Toast'
+import { Mail, CreditCard } from 'lucide-react'
 
 const LINE_TYPE_LABELS: Record<string, string> = {
   base_fee: 'Base Fee',
@@ -31,6 +33,8 @@ export function InvoiceDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [acting, setActing] = useState(false)
   const [showVoidConfirm, setShowVoidConfirm] = useState(false)
+  const [showEmailModal, setShowEmailModal] = useState(false)
+  const [showCreditModal, setShowCreditModal] = useState(false)
   const toast = useToast()
 
   const loadData = () => {
@@ -153,6 +157,20 @@ export function InvoiceDetailPage() {
               </button>
             )}
 
+            <button onClick={() => setShowEmailModal(true)} disabled={acting}
+              className="px-3 py-1.5 border border-gray-300 text-gray-600 rounded-lg text-xs font-medium hover:bg-gray-50 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
+              <Mail size={14} />
+              Email Invoice
+            </button>
+
+            {(invoice.status === 'finalized' || invoice.status === 'paid') && (
+              <button onClick={() => setShowCreditModal(true)} disabled={acting}
+                className="px-3 py-1.5 border border-amber-300 text-amber-600 rounded-lg text-xs font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5">
+                <CreditCard size={14} />
+                Issue Credit
+              </button>
+            )}
+
             <button
               onClick={() => downloadPDF(invoice.id, invoice.invoice_number)}
               className="px-3 py-1.5 bg-velox-600 text-white rounded-lg text-xs font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
@@ -228,6 +246,143 @@ export function InvoiceDetailPage() {
         onConfirm={handleVoid}
         onCancel={() => setShowVoidConfirm(false)}
       />
+
+      {showEmailModal && (
+        <EmailInvoiceModal
+          invoiceId={invoice.id}
+          defaultEmail={customer?.email || ''}
+          onClose={() => setShowEmailModal(false)}
+          onSent={() => {
+            setShowEmailModal(false)
+            toast.success('Invoice email sent')
+          }}
+          onError={(msg) => toast.error(msg)}
+        />
+      )}
+
+      {showCreditModal && (
+        <IssueCreditModal
+          invoice={invoice}
+          onClose={() => setShowCreditModal(false)}
+          onCreated={() => {
+            setShowCreditModal(false)
+            toast.success('Credit note created')
+          }}
+          onError={(msg) => toast.error(msg)}
+        />
+      )}
     </Layout>
+  )
+}
+
+function EmailInvoiceModal({ invoiceId, defaultEmail, onClose, onSent, onError }: {
+  invoiceId: string
+  defaultEmail: string
+  onClose: () => void
+  onSent: () => void
+  onError: (msg: string) => void
+}) {
+  const [email, setEmail] = useState(defaultEmail)
+  const [sending, setSending] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSending(true)
+    try {
+      await api.sendInvoiceEmail(invoiceId, email)
+      onSent()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Failed to send email')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Email Invoice">
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Recipient Email <span className="text-red-500">*</span></label>
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
+            placeholder="customer@example.com"
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+        </div>
+        <div className="flex justify-end gap-3 pt-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+          <button type="submit" disabled={sending}
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
+            {sending ? 'Sending...' : 'Send Email'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+function IssueCreditModal({ invoice, onClose, onCreated, onError }: {
+  invoice: Invoice
+  onClose: () => void
+  onCreated: () => void
+  onError: (msg: string) => void
+}) {
+  const [reason, setReason] = useState('')
+  const [amount, setAmount] = useState((invoice.total_amount_cents / 100).toFixed(2))
+  const [type, setType] = useState<'credit' | 'refund'>('credit')
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      const amountCents = Math.round(parseFloat(amount) * 100)
+      await api.createCreditNote({
+        invoice_id: invoice.id,
+        reason,
+        refund_type: type,
+        lines: [{ description: reason, quantity: 1, unit_amount_cents: amountCents }],
+      })
+      onCreated()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Failed to create credit note')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Issue Credit / Refund">
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Invoice</label>
+          <p className="text-sm text-gray-500 font-mono">{invoice.invoice_number}</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Reason <span className="text-red-500">*</span></label>
+          <input type="text" value={reason} onChange={e => setReason(e.target.value)} required
+            placeholder="e.g. Service disruption, billing error"
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Amount ($) <span className="text-red-500">*</span></label>
+          <input type="number" step="0.01" min="0.01" value={amount} onChange={e => setAmount(e.target.value)} required
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
+          <select value={type} onChange={e => setType(e.target.value as 'credit' | 'refund')}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
+            <option value="credit">Credit</option>
+            {invoice.payment_status === 'paid' && <option value="refund">Refund</option>}
+          </select>
+        </div>
+        <div className="flex justify-end gap-3 pt-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+          <button type="submit" disabled={saving}
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
+            {saving ? 'Creating...' : 'Create Credit Note'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }

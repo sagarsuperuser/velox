@@ -16,6 +16,7 @@ export function ApiKeysPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null)
+  const [isRevokingSelf, setIsRevokingSelf] = useState(false)
   const toast = useToast()
 
   const loadKeys = () => {
@@ -84,7 +85,11 @@ export function ApiKeysPage() {
                     <td className="px-6 py-3"><Badge status={isRevoked ? 'revoked' : 'active'} /></td>
                     <td className="px-6 py-3 text-right">
                       {!isRevoked && (
-                        <button onClick={() => setRevokeTarget(k)}
+                        <button onClick={() => {
+                          const currentKey = localStorage.getItem('velox_api_key') || ''
+                          setIsRevokingSelf(currentKey.startsWith(k.key_prefix))
+                          setRevokeTarget(k)
+                        }}
                           className="text-xs text-red-600 hover:underline">Revoke</button>
                       )}
                     </td>
@@ -139,12 +144,16 @@ export function ApiKeysPage() {
 
       <ConfirmDialog
         open={!!revokeTarget}
-        title="Revoke API Key"
-        message={revokeTarget ? `Are you sure you want to revoke the API key "${revokeTarget.name}" (${revokeTarget.key_prefix}...)? This action cannot be undone.` : ''}
+        title={isRevokingSelf ? 'Revoke Current Session Key?' : 'Revoke API Key'}
+        message={revokeTarget
+          ? isRevokingSelf
+            ? 'This is the API key you\'re currently logged in with. Revoking it will log you out immediately. Are you sure?'
+            : `Are you sure you want to revoke the API key "${revokeTarget.name}" (${revokeTarget.key_prefix}...)? This action cannot be undone.`
+          : ''}
         confirmLabel="Revoke Key"
         variant="danger"
         onConfirm={handleRevoke}
-        onCancel={() => setRevokeTarget(null)}
+        onCancel={() => { setRevokeTarget(null); setIsRevokingSelf(false) }}
       />
     </Layout>
   )
