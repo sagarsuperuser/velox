@@ -181,7 +181,7 @@ export function MeterDetailPage() {
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b border-gray-100">
+                    <tr className="border-b border-gray-100 bg-gray-50">
                       <th className="text-left text-xs font-medium text-gray-500 py-2 pr-4">Tier</th>
                       <th className="text-right text-xs font-medium text-gray-500 py-2">Price / unit</th>
                     </tr>
@@ -226,7 +226,7 @@ export function MeterDetailPage() {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-gray-100">
+                <tr className="border-b border-gray-100 bg-gray-50">
                   <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
                   <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Code</th>
                   <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Interval</th>

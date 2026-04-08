@@ -60,15 +60,24 @@
 
 ## 7. Usage Ingestion (via API)
 ```bash
-curl -X POST http://localhost:8080/v1/events \
+# Single event (get customer_id and meter_id from the UI)
+curl -X POST http://localhost:8080/v1/usage-events \
   -H "Authorization: Bearer <secret_key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "events": [
-      {"external_customer_id": "acme_corp", "event_name": "api_calls", "timestamp": "2026-04-08T10:00:00Z", "properties": {"count": 1500}},
-      {"external_customer_id": "acme_corp", "event_name": "api_calls", "timestamp": "2026-04-08T11:00:00Z", "properties": {"count": 2500}}
-    ]
+    "customer_id": "<vlx_cus_...>",
+    "meter_id": "<vlx_mtr_...>",
+    "quantity": 1500
   }'
+
+# Batch events
+curl -X POST http://localhost:8080/v1/usage-events/batch \
+  -H "Authorization: Bearer <secret_key>" \
+  -H "Content-Type: application/json" \
+  -d '[
+    {"customer_id": "<vlx_cus_...>", "meter_id": "<vlx_mtr_...>", "quantity": 1500},
+    {"customer_id": "<vlx_cus_...>", "meter_id": "<vlx_mtr_...>", "quantity": 2500}
+  ]'
 ```
 - [ ] Go to Usage Events page, verify events appear
 - [ ] Go to Customer Detail, verify usage summary shows
