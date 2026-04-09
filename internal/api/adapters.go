@@ -22,6 +22,10 @@ func (a *invoiceWriterAdapter) CreateLineItem(ctx context.Context, tenantID stri
 	return a.store.CreateLineItem(ctx, tenantID, item)
 }
 
+func (a *invoiceWriterAdapter) ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
+	return a.store.ApplyCreditNote(ctx, tenantID, id, amountCents)
+}
+
 // creditGrantAdapter bridges credit.Service → creditnote.CreditGranter.
 type creditGrantAdapter struct {
 	svc *credit.Service
