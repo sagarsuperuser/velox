@@ -168,6 +168,24 @@ export function InvoiceDetailPage() {
             </button>
           )}
 
+          {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.amount_due_cents > 0 && (
+            <button onClick={async () => {
+              setActing(true)
+              try {
+                const updated = await api.collectPayment(invoice.id)
+                setInvoice(updated)
+                toast.success('Payment initiated')
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : 'Payment failed')
+              } finally {
+                setActing(false)
+              }
+            }} disabled={acting}
+              className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm disabled:opacity-50 transition-colors">
+              Collect Payment
+            </button>
+          )}
+
           <button
             onClick={() => downloadPDF(invoice.id, invoice.invoice_number)}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
