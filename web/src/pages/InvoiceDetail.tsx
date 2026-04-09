@@ -316,6 +316,16 @@ export function InvoiceDetailPage() {
                 <td className="px-6 py-2.5 text-sm text-emerald-600 text-right">-{formatCents(cn.total_cents)}</td>
               </tr>
             ))}
+            {(() => {
+              const creditNotesTotal = creditNotes.reduce((sum, cn) => sum + cn.total_cents, 0)
+              const prepaidCredits = invoice.total_amount_cents - invoice.amount_due_cents - creditNotesTotal
+              return prepaidCredits > 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-6 py-2.5 text-sm text-emerald-600 text-right">Prepaid credits applied</td>
+                  <td className="px-6 py-2.5 text-sm text-emerald-600 text-right">-{formatCents(prepaidCredits)}</td>
+                </tr>
+              ) : null
+            })()}
             <tr>
               <td colSpan={4} className="px-6 py-2.5 text-sm font-semibold text-gray-900 text-right">Amount Due</td>
               <td className="px-6 py-2.5 text-sm font-semibold text-gray-900 text-right">{formatCents(invoice.amount_due_cents)}</td>
