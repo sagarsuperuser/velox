@@ -70,7 +70,12 @@ export function CustomerDetailPage() {
       const res = await api.setupPayment({
         customer_id: id,
         customer_name: customer.display_name,
-        email: customer.email || '',
+        email: customer.email || billingProfile?.email || '',
+        address_line1: billingProfile?.address_line1 || '',
+        address_city: billingProfile?.city || '',
+        address_state: billingProfile?.state || '',
+        address_postal_code: billingProfile?.postal_code || '',
+        address_country: billingProfile?.country || 'US',
       })
       // Open Stripe Checkout in new tab
       window.open(res.url, '_blank')

@@ -109,7 +109,7 @@ export const api = {
     request<{ status: string }>('POST', `/invoices/${invoiceId}/send`, { email }),
 
   // Payment setup
-  setupPayment: (data: { customer_id: string; customer_name: string; email: string }) =>
+  setupPayment: (data: { customer_id: string; customer_name: string; email: string; address_line1?: string; address_city?: string; address_state?: string; address_postal_code?: string; address_country?: string }) =>
     request<{ session_id: string; url: string; stripe_customer_id: string }>('POST', '/checkout/setup', data),
   getPaymentStatus: (customerId: string) =>
     request<{ customer_id: string; setup_status: string; stripe_customer_id?: string; payment_method_type?: string }>('GET', `/checkout/status/${customerId}`),
