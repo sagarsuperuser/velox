@@ -223,7 +223,12 @@ function RunsTab() {
                   <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right tabular-nums">
                     {inv ? formatCents(inv.amount_due_cents) : '—'}
                   </td>
-                  <td className="px-6 py-3"><Badge status={run.state} /></td>
+                  <td className="px-6 py-3">
+                    <Badge status={run.state} />
+                    {run.resolution && (
+                      <span className="ml-2"><Badge status={run.resolution} /></span>
+                    )}
+                  </td>
                   <td className="px-6 py-3 text-sm text-gray-500">
                     {run.attempt_count} of 3
                   </td>
