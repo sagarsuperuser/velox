@@ -103,8 +103,16 @@ export const api = {
     request<Invoice>('POST', `/invoices/${id}/finalize`),
   voidInvoice: (id: string) =>
     request<Invoice>('POST', `/invoices/${id}/void`),
+  collectPayment: (id: string) =>
+    request<Invoice>('POST', `/invoices/${id}/collect`),
   sendInvoiceEmail: (invoiceId: string, email: string) =>
     request<{ status: string }>('POST', `/invoices/${invoiceId}/send`, { email }),
+
+  // Payment setup
+  setupPayment: (data: { customer_id: string; customer_name: string; email: string }) =>
+    request<{ session_id: string; url: string; stripe_customer_id: string }>('POST', '/checkout/setup', data),
+  getPaymentStatus: (customerId: string) =>
+    request<{ customer_id: string; setup_status: string; stripe_customer_id?: string; payment_method_type?: string }>('GET', `/checkout/status/${customerId}`),
 
   // Billing
   triggerBilling: () =>

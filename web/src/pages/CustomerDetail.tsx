@@ -29,6 +29,8 @@ export function CustomerDetailPage() {
   const [showEditCustomer, setShowEditCustomer] = useState(false)
   const [showEditBilling, setShowEditBilling] = useState(false)
   const [showCreateSub, setShowCreateSub] = useState(false)
+  const [paymentStatus, setPaymentStatus] = useState<string>('missing')
+  const [settingUpPayment, setSettingUpPayment] = useState(false)
   const toast = useToast()
 
   const loadData = () => {
@@ -55,8 +57,30 @@ export function CustomerDetailPage() {
       setMeterMap(mm)
       setPlans(plansRes.data.filter(p => p.status === 'active'))
       setAllSubs(subsRes.data.filter(s => s.customer_id === id))
+      // Fetch payment status
+      api.getPaymentStatus(id).then(ps => setPaymentStatus(ps.setup_status)).catch(() => {})
       setLoading(false)
     }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load customer'); setLoading(false) })
+  }
+
+  const handleSetupPayment = async () => {
+    if (!id || !customer) return
+    setSettingUpPayment(true)
+    try {
+      const res = await api.setupPayment({
+        customer_id: id,
+        customer_name: customer.display_name,
+        email: customer.email || '',
+      })
+      // Open Stripe Checkout in new tab
+      window.open(res.url, '_blank')
+      setPaymentStatus('pending')
+      toast.success('Stripe checkout opened in new tab')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to set up payment')
+    } finally {
+      setSettingUpPayment(false)
+    }
   }
 
   useEffect(() => { loadData() }, [id])
@@ -251,6 +275,41 @@ export function CustomerDetailPage() {
         ) : (
           <EmptyState title="No usage recorded" description="Usage events will appear here once ingested" />
         )}
+      </div>
+
+      {/* Payment Method */}
+      <div className="bg-white rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+          <h2 className="text-sm font-semibold text-gray-900">Payment Method</h2>
+          {paymentStatus !== 'ready' && (
+            <button onClick={handleSetupPayment} disabled={settingUpPayment}
+              className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm disabled:opacity-50 transition-colors">
+              {settingUpPayment ? 'Setting up...' : paymentStatus === 'pending' ? 'Complete Setup' : 'Set Up Payment'}
+            </button>
+          )}
+        </div>
+        <div className="px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+              paymentStatus === 'ready' ? 'bg-emerald-50' : paymentStatus === 'pending' ? 'bg-amber-50' : 'bg-gray-100'
+            }`}>
+              <CreditCard size={18} className={
+                paymentStatus === 'ready' ? 'text-emerald-500' : paymentStatus === 'pending' ? 'text-amber-500' : 'text-gray-400'
+              } />
+            </div>
+            <div>
+              <p className="text-sm text-gray-900">
+                {paymentStatus === 'ready' ? 'Payment method active' : paymentStatus === 'pending' ? 'Awaiting payment method setup' : 'No payment method'}
+              </p>
+              <p className="text-sm text-gray-500">
+                {paymentStatus === 'ready' ? 'Invoices will be charged automatically' : paymentStatus === 'pending' ? 'Customer needs to complete Stripe Checkout' : 'Set up a payment method to enable automatic billing'}
+              </p>
+            </div>
+          </div>
+          {paymentStatus === 'ready' && (
+            <Badge status="active" label="Active" />
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-6 mt-6">
