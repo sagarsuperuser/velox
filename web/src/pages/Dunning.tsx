@@ -228,9 +228,9 @@ function RunsTab() {
                     {run.attempt_count} of 3
                   </td>
                   <td className="px-6 py-3 text-sm text-gray-500">
-                    {run.state === 'resolved' || run.state === 'exhausted'
+                    {run.state === 'resolved' || run.state === 'exhausted' || run.state === 'escalated'
                       ? (run.resolution ? <Badge status={run.resolution} /> : '—')
-                      : run.next_action_at ? formatDateTime(run.next_action_at) : 'Pending'}
+                      : run.next_action_at ? formatDateTime(run.next_action_at) : '—'}
                   </td>
                   <td className="px-6 py-3 text-sm text-gray-500">{formatDateTime(run.created_at)}</td>
                   <td className="px-6 py-3 text-right">
