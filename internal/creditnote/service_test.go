@@ -98,6 +98,19 @@ func (m *memInvoiceReader) ListLineItems(_ context.Context, _, invoiceID string)
 	return m.lineItems[invoiceID], nil
 }
 
+func (m *memInvoiceReader) ApplyCreditNote(_ context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv.AmountDueCents -= amountCents
+	if inv.AmountDueCents < 0 {
+		inv.AmountDueCents = 0
+	}
+	m.invoices[id] = inv
+	return inv, nil
+}
+
 func TestCreate_CreditNote(t *testing.T) {
 	store := newMemStore()
 	invoices := &memInvoiceReader{
@@ -109,7 +122,7 @@ func TestCreate_CreditNote(t *testing.T) {
 			},
 		},
 	}
-	svc := NewService(store, invoices)
+	svc := NewService(store, invoices, nil)
 	ctx := context.Background()
 
 	t.Run("valid credit note", func(t *testing.T) {
@@ -204,7 +217,7 @@ func TestIssueAndVoid_CreditNote(t *testing.T) {
 			"inv_1": {ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized, Currency: "USD"},
 		},
 	}
-	svc := NewService(store, invoices)
+	svc := NewService(store, invoices, nil)
 	ctx := context.Background()
 
 	cn, _ := svc.Create(ctx, "t1", CreateInput{

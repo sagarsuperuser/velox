@@ -87,6 +87,19 @@ func (m *memStore) UpdatePayment(_ context.Context, tenantID, id string, ps doma
 	return inv, nil
 }
 
+func (m *memStore) ApplyCreditNote(_ context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv.AmountDueCents -= amountCents
+	if inv.AmountDueCents < 0 {
+		inv.AmountDueCents = 0
+	}
+	m.invoices[id] = inv
+	return inv, nil
+}
+
 func (m *memStore) CreateLineItem(_ context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error) {
 	item.ID = fmt.Sprintf("vlx_ili_%d", len(m.lineItems[item.InvoiceID])+1)
 	item.TenantID = tenantID
