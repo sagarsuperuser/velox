@@ -17,9 +17,10 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
-// CustomerGetter resolves customer IDs to names for PDF rendering.
+// CustomerGetter resolves customer IDs to names and billing profiles for PDF rendering.
 type CustomerGetter interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Customer, error)
+	GetBillingProfile(ctx context.Context, tenantID, customerID string) (domain.CustomerBillingProfile, error)
 }
 
 // SettingsGetter reads tenant settings for PDF company info.
@@ -50,6 +51,11 @@ type CreditReverser interface {
 // PaymentCanceler cancels a Stripe PaymentIntent when an invoice is voided.
 type PaymentCanceler interface {
 	CancelPaymentIntent(ctx context.Context, paymentIntentID string) error
+}
+
+// BillingProfileGetter reads customer billing profile for PDF.
+type BillingProfileGetter interface {
+	GetBillingProfile(ctx context.Context, tenantID, customerID string) (domain.CustomerBillingProfile, error)
 }
 
 type Handler struct {
@@ -294,10 +300,26 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	customerName := inv.CustomerID
+	// Build Bill To from customer + billing profile
+	bt := BillToInfo{Name: inv.CustomerID}
 	if h.customers != nil {
 		if cust, err := h.customers.Get(r.Context(), tenantID, inv.CustomerID); err == nil {
-			customerName = cust.DisplayName
+			bt.Name = cust.DisplayName
+			bt.Email = cust.Email
+		}
+		if bp, err := h.customers.GetBillingProfile(r.Context(), tenantID, inv.CustomerID); err == nil {
+			if bp.LegalName != "" {
+				bt.Name = bp.LegalName
+			}
+			if bp.Email != "" {
+				bt.Email = bp.Email
+			}
+			bt.AddressLine1 = bp.AddressLine1
+			bt.AddressLine2 = bp.AddressLine2
+			bt.City = bp.City
+			bt.State = bp.State
+			bt.PostalCode = bp.PostalCode
+			bt.Country = bp.Country
 		}
 	}
 
@@ -329,7 +351,7 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pdfBytes, err := RenderPDF(inv, items, customerName, cnInfos, ci)
+	pdfBytes, err := RenderPDF(inv, items, bt, cnInfos, ci)
 	if err != nil {
 		respond.InternalError(w, r)
 		return

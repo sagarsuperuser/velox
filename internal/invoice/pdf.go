@@ -26,7 +26,19 @@ type CreditNoteInfo struct {
 	Amount int64
 }
 
-func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, customerName string, creditNotes []CreditNoteInfo, company ...CompanyInfo) ([]byte, error) {
+// BillToInfo holds the customer's billing address for the PDF.
+type BillToInfo struct {
+	Name         string
+	Email        string
+	AddressLine1 string
+	AddressLine2 string
+	City         string
+	State        string
+	PostalCode   string
+	Country      string
+}
+
+func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo BillToInfo, creditNotes []CreditNoteInfo, company ...CompanyInfo) ([]byte, error) {
 	pdf := fpdf.New("P", "mm", "A4", "")
 	pdf.SetAutoPageBreak(true, 20)
 	pdf.AddPage()
@@ -111,9 +123,47 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, customerN
 	pdf.Ln(1)
 
 	pdf.SetX(120)
-	pdf.SetFont("Helvetica", "", 10)
+	pdf.SetFont("Helvetica", "B", 10)
 	pdf.SetTextColor(40, 40, 40)
-	pdf.CellFormat(0, 5, customerName, "", 1, "L", false, 0, "")
+	pdf.CellFormat(0, 5, billTo.Name, "", 1, "L", false, 0, "")
+
+	pdf.SetFont("Helvetica", "", 9)
+	pdf.SetTextColor(80, 80, 80)
+	if billTo.AddressLine1 != "" {
+		pdf.SetX(120)
+		pdf.CellFormat(0, 4, billTo.AddressLine1, "", 1, "L", false, 0, "")
+	}
+	if billTo.AddressLine2 != "" {
+		pdf.SetX(120)
+		pdf.CellFormat(0, 4, billTo.AddressLine2, "", 1, "L", false, 0, "")
+	}
+	cityLine := ""
+	if billTo.City != "" {
+		cityLine = billTo.City
+	}
+	if billTo.State != "" {
+		if cityLine != "" {
+			cityLine += ", "
+		}
+		cityLine += billTo.State
+	}
+	if billTo.PostalCode != "" {
+		cityLine += " " + billTo.PostalCode
+	}
+	if cityLine != "" {
+		pdf.SetX(120)
+		pdf.CellFormat(0, 4, cityLine, "", 1, "L", false, 0, "")
+	}
+	if billTo.Country != "" {
+		pdf.SetX(120)
+		pdf.CellFormat(0, 4, billTo.Country, "", 1, "L", false, 0, "")
+	}
+	if billTo.Email != "" {
+		pdf.SetX(120)
+		pdf.SetFont("Helvetica", "", 8)
+		pdf.SetTextColor(100, 100, 100)
+		pdf.CellFormat(0, 4, billTo.Email, "", 1, "L", false, 0, "")
+	}
 
 	bottomRight := pdf.GetY()
 	if bottomLeft > bottomRight {
