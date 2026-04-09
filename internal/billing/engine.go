@@ -58,6 +58,7 @@ type PricingReader interface {
 type InvoiceWriter interface {
 	CreateInvoice(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error)
 	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
+	ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 }
 
 func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader) *Engine {
@@ -257,13 +258,17 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		credited, err := e.credits.ApplyToInvoice(ctx, sub.TenantID, sub.CustomerID, inv.ID, subtotal)
 		if err != nil {
 			slog.Warn("failed to apply credits", "invoice_id", inv.ID, "error", err)
-			// Non-fatal: invoice still valid, just won't have credits applied
 		} else if credited > 0 {
-			slog.Info("credits applied to invoice",
-				"invoice_id", inv.ID,
-				"credited_cents", credited,
-				"remaining_due", subtotal-credited,
-			)
+			// Actually reduce the invoice amount_due
+			if _, err := e.invoices.ApplyCreditAmount(ctx, sub.TenantID, inv.ID, credited); err != nil {
+				slog.Warn("failed to reduce invoice amount_due", "invoice_id", inv.ID, "error", err)
+			} else {
+				slog.Info("credits applied to invoice",
+					"invoice_id", inv.ID,
+					"credited_cents", credited,
+					"remaining_due", subtotal-credited,
+				)
+			}
 		}
 	}
 
