@@ -232,6 +232,20 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		}
 	}
 
+	// Prepaid credits (calculated: total - amount_due - credit_notes)
+	var creditNotesTotal int64
+	for _, cn := range creditNotes {
+		creditNotesTotal += cn.Amount
+	}
+	prepaidCredits := inv.TotalAmountCents - inv.AmountDueCents - creditNotesTotal
+	if prepaidCredits > 0 {
+		pdf.SetFont("Helvetica", "", 9)
+		pdf.SetTextColor(0, 128, 80) // green
+		pdf.SetX(totalsX)
+		pdf.CellFormat(totalsW, 6, "Prepaid credits", "", 0, "L", false, 0, "")
+		pdf.CellFormat(valW, 6, "-"+formatCents(prepaidCredits), "", 1, "R", false, 0, "")
+	}
+
 	// Discount
 	if inv.DiscountCents > 0 {
 		pdf.SetFont("Helvetica", "", 10)
