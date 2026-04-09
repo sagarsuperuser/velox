@@ -83,6 +83,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 		Charger:        stripeAdapter,
 		PaymentSetups:  customerStore,
 		CreditReverser: creditSvc,
+		PaymentCancel:  stripeClient,
 	})
 	checkoutH := payment.NewCheckoutHandler(stripeKey,
 		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")),
