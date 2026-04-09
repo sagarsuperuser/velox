@@ -21,7 +21,7 @@ export function CustomerDetailPage() {
   const [balance, setBalance] = useState(0)
   const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null)
   const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null)
-  const [meterMap, setMeterMap] = useState<Record<string, string>>({})
+  const [meterMap, setMeterMap] = useState<Record<string, { name: string; unit: string }>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [plans, setPlans] = useState<Plan[]>([])
@@ -52,8 +52,8 @@ export function CustomerDetailPage() {
       setBalance(b.balance_cents)
       setBillingProfile(bp)
       setUsageSummary(us)
-      const mm: Record<string, string> = {}
-      metersRes.data.forEach(m => { mm[m.id] = m.name; mm[m.key] = m.name })
+      const mm: Record<string, { name: string; unit: string }> = {}
+      metersRes.data.forEach(m => { mm[m.id] = { name: m.name, unit: m.unit }; mm[m.key] = { name: m.name, unit: m.unit } })
       setMeterMap(mm)
       setPlans(plansRes.data.filter(p => p.status === 'active'))
       setAllSubs(subsRes.data.filter(s => s.customer_id === id))
@@ -263,19 +263,31 @@ export function CustomerDetailPage() {
 
       {/* Usage This Period */}
       <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Usage This Period</h2>
+        <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Usage This Period</h2>
+            {(() => {
+              const activeSub = allSubs.find(s => s.status === 'active' && s.current_billing_period_start && s.current_billing_period_end)
+              return activeSub ? (
+                <p className="text-sm text-gray-500 mt-0.5">{formatDate(activeSub.current_billing_period_start!)} — {formatDate(activeSub.current_billing_period_end!)}</p>
+              ) : null
+            })()}
+          </div>
         </div>
         {usageSummary && Object.keys(usageSummary.meters).length > 0 ? (
-          <div className="px-6 py-4">
-            <div className="space-y-2">
-              {Object.entries(usageSummary.meters).map(([meter, qty]) => (
-                <div key={meter} className="flex items-center justify-between py-1">
-                  <span className="text-sm text-gray-700">{meterMap[meter] || meter}</span>
-                  <span className="text-sm font-medium text-gray-900">{qty.toLocaleString()}</span>
+          <div className="divide-y divide-gray-50">
+            {Object.entries(usageSummary.meters).map(([meter, qty]) => {
+              const m = meterMap[meter]
+              return (
+                <div key={meter} className="flex items-center justify-between px-6 py-3">
+                  <div>
+                    <p className="text-sm text-gray-900">{m?.name || meter}</p>
+                    {m?.unit && <p className="text-sm text-gray-500">{m.unit}</p>}
+                  </div>
+                  <span className="text-sm font-semibold text-gray-900 tabular-nums">{qty.toLocaleString()}</span>
                 </div>
-              ))}
-            </div>
+              )
+            })}
           </div>
         ) : (
           <EmptyState title="No usage recorded" description="Usage events will appear here once ingested" />
