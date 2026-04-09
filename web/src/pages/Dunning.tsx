@@ -225,7 +225,7 @@ function RunsTab() {
                   </td>
                   <td className="px-6 py-3"><Badge status={run.state} /></td>
                   <td className="px-6 py-3 text-sm text-gray-500">
-                    {run.attempt_count > 0 ? `${run.attempt_count} of 3` : 'Pending'}
+                    {run.attempt_count} of 3
                   </td>
                   <td className="px-6 py-3 text-sm text-gray-500">
                     {run.state === 'resolved' || run.state === 'exhausted'
