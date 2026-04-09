@@ -6,6 +6,7 @@ import (
 
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/paymentintent"
+	"github.com/stripe/stripe-go/v82/paymentmethod"
 )
 
 // LiveStripeClient wraps the Stripe SDK for real PaymentIntent operations.
@@ -31,20 +32,31 @@ func (c *LiveStripeClient) CreatePaymentIntent(_ context.Context, params Payment
 		metadata[k] = v
 	}
 
+	// Look up the customer's payment methods to find one to charge
+	pmIter := paymentmethod.List(&stripe.PaymentMethodListParams{
+		Customer: stripe.String(params.CustomerID),
+		Type:     stripe.String("card"),
+	})
+	var defaultPM string
+	if pmIter.Next() {
+		defaultPM = pmIter.PaymentMethod().ID
+	}
+	if defaultPM == "" {
+		return PaymentIntentResult{}, fmt.Errorf("customer has no payment method on file")
+	}
+
 	pi, err := paymentintent.New(&stripe.PaymentIntentParams{
-		Amount:     stripe.Int64(params.AmountCents),
-		Currency:   stripe.String(params.Currency),
-		Customer:   stripe.String(params.CustomerID),
-		Confirm:    stripe.Bool(true),
-		OffSession: stripe.Bool(true),
+		Amount:        stripe.Int64(params.AmountCents),
+		Currency:      stripe.String(params.Currency),
+		Customer:      stripe.String(params.CustomerID),
+		PaymentMethod: stripe.String(defaultPM),
+		Confirm:       stripe.Bool(true),
+		OffSession:    stripe.Bool(true),
 		Params: stripe.Params{
 			IdempotencyKey: stripe.String(params.IdempotencyKey),
 			Metadata:       metadata,
 		},
-		Description:           stripe.String(params.Description),
-		AutomaticPaymentMethods: &stripe.PaymentIntentAutomaticPaymentMethodsParams{
-			Enabled: stripe.Bool(true),
-		},
+		Description: stripe.String(params.Description),
 	})
 	if err != nil {
 		return PaymentIntentResult{}, fmt.Errorf("stripe: %w", err)
