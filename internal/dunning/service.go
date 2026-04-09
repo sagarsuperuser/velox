@@ -43,15 +43,32 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 		return domain.InvoiceDunningRun{}, fmt.Errorf("dunning is disabled for this tenant")
 	}
 
-	// Schedule first retry based on policy
-	var nextActionAt *time.Time
+	// Schedule first retry based on policy (default: 24h, 72h, 168h)
+	defaultIntervals := []time.Duration{24 * time.Hour, 72 * time.Hour, 168 * time.Hour}
+	retryIntervals := defaultIntervals
 	if len(policy.RetrySchedule) > 0 {
-		d, err := time.ParseDuration(policy.RetrySchedule[0])
-		if err == nil {
-			t := time.Now().UTC().Add(d)
-			nextActionAt = &t
+		retryIntervals = nil
+		for _, s := range policy.RetrySchedule {
+			if d, err := time.ParseDuration(s); err == nil {
+				retryIntervals = append(retryIntervals, d)
+			}
+		}
+		if len(retryIntervals) == 0 {
+			retryIntervals = defaultIntervals
 		}
 	}
+
+	// Apply grace period before first retry
+	firstRetryDelay := retryIntervals[0]
+	if policy.GracePeriodDays > 0 {
+		graceDelay := time.Duration(policy.GracePeriodDays) * 24 * time.Hour
+		if graceDelay > firstRetryDelay {
+			firstRetryDelay = graceDelay
+		}
+	}
+
+	t := time.Now().UTC().Add(firstRetryDelay)
+	nextActionAt := &t
 
 	run, err := s.store.CreateRun(ctx, tenantID, domain.InvoiceDunningRun{
 		InvoiceID:    invoiceID,
