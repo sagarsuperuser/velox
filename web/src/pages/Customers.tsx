@@ -4,7 +4,7 @@ import { api, formatDate, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
-import { FormField } from '@/components/FormField'
+import { FormField, FormSelect } from '@/components/FormField'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
@@ -22,6 +22,7 @@ export function CustomersPage() {
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ external_id: '', display_name: '', email: '' })
   const [error, setError] = useState('')
+  const [filterStatus, setFilterStatus] = useState('')
   const [page, setPage] = useState(1)
   const pageSize = 25
   const toast = useToast()
@@ -92,6 +93,14 @@ export function CustomersPage() {
             </button>
           )}
           {customers.length > 0 && (
+            <FormSelect label="" value={filterStatus} placeholder="All statuses"
+              onChange={e => { setFilterStatus(e.target.value); setPage(1) }}
+              options={[
+                { value: 'active', label: 'Active' },
+                { value: 'inactive', label: 'Inactive' },
+              ]} />
+          )}
+          {customers.length > 0 && (
             <button
               onClick={() => setShowCreate(true)}
               className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors"
@@ -133,7 +142,8 @@ export function CustomersPage() {
           </div>
         ) : (
           (() => {
-            const filtered = customers.filter(c => {
+            const statusFiltered = filterStatus ? customers.filter(c => c.status === filterStatus) : customers
+            const filtered = statusFiltered.filter(c => {
               if (!search) return true
               const q = search.toLowerCase()
               return c.display_name.toLowerCase().includes(q) ||

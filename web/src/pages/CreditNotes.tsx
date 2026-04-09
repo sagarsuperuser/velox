@@ -12,6 +12,7 @@ import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus } from 'lucide-react'
+import { Pagination } from '@/components/Pagination'
 
 export function CreditNotesPage() {
   const [notes, setNotes] = useState<CreditNote[]>([])
@@ -21,6 +22,9 @@ export function CreditNotesPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [confirmIssue, setConfirmIssue] = useState<string | null>(null)
   const [confirmVoid, setConfirmVoid] = useState<string | null>(null)
+  const [filterStatus, setFilterStatus] = useState('')
+  const [page, setPage] = useState(1)
+  const pageSize = 25
   const toast = useToast()
 
   const loadNotes = () => {
@@ -67,10 +71,19 @@ export function CreditNotesPage() {
           <h1 className="text-2xl font-semibold text-gray-900">Credit Notes</h1>
           <p className="text-sm text-gray-500 mt-1">Issue credits and refunds against invoices</p>
         </div>
-        <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
-          <Plus size={16} /> Create Credit Note
-        </button>
+        <div className="flex items-center gap-2">
+          <FormSelect label="" value={filterStatus} placeholder="All statuses"
+            onChange={e => { setFilterStatus(e.target.value); setPage(1) }}
+            options={[
+              { value: 'draft', label: 'Draft' },
+              { value: 'issued', label: 'Issued' },
+              { value: 'voided', label: 'Voided' },
+            ]} />
+          <button onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
+            <Plus size={16} /> Create Credit Note
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl shadow-card mt-6">
@@ -78,45 +91,58 @@ export function CreditNotesPage() {
         : loading ? <LoadingSkeleton rows={5} columns={6} />
         : notes.length === 0 ? <EmptyState title="No credit notes" description="Credit notes will appear here once created" />
         : (
-          <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100 bg-gray-50">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Number</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Invoice</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Reason</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Total</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Date</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {notes.map(note => (
-                <tr key={note.id} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900">{note.credit_note_number}</td>
-                  <td className="px-6 py-3 text-sm">
-                    <Link to={`/invoices/${note.invoice_id}`} className="text-velox-600 hover:underline">
-                      {invoiceMap[note.invoice_id]?.invoice_number || note.invoice_id.slice(0, 8) + '...'}
-                    </Link>
-                  </td>
-                  <td className="px-6 py-3"><Badge status={note.status} /></td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{note.reason.length > 30 ? note.reason.slice(0, 30) + '...' : note.reason}</td>
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">{formatCents(note.total_cents)}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{formatDate(note.created_at)}</td>
-                  <td className="px-6 py-3 text-right space-x-2">
-                    {note.status === 'draft' && (
-                      <button onClick={() => setConfirmIssue(note.id)} className="text-xs font-medium text-velox-600 hover:text-velox-700 bg-velox-50 hover:bg-velox-100 px-2.5 py-1 rounded-md transition-colors">Issue</button>
-                    )}
-                    {note.status !== 'voided' && (
-                      <button onClick={() => setConfirmVoid(note.id)} className="text-xs font-medium text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-md transition-colors">Void</button>
-                    )}
-                  </td>
+          (() => {
+            const filtered = filterStatus ? notes.filter(n => n.status === filterStatus) : notes
+            const totalPages = Math.ceil(filtered.length / pageSize)
+            const currentPage = Math.min(page, totalPages || 1)
+            const paginated = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+            return filtered.length === 0 ? (
+              <p className="px-6 py-8 text-sm text-gray-400 text-center">No credit notes match the selected filter</p>
+            ) : (
+            <>
+            <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-100 bg-gray-50">
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Number</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Invoice</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Reason</th>
+                  <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Total</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Date</th>
+                  <th className="text-right text-xs font-medium text-gray-500 px-6 py-3"></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {paginated.map(note => (
+                  <tr key={note.id} className="hover:bg-gray-50/50 transition-colors">
+                    <td className="px-6 py-3 text-sm font-medium text-gray-900">{note.credit_note_number}</td>
+                    <td className="px-6 py-3 text-sm">
+                      <Link to={`/invoices/${note.invoice_id}`} className="text-velox-600 hover:underline">
+                        {invoiceMap[note.invoice_id]?.invoice_number || note.invoice_id.slice(0, 8) + '...'}
+                      </Link>
+                    </td>
+                    <td className="px-6 py-3"><Badge status={note.status} /></td>
+                    <td className="px-6 py-3 text-sm text-gray-500">{note.reason.length > 30 ? note.reason.slice(0, 30) + '...' : note.reason}</td>
+                    <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">{formatCents(note.total_cents)}</td>
+                    <td className="px-6 py-3 text-sm text-gray-500">{formatDate(note.created_at)}</td>
+                    <td className="px-6 py-3 text-right space-x-2">
+                      {note.status === 'draft' && (
+                        <button onClick={() => setConfirmIssue(note.id)} className="text-xs font-medium text-velox-600 hover:text-velox-700 bg-velox-50 hover:bg-velox-100 px-2.5 py-1 rounded-md transition-colors">Issue</button>
+                      )}
+                      {note.status !== 'voided' && (
+                        <button onClick={() => setConfirmVoid(note.id)} className="text-xs font-medium text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-md transition-colors">Void</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            </div>
+            <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} />
+            </>
+            )
+          })()
         )}
       </div>
 

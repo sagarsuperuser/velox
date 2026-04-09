@@ -9,6 +9,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
+import { Pagination } from '@/components/Pagination'
 
 export function DunningPage() {
   const [tab, setTab] = useState<'policy' | 'runs'>('policy')
@@ -157,6 +158,9 @@ function RunsTab() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [resolveTarget, setResolveTarget] = useState<DunningRun | null>(null)
+  const [filterStatus, setFilterStatus] = useState('')
+  const [page, setPage] = useState(1)
+  const pageSize = 25
   const toast = useToast()
   const navigate = useNavigate()
 
@@ -183,73 +187,98 @@ function RunsTab() {
 
   return (
     <>
+      {runs.length > 0 && (
+        <div className="flex items-center gap-2 mt-4">
+          <FormSelect label="" value={filterStatus} placeholder="All states"
+            onChange={e => { setFilterStatus(e.target.value); setPage(1) }}
+            options={[
+              { value: 'scheduled', label: 'Scheduled' },
+              { value: 'escalated', label: 'Escalated' },
+              { value: 'resolved', label: 'Resolved' },
+              { value: 'exhausted', label: 'Exhausted' },
+            ]} />
+        </div>
+      )}
       <div className="bg-white rounded-xl shadow-card mt-4">
         {error ? <ErrorState message={error} onRetry={loadRuns} />
         : loading ? <LoadingSkeleton rows={5} columns={6} />
         : runs.length === 0 ? <EmptyState title="No dunning runs" description="Dunning runs appear when payment retries are triggered" />
         : (
-          <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100 bg-gray-50">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Invoice</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Customer</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Amount Due</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">State</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Retries</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Next Retry</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Created</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {runs.map(run => {
-                const inv = invoiceMap[run.invoice_id]
-                const cust = customerMap[run.customer_id]
-                return (
-                <tr key={run.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
-                  const target = e.target as HTMLElement
-                  if (target.closest('button, a, input, select')) return
-                  navigate(`/invoices/${run.invoice_id}`)
-                }}>
-                  <td className="px-6 py-3 text-sm">
-                    <Link to={`/invoices/${run.invoice_id}`} className="font-medium text-gray-900 group-hover:text-velox-600 transition-colors">
-                      {inv?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
-                    </Link>
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-500">
-                    {cust?.display_name || run.customer_id.slice(0, 8) + '...'}
-                  </td>
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right tabular-nums">
-                    {inv ? formatCents(inv.amount_due_cents) : '—'}
-                  </td>
-                  <td className="px-6 py-3">
-                    <Badge status={run.state} />
-                    {run.resolution && (
-                      <span className="ml-2"><Badge status={run.resolution} /></span>
-                    )}
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-500">
-                    {run.attempt_count} of 3
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-500">
-                    {run.state === 'resolved' || run.state === 'exhausted' || run.state === 'escalated'
-                      ? '—'
-                      : run.next_action_at ? formatDateTime(run.next_action_at) : '—'}
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{formatDateTime(run.created_at)}</td>
-                  <td className="px-6 py-3 text-right">
-                    {run.state !== 'resolved' && run.state !== 'exhausted' && (
-                      <button onClick={() => setResolveTarget(run)}
-                        className="text-xs font-medium text-velox-600 hover:text-velox-700 bg-velox-50 hover:bg-velox-100 px-2.5 py-1 rounded-md transition-colors">Resolve</button>
-                    )}
-                  </td>
+          (() => {
+            const filtered = filterStatus ? runs.filter(r => r.state === filterStatus) : runs
+            const totalPages = Math.ceil(filtered.length / pageSize)
+            const currentPage = Math.min(page, totalPages || 1)
+            const paginated = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+            return filtered.length === 0 ? (
+              <p className="px-6 py-8 text-sm text-gray-400 text-center">No dunning runs match the selected filter</p>
+            ) : (
+            <>
+            <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-100 bg-gray-50">
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Invoice</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Customer</th>
+                  <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Amount Due</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">State</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Retries</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Next Retry</th>
+                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Created</th>
+                  <th className="text-right text-xs font-medium text-gray-500 px-6 py-3"></th>
                 </tr>
-                )
-              })}
-            </tbody>
-          </table>
-          </div>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {paginated.map(run => {
+                  const inv = invoiceMap[run.invoice_id]
+                  const cust = customerMap[run.customer_id]
+                  return (
+                  <tr key={run.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+                    const target = e.target as HTMLElement
+                    if (target.closest('button, a, input, select')) return
+                    navigate(`/invoices/${run.invoice_id}`)
+                  }}>
+                    <td className="px-6 py-3 text-sm">
+                      <Link to={`/invoices/${run.invoice_id}`} className="font-medium text-gray-900 group-hover:text-velox-600 transition-colors">
+                        {inv?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
+                      </Link>
+                    </td>
+                    <td className="px-6 py-3 text-sm text-gray-500">
+                      {cust?.display_name || run.customer_id.slice(0, 8) + '...'}
+                    </td>
+                    <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right tabular-nums">
+                      {inv ? formatCents(inv.amount_due_cents) : '\u2014'}
+                    </td>
+                    <td className="px-6 py-3">
+                      <Badge status={run.state} />
+                      {run.resolution && (
+                        <span className="ml-2"><Badge status={run.resolution} /></span>
+                      )}
+                    </td>
+                    <td className="px-6 py-3 text-sm text-gray-500">
+                      {run.attempt_count} of 3
+                    </td>
+                    <td className="px-6 py-3 text-sm text-gray-500">
+                      {run.state === 'resolved' || run.state === 'exhausted' || run.state === 'escalated'
+                        ? '\u2014'
+                        : run.next_action_at ? formatDateTime(run.next_action_at) : '\u2014'}
+                    </td>
+                    <td className="px-6 py-3 text-sm text-gray-500">{formatDateTime(run.created_at)}</td>
+                    <td className="px-6 py-3 text-right">
+                      {run.state !== 'resolved' && run.state !== 'exhausted' && (
+                        <button onClick={() => setResolveTarget(run)}
+                          className="text-xs font-medium text-velox-600 hover:text-velox-700 bg-velox-50 hover:bg-velox-100 px-2.5 py-1 rounded-md transition-colors">Resolve</button>
+                      )}
+                    </td>
+                  </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            </div>
+            <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} />
+            </>
+            )
+          })()
         )}
       </div>
 

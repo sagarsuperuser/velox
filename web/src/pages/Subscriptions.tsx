@@ -22,6 +22,7 @@ export function SubscriptionsPage() {
   const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [plans, setPlans] = useState<Plan[]>([])
   const [search, setSearch] = useState('')
+  const [filterStatus, setFilterStatus] = useState('')
   const [page, setPage] = useState(1)
   const pageSize = 25
   const toast = useToast()
@@ -52,12 +53,24 @@ export function SubscriptionsPage() {
           <h1 className="text-2xl font-semibold text-gray-900">Subscriptions</h1>
           <p className="text-sm text-gray-500 mt-1">{subs.length} total</p>
         </div>
-        {subs.length > 0 && (
-          <button onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
-            <Plus size={16} /> Add Subscription
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {subs.length > 0 && (
+            <FormSelect label="" value={filterStatus} placeholder="All statuses"
+              onChange={e => { setFilterStatus(e.target.value); setPage(1) }}
+              options={[
+                { value: 'active', label: 'Active' },
+                { value: 'paused', label: 'Paused' },
+                { value: 'canceled', label: 'Canceled' },
+                { value: 'draft', label: 'Draft' },
+              ]} />
+          )}
+          {subs.length > 0 && (
+            <button onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
+              <Plus size={16} /> Add Subscription
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Search */}
@@ -90,7 +103,8 @@ export function SubscriptionsPage() {
           </div>
         ) : (
           (() => {
-            const filtered = subs.filter(sub => {
+            const statusFiltered = filterStatus ? subs.filter(sub => sub.status === filterStatus) : subs
+            const filtered = statusFiltered.filter(sub => {
               if (!search) return true
               const q = search.toLowerCase()
               return sub.display_name.toLowerCase().includes(q) || sub.code.toLowerCase().includes(q)
