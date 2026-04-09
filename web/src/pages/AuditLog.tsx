@@ -6,7 +6,6 @@ import { FormSelect } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
 import { Pagination } from '@/components/Pagination'
 
 function describeAction(entry: AuditEntry): string {
@@ -42,8 +41,6 @@ export function AuditLogPage() {
   const [action, setAction] = useState('')
   const [page, setPage] = useState(1)
   const pageSize = 25
-  const toast = useToast()
-
   const loadEntries = () => {
     setLoading(true)
     setError(null)
@@ -122,31 +119,22 @@ export function AuditLogPage() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Timestamp</th>
+                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3 w-44">Timestamp</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Event</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Actor</th>
+                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3 w-24">Actor</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {paginated.map(entry => (
-                <tr key={entry.id} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="px-6 py-3 text-sm text-gray-500 whitespace-nowrap">{formatDateTime(entry.created_at)}</td>
+                <tr key={entry.id} className="hover:bg-gray-50/50 transition-colors group">
+                  <td className="px-6 py-3 text-sm text-gray-500 whitespace-nowrap align-top">{formatDateTime(entry.created_at)}</td>
                   <td className="px-6 py-3">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-start gap-2.5">
                       <Badge status={entry.action} />
-                      <div className="min-w-0">
-                        <p className="text-sm text-gray-900">{describeAction(entry)}</p>
-                        {entry.resource_id && (
-                          <p className="text-xs text-gray-400 font-mono truncate cursor-pointer hover:text-gray-600"
-                            title="Click to copy ID"
-                            onClick={() => { navigator.clipboard.writeText(entry.resource_id); toast.success('Copied') }}>
-                            {entry.resource_id}
-                          </p>
-                        )}
-                      </div>
+                      <span className="text-sm text-gray-900">{describeAction(entry)}</span>
                     </div>
                   </td>
-                  <td className="px-6 py-3 text-sm text-gray-500">
+                  <td className="px-6 py-3 text-sm text-gray-500 text-right align-top">
                     {entry.actor_type === 'api_key' ? 'API Key' : entry.actor_type === 'system' ? 'System' : entry.actor_type}
                   </td>
                 </tr>
