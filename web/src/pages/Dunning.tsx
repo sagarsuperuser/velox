@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { api, formatDate, type DunningPolicy, type DunningRun, type Invoice } from '@/lib/api'
+import { api, formatDateTime, formatCents, type DunningPolicy, type DunningRun, type Invoice, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
@@ -153,6 +153,7 @@ function PolicyTab() {
 function RunsTab() {
   const [runs, setRuns] = useState<DunningRun[]>([])
   const [invoiceMap, setInvoiceMap] = useState<Record<string, Invoice>>({})
+  const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [resolveTarget, setResolveTarget] = useState<DunningRun | null>(null)
@@ -165,11 +166,15 @@ function RunsTab() {
     Promise.all([
       api.listDunningRuns(),
       api.listInvoices().catch(() => ({ data: [] as Invoice[], total: 0 })),
-    ]).then(([runsRes, invoicesRes]) => {
+      api.listCustomers().catch(() => ({ data: [] as Customer[], total: 0 })),
+    ]).then(([runsRes, invoicesRes, custRes]) => {
       setRuns(runsRes.data || [])
-      const map: Record<string, Invoice> = {}
-      invoicesRes.data.forEach(inv => { map[inv.id] = inv })
-      setInvoiceMap(map)
+      const iMap: Record<string, Invoice> = {}
+      invoicesRes.data.forEach(inv => { iMap[inv.id] = inv })
+      setInvoiceMap(iMap)
+      const cMap: Record<string, Customer> = {}
+      custRes.data.forEach(c => { cMap[c.id] = c })
+      setCustomerMap(cMap)
       setLoading(false)
     }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load dunning runs'); setRuns([]); setLoading(false) })
   }
@@ -187,32 +192,47 @@ function RunsTab() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Invoice ID</th>
+                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Invoice</th>
+                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Customer</th>
+                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Amount Due</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">State</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Attempts</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Next Action</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Resolution</th>
+                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Retries</th>
+                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Next Retry</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Created</th>
                 <th className="text-right text-xs font-medium text-gray-500 px-6 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {runs.map(run => (
+              {runs.map(run => {
+                const inv = invoiceMap[run.invoice_id]
+                const cust = customerMap[run.customer_id]
+                return (
                 <tr key={run.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
                   const target = e.target as HTMLElement
                   if (target.closest('button, a, input, select')) return
                   navigate(`/invoices/${run.invoice_id}`)
                 }}>
                   <td className="px-6 py-3 text-sm">
-                    <Link to={`/invoices/${run.invoice_id}`} className="text-velox-600 group-hover:text-velox-600 transition-colors hover:underline">
-                      {invoiceMap[run.invoice_id]?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
+                    <Link to={`/invoices/${run.invoice_id}`} className="font-medium text-gray-900 group-hover:text-velox-600 transition-colors">
+                      {inv?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
                     </Link>
                   </td>
+                  <td className="px-6 py-3 text-sm text-gray-500">
+                    {cust?.display_name || run.customer_id.slice(0, 8) + '...'}
+                  </td>
+                  <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right tabular-nums">
+                    {inv ? formatCents(inv.amount_due_cents) : '—'}
+                  </td>
                   <td className="px-6 py-3"><Badge status={run.state} /></td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{run.attempt_count}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{run.next_action_at ? formatDate(run.next_action_at) : '—'}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{run.resolution || '—'}</td>
-                  <td className="px-6 py-3 text-sm text-gray-400">{formatDate(run.created_at)}</td>
+                  <td className="px-6 py-3 text-sm text-gray-500">
+                    {run.attempt_count > 0 ? `${run.attempt_count} of 3` : 'Pending'}
+                  </td>
+                  <td className="px-6 py-3 text-sm text-gray-500">
+                    {run.state === 'resolved' || run.state === 'exhausted'
+                      ? (run.resolution ? <Badge status={run.resolution} /> : '—')
+                      : run.next_action_at ? formatDateTime(run.next_action_at) : 'Pending'}
+                  </td>
+                  <td className="px-6 py-3 text-sm text-gray-500">{formatDateTime(run.created_at)}</td>
                   <td className="px-6 py-3 text-right">
                     {run.state !== 'resolved' && run.state !== 'exhausted' && (
                       <button onClick={() => setResolveTarget(run)}
@@ -220,7 +240,8 @@ function RunsTab() {
                     )}
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
           </div>
