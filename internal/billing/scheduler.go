@@ -6,23 +6,33 @@ import (
 	"time"
 )
 
-// Scheduler runs the billing cycle engine on a periodic interval.
-// It's a simple background goroutine — no Temporal, no cron library.
-// For a billing platform, predictable timing matters more than fancy scheduling.
+// DunningProcessor processes due dunning runs.
+type DunningProcessor interface {
+	ProcessDueRuns(ctx context.Context, tenantID string, limit int) (int, []error)
+}
+
+// TenantLister lists all tenant IDs for background processing.
+type TenantLister interface {
+	ListTenantIDs(ctx context.Context) ([]string, error)
+}
+
+// Scheduler runs the billing cycle engine and dunning processor on a periodic interval.
 type Scheduler struct {
 	engine   *Engine
+	dunning  DunningProcessor
+	tenants  TenantLister
 	interval time.Duration
 	batch    int
 }
 
-func NewScheduler(engine *Engine, interval time.Duration, batch int) *Scheduler {
+func NewScheduler(engine *Engine, interval time.Duration, batch int, dunning DunningProcessor, tenants TenantLister) *Scheduler {
 	if interval <= 0 {
 		interval = 1 * time.Hour
 	}
 	if batch <= 0 {
 		batch = 50
 	}
-	return &Scheduler{engine: engine, interval: interval, batch: batch}
+	return &Scheduler{engine: engine, dunning: dunning, tenants: tenants, interval: interval, batch: batch}
 }
 
 // Start runs the scheduler in a background goroutine.
@@ -51,6 +61,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 func (s *Scheduler) runOnce(ctx context.Context) {
 	start := time.Now()
 
+	// 1. Billing cycle — generate invoices
 	generated, errs := s.engine.RunCycle(ctx, s.batch)
 
 	duration := time.Since(start)
@@ -69,5 +80,24 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			"duration_ms", duration.Milliseconds(),
 		)
 	}
-	// If generated == 0 and no errors, stay silent — nothing to do
+
+	// 2. Dunning — process due retry runs
+	if s.dunning != nil && s.tenants != nil {
+		tenantIDs, err := s.tenants.ListTenantIDs(ctx)
+		if err != nil {
+			slog.Error("dunning: failed to list tenants", "error", err)
+			return
+		}
+		for _, tid := range tenantIDs {
+			processed, dErrs := s.dunning.ProcessDueRuns(ctx, tid, 20)
+			if len(dErrs) > 0 {
+				for _, e := range dErrs {
+					slog.Error("dunning error", "tenant_id", tid, "error", e)
+				}
+			}
+			if processed > 0 {
+				slog.Info("dunning runs processed", "tenant_id", tid, "processed", processed)
+			}
+		}
+	}
 }

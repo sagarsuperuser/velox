@@ -31,6 +31,23 @@ func NewSettingsStore(db *postgres.DB) *SettingsStore {
 	return &SettingsStore{db: db}
 }
 
+func (s *SettingsStore) ListTenantIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.Pool.QueryContext(ctx, `SELECT id FROM tenants`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.TenantSettings, error) {
 	var ts domain.TenantSettings
 	err := s.db.Pool.QueryRowContext(ctx, `

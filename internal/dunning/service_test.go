@@ -118,6 +118,12 @@ type noopRetrier struct{}
 
 func (n *noopRetrier) RetryPayment(_ context.Context, _, _, _ string) error { return nil }
 
+type failingRetrier struct{}
+
+func (f *failingRetrier) RetryPayment(_ context.Context, _, _, _ string) error {
+	return fmt.Errorf("payment declined")
+}
+
 func TestStartDunning(t *testing.T) {
 	store := newMemStore()
 	svc := NewService(store, &noopRetrier{})
@@ -182,7 +188,7 @@ func TestStartDunning_DisabledPolicy(t *testing.T) {
 
 func TestProcessDueRuns(t *testing.T) {
 	store := newMemStore()
-	svc := NewService(store, &noopRetrier{})
+	svc := NewService(store, &failingRetrier{}) // Use failing retrier
 	ctx := context.Background()
 
 	// Start a run, then make it due
@@ -199,13 +205,13 @@ func TestProcessDueRuns(t *testing.T) {
 		t.Errorf("processed: got %d, want 1", processed)
 	}
 
-	// Verify run was updated
+	// Verify run was updated — retry failed so state stays scheduled
 	updated := store.runs[run.ID]
 	if updated.AttemptCount != 1 {
 		t.Errorf("attempt_count: got %d, want 1", updated.AttemptCount)
 	}
-	if updated.State != domain.DunningAwaitingResult {
-		t.Errorf("state: got %q, want awaiting_retry_result", updated.State)
+	if updated.State != domain.DunningScheduled {
+		t.Errorf("state: got %q, want scheduled", updated.State)
 	}
 }
 
