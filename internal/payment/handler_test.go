@@ -68,7 +68,7 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 
 	webhooks := newMockWebhookStoreHandler()
 
-	stripeAdapter := NewStripe(nil, invoices, webhooks)
+	stripeAdapter := NewStripe(nil, invoices, webhooks, nil)
 	handler := NewHandler(stripeAdapter, "") // No signature verification in test
 
 	event := map[string]any{
@@ -115,7 +115,7 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 }
 
 func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
-	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler())
+	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
 	handler := NewHandler(stripeAdapter, "")
 
 	event := map[string]any{
@@ -148,7 +148,7 @@ func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 }
 
 func TestWebhookHandler_SignatureRequired(t *testing.T) {
-	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler())
+	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
 	handler := NewHandler(stripeAdapter, "whsec_real_secret")
 
 	req := httptest.NewRequest("POST", "/stripe", strings.NewReader(`{"id":"evt_1"}`))

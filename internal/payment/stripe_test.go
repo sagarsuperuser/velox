@@ -115,7 +115,7 @@ func TestChargeInvoice_Success(t *testing.T) {
 	}
 	invoices.invoices["inv_1"] = inv
 
-	stripe := NewStripe(client, invoices, webhooks)
+	stripe := NewStripe(client, invoices, webhooks, nil)
 	result, err := stripe.ChargeInvoice(context.Background(), "t1", inv, "cus_stripe_abc")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -145,7 +145,7 @@ func TestChargeInvoice_Success(t *testing.T) {
 }
 
 func TestChargeInvoice_NotFinalized(t *testing.T) {
-	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore())
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
 
 	inv := domain.Invoice{Status: domain.InvoiceDraft, AmountDueCents: 100}
 	_, err := stripe.ChargeInvoice(context.Background(), "t1", inv, "cus_stripe")
@@ -155,7 +155,7 @@ func TestChargeInvoice_NotFinalized(t *testing.T) {
 }
 
 func TestChargeInvoice_ZeroAmount(t *testing.T) {
-	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore())
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
 
 	inv := domain.Invoice{Status: domain.InvoiceFinalized, AmountDueCents: 0}
 	_, err := stripe.ChargeInvoice(context.Background(), "t1", inv, "cus_stripe")
@@ -172,7 +172,7 @@ func TestChargeInvoice_StripeFailure(t *testing.T) {
 		AmountDueCents: 5000, Currency: "USD",
 	}
 
-	stripe := NewStripe(client, invoices, newMockWebhookStore())
+	stripe := NewStripe(client, invoices, newMockWebhookStore(), nil)
 	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe")
 	if err == nil {
 		t.Fatal("expected error when Stripe fails")
@@ -195,7 +195,7 @@ func TestHandleWebhook_PaymentSucceeded(t *testing.T) {
 	invoices.byPI["pi_abc"] = "inv_1"
 
 	webhooks := newMockWebhookStore()
-	stripe := NewStripe(&mockStripeClient{}, invoices, webhooks)
+	stripe := NewStripe(&mockStripeClient{}, invoices, webhooks, nil)
 
 	err := stripe.HandleWebhook(context.Background(), "t1", domain.StripeWebhookEvent{
 		StripeEventID:   "evt_001",
@@ -227,7 +227,7 @@ func TestHandleWebhook_PaymentFailed(t *testing.T) {
 	}
 	invoices.byPI["pi_def"] = "inv_1"
 
-	stripe := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore())
+	stripe := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil)
 
 	err := stripe.HandleWebhook(context.Background(), "t1", domain.StripeWebhookEvent{
 		StripeEventID:   "evt_002",
@@ -257,7 +257,7 @@ func TestHandleWebhook_DuplicateEvent(t *testing.T) {
 	invoices.byPI["pi_dup"] = "inv_1"
 
 	webhooks := newMockWebhookStore()
-	stripe := NewStripe(&mockStripeClient{}, invoices, webhooks)
+	stripe := NewStripe(&mockStripeClient{}, invoices, webhooks, nil)
 
 	event := domain.StripeWebhookEvent{
 		StripeEventID:   "evt_dup",
@@ -291,7 +291,7 @@ func TestHandleWebhook_DuplicateEvent(t *testing.T) {
 }
 
 func TestHandleWebhook_UnhandledEvent(t *testing.T) {
-	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore())
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
 
 	err := stripe.HandleWebhook(context.Background(), "t1", domain.StripeWebhookEvent{
 		StripeEventID: "evt_other",

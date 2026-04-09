@@ -67,8 +67,6 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	stripeRefunder := payment.NewStripeRefunder(stripeKey)
 	creditNoteSvc := creditnote.NewService(creditNoteStore, invoiceStore, stripeRefunder, &creditGrantAdapter{svc: creditSvc})
 	creditNoteH := creditnote.NewHandler(creditNoteSvc)
-
-	invoiceH := invoice.NewHandler(invoice.NewService(invoiceStore), customerStore, settingsStore, &creditNoteListerAdapter{svc: creditNoteSvc})
 	webhookOutH := webhook.NewHandler(webhook.NewService(webhook.NewPostgresStore(db), nil))
 	auditLogger := audit.NewLogger(db)
 	auditH := audit.NewHandler(auditLogger)
@@ -77,11 +75,18 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	dunningStore := dunning.NewPostgresStore(db)
 	dunningSvc := dunning.NewService(dunningStore, nil)
 	dunningH := dunning.NewHandler(dunningSvc)
-	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, dunningSvc)
+	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, customerStore, dunningSvc)
 	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
+
+	invoiceH := invoice.NewHandler(invoice.NewService(invoiceStore), customerStore, settingsStore, invoice.HandlerDeps{
+		CreditNotes:   &creditNoteListerAdapter{svc: creditNoteSvc},
+		Charger:       stripeAdapter,
+		PaymentSetups: customerStore,
+	})
 	checkoutH := payment.NewCheckoutHandler(stripeKey,
 		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")),
-		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")))
+		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")),
+		customerStore)
 
 	// Billing engine + manual trigger (with credit auto-application)
 	engine := billing.NewEngine(subStore, usageStore, pricingStore,

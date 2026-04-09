@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -31,17 +32,37 @@ type CreditNoteLister interface {
 	List(ctx context.Context, tenantID, invoiceID string) ([]domain.CreditNote, error)
 }
 
-type Handler struct {
-	svc         *Service
-	customers   CustomerGetter
-	settings    SettingsGetter
-	creditNotes CreditNoteLister
+// PaymentCharger creates a Stripe PaymentIntent for a finalized invoice.
+type PaymentCharger interface {
+	ChargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID string) (domain.Invoice, error)
 }
 
-func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter, creditNotes ...CreditNoteLister) *Handler {
+// PaymentSetupGetter checks if a customer has a payment method ready.
+type PaymentSetupGetter interface {
+	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
+}
+
+type Handler struct {
+	svc           *Service
+	customers     CustomerGetter
+	settings      SettingsGetter
+	creditNotes   CreditNoteLister
+	charger       PaymentCharger
+	paymentSetups PaymentSetupGetter
+}
+
+type HandlerDeps struct {
+	CreditNotes   CreditNoteLister
+	Charger       PaymentCharger
+	PaymentSetups PaymentSetupGetter
+}
+
+func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter, deps ...HandlerDeps) *Handler {
 	h := &Handler{svc: svc, customers: customers, settings: settings}
-	if len(creditNotes) > 0 {
-		h.creditNotes = creditNotes[0]
+	if len(deps) > 0 {
+		h.creditNotes = deps[0].CreditNotes
+		h.charger = deps[0].Charger
+		h.paymentSetups = deps[0].PaymentSetups
 	}
 	return h
 }
@@ -54,6 +75,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/{id}/pdf", h.downloadPDF)
 	r.Post("/{id}/finalize", h.finalize)
 	r.Post("/{id}/void", h.void)
+	r.Post("/{id}/collect", h.collectPayment)
 	return r
 }
 
@@ -140,6 +162,20 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-charge: if customer has a payment method, create PaymentIntent
+	if h.charger != nil && h.paymentSetups != nil && inv.AmountDueCents > 0 {
+		if ps, err := h.paymentSetups.GetPaymentSetup(r.Context(), tenantID, inv.CustomerID); err == nil &&
+			ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
+			if charged, err := h.charger.ChargeInvoice(r.Context(), tenantID, inv, ps.StripeCustomerID); err != nil {
+				slog.Warn("auto-charge failed, invoice stays finalized",
+					"invoice_id", inv.ID, "error", err)
+			} else {
+				inv = charged
+				slog.Info("auto-charge initiated", "invoice_id", inv.ID)
+			}
+		}
+	}
+
 	respond.JSON(w, r, http.StatusOK, inv)
 }
 
@@ -158,6 +194,53 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, inv)
+}
+
+func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	inv, err := h.svc.Get(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "invoice")
+		return
+	}
+	if err != nil {
+		respond.InternalError(w, r)
+		return
+	}
+
+	if inv.Status != domain.InvoiceFinalized {
+		respond.Validation(w, r, "can only collect payment on finalized invoices")
+		return
+	}
+	if inv.PaymentStatus == domain.PaymentSucceeded {
+		respond.Validation(w, r, "invoice is already paid")
+		return
+	}
+	if inv.AmountDueCents <= 0 {
+		respond.Validation(w, r, "invoice has no amount due")
+		return
+	}
+
+	if h.charger == nil || h.paymentSetups == nil {
+		respond.Validation(w, r, "payment provider not configured")
+		return
+	}
+
+	ps, err := h.paymentSetups.GetPaymentSetup(r.Context(), tenantID, inv.CustomerID)
+	if err != nil || ps.SetupStatus != domain.PaymentSetupReady || ps.StripeCustomerID == "" {
+		respond.Validation(w, r, "customer has no payment method set up")
+		return
+	}
+
+	charged, err := h.charger.ChargeInvoice(r.Context(), tenantID, inv, ps.StripeCustomerID)
+	if err != nil {
+		respond.Validation(w, r, fmt.Sprintf("payment failed: %s", err.Error()))
+		return
+	}
+
+	respond.JSON(w, r, http.StatusOK, charged)
 }
 
 func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
