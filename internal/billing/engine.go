@@ -31,7 +31,7 @@ type Engine struct {
 
 // CreditApplier applies customer credits to an invoice before charging.
 type CreditApplier interface {
-	ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64) (int64, error)
+	ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64, invoiceNumber ...string) (int64, error)
 }
 
 // SubscriptionReader reads subscription and plan data for billing.
@@ -255,7 +255,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 
 	// Apply customer credits before charging (reduces amount_due)
 	if e.credits != nil && subtotal > 0 {
-		credited, err := e.credits.ApplyToInvoice(ctx, sub.TenantID, sub.CustomerID, inv.ID, subtotal)
+		credited, err := e.credits.ApplyToInvoice(ctx, sub.TenantID, sub.CustomerID, inv.ID, subtotal, inv.InvoiceNumber)
 		if err != nil {
 			slog.Warn("failed to apply credits", "invoice_id", inv.ID, "error", err)
 		} else if credited > 0 {
