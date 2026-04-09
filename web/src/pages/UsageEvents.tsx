@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { api, formatDateTime, type UsageEvent, type Customer, type Meter } from '@/lib/api'
 import { Layout } from '@/components/Layout'
-import { FormSelect } from '@/components/FormField'
+import { FormField, FormSelect } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { Pagination } from '@/components/Pagination'
+import { downloadCSV } from '@/lib/csv'
+import { Download } from 'lucide-react'
 
 export function UsageEventsPage() {
   const [events, setEvents] = useState<UsageEvent[]>([])
@@ -19,6 +21,8 @@ export function UsageEventsPage() {
   // Filters
   const [filterCustomer, setFilterCustomer] = useState('')
   const [filterMeter, setFilterMeter] = useState('')
+  const [filterFrom, setFilterFrom] = useState('')
+  const [filterTo, setFilterTo] = useState('')
   const [page, setPage] = useState(1)
   const pageSize = 25
 
@@ -44,6 +48,8 @@ export function UsageEventsPage() {
     const parts: string[] = []
     if (filterCustomer) parts.push(`customer_id=${filterCustomer}`)
     if (filterMeter) parts.push(`meter_id=${filterMeter}`)
+    if (filterFrom) parts.push(`from=${new Date(filterFrom).toISOString()}`)
+    if (filterTo) parts.push(`to=${new Date(filterTo + 'T23:59:59').toISOString()}`)
     const params = parts.length > 0 ? parts.join('&') : undefined
     api.listUsageEvents(params)
       .then(res => { setEvents(res.data || []); setLoading(false) })
@@ -51,32 +57,59 @@ export function UsageEventsPage() {
   }
 
   useEffect(() => { loadRefs() }, [])
-  useEffect(() => { loadEvents() }, [filterCustomer, filterMeter])
+  useEffect(() => { loadEvents() }, [filterCustomer, filterMeter, filterFrom, filterTo])
 
   const totalQuantity = events.reduce((sum, e) => sum + e.quantity, 0)
 
   return (
     <Layout>
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Usage Events</h1>
-        <p className="text-sm text-gray-500 mt-1">View ingested usage events</p>
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Usage Events</h1>
+          <p className="text-sm text-gray-500 mt-1">View ingested usage events</p>
+        </div>
+        {events.length > 0 && (
+          <button
+            onClick={() => {
+              const rows = events.map(ev => [
+                formatDateTime(ev.timestamp),
+                customerMap[ev.customer_id]?.display_name || ev.customer_id,
+                meterMap[ev.meter_id]?.name || ev.meter_id,
+                String(ev.quantity),
+              ])
+              downloadCSV('usage-events.csv', ['Timestamp', 'Customer', 'Meter', 'Quantity'], rows)
+            }}
+            className="flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 shadow-sm transition-colors"
+          >
+            <Download size={16} />
+            Export CSV
+          </button>
+        )}
       </div>
 
       {/* Filter bar */}
       <div className="flex items-center gap-4 mt-6">
-        <div className="w-48">
+        <div className="w-44">
           <FormSelect value={filterCustomer}
             label=""
             onChange={e => { setFilterCustomer(e.target.value); setPage(1) }}
             placeholder="All customers"
             options={customers.map(c => ({ value: c.id, label: c.display_name }))} />
         </div>
-        <div className="w-48">
+        <div className="w-44">
           <FormSelect value={filterMeter}
             label=""
             onChange={e => { setFilterMeter(e.target.value); setPage(1) }}
             placeholder="All meters"
             options={meters.map(m => ({ value: m.id, label: m.name }))} />
+        </div>
+        <div className="w-36">
+          <FormField label="" type="date" value={filterFrom} placeholder="From"
+            onChange={e => { setFilterFrom(e.target.value); setPage(1) }} />
+        </div>
+        <div className="w-36">
+          <FormField label="" type="date" value={filterTo} placeholder="To"
+            onChange={e => { setFilterTo(e.target.value); setPage(1) }} />
         </div>
         {events.length > 0 && (
           <div className="ml-auto text-sm text-gray-500">
