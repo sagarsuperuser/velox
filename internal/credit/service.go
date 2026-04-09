@@ -44,7 +44,7 @@ func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) 
 
 // ApplyToInvoice deducts credits from a customer's balance and returns the
 // amount deducted. If balance is less than invoiceAmount, uses what's available.
-func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, invoiceAmountCents int64) (int64, error) {
+func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, invoiceAmountCents int64, invoiceNumber ...string) (int64, error) {
 	bal, err := s.store.GetBalance(ctx, tenantID, customerID)
 	if err != nil {
 		return 0, err
@@ -63,7 +63,12 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, customerID, invo
 		CustomerID:  customerID,
 		EntryType:   domain.CreditUsage,
 		AmountCents: -deduct, // Negative = deduction
-		Description: fmt.Sprintf("Applied to invoice %s", invoiceID),
+		Description: func() string {
+			if len(invoiceNumber) > 0 && invoiceNumber[0] != "" {
+				return fmt.Sprintf("Applied to invoice %s", invoiceNumber[0])
+			}
+			return fmt.Sprintf("Applied to invoice %s", invoiceID)
+		}(),
 		InvoiceID:   invoiceID,
 	})
 	if err != nil {
