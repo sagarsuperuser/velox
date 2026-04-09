@@ -76,7 +76,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	stripeClient := payment.NewLiveStripeClient(stripeKey)
 	dunningStore := dunning.NewPostgresStore(db)
 	dunningSvc := dunning.NewService(dunningStore, nil) // retrier set below after stripeAdapter created
-	dunningH := dunning.NewHandler(dunningSvc)
+	dunningH := dunning.NewHandler(dunningSvc, invoiceStore)
 	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, customerStore, dunningSvc)
 
 	// Wire payment retrier now that stripeAdapter exists
