@@ -159,6 +159,7 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 		SELECT `+subCols+` FROM subscriptions
 		WHERE status = 'active' AND next_billing_at <= $1
 		ORDER BY next_billing_at ASC LIMIT $2
+		FOR UPDATE SKIP LOCKED
 	`, before, limit)
 	if err != nil {
 		return nil, err
