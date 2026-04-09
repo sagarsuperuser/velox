@@ -49,6 +49,12 @@ type setupRequest struct {
 	CustomerID   string `json:"customer_id"`
 	CustomerName string `json:"customer_name"`
 	Email        string `json:"email"`
+	// Address fields for Stripe compliance (required for India)
+	AddressLine1 string `json:"address_line1,omitempty"`
+	AddressCity  string `json:"address_city,omitempty"`
+	AddressState string `json:"address_state,omitempty"`
+	AddressZip   string `json:"address_postal_code,omitempty"`
+	AddressCountry string `json:"address_country,omitempty"`
 }
 
 type setupResponse struct {
@@ -78,9 +84,9 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		stripeCustomerID = existing.StripeCustomerID
 	}
 
-	// Create Stripe customer if needed
+	// Create or update Stripe customer
 	if stripeCustomerID == "" {
-		cus, err := stripecustomer.New(&stripe.CustomerParams{
+		cusParams := &stripe.CustomerParams{
 			Name:  stripe.String(req.CustomerName),
 			Email: stripe.String(req.Email),
 			Params: stripe.Params{
@@ -89,13 +95,37 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 					"velox_tenant_id":   tenantID,
 				},
 			},
-		})
+		}
+		// Address required for Indian Stripe accounts (export regulations)
+		if req.AddressLine1 != "" || req.AddressCountry != "" {
+			cusParams.Address = &stripe.AddressParams{
+				Line1:      stripe.String(req.AddressLine1),
+				City:       stripe.String(req.AddressCity),
+				State:      stripe.String(req.AddressState),
+				PostalCode: stripe.String(req.AddressZip),
+				Country:    stripe.String(req.AddressCountry),
+			}
+		}
+		cus, err := stripecustomer.New(cusParams)
 		if err != nil {
 			respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
 				fmt.Sprintf("failed to create Stripe customer: %v", err))
 			return
 		}
 		stripeCustomerID = cus.ID
+	} else if req.AddressLine1 != "" || req.AddressCountry != "" {
+		// Update existing Stripe customer with address
+		stripecustomer.Update(stripeCustomerID, &stripe.CustomerParams{
+			Name:  stripe.String(req.CustomerName),
+			Email: stripe.String(req.Email),
+			Address: &stripe.AddressParams{
+				Line1:      stripe.String(req.AddressLine1),
+				City:       stripe.String(req.AddressCity),
+				State:      stripe.String(req.AddressState),
+				PostalCode: stripe.String(req.AddressZip),
+				Country:    stripe.String(req.AddressCountry),
+			},
+		})
 	}
 
 	// Save Stripe customer ID immediately (status: pending until checkout completes)
