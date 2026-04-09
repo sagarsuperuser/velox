@@ -278,8 +278,18 @@ export function InvoiceDetailPage() {
           </tbody>
           <tfoot>
             <tr className="border-t border-gray-200">
-              <td colSpan={4} className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">Total</td>
-              <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatCents(invoice.total_amount_cents)}</td>
+              <td colSpan={4} className="px-6 py-2.5 text-sm text-gray-500 text-right">Subtotal</td>
+              <td className="px-6 py-2.5 text-sm text-gray-900 text-right">{formatCents(invoice.subtotal_cents)}</td>
+            </tr>
+            {invoice.total_amount_cents !== invoice.amount_due_cents && (
+              <tr>
+                <td colSpan={4} className="px-6 py-2.5 text-sm text-emerald-600 text-right">Credits Applied</td>
+                <td className="px-6 py-2.5 text-sm text-emerald-600 text-right">-{formatCents(invoice.total_amount_cents - invoice.amount_due_cents)}</td>
+              </tr>
+            )}
+            <tr>
+              <td colSpan={4} className="px-6 py-2.5 text-sm font-semibold text-gray-900 text-right">Amount Due</td>
+              <td className="px-6 py-2.5 text-sm font-semibold text-gray-900 text-right">{formatCents(invoice.amount_due_cents)}</td>
             </tr>
           </tfoot>
         </table>
