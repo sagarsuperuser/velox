@@ -55,6 +55,7 @@ type InvoiceUpdater interface {
 	UpdatePayment(ctx context.Context, tenantID, id string, paymentStatus domain.InvoicePaymentStatus, stripePaymentIntentID, lastPaymentError string, paidAt *time.Time) (domain.Invoice, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error)
 	GetByStripePaymentIntentID(ctx context.Context, tenantID, stripePaymentIntentID string) (domain.Invoice, error)
+	Get(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 }
 
 // WebhookStore persists Stripe webhook events for audit trail.
@@ -145,6 +146,9 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 	}
 
 	inv, err := s.invoices.GetByStripePaymentIntentID(ctx, tenantID, event.PaymentIntentID)
+	if err != nil && event.InvoiceID != "" {
+		inv, err = s.invoices.Get(ctx, tenantID, event.InvoiceID)
+	}
 	if err != nil {
 		return fmt.Errorf("find invoice for PI %s: %w", event.PaymentIntentID, err)
 	}
@@ -175,7 +179,11 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		return fmt.Errorf("payment_intent.payment_failed event missing payment_intent_id")
 	}
 
+	// Try to find invoice by PI ID first, fall back to invoice ID from metadata
 	inv, err := s.invoices.GetByStripePaymentIntentID(ctx, tenantID, event.PaymentIntentID)
+	if err != nil && event.InvoiceID != "" {
+		inv, err = s.invoices.Get(ctx, tenantID, event.InvoiceID)
+	}
 	if err != nil {
 		return fmt.Errorf("find invoice for PI %s: %w", event.PaymentIntentID, err)
 	}
