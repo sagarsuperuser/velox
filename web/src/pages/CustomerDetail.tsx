@@ -42,21 +42,30 @@ export function CustomerDetailPage() {
       api.customerOverview(id),
       api.getBalance(id).catch(() => ({ balance_cents: 0 })),
       api.getBillingProfile(id).catch(() => null),
-      api.usageSummary(id).catch(() => null),
       api.listMeters().catch(() => ({ data: [] as Meter[] })),
       api.listPlans().catch(() => ({ data: [] as Plan[] })),
       api.listSubscriptions().catch(() => ({ data: [] as Subscription[] })),
-    ]).then(([c, o, b, bp, us, metersRes, plansRes, subsRes]) => {
+    ]).then(([c, o, b, bp, metersRes, plansRes, subsRes]) => {
       setCustomer(c)
       setOverview(o)
       setBalance(b.balance_cents)
       setBillingProfile(bp)
-      setUsageSummary(us)
       const mm: Record<string, { name: string; unit: string }> = {}
       metersRes.data.forEach(m => { mm[m.id] = { name: m.name, unit: m.unit }; mm[m.key] = { name: m.name, unit: m.unit } })
       setMeterMap(mm)
       setPlans(plansRes.data.filter(p => p.status === 'active'))
-      setAllSubs(subsRes.data.filter(s => s.customer_id === id))
+      const customerSubs = subsRes.data.filter(s => s.customer_id === id)
+      setAllSubs(customerSubs)
+
+      // Fetch usage summary scoped to active subscription's billing period
+      const activeSub = customerSubs.find(s => s.status === 'active' && s.current_billing_period_start && s.current_billing_period_end)
+      if (activeSub) {
+        api.usageSummary(id, activeSub.current_billing_period_start!, activeSub.current_billing_period_end!)
+          .then(us => setUsageSummary(us)).catch(() => setUsageSummary(null))
+      } else {
+        api.usageSummary(id).then(us => setUsageSummary(us)).catch(() => setUsageSummary(null))
+      }
+
       // Fetch payment status
       api.getPaymentStatus(id).then(ps => setPaymentStatus(ps.setup_status)).catch(() => {})
       setLoading(false)
