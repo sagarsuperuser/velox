@@ -285,21 +285,25 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		}
 	}
 
-	// Auto-charge: if customer has payment method, create PaymentIntent
+	// Auto-charge: if customer has payment method, create PaymentIntent (async)
 	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
 		if ps, err := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID); err == nil &&
 			ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
-			// Re-read invoice to get updated amount_due after credits
-			if updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
-				inv = updatedInv
-			}
-			if inv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(ctx, sub.TenantID, inv, ps.StripeCustomerID); err != nil {
-					slog.Warn("auto-charge failed", "invoice_id", inv.ID, "error", err)
-				} else {
-					slog.Info("auto-charge initiated", "invoice_id", inv.ID)
+			// Fire-and-forget: charge in background so billing cycle isn't blocked
+			go func(tenantID string, invID string, stripeCustomerID string) {
+				chargeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				// Re-read invoice to get updated amount_due after credits
+				chargeInv, err := e.invoices.GetInvoice(chargeCtx, tenantID, invID)
+				if err != nil || chargeInv.AmountDueCents <= 0 {
+					return
 				}
-			}
+				if _, err := e.charger.ChargeInvoice(chargeCtx, tenantID, chargeInv, stripeCustomerID); err != nil {
+					slog.Warn("auto-charge failed", "invoice_id", invID, "error", err)
+				} else {
+					slog.Info("auto-charge initiated", "invoice_id", invID)
+				}
+			}(sub.TenantID, inv.ID, ps.StripeCustomerID)
 		}
 	}
 
