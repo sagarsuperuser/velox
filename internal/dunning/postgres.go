@@ -267,6 +267,7 @@ func (s *PostgresStore) ListDueRuns(ctx context.Context, tenantID string, dueBef
 		WHERE next_action_at <= $1 AND paused = false
 			AND state NOT IN ('resolved', 'exhausted')
 		ORDER BY next_action_at ASC LIMIT $2
+		FOR UPDATE SKIP LOCKED
 	`, dueBefore, limit)
 	if err != nil {
 		return nil, err
