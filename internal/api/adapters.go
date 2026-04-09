@@ -26,6 +26,10 @@ func (a *invoiceWriterAdapter) ApplyCreditAmount(ctx context.Context, tenantID, 
 	return a.store.ApplyCreditNote(ctx, tenantID, id, amountCents)
 }
 
+func (a *invoiceWriterAdapter) GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
+	return a.store.Get(ctx, tenantID, id)
+}
+
 // creditGrantAdapter bridges credit.Service → creditnote.CreditGranter.
 type creditGrantAdapter struct {
 	svc *credit.Service

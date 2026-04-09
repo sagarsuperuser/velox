@@ -12,7 +12,7 @@ func TestComputeAmountCents_Flat(t *testing.T) {
 		wantErr  bool
 	}{
 		{"zero quantity", 0, 0, false},
-		{"positive quantity", 100, 500, false},
+		{"positive quantity", 100, 50000, false},
 		{"negative quantity", -1, 0, true},
 	}
 
