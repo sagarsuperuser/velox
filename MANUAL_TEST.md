@@ -108,7 +108,7 @@ curl -X POST http://localhost:8080/v1/usage-events \
   -H "Authorization: Bearer <secret_key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "external_customer_id": "acme_corp",
+    "external_customer_id": "acme_corp123",
     "event_name": "api_calls",
     "quantity": 1500
   }'
@@ -118,8 +118,8 @@ curl -X POST http://localhost:8080/v1/usage-events/batch \
   -H "Authorization: Bearer <secret_key>" \
   -H "Content-Type: application/json" \
   -d '[
-    {"external_customer_id": "acme_corp", "event_name": "api_calls", "quantity": 1500},
-    {"external_customer_id": "acme_corp", "event_name": "api_calls", "quantity": 2500}
+    {"external_customer_id": "acme_corp123", "event_name": "api_calls", "quantity": 1500},
+    {"external_customer_id": "acme_corp123", "event_name": "api_calls", "quantity": 2500}
   ]'
 ```
 - [ ] Verify events appear on Usage Events page

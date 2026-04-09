@@ -64,7 +64,7 @@ func TestRenderPDF(t *testing.T) {
 		},
 	}
 
-	pdfBytes, err := RenderPDF(inv, lineItems, "Acme Corp")
+	pdfBytes, err := RenderPDF(inv, lineItems, "Acme Corp", nil)
 	if err != nil {
 		t.Fatalf("render pdf: %v", err)
 	}

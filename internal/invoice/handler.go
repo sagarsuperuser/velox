@@ -26,16 +26,22 @@ type SettingsGetter interface {
 	Get(ctx context.Context, tenantID string) (domain.TenantSettings, error)
 }
 
-type Handler struct {
-	svc       *Service
-	customers CustomerGetter
-	settings  SettingsGetter
+// CreditNoteLister fetches credit notes for an invoice.
+type CreditNoteLister interface {
+	List(ctx context.Context, tenantID, invoiceID string) ([]domain.CreditNote, error)
 }
 
-func NewHandler(svc *Service, customers CustomerGetter, settings ...SettingsGetter) *Handler {
-	h := &Handler{svc: svc, customers: customers}
-	if len(settings) > 0 {
-		h.settings = settings[0]
+type Handler struct {
+	svc         *Service
+	customers   CustomerGetter
+	settings    SettingsGetter
+	creditNotes CreditNoteLister
+}
+
+func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter, creditNotes ...CreditNoteLister) *Handler {
+	h := &Handler{svc: svc, customers: customers, settings: settings}
+	if len(creditNotes) > 0 {
+		h.creditNotes = creditNotes[0]
 	}
 	return h
 }
@@ -187,7 +193,23 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pdfBytes, err := RenderPDF(inv, items, customerName, ci)
+	// Fetch credit notes for this invoice
+	var cnInfos []CreditNoteInfo
+	if h.creditNotes != nil {
+		if notes, err := h.creditNotes.List(r.Context(), tenantID, id); err == nil {
+			for _, cn := range notes {
+				if cn.Status == domain.CreditNoteIssued {
+					cnInfos = append(cnInfos, CreditNoteInfo{
+						Number: cn.CreditNoteNumber,
+						Reason: cn.Reason,
+						Amount: cn.TotalCents,
+					})
+				}
+			}
+		}
+	}
+
+	pdfBytes, err := RenderPDF(inv, items, customerName, cnInfos, ci)
 	if err != nil {
 		respond.InternalError(w, r)
 		return
