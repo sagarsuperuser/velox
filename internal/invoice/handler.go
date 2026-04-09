@@ -47,6 +47,11 @@ type CreditReverser interface {
 	ReverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error)
 }
 
+// PaymentCanceler cancels a Stripe PaymentIntent when an invoice is voided.
+type PaymentCanceler interface {
+	CancelPaymentIntent(ctx context.Context, paymentIntentID string) error
+}
+
 type Handler struct {
 	svc            *Service
 	customers      CustomerGetter
@@ -55,6 +60,7 @@ type Handler struct {
 	charger        PaymentCharger
 	paymentSetups  PaymentSetupGetter
 	creditReverser CreditReverser
+	paymentCancel  PaymentCanceler
 }
 
 type HandlerDeps struct {
@@ -62,6 +68,7 @@ type HandlerDeps struct {
 	Charger        PaymentCharger
 	PaymentSetups  PaymentSetupGetter
 	CreditReverser CreditReverser
+	PaymentCancel  PaymentCanceler
 }
 
 func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter, deps ...HandlerDeps) *Handler {
@@ -71,6 +78,7 @@ func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter,
 		h.charger = deps[0].Charger
 		h.paymentSetups = deps[0].PaymentSetups
 		h.creditReverser = deps[0].CreditReverser
+		h.paymentCancel = deps[0].PaymentCancel
 	}
 	return h
 }
@@ -202,6 +210,15 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.Validation(w, r, err.Error())
 		return
+	}
+
+	// Cancel Stripe PaymentIntent if one was created
+	if h.paymentCancel != nil && existing.StripePaymentIntentID != "" {
+		if err := h.paymentCancel.CancelPaymentIntent(r.Context(), existing.StripePaymentIntentID); err != nil {
+			slog.Warn("failed to cancel payment intent on void", "invoice_id", id, "pi_id", existing.StripePaymentIntentID, "error", err)
+		} else {
+			slog.Info("payment intent canceled on void", "invoice_id", id)
+		}
 	}
 
 	// Reverse any credits that were applied to this invoice
