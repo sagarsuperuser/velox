@@ -229,7 +229,7 @@ function RunsTab() {
                   </td>
                   <td className="px-6 py-3 text-sm text-gray-500">
                     {run.state === 'resolved' || run.state === 'exhausted' || run.state === 'escalated'
-                      ? (run.resolution ? <Badge status={run.resolution} /> : '—')
+                      ? '—'
                       : run.next_action_at ? formatDateTime(run.next_action_at) : '—'}
                   </td>
                   <td className="px-6 py-3 text-sm text-gray-500">{formatDateTime(run.created_at)}</td>
