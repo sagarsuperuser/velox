@@ -1,14 +1,14 @@
 import { useEffect, useState, useMemo } from 'react'
-import { api, formatCents, formatDate, type Customer, type CreditBalance, type CreditLedgerEntry } from '@/lib/api'
+import { api, formatCents, formatDateTime, type Customer, type CreditBalance, type CreditLedgerEntry } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
-import { FormField } from '@/components/FormField'
+import { FormField, FormSelect } from '@/components/FormField'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Plus } from 'lucide-react'
+import { Plus, Wallet } from 'lucide-react'
 
 export function CreditsPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -23,6 +23,8 @@ export function CreditsPage() {
   useEffect(() => {
     api.listCustomers().then(res => setCustomers(res.data)).catch(err => setError(err instanceof Error ? err.message : 'Failed to load customers'))
   }, [])
+
+  const selectedCustomerName = customers.find(c => c.id === selectedCustomer)?.display_name || ''
 
   const loadCredits = (customerId: string) => {
     if (!customerId) return
@@ -45,7 +47,7 @@ export function CreditsPage() {
 
   const handleSelectCustomer = (id: string) => {
     setSelectedCustomer(id)
-    loadCredits(id)
+    if (id) loadCredits(id)
   }
 
   return (
@@ -53,7 +55,7 @@ export function CreditsPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Credits</h1>
-          <p className="text-sm text-gray-500 mt-1">Customer prepaid balances</p>
+          <p className="text-sm text-gray-500 mt-1">Manage customer prepaid balances</p>
         </div>
         {selectedCustomer && (
           <button onClick={() => setShowGrant(true)}
@@ -64,13 +66,20 @@ export function CreditsPage() {
       </div>
 
       {/* Customer selector */}
-      <div className="mt-6">
-        <select value={selectedCustomer} onChange={e => handleSelectCustomer(e.target.value)}
-          className="w-full max-w-sm px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white">
-          <option value="">Select a customer...</option>
-          {customers.map(c => <option key={c.id} value={c.id}>{c.display_name} ({c.external_id})</option>)}
-        </select>
+      <div className="mt-6 max-w-sm">
+        <FormSelect label="" value={selectedCustomer}
+          onChange={e => handleSelectCustomer(e.target.value)}
+          placeholder="Select a customer..."
+          options={customers.map(c => ({ value: c.id, label: `${c.display_name} (${c.external_id})` }))} />
       </div>
+
+      {!selectedCustomer && (
+        <div className="bg-white rounded-xl shadow-card mt-6 py-16 text-center">
+          <Wallet size={32} className="text-gray-300 mx-auto mb-3" />
+          <p className="text-sm text-gray-900">Select a customer to view their credit balance</p>
+          <p className="text-sm text-gray-500 mt-1">Credits are automatically applied to invoices before payment</p>
+        </div>
+      )}
 
       {error && selectedCustomer && (
         <div className="mt-6">
@@ -78,53 +87,62 @@ export function CreditsPage() {
         </div>
       )}
 
+      {loading && <div className="bg-white rounded-xl shadow-card mt-6 py-12 text-center text-sm text-gray-400 animate-pulse">Loading...</div>}
+
       {selectedCustomer && balance && !loading && !error && (
         <>
-          {/* Balance cards */}
-          <div className="grid grid-cols-3 gap-4 mt-6">
-            <div className="bg-white rounded-xl shadow-card p-5">
-              <p className="text-xs text-gray-500">Current Balance</p>
-              <p className="text-2xl font-semibold mt-1 text-gray-900">{formatCents(balance.balance_cents)}</p>
+          {/* Balance strip */}
+          <div className="bg-white rounded-xl shadow-card flex divide-x divide-gray-100 mt-6">
+            <div className="flex-1 px-6 py-4">
+              <p className="text-sm text-gray-500">Customer</p>
+              <p className="text-sm font-medium text-gray-900 mt-1">{selectedCustomerName}</p>
             </div>
-            <div className="bg-white rounded-xl shadow-card p-5">
-              <p className="text-xs text-gray-500">Total Granted</p>
-              <p className="text-2xl font-semibold mt-1 text-emerald-600">{formatCents(balance.total_granted)}</p>
+            <div className="flex-1 px-6 py-4">
+              <p className="text-sm text-gray-500">Current Balance</p>
+              <p className="text-lg font-semibold text-gray-900 mt-1">{formatCents(balance.balance_cents)}</p>
             </div>
-            <div className="bg-white rounded-xl shadow-card p-5">
-              <p className="text-xs text-gray-500">Total Used</p>
-              <p className="text-2xl font-semibold mt-1 text-gray-500">{formatCents(balance.total_used)}</p>
+            <div className="flex-1 px-6 py-4">
+              <p className="text-sm text-gray-500">Total Granted</p>
+              <p className="text-lg font-semibold text-emerald-600 mt-1">{formatCents(balance.total_granted)}</p>
+            </div>
+            <div className="flex-1 px-6 py-4">
+              <p className="text-sm text-gray-500">Total Used</p>
+              <p className="text-lg font-semibold text-gray-900 mt-1">{formatCents(balance.total_used)}</p>
             </div>
           </div>
 
           {/* Ledger */}
           <div className="bg-white rounded-xl shadow-card mt-6">
             <div className="px-6 py-4 border-b border-gray-100">
-              <h2 className="text-sm font-semibold text-gray-900">Credit Ledger</h2>
+              <h2 className="text-sm font-semibold text-gray-900">Transaction History</h2>
             </div>
             {ledger.length === 0 ? (
-              <p className="px-6 py-8 text-sm text-gray-400 text-center">No credit history</p>
+              <div className="px-6 py-12 text-center">
+                <p className="text-sm text-gray-900">No transactions yet</p>
+                <p className="text-sm text-gray-500 mt-1">Grant credits to this customer to get started</p>
+              </div>
             ) : (
               <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-gray-100 bg-gray-50">
+                    <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Date</th>
                     <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Type</th>
                     <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Description</th>
                     <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Amount</th>
-                    <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Balance After</th>
-                    <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Date</th>
+                    <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Balance</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                   {ledger.map(entry => (
                     <tr key={entry.id} className="hover:bg-gray-50/50 transition-colors">
+                      <td className="px-6 py-3 text-sm text-gray-500 whitespace-nowrap">{formatDateTime(entry.created_at)}</td>
                       <td className="px-6 py-3"><Badge status={entry.entry_type} /></td>
-                      <td className="px-6 py-3 text-sm text-gray-900">{entry.description}</td>
-                      <td className={`px-6 py-3 text-sm font-medium text-right ${entry.amount_cents >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      <td className="px-6 py-3 text-sm text-gray-900">{entry.description || '\u2014'}</td>
+                      <td className={`px-6 py-3 text-sm font-medium text-right tabular-nums ${entry.amount_cents >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                         {entry.amount_cents >= 0 ? '+' : ''}{formatCents(entry.amount_cents)}
                       </td>
-                      <td className="px-6 py-3 text-sm text-gray-500 text-right">{formatCents(entry.balance_after)}</td>
-                      <td className="px-6 py-3 text-sm text-gray-500">{formatDate(entry.created_at)}</td>
+                      <td className="px-6 py-3 text-sm text-gray-900 text-right tabular-nums">{formatCents(entry.balance_after)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -135,17 +153,18 @@ export function CreditsPage() {
         </>
       )}
 
-      {loading && <div className="mt-6 text-gray-400 animate-pulse">Loading...</div>}
-
       {showGrant && (
-        <GrantModal customerId={selectedCustomer} onClose={() => setShowGrant(false)}
+        <GrantModal customerId={selectedCustomer} customerName={selectedCustomerName}
+          onClose={() => setShowGrant(false)}
           onGranted={() => { setShowGrant(false); loadCredits(selectedCustomer); toast.success('Credits granted') }} />
       )}
     </Layout>
   )
 }
 
-function GrantModal({ customerId, onClose, onGranted }: { customerId: string; onClose: () => void; onGranted: () => void }) {
+function GrantModal({ customerId, customerName, onClose, onGranted }: {
+  customerId: string; customerName: string; onClose: () => void; onGranted: () => void
+}) {
   const [amount, setAmount] = useState('')
   const [description, setDescription] = useState('')
   const [error, setError] = useState('')
@@ -183,13 +202,18 @@ function GrantModal({ customerId, onClose, onGranted }: { customerId: string; on
   return (
     <>
       <Modal open onClose={onClose} title="Grant Credits">
-        <form onSubmit={handleSubmit} noValidate className="space-y-3">
+        <form onSubmit={handleSubmit} noValidate className="space-y-4">
+          <div className="bg-gray-50 rounded-lg px-4 py-3">
+            <p className="text-sm text-gray-500">Customer</p>
+            <p className="text-sm font-medium text-gray-900 mt-0.5">{customerName}</p>
+          </div>
           <FormField label="Amount ($)" required type="number" step="0.01" min="0.01" max={999999.99} value={amount}
             placeholder="50.00"
             ref={registerRef('amount')} error={fieldError('amount')}
             onChange={e => setAmount(e.target.value)}
-            onBlur={() => onBlur('amount', amount)} />
-          <FormField label="Description" value={description} placeholder="Welcome credit" maxLength={500}
+            onBlur={() => onBlur('amount', amount)}
+            hint="Added to the customer's prepaid balance" />
+          <FormField label="Description" value={description} placeholder="e.g. Welcome credit, compensation" maxLength={500}
             onChange={e => setDescription(e.target.value)} />
           {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
           <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
@@ -204,7 +228,7 @@ function GrantModal({ customerId, onClose, onGranted }: { customerId: string; on
       <ConfirmDialog
         open={showConfirm}
         title="Confirm Credit Grant"
-        message={`Grant $${parseFloat(amount || '0').toFixed(2)} to this customer?`}
+        message={`Grant $${parseFloat(amount || '0').toFixed(2)} to ${customerName}?`}
         confirmLabel="Grant Credits"
         onConfirm={handleConfirmedGrant}
         onCancel={() => setShowConfirm(false)}
