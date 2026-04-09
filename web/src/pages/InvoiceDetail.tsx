@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { api, downloadPDF, formatCents, formatDate, type Invoice, type LineItem, type Customer, type Subscription } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, type Invoice, type LineItem, type Customer, type Subscription, type CreditNote } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
@@ -39,6 +39,7 @@ export function InvoiceDetailPage() {
   const [showVoidConfirm, setShowVoidConfirm] = useState(false)
   const [showEmailModal, setShowEmailModal] = useState(false)
   const [showCreditModal, setShowCreditModal] = useState(false)
+  const [creditNotes, setCreditNotes] = useState<CreditNote[]>([])
   const toast = useToast()
 
   const loadData = () => {
@@ -65,6 +66,14 @@ export function InvoiceDetailPage() {
         } catch {
           // subscription may not be accessible
         }
+      }
+
+      // Fetch credit notes for this invoice
+      try {
+        const cn = await api.listCreditNotes(`invoice_id=${id}`)
+        setCreditNotes((cn.data || []).filter(n => n.status === 'issued'))
+      } catch {
+        // non-critical
       }
 
       setLoading(false)
@@ -281,12 +290,14 @@ export function InvoiceDetailPage() {
               <td colSpan={4} className="px-6 py-2.5 text-sm text-gray-500 text-right">Subtotal</td>
               <td className="px-6 py-2.5 text-sm text-gray-900 text-right">{formatCents(invoice.subtotal_cents)}</td>
             </tr>
-            {invoice.total_amount_cents !== invoice.amount_due_cents && (
-              <tr>
-                <td colSpan={4} className="px-6 py-2.5 text-sm text-emerald-600 text-right">Credits Applied</td>
-                <td className="px-6 py-2.5 text-sm text-emerald-600 text-right">-{formatCents(invoice.total_amount_cents - invoice.amount_due_cents)}</td>
+            {creditNotes.map(cn => (
+              <tr key={cn.id}>
+                <td colSpan={4} className="px-6 py-2.5 text-sm text-emerald-600 text-right">
+                  Credit note {cn.credit_note_number} — {cn.reason}
+                </td>
+                <td className="px-6 py-2.5 text-sm text-emerald-600 text-right">-{formatCents(cn.total_cents)}</td>
               </tr>
-            )}
+            ))}
             <tr>
               <td colSpan={4} className="px-6 py-2.5 text-sm font-semibold text-gray-900 text-right">Amount Due</td>
               <td className="px-6 py-2.5 text-sm font-semibold text-gray-900 text-right">{formatCents(invoice.amount_due_cents)}</td>
