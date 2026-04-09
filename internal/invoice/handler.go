@@ -42,19 +42,26 @@ type PaymentSetupGetter interface {
 	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
 }
 
+// CreditReverser returns credits to the customer when an invoice is voided.
+type CreditReverser interface {
+	ReverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error)
+}
+
 type Handler struct {
-	svc           *Service
-	customers     CustomerGetter
-	settings      SettingsGetter
-	creditNotes   CreditNoteLister
-	charger       PaymentCharger
-	paymentSetups PaymentSetupGetter
+	svc            *Service
+	customers      CustomerGetter
+	settings       SettingsGetter
+	creditNotes    CreditNoteLister
+	charger        PaymentCharger
+	paymentSetups  PaymentSetupGetter
+	creditReverser CreditReverser
 }
 
 type HandlerDeps struct {
-	CreditNotes   CreditNoteLister
-	Charger       PaymentCharger
-	PaymentSetups PaymentSetupGetter
+	CreditNotes    CreditNoteLister
+	Charger        PaymentCharger
+	PaymentSetups  PaymentSetupGetter
+	CreditReverser CreditReverser
 }
 
 func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter, deps ...HandlerDeps) *Handler {
@@ -63,6 +70,7 @@ func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter,
 		h.creditNotes = deps[0].CreditNotes
 		h.charger = deps[0].Charger
 		h.paymentSetups = deps[0].PaymentSetups
+		h.creditReverser = deps[0].CreditReverser
 	}
 	return h
 }
@@ -183,6 +191,9 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	id := chi.URLParam(r, "id")
 
+	// Get invoice first for credit reversal info
+	existing, _ := h.svc.Get(r.Context(), tenantID, id)
+
 	inv, err := h.svc.Void(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
 		respond.NotFound(w, r, "invoice")
@@ -191,6 +202,15 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.Validation(w, r, err.Error())
 		return
+	}
+
+	// Reverse any credits that were applied to this invoice
+	if h.creditReverser != nil && existing.CustomerID != "" {
+		if reversed, err := h.creditReverser.ReverseForInvoice(r.Context(), tenantID, existing.CustomerID, id, existing.InvoiceNumber); err != nil {
+			slog.Warn("failed to reverse credits on void", "invoice_id", id, "error", err)
+		} else if reversed > 0 {
+			slog.Info("credits reversed on invoice void", "invoice_id", id, "reversed_cents", reversed)
+		}
 	}
 
 	respond.JSON(w, r, http.StatusOK, inv)

@@ -78,6 +78,46 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, customerID, invo
 	return deduct, nil
 }
 
+func (s *Service) ReverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error) {
+	entries, err := s.store.ListEntries(ctx, ListFilter{
+		TenantID:   tenantID,
+		CustomerID: customerID,
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	// Sum all usage entries for this invoice (they're negative)
+	var totalUsed int64
+	for _, e := range entries {
+		if e.InvoiceID == invoiceID && e.EntryType == domain.CreditUsage {
+			totalUsed += -e.AmountCents // Convert negative to positive
+		}
+	}
+
+	if totalUsed <= 0 {
+		return 0, nil // No credits were applied to this invoice
+	}
+
+	desc := fmt.Sprintf("Reversed — invoice %s voided", invoiceNumber)
+	if invoiceNumber == "" {
+		desc = fmt.Sprintf("Reversed — invoice %s voided", invoiceID)
+	}
+
+	_, err = s.store.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
+		CustomerID:  customerID,
+		EntryType:   domain.CreditGrant,
+		AmountCents: totalUsed,
+		Description: desc,
+		InvoiceID:   invoiceID,
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	return totalUsed, nil
+}
+
 func (s *Service) GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error) {
 	return s.store.GetBalance(ctx, tenantID, customerID)
 }

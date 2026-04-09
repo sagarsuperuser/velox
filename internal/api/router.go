@@ -79,9 +79,10 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
 
 	invoiceH := invoice.NewHandler(invoice.NewService(invoiceStore), customerStore, settingsStore, invoice.HandlerDeps{
-		CreditNotes:   &creditNoteListerAdapter{svc: creditNoteSvc},
-		Charger:       stripeAdapter,
-		PaymentSetups: customerStore,
+		CreditNotes:    &creditNoteListerAdapter{svc: creditNoteSvc},
+		Charger:        stripeAdapter,
+		PaymentSetups:  customerStore,
+		CreditReverser: creditSvc,
 	})
 	checkoutH := payment.NewCheckoutHandler(stripeKey,
 		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")),
