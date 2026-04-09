@@ -323,7 +323,7 @@ export function PlanDetailPage() {
                     <td className="px-6 py-3"><Badge status={sub.status} /></td>
                     <td className="px-6 py-3 text-sm text-gray-500">
                       {sub.current_billing_period_start && sub.current_billing_period_end
-                        ? `${formatDate(sub.current_billing_period_start)} - ${formatDate(sub.current_billing_period_end)}`
+                        ? `${formatDate(sub.current_billing_period_start)} — ${formatDate(sub.current_billing_period_end)}`
                         : '\u2014'}
                     </td>
                     <td className="px-6 py-3 text-sm text-gray-500">{formatDate(sub.created_at)}</td>
