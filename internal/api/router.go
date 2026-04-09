@@ -65,10 +65,13 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	auditH := audit.NewHandler(auditLogger)
 	settingsH := tenant.NewSettingsHandler(settingsStore)
 
+	// Credits
+	creditSvc := credit.NewService(credit.NewPostgresStore(db))
+
 	// Payment / webhook / checkout / refund handlers
 	stripeKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
 	stripeRefunder := payment.NewStripeRefunder(stripeKey)
-	creditNoteH := creditnote.NewHandler(creditnote.NewService(creditnote.NewPostgresStore(db), invoiceStore, stripeRefunder))
+	creditNoteH := creditnote.NewHandler(creditnote.NewService(creditnote.NewPostgresStore(db), invoiceStore, stripeRefunder, &creditGrantAdapter{svc: creditSvc}))
 	stripeClient := payment.NewLiveStripeClient(stripeKey)
 	dunningStore := dunning.NewPostgresStore(db)
 	dunningSvc := dunning.NewService(dunningStore, nil)
@@ -80,7 +83,6 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")))
 
 	// Billing engine + manual trigger (with credit auto-application)
-	creditSvc := credit.NewService(credit.NewPostgresStore(db))
 	engine := billing.NewEngine(subStore, usageStore, pricingStore,
 		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore)
 	billingH := billing.NewHandler(engine, subStore)

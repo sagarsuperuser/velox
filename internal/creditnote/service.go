@@ -13,6 +13,7 @@ import (
 type InvoiceReader interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 	ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error)
+	ApplyCreditNote(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 }
 
 // Refunder processes refunds via the payment provider.
@@ -20,16 +21,28 @@ type Refunder interface {
 	CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64) (string, error)
 }
 
+// CreditGranter adds credits to a customer's balance.
+type CreditGranter interface {
+	Grant(ctx context.Context, tenantID string, input CreditGrantInput) error
+}
+
+type CreditGrantInput struct {
+	CustomerID  string
+	AmountCents int64
+	Description string
+}
+
 type Service struct {
 	store    Store
 	invoices InvoiceReader
 	refunder Refunder
+	credits  CreditGranter
 }
 
-func NewService(store Store, invoices InvoiceReader, refunder ...Refunder) *Service {
-	s := &Service{store: store, invoices: invoices}
-	if len(refunder) > 0 {
-		s.refunder = refunder[0]
+func NewService(store Store, invoices InvoiceReader, refunder Refunder, credits ...CreditGranter) *Service {
+	s := &Service{store: store, invoices: invoices, refunder: refunder}
+	if len(credits) > 0 {
+		s.credits = credits[0]
 	}
 	return s
 }
@@ -156,6 +169,23 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 			}
 			cn.StripeRefundID = refundID
 			cn.RefundStatus = domain.RefundSucceeded
+		}
+	}
+
+	// Reduce the invoice's amount_due
+	if _, err := s.invoices.ApplyCreditNote(ctx, tenantID, cn.InvoiceID, cn.TotalCents); err != nil {
+		return domain.CreditNote{}, fmt.Errorf("reduce invoice amount: %w", err)
+	}
+
+	// For credit type: add to customer's credit balance
+	if cn.CreditAmountCents > 0 && s.credits != nil {
+		if err := s.credits.Grant(ctx, tenantID, CreditGrantInput{
+			CustomerID:  cn.CustomerID,
+			AmountCents: cn.CreditAmountCents,
+			Description: fmt.Sprintf("Credit note %s", cn.CreditNoteNumber),
+		}); err != nil {
+			// Non-fatal: credit note still issued, balance update failed
+			fmt.Printf("warn: failed to grant credits for credit note %s: %v\n", cn.ID, err)
 		}
 	}
 

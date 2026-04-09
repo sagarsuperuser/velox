@@ -209,6 +209,36 @@ func (s *PostgresStore) UpdatePayment(ctx context.Context, tenantID, id string, 
 	return inv, nil
 }
 
+func (s *PostgresStore) ApplyCreditNote(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `
+		UPDATE invoices SET
+			amount_due_cents = GREATEST(amount_due_cents - $1, 0),
+			updated_at = $2
+		WHERE id = $3
+		RETURNING `+invCols,
+		amountCents, now, id,
+	).Scan(scanInvDest(&inv)...)
+
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, err
+	}
+	return inv, nil
+}
+
 func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
