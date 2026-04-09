@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/invoice"
+	"github.com/sagarsuperuser/velox/internal/payment"
 )
 
 // invoiceWriterAdapter bridges invoice.PostgresStore → billing.InvoiceWriter.
@@ -54,4 +56,29 @@ func (a *creditNoteListerAdapter) List(ctx context.Context, tenantID, invoiceID 
 		TenantID:  tenantID,
 		InvoiceID: invoiceID,
 	})
+}
+
+// paymentRetrierAdapter bridges Stripe + invoice/customer stores → dunning.PaymentRetrier.
+type paymentRetrierAdapter struct {
+	charger       *payment.Stripe
+	invoiceStore  *invoice.PostgresStore
+	paymentSetups payment.PaymentSetupStore
+}
+
+func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invoiceID, customerID string) error {
+	inv, err := a.invoiceStore.Get(ctx, tenantID, invoiceID)
+	if err != nil {
+		return fmt.Errorf("get invoice: %w", err)
+	}
+	if inv.AmountDueCents <= 0 {
+		return nil // Nothing to charge
+	}
+
+	ps, err := a.paymentSetups.GetPaymentSetup(ctx, tenantID, customerID)
+	if err != nil || ps.StripeCustomerID == "" {
+		return fmt.Errorf("no payment method for customer")
+	}
+
+	_, err = a.charger.ChargeInvoice(ctx, tenantID, inv, ps.StripeCustomerID)
+	return err
 }

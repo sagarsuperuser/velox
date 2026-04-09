@@ -33,8 +33,10 @@ import (
 type Server struct {
 	router chi.Router
 
-	// Exported for main.go to wire the billing scheduler
+	// Exported for main.go to wire the billing scheduler + dunning
 	BillingEngine *billing.Engine
+	DunningSvc    *dunning.Service
+	SettingsStore *tenant.SettingsStore
 }
 
 func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
@@ -73,9 +75,16 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	settingsH := tenant.NewSettingsHandler(settingsStore)
 	stripeClient := payment.NewLiveStripeClient(stripeKey)
 	dunningStore := dunning.NewPostgresStore(db)
-	dunningSvc := dunning.NewService(dunningStore, nil)
+	dunningSvc := dunning.NewService(dunningStore, nil) // retrier set below after stripeAdapter created
 	dunningH := dunning.NewHandler(dunningSvc)
 	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, customerStore, dunningSvc)
+
+	// Wire payment retrier now that stripeAdapter exists
+	dunningSvc.SetRetrier(&paymentRetrierAdapter{
+		charger:       stripeAdapter,
+		invoiceStore:  invoiceStore,
+		paymentSetups: customerStore,
+	})
 	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
 
 	invoiceH := invoice.NewHandler(invoice.NewService(invoiceStore), customerStore, settingsStore, invoice.HandlerDeps{
@@ -97,6 +106,8 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 
 	s := &Server{
 		BillingEngine: engine,
+		DunningSvc:    dunningSvc,
+		SettingsStore: settingsStore,
 	}
 
 	rateLimiter := mw.NewRateLimiter(100, time.Minute)

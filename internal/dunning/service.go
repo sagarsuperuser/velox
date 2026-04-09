@@ -23,6 +23,10 @@ func NewService(store Store, retrier PaymentRetrier) *Service {
 	return &Service{store: store, retrier: retrier}
 }
 
+func (s *Service) SetRetrier(retrier PaymentRetrier) {
+	s.retrier = retrier
+}
+
 // StartDunning initiates a dunning run for a failed invoice payment.
 func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, customerID string) (domain.InvoiceDunningRun, error) {
 	// Check if there's already an active run for this invoice
@@ -119,22 +123,76 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 	run.AttemptCount++
 	now := time.Now().UTC()
 	run.LastAttemptAt = &now
-	run.State = domain.DunningAwaitingResult
 
-	// Record retry attempt event
-	s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
-		RunID:        run.ID,
-		InvoiceID:    run.InvoiceID,
-		EventType:    domain.DunningEventRetryAttempted,
-		State:        domain.DunningAwaitingResult,
-		AttemptCount: run.AttemptCount,
-	})
+	// Actually retry the payment
+	retryErr := fmt.Errorf("payment retrier not configured")
+	if s.retrier != nil {
+		retryErr = s.retrier.RetryPayment(ctx, tenantID, run.InvoiceID, run.CustomerID)
+	}
 
-	// Schedule next action
-	if run.AttemptCount < policy.MaxRetryAttempts && run.AttemptCount < len(policy.RetrySchedule) {
-		d, err := time.ParseDuration(policy.RetrySchedule[run.AttemptCount])
-		if err == nil {
-			t := now.Add(d)
+	if retryErr != nil {
+		run.State = domain.DunningScheduled // Will retry again later
+		slog.Warn("dunning retry failed",
+			"run_id", run.ID,
+			"invoice_id", run.InvoiceID,
+			"attempt", run.AttemptCount,
+			"error", retryErr,
+		)
+
+		// Record failed retry event
+		s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
+			RunID:        run.ID,
+			InvoiceID:    run.InvoiceID,
+			EventType:    domain.DunningEventRetryAttempted,
+			State:        domain.DunningScheduled,
+			AttemptCount: run.AttemptCount,
+			Reason:       retryErr.Error(),
+		})
+	} else {
+		run.State = domain.DunningResolved
+		run.Resolution = domain.ResolutionPaymentSucceeded
+		run.ResolvedAt = &now
+		run.NextActionAt = nil
+
+		s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
+			RunID:        run.ID,
+			InvoiceID:    run.InvoiceID,
+			EventType:    domain.DunningEventResolved,
+			State:        domain.DunningResolved,
+			AttemptCount: run.AttemptCount,
+			Reason:       "payment_succeeded",
+		})
+
+		slog.Info("dunning resolved — payment succeeded",
+			"run_id", run.ID,
+			"invoice_id", run.InvoiceID,
+			"attempt", run.AttemptCount,
+		)
+
+		if _, err := s.store.UpdateRun(ctx, tenantID, run); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// Schedule next retry
+	if run.AttemptCount < policy.MaxRetryAttempts {
+		// Default retry intervals: 1 day, 3 days, 7 days
+		retryIntervals := []time.Duration{24 * time.Hour, 72 * time.Hour, 168 * time.Hour}
+		if len(policy.RetrySchedule) > 0 {
+			retryIntervals = nil
+			for _, s := range policy.RetrySchedule {
+				if d, err := time.ParseDuration(s); err == nil {
+					retryIntervals = append(retryIntervals, d)
+				}
+			}
+		}
+		idx := run.AttemptCount - 1
+		if idx >= len(retryIntervals) {
+			idx = len(retryIntervals) - 1
+		}
+		if idx >= 0 && idx < len(retryIntervals) {
+			t := now.Add(retryIntervals[idx])
 			run.NextActionAt = &t
 		}
 	} else {
@@ -145,11 +203,10 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 		return err
 	}
 
-	slog.Info("dunning retry attempted",
-		"run_id", run.ID,
-		"invoice_id", run.InvoiceID,
-		"attempt", run.AttemptCount,
-	)
+	// Check if exhausted after this attempt
+	if run.AttemptCount >= policy.MaxRetryAttempts {
+		return s.exhaustRun(ctx, tenantID, run, policy)
+	}
 
 	return nil
 }

@@ -96,7 +96,7 @@ func serve() {
 	if cfg.Env == "local" {
 		billingInterval = 5 * time.Minute
 	}
-	scheduler := billing.NewScheduler(server.BillingEngine, billingInterval, 50)
+	scheduler := billing.NewScheduler(server.BillingEngine, billingInterval, 50, server.DunningSvc, server.SettingsStore)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.Port),
