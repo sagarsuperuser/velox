@@ -35,3 +35,15 @@ func (a *creditGrantAdapter) Grant(ctx context.Context, tenantID string, input c
 	})
 	return err
 }
+
+// creditNoteListerAdapter bridges creditnote.Service → invoice.CreditNoteLister.
+type creditNoteListerAdapter struct {
+	svc *creditnote.Service
+}
+
+func (a *creditNoteListerAdapter) List(ctx context.Context, tenantID, invoiceID string) ([]domain.CreditNote, error) {
+	return a.svc.List(ctx, creditnote.ListFilter{
+		TenantID:  tenantID,
+		InvoiceID: invoiceID,
+	})
+}

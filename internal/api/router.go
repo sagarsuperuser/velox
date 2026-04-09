@@ -58,20 +58,21 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	subH := subscription.NewHandler(subscription.NewService(subStore))
 	usageH := usage.NewHandler(usage.NewService(usageStore), customerStore, pricingSvc)
 	settingsStore := tenant.NewSettingsStore(db)
-	invoiceH := invoice.NewHandler(invoice.NewService(invoiceStore), customerStore, settingsStore)
-	creditH := credit.NewHandler(credit.NewService(credit.NewPostgresStore(db)))
-	webhookOutH := webhook.NewHandler(webhook.NewService(webhook.NewPostgresStore(db), nil))
-	auditLogger := audit.NewLogger(db)
-	auditH := audit.NewHandler(auditLogger)
-	settingsH := tenant.NewSettingsHandler(settingsStore)
-
-	// Credits
 	creditSvc := credit.NewService(credit.NewPostgresStore(db))
+	creditH := credit.NewHandler(creditSvc)
+	creditNoteStore := creditnote.NewPostgresStore(db)
 
 	// Payment / webhook / checkout / refund handlers
 	stripeKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
 	stripeRefunder := payment.NewStripeRefunder(stripeKey)
-	creditNoteH := creditnote.NewHandler(creditnote.NewService(creditnote.NewPostgresStore(db), invoiceStore, stripeRefunder, &creditGrantAdapter{svc: creditSvc}))
+	creditNoteSvc := creditnote.NewService(creditNoteStore, invoiceStore, stripeRefunder, &creditGrantAdapter{svc: creditSvc})
+	creditNoteH := creditnote.NewHandler(creditNoteSvc)
+
+	invoiceH := invoice.NewHandler(invoice.NewService(invoiceStore), customerStore, settingsStore, &creditNoteListerAdapter{svc: creditNoteSvc})
+	webhookOutH := webhook.NewHandler(webhook.NewService(webhook.NewPostgresStore(db), nil))
+	auditLogger := audit.NewLogger(db)
+	auditH := audit.NewHandler(auditLogger)
+	settingsH := tenant.NewSettingsHandler(settingsStore)
 	stripeClient := payment.NewLiveStripeClient(stripeKey)
 	dunningStore := dunning.NewPostgresStore(db)
 	dunningSvc := dunning.NewService(dunningStore, nil)
