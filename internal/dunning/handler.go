@@ -1,10 +1,12 @@
 package dunning
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -14,12 +16,23 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
-type Handler struct {
-	svc *Service
+// InvoiceUpdater updates invoice status when dunning is resolved.
+type InvoiceUpdater interface {
+	UpdateStatus(ctx context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error)
+	UpdatePayment(ctx context.Context, tenantID, id string, paymentStatus domain.InvoicePaymentStatus, stripePaymentIntentID, lastPaymentError string, paidAt *time.Time) (domain.Invoice, error)
 }
 
-func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+type Handler struct {
+	svc      *Service
+	invoices InvoiceUpdater
+}
+
+func NewHandler(svc *Service, invoices ...InvoiceUpdater) *Handler {
+	h := &Handler{svc: svc}
+	if len(invoices) > 0 {
+		h.invoices = invoices[0]
+	}
+	return h
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -142,6 +155,24 @@ func (h *Handler) resolveRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.Validation(w, r, err.Error())
 		return
+	}
+
+	// Propagate resolution to invoice
+	if h.invoices != nil && run.InvoiceID != "" {
+		switch domain.DunningResolution(input.Resolution) {
+		case domain.ResolutionPaymentSucceeded:
+			now := time.Now().UTC()
+			if _, err := h.invoices.UpdatePayment(r.Context(), tenantID, run.InvoiceID,
+				domain.PaymentSucceeded, "", "", &now); err != nil {
+				slog.Warn("failed to mark invoice as paid after dunning resolution", "invoice_id", run.InvoiceID, "error", err)
+			} else {
+				h.invoices.UpdateStatus(r.Context(), tenantID, run.InvoiceID, domain.InvoicePaid)
+			}
+		case domain.ResolutionNotCollectible:
+			if _, err := h.invoices.UpdateStatus(r.Context(), tenantID, run.InvoiceID, domain.InvoiceVoided); err != nil {
+				slog.Warn("failed to void invoice after dunning resolution", "invoice_id", run.InvoiceID, "error", err)
+			}
+		}
 	}
 
 	respond.JSON(w, r, http.StatusOK, run)
