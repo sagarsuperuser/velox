@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, formatDateTime, type AuditEntry } from '@/lib/api'
+import { api, type AuditEntry } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { FormSelect } from '@/components/FormField'
@@ -33,6 +33,24 @@ function describeAction(entry: AuditEntry): string {
   }
 }
 
+function groupByDate(entries: AuditEntry[]): { date: string; entries: AuditEntry[] }[] {
+  const groups: { date: string; entries: AuditEntry[] }[] = []
+  let currentDate = ''
+
+  for (const entry of entries) {
+    const date = new Date(entry.created_at).toLocaleDateString('en-US', {
+      year: 'numeric', month: 'long', day: 'numeric',
+    })
+    if (date !== currentDate) {
+      groups.push({ date, entries: [] })
+      currentDate = date
+    }
+    groups[groups.length - 1].entries.push(entry)
+  }
+
+  return groups
+}
+
 export function AuditLogPage() {
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -40,7 +58,8 @@ export function AuditLogPage() {
   const [resourceType, setResourceType] = useState('')
   const [action, setAction] = useState('')
   const [page, setPage] = useState(1)
-  const pageSize = 25
+  const pageSize = 50
+
   const loadEntries = () => {
     setLoading(true)
     setError(null)
@@ -113,34 +132,36 @@ export function AuditLogPage() {
           const totalPages = Math.ceil(entries.length / pageSize)
           const currentPage = Math.min(page, totalPages || 1)
           const paginated = entries.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+          const groups = groupByDate(paginated)
           return (
           <>
-          <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100 bg-gray-50">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3 w-44">Timestamp</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Event</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3 w-24">Actor</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {paginated.map(entry => (
-                <tr key={entry.id} className="hover:bg-gray-50/50 transition-colors group">
-                  <td className="px-6 py-3 text-sm text-gray-500 whitespace-nowrap align-top">{formatDateTime(entry.created_at)}</td>
-                  <td className="px-6 py-3">
-                    <div className="flex items-start gap-2.5">
-                      <Badge status={entry.action} />
-                      <span className="text-sm text-gray-900">{describeAction(entry)}</span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-500 text-right align-top">
-                    {entry.actor_type === 'api_key' ? 'API Key' : entry.actor_type === 'system' ? 'System' : entry.actor_type}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div>
+            {groups.map((group, gi) => (
+              <div key={group.date}>
+                {/* Day header */}
+                <div className={`px-6 py-2 bg-gray-50 text-xs font-medium text-gray-500 ${gi > 0 ? 'border-t border-gray-100' : ''}`}>
+                  {group.date}
+                </div>
+                {/* Events for this day */}
+                <div className="divide-y divide-gray-50">
+                  {group.entries.map(entry => {
+                    const time = new Date(entry.created_at).toLocaleTimeString('en-US', {
+                      hour: 'numeric', minute: '2-digit',
+                    })
+                    return (
+                      <div key={entry.id} className="flex items-center px-6 py-2 hover:bg-gray-50/50 transition-colors">
+                        <span className="text-sm text-gray-400 w-20 shrink-0">{time}</span>
+                        <Badge status={entry.action} />
+                        <span className="text-sm text-gray-900 ml-2.5 flex-1 truncate">{describeAction(entry)}</span>
+                        <span className="text-sm text-gray-400 shrink-0 ml-4">
+                          {entry.actor_type === 'api_key' ? 'API Key' : entry.actor_type === 'system' ? 'System' : entry.actor_type}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
           <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} />
           </>
