@@ -215,6 +215,14 @@ func (m *mockInvoiceUpdaterHandler) GetByStripePaymentIntentID(_ context.Context
 	return domain.Invoice{ID: id, TenantID: inv.tenantID}, nil
 }
 
+func (m *mockInvoiceUpdaterHandler) Get(_ context.Context, _, id string) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return domain.Invoice{}, fmt.Errorf("not found")
+	}
+	return domain.Invoice{ID: id, TenantID: inv.tenantID}, nil
+}
+
 type mockWebhookStoreH struct {
 	seen map[string]bool
 }

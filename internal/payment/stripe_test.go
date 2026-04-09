@@ -82,6 +82,14 @@ func (m *mockInvoiceUpdater) GetByStripePaymentIntentID(_ context.Context, _, pi
 	return m.invoices[id], nil
 }
 
+func (m *mockInvoiceUpdater) Get(_ context.Context, _, id string) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	return inv, nil
+}
+
 type mockWebhookStore struct {
 	events map[string]bool
 }
