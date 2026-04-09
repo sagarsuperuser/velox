@@ -172,21 +172,11 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		}
 	}
 
-	// Reduce the invoice's amount_due
+	// Reduce the invoice's amount_due — this is the only financial effect.
+	// Credit notes do NOT add to the customer's prepaid balance (that would
+	// be double-counting: once on this invoice, again on the next).
 	if _, err := s.invoices.ApplyCreditNote(ctx, tenantID, cn.InvoiceID, cn.TotalCents); err != nil {
 		return domain.CreditNote{}, fmt.Errorf("reduce invoice amount: %w", err)
-	}
-
-	// For credit type: add to customer's credit balance
-	if cn.CreditAmountCents > 0 && s.credits != nil {
-		if err := s.credits.Grant(ctx, tenantID, CreditGrantInput{
-			CustomerID:  cn.CustomerID,
-			AmountCents: cn.CreditAmountCents,
-			Description: fmt.Sprintf("Credit note %s", cn.CreditNoteNumber),
-		}); err != nil {
-			// Non-fatal: credit note still issued, balance update failed
-			fmt.Printf("warn: failed to grant credits for credit note %s: %v\n", cn.ID, err)
-		}
 	}
 
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.CreditNoteIssued)
