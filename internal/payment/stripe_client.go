@@ -32,9 +32,11 @@ func (c *LiveStripeClient) CreatePaymentIntent(_ context.Context, params Payment
 	}
 
 	pi, err := paymentintent.New(&stripe.PaymentIntentParams{
-		Amount:   stripe.Int64(params.AmountCents),
-		Currency: stripe.String(params.Currency),
-		Customer: stripe.String(params.CustomerID),
+		Amount:     stripe.Int64(params.AmountCents),
+		Currency:   stripe.String(params.Currency),
+		Customer:   stripe.String(params.CustomerID),
+		Confirm:    stripe.Bool(true),
+		OffSession: stripe.Bool(true),
 		Params: stripe.Params{
 			IdempotencyKey: stripe.String(params.IdempotencyKey),
 			Metadata:       metadata,
