@@ -75,6 +75,14 @@ func (a *invoiceStoreAdapter) CreateLineItem(ctx context.Context, tenantID strin
 	return a.store.CreateLineItem(ctx, tenantID, item)
 }
 
+func (a *invoiceStoreAdapter) ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
+	return a.store.ApplyCreditNote(ctx, tenantID, id, amountCents)
+}
+
+func (a *invoiceStoreAdapter) GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
+	return a.store.Get(ctx, tenantID, id)
+}
+
 // TestFullBillingCycle_E2E tests the complete flow against real Postgres:
 // tenant → customer → meter → rating rule → plan → subscription → usage → billing engine → invoice
 func TestFullBillingCycle_E2E(t *testing.T) {
@@ -198,7 +206,7 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil,
+		nil, nil, nil, nil,
 	)
 
 	count, errs := engine.RunCycle(ctx, 50)

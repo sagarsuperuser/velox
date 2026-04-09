@@ -127,6 +127,25 @@ func (m *mockInvoices) CreateLineItem(_ context.Context, tenantID string, item d
 	return item, nil
 }
 
+func (m *mockInvoices) ApplyCreditAmount(_ context.Context, _, id string, amountCents int64) (domain.Invoice, error) {
+	for i, inv := range m.invoices {
+		if inv.ID == id {
+			m.invoices[i].AmountDueCents -= amountCents
+			return m.invoices[i], nil
+		}
+	}
+	return domain.Invoice{}, fmt.Errorf("not found")
+}
+
+func (m *mockInvoices) GetInvoice(_ context.Context, _, id string) (domain.Invoice, error) {
+	for _, inv := range m.invoices {
+		if inv.ID == id {
+			return inv, nil
+		}
+	}
+	return domain.Invoice{}, fmt.Errorf("not found")
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -185,7 +204,7 @@ func setupEngine() (*Engine, *mockSubs, *mockUsage, *mockPricing, *mockInvoices)
 
 	invoices := &mockInvoices{}
 
-	engine := NewEngine(subs, usage, pricing, invoices, nil)
+	engine := NewEngine(subs, usage, pricing, invoices, nil, nil, nil, nil)
 	return engine, subs, usage, pricing, invoices
 }
 
@@ -213,19 +232,16 @@ func TestRunCycle_GeneratesInvoice(t *testing.T) {
 	if inv.SubscriptionID != "sub_1" {
 		t.Errorf("got subscription_id %q, want sub_1", inv.SubscriptionID)
 	}
-	if inv.Status != domain.InvoiceDraft {
-		t.Errorf("got status %q, want draft", inv.Status)
+	if inv.Status != domain.InvoiceFinalized {
+		t.Errorf("got status %q, want finalized", inv.Status)
 	}
 	if inv.Currency != "USD" {
 		t.Errorf("got currency %q, want USD", inv.Currency)
 	}
 
-	// Expected: base fee $49 + API (1000*$0.10 + 500*$0.05 = $12.50) + storage $25 = $86.50
-	// API: 1000*10 + 500*5 = 10000 + 2500 = 12500 cents
-	// Storage: flat 2500 cents
-	// Base: 4900 cents
-	// Total: 4900 + 12500 + 2500 = 19900 cents
-	expectedTotal := int64(4900 + 12500 + 2500)
+	// Expected: base fee $49 + API graduated (1000*10 + 500*5 = 12500) + storage flat (250*2500 = 625000)
+	// Total: 4900 + 12500 + 625000 = 642400 cents
+	expectedTotal := int64(4900 + 12500 + 625000)
 	if inv.TotalAmountCents != expectedTotal {
 		t.Errorf("got total %d cents, want %d", inv.TotalAmountCents, expectedTotal)
 	}
@@ -344,8 +360,8 @@ func TestRunCycle_LineItemDetails(t *testing.T) {
 				}
 			}
 			if item.MeterID == "mtr_storage" {
-				if item.AmountCents != 2500 {
-					t.Errorf("storage amount: got %d, want 2500", item.AmountCents)
+				if item.AmountCents != 625000 { // 250 qty * 2500 flat rate
+					t.Errorf("storage amount: got %d, want 625000", item.AmountCents)
 				}
 				if item.PricingMode != "flat" {
 					t.Errorf("storage pricing_mode: got %q, want flat", item.PricingMode)
@@ -376,10 +392,10 @@ func TestRunCycle_WithPriceOverride(t *testing.T) {
 	}
 
 	inv := invoices.invoices[0]
-	// Expected: base $49 + API flat $50 (override) + storage flat $25 = $124
-	expectedTotal := int64(4900 + 5000 + 2500)
+	// Expected: base $49 + API flat (1500*5000=7500000) + storage flat (250*2500=625000)
+	expectedTotal := int64(4900 + 7500000 + 625000)
 	if inv.TotalAmountCents != expectedTotal {
-		t.Errorf("with override: got %d cents, want %d (base $49 + API override $50 + storage $25)",
+		t.Errorf("with override: got %d cents, want %d",
 			inv.TotalAmountCents, expectedTotal)
 	}
 }

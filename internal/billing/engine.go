@@ -21,17 +21,29 @@ type SettingsReader interface {
 }
 
 type Engine struct {
-	subs     SubscriptionReader
-	usage    UsageAggregator
-	pricing  PricingReader
-	invoices InvoiceWriter
-	credits  CreditApplier
-	settings SettingsReader
+	subs          SubscriptionReader
+	usage         UsageAggregator
+	pricing       PricingReader
+	invoices      InvoiceWriter
+	credits       CreditApplier
+	settings      SettingsReader
+	paymentSetups PaymentSetupReader
+	charger       InvoiceCharger
 }
 
 // CreditApplier applies customer credits to an invoice before charging.
 type CreditApplier interface {
 	ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64, invoiceNumber ...string) (int64, error)
+}
+
+// PaymentSetupReader checks if a customer has a payment method.
+type PaymentSetupReader interface {
+	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
+}
+
+// InvoiceCharger creates a Stripe PaymentIntent for a finalized invoice.
+type InvoiceCharger interface {
+	ChargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID string) (domain.Invoice, error)
 }
 
 // SubscriptionReader reads subscription and plan data for billing.
@@ -59,10 +71,11 @@ type InvoiceWriter interface {
 	CreateInvoice(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error)
 	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
 	ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
+	GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 }
 
-func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader) *Engine {
-	return &Engine{subs: subs, usage: usage, pricing: pricing, invoices: invoices, credits: credits, settings: settings}
+func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader, paymentSetups PaymentSetupReader, charger InvoiceCharger) *Engine {
+	return &Engine{subs: subs, usage: usage, pricing: pricing, invoices: invoices, credits: credits, settings: settings, paymentSetups: paymentSetups, charger: charger}
 }
 
 // RunCycle finds all subscriptions due for billing and generates invoices.
@@ -229,7 +242,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		CustomerID:         sub.CustomerID,
 		SubscriptionID:     sub.ID,
 		InvoiceNumber:      invoiceNumber,
-		Status:             domain.InvoiceDraft,
+		Status:             domain.InvoiceFinalized,
 		PaymentStatus:      domain.PaymentPending,
 		Currency:           plan.Currency,
 		SubtotalCents:      subtotal,
@@ -268,6 +281,24 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 					"credited_cents", credited,
 					"remaining_due", subtotal-credited,
 				)
+			}
+		}
+	}
+
+	// Auto-charge: if customer has payment method, create PaymentIntent
+	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
+		if ps, err := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID); err == nil &&
+			ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
+			// Re-read invoice to get updated amount_due after credits
+			if updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
+				inv = updatedInv
+			}
+			if inv.AmountDueCents > 0 {
+				if _, err := e.charger.ChargeInvoice(ctx, sub.TenantID, inv, ps.StripeCustomerID); err != nil {
+					slog.Warn("auto-charge failed", "invoice_id", inv.ID, "error", err)
+				} else {
+					slog.Info("auto-charge initiated", "invoice_id", inv.ID)
+				}
 			}
 		}
 	}

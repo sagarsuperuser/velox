@@ -92,7 +92,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 
 	// Billing engine + manual trigger (with credit auto-application)
 	engine := billing.NewEngine(subStore, usageStore, pricingStore,
-		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore)
+		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, customerStore, stripeAdapter)
 	billingH := billing.NewHandler(engine, subStore)
 
 	s := &Server{
