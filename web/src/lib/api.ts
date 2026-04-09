@@ -131,8 +131,13 @@ export const api = {
     request<CustomerOverview>('GET', `/customer-portal/${customerId}/overview`),
 
   // Usage
-  usageSummary: (customerId: string) =>
-    request<UsageSummary>('GET', `/usage-summary/${customerId}`),
+  usageSummary: (customerId: string, from?: string, to?: string) => {
+    const params = new URLSearchParams()
+    if (from) params.set('from', from)
+    if (to) params.set('to', to)
+    const qs = params.toString()
+    return request<UsageSummary>('GET', `/usage-summary/${customerId}${qs ? '?' + qs : ''}`)
+  },
   listUsageEvents: (params?: string) =>
     request<{ data: UsageEvent[] }>('GET', `/usage-events${params ? '?' + params : ''}`),
 
