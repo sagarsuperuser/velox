@@ -1,213 +1,184 @@
 # Velox Manual E2E Test Plan
 
 ## Prerequisites
-- Server running: `DATABASE_URL="..." go run ./cmd/velox`
-- Frontend running: `cd web && npm run dev`
-- Bootstrap done: `POST /v1/bootstrap`
-- Logged in with platform API key
+- `cp .env.example .env` — fill in Stripe test keys
+- `make up` — start Postgres
+- `make dev` — start server (auto-migrates)
+- `cd web && npm run dev` — start frontend
+- `stripe listen --forward-to localhost:8080/v1/webhooks/stripe` — webhook forwarding
+- Bootstrap: `POST /v1/bootstrap` or `make bootstrap`
 
 ---
 
 ## 1. Tenant Onboarding
-- [ ] Open app, see login page
-- [ ] Enter platform API key, click Login
-- [ ] Dashboard loads with 0 customers, 0 subscriptions, 0 invoices
-- [ ] "Get Started" section visible with 3 steps
+- [ ] Open http://localhost:3000 — see login page
+- [ ] Enter API key from bootstrap, click Login
+- [ ] Dashboard loads with 0 customers, 0 subs, 0 invoices
+- [ ] "Get Started" section visible
 
 ## 2. Settings
 - [ ] Go to Settings
 - [ ] Set company name, email, phone, address
-- [ ] Set invoice prefix (e.g. "ACME"), currency, timezone, net terms
-- [ ] Click Save, see "Settings saved" confirmation
-- [ ] Refresh page, verify values persisted
-- [ ] **Validation**: Enter single-digit phone (e.g. "5"), tab out — see "Invalid phone number" inline error
-- [ ] **Validation**: Enter bad email (e.g. "abc"), tab out — see "Invalid email address"
-- [ ] **Validation**: Submit with bad phone — form blocked, field focused
+- [ ] Set invoice prefix (e.g. "ACME"), net payment terms (e.g. 15), currency, timezone
+- [ ] Save — "Settings saved" confirmation
+- [ ] Refresh — values persisted
+- [ ] **Validation**: bad email/phone — inline errors on blur
+- [ ] Verify: hints explain what each setting controls
 
-## 3. Pricing Setup
-- [ ] Go to Pricing page
-- [ ] Create a Meter (key: `api_calls`, name: "API Calls", aggregation: sum)
-- [ ] Create a Rating Rule (key: `api_calls`, mode: flat, amount: $0.01)
-- [ ] Create a Plan (code: `pro`, name: "Pro Plan", interval: monthly, base: $49.00, attach the meter)
-- [ ] Verify all 3 appear in their tables with **active** status
-- [ ] Click plan name — navigates to Plan detail page
-- [ ] Click meter name — navigates to Meter detail page
-- [ ] **Validation**: Try creating plan with empty name — see inline error
-- [ ] **Validation**: Try duplicate plan code — see humanized error message
+## 3. Pricing — Plans, Meters, Rating Rules
+- [ ] Go to Pricing > Rules tab
+- [ ] Create Rating Rule: key `api_calls`, name "API Call Pricing", mode Flat, $0.01/unit
+- [ ] Status shows "active" (not draft)
+- [ ] Go to Meters tab
+- [ ] Create Meter: key `api_calls`, name "API Calls", unit "request", aggregation Sum
+- [ ] **Select the rating rule** from dropdown (important — without this, usage won't be priced)
+- [ ] Go to Plans tab
+- [ ] Create Plan: code `pro`, name "Pro Plan", Monthly, $49.00, USD
+- [ ] **Attach the meter** to the plan
+- [ ] Click plan name — navigates to Plan detail
+- [ ] Verify: meters section shows "API Calls" with "Detach" button
+- [ ] Verify: full-row click works on all tabs
 
-## 4. Plan Detail
-- [ ] Verify breadcrumbs: Pricing > Pro Plan (Pricing link goes to /pricing)
-- [ ] Key metrics row: Base Price, Interval, Currency, Active Subscriptions
-- [ ] Properties card with all details + copy button on ID
-- [ ] Meters section shows attached meter with aggregation + unit info
-- [ ] Click "+ Attach Meter" — opens picker modal
-- [ ] Click "Detach" on meter — confirmation dialog appears
-- [ ] Edit button (pencil icon) — opens Edit Plan modal
-- [ ] Edit modal: change name, verify "No changes" button when nothing changed
-- [ ] Edit modal: change status to Archived, verify it saves
-
-## 5. Meter Detail
-- [ ] Verify breadcrumbs: Pricing > API Calls
-- [ ] Properties card, linked rating rule with pricing display
-- [ ] Plans table shows which plans use this meter
-- [ ] Full-row click navigates to plan detail
-
-## 6. Customer Creation
-- [ ] Go to Customers — when empty, single centered "Add Customer" CTA (no redundant header button)
+## 4. Customer Creation
+- [ ] Go to Customers — empty state with single centered CTA
 - [ ] Click "Add Customer"
-- [ ] **Validation**: Submit empty form — inline errors on required fields
-- [ ] **Validation**: Bad email — inline error on blur
-- [ ] Fill valid data: name "Acme Corp", external_id "acme_corp", email "billing@acme.com"
-- [ ] Click Create, see success toast
-- [ ] Customer appears in list — full-row click navigates to detail
-- [ ] When list has data, header shows "Add Customer" button + "Export CSV"
+- [ ] **Validation**: submit empty — inline errors
+- [ ] **Validation**: bad email — error on blur
+- [ ] Create: name "ACME CORP", external_id "acme_corp", email "billing@acme.com"
+- [ ] Customer appears in list — full-row click to detail
 
-## 7. Customer Detail
-- [ ] Header: name, ID with copy button, Edit button (pencil icon)
-- [ ] Key metrics: Email, Credit Balance, Subscriptions count, Created
-- [ ] Details card: External ID, Email, Status, Created, ID
-- [ ] All text consistently `text-sm` (no faint/tiny labels)
+## 5. Billing Profile
+- [ ] Customer detail — "Set Up Billing Profile" CTA
+- [ ] Fill: legal name, email, phone
+- [ ] Select country "United States" — State becomes dropdown with full names ("California")
+- [ ] Fill address, postal code, tax ID, currency
+- [ ] Save — profile shows in 3-column grid on detail page
+- [ ] Edit — "No changes" button when nothing changed
 
-## 8. Billing Profile
-- [ ] Click "Set Up Billing Profile" CTA (centered, prominent)
-- [ ] Modal: 3 sections separated by dividers (CONTACT / ADDRESS / TAX & BILLING)
-- [ ] Section labels are uppercase/tracking-wider (visually distinct from field labels)
-- [ ] Select country "United States" — State field becomes dropdown with full state names ("California" not "CA")
-- [ ] Select country "Canada" — Province dropdown with full names ("British Columbia")
-- [ ] Select country "India" — State dropdown with full names ("Maharashtra")
-- [ ] Other countries — State is free text
-- [ ] Tax ID placeholder adapts: US="EIN (e.g. 12-3456789)", UK="VAT number", India="GSTIN"
-- [ ] Currency shows full names: "USD — US Dollar"
-- [ ] **Validation**: Bad email/phone — inline errors on blur
-- [ ] Save, verify data shows on detail page in grouped layout (Contact, Address, Tax)
-- [ ] Edit again — "No changes" button disabled when nothing changed
-- [ ] After profile exists, header shows "Edit" button (pencil icon) instead of "Set up" CTA
+## 6. Payment Method Setup (Stripe)
+- [ ] Customer detail — "Set Up Payment" button
+- [ ] Opens Stripe Checkout in new tab
+- [ ] Enter card `4242 4242 4242 4242`, expiry `12/30`, CVC `123`
+- [ ] Complete — redirects back, payment status shows "ready"
+- [ ] Check Stripe CLI — `checkout.session.completed` webhook received
 
-## 9. Subscription Creation
-- [ ] From Customer detail, click "+ Add" (solid primary button in Subscriptions section)
-- [ ] OR go to Subscriptions page, click "Add Subscription" (only shows when list has data)
-- [ ] When list empty — single centered CTA, no header button
-- [ ] Fill: name, code, select plan, check "Start immediately"
-- [ ] Click Create, see success toast
-- [ ] Subscription shows on Customer detail with status badge (all statuses shown, not just active)
+## 7. Subscription Creation
+- [ ] Customer detail — click "+ Add" in Subscriptions section
+- [ ] Create: name, code, select Pro Plan, check "Start immediately"
+- [ ] Subscription appears with "active" badge
+- [ ] Click into subscription detail — Plan links to /plans/:id, Customer links to /customers/:id
+- [ ] Verify: billing period set
 
-## 10. Subscription Detail
-- [ ] Header: name, ID with copy, code badge
-- [ ] **Draft status**: "Activate" button visible (solid primary)
-- [ ] Click Activate — subscription becomes active with billing period
-- [ ] **Active status**: Change Plan, Pause, Cancel buttons visible
-- [ ] Key metrics: Customer (clickable link), Plan (clickable link), Billing Period, Status
-- [ ] Properties: Plan links to /plans/:id, Customer links to /customers/:id
-- [ ] Invoice Preview: shows preview when active, friendly message when draft ("Activate the subscription...")
-- [ ] No raw "HTTP 422" errors
-
-## 11. Usage Ingestion (via API)
+## 8. Usage Ingestion
 ```bash
-# Single event
 curl -X POST http://localhost:8080/v1/usage-events \
   -H "Authorization: Bearer <secret_key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "external_customer_id": "acme_corp123",
+    "external_customer_id": "acme_corp",
     "event_name": "api_calls",
-    "quantity": 1500
+    "quantity": 5000
   }'
-
-# Batch events
-curl -X POST http://localhost:8080/v1/usage-events/batch \
-  -H "Authorization: Bearer <secret_key>" \
-  -H "Content-Type: application/json" \
-  -d '[
-    {"external_customer_id": "acme_corp123", "event_name": "api_calls", "quantity": 1500},
-    {"external_customer_id": "acme_corp123", "event_name": "api_calls", "quantity": 2500}
-  ]'
 ```
-- [ ] Verify events appear on Usage Events page
-- [ ] Verify Customer Detail shows usage summary
-- [ ] Quantity defaults to 1 when omitted (count-based meters)
+- [ ] Verify: Usage Events page shows the event with timestamp + time
+- [ ] Verify: Customer detail "Usage This Period" shows meter name + unit + billing period dates
 
-## 12. Invoice Generation
-- [ ] Go to Dashboard, click "Generate Invoices" (solid primary button)
-- [ ] See "Generated N invoice(s)" result
-- [ ] Go to Invoices page, verify invoice appears as "draft"
-- [ ] Full-row click navigates to invoice detail
-- [ ] Verify line items: base plan ($49.00) + usage charges
-- [ ] Verify customer name (not raw ID) in properties
+## 9. Invoice Generation + Auto-Charge
+- [ ] Dashboard — click "Generate Invoices"
+- [ ] Invoice created as **finalized** (not draft — auto-finalized)
+- [ ] Credits auto-applied (if any) — amount_due reduced
+- [ ] Auto-charge via Stripe — payment status goes to "processing" then "paid" (via webhook)
+- [ ] Check Stripe CLI: `payment_intent.succeeded` received
+- [ ] Invoice detail: Subtotal + Prepaid Credits (if any) + Amount Due breakdown
+- [ ] Line items: base fee ($49) + usage (5,000 × $0.01 = $50) = $99 total
 
-## 13. Invoice Actions
-- [ ] "Finalize" button (solid primary) — status changes to "finalized"
-- [ ] "Download PDF" (solid primary) — PDF downloads correctly
-- [ ] "Email" (bordered) — enter email, send
-- [ ] "Issue Credit" (bordered) — opens credit note modal
-- [ ] "Void" (bordered red) — confirm dialog with danger icon — invoice voided
-- [ ] **Button hierarchy**: Finalize/Download = solid, Email/Issue Credit = bordered, Void = bordered red
+## 10. PDF Invoice
+- [ ] Click "Download PDF"
+- [ ] Verify: FROM (company from Settings) — name, address, email, phone
+- [ ] Verify: BILL TO (customer billing profile) — name, full address, email
+- [ ] Verify: invoice number from Settings prefix (e.g. ACME-000001)
+- [ ] Verify: due date uses net payment terms from Settings
+- [ ] Verify: line items with comma-formatted quantities
+- [ ] Verify: Subtotal + Prepaid credits (if applied) + Amount Due
+- [ ] Verify: "Paid on [date] - Thank you!" if paid
 
-## 14. Credit Notes
-- [ ] Go to Credit Notes, click "Create Credit Note"
-- [ ] Wide modal with Reason + Type side by side
-- [ ] Type explains itself: "Credit — apply to balance", "Refund — return to payment method"
-- [ ] Line Item section with divider
-- [ ] Description hint: "Defaults to reason if left blank"
-- [ ] Create credit note (draft), "Issue" button in table, "Void" button (danger)
+## 11. Credit Notes
+- [ ] Go to finalized/paid invoice — click "Issue Credit"
+- [ ] Enter reason, amount, type (Credit or Refund)
+- [ ] Create — draft credit note appears on Credit Notes page
+- [ ] Click "Issue" — credit note issued
+- [ ] Invoice detail: amount_due reduced, credit note shown in totals breakdown
+- [ ] PDF: credit note shown in totals
 
-## 15. Credits
-- [ ] Select a customer, click "Grant Credits"
-- [ ] **Validation**: Empty amount, amount = 0
-- [ ] Confirm grant in confirmation dialog
-- [ ] Verify balance updates, ledger shows entry
+## 12. Credits
+- [ ] Go to Credits — select customer
+- [ ] Click "Grant Credits" — enter $25, description
+- [ ] Confirm in dialog
+- [ ] Balance shows $25, transaction history shows grant
+- [ ] Generate next invoice — credits auto-applied, shown on invoice
+- [ ] Credits page: "Applied to invoice ACME-000002" (human-readable, not raw ID)
 
-## 16. Dunning
-- [ ] Go to Dunning > Policy tab — shows form (no "Something went wrong" error)
-- [ ] Save policy, toggle enabled/disabled
-- [ ] Runs tab — empty state or dunning runs with "Resolve" button
+## 13. Void Invoice
+- [ ] Void a finalized invoice
+- [ ] Stripe PaymentIntent canceled (if exists)
+- [ ] Credits reversed — returned to customer balance
+- [ ] Invoice status: voided
 
-## 17. API Keys
-- [ ] Create key, see created key modal with copy button
-- [ ] Revoke — danger confirmation dialog
+## 14. Dunning (Failed Payment Recovery)
+- [ ] Go to Dunning > Policy — enable, set max retries 3, grace period 3 days
+- [ ] Create second customer "Bad Card Corp" with billing profile + US address
+- [ ] Set up payment with card `4000 0000 0000 0341` (saves but declines charges)
+- [ ] Create subscription, ingest usage
+- [ ] Generate invoice — auto-charge fails
+- [ ] Dunning > Runs: run appears with state "scheduled", "0 of 3" retries
+- [ ] Wait for scheduler (or fast-forward next_action_at in DB)
+- [ ] After 3 retries: state "escalated"
+- [ ] Click "Resolve" — select "Invoice Not Collectible"
+- [ ] Invoice becomes voided
+- [ ] Or: resolve as "Payment Succeeded" — invoice becomes paid
+
+## 15. API Keys
+- [ ] Create key — shown once, copy button
+- [ ] Revoke — danger confirmation, self-revoke warning
 - [ ] Key shows as revoked in list
 
-## 18. Webhooks
+## 16. Webhooks
 - [ ] Add endpoint with URL validation
-- [ ] See signing secret modal
+- [ ] Signing secret shown once
 - [ ] Events tab shows delivery history
 
-## 19. Audit Log
-- [ ] All actions logged with correct labels
-- [ ] Resource IDs copyable
+## 17. Audit Log
+- [ ] Timeline feed grouped by day
+- [ ] Human-readable descriptions ("Finalized invoice ACME-000001")
+- [ ] Colored badges per action type
+- [ ] Filters: resource type, action type
 
-## 20. Dashboard
-- [ ] Stat cards: Customers, Subscriptions, Invoices, Revenue, MRR
-- [ ] "Needs Attention" — shows actionable items or "No pending issues"
-- [ ] "Active Subscriptions" — scroll contained
-- [ ] "Recent Activity" — typed icons per action
-- [ ] "View all" links are `text-sm text-gray-500` (visible but not loud)
-- [ ] "Generate Invoices" is solid primary button
+## 18. Dashboard
+- [ ] Stat cards: Customers, Subscriptions, Invoices, Revenue (paid only), MRR
+- [ ] "Needs Attention" — failed/pending invoices
+- [ ] "Active Subscriptions" — with customer names
+- [ ] "Recent Activity" — last 10 actions
+- [ ] "Generate Invoices" button (solid primary)
 
-## 21. UI/UX Quality Check
-- [ ] **Badges**: visible with stronger backgrounds, ring borders, rounded-md (not pills)
-- [ ] **Table headers**: bg-gray-50 background on all tables
-- [ ] **Full-row click**: click anywhere on row navigates (not just name link)
-- [ ] **Buttons**: solid = create/add, bordered = edit/change, bordered red = danger
-- [ ] **Edit buttons**: pencil icon, hover:border-gray-400 darkening
-- [ ] **Modals**: header with border, close button with hover bg, footer with border-t
-- [ ] **Cancel buttons**: bordered (not bare text)
-- [ ] **Confirm dialogs**: contextual icon (red triangle for danger, blue info for default)
+## 19. UI/UX Quality
+- [ ] **Badges**: visible with ring borders, rounded-md
+- [ ] **Table headers**: bg-gray-50
+- [ ] **Full-row click**: all entity tables navigate on click
+- [ ] **Buttons**: solid=create, bordered=edit, bordered-red=danger
+- [ ] **Edit buttons**: pencil icon
+- [ ] **Modals**: header border, close button hover, footer border-t
 - [ ] **No browser validation popups**: all forms use noValidate + inline errors
-- [ ] **Inline errors**: red border + text on blur, focus first error on submit
-- [ ] **Empty states**: single centered CTA when list empty, header button when data exists
-- [ ] **Typography**: labels = text-sm text-gray-500, values = text-sm text-gray-900
-- [ ] **Breadcrumbs**: text-gray-500 hover:text-gray-900 (not faint gray-400)
-- [ ] **Copy buttons**: w-6 h-6 on all detail page IDs
+- [ ] **Save buttons**: disabled when no changes
+- [ ] **Typography**: labels text-sm text-gray-500, values text-sm text-gray-900
+- [ ] **Breadcrumbs**: text-gray-500 hover:text-gray-900
+- [ ] **Empty states**: single CTA, no redundant buttons
 - [ ] **Error messages**: humanized ("already exists" → friendly message)
-- [ ] **Save buttons**: disabled + "No changes" when form unchanged (Edit modals)
+- [ ] **Copy buttons**: on all detail page IDs
 
-## 22. Responsive & Edge Cases
-- [ ] All tables horizontally scrollable on narrow screens
-- [ ] Empty states consistent across all pages (EmptyState component)
-- [ ] Error states show retry button
-- [ ] Pagination on Customers, Invoices, Subscriptions, Audit Log, Usage Events
-- [ ] CSV export on Customers and Invoices pages
-- [ ] Search/filter on Customers, Subscriptions, Invoices
+## 20. Multi-Instance Safety
+- [ ] Billing: FOR UPDATE SKIP LOCKED on GetDueBilling
+- [ ] Dunning: FOR UPDATE SKIP LOCKED on ListDueRuns
+- [ ] No double-billing possible with multiple server instances
 
 ---
 
@@ -217,23 +188,21 @@ curl -X POST http://localhost:8080/v1/usage-events/batch \
 |---|------|--------|-------|
 | 1 | Tenant Onboarding | | |
 | 2 | Settings | | |
-| 3 | Pricing Setup | | |
-| 4 | Plan Detail | | |
-| 5 | Meter Detail | | |
-| 6 | Customer Creation | | |
-| 7 | Customer Detail | | |
-| 8 | Billing Profile | | |
-| 9 | Subscription Creation | | |
-| 10 | Subscription Detail | | |
-| 11 | Usage Ingestion | | |
-| 12 | Invoice Generation | | |
-| 13 | Invoice Actions | | |
-| 14 | Credit Notes | | |
-| 15 | Credits | | |
-| 16 | Dunning | | |
-| 17 | API Keys | | |
-| 18 | Webhooks | | |
-| 19 | Audit Log | | |
-| 20 | Dashboard | | |
-| 21 | UI/UX Quality | | |
-| 22 | Responsive & Edge Cases | | |
+| 3 | Pricing | | |
+| 4 | Customer Creation | | |
+| 5 | Billing Profile | | |
+| 6 | Payment Setup (Stripe) | | |
+| 7 | Subscription Creation | | |
+| 8 | Usage Ingestion | | |
+| 9 | Invoice + Auto-Charge | | |
+| 10 | PDF Invoice | | |
+| 11 | Credit Notes | | |
+| 12 | Credits | | |
+| 13 | Void Invoice | | |
+| 14 | Dunning | | |
+| 15 | API Keys | | |
+| 16 | Webhooks | | |
+| 17 | Audit Log | | |
+| 18 | Dashboard | | |
+| 19 | UI/UX Quality | | |
+| 20 | Multi-Instance Safety | | |
