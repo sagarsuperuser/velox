@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -20,10 +21,11 @@ type DunningStarter interface {
 }
 
 type Stripe struct {
-	client   StripeClient
-	invoices InvoiceUpdater
-	webhooks WebhookStore
-	dunning  DunningStarter
+	client        StripeClient
+	invoices      InvoiceUpdater
+	webhooks      WebhookStore
+	dunning       DunningStarter
+	paymentSetups PaymentSetupStore
 }
 
 // StripeClient is the interface for Stripe API calls.
@@ -60,8 +62,8 @@ type WebhookStore interface {
 	IngestEvent(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) (domain.StripeWebhookEvent, bool, error)
 }
 
-func NewStripe(client StripeClient, invoices InvoiceUpdater, webhooks WebhookStore, dunning ...DunningStarter) *Stripe {
-	s := &Stripe{client: client, invoices: invoices, webhooks: webhooks}
+func NewStripe(client StripeClient, invoices InvoiceUpdater, webhooks WebhookStore, paymentSetups PaymentSetupStore, dunning ...DunningStarter) *Stripe {
+	s := &Stripe{client: client, invoices: invoices, webhooks: webhooks, paymentSetups: paymentSetups}
 	if len(dunning) > 0 {
 		s.dunning = dunning[0]
 	}
@@ -129,6 +131,8 @@ func (s *Stripe) HandleWebhook(ctx context.Context, tenantID string, event domai
 		return s.handlePaymentSucceeded(ctx, tenantID, event)
 	case "payment_intent.payment_failed":
 		return s.handlePaymentFailed(ctx, tenantID, event)
+	case "checkout.session.completed":
+		return s.handleCheckoutCompleted(ctx, tenantID, event)
 	default:
 		slog.Debug("unhandled webhook event type", "type", event.EventType)
 		return nil
@@ -204,6 +208,59 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 			slog.Info("dunning started for failed payment", "invoice_id", inv.ID)
 		}
 	}
+
+	return nil
+}
+
+func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {
+	// Extract velox_customer_id from metadata (set during checkout session creation)
+	customerID := ""
+	if payload, ok := event.Payload["raw"]; ok {
+		var raw struct {
+			Data struct {
+				Object struct {
+					Customer string            `json:"customer"`
+					Metadata map[string]string  `json:"metadata"`
+				} `json:"object"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(payload.(string)), &raw); err == nil {
+			customerID = raw.Data.Object.Metadata["velox_customer_id"]
+			if event.CustomerExternalID == "" {
+				event.CustomerExternalID = raw.Data.Object.Customer
+			}
+		}
+	}
+
+	if customerID == "" {
+		slog.Debug("checkout.session.completed missing velox_customer_id, skipping")
+		return nil
+	}
+
+	if s.paymentSetups == nil {
+		slog.Warn("payment setup store not configured, cannot update payment status")
+		return nil
+	}
+
+	now := time.Now().UTC()
+	_, err := s.paymentSetups.UpsertPaymentSetup(ctx, tenantID, domain.CustomerPaymentSetup{
+		CustomerID:                  customerID,
+		TenantID:                    tenantID,
+		SetupStatus:                 domain.PaymentSetupReady,
+		DefaultPaymentMethodPresent: true,
+		PaymentMethodType:           "card",
+		StripeCustomerID:            event.CustomerExternalID,
+		LastVerifiedAt:              &now,
+		UpdatedAt:                   now,
+	})
+	if err != nil {
+		return fmt.Errorf("update payment setup: %w", err)
+	}
+
+	slog.Info("payment method setup completed",
+		"customer_id", customerID,
+		"stripe_customer_id", event.CustomerExternalID,
+	)
 
 	return nil
 }
