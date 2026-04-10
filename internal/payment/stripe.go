@@ -54,6 +54,7 @@ type PaymentIntentResult struct {
 type InvoiceUpdater interface {
 	UpdatePayment(ctx context.Context, tenantID, id string, paymentStatus domain.InvoicePaymentStatus, stripePaymentIntentID, lastPaymentError string, paidAt *time.Time) (domain.Invoice, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error)
+	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
 	GetByStripePaymentIntentID(ctx context.Context, tenantID, stripePaymentIntentID string) (domain.Invoice, error)
 	Get(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 }
@@ -155,15 +156,9 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 
 	now := time.Now().UTC()
 
-	// Mark payment as succeeded
-	if _, err := s.invoices.UpdatePayment(ctx, tenantID, inv.ID,
-		domain.PaymentSucceeded, event.PaymentIntentID, "", &now); err != nil {
-		return fmt.Errorf("update payment status: %w", err)
-	}
-
-	// Transition invoice to paid
-	if _, err := s.invoices.UpdateStatus(ctx, tenantID, inv.ID, domain.InvoicePaid); err != nil {
-		return fmt.Errorf("update invoice status: %w", err)
+	// Single atomic operation: mark paid, zero amount_due, record PI + paid_at
+	if _, err := s.invoices.MarkPaid(ctx, tenantID, inv.ID, event.PaymentIntentID, now); err != nil {
+		return fmt.Errorf("mark invoice paid: %w", err)
 	}
 
 	slog.Info("payment succeeded",

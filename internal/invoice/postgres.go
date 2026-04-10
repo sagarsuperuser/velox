@@ -209,6 +209,40 @@ func (s *PostgresStore) UpdatePayment(ctx context.Context, tenantID, id string, 
 	return inv, nil
 }
 
+func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `
+		UPDATE invoices SET
+			status = 'paid',
+			payment_status = 'succeeded',
+			stripe_payment_intent_id = $1,
+			paid_at = $2,
+			amount_due_cents = 0,
+			updated_at = $3
+		WHERE id = $4
+		RETURNING `+invCols,
+		postgres.NullableString(stripePaymentIntentID), paidAt, now, id,
+	).Scan(scanInvDest(&inv)...)
+
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, err
+	}
+	return inv, nil
+}
+
 func (s *PostgresStore) ApplyCreditNote(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
