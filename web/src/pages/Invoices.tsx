@@ -71,7 +71,7 @@ export function InvoicesPage() {
                   customerMap[inv.customer_id]?.display_name || 'Unknown',
                   inv.status,
                   inv.payment_status,
-                  (inv.total_amount_cents / 100).toFixed(2),
+                  (inv.amount_due_cents / 100).toFixed(2),
                   inv.currency,
                   inv.billing_period_start,
                   inv.billing_period_end,
@@ -136,7 +136,7 @@ export function InvoicesPage() {
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Payment</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Period</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Amount</th>
+                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Amount Due</th>
                 <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">PDF</th>
               </tr>
             </thead>
@@ -161,7 +161,7 @@ export function InvoicesPage() {
                     {formatDate(inv.billing_period_start)} — {formatDate(inv.billing_period_end)}
                   </td>
                   <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">
-                    {formatCents(inv.total_amount_cents)}
+                    {formatCents(inv.amount_due_cents)}
                   </td>
                   <td className="px-6 py-3 text-right">
                     <button
