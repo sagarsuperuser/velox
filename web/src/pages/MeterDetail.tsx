@@ -27,11 +27,26 @@ export function MeterDetailPage() {
 
       const promises: Promise<void>[] = []
 
-      // Fetch rating rule if linked
+      // Fetch rating rule — resolve to latest version by key
       if (m.rating_rule_version_id) {
         promises.push(
           api.getRatingRule(m.rating_rule_version_id)
-            .then(r => setRatingRule(r))
+            .then(async (linkedRule) => {
+              // Find latest version with the same rule_key
+              try {
+                const allRules = await api.listRatingRules()
+                const sameKey = allRules.data.filter(r => r.rule_key === linkedRule.rule_key)
+                if (sameKey.length > 0) {
+                  // Latest = highest version number
+                  const latest = sameKey.reduce((a, b) => b.version > a.version ? b : a)
+                  setRatingRule(latest)
+                } else {
+                  setRatingRule(linkedRule)
+                }
+              } catch {
+                setRatingRule(linkedRule)
+              }
+            })
             .catch(() => {})
         )
       }
