@@ -57,17 +57,32 @@
 
 ---
 
-## FLOW 3: Credit Note on Paid Invoice
+## FLOW 3: Credit Notes (Paid vs Unpaid)
 
-### 3.1 Issue Credit Note
-- [ ] Go to a paid invoice
-- [ ] Click "Issue Credit" — enter $20, reason "Service disruption"
+### 3.1 Credit Note on Unpaid Invoice
+- [ ] Go to a finalized (unpaid) invoice
+- [ ] Click "Issue Credit" — enter $20, reason "Billing error", type "Credit"
 - [ ] Create credit note (draft)
 - [ ] Go to Credit Notes — click "Issue"
 - [ ] Verify: invoice amount_due reduced by $20
 - [ ] Verify: invoice detail shows credit note in totals breakdown
+- [ ] Verify: credits balance did NOT change (only amount_due reduced)
+
+### 3.2 Credit Note on Paid Invoice (Credit type)
+- [ ] Go to a paid invoice
+- [ ] Click "Issue Credit" — enter $15, reason "Service disruption", type "Credit"
+- [ ] Create + Issue the credit note
+- [ ] Verify: invoice amount_due stays $0 (already paid)
+- [ ] Verify: customer credit balance INCREASED by $15 (for next invoice)
+- [ ] Verify: Credits page shows "Credit note CN-XXXX — Service disruption" +$15
+
+### 3.3 Credit Note on Paid Invoice (Refund type)
+- [ ] Go to a paid invoice
+- [ ] Click "Issue Credit" — enter $10, reason "Overcharge", type "Refund"
+- [ ] Create + Issue the credit note
+- [ ] Verify: Stripe refund processed (check Stripe CLI for refund event)
+- [ ] Verify: credits balance did NOT change (refund goes to payment method, not balance)
 - [ ] Verify: PDF shows credit note in totals
-- [ ] Verify: credits balance did NOT increase (no double-counting)
 
 ---
 
