@@ -90,6 +90,33 @@ func (m *mockInvoiceUpdater) Get(_ context.Context, _, id string) (domain.Invoic
 	return inv, nil
 }
 
+func (m *mockInvoiceUpdater) MarkPaid(_ context.Context, _, id string, stripePI string, paidAt time.Time) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv.Status = domain.InvoicePaid
+	inv.PaymentStatus = domain.PaymentSucceeded
+	inv.StripePaymentIntentID = stripePI
+	inv.PaidAt = &paidAt
+	inv.AmountDueCents = 0
+	m.invoices[id] = inv
+	return inv, nil
+}
+
+func (m *mockInvoiceUpdater) ApplyCreditNote(_ context.Context, _, id string, amountCents int64) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv.AmountDueCents -= amountCents
+	if inv.AmountDueCents < 0 {
+		inv.AmountDueCents = 0
+	}
+	m.invoices[id] = inv
+	return inv, nil
+}
+
 type mockWebhookStore struct {
 	events map[string]bool
 }

@@ -223,6 +223,29 @@ func (m *mockInvoiceUpdaterHandler) Get(_ context.Context, _, id string) (domain
 	return domain.Invoice{ID: id, TenantID: inv.tenantID}, nil
 }
 
+func (m *mockInvoiceUpdaterHandler) MarkPaid(_ context.Context, _, id string, piID string, paidAt time.Time) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return domain.Invoice{}, fmt.Errorf("not found")
+	}
+	inv.paymentStatus = "succeeded"
+	inv.stripePI = piID
+	inv.paidAt = &paidAt
+	m.invoices[id] = inv
+	if piID != "" {
+		m.byPI[piID] = id
+	}
+	return domain.Invoice{ID: id, TenantID: inv.tenantID, Status: domain.InvoicePaid}, nil
+}
+
+func (m *mockInvoiceUpdaterHandler) ApplyCreditNote(_ context.Context, _, id string, _ int64) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return domain.Invoice{}, fmt.Errorf("not found")
+	}
+	return domain.Invoice{ID: id, TenantID: inv.tenantID}, nil
+}
+
 type mockWebhookStoreH struct {
 	seen map[string]bool
 }
