@@ -1,4 +1,4 @@
-# Velox Manual E2E Test Plan
+# Velox Manual E2E Test Plan — Edge Cases & User Flows
 
 ## Prerequisites
 - `cp .env.example .env` — fill in Stripe test keys
@@ -10,175 +10,287 @@
 
 ---
 
-## 1. Tenant Onboarding
-- [ ] Open http://localhost:3000 — see login page
-- [ ] Enter API key from bootstrap, click Login
-- [ ] Dashboard loads with 0 customers, 0 subs, 0 invoices
-- [ ] "Get Started" section visible
+## FLOW 1: Complete Happy Path (End-to-End)
 
-## 2. Settings
-- [ ] Go to Settings
-- [ ] Set company name, email, phone, address
-- [ ] Set invoice prefix (e.g. "ACME"), net payment terms (e.g. 15), currency, timezone
-- [ ] Save — "Settings saved" confirmation
-- [ ] Refresh — values persisted
-- [ ] **Validation**: bad email/phone — inline errors on blur
-- [ ] Verify: hints explain what each setting controls
+### 1.1 Setup
+- [ ] Configure Settings: company name "Demo Corp", prefix "DEMO", net terms 15, USD, UTC
+- [ ] Create Rating Rule: key `api_calls`, flat, $0.01/call
+- [ ] Create Meter: key `api_calls`, aggregation sum, link rating rule
+- [ ] Create Plan: code `starter`, $29/mo, attach api_calls meter
+- [ ] Create Customer: "Alpha Inc", external_id `alpha_inc`
+- [ ] Set up billing profile with US address
+- [ ] Set up payment method (card 4242 4242 4242 4242)
+- [ ] Create subscription: start immediately
 
-## 3. Pricing — Plans, Meters, Rating Rules
-- [ ] Go to Pricing > Rules tab
-- [ ] Create Rating Rule: key `api_calls`, name "API Call Pricing", mode Flat, $0.01/unit
-- [ ] Status shows "active" (not draft)
-- [ ] Go to Meters tab
-- [ ] Create Meter: key `api_calls`, name "API Calls", unit "request", aggregation Sum
-- [ ] **Select the rating rule** from dropdown (important — without this, usage won't be priced)
-- [ ] Go to Plans tab
-- [ ] Create Plan: code `pro`, name "Pro Plan", Monthly, $49.00, USD
-- [ ] **Attach the meter** to the plan
-- [ ] Click plan name — navigates to Plan detail
-- [ ] Verify: meters section shows "API Calls" with "Detach" button
-- [ ] Verify: full-row click works on all tabs
+### 1.2 Usage + Billing
+- [ ] Ingest 10,000 API calls via API (`external_customer_id: alpha_inc, event_name: api_calls`)
+- [ ] Generate invoices
+- [ ] Verify: invoice auto-finalized, auto-charged, status "paid" via webhook
+- [ ] Verify: invoice = $29 base + $100 usage (10,000 × $0.01) = $129
+- [ ] Verify: PDF shows FROM (Demo Corp) + BILL TO (Alpha Inc) + correct amounts
+- [ ] Verify: invoice number uses "DEMO" prefix
+- [ ] Verify: due date = issued + 15 days (from settings)
 
-## 4. Customer Creation
-- [ ] Go to Customers — empty state with single centered CTA
-- [ ] Click "Add Customer"
-- [ ] **Validation**: submit empty — inline errors
-- [ ] **Validation**: bad email — error on blur
-- [ ] Create: name "ACME CORP", external_id "acme_corp", email "billing@acme.com"
-- [ ] Customer appears in list — full-row click to detail
+### 1.3 Verify Billing Cycle Advanced
+- [ ] Subscription detail: billing period moved to next month
+- [ ] Usage This Period: shows $0 (new period, no events yet)
 
-## 5. Billing Profile
-- [ ] Customer detail — "Set Up Billing Profile" CTA
-- [ ] Fill: legal name, email, phone
-- [ ] Select country "United States" — State becomes dropdown with full names ("California")
-- [ ] Fill address, postal code, tax ID, currency
-- [ ] Save — profile shows in 3-column grid on detail page
-- [ ] Edit — "No changes" button when nothing changed
+---
 
-## 6. Payment Method Setup (Stripe)
-- [ ] Customer detail — "Set Up Payment" button
-- [ ] Opens Stripe Checkout in new tab
-- [ ] Enter card `4242 4242 4242 4242`, expiry `12/30`, CVC `123`
-- [ ] Complete — redirects back, payment status shows "ready"
-- [ ] Check Stripe CLI — `checkout.session.completed` webhook received
+## FLOW 2: Credits Applied Before Charge
 
-## 7. Subscription Creation
-- [ ] Customer detail — click "+ Add" in Subscriptions section
-- [ ] Create: name, code, select Pro Plan, check "Start immediately"
-- [ ] Subscription appears with "active" badge
-- [ ] Click into subscription detail — Plan links to /plans/:id, Customer links to /customers/:id
-- [ ] Verify: billing period set
+### 2.1 Grant Credits
+- [ ] Go to Credits, select Alpha Inc
+- [ ] Grant $50 credit with description "Promotional credit"
+- [ ] Verify: balance = $50
 
-## 8. Usage Ingestion
-```bash
-curl -X POST http://localhost:8080/v1/usage-events \
-  -H "Authorization: Bearer <secret_key>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "external_customer_id": "acme_corp",
-    "event_name": "api_calls",
-    "quantity": 5000
-  }'
-```
-- [ ] Verify: Usage Events page shows the event with timestamp + time
-- [ ] Verify: Customer detail "Usage This Period" shows meter name + unit + billing period dates
+### 2.2 Generate Invoice with Credits
+- [ ] Ingest 5,000 more API calls
+- [ ] Fast-forward billing period (DB fixture)
+- [ ] Generate invoices
+- [ ] Verify: invoice subtotal = $29 + $50 = $79
+- [ ] Verify: prepaid credits applied = -$50
+- [ ] Verify: amount_due = $29
+- [ ] Verify: Stripe charged only $29 (not $79)
+- [ ] Verify: Credits page shows "Applied to invoice DEMO-000002" with -$50
+- [ ] Verify: credits balance = $0
 
-## 9. Invoice Generation + Auto-Charge
-- [ ] Dashboard — click "Generate Invoices"
-- [ ] Invoice created as **finalized** (not draft — auto-finalized)
-- [ ] Credits auto-applied (if any) — amount_due reduced
-- [ ] Auto-charge via Stripe — payment status goes to "processing" then "paid" (via webhook)
-- [ ] Check Stripe CLI: `payment_intent.succeeded` received
-- [ ] Invoice detail: Subtotal + Prepaid Credits (if any) + Amount Due breakdown
-- [ ] Line items: base fee ($49) + usage (5,000 × $0.01 = $50) = $99 total
+---
 
-## 10. PDF Invoice
-- [ ] Click "Download PDF"
-- [ ] Verify: FROM (company from Settings) — name, address, email, phone
-- [ ] Verify: BILL TO (customer billing profile) — name, full address, email
-- [ ] Verify: invoice number from Settings prefix (e.g. ACME-000001)
-- [ ] Verify: due date uses net payment terms from Settings
-- [ ] Verify: line items with comma-formatted quantities
-- [ ] Verify: Subtotal + Prepaid credits (if applied) + Amount Due
-- [ ] Verify: "Paid on [date] - Thank you!" if paid
+## FLOW 3: Credit Note on Paid Invoice
 
-## 11. Credit Notes
-- [ ] Go to finalized/paid invoice — click "Issue Credit"
-- [ ] Enter reason, amount, type (Credit or Refund)
-- [ ] Create — draft credit note appears on Credit Notes page
-- [ ] Click "Issue" — credit note issued
-- [ ] Invoice detail: amount_due reduced, credit note shown in totals breakdown
-- [ ] PDF: credit note shown in totals
+### 3.1 Issue Credit Note
+- [ ] Go to a paid invoice
+- [ ] Click "Issue Credit" — enter $20, reason "Service disruption"
+- [ ] Create credit note (draft)
+- [ ] Go to Credit Notes — click "Issue"
+- [ ] Verify: invoice amount_due reduced by $20
+- [ ] Verify: invoice detail shows credit note in totals breakdown
+- [ ] Verify: PDF shows credit note in totals
+- [ ] Verify: credits balance did NOT increase (no double-counting)
 
-## 12. Credits
-- [ ] Go to Credits — select customer
-- [ ] Click "Grant Credits" — enter $25, description
-- [ ] Confirm in dialog
-- [ ] Balance shows $25, transaction history shows grant
-- [ ] Generate next invoice — credits auto-applied, shown on invoice
-- [ ] Credits page: "Applied to invoice ACME-000002" (human-readable, not raw ID)
+---
 
-## 13. Void Invoice
-- [ ] Void a finalized invoice
-- [ ] Stripe PaymentIntent canceled (if exists)
-- [ ] Credits reversed — returned to customer balance
-- [ ] Invoice status: voided
+## FLOW 4: Void Invoice — Credits Reversed
 
-## 14. Dunning (Failed Payment Recovery)
-- [ ] Go to Dunning > Policy — enable, set max retries 3, grace period 3 days
-- [ ] Create second customer "Bad Card Corp" with billing profile + US address
-- [ ] Set up payment with card `4000 0000 0000 0341` (saves but declines charges)
+### 4.1 Setup
+- [ ] Grant $30 credits to Alpha Inc
+- [ ] Generate invoice — credits applied, amount_due reduced
+
+### 4.2 Void
+- [ ] Void the invoice
+- [ ] Verify: credits reversed — balance restored to $30
+- [ ] Verify: Credits page shows "Reversed — invoice DEMO-XXXX voided"
+- [ ] Verify: Stripe PaymentIntent canceled (if was charged)
+- [ ] Verify: invoice status = voided
+
+---
+
+## FLOW 5: Payment Failure → Dunning → Resolution
+
+### 5.1 Setup Bad Card Customer
+- [ ] Create customer "Bad Pay Corp", external_id `bad_pay`
+- [ ] Set up billing profile with address
+- [ ] Set up payment with card `4000 0000 0000 0341` (declines on charge)
 - [ ] Create subscription, ingest usage
-- [ ] Generate invoice — auto-charge fails
-- [ ] Dunning > Runs: run appears with state "scheduled", "0 of 3" retries
-- [ ] Wait for scheduler (or fast-forward next_action_at in DB)
-- [ ] After 3 retries: state "escalated"
-- [ ] Click "Resolve" — select "Invoice Not Collectible"
-- [ ] Invoice becomes voided
-- [ ] Or: resolve as "Payment Succeeded" — invoice becomes paid
 
-## 15. API Keys
-- [ ] Create key — shown once, copy button
-- [ ] Revoke — danger confirmation, self-revoke warning
-- [ ] Key shows as revoked in list
+### 5.2 Trigger Failure
+- [ ] Fast-forward billing period, generate invoice
+- [ ] Verify: invoice finalized, payment_status = failed
+- [ ] Verify: Dunning > Runs shows new run, state "scheduled", "0 of 3"
 
-## 16. Webhooks
-- [ ] Add endpoint with URL validation
-- [ ] Signing secret shown once
-- [ ] Events tab shows delivery history
+### 5.3 Retry Cycle
+- [ ] Fast-forward next_action_at in DB
+- [ ] Wait for scheduler tick (5 min)
+- [ ] Verify: retries = "1 of 3", next retry scheduled
+- [ ] Repeat 2 more times
+- [ ] After 3rd retry: state = "escalated"
 
-## 17. Audit Log
-- [ ] Timeline feed grouped by day
-- [ ] Human-readable descriptions ("Finalized invoice ACME-000001")
-- [ ] Colored badges per action type
-- [ ] Filters: resource type, action type
+### 5.4 Resolution
+- [ ] Click "Resolve" on escalated run
+- [ ] Select "Invoice Not Collectible"
+- [ ] Verify: run state = resolved
+- [ ] Verify: invoice status = voided
+- [ ] Try another: resolve as "Payment Succeeded"
+- [ ] Verify: invoice status = paid
 
-## 18. Dashboard
-- [ ] Stat cards: Customers, Subscriptions, Invoices, Revenue (paid only), MRR
-- [ ] "Needs Attention" — failed/pending invoices
-- [ ] "Active Subscriptions" — with customer names
-- [ ] "Recent Activity" — last 10 actions
-- [ ] "Generate Invoices" button (solid primary)
+---
 
-## 19. UI/UX Quality
-- [ ] **Badges**: visible with ring borders, rounded-md
-- [ ] **Table headers**: bg-gray-50
-- [ ] **Full-row click**: all entity tables navigate on click
-- [ ] **Buttons**: solid=create, bordered=edit, bordered-red=danger
-- [ ] **Edit buttons**: pencil icon
-- [ ] **Modals**: header border, close button hover, footer border-t
-- [ ] **No browser validation popups**: all forms use noValidate + inline errors
-- [ ] **Save buttons**: disabled when no changes
-- [ ] **Typography**: labels text-sm text-gray-500, values text-sm text-gray-900
-- [ ] **Breadcrumbs**: text-gray-500 hover:text-gray-900
-- [ ] **Empty states**: single CTA, no redundant buttons
-- [ ] **Error messages**: humanized ("already exists" → friendly message)
-- [ ] **Copy buttons**: on all detail page IDs
+## FLOW 6: Price Versioning
 
-## 20. Multi-Instance Safety
-- [ ] Billing: FOR UPDATE SKIP LOCKED on GetDueBilling
-- [ ] Dunning: FOR UPDATE SKIP LOCKED on ListDueRuns
-- [ ] No double-billing possible with multiple server instances
+### 6.1 Initial Price
+- [ ] Verify current rule: api_calls v1 at $0.01/call
+- [ ] Generate invoice — usage billed at $0.01
+
+### 6.2 Create New Version
+- [ ] Create new rating rule: same key `api_calls`, flat, $0.02/call (creates v2)
+- [ ] Verify: Meter detail page shows v2 pricing ($0.02), not v1
+- [ ] No plan or meter changes needed
+
+### 6.3 Bill at New Price
+- [ ] Ingest more usage, fast-forward billing period
+- [ ] Generate invoice
+- [ ] Verify: usage billed at $0.02/call (v2), not $0.01 (v1)
+- [ ] Verify: invoice line item references v2 rule
+
+---
+
+## FLOW 7: Multiple Meters on One Plan
+
+### 7.1 Setup
+- [ ] Create second rating rule: key `storage_gb`, flat, $0.10/GB
+- [ ] Create second meter: key `storage_gb`, aggregation max, link rule
+- [ ] Go to Plan detail — click "+ Attach Meter" — attach storage_gb
+- [ ] Plan now has 2 meters
+
+### 7.2 Ingest Both
+```bash
+# API calls
+curl -X POST http://localhost:8080/v1/usage-events \
+  -H "Authorization: Bearer <key>" \
+  -d '{"external_customer_id":"alpha_inc","event_name":"api_calls","quantity":2000}'
+
+# Storage
+curl -X POST http://localhost:8080/v1/usage-events \
+  -H "Authorization: Bearer <key>" \
+  -d '{"external_customer_id":"alpha_inc","event_name":"storage_gb","quantity":50}'
+```
+
+### 7.3 Verify Invoice
+- [ ] Generate invoice
+- [ ] Verify 3 line items: base fee + API calls + storage
+- [ ] API: 2,000 × $0.02 = $40
+- [ ] Storage: 50 × $0.10 = $5
+- [ ] Total: $29 + $40 + $5 = $74
+
+---
+
+## FLOW 8: Subscription Lifecycle
+
+### 8.1 Pause
+- [ ] Go to active subscription — click "Pause"
+- [ ] Verify: status = paused
+- [ ] Verify: billing cycle does NOT generate invoice for paused sub
+
+### 8.2 Resume
+- [ ] Click "Resume"
+- [ ] Verify: status = active
+- [ ] Verify: billing resumes
+
+### 8.3 Change Plan
+- [ ] Create a second plan: "Enterprise", $99/mo
+- [ ] Go to subscription — click "Change Plan"
+- [ ] Select Enterprise plan
+- [ ] Verify: next invoice uses new plan pricing
+
+### 8.4 Cancel
+- [ ] Click "Cancel"
+- [ ] Verify: status = canceled
+- [ ] Verify: no more invoices generated
+
+---
+
+## FLOW 9: Multiple Customers, Same Plan
+
+- [ ] Create 3 customers with payment methods
+- [ ] Create subscription for each on same plan
+- [ ] Ingest different usage amounts for each
+- [ ] Generate invoices — verify each gets correct amount
+- [ ] Verify: billing engine processes all 3 in one cycle
+- [ ] Verify: no double-billing (FOR UPDATE SKIP LOCKED)
+
+---
+
+## FLOW 10: Edge Cases
+
+### 10.1 Zero Usage
+- [ ] Customer with subscription but no usage events
+- [ ] Generate invoice — should have base fee only, no usage lines
+- [ ] Verify: $29 invoice (base only)
+
+### 10.2 Meter Without Rating Rule
+- [ ] Create meter without linking a rating rule
+- [ ] Attach to plan
+- [ ] Ingest usage
+- [ ] Generate invoice — meter usage should be silently skipped
+- [ ] Verify: invoice has base fee only
+
+### 10.3 Duplicate Usage Events
+- [ ] Ingest event with idempotency_key "test-1"
+- [ ] Ingest same event again with same idempotency_key "test-1"
+- [ ] Verify: second call returns conflict error
+- [ ] Verify: only 1 event in usage list
+
+### 10.4 Invalid External Customer ID
+- [ ] Ingest event with non-existent external_customer_id
+- [ ] Verify: error "customer not found"
+
+### 10.5 Invalid Event Name
+- [ ] Ingest event with non-existent event_name
+- [ ] Verify: error "meter not found"
+
+### 10.6 Credits > Invoice Amount
+- [ ] Grant $500 credits
+- [ ] Generate invoice for $79
+- [ ] Verify: credits applied = $79 (not $500)
+- [ ] Verify: amount_due = $0
+- [ ] Verify: remaining balance = $421
+- [ ] Verify: Stripe NOT charged (amount_due = 0)
+
+### 10.7 Credit Note > Amount Due
+- [ ] Issue credit note for more than amount_due
+- [ ] Verify: amount_due goes to $0 (not negative)
+
+### 10.8 Void Already Voided Invoice
+- [ ] Try to void a voided invoice
+- [ ] Verify: error message
+
+### 10.9 Finalize Non-Draft Invoice
+- [ ] Try to finalize a paid invoice
+- [ ] Verify: error message (invoices are auto-finalized now, so test via API)
+
+### 10.10 Create Duplicate Subscription Code
+- [ ] Create subscription with code "alpha-pro"
+- [ ] Create another with same code "alpha-pro"
+- [ ] Verify: humanized error message about duplicate
+
+---
+
+## FLOW 11: API Key Permissions
+
+### 11.1 Secret Key
+- [ ] Use secret key — can access all endpoints
+- [ ] Can create customers, subscriptions, ingest usage
+
+### 11.2 Publishable Key
+- [ ] Create a publishable key
+- [ ] Try to create a plan with publishable key
+- [ ] Verify: 403 forbidden (publishable can't manage pricing)
+- [ ] Try to read customers with publishable key
+- [ ] Verify: works (publishable can read customers)
+
+### 11.3 Revoked Key
+- [ ] Revoke a key
+- [ ] Try to use revoked key
+- [ ] Verify: 401 unauthorized
+
+---
+
+## FLOW 12: Webhook Reliability
+
+### 12.1 Payment Success Webhook
+- [ ] Finalize invoice with good card
+- [ ] Verify: payment_intent.succeeded webhook received
+- [ ] Verify: invoice status = paid
+
+### 12.2 Payment Failed Webhook
+- [ ] Charge bad card customer
+- [ ] Verify: payment_intent.payment_failed webhook received
+- [ ] Verify: dunning started
+
+### 12.3 Duplicate Webhook
+- [ ] Same webhook event delivered twice (Stripe retries)
+- [ ] Verify: second delivery is idempotent (no duplicate processing)
 
 ---
 
@@ -186,23 +298,15 @@ curl -X POST http://localhost:8080/v1/usage-events \
 
 | # | Flow | Status | Notes |
 |---|------|--------|-------|
-| 1 | Tenant Onboarding | | |
-| 2 | Settings | | |
-| 3 | Pricing | | |
-| 4 | Customer Creation | | |
-| 5 | Billing Profile | | |
-| 6 | Payment Setup (Stripe) | | |
-| 7 | Subscription Creation | | |
-| 8 | Usage Ingestion | | |
-| 9 | Invoice + Auto-Charge | | |
-| 10 | PDF Invoice | | |
-| 11 | Credit Notes | | |
-| 12 | Credits | | |
-| 13 | Void Invoice | | |
-| 14 | Dunning | | |
-| 15 | API Keys | | |
-| 16 | Webhooks | | |
-| 17 | Audit Log | | |
-| 18 | Dashboard | | |
-| 19 | UI/UX Quality | | |
-| 20 | Multi-Instance Safety | | |
+| 1 | Happy Path E2E | | |
+| 2 | Credits Applied | | |
+| 3 | Credit Note | | |
+| 4 | Void + Credit Reversal | | |
+| 5 | Dunning | | |
+| 6 | Price Versioning | | |
+| 7 | Multiple Meters | | |
+| 8 | Subscription Lifecycle | | |
+| 9 | Multiple Customers | | |
+| 10 | Edge Cases | | |
+| 11 | API Key Permissions | | |
+| 12 | Webhook Reliability | | |
