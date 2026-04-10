@@ -159,24 +159,37 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		return domain.CreditNote{}, fmt.Errorf("can only issue draft credit notes")
 	}
 
-	// If this is a refund credit note and we have a refunder, process via Stripe
-	if cn.RefundAmountCents > 0 && s.refunder != nil {
-		inv, err := s.invoices.Get(ctx, tenantID, cn.InvoiceID)
-		if err == nil && inv.StripePaymentIntentID != "" {
+	inv, err := s.invoices.Get(ctx, tenantID, cn.InvoiceID)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("get invoice: %w", err)
+	}
+
+	if inv.PaymentStatus == domain.PaymentSucceeded {
+		// Invoice already paid — handle based on refund type
+		if cn.RefundAmountCents > 0 && s.refunder != nil && inv.StripePaymentIntentID != "" {
+			// Refund type: return money to payment method via Stripe
 			refundID, err := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents)
 			if err != nil {
 				return domain.CreditNote{}, fmt.Errorf("stripe refund failed: %w", err)
 			}
 			cn.StripeRefundID = refundID
 			cn.RefundStatus = domain.RefundSucceeded
+		} else if cn.CreditAmountCents > 0 && s.credits != nil {
+			// Credit type on paid invoice: add to customer's prepaid balance
+			// (not double-counting — invoice is already paid, this is new credit for future use)
+			if err := s.credits.Grant(ctx, tenantID, CreditGrantInput{
+				CustomerID:  cn.CustomerID,
+				AmountCents: cn.CreditAmountCents,
+				Description: fmt.Sprintf("Credit note %s — %s", cn.CreditNoteNumber, cn.Reason),
+			}); err != nil {
+				return domain.CreditNote{}, fmt.Errorf("grant credit: %w", err)
+			}
 		}
-	}
-
-	// Reduce the invoice's amount_due — this is the only financial effect.
-	// Credit notes do NOT add to the customer's prepaid balance (that would
-	// be double-counting: once on this invoice, again on the next).
-	if _, err := s.invoices.ApplyCreditNote(ctx, tenantID, cn.InvoiceID, cn.TotalCents); err != nil {
-		return domain.CreditNote{}, fmt.Errorf("reduce invoice amount: %w", err)
+	} else {
+		// Invoice not yet paid — reduce amount_due
+		if _, err := s.invoices.ApplyCreditNote(ctx, tenantID, cn.InvoiceID, cn.TotalCents); err != nil {
+			return domain.CreditNote{}, fmt.Errorf("reduce invoice amount: %w", err)
+		}
 	}
 
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.CreditNoteIssued)
