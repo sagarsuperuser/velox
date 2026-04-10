@@ -100,7 +100,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 		customerStore)
 
 	// Billing engine + manual trigger (with credit auto-application)
-	engine := billing.NewEngine(subStore, usageStore, pricingStore,
+	engine := billing.NewEngine(subStore, usageStore, pricingSvc,
 		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, customerStore, stripeAdapter)
 	billingH := billing.NewHandler(engine, subStore)
 

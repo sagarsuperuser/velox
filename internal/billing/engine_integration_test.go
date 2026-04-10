@@ -2,6 +2,7 @@ package billing_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -47,6 +48,21 @@ func (a *pricingStoreAdapter) GetMeter(ctx context.Context, tenantID, id string)
 
 func (a *pricingStoreAdapter) GetRatingRule(ctx context.Context, tenantID, id string) (domain.RatingRuleVersion, error) {
 	return a.store.GetRatingRule(ctx, tenantID, id)
+}
+
+func (a *pricingStoreAdapter) GetLatestRuleByKey(ctx context.Context, tenantID, ruleKey string) (domain.RatingRuleVersion, error) {
+	rules, err := a.store.ListRatingRules(ctx, pricing.RatingRuleFilter{
+		TenantID:   tenantID,
+		RuleKey:    ruleKey,
+		LatestOnly: true,
+	})
+	if err != nil {
+		return domain.RatingRuleVersion{}, err
+	}
+	if len(rules) == 0 {
+		return domain.RatingRuleVersion{}, fmt.Errorf("no rule found for key %s", ruleKey)
+	}
+	return rules[0], nil
 }
 
 func (a *pricingStoreAdapter) GetOverride(ctx context.Context, tenantID, customerID, ruleID string) (domain.CustomerPriceOverride, error) {

@@ -97,6 +97,24 @@ func (m *mockPricing) GetRatingRule(_ context.Context, _, id string) (domain.Rat
 	return r, nil
 }
 
+func (m *mockPricing) GetLatestRuleByKey(_ context.Context, _, ruleKey string) (domain.RatingRuleVersion, error) {
+	// Return the latest version with matching key
+	var latest domain.RatingRuleVersion
+	found := false
+	for _, r := range m.rules {
+		if r.RuleKey == ruleKey {
+			if !found || r.Version > latest.Version {
+				latest = r
+				found = true
+			}
+		}
+	}
+	if !found {
+		return domain.RatingRuleVersion{}, fmt.Errorf("rule not found for key %s", ruleKey)
+	}
+	return latest, nil
+}
+
 func (m *mockPricing) GetOverride(_ context.Context, _, customerID, ruleID string) (domain.CustomerPriceOverride, error) {
 	if m.overrides == nil {
 		return domain.CustomerPriceOverride{}, fmt.Errorf("not found")
@@ -189,14 +207,14 @@ func setupEngine() (*Engine, *mockSubs, *mockUsage, *mockPricing, *mockInvoices)
 		},
 		rules: map[string]domain.RatingRuleVersion{
 			"rrv_api": {
-				ID: "rrv_api", Mode: domain.PricingGraduated,
+				ID: "rrv_api", RuleKey: "api_calls", Version: 1, Mode: domain.PricingGraduated,
 				GraduatedTiers: []domain.RatingTier{
 					{UpTo: 1000, UnitAmountCents: 10},
 					{UpTo: 0, UnitAmountCents: 5},
 				},
 			},
 			"rrv_storage": {
-				ID: "rrv_storage", Mode: domain.PricingFlat,
+				ID: "rrv_storage", RuleKey: "storage_gb", Version: 1, Mode: domain.PricingFlat,
 				FlatAmountCents: 2500,
 			},
 		},

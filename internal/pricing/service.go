@@ -81,6 +81,22 @@ func (s *Service) GetRatingRule(ctx context.Context, tenantID, id string) (domai
 	return s.store.GetRatingRule(ctx, tenantID, id)
 }
 
+// GetLatestRuleByKey returns the latest version of a rating rule by its key.
+func (s *Service) GetLatestRuleByKey(ctx context.Context, tenantID, ruleKey string) (domain.RatingRuleVersion, error) {
+	rules, err := s.store.ListRatingRules(ctx, RatingRuleFilter{
+		TenantID:   tenantID,
+		RuleKey:    ruleKey,
+		LatestOnly: true,
+	})
+	if err != nil {
+		return domain.RatingRuleVersion{}, err
+	}
+	if len(rules) == 0 {
+		return domain.RatingRuleVersion{}, fmt.Errorf("no rating rule found for key %q", ruleKey)
+	}
+	return rules[0], nil
+}
+
 func (s *Service) ListRatingRules(ctx context.Context, filter RatingRuleFilter) ([]domain.RatingRuleVersion, error) {
 	return s.store.ListRatingRules(ctx, filter)
 }

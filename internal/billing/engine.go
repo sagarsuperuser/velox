@@ -63,6 +63,7 @@ type PricingReader interface {
 	GetPlan(ctx context.Context, tenantID, id string) (domain.Plan, error)
 	GetMeter(ctx context.Context, tenantID, id string) (domain.Meter, error)
 	GetRatingRule(ctx context.Context, tenantID, id string) (domain.RatingRuleVersion, error)
+	GetLatestRuleByKey(ctx context.Context, tenantID, ruleKey string) (domain.RatingRuleVersion, error)
 	GetOverride(ctx context.Context, tenantID, customerID, ruleID string) (domain.CustomerPriceOverride, error)
 }
 
@@ -182,13 +183,21 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			continue // No pricing rule attached
 		}
 
-		rule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, meter.RatingRuleVersionID)
+		// Get the linked rule to find its key, then resolve the latest version
+		linkedRule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, meter.RatingRuleVersionID)
 		if err != nil {
 			return false, fmt.Errorf("get rating rule for meter %s: %w", meterID, err)
 		}
 
+		// Use the latest active version of this rule (not the hardcoded version)
+		rule, err := e.pricing.GetLatestRuleByKey(ctx, sub.TenantID, linkedRule.RuleKey)
+		if err != nil {
+			// Fall back to the linked version if latest lookup fails
+			rule = linkedRule
+		}
+
 		// Check for per-customer price override
-		override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, meter.RatingRuleVersionID)
+		override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, rule.ID)
 		if overrideErr == nil && override.Active {
 			rule = override.ToRatingRule()
 		}
