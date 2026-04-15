@@ -16,6 +16,16 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   velox:
     build: .
     ports:
@@ -24,9 +34,12 @@ services:
       PORT: "8080"
       APP_ENV: local
       DATABASE_URL: postgres://velox_app:velox_app@postgres:5432/velox?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS_ON_BOOT: "true"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:

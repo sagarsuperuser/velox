@@ -103,10 +103,17 @@ func TestCreateKey_Secret(t *testing.T) {
 		t.Errorf("tenant_id: got %q", result.Key.TenantID)
 	}
 
-	// Verify hash
-	hash := sha256.Sum256([]byte(result.RawKey))
+	// Verify salted hash: SHA-256(salt + rawKey)
+	if result.Key.KeySalt == "" {
+		t.Fatal("key salt should not be empty")
+	}
+	salt, err := hex.DecodeString(result.Key.KeySalt)
+	if err != nil {
+		t.Fatalf("decode salt: %v", err)
+	}
+	hash := sha256.Sum256(append(salt, []byte(result.RawKey)...))
 	if result.Key.KeyHash != hex.EncodeToString(hash[:]) {
-		t.Error("hash mismatch")
+		t.Error("salted hash mismatch")
 	}
 }
 
