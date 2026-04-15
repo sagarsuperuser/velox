@@ -1,0 +1,31 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: velox
+  namespace: velox
+  labels:
+    app.kubernetes.io/name: velox
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.velox.dev
+      secretName: velox-tls
+  rules:
+    - host: api.velox.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: velox
+                port:
+                  number: 8080

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: velox
+  labels:
+    app.kubernetes.io/name: velox
+    app.kubernetes.io/part-of: velox
