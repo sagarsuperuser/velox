@@ -7,35 +7,54 @@ interface ModalProps {
   title: string
   children: React.ReactNode
   wide?: boolean
+  dirty?: boolean // When true, warn before closing via Escape or backdrop click
 }
 
-export function Modal({ open, onClose, title, children, wide }: ModalProps) {
+export function Modal({ open, onClose, title, children, wide, dirty }: ModalProps) {
   const ref = useRef<HTMLDivElement>(null)
+
+  const safeClose = () => {
+    if (dirty) {
+      if (!window.confirm('You have unsaved changes. Discard them?')) return
+    }
+    onClose()
+  }
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') safeClose()
     }
     if (open) document.addEventListener('keydown', handleEsc)
     return () => document.removeEventListener('keydown', handleEsc)
-  }, [open, onClose])
+  }, [open, onClose, dirty])
+
+  // Focus trap: focus first focusable element on open
+  useEffect(() => {
+    if (open && ref.current) {
+      const focusable = ref.current.querySelector<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      )
+      focusable?.focus()
+    }
+  }, [open])
 
   if (!open) return null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/25 backdrop-blur-[2px] animate-fade-in" onClick={onClose} />
-      <div ref={ref} className={`relative bg-white rounded-2xl shadow-modal w-full ${wide ? 'max-w-lg' : 'max-w-md'} mx-4 animate-scale-in`}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
+      <div className="absolute inset-0 bg-black/25 backdrop-blur-[2px] animate-fade-in" onClick={safeClose} />
+      <div ref={ref} role="dialog" aria-modal="true" aria-labelledby="modal-title" className={`relative bg-white dark:bg-gray-900 rounded-2xl shadow-modal w-full ${wide ? 'max-w-lg' : 'max-w-md'} mx-4 animate-scale-in max-h-[90vh] flex flex-col`}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 shrink-0">
+          <h2 id="modal-title" className="text-base font-semibold text-gray-900 dark:text-gray-100">{title}</h2>
           <button
-            onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            onClick={safeClose}
+            aria-label="Close"
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:text-gray-300 dark:hover:bg-gray-800 transition-colors"
           >
             <X size={18} />
           </button>
         </div>
-        <div className="px-6 py-5">
+        <div className="px-6 py-5 overflow-y-auto">
           {children}
         </div>
       </div>

@@ -1,10 +1,10 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { api, formatCents, formatDate, type Subscription, type Customer, type Plan, type Invoice, type InvoicePreview } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, type Subscription, type Customer, type Plan, type Invoice, type InvoicePreview } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
-import { FormSelect } from '@/components/FormField'
+import { SearchSelect } from '@/components/SearchSelect'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
@@ -27,6 +27,7 @@ export function SubscriptionDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [acting, setActing] = useState(false)
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
+  const [showPauseConfirm, setShowPauseConfirm] = useState(false)
   const [showChangePlan, setShowChangePlan] = useState(false)
   const toast = useToast()
   const navigate = useNavigate()
@@ -126,7 +127,7 @@ export function SubscriptionDetailPage() {
     return (
       <Layout>
         <Breadcrumbs items={[{ label: 'Subscriptions', to: '/subscriptions' }, { label: 'Loading...' }]} />
-        <div className="bg-white rounded-xl shadow-card">
+        <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card">
           <LoadingSkeleton rows={8} columns={4} />
         </div>
       </Layout>
@@ -142,96 +143,98 @@ export function SubscriptionDetailPage() {
       <Breadcrumbs items={[{ label: 'Subscriptions', to: '/subscriptions' }, { label: sub.display_name }]} />
 
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">{sub.display_name}</h1>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-xs text-gray-400 font-mono bg-gray-50 border border-gray-100 px-2 py-0.5 rounded">{sub.id}</span>
-            <CopyButton text={sub.id} />
-            <span className="text-xs font-medium text-gray-600 bg-gray-100 px-2.5 py-0.5 rounded-full">{sub.code}</span>
+      <div className="sticky top-0 z-10 bg-white dark:bg-gray-950 pb-4 -mx-4 px-4 md:-mx-8 md:px-8 pt-2 border-b border-gray-100 dark:border-gray-800">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">{sub.display_name}</h1>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-gray-500 dark:text-gray-500 font-mono bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-2 py-0.5 rounded">{sub.id}</span>
+              <CopyButton text={sub.id} />
+              <span className="text-xs font-mono text-gray-500 bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-2 py-0.5 rounded">{sub.code}</span>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-3">
-          {sub.status === 'draft' && (
-            <button onClick={async () => {
-              if (!id) return; setActing(true)
-              try { const updated = await api.activateSubscription(id); setSub(updated); toast.success('Subscription activated'); loadData() }
-              catch (err) { toast.error(err instanceof Error ? err.message : 'Failed to activate') }
-              finally { setActing(false) }
-            }} disabled={acting}
-              className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm disabled:opacity-50 transition-colors">
-              Activate
-            </button>
-          )}
-          {sub.status === 'active' && (
-            <>
-              <button onClick={() => setShowChangePlan(true)} disabled={acting}
-                className="px-4 py-2 border border-velox-300 text-velox-600 rounded-lg text-sm font-medium hover:bg-velox-50 disabled:opacity-50 transition-colors">
-                Change Plan
+          <div className="flex items-center gap-3">
+            {sub.status === 'draft' && (
+              <button onClick={async () => {
+                if (!id) return; setActing(true)
+                try { const updated = await api.activateSubscription(id); setSub(updated); toast.success('Subscription activated'); loadData() }
+                catch (err) { toast.error(err instanceof Error ? err.message : 'Failed to activate') }
+                finally { setActing(false) }
+              }} disabled={acting}
+                className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm disabled:opacity-50 transition-colors">
+                Activate
               </button>
-              <button onClick={handlePause} disabled={acting}
-                className="px-4 py-2 border border-amber-300 text-amber-600 rounded-lg text-sm font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors">
-                Pause
-              </button>
-              <button onClick={() => setShowCancelConfirm(true)} disabled={acting}
-                className="px-4 py-2 border border-red-300 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
-                Cancel
-              </button>
-            </>
-          )}
-          {sub.status === 'paused' && (
-            <>
-              <button onClick={handleResume} disabled={acting}
-                className="px-4 py-2 border border-emerald-300 text-emerald-600 rounded-lg text-sm font-medium hover:bg-emerald-50 disabled:opacity-50 transition-colors">
-                Resume
-              </button>
-              <button onClick={() => setShowCancelConfirm(true)} disabled={acting}
-                className="px-4 py-2 border border-red-300 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
-                Cancel
-              </button>
-            </>
-          )}
-          <Badge status={sub.status} />
+            )}
+            {sub.status === 'active' && (
+              <>
+                <button onClick={() => setShowChangePlan(true)} disabled={acting}
+                  className="px-4 py-2 border border-velox-300 text-velox-600 rounded-lg text-sm font-medium hover:bg-velox-50 disabled:opacity-50 transition-colors">
+                  Change Plan
+                </button>
+                <button onClick={() => setShowPauseConfirm(true)} disabled={acting}
+                  className="px-4 py-2 border border-amber-300 text-amber-600 rounded-lg text-sm font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors">
+                  Pause
+                </button>
+                <button onClick={() => setShowCancelConfirm(true)} disabled={acting}
+                  className="px-4 py-2 border border-red-300 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
+                  Cancel
+                </button>
+              </>
+            )}
+            {sub.status === 'paused' && (
+              <>
+                <button onClick={handleResume} disabled={acting}
+                  className="px-4 py-2 border border-emerald-300 text-emerald-600 rounded-lg text-sm font-medium hover:bg-emerald-50 disabled:opacity-50 transition-colors">
+                  Resume
+                </button>
+                <button onClick={() => setShowCancelConfirm(true)} disabled={acting}
+                  className="px-4 py-2 border border-red-300 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 disabled:opacity-50 transition-colors">
+                  Cancel
+                </button>
+              </>
+            )}
+            <Badge status={sub.status} />
+          </div>
         </div>
       </div>
 
       {/* Key metrics row */}
-      <div className="bg-white rounded-xl shadow-card flex divide-x divide-gray-100 mt-6">
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card flex divide-x divide-gray-100 dark:divide-gray-800 mt-6">
         <div className="flex-1 px-6 py-4">
-          <p className="text-sm text-gray-500">Customer</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400">Customer</p>
           {customer ? (
             <Link to={`/customers/${customer.id}`} className="text-lg font-semibold text-velox-600 hover:text-velox-700 mt-1 block transition-colors">
               {customer.display_name}
             </Link>
           ) : (
-            <p className="text-lg font-semibold text-gray-900 mt-1">{sub.customer_id.slice(0, 8)}...</p>
+            <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mt-1">{sub.customer_id.slice(0, 8)}...</p>
           )}
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-sm text-gray-500">Plan</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400">Plan</p>
           {plan ? (
             <Link to={`/plans/${plan.id}`} className="text-lg font-semibold text-velox-600 hover:text-velox-700 mt-1 block transition-colors">
               {plan.name}
             </Link>
           ) : (
-            <p className="text-lg font-semibold text-gray-900 mt-1">{sub.plan_id.slice(0, 8)}...</p>
+            <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mt-1">{sub.plan_id.slice(0, 8)}...</p>
           )}
           {plan && (
-            <p className="text-xs text-gray-400 mt-0.5">
+            <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">
               {formatCents(plan.base_amount_cents)}/{plan.billing_interval === 'yearly' ? 'yr' : 'mo'}
             </p>
           )}
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-sm text-gray-500">Billing Period</p>
-          <p className="text-lg font-semibold text-gray-900 mt-1">
+          <p className="text-sm text-gray-600 dark:text-gray-400">Billing Period</p>
+          <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mt-1">
             {sub.current_billing_period_start && sub.current_billing_period_end
               ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
               : '\u2014'}
           </p>
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-sm text-gray-500">Status</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400">Status</p>
           <div className="mt-1.5">
             <Badge status={sub.status} />
           </div>
@@ -239,27 +242,27 @@ export function SubscriptionDetailPage() {
       </div>
 
       {/* Properties card */}
-      <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Properties</h2>
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Properties</h2>
         </div>
-        <div className="divide-y divide-gray-50">
+        <div className="divide-y divide-gray-100 dark:divide-gray-800">
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Code</span>
-            <span className="text-sm text-gray-900 font-mono">{sub.code}</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">Code</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100 font-mono">{sub.code}</span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Customer</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">Customer</span>
             {customer ? (
               <Link to={`/customers/${customer.id}`} className="text-sm font-medium text-velox-600 hover:text-velox-700 hover:underline transition-colors">
                 {customer.display_name}
               </Link>
             ) : (
-              <span className="text-sm text-gray-900 font-mono">{sub.customer_id}</span>
+              <span className="text-sm text-gray-900 dark:text-gray-100 font-mono">{sub.customer_id}</span>
             )}
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Plan</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">Plan</span>
             {plan ? (
               <span className="text-sm">
                 <Link to={`/plans/${plan.id}`} className="font-medium text-velox-600 hover:text-velox-700 hover:underline transition-colors">
@@ -270,29 +273,44 @@ export function SubscriptionDetailPage() {
                 </span>
               </span>
             ) : (
-              <span className="text-sm text-gray-900 font-mono">{sub.plan_id}</span>
+              <span className="text-sm text-gray-900 dark:text-gray-100 font-mono">{sub.plan_id}</span>
             )}
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Status</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">Status</span>
             <Badge status={sub.status} />
           </div>
+          {sub.billing_time && (
+            <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-sm text-gray-600 w-40 shrink-0">Billing Time</span>
+              <span className="text-sm text-gray-900 dark:text-gray-100">{sub.billing_time === 'anniversary' ? 'Anniversary' : 'Calendar'}</span>
+            </div>
+          )}
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Billing Period</span>
-            <span className="text-sm text-gray-900">
+            <span className="text-sm text-gray-600 w-40 shrink-0">Billing Period</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100">
               {sub.current_billing_period_start && sub.current_billing_period_end
                 ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
                 : '\u2014'}
             </span>
           </div>
+          {sub.usage_cap_units != null && (
+            <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-sm text-gray-600 w-40 shrink-0">Usage Cap</span>
+              <span className="text-sm text-gray-900 dark:text-gray-100">
+                {sub.usage_cap_units.toLocaleString()} units / period
+                <span className="text-xs text-gray-500 ml-2">({sub.overage_action === 'block' ? 'hard cap' : 'charge overage'})</span>
+              </span>
+            </div>
+          )}
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Created</span>
-            <span className="text-sm text-gray-900">{formatDate(sub.created_at)}</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">Created</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100">{formatDateTime(sub.created_at)}</span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">ID</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">ID</span>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-900 font-mono">{sub.id}</span>
+              <span className="text-sm text-gray-900 dark:text-gray-100 font-mono">{sub.id}</span>
               <CopyButton text={sub.id} />
             </div>
           </div>
@@ -300,34 +318,34 @@ export function SubscriptionDetailPage() {
       </div>
 
       {/* Invoice Preview */}
-      <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Next Invoice Preview</h2>
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Next Invoice Preview</h2>
         </div>
         {preview ? (
           <>
             <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-gray-100 bg-gray-50">
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Description</th>
-                  <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Quantity</th>
-                  <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Amount</th>
+                <tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Description</th>
+                  <th className="text-right text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Quantity</th>
+                  <th className="text-right text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Amount</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-50">
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                 {preview.lines.map((line, i) => (
                   <tr key={i}>
-                    <td className="px-6 py-3 text-sm text-gray-900">{line.description}</td>
-                    <td className="px-6 py-3 text-sm text-gray-500 text-right">{line.quantity}</td>
-                    <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">{formatCents(line.amount_cents)}</td>
+                    <td className="px-6 py-3 text-sm text-gray-900 dark:text-gray-100">{line.description}</td>
+                    <td className="px-6 py-3 text-sm text-gray-600 text-right">{line.quantity}</td>
+                    <td className="px-6 py-3 text-sm font-medium text-gray-900 dark:text-gray-100 text-right">{formatCents(line.amount_cents)}</td>
                   </tr>
                 ))}
               </tbody>
               <tfoot>
-                <tr className="border-t border-gray-200">
-                  <td colSpan={2} className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">Subtotal</td>
-                  <td className="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{formatCents(preview.subtotal_cents)}</td>
+                <tr className="border-t border-gray-200 dark:border-gray-700">
+                  <td colSpan={2} className="px-6 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100 text-right">Subtotal</td>
+                  <td className="px-6 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100 text-right">{formatCents(preview.subtotal_cents)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -335,7 +353,7 @@ export function SubscriptionDetailPage() {
           </>
         ) : previewError ? (
           <div className="px-6 py-8 text-center">
-            <p className="text-sm text-gray-500">Preview not available</p>
+            <p className="text-sm text-gray-600 dark:text-gray-400">Preview not available</p>
             <p className="text-sm text-gray-400 mt-1">Activate the subscription and set a billing period to see a preview</p>
           </div>
         ) : (
@@ -343,37 +361,42 @@ export function SubscriptionDetailPage() {
         )}
       </div>
 
-      {/* Related Invoices */}
-      <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Invoices ({invoices.length})</h2>
+      {/* Related Invoices (show latest 5) */}
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Invoices ({invoices.length})</h2>
+          {invoices.length > 5 && (
+            <Link to="/invoices" className="text-xs text-velox-600 hover:underline">View all</Link>
+          )}
         </div>
         {invoices.length > 0 ? (
           <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-gray-100 bg-gray-50">
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Invoice</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
-                <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Amount</th>
-                <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Date</th>
+              <tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+                <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Invoice</th>
+                <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Status</th>
+                <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Payment</th>
+                <th className="text-right text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Amount</th>
+                <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Date</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-50">
-              {invoices.map(inv => (
-                <tr key={inv.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+              {invoices.slice(0, 5).map(inv => (
+                <tr key={inv.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer transition-colors group" onClick={(e) => {
                   const target = e.target as HTMLElement
                   if (target.closest('button, a, input, select')) return
                   navigate(`/invoices/${inv.id}`)
                 }}>
                   <td className="px-6 py-3">
-                    <Link to={`/invoices/${inv.id}`} className="text-sm font-medium text-velox-600 group-hover:text-velox-600 transition-colors hover:underline">
+                    <Link to={`/invoices/${inv.id}`} className="text-sm font-medium text-gray-900 dark:text-gray-100 group-hover:text-velox-600 transition-colors">
                       {inv.invoice_number}
                     </Link>
                   </td>
                   <td className="px-6 py-3"><Badge status={inv.status} /></td>
-                  <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">{formatCents(inv.total_amount_cents)}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{formatDate(inv.created_at)}</td>
+                  <td className="px-6 py-3"><Badge status={inv.payment_status} /></td>
+                  <td className="px-6 py-3 text-sm font-medium text-gray-900 dark:text-gray-100 text-right">{formatCents(inv.total_amount_cents)}</td>
+                  <td className="px-6 py-3 text-sm text-gray-600 dark:text-gray-400">{formatDateTime(inv.created_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -383,6 +406,15 @@ export function SubscriptionDetailPage() {
           <EmptyState title="No invoices" description="Invoices will appear here after billing runs" />
         )}
       </div>
+
+      <ConfirmDialog
+        open={showPauseConfirm}
+        title="Pause Subscription"
+        message="Pausing will stop billing for this subscription. Usage will not be metered while paused. You can resume at any time."
+        confirmLabel="Pause Subscription"
+        onConfirm={() => { setShowPauseConfirm(false); handlePause() }}
+        onCancel={() => setShowPauseConfirm(false)}
+      />
 
       <ConfirmDialog
         open={showCancelConfirm}
@@ -401,12 +433,22 @@ export function SubscriptionDetailPage() {
           currentPlanName={plan?.name || 'Unknown'}
           plans={allPlans}
           onClose={() => setShowChangePlan(false)}
-          onChanged={(updated) => {
+          onChanged={(updated, proration) => {
             setSub(updated)
             const newPlan = allPlans.find(p => p.id === updated.plan_id)
             if (newPlan) setPlan(newPlan)
             setShowChangePlan(false)
-            toast.success('Plan changed successfully')
+            if (proration) {
+              if (proration.type === 'upgrade') {
+                toast.success(`Proration invoice created for ${formatCents(proration.amount_cents)}`)
+              } else if (proration.type === 'downgrade') {
+                toast.success(`${formatCents(Math.abs(proration.amount_cents))} credited to customer balance`)
+              } else {
+                toast.success('Plan changed successfully')
+              }
+            } else {
+              toast.success('Plan changed successfully')
+            }
             loadData()
           }}
         />
@@ -421,7 +463,7 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
   currentPlanName: string
   plans: Plan[]
   onClose: () => void
-  onChanged: (sub: Subscription) => void
+  onChanged: (sub: Subscription, proration?: { type: string; amount_cents: number; invoice_id?: string }) => void
 }) {
   const [newPlanId, setNewPlanId] = useState('')
   const [immediate, setImmediate] = useState(false)
@@ -441,7 +483,7 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
     setSaving(true); setError('')
     try {
       const res = await api.changePlan(subscriptionId, { new_plan_id: newPlanId, immediate })
-      onChanged(res.subscription)
+      onChanged(res.subscription, res.proration)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to change plan')
     } finally {
@@ -453,14 +495,14 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
     <Modal open onClose={onClose} title="Change Plan">
       <form onSubmit={handleSubmit} noValidate className="space-y-4">
         <div>
-          <p className="text-sm text-gray-500">Current plan</p>
-          <p className="text-sm font-semibold text-gray-900 mt-0.5">{currentPlanName}</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400">Current plan</p>
+          <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 mt-0.5">{currentPlanName}</p>
         </div>
 
-        <FormSelect label="New Plan" required value={newPlanId} error={fieldError('plan_id')}
-          onChange={e => { setNewPlanId(e.target.value); onBlur('plan_id', e.target.value) }}
+        <SearchSelect label="New Plan" required value={newPlanId} error={fieldError('plan_id')}
+          onChange={(v) => { setNewPlanId(v); onBlur('plan_id', v) }}
           placeholder="Select a plan..."
-          options={availablePlans.map(p => ({ value: p.id, label: `${p.name} (${p.code}) - ${formatCents(p.base_amount_cents)}/${p.billing_interval}` }))} />
+          options={availablePlans.map(p => ({ value: p.id, label: `${p.name} — ${formatCents(p.base_amount_cents)}/${p.billing_interval}`, sublabel: p.code }))} />
 
         <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" checked={immediate} onChange={e => setImmediate(e.target.checked)}
@@ -468,7 +510,7 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
           <div>
             <span className="font-medium text-gray-700">Apply immediately (with proration)</span>
             {immediate && (
-              <p className="text-xs text-gray-400 mt-1">
+              <p className="text-xs text-gray-500 mt-1">
                 The remaining time on the current billing period will be prorated. A credit or charge will be applied based on the price difference between plans.
               </p>
             )}
@@ -476,8 +518,8 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
         </label>
 
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
-          <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
           <button type="submit" disabled={saving || !newPlanId}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
             {saving ? 'Changing...' : 'Change Plan'}

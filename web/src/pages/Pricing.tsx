@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { api, formatCents, formatDate, type Meter, type Plan, type RatingRule } from '@/lib/api'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { api, formatCents, formatDateTime, getCurrencySymbol, getActiveCurrency, type Meter, type Plan, type RatingRule } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
 import { FormField, FormSelect } from '@/components/FormField'
+import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Plus, Trash2 } from 'lucide-react'
@@ -15,8 +16,10 @@ export function PricingPage() {
   const [rules, setRules] = useState<RatingRule[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [tab, setTab] = useState<'plans' | 'meters' | 'rules'>('plans')
-  const [showCreate, setShowCreate] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = (['plans', 'meters', 'rules'].includes(searchParams.get('tab') || '') ? searchParams.get('tab') : 'plans') as 'plans' | 'meters' | 'rules'
+  const setTab = (t: 'plans' | 'meters' | 'rules') => setSearchParams(t === 'plans' ? {} : { tab: t })
+  const [createFor, setCreateFor] = useState<'plans' | 'meters' | 'rules' | null>(null)
   const toast = useToast()
   const navigate = useNavigate()
 
@@ -34,64 +37,64 @@ export function PricingPage() {
     <Layout>
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Pricing</h1>
-          <p className="text-sm text-gray-500 mt-1">Plans, meters, and rating rules</p>
+          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Pricing</h1>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Plans, meters, and rating rules</p>
         </div>
-        <button onClick={() => setShowCreate(true)}
+        <button onClick={() => setCreateFor(tab)}
           className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
           <Plus size={16} />
           {tab === 'plans' ? 'Add Plan' : tab === 'meters' ? 'Add Meter' : 'Add Rule'}
         </button>
       </div>
 
-      <div className="flex gap-1 mt-6 bg-gray-100 rounded-lg p-1 w-fit">
+      <div className="flex gap-1 mt-6 bg-gray-100 dark:bg-gray-800 rounded-lg p-1 w-fit">
         {(['plans', 'meters', 'rules'] as const).map(t => (
-          <button key={t} onClick={() => { setTab(t); setShowCreate(false) }}
+          <button key={t} onClick={() => { setTab(t) }}
             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              tab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              tab === t ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
             }`}>
             {t === 'plans' ? `Plans (${plans.length})` : t === 'meters' ? `Meters (${meters.length})` : `Rules (${rules.length})`}
           </button>
         ))}
       </div>
 
-      <div className="bg-white rounded-xl shadow-card mt-4">
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-4">
         {error ? <ErrorState message={error} onRetry={loadAll} />
-        : loading ? <div className="p-8 text-gray-400 animate-pulse">Loading...</div>
-        : tab === 'plans' ? (plans.length === 0 ? <Empty label="plans" /> :
-          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100 bg-gray-50">
+        : loading ? <LoadingSkeleton rows={5} columns={5} />
+        : tab === 'plans' ? (plans.length === 0 ? <Empty label="plans" onAdd={() => setCreateFor('plans')} /> :
+          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
             <Th>Name</Th><Th>Code</Th><Th>Interval</Th><Th>Status</Th><Th right>Base Price</Th><Th right>Meters</Th>
-          </tr></thead><tbody className="divide-y divide-gray-50">
-            {plans.map(p => <tr key={p.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+          </tr></thead><tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+            {plans.map(p => <tr key={p.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer transition-colors group" onClick={(e) => {
               const target = e.target as HTMLElement
               if (target.closest('button, a, input, select')) return
               navigate(`/plans/${p.id}`)
             }}>
-              <Td bold><Link to={`/plans/${p.id}`} className="text-gray-900 group-hover:text-velox-600 transition-colors">{p.name}</Link></Td>
+              <Td bold><Link to={`/plans/${p.id}`} className="text-gray-900 dark:text-gray-100 group-hover:text-velox-600 transition-colors">{p.name}</Link></Td>
               <Td mono>{p.code}</Td><Td><Badge status={p.billing_interval} /></Td>
               <Td><Badge status={p.status} /></Td><Td right bold>{formatCents(p.base_amount_cents)}</Td>
               <Td right>{p.meter_ids?.length || 0}</Td>
             </tr>)}
           </tbody></table></div>)
-        : tab === 'meters' ? (meters.length === 0 ? <Empty label="meters" /> :
-          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100 bg-gray-50">
+        : tab === 'meters' ? (meters.length === 0 ? <Empty label="meters" onAdd={() => setCreateFor('meters')} /> :
+          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
             <Th>Name</Th><Th>Key</Th><Th>Unit</Th><Th>Aggregation</Th><Th>Created</Th>
-          </tr></thead><tbody className="divide-y divide-gray-50">
-            {meters.map(m => <tr key={m.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+          </tr></thead><tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+            {meters.map(m => <tr key={m.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer transition-colors group" onClick={(e) => {
               const target = e.target as HTMLElement
               if (target.closest('button, a, input, select')) return
               navigate(`/meters/${m.id}`)
             }}>
-              <Td bold><Link to={`/meters/${m.id}`} className="text-gray-900 group-hover:text-velox-600 transition-colors">{m.name}</Link></Td>
+              <Td bold><Link to={`/meters/${m.id}`} className="text-gray-900 dark:text-gray-100 group-hover:text-velox-600 transition-colors">{m.name}</Link></Td>
               <Td mono>{m.key}</Td><Td>{m.unit}</Td>
-              <Td><Badge status={m.aggregation} /></Td><Td muted>{formatDate(m.created_at)}</Td>
+              <Td><Badge status={m.aggregation} /></Td><Td muted>{formatDateTime(m.created_at)}</Td>
             </tr>)}
           </tbody></table></div>)
-        : (rules.length === 0 ? <Empty label="rating rules" /> :
-          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100 bg-gray-50">
+        : (rules.length === 0 ? <Empty label="rating rules" onAdd={() => setCreateFor('rules')} /> :
+          <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
             <Th>Name</Th><Th>Rule Key</Th><Th>Mode</Th><Th>Version</Th><Th right>Price</Th>
-          </tr></thead><tbody className="divide-y divide-gray-50">
-            {rules.map(r => <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">
+          </tr></thead><tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+            {rules.map(r => <tr key={r.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/50 transition-colors">
               <Td bold>{r.name}</Td><Td mono>{r.rule_key}</Td><Td><Badge status={r.mode} /></Td>
               <Td>v{r.version}</Td>
               <Td right bold>{r.mode === 'flat' ? formatCents(r.flat_amount_cents) : r.mode === 'graduated' ? `${r.graduated_tiers?.length || 0} tiers` : `${r.package_size}/pkg`}</Td>
@@ -99,22 +102,33 @@ export function PricingPage() {
           </tbody></table></div>)}
       </div>
 
-      {showCreate && tab === 'rules' && <CreateRuleModal onClose={() => setShowCreate(false)}
-        onCreated={() => { setShowCreate(false); loadAll(); toast.success('Rating rule created') }} />}
-      {showCreate && tab === 'meters' && <CreateMeterModal onClose={() => setShowCreate(false)} rules={rules}
-        onCreated={() => { setShowCreate(false); loadAll(); toast.success('Meter created') }} />}
-      {showCreate && tab === 'plans' && <CreatePlanModal onClose={() => setShowCreate(false)} meters={meters}
-        onCreated={() => { setShowCreate(false); loadAll(); toast.success('Plan created') }} />}
+      {createFor === 'rules' && <CreateRuleModal onClose={() => setCreateFor(null)}
+        onCreated={() => { setCreateFor(null); loadAll(); toast.success('Rating rule created') }} />}
+      {createFor === 'meters' && <CreateMeterModal onClose={() => setCreateFor(null)} rules={rules}
+        onCreated={() => { setCreateFor(null); loadAll(); toast.success('Meter created') }} />}
+      {createFor === 'plans' && <CreatePlanModal onClose={() => setCreateFor(null)} meters={meters}
+        onCreated={() => { setCreateFor(null); loadAll(); toast.success('Plan created') }} />}
     </Layout>
   )
 }
 
-function Empty({ label }: { label: string }) {
-  return <p className="px-6 py-8 text-sm text-gray-400 text-center">No {label} yet</p>
+function Empty({ label, onAdd }: { label: string; onAdd?: () => void }) {
+  return (
+    <div className="px-6 py-12 text-center">
+      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">No {label} yet</p>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Get started by creating your first {label.replace(/s$/, '')}</p>
+      {onAdd && (
+        <button onClick={onAdd}
+          className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm transition-colors">
+          <Plus size={16} /> Add {label.replace(/s$/, '').replace(/^./, c => c.toUpperCase())}
+        </button>
+      )}
+    </div>
+  )
 }
 
 function Th({ children, right }: { children: React.ReactNode; right?: boolean }) {
-  return <th className={`${right ? 'text-right' : 'text-left'} text-xs font-medium text-gray-500 px-6 py-3`}>{children}</th>
+  return <th className={`${right ? 'text-right' : 'text-left'} text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3`}>{children}</th>
 }
 
 function Td({ children, bold, mono, right, muted }: { children: React.ReactNode; bold?: boolean; mono?: boolean; right?: boolean; muted?: boolean }) {
@@ -123,8 +137,8 @@ function Td({ children, bold, mono, right, muted }: { children: React.ReactNode;
 
 
 function Buttons({ onClose, saving, label }: { onClose: () => void; saving: boolean; label: string }) {
-  return (<div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
-    <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
+  return (<div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
+    <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
     <button type="submit" disabled={saving}
       className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
       {saving ? 'Saving...' : label}
@@ -136,7 +150,6 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [name, setName] = useState('')
   const [ruleKey, setRuleKey] = useState('')
   const [mode, setMode] = useState('flat')
-  const [currency, setCurrency] = useState('USD')
   const [flatAmount, setFlatAmount] = useState('')
   const [tiers, setTiers] = useState([
     { upTo: '100', price: '0.10' },
@@ -157,11 +170,18 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
     e.preventDefault()
     setSaving(true); setError('')
     try {
-      const payload: Record<string, unknown> = { rule_key: ruleKey, name, mode, currency }
+      const payload: Record<string, unknown> = { rule_key: ruleKey, name, mode, currency: getActiveCurrency() }
       if (mode === 'flat') {
         payload.flat_amount_cents = Math.round(parseFloat(flatAmount || '0') * 100)
       }
       if (mode === 'graduated') {
+        // Validate tier order: each "up to" must be greater than the previous
+        for (let i = 0; i < tiers.length - 1; i++) {
+          const current = parseInt(tiers[i].upTo) || 0
+          const next = tiers[i + 1].upTo === '' ? Infinity : (parseInt(tiers[i + 1].upTo) || 0)
+          if (current <= 0) { setError(`Tier ${i + 1}: "Up to" must be greater than 0`); setSaving(false); return }
+          if (next !== Infinity && next <= current) { setError(`Tier ${i + 2}: "Up to" must be greater than ${current}`); setSaving(false); return }
+        }
         payload.graduated_tiers = tiers.map(t => ({
           up_to: t.upTo === '' ? 0 : parseInt(t.upTo) || 0,
           unit_amount_cents: Math.round(parseFloat(t.price || '0') * 100),
@@ -174,14 +194,14 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
       await api.createRatingRule(payload as Parameters<typeof api.createRatingRule>[0])
       onCreated()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed')
+      setError(err instanceof Error ? err.message : 'Failed to create rating rule')
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <Modal open onClose={onClose} title="Create Rating Rule" wide>
+    <Modal open onClose={onClose} title="Create Rating Rule" wide dirty={!!(name || ruleKey || flatAmount)}>
       <form onSubmit={submit} noValidate className="space-y-4">
         <FormField label="Name" required value={name} onChange={e => setName(e.target.value)}
           placeholder="API Call Pricing" maxLength={255} />
@@ -197,25 +217,22 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
               { value: 'graduated', label: 'Graduated Tiers' },
               { value: 'package', label: 'Package' },
             ]} />
-          <FormSelect label="Currency" value={currency}
-            onChange={e => setCurrency(e.target.value)}
-            options={['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'CHF'].map(c => ({ value: c, label: c }))} />
         </div>
-        <p className="text-xs text-gray-400 -mt-2">{modeDescriptions[mode]}</p>
+        <p className="text-xs text-gray-500 -mt-2">{modeDescriptions[mode]}</p>
 
         {mode === 'flat' && (
-          <FormField label="Price per Unit ($)" required type="number" step="0.01" min={0} max={999999.99}
+          <FormField label={`Price per Unit (${getCurrencySymbol()})`} required type="number" step="0.01" min={0} max={999999.99}
             value={flatAmount} onChange={e => setFlatAmount(e.target.value)}
-            placeholder="0.01" hint="e.g. $0.01 per API call" />
+            placeholder="0.01" hint={`e.g. ${getCurrencySymbol()}0.01 per API call`} />
         )}
 
         {mode === 'graduated' && (
           <div className="space-y-3">
             <label className="block text-sm font-medium text-gray-700">Pricing Tiers</label>
-            <div className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
               <div className="grid grid-cols-[1fr_1fr_36px] gap-0 px-3 py-2 border-b border-gray-200 bg-gray-100">
-                <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Up to (units)</span>
-                <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Price per unit ($)</span>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Up to (units)</span>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Price per unit ($)</span>
                 <span />
               </div>
               {tiers.map((tier, idx) => (
@@ -247,7 +264,7 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
               className="text-sm font-medium text-velox-600 hover:text-velox-700 transition-colors">
               + Add tier
             </button>
-            <p className="text-xs text-gray-400">Leave "Up to" empty on the last tier for unlimited. Tiers are evaluated in order.</p>
+            <p className="text-xs text-gray-500">Leave "Up to" empty on the last tier for unlimited. Tiers are evaluated in order.</p>
           </div>
         )}
 
@@ -256,9 +273,9 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
             <FormField label="Units per Package" required type="number" min={1}
               value={packageSize} onChange={e => setPackageSize(e.target.value)}
               placeholder="100" hint="e.g. 100 API calls per package" />
-            <FormField label="Price per Package ($)" required type="number" step="0.01" min={0} max={999999.99}
+            <FormField label={`Price per Package (${getCurrencySymbol()})`} required type="number" step="0.01" min={0} max={999999.99}
               value={packageAmount} onChange={e => setPackageAmount(e.target.value)}
-              placeholder="10.00" hint="e.g. $10.00 per 100 calls" />
+              placeholder="10.00" hint={`e.g. ${getCurrencySymbol()}10.00 per 100 calls`} />
           </div>
         )}
 
@@ -277,7 +294,7 @@ function CreateMeterModal({ onClose, onCreated, rules }: { onClose: () => void; 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setSaving(true); setError('')
     try { await api.createMeter(form); onCreated() }
-    catch (err) { setError(err instanceof Error ? err.message : 'Failed') }
+    catch (err) { setError(err instanceof Error ? err.message : 'Failed to create meter') }
     finally { setSaving(false) }
   }
 
@@ -308,7 +325,7 @@ function CreateMeterModal({ onClose, onCreated, rules }: { onClose: () => void; 
                 { value: 'max', label: 'Maximum' },
                 { value: 'last', label: 'Latest Value' },
               ]} />
-            <p className="text-xs text-gray-400 mt-1">{aggregationDescriptions[form.aggregation]}</p>
+            <p className="text-xs text-gray-500 mt-1">{aggregationDescriptions[form.aggregation]}</p>
           </div>
         </div>
         {rules.length > 0 && (
@@ -327,7 +344,6 @@ function CreateMeterModal({ onClose, onCreated, rules }: { onClose: () => void; 
 function CreatePlanModal({ onClose, onCreated, meters }: { onClose: () => void; onCreated: () => void; meters: Meter[] }) {
   const [name, setName] = useState('')
   const [code, setCode] = useState('')
-  const [currency, setCurrency] = useState('USD')
   const [interval, setInterval] = useState('monthly')
   const [basePrice, setBasePrice] = useState('')
   const [meterIds, setMeterIds] = useState<string[]>([])
@@ -338,13 +354,13 @@ function CreatePlanModal({ onClose, onCreated, meters }: { onClose: () => void; 
     e.preventDefault(); setSaving(true); setError('')
     try {
       await api.createPlan({
-        name, code, currency, billing_interval: interval,
+        name, code, currency: getActiveCurrency(), billing_interval: interval,
         base_amount_cents: Math.round(parseFloat(basePrice || '0') * 100),
         meter_ids: meterIds,
       })
       onCreated()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed')
+      setError(err instanceof Error ? err.message : 'Failed to create plan')
     } finally {
       setSaving(false)
     }
@@ -365,17 +381,14 @@ function CreatePlanModal({ onClose, onCreated, meters }: { onClose: () => void; 
               { value: 'monthly', label: 'Monthly' },
               { value: 'yearly', label: 'Yearly' },
             ]} />
-          <FormSelect label="Currency" value={currency}
-            onChange={e => setCurrency(e.target.value)}
-            options={['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'INR', 'CHF'].map(c => ({ value: c, label: c }))} />
         </div>
-        <FormField label="Base Price ($)" required type="number" step="0.01" min={0} max={999999.99}
+        <FormField label={`Base Price (${getCurrencySymbol()})`} required type="number" step="0.01" min={0} max={999999.99}
           value={basePrice} onChange={e => setBasePrice(e.target.value)}
           placeholder="49.00" hint={`Fixed ${interval} charge before usage fees`} />
         {meters.length > 0 && (
-          <div className="border-t border-gray-100 pt-4">
+          <div className="border-t border-gray-100 dark:border-gray-800 pt-4">
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Usage Meters</p>
-            <div className="space-y-0 rounded-lg border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+            <div className="space-y-0 rounded-lg border border-gray-200 divide-y divide-gray-100 dark:divide-gray-800 overflow-hidden">
               {meters.map(m => (
                 <label key={m.id} className="flex items-center gap-3 px-3 py-2.5 text-sm cursor-pointer hover:bg-gray-50 transition-colors">
                   <input type="checkbox" checked={meterIds.includes(m.id)}
@@ -385,7 +398,7 @@ function CreatePlanModal({ onClose, onCreated, meters }: { onClose: () => void; 
                     <span className="text-gray-900">{m.name}</span>
                     <span className="text-gray-400 font-mono text-xs ml-2">{m.key}</span>
                   </div>
-                  <span className="text-xs text-gray-400">{m.aggregation} · {m.unit}</span>
+                  <span className="text-xs text-gray-500">{m.aggregation} · {m.unit}</span>
                 </label>
               ))}
             </div>

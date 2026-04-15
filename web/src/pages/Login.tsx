@@ -13,7 +13,7 @@ export function LoginPage() {
     setError('')
 
     if (!key.startsWith('vlx_')) {
-      setError('Invalid API key format')
+      setError('API key must start with vlx_secret_ or vlx_pub_')
       return
     }
 
@@ -37,16 +37,16 @@ export function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-velox-900">Velox</h1>
+          <h1 className="text-3xl font-bold text-velox-900 dark:text-gray-100">Velox</h1>
           <p className="text-gray-500 mt-1">Billing Dashboard</p>
           <p className="text-sm text-gray-400 mt-0.5">Open-source usage-based billing</p>
         </div>
 
-        <form onSubmit={handleSubmit} noValidate className="bg-white rounded-xl shadow-card p-6">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
+        <form onSubmit={handleSubmit} noValidate className="bg-white dark:bg-gray-900 rounded-xl shadow-card p-6">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             API Key
           </label>
           <input
@@ -54,7 +54,7 @@ export function LoginPage() {
             value={key}
             onChange={e => setKey(e.target.value)}
             placeholder="vlx_secret_..."
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 focus:border-transparent"
+            className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 focus:border-transparent dark:bg-gray-800 dark:text-gray-100"
             autoFocus
           />
           {error && (
@@ -67,8 +67,8 @@ export function LoginPage() {
           >
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
-          <p className="text-xs text-gray-400 mt-3 text-center">
-            Run <code className="bg-gray-100 px-1 py-0.5 rounded">make bootstrap</code> to get an API key
+          <p className="text-xs text-gray-500 mt-3 text-center">
+            Run <code className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">make bootstrap</code> to get an API key
           </p>
         </form>
       </div>

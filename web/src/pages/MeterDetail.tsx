@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { api, formatCents, formatDate, type Meter, type Plan, type RatingRule } from '@/lib/api'
+import { api, formatCents, formatDateTime, type Meter, type Plan, type RatingRule } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { Badge } from '@/components/Badge'
@@ -71,7 +71,7 @@ export function MeterDetailPage() {
     return (
       <Layout>
         <Breadcrumbs items={[{ label: 'Pricing', to: '/pricing' }, { label: 'Loading...' }]} />
-        <div className="bg-white rounded-xl shadow-card">
+        <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card">
           <LoadingSkeleton rows={8} columns={3} />
         </div>
       </Layout>
@@ -98,43 +98,45 @@ export function MeterDetailPage() {
       <Breadcrumbs items={[{ label: 'Pricing', to: '/pricing' }, { label: meter.name }]} />
 
       {/* Header row */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">{meter.name}</h1>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-sm text-gray-500 font-mono">{meter.id}</span>
-            <CopyButton text={meter.id} />
+      <div className="sticky top-0 z-10 bg-white dark:bg-gray-950 pb-4 -mx-4 px-4 md:-mx-8 md:px-8 pt-2 border-b border-gray-100 dark:border-gray-800">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">{meter.name}</h1>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-sm text-gray-600 dark:text-gray-400 font-mono">{meter.id}</span>
+              <CopyButton text={meter.id} />
+            </div>
           </div>
+          <Badge status={meter.aggregation} />
         </div>
-        <Badge status={meter.aggregation} />
       </div>
 
       {/* Properties card */}
-      <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Properties</h2>
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Properties</h2>
         </div>
         <div className="px-6">
           <div className="flex items-center justify-between py-3 border-b border-gray-50">
-            <span className="text-sm text-gray-500">Key</span>
-            <span className="text-sm text-gray-900 font-medium font-mono">{meter.key}</span>
+            <span className="text-sm text-gray-600 dark:text-gray-400">Key</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100 font-medium font-mono">{meter.key}</span>
           </div>
           <div className="flex items-center justify-between py-3 border-b border-gray-50">
-            <span className="text-sm text-gray-500">Unit</span>
-            <span className="text-sm text-gray-900 font-medium">{meter.unit}</span>
+            <span className="text-sm text-gray-600 dark:text-gray-400">Unit</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100 font-medium">{meter.unit}</span>
           </div>
           <div className="flex items-center justify-between py-3 border-b border-gray-50">
-            <span className="text-sm text-gray-500">Aggregation</span>
+            <span className="text-sm text-gray-600 dark:text-gray-400">Aggregation</span>
             <Badge status={meter.aggregation} />
           </div>
           <div className="flex items-center justify-between py-3 border-b border-gray-50">
-            <span className="text-sm text-gray-500">Created</span>
-            <span className="text-sm text-gray-900 font-medium">{formatDate(meter.created_at)}</span>
+            <span className="text-sm text-gray-600 dark:text-gray-400">Created</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100 font-medium">{formatDateTime(meter.created_at)}</span>
           </div>
           <div className="flex items-center justify-between py-3">
-            <span className="text-sm text-gray-500">ID</span>
+            <span className="text-sm text-gray-600 dark:text-gray-400">ID</span>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-900 font-medium font-mono truncate max-w-xs">{meter.id}</span>
+              <span className="text-sm text-gray-900 dark:text-gray-100 font-medium font-mono truncate max-w-xs">{meter.id}</span>
               <CopyButton text={meter.id} />
             </div>
           </div>
@@ -142,13 +144,13 @@ export function MeterDetailPage() {
       </div>
 
       {/* Rating Rule card */}
-      <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100">
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-gray-900">Pricing Rule</h2>
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Pricing Rule</h2>
               {ratingRule && (
-                <p className="text-sm text-gray-500 mt-0.5">{ratingRule.name}</p>
+                <p className="text-sm text-gray-600 mt-0.5">{ratingRule.name}</p>
               )}
             </div>
             {ratingRule && (
@@ -161,14 +163,14 @@ export function MeterDetailPage() {
             <div className="flex items-center gap-2 mb-4">
               <Badge status={ratingRule.mode} />
               {ratingRule.currency && (
-                <span className="text-xs text-gray-400 font-medium uppercase">{ratingRule.currency}</span>
+                <span className="text-xs text-gray-500 font-medium uppercase">{ratingRule.currency}</span>
               )}
             </div>
 
             {ratingRule.mode === 'flat' && (
               <div>
                 <span className="text-3xl font-semibold text-gray-900">{formatCents(ratingRule.flat_amount_cents)}</span>
-                <span className="text-sm text-gray-500 ml-2">per unit</span>
+                <span className="text-sm text-gray-600 ml-2">per unit</span>
               </div>
             )}
 
@@ -176,18 +178,18 @@ export function MeterDetailPage() {
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b border-gray-100 bg-gray-50">
-                      <th className="text-left text-xs font-medium text-gray-500 py-2 pr-4">Tier</th>
-                      <th className="text-right text-xs font-medium text-gray-500 py-2">Price / unit</th>
+                    <tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+                      <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 py-2 pr-4">Tier</th>
+                      <th className="text-right text-xs font-medium text-gray-500 dark:text-gray-400 py-2">Price / unit</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-50">
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                     {ratingRule.graduated_tiers.map((tier, i) => (
                       <tr key={i}>
-                        <td className="py-2.5 pr-4 text-sm text-gray-900">
+                        <td className="py-2.5 pr-4 text-sm text-gray-900 dark:text-gray-100">
                           {graduatedTierLabel(tier, i, ratingRule.graduated_tiers!)}
                         </td>
-                        <td className="py-2.5 text-sm font-medium text-gray-900 text-right">
+                        <td className="py-2.5 text-sm font-medium text-gray-900 dark:text-gray-100 text-right">
                           {formatCents(tier.unit_amount_cents)}
                         </td>
                       </tr>
@@ -200,8 +202,8 @@ export function MeterDetailPage() {
             {ratingRule.mode === 'package' && (
               <div>
                 <span className="text-3xl font-semibold text-gray-900">{ratingRule.package_size.toLocaleString()}</span>
-                <span className="text-sm text-gray-500 ml-2">units per package at</span>
-                <span className="text-lg font-semibold text-gray-900 ml-1">{formatCents(ratingRule.package_amount_cents)}</span>
+                <span className="text-sm text-gray-600 ml-2">units per package at</span>
+                <span className="text-lg font-semibold text-gray-900 dark:text-gray-100 ml-1">{formatCents(ratingRule.package_amount_cents)}</span>
               </div>
             )}
           </div>
@@ -211,9 +213,9 @@ export function MeterDetailPage() {
       </div>
 
       {/* Plans table */}
-      <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
             Used by {plans.length} plan{plans.length !== 1 ? 's' : ''}
           </h2>
         </div>
@@ -221,17 +223,17 @@ export function MeterDetailPage() {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-gray-100 bg-gray-50">
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Code</th>
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Interval</th>
-                  <th className="text-right text-xs font-medium text-gray-500 px-6 py-3">Base Price</th>
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
+                <tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Name</th>
+                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Code</th>
+                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Interval</th>
+                  <th className="text-right text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Base Price</th>
+                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Status</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-50">
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                 {plans.map(plan => (
-                  <tr key={plan.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+                  <tr key={plan.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer transition-colors group" onClick={(e) => {
                     const target = e.target as HTMLElement
                     if (target.closest('button, a, input, select')) return
                     navigate(`/plans/${plan.id}`)
@@ -241,9 +243,9 @@ export function MeterDetailPage() {
                         {plan.name}
                       </Link>
                     </td>
-                    <td className="px-6 py-3 text-sm text-gray-500 font-mono">{plan.code}</td>
-                    <td className="px-6 py-3 text-sm text-gray-500">{plan.billing_interval}</td>
-                    <td className="px-6 py-3 text-sm font-medium text-gray-900 text-right">{formatCents(plan.base_amount_cents)}</td>
+                    <td className="px-6 py-3 text-sm text-gray-600 dark:text-gray-400 font-mono">{plan.code}</td>
+                    <td className="px-6 py-3 text-sm text-gray-600 dark:text-gray-400">{plan.billing_interval}</td>
+                    <td className="px-6 py-3 text-sm font-medium text-gray-900 dark:text-gray-100 text-right">{formatCents(plan.base_amount_cents)}</td>
                     <td className="px-6 py-3"><Badge status={plan.status} /></td>
                   </tr>
                 ))}
