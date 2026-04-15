@@ -1,0 +1,151 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: velox-db-backup
+  namespace: velox
+  labels:
+    app.kubernetes.io/name: velox
+    app.kubernetes.io/component: backup
+spec:
+  # Daily at 03:00 UTC
+  schedule: "0 3 * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: velox
+        app.kubernetes.io/component: backup
+    spec:
+      # Retry once on failure, then alert via failed job.
+      backoffLimit: 1
+      # Kill the job if it runs longer than 30 minutes.
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: velox
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          containers:
+            - name: backup
+              image: postgres:16-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+
+                  TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+                  BACKUP_FILE="/backups/velox_${TIMESTAMP}.dump"
+
+                  echo "[$(date -u)] Starting backup..."
+
+                  # Create the logical backup
+                  pg_dump \
+                    --dbname="$DATABASE_URL" \
+                    --format=custom \
+                    --compress=6 \
+                    --file="$BACKUP_FILE"
+
+                  # Verify the backup is readable
+                  pg_restore --list "$BACKUP_FILE" > /dev/null
+
+                  BACKUP_SIZE=$(wc -c < "$BACKUP_FILE" | tr -d ' ')
+                  echo "[$(date -u)] Backup complete: $BACKUP_FILE ($BACKUP_SIZE bytes)"
+
+                  # Upload to S3 if the aws CLI is available
+                  if command -v aws >/dev/null 2>&1 && [ -n "${BACKUP_S3_BUCKET:-}" ]; then
+                    aws s3 cp "$BACKUP_FILE" "s3://${BACKUP_S3_BUCKET}/logical-backups/velox_${TIMESTAMP}.dump" --only-show-errors
+                    echo "[$(date -u)] Uploaded to S3."
+                  fi
+
+                  # Rotate local backups (keep last 7 days in PVC)
+                  find /backups -name "velox_*.dump" -type f -mtime +7 -delete 2>/dev/null || true
+
+                  echo "[$(date -u)] Backup job finished successfully."
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: velox-secrets
+                      key: DATABASE_URL
+                - name: BACKUP_S3_BUCKET
+                  valueFrom:
+                    configMapKeyRef:
+                      name: velox-backup-config
+                      key: BACKUP_S3_BUCKET
+                      optional: true
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: velox-backup-s3-credentials
+                      key: AWS_ACCESS_KEY_ID
+                      optional: true
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: velox-backup-s3-credentials
+                      key: AWS_SECRET_ACCESS_KEY
+                      optional: true
+                - name: AWS_REGION
+                  valueFrom:
+                    configMapKeyRef:
+                      name: velox-backup-config
+                      key: AWS_REGION
+                      optional: true
+              resources:
+                requests:
+                  memory: 256Mi
+                  cpu: 100m
+                limits:
+                  memory: 512Mi
+                  cpu: 500m
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backups
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: velox-backup-pvc
+---
+# PersistentVolumeClaim for local backup storage.
+# Size this based on your database size. A 10Gi database compressed will
+# need ~20Gi to hold a week of daily backups.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: velox-backup-pvc
+  namespace: velox
+  labels:
+    app.kubernetes.io/name: velox
+    app.kubernetes.io/component: backup
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+# Optional: ConfigMap for backup settings.
+# Only needed if you want S3 upload from the CronJob.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: velox-backup-config
+  namespace: velox
+  labels:
+    app.kubernetes.io/name: velox
+    app.kubernetes.io/component: backup
+data:
+  BACKUP_S3_BUCKET: ""
+  AWS_REGION: "us-east-1"
