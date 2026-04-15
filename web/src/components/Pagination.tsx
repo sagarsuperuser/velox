@@ -26,28 +26,30 @@ export function Pagination({ page, totalPages, onPageChange }: PaginationProps) 
   if (totalPages > 1) pages.push(totalPages)
 
   return (
-    <div className="flex items-center justify-center gap-1 py-4">
+    <nav aria-label="Pagination" className="flex items-center justify-center gap-1 py-4">
       <button
         onClick={() => onPageChange(page - 1)}
         disabled={page === 1}
-        className="flex items-center justify-center w-8 h-8 rounded-lg text-sm text-gray-500 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        className="flex items-center justify-center w-8 h-8 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         aria-label="Previous page"
       >
         <ChevronLeft size={16} />
       </button>
       {pages.map((p, i) =>
         p === '...' ? (
-          <span key={`ellipsis-${i}`} className="w-8 h-8 flex items-center justify-center text-xs text-gray-400">
+          <span key={`ellipsis-${i}`} className="w-8 h-8 flex items-center justify-center text-xs text-gray-500">
             ...
           </span>
         ) : (
           <button
             key={p}
             onClick={() => onPageChange(p)}
+            aria-label={`Page ${p}`}
+            aria-current={p === page ? 'page' : undefined}
             className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors ${
               p === page
                 ? 'bg-velox-600 text-white'
-                : 'text-gray-600 hover:bg-gray-100'
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
             }`}
           >
             {p}
@@ -57,11 +59,11 @@ export function Pagination({ page, totalPages, onPageChange }: PaginationProps) 
       <button
         onClick={() => onPageChange(page + 1)}
         disabled={page === totalPages}
-        className="flex items-center justify-center w-8 h-8 rounded-lg text-sm text-gray-500 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        className="flex items-center justify-center w-8 h-8 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         aria-label="Next page"
       >
         <ChevronRight size={16} />
       </button>
-    </div>
+    </nav>
   )
 }

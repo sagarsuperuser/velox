@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { api, formatCents, formatDate, type Plan, type Meter, type Subscription, type RatingRule, type Customer } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, type Plan, type Meter, type Subscription, type RatingRule, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { Modal } from '@/components/Modal'
@@ -109,7 +109,7 @@ export function PlanDetailPage() {
     return (
       <Layout>
         <Breadcrumbs items={[{ label: 'Pricing', to: '/pricing' }, { label: 'Loading...' }]} />
-        <div className="bg-white rounded-xl shadow-card">
+        <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card">
           <LoadingSkeleton rows={8} columns={3} />
         </div>
       </Layout>
@@ -125,77 +125,79 @@ export function PlanDetailPage() {
       <Breadcrumbs items={[{ label: 'Pricing', to: '/pricing' }, { label: plan.name }]} />
 
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">{plan.name}</h1>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-xs text-gray-400 font-mono bg-gray-50 border border-gray-100 px-2 py-0.5 rounded">{plan.id}</span>
-            <CopyButton text={plan.id} />
-            <span className="text-xs font-medium text-gray-600 bg-gray-100 px-2.5 py-0.5 rounded-full">{plan.code}</span>
+      <div className="sticky top-0 z-10 bg-white dark:bg-gray-950 pb-4 -mx-4 px-4 md:-mx-8 md:px-8 pt-2 border-b border-gray-100 dark:border-gray-800">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">{plan.name}</h1>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-gray-500 dark:text-gray-500 font-mono bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-2 py-0.5 rounded">{plan.id}</span>
+              <CopyButton text={plan.id} />
+              <span className="text-xs font-mono text-gray-500 bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-2 py-0.5 rounded">{plan.code}</span>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <Badge status={plan.status} />
-          <button
-            onClick={() => setShowEdit(true)}
-            className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 hover:border-gray-400 transition-colors"
-          >
-            <Pencil size={14} />
-            Edit
-          </button>
+          <div className="flex items-center gap-3">
+            <Badge status={plan.status} />
+            <button
+              onClick={() => setShowEdit(true)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 hover:border-gray-400 transition-colors"
+            >
+              <Pencil size={14} />
+              Edit
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Key metrics row */}
-      <div className="bg-white rounded-xl shadow-card flex divide-x divide-gray-100 mt-6">
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card flex divide-x divide-gray-100 dark:divide-gray-800 mt-6">
         <div className="flex-1 px-6 py-4">
-          <p className="text-sm text-gray-500">Base Price</p>
-          <p className="text-lg font-semibold text-gray-900 mt-1">{formatCents(plan.base_amount_cents)}</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400">Base Price</p>
+          <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mt-1">{formatCents(plan.base_amount_cents)}</p>
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-sm text-gray-500">Interval</p>
-          <p className="text-lg font-semibold text-gray-900 mt-1">{plan.billing_interval === 'yearly' ? 'Yearly' : 'Monthly'}</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400">Interval</p>
+          <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mt-1">{plan.billing_interval === 'yearly' ? 'Yearly' : 'Monthly'}</p>
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-sm text-gray-500">Currency</p>
-          <p className="text-lg font-semibold text-gray-900 mt-1">{plan.currency.toUpperCase()}</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400">Currency</p>
+          <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mt-1">{plan.currency.toUpperCase()}</p>
         </div>
         <div className="flex-1 px-6 py-4">
-          <p className="text-sm text-gray-500">Active Subscriptions</p>
-          <p className="text-lg font-semibold text-gray-900 mt-1">{activeSubscriptions.length}</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400">Active Subscriptions</p>
+          <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mt-1">{activeSubscriptions.length}</p>
         </div>
       </div>
 
       {/* Properties card */}
-      <div className="bg-white rounded-xl shadow-card mt-6">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-900">Properties</h2>
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">
+        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Properties</h2>
         </div>
-        <div className="divide-y divide-gray-50">
+        <div className="divide-y divide-gray-100 dark:divide-gray-800">
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Code</span>
-            <span className="text-sm text-gray-900 font-mono">{plan.code}</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">Code</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100 font-mono">{plan.code}</span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Billing Interval</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">Billing Interval</span>
             <Badge status={plan.billing_interval === 'yearly' ? 'yearly' : 'monthly'} />
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Currency</span>
-            <span className="text-sm text-gray-900 font-medium">{plan.currency.toUpperCase()}</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">Currency</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100 font-medium">{plan.currency.toUpperCase()}</span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Status</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">Status</span>
             <Badge status={plan.status} />
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">Created</span>
-            <span className="text-sm text-gray-900">{formatDate(plan.created_at)}</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">Created</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100">{formatDateTime(plan.created_at)}</span>
           </div>
           <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-gray-500 w-40 shrink-0">ID</span>
+            <span className="text-sm text-gray-600 w-40 shrink-0">ID</span>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-900 font-mono">{plan.id}</span>
+              <span className="text-sm text-gray-900 dark:text-gray-100 font-mono">{plan.id}</span>
               <CopyButton text={plan.id} />
             </div>
           </div>
@@ -203,9 +205,9 @@ export function PlanDetailPage() {
       </div>
 
       {/* Attached Meters */}
-      <div className="bg-white rounded-xl shadow-card mt-6">
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-900">Meters ({attachedMeters.length})</h2>
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Meters ({attachedMeters.length})</h2>
           {unattachedMeters.length > 0 && (
             <button
               onClick={() => setShowAttachMeter(true)}
@@ -218,14 +220,14 @@ export function PlanDetailPage() {
           )}
         </div>
         {attachedMeters.length > 0 ? (
-          <div className="divide-y divide-gray-50">
+          <div className="divide-y divide-gray-100 dark:divide-gray-800">
             {attachedMeters.map(meter => {
               const rule = meter.rating_rule_version_id ? ruleMap[meter.rating_rule_version_id] : null
               return (
                 <div key={meter.id} className="flex items-center justify-between px-6 py-3.5 hover:bg-gray-50 transition-colors group">
                   <Link to={`/meters/${meter.id}`} className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 group-hover:text-velox-600 transition-colors">{meter.name}</p>
-                    <p className="text-xs text-gray-400 font-mono mt-0.5">{meter.key}</p>
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 group-hover:text-velox-600 transition-colors">{meter.name}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-500 font-mono mt-0.5">{meter.key}</p>
                   </Link>
                   <div className="flex items-center gap-2">
                     <Badge status={meter.aggregation} />
@@ -253,9 +255,9 @@ export function PlanDetailPage() {
       {/* Attach Meter Picker */}
       {showAttachMeter && (
         <Modal open onClose={() => setShowAttachMeter(false)} title="Attach Meter">
-          <p className="text-sm text-gray-500 mb-4">Select a meter to attach to this plan.</p>
+          <p className="text-sm text-gray-600 mb-4">Select a meter to attach to this plan.</p>
           {unattachedMeters.length > 0 ? (
-            <div className="divide-y divide-gray-50 border border-gray-100 rounded-lg overflow-hidden">
+            <div className="divide-y divide-gray-100 dark:divide-gray-800 border border-gray-100 dark:border-gray-700 rounded-lg overflow-hidden">
               {unattachedMeters.map(meter => (
                 <button
                   key={meter.id}
@@ -264,8 +266,8 @@ export function PlanDetailPage() {
                   className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors text-left disabled:opacity-50"
                 >
                   <div>
-                    <p className="text-sm font-medium text-gray-900">{meter.name}</p>
-                    <p className="text-xs text-gray-400 font-mono mt-0.5">{meter.key}</p>
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{meter.name}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-500 font-mono mt-0.5">{meter.key}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <Badge status={meter.aggregation} />
@@ -281,11 +283,11 @@ export function PlanDetailPage() {
       )}
 
       {/* Subscriptions */}
-      <div className="bg-white rounded-xl shadow-card mt-6">
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-900">Subscriptions ({subscriptions.length})</h2>
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Subscriptions ({subscriptions.length})</h2>
           {subscriptions.length > 0 && (
-            <Link to="/subscriptions" className="text-sm text-gray-500 hover:text-gray-700 transition-colors">
+            <Link to="/subscriptions" className="text-sm text-gray-600 hover:text-gray-700 transition-colors">
               View all
             </Link>
           )}
@@ -294,17 +296,17 @@ export function PlanDetailPage() {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-gray-100 bg-gray-50">
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Name</th>
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Customer</th>
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Status</th>
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Billing Period</th>
-                  <th className="text-left text-xs font-medium text-gray-500 px-6 py-3">Created</th>
+                <tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Name</th>
+                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Customer</th>
+                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Status</th>
+                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Billing Period</th>
+                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 px-6 py-3">Created</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-50">
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                 {subscriptions.map(sub => (
-                  <tr key={sub.id} className="hover:bg-gray-50 cursor-pointer transition-colors group" onClick={(e) => {
+                  <tr key={sub.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer transition-colors group" onClick={(e) => {
                     const target = e.target as HTMLElement
                     if (target.closest('button, a, input, select')) return
                     navigate(`/subscriptions/${sub.id}`)
@@ -313,7 +315,7 @@ export function PlanDetailPage() {
                       <Link to={`/subscriptions/${sub.id}`} className="text-sm font-medium text-velox-600 group-hover:text-velox-600 transition-colors hover:underline">
                         {sub.display_name}
                       </Link>
-                      <p className="text-xs text-gray-400 font-mono">{sub.code}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-500 font-mono">{sub.code}</p>
                     </td>
                     <td className="px-6 py-3">
                       <Link to={`/customers/${sub.customer_id}`} className="text-sm text-velox-600 hover:underline">
@@ -321,12 +323,12 @@ export function PlanDetailPage() {
                       </Link>
                     </td>
                     <td className="px-6 py-3"><Badge status={sub.status} /></td>
-                    <td className="px-6 py-3 text-sm text-gray-500">
+                    <td className="px-6 py-3 text-sm text-gray-600 dark:text-gray-400">
                       {sub.current_billing_period_start && sub.current_billing_period_end
                         ? `${formatDate(sub.current_billing_period_start)} — ${formatDate(sub.current_billing_period_end)}`
                         : '\u2014'}
                     </td>
-                    <td className="px-6 py-3 text-sm text-gray-500">{formatDate(sub.created_at)}</td>
+                    <td className="px-6 py-3 text-sm text-gray-600 dark:text-gray-400">{formatDateTime(sub.created_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -407,10 +409,10 @@ function EditPlanModal({ plan, onClose, onSaved }: {
   return (
     <Modal open onClose={onClose} title="Edit Plan">
       <form onSubmit={handleSubmit} noValidate className="space-y-4">
-        <div className="bg-gray-50 rounded-lg px-4 py-3 flex items-center justify-between">
+        <div className="bg-gray-50 dark:bg-gray-800 rounded-lg px-4 py-3 flex items-center justify-between">
           <div>
             <p className="text-xs text-gray-500">Code</p>
-            <p className="text-sm text-gray-900 font-mono mt-0.5">{plan.code}</p>
+            <p className="text-sm text-gray-900 dark:text-gray-100 font-mono mt-0.5">{plan.code}</p>
           </div>
           <div className="text-right">
             <p className="text-xs text-gray-500">Interval</p>
@@ -432,8 +434,8 @@ function EditPlanModal({ plan, onClose, onSaved }: {
             { value: 'archived', label: 'Archived' },
           ]} />
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 mt-2">
-          <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
           <button type="submit" disabled={saving || !hasChanges}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
             {saving ? 'Saving...' : hasChanges ? 'Save' : 'No changes'}

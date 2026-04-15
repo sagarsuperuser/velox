@@ -6,14 +6,17 @@ interface ErrorStateProps {
   onRetry?: () => void
 }
 
-export function ErrorState({ title = 'Something went wrong', message, onRetry }: ErrorStateProps) {
+export function ErrorState({ title = 'Failed to load data', message, onRetry }: ErrorStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center py-12 px-6">
-      <AlertTriangle size={40} className="text-red-400 mb-4" />
-      <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
+    <div role="status" className="flex flex-col items-center justify-center py-12 px-6">
+      <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mb-4">
+        <AlertTriangle size={22} className="text-red-400" />
+      </div>
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
       {message && (
-        <p className="text-sm text-gray-500 mt-1 text-center max-w-md">{message}</p>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 text-center max-w-md">{message}</p>
       )}
+      <p className="text-xs text-gray-500 dark:text-gray-500 mt-2">Check your connection and try again</p>
       {onRetry && (
         <button
           onClick={onRetry}
