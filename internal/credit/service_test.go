@@ -53,6 +53,50 @@ func (m *memStore) GetBalance(_ context.Context, _, customerID string) (domain.C
 	return b, nil
 }
 
+func (m *memStore) ListBalances(_ context.Context, _ string) ([]domain.CreditBalance, error) {
+	byCustomer := map[string]*domain.CreditBalance{}
+	for _, e := range m.entries {
+		b, ok := byCustomer[e.CustomerID]
+		if !ok {
+			b = &domain.CreditBalance{CustomerID: e.CustomerID}
+			byCustomer[e.CustomerID] = b
+		}
+		b.BalanceCents += e.AmountCents
+		switch e.EntryType {
+		case domain.CreditGrant:
+			b.TotalGranted += e.AmountCents
+		case domain.CreditUsage:
+			b.TotalUsed += -e.AmountCents
+		}
+	}
+	var result []domain.CreditBalance
+	for _, b := range byCustomer {
+		result = append(result, *b)
+	}
+	return result, nil
+}
+
+func (m *memStore) ListExpiredGrants(_ context.Context) ([]domain.CreditLedgerEntry, error) {
+	var result []domain.CreditLedgerEntry
+	for _, e := range m.entries {
+		if e.EntryType != domain.CreditGrant || e.ExpiresAt == nil || !e.ExpiresAt.Before(time.Now()) {
+			continue
+		}
+		// Check no expiry entry already exists for this grant
+		expired := false
+		for _, e2 := range m.entries {
+			if e2.EntryType == domain.CreditExpiry && e2.Description == fmt.Sprintf("Expired grant %s", e.ID) {
+				expired = true
+				break
+			}
+		}
+		if !expired {
+			result = append(result, e)
+		}
+	}
+	return result, nil
+}
+
 func (m *memStore) ListEntries(_ context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error) {
 	var result []domain.CreditLedgerEntry
 	for _, e := range m.entries {
@@ -111,7 +155,7 @@ func TestApplyToInvoice(t *testing.T) {
 	ctx := context.Background()
 
 	// Grant $500
-	svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 50000})
+	svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 50000, Description: "Test grant"})
 
 	t.Run("partial application", func(t *testing.T) {
 		deducted, err := svc.ApplyToInvoice(ctx, "t1", "cus_1", "inv_1", 19900)
@@ -159,7 +203,7 @@ func TestAdjust(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
 
-	svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 10000})
+	svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 10000, Description: "Test grant"})
 
 	t.Run("positive adjustment", func(t *testing.T) {
 		entry, err := svc.Adjust(ctx, "t1", AdjustInput{
@@ -197,7 +241,7 @@ func TestGetBalance(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
 
-	svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 50000})
+	svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 50000, Description: "Test grant"})
 	svc.ApplyToInvoice(ctx, "t1", "cus_1", "inv_1", 20000)
 
 	bal, err := svc.GetBalance(ctx, "t1", "cus_1")

@@ -16,13 +16,18 @@ type Store interface {
 	CreateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error)
 	GetRun(ctx context.Context, tenantID, id string) (domain.InvoiceDunningRun, error)
 	GetActiveRunByInvoice(ctx context.Context, tenantID, invoiceID string) (domain.InvoiceDunningRun, error)
-	ListRuns(ctx context.Context, filter RunListFilter) ([]domain.InvoiceDunningRun, error)
+	ListRuns(ctx context.Context, filter RunListFilter) ([]domain.InvoiceDunningRun, int, error)
 	UpdateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error)
 	ListDueRuns(ctx context.Context, tenantID string, dueBefore time.Time, limit int) ([]domain.InvoiceDunningRun, error)
 
 	// Events
 	CreateEvent(ctx context.Context, tenantID string, event domain.InvoiceDunningEvent) (domain.InvoiceDunningEvent, error)
 	ListEvents(ctx context.Context, tenantID, runID string) ([]domain.InvoiceDunningEvent, error)
+
+	// Customer dunning overrides
+	GetCustomerOverride(ctx context.Context, tenantID, customerID string) (domain.CustomerDunningOverride, error)
+	UpsertCustomerOverride(ctx context.Context, tenantID string, override domain.CustomerDunningOverride) (domain.CustomerDunningOverride, error)
+	DeleteCustomerOverride(ctx context.Context, tenantID, customerID string) error
 }
 
 type RunListFilter struct {

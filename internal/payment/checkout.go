@@ -113,19 +113,22 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		stripeCustomerID = cus.ID
-	} else if req.AddressLine1 != "" || req.AddressCountry != "" {
-		// Update existing Stripe customer with address
-		stripecustomer.Update(stripeCustomerID, &stripe.CustomerParams{
+	} else {
+		// Always sync latest customer data to Stripe on re-setup
+		updateParams := &stripe.CustomerParams{
 			Name:  stripe.String(req.CustomerName),
 			Email: stripe.String(req.Email),
-			Address: &stripe.AddressParams{
+		}
+		if req.AddressLine1 != "" || req.AddressCountry != "" {
+			updateParams.Address = &stripe.AddressParams{
 				Line1:      stripe.String(req.AddressLine1),
 				City:       stripe.String(req.AddressCity),
 				State:      stripe.String(req.AddressState),
 				PostalCode: stripe.String(req.AddressZip),
 				Country:    stripe.String(req.AddressCountry),
-			},
-		})
+			}
+		}
+		stripecustomer.Update(stripeCustomerID, updateParams)
 	}
 
 	// Save Stripe customer ID immediately (status: pending until checkout completes)

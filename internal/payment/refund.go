@@ -28,7 +28,7 @@ func (r *StripeRefunder) CreateRefund(_ context.Context, paymentIntentID string,
 		Amount:        stripe.Int64(amountCents),
 	})
 	if err != nil {
-		return "", fmt.Errorf("stripe refund: %w", err)
+		return "", fmt.Errorf("stripe refund: %s", stripeErrorMessage(err))
 	}
 
 	return ref.ID, nil

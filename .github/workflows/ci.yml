@@ -7,34 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Build
-        run: go build ./...
-
-      - name: Lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-        continue-on-error: true  # golangci-lint may not support Go 1.25 yet
-
-      - name: Unit Tests
-        run: go test ./... -short -count=1 -coverprofile=coverage.out
-
-      - name: Upload Coverage
-        uses: codecov/codecov-action@v4
-        with:
-          file: coverage.out
-        continue-on-error: true
-
-  integration:
+  test:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -58,6 +31,22 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Build
+        run: go build ./...
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Unit Tests (with race detector)
+        run: go test ./... -race -short -count=1 -coverprofile=coverage.out
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Vulnerability check
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
+        continue-on-error: true
+
       - name: Create app user
         run: |
           PGPASSWORD=velox psql -h localhost -U velox -d velox -c "
@@ -74,15 +63,94 @@ jobs:
           TEST_ADMIN_DATABASE_URL: postgres://velox:velox@localhost:5432/velox?sslmode=disable
           TEST_DATABASE_URL: postgres://velox_app:velox_app@localhost:5432/velox?sslmode=disable
 
-  docker:
+      - name: Upload Coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.out
+        continue-on-error: true
+
+  lint:
     runs-on: ubuntu-latest
-    needs: [build, integration]
-    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t velox:latest .
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
 
-      - name: Verify image
-        run: docker run --rm velox:latest --help || true
+      - uses: golangci/golangci-lint-action@v4
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install and build frontend
+        run: cd web && npm ci && npx tsc --noEmit && npx vite build
+
+  docker:
+    needs: [test, frontend]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write  # Required for Cosign keyless signing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Container vulnerability scanning — fail on critical/high CVEs
+      - name: Scan image for vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      # Generate SBOM (Software Bill of Materials) for supply chain transparency
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          artifact-name: velox-sbom.spdx.json
+          format: spdx-json
+
+      # Scan SBOM for known vulnerabilities
+      - name: Scan SBOM (Grype)
+        uses: anchore/scan-action@v5
+        with:
+          sbom: velox-sbom.spdx.json
+          fail-build: true
+          severity-cutoff: high
+
+      # Sign the container image (keyless via Sigstore/Fulcio)
+      # Verifiers can confirm the image was built by this CI pipeline
+      - name: Sign image (Cosign)
+        uses: sigstore/cosign-installer@v3
+      - run: cosign sign --yes ghcr.io/${{ github.repository }}:${{ github.sha }}
+        env:
+          COSIGN_EXPERIMENTAL: "1"

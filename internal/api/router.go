@@ -2,41 +2,78 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/redis/go-redis/v9"
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/analytics"
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/billing"
+	"github.com/sagarsuperuser/velox/internal/coupon"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/dunning"
+	"github.com/sagarsuperuser/velox/internal/email"
+	"github.com/sagarsuperuser/velox/internal/feature"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
+	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/subscription"
+	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
 	"github.com/sagarsuperuser/velox/internal/usage"
 	"github.com/sagarsuperuser/velox/internal/webhook"
 )
 
+// --- Scheduler health tracking ---
+
+var (
+	schedulerMu       sync.RWMutex
+	schedulerLastRun  time.Time
+	schedulerInterval time.Duration
+)
+
+// RecordSchedulerRun is called by the billing scheduler after each cycle
+// so the health check can determine whether the scheduler is alive.
+func RecordSchedulerRun() {
+	schedulerMu.Lock()
+	schedulerLastRun = time.Now()
+	schedulerMu.Unlock()
+}
+
+// SetSchedulerInterval stores the configured scheduler interval so the
+// health check knows when to flag it as degraded (>2x interval).
+func SetSchedulerInterval(d time.Duration) {
+	schedulerMu.Lock()
+	schedulerInterval = d
+	schedulerMu.Unlock()
+}
+
 type Server struct {
 	router chi.Router
 
 	// Exported for main.go to wire the billing scheduler + dunning
-	BillingEngine *billing.Engine
-	DunningSvc    *dunning.Service
-	SettingsStore *tenant.SettingsStore
+	BillingEngine  *billing.Engine
+	DunningSvc     *dunning.Service
+	SettingsStore  *tenant.SettingsStore
+	WebhookOutSvc  *webhook.Service
+	CreditSvc      *credit.Service
+	InvoiceSvc     *invoice.Service
+	TokenSvc       *payment.TokenService
 }
 
 func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
@@ -53,31 +90,63 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 
 	// Domain handlers
 	tenantH := tenant.NewHandler(tenant.NewService(tenant.NewPostgresStore(db)))
+	stripeKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
 	customerStore := customer.NewPostgresStore(db)
+
+	// PII encryption at rest — encrypt customer fields in the DB
+	if encKey := strings.TrimSpace(os.Getenv("VELOX_ENCRYPTION_KEY")); encKey != "" {
+		enc, err := crypto.NewEncryptor(encKey)
+		if err != nil {
+			slog.Error("invalid VELOX_ENCRYPTION_KEY, PII encryption disabled", "error", err)
+		} else {
+			customerStore.SetEncryptor(enc)
+			slog.Info("PII encryption enabled for customer data")
+		}
+	} else {
+		slog.Warn("VELOX_ENCRYPTION_KEY not set — customer PII stored in plaintext")
+	}
+
 	pricingSvc := pricing.NewService(pricingStore)
-	customerH := customer.NewHandler(customer.NewService(customerStore))
+	customerSvc := customer.NewService(customerStore)
+	customerSvc.SetStripeSyncer(payment.NewStripeBillingSync(stripeKey), customerStore)
+	customerH := customer.NewHandler(customerSvc)
 	pricingH := pricing.NewHandler(pricingSvc)
-	subH := subscription.NewHandler(subscription.NewService(subStore))
+	subSvc := subscription.NewService(subStore)
+	subH := subscription.NewHandler(subSvc)
+	// Proration deps are wired below after creditSvc + invoiceStore are available
 	usageH := usage.NewHandler(usage.NewService(usageStore), customerStore, pricingSvc)
 	settingsStore := tenant.NewSettingsStore(db)
-	creditSvc := credit.NewService(credit.NewPostgresStore(db))
+	creditStore := credit.NewPostgresStore(db)
+	creditSvc := credit.NewService(creditStore)
 	creditH := credit.NewHandler(creditSvc)
+	couponSvc := coupon.NewService(coupon.NewPostgresStore(db))
+	couponH := coupon.NewHandler(couponSvc)
 	creditNoteStore := creditnote.NewPostgresStore(db)
 
+	// Wire proration dependencies for plan change invoicing
+	subH.SetProrationDeps(pricingSvc, &prorationInvoiceCreatorAdapter{store: invoiceStore}, &prorationCreditGranterAdapter{svc: creditSvc})
+
 	// Payment / webhook / checkout / refund handlers
-	stripeKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
 	stripeRefunder := payment.NewStripeRefunder(stripeKey)
 	creditNoteSvc := creditnote.NewService(creditNoteStore, invoiceStore, stripeRefunder, &creditGrantAdapter{svc: creditSvc})
+	creditNoteSvc.SetNumberGenerator(settingsStore)
 	creditNoteH := creditnote.NewHandler(creditNoteSvc)
-	webhookOutH := webhook.NewHandler(webhook.NewService(webhook.NewPostgresStore(db), nil))
+	webhookOutSvc := webhook.NewService(webhook.NewPostgresStore(db), nil)
+	webhookOutH := webhook.NewHandler(webhookOutSvc)
 	auditLogger := audit.NewLogger(db)
 	auditH := audit.NewHandler(auditLogger)
 	settingsH := tenant.NewSettingsHandler(settingsStore)
 	stripeClient := payment.NewLiveStripeClient(stripeKey)
 	dunningStore := dunning.NewPostgresStore(db)
 	dunningSvc := dunning.NewService(dunningStore, nil) // retrier set below after stripeAdapter created
-	dunningH := dunning.NewHandler(dunningSvc, invoiceStore)
+	dunningH := dunning.NewHandler(dunningSvc, dunning.HandlerDeps{
+		Invoices:       invoiceStore,
+		CreditReverser: creditSvc,
+		PaymentCancel:  payment.NewLiveStripeClient(stripeKey),
+	})
 	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, customerStore, dunningSvc)
+	stripeAdapter.SetCardFetcher(stripeClient)
+	stripeAdapter.SetEventDispatcher(webhookOutSvc)
 
 	// Wire payment retrier now that stripeAdapter exists
 	dunningSvc.SetRetrier(&paymentRetrierAdapter{
@@ -85,47 +154,138 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 		invoiceStore:  invoiceStore,
 		paymentSetups: customerStore,
 	})
+	dunningSvc.SetSubscriptionPauser(&subscriptionPauserAdapter{svc: subSvc}, invoiceStore)
+	dunningSvc.SetEventDispatcher(webhookOutSvc)
 	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
 
-	invoiceH := invoice.NewHandler(invoice.NewService(invoiceStore), customerStore, settingsStore, invoice.HandlerDeps{
+	invoiceSvc := invoice.NewService(invoiceStore)
+	invoiceH := invoice.NewHandler(invoiceSvc, customerStore, settingsStore, invoice.HandlerDeps{
 		CreditNotes:    &creditNoteListerAdapter{svc: creditNoteSvc},
 		Charger:        stripeAdapter,
 		PaymentSetups:  customerStore,
 		CreditReverser: creditSvc,
 		PaymentCancel:  stripeClient,
+		Dunning:         dunningSvc,
+		WebhookEvents:   webhookStore,
+		DunningTimeline: &dunningTimelineAdapter{store: dunningStore},
+		Events:          webhookOutSvc,
 	})
 	checkoutH := payment.NewCheckoutHandler(stripeKey,
 		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")),
 		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")),
 		customerStore)
+	portalH := payment.NewPortalHandler(stripeKey, customerStore)
+
+	// Token service for public payment update links
+	tokenSvc := payment.NewTokenService(db)
+	stripeAdapter.SetTokenService(tokenSvc)
+	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeKey,
+		strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_RETURN_URL")))
+
+	// Email sender
+	emailSender := email.NewSender()
+	invoiceH.SetEmailSender(emailSender)
+	customerEmailAdapter := &customerEmailFetcherAdapter{store: customerStore}
+	dunningSvc.SetEmailNotifier(emailSender)
+	dunningSvc.SetCustomerEmailFetcher(customerEmailAdapter)
+	stripeAdapter.SetEmailReceipt(emailSender, customerEmailAdapter)
+	paymentUpdateURL := strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_URL"))
+	if paymentUpdateURL != "" {
+		stripeAdapter.SetEmailPaymentUpdate(emailSender, customerEmailAdapter, paymentUpdateURL)
+	}
+
+	// Audit logging for financial operations
+	creditH.SetAuditLogger(auditLogger)
+	invoiceH.SetAuditLogger(auditLogger)
+	subH.SetAuditLogger(auditLogger)
+	creditNoteH.SetAuditLogger(auditLogger)
+
+	// Feature flags (created before billing engine to gate Stripe Tax)
+	featureSvc := feature.NewService(feature.NewPostgresStore(db))
+	featureH := feature.NewHandler(featureSvc)
 
 	// Billing engine + manual trigger (with credit auto-application)
 	engine := billing.NewEngine(subStore, usageStore, pricingSvc,
-		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, customerStore, stripeAdapter)
+		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, customerStore, stripeAdapter, customerStore)
+
+	// Tax calculator: use Stripe Tax when enabled via feature flag, otherwise manual
+	manualTaxCalc := tax.NewManualCalculator(0, "") // rate resolved per-subscription at billing time
+	if stripeKey != "" && featureSvc.IsEnabled(context.Background(), "billing.stripe_tax", "") {
+		slog.Info("stripe tax enabled, using Stripe Tax calculator with manual fallback")
+		engine.SetTaxCalculator(tax.NewStripeCalculator(stripeKey, manualTaxCalc))
+	} else {
+		// ManualCalculator with rate 0 is a no-op — the engine still reads
+		// tenant/customer tax rates and passes them into the calculator.
+		// We leave the taxCalc nil here so the engine uses its inline legacy path
+		// which resolves rates from settings + billing profiles per subscription.
+		slog.Info("using manual tax calculation (inline)")
+	}
+
 	billingH := billing.NewHandler(engine, subStore)
+	analyticsH := analytics.NewHandler(db)
+
+	// GDPR data export + deletion — wired into customer handler
+	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, auditLogger)
+	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
 
 	s := &Server{
 		BillingEngine: engine,
 		DunningSvc:    dunningSvc,
 		SettingsStore: settingsStore,
+		WebhookOutSvc: webhookOutSvc,
+		CreditSvc:     creditSvc,
+		InvoiceSvc:    invoiceSvc,
+		TokenSvc:      tokenSvc,
 	}
 
-	rateLimiter := mw.NewRateLimiter(100, time.Minute)
+	// Redis for distributed rate limiting (fail-open if not configured)
+	var rdb *redis.Client
+	if redisURL := strings.TrimSpace(os.Getenv("REDIS_URL")); redisURL != "" {
+		opt, err := redis.ParseURL(redisURL)
+		if err != nil {
+			slog.Warn("invalid REDIS_URL, rate limiting will fail open", "error", err)
+		} else {
+			rdb = redis.NewClient(opt)
+			if err := rdb.Ping(context.Background()).Err(); err != nil {
+				slog.Warn("redis not reachable, rate limiting will fail open", "error", err)
+			} else {
+				slog.Info("redis connected for rate limiting")
+			}
+		}
+	} else {
+		slog.Info("REDIS_URL not set, rate limiting will fail open")
+	}
+	rateLimiter := mw.NewRateLimiter(rdb, 100, time.Minute)
 
 	r := chi.NewRouter()
+	r.Use(mw.Tracing())
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(mw.CORS([]string{"*"})) // Configure per-environment in production
+	corsEnv := os.Getenv("CORS_ALLOWED_ORIGINS")
+	if corsEnv == "" {
+		corsEnv = "http://localhost:3000,http://localhost:5173,http://localhost:5174"
+	}
+	r.Use(mw.CORS(strings.Split(corsEnv, ",")))
 	r.Use(mw.Metrics())
 	r.Use(requestLogger)
 	r.Use(middleware.Recoverer)
+
+	// Limit request body to 1 MB to prevent DoS via oversized payloads.
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	r.Use(mw.SecurityHeaders())
 	r.Use(middleware.Timeout(30 * time.Second))
 	r.Use(rateLimiter.Middleware())
 
 	// Public
 	r.Get("/health", handleHealth)
 	r.Get("/health/ready", handleDeepHealth(db))
-	r.Handle("/metrics", mw.MetricsHandler())
+	r.Handle("/metrics", mw.MetricsAuth(mw.MetricsHandler()))
 
 	// Bootstrap — one-time setup (no auth, only works when no tenants exist)
 	bootstrapH := tenant.NewBootstrapHandler(db)
@@ -133,6 +293,11 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 
 	// Stripe webhooks — no API key auth (verified by signature)
 	r.Mount("/v1/webhooks", webhookH.Routes())
+
+	// Public payment update — no auth (validated by token)
+	if publicPaymentH != nil {
+		r.Mount("/v1/public/payment-updates", publicPaymentH.Routes())
+	}
 
 	// Platform routes
 	r.Route("/v1/tenants", func(r chi.Router) {
@@ -157,12 +322,15 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices", invoiceH.Routes())
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/credit-notes", creditNoteH.Routes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/price-overrides", pricingH.OverrideRoutes())
+		r.With(auth.Require(auth.PermPricingWrite)).Mount("/coupons", couponH.Routes())
 		r.With(auth.Require(auth.PermCustomerWrite)).Mount("/credits", creditH.Routes())
 		r.With(auth.Require(auth.PermDunningRead)).Mount("/dunning", dunningH.Routes())
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/billing", billingH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/webhook-endpoints", webhookOutH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyRead)).Mount("/audit-log", auditH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
+		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/analytics", analyticsH.Routes())
+		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/feature-flags", featureH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
 		if checkoutH != nil {
 			r.With(auth.Require(auth.PermCustomerWrite)).Mount("/checkout", checkoutH.Routes())
@@ -171,6 +339,9 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 		// Customer portal — consolidated views across domains
 		portal := newCustomerPortalHandler(subStore, invoiceStore, usageStore)
 		r.With(auth.Require(auth.PermCustomerRead)).Mount("/customer-portal", portal.Routes())
+		if portalH != nil {
+			r.With(auth.Require(auth.PermCustomerWrite)).Mount("/payment-portal", portalH.Routes())
+		}
 	})
 
 	s.router = r
@@ -190,20 +361,45 @@ func handleDeepHealth(db *postgres.DB) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 
+		overallStatus := "ok"
 		checks := map[string]string{"api": "ok"}
 
+		// Database check
 		if err := db.Pool.PingContext(ctx); err != nil {
 			checks["database"] = "error: " + err.Error()
-			respond.JSON(w, r, http.StatusServiceUnavailable, map[string]any{
-				"status": "degraded",
-				"checks": checks,
-			})
-			return
+			overallStatus = "degraded"
+		} else {
+			checks["database"] = "ok"
 		}
-		checks["database"] = "ok"
 
-		respond.JSON(w, r, http.StatusOK, map[string]any{
-			"status": "ok",
+		// Scheduler check — degraded if no run recorded within 2x the interval.
+		// Before the first run completes the scheduler is considered ok (just started).
+		schedulerMu.RLock()
+		lastRun := schedulerLastRun
+		interval := schedulerInterval
+		schedulerMu.RUnlock()
+
+		if interval > 0 && !lastRun.IsZero() {
+			sinceLastRun := time.Since(lastRun)
+			if sinceLastRun > 2*interval {
+				checks["scheduler"] = fmt.Sprintf("degraded: last run %s ago (interval %s)", sinceLastRun.Truncate(time.Second), interval)
+				overallStatus = "degraded"
+			} else {
+				checks["scheduler"] = fmt.Sprintf("ok: last run %s ago", sinceLastRun.Truncate(time.Second))
+			}
+		} else if interval > 0 && lastRun.IsZero() {
+			checks["scheduler"] = "ok: awaiting first run"
+		} else {
+			checks["scheduler"] = "ok: not configured"
+		}
+
+		status := http.StatusOK
+		if overallStatus != "ok" {
+			status = http.StatusServiceUnavailable
+		}
+
+		respond.JSON(w, r, status, map[string]any{
+			"status": overallStatus,
 			"checks": checks,
 		})
 	}

@@ -13,14 +13,10 @@ const (
 type DunningRunState string
 
 const (
-	DunningScheduled       DunningRunState = "scheduled"
-	DunningRetryDue        DunningRunState = "retry_due"
-	DunningAwaitingPayment DunningRunState = "awaiting_payment_setup"
-	DunningAwaitingResult  DunningRunState = "awaiting_retry_result"
-	DunningResolved        DunningRunState = "resolved"
-	DunningPaused          DunningRunState = "paused"
-	DunningEscalated       DunningRunState = "escalated"
-	DunningExhausted       DunningRunState = "exhausted"
+	DunningActive    DunningRunState = "active"
+	DunningResolved  DunningRunState = "resolved"
+	DunningEscalated DunningRunState = "escalated"
+	DunningPaused    DunningRunState = "paused"
 )
 
 type DunningEventType string
@@ -40,10 +36,9 @@ const (
 type DunningResolution string
 
 const (
-	ResolutionPaymentSucceeded DunningResolution = "payment_succeeded"
-	ResolutionNotCollectible   DunningResolution = "invoice_not_collectible"
-	ResolutionOperatorResolved DunningResolution = "operator_resolved"
-	ResolutionEscalated        DunningResolution = "escalated"
+	ResolutionPaymentRecovered DunningResolution = "payment_recovered"
+	ResolutionManuallyResolved DunningResolution = "manually_resolved"
+	ResolutionRetriesExhausted DunningResolution = "retries_exhausted"
 )
 
 type DunningPolicy struct {
@@ -75,6 +70,14 @@ type InvoiceDunningRun struct {
 	Resolution    DunningResolution `json:"resolution,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
+}
+
+type CustomerDunningOverride struct {
+	CustomerID       string `json:"customer_id"`
+	TenantID         string `json:"tenant_id,omitempty"`
+	MaxRetryAttempts *int   `json:"max_retry_attempts,omitempty"` // nil = use tenant default
+	GracePeriodDays  *int   `json:"grace_period_days,omitempty"`
+	FinalAction      string `json:"final_action,omitempty"` // empty = use tenant default
 }
 
 type InvoiceDunningEvent struct {

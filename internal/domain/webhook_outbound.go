@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type WebhookEndpoint struct {
 	ID          string    `json:"id"`
@@ -45,6 +48,11 @@ type WebhookDelivery struct {
 	CompletedAt       *time.Time     `json:"completed_at,omitempty"`
 }
 
+// EventDispatcher fires outbound webhook events.
+type EventDispatcher interface {
+	Dispatch(ctx context.Context, tenantID, eventType string, payload map[string]any) error
+}
+
 // Well-known event types emitted by Velox.
 const (
 	EventInvoiceCreated     = "invoice.created"
@@ -57,7 +65,11 @@ const (
 	EventSubscriptionActivated = "subscription.activated"
 	EventSubscriptionCanceled = "subscription.canceled"
 	EventCustomerCreated    = "customer.created"
-	EventDunningStarted     = "dunning.started"
-	EventDunningResolved    = "dunning.resolved"
-	EventCreditGranted      = "credit.granted"
+	EventDunningStarted       = "dunning.started"
+	EventDunningEscalated     = "dunning.escalated"
+	EventDunningResolved      = "dunning.resolved"
+	EventSubscriptionPaused   = "subscription.paused"
+	EventSubscriptionResumed  = "subscription.resumed"
+	EventCreditGranted        = "credit.granted"
+	EventCreditNoteIssued     = "credit_note.issued"
 )

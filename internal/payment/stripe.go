@@ -20,12 +20,48 @@ type DunningStarter interface {
 	StartDunning(ctx context.Context, tenantID string, invoiceID, customerID string) (domain.InvoiceDunningRun, error)
 }
 
+// CardDetails holds card info fetched from Stripe for display.
+type CardDetails struct {
+	PaymentMethodID string
+	Brand           string
+	Last4           string
+	ExpMonth        int
+	ExpYear         int
+}
+
+// CardFetcher fetches card details from Stripe for a customer.
+type CardFetcher interface {
+	FetchCardDetails(ctx context.Context, stripeCustomerID string) (CardDetails, error)
+}
+
+// EmailReceipt sends payment receipt emails.
+type EmailReceipt interface {
+	SendPaymentReceipt(to, customerName, invoiceNumber string, amountCents int64, currency string) error
+}
+
+// CustomerEmailResolver resolves customer contact info for email notifications.
+type CustomerEmailResolver interface {
+	GetCustomerEmail(ctx context.Context, tenantID, customerID string) (email, displayName string, err error)
+}
+
+// EmailPaymentUpdate sends payment update request emails.
+type EmailPaymentUpdate interface {
+	SendPaymentUpdateRequest(to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
+}
+
 type Stripe struct {
-	client        StripeClient
-	invoices      InvoiceUpdater
-	webhooks      WebhookStore
-	dunning       DunningStarter
-	paymentSetups PaymentSetupStore
+	client             StripeClient
+	invoices           InvoiceUpdater
+	webhooks           WebhookStore
+	dunning            DunningStarter
+	paymentSetups      PaymentSetupStore
+	cardFetcher        CardFetcher
+	events             domain.EventDispatcher
+	emailReceipt       EmailReceipt
+	customerEmail      CustomerEmailResolver
+	emailPaymentUpdate EmailPaymentUpdate
+	paymentUpdateURL   string
+	tokenSvc           *TokenService
 }
 
 // StripeClient is the interface for Stripe API calls.
@@ -59,9 +95,10 @@ type InvoiceUpdater interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 }
 
-// WebhookStore persists Stripe webhook events for audit trail.
+// WebhookStore persists and queries Stripe webhook events.
 type WebhookStore interface {
 	IngestEvent(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) (domain.StripeWebhookEvent, bool, error)
+	ListByInvoice(ctx context.Context, tenantID, invoiceID string) ([]domain.StripeWebhookEvent, error)
 }
 
 func NewStripe(client StripeClient, invoices InvoiceUpdater, webhooks WebhookStore, paymentSetups PaymentSetupStore, dunning ...DunningStarter) *Stripe {
@@ -70,6 +107,45 @@ func NewStripe(client StripeClient, invoices InvoiceUpdater, webhooks WebhookSto
 		s.dunning = dunning[0]
 	}
 	return s
+}
+
+// SetCardFetcher configures card detail fetching from Stripe.
+func (s *Stripe) SetCardFetcher(cf CardFetcher) {
+	s.cardFetcher = cf
+}
+
+// SetEmailReceipt configures payment receipt email sending.
+func (s *Stripe) SetEmailReceipt(receipt EmailReceipt, customerEmail CustomerEmailResolver) {
+	s.emailReceipt = receipt
+	s.customerEmail = customerEmail
+}
+
+// SetEmailPaymentUpdate configures payment update request email sending.
+func (s *Stripe) SetEmailPaymentUpdate(sender EmailPaymentUpdate, customerEmail CustomerEmailResolver, paymentUpdateURL string) {
+	s.emailPaymentUpdate = sender
+	if s.customerEmail == nil {
+		s.customerEmail = customerEmail
+	}
+	s.paymentUpdateURL = paymentUpdateURL
+}
+
+// SetTokenService configures the payment update token service for tokenized update links.
+func (s *Stripe) SetTokenService(svc *TokenService) {
+	s.tokenSvc = svc
+}
+
+// SetEventDispatcher configures outbound webhook event firing.
+func (s *Stripe) SetEventDispatcher(events domain.EventDispatcher) {
+	s.events = events
+}
+
+func (s *Stripe) fireEvent(ctx context.Context, tenantID, eventType string, payload map[string]any) {
+	if s.events == nil {
+		return
+	}
+	go func() {
+		s.events.Dispatch(ctx, tenantID, eventType, payload)
+	}()
 }
 
 // ChargeInvoice creates a Stripe PaymentIntent for a finalized invoice.
@@ -100,9 +176,13 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		},
 	})
 	if err != nil {
-		// Record the failure but don't crash — the invoice stays finalized
+		// Record the failure — the invoice stays finalized.
+		// Dunning is NOT started here. With Confirm:true + OffSession:true,
+		// Stripe creates the PI even on decline and sends a payment_intent.payment_failed
+		// webhook, which triggers dunning via handlePaymentFailed().
+		// Starting dunning here would cause duplicate runs.
 		s.invoices.UpdatePayment(ctx, tenantID, inv.ID, domain.PaymentFailed, "", err.Error(), nil)
-		return domain.Invoice{}, fmt.Errorf("create payment intent: %w", err)
+		return domain.Invoice{}, fmt.Errorf("payment failed: %s", err.Error())
 	}
 
 	slog.Info("payment intent created",
@@ -166,6 +246,30 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 		"payment_intent_id", event.PaymentIntentID,
 	)
 
+	s.fireEvent(ctx, tenantID, domain.EventPaymentSucceeded, map[string]any{
+		"invoice_id":         inv.ID,
+		"customer_id":        inv.CustomerID,
+		"payment_intent_id":  event.PaymentIntentID,
+		"amount_cents":       inv.TotalAmountCents,
+		"currency":           inv.Currency,
+	})
+
+	// Send payment receipt email asynchronously
+	if s.emailReceipt != nil && s.customerEmail != nil {
+		go func() {
+			email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
+			if err != nil || email == "" {
+				slog.Warn("skip payment receipt email — cannot resolve customer email",
+					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
+				return
+			}
+			if err := s.emailReceipt.SendPaymentReceipt(email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency); err != nil {
+				slog.Error("failed to send payment receipt email",
+					"invoice_id", inv.ID, "email", email, "error", err)
+			}
+		}()
+	}
+
 	return nil
 }
 
@@ -199,6 +303,15 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		"failure_message", failureMsg,
 	)
 
+	s.fireEvent(ctx, tenantID, domain.EventPaymentFailed, map[string]any{
+		"invoice_id":         inv.ID,
+		"customer_id":        inv.CustomerID,
+		"payment_intent_id":  event.PaymentIntentID,
+		"failure_message":    failureMsg,
+		"amount_cents":       inv.TotalAmountCents,
+		"currency":           inv.Currency,
+	})
+
 	// Auto-start dunning for failed payments
 	if s.dunning != nil {
 		if _, err := s.dunning.StartDunning(ctx, tenantID, inv.ID, inv.CustomerID); err != nil {
@@ -210,6 +323,37 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		} else {
 			slog.Info("dunning started for failed payment", "invoice_id", inv.ID)
 		}
+	}
+
+	// Send payment update request email asynchronously with tokenized URL
+	if s.emailPaymentUpdate != nil && s.customerEmail != nil && s.paymentUpdateURL != "" {
+		go func() {
+			email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
+			if err != nil || email == "" {
+				slog.Warn("skip payment update email — cannot resolve customer email",
+					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
+				return
+			}
+
+			// Generate a secure token for the payment update link
+			var updateURL string
+			if s.tokenSvc != nil {
+				rawToken, err := s.tokenSvc.Create(ctx, tenantID, inv.CustomerID, inv.ID)
+				if err != nil {
+					slog.Error("failed to create payment update token",
+						"invoice_id", inv.ID, "error", err)
+					return
+				}
+				updateURL = fmt.Sprintf("%s/%s", s.paymentUpdateURL, rawToken)
+			} else {
+				updateURL = fmt.Sprintf("%s?invoice_id=%s&customer_id=%s", s.paymentUpdateURL, inv.ID, inv.CustomerID)
+			}
+
+			if err := s.emailPaymentUpdate.SendPaymentUpdateRequest(email, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
+				slog.Error("failed to send payment update email",
+					"invoice_id", inv.ID, "email", email, "error", err)
+			}
+		}()
 	}
 
 	return nil
@@ -246,7 +390,7 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 	}
 
 	now := time.Now().UTC()
-	_, err := s.paymentSetups.UpsertPaymentSetup(ctx, tenantID, domain.CustomerPaymentSetup{
+	setup := domain.CustomerPaymentSetup{
 		CustomerID:                  customerID,
 		TenantID:                    tenantID,
 		SetupStatus:                 domain.PaymentSetupReady,
@@ -255,7 +399,22 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 		StripeCustomerID:            event.CustomerExternalID,
 		LastVerifiedAt:              &now,
 		UpdatedAt:                   now,
-	})
+	}
+
+	// Fetch card details from Stripe for display
+	if s.cardFetcher != nil && event.CustomerExternalID != "" {
+		if card, err := s.cardFetcher.FetchCardDetails(ctx, event.CustomerExternalID); err == nil {
+			setup.CardBrand = card.Brand
+			setup.CardLast4 = card.Last4
+			setup.CardExpMonth = card.ExpMonth
+			setup.CardExpYear = card.ExpYear
+			setup.StripePaymentMethodID = card.PaymentMethodID
+		} else {
+			slog.Warn("failed to fetch card details", "stripe_customer_id", event.CustomerExternalID, "error", err)
+		}
+	}
+
+	_, err := s.paymentSetups.UpsertPaymentSetup(ctx, tenantID, setup)
 	if err != nil {
 		return fmt.Errorf("update payment setup: %w", err)
 	}
@@ -263,7 +422,16 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 	slog.Info("payment method setup completed",
 		"customer_id", customerID,
 		"stripe_customer_id", event.CustomerExternalID,
+		"card_brand", setup.CardBrand,
+		"card_last4", setup.CardLast4,
 	)
+
+	s.fireEvent(ctx, tenantID, "payment_method.updated", map[string]any{
+		"customer_id":        customerID,
+		"stripe_customer_id": event.CustomerExternalID,
+		"card_brand":         setup.CardBrand,
+		"card_last4":         setup.CardLast4,
+	})
 
 	return nil
 }

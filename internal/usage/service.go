@@ -36,8 +36,9 @@ func (s *Service) Ingest(ctx context.Context, tenantID string, input IngestInput
 	if strings.TrimSpace(input.MeterID) == "" {
 		return domain.UsageEvent{}, fmt.Errorf("meter_id is required")
 	}
-	// Default quantity to 1 (count-based meters)
-	if input.Quantity <= 0 {
+	if input.Quantity == 0 {
+		// Default quantity to 1 (count-based meters) when not explicitly provided.
+		// Negative values are allowed as usage corrections.
 		input.Quantity = 1
 	}
 
@@ -75,7 +76,7 @@ func (s *Service) BatchIngest(ctx context.Context, tenantID string, events []Ing
 	return ingested, errs
 }
 
-func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.UsageEvent, error) {
+func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.UsageEvent, int, error) {
 	return s.store.List(ctx, filter)
 }
 

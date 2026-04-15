@@ -150,7 +150,7 @@ func (s *PostgresStore) GetActiveRunByInvoice(ctx context.Context, tenantID, inv
 			COALESCE(reason,''), attempt_count, last_attempt_at, next_action_at,
 			paused, resolved_at, COALESCE(resolution,''), created_at, updated_at
 		FROM invoice_dunning_runs
-		WHERE invoice_id = $1 AND state NOT IN ('resolved', 'exhausted')
+		WHERE invoice_id = $1 AND state NOT IN ('resolved', 'escalated')
 		LIMIT 1
 	`, invoiceID).Scan(&run.ID, &run.TenantID, &run.InvoiceID, &run.CustomerID, &run.PolicyID,
 		&run.State, &run.Reason, &run.AttemptCount, &run.LastAttemptAt, &run.NextActionAt,
@@ -161,17 +161,13 @@ func (s *PostgresStore) GetActiveRunByInvoice(ctx context.Context, tenantID, inv
 	return run, err
 }
 
-func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]domain.InvoiceDunningRun, error) {
+func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]domain.InvoiceDunningRun, int, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, filter.TenantID)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer postgres.Rollback(tx)
 
-	query := `SELECT id, tenant_id, invoice_id, COALESCE(customer_id,''), policy_id, state,
-		COALESCE(reason,''), attempt_count, last_attempt_at, next_action_at,
-		paused, resolved_at, COALESCE(resolution,''), created_at, updated_at
-		FROM invoice_dunning_runs`
 	args := []any{}
 	clauses := []string{}
 	idx := 1
@@ -186,26 +182,38 @@ func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]d
 		args = append(args, filter.State)
 		idx++
 	}
+
+	whereClause := ""
 	if len(clauses) > 0 {
-		query += " WHERE "
+		whereClause = " WHERE "
 		for i, c := range clauses {
 			if i > 0 {
-				query += " AND "
+				whereClause += " AND "
 			}
-			query += c
+			whereClause += c
 		}
 	}
-	query += " ORDER BY created_at DESC"
+
+	var total int
+	countQuery := `SELECT COUNT(*) FROM invoice_dunning_runs` + whereClause
+	if err := tx.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	query := `SELECT id, tenant_id, invoice_id, COALESCE(customer_id,''), policy_id, state,
+		COALESCE(reason,''), attempt_count, last_attempt_at, next_action_at,
+		paused, resolved_at, COALESCE(resolution,''), created_at, updated_at
+		FROM invoice_dunning_runs` + whereClause + ` ORDER BY created_at DESC`
 	limit := filter.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	query += fmt.Sprintf(" LIMIT $%d", idx)
-	args = append(args, limit)
+	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", idx, idx+1)
+	args = append(args, limit, filter.Offset)
 
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -215,11 +223,11 @@ func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]d
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.InvoiceID, &r.CustomerID, &r.PolicyID,
 			&r.State, &r.Reason, &r.AttemptCount, &r.LastAttemptAt, &r.NextActionAt,
 			&r.Paused, &r.ResolvedAt, &r.Resolution, &r.CreatedAt, &r.UpdatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		runs = append(runs, r)
 	}
-	return runs, rows.Err()
+	return runs, total, rows.Err()
 }
 
 func (s *PostgresStore) UpdateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error) {
@@ -265,7 +273,7 @@ func (s *PostgresStore) ListDueRuns(ctx context.Context, tenantID string, dueBef
 			paused, resolved_at, COALESCE(resolution,''), created_at, updated_at
 		FROM invoice_dunning_runs
 		WHERE next_action_at <= $1 AND paused = false
-			AND state NOT IN ('resolved', 'exhausted')
+			AND state NOT IN ('resolved', 'escalated')
 		ORDER BY next_action_at ASC LIMIT $2
 		FOR UPDATE SKIP LOCKED
 	`, dueBefore, limit)
@@ -349,4 +357,68 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID, runID string) 
 		events = append(events, e)
 	}
 	return events, rows.Err()
+}
+
+func (s *PostgresStore) GetCustomerOverride(ctx context.Context, tenantID, customerID string) (domain.CustomerDunningOverride, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.CustomerDunningOverride{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var o domain.CustomerDunningOverride
+	err = tx.QueryRowContext(ctx, `
+		SELECT customer_id, tenant_id, max_retry_attempts, grace_period_days, COALESCE(final_action,'')
+		FROM customer_dunning_overrides WHERE customer_id = $1
+	`, customerID).Scan(&o.CustomerID, &o.TenantID, &o.MaxRetryAttempts, &o.GracePeriodDays, &o.FinalAction)
+	if err == sql.ErrNoRows {
+		return domain.CustomerDunningOverride{}, errs.ErrNotFound
+	}
+	return o, err
+}
+
+func (s *PostgresStore) UpsertCustomerOverride(ctx context.Context, tenantID string, o domain.CustomerDunningOverride) (domain.CustomerDunningOverride, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.CustomerDunningOverride{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO customer_dunning_overrides (customer_id, tenant_id, max_retry_attempts, grace_period_days, final_action, updated_at)
+		VALUES ($1,$2,$3,$4,$5,NOW())
+		ON CONFLICT (tenant_id, customer_id) DO UPDATE SET
+			max_retry_attempts = EXCLUDED.max_retry_attempts,
+			grace_period_days = EXCLUDED.grace_period_days,
+			final_action = EXCLUDED.final_action,
+			updated_at = NOW()
+		RETURNING customer_id, tenant_id, max_retry_attempts, grace_period_days, COALESCE(final_action,'')
+	`, o.CustomerID, tenantID, o.MaxRetryAttempts, o.GracePeriodDays,
+		postgres.NullableString(o.FinalAction),
+	).Scan(&o.CustomerID, &o.TenantID, &o.MaxRetryAttempts, &o.GracePeriodDays, &o.FinalAction)
+	if err != nil {
+		return domain.CustomerDunningOverride{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.CustomerDunningOverride{}, err
+	}
+	return o, nil
+}
+
+func (s *PostgresStore) DeleteCustomerOverride(ctx context.Context, tenantID, customerID string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM customer_dunning_overrides WHERE customer_id = $1`, customerID)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return errs.ErrNotFound
+	}
+	return tx.Commit()
 }

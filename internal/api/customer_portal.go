@@ -39,7 +39,7 @@ func (h *customerPortalHandler) listSubscriptions(w http.ResponseWriter, r *http
 	tenantID := auth.TenantID(r.Context())
 	customerID := chi.URLParam(r, "customer_id")
 
-	subs, err := h.subs.List(r.Context(), subscription.ListFilter{
+	subs, _, err := h.subs.List(r.Context(), subscription.ListFilter{
 		TenantID:   tenantID,
 		CustomerID: customerID,
 	})
@@ -83,7 +83,7 @@ func (h *customerPortalHandler) overview(w http.ResponseWriter, r *http.Request)
 	tenantID := auth.TenantID(r.Context())
 	customerID := chi.URLParam(r, "customer_id")
 
-	subs, _ := h.subs.List(r.Context(), subscription.ListFilter{
+	subs, _, _ := h.subs.List(r.Context(), subscription.ListFilter{
 		TenantID:   tenantID,
 		CustomerID: customerID,
 		Status:     "active",

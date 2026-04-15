@@ -52,6 +52,53 @@ Thank you for your business.
 	return s.send(to, subject, body, invoiceNumber+".pdf", pdfBytes)
 }
 
+// SendPaymentReceipt sends a payment receipt after successful payment.
+func (s *Sender) SendPaymentReceipt(to, customerName, invoiceNumber string, amountCents int64, currency string) error {
+	subject := fmt.Sprintf("Payment received for invoice %s", invoiceNumber)
+	body := fmt.Sprintf(`Dear %s,
+
+We have received your payment of %s for invoice %s.
+
+Thank you for your prompt payment.
+
+— Velox Billing
+`, customerName, formatAmount(amountCents, currency), invoiceNumber)
+
+	return s.send(to, subject, body, "", nil)
+}
+
+// SendDunningWarning notifies a customer about a failed payment retry.
+func (s *Sender) SendDunningWarning(to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate string) error {
+	subject := fmt.Sprintf("Action required — payment retry failed for invoice %s", invoiceNumber)
+	body := fmt.Sprintf(`Dear %s,
+
+Payment attempt %d of %d for invoice %s has failed.
+
+We will retry your payment on %s. Please update your payment method to avoid further issues.
+
+— Velox Billing
+`, customerName, attemptNumber, maxAttempts, invoiceNumber, nextRetryDate)
+
+	return s.send(to, subject, body, "", nil)
+}
+
+// SendDunningEscalation notifies a customer that all payment retries have been exhausted.
+func (s *Sender) SendDunningEscalation(to, customerName, invoiceNumber string, action string) error {
+	subject := fmt.Sprintf("Payment retries exhausted for invoice %s", invoiceNumber)
+	body := fmt.Sprintf(`Dear %s,
+
+All payment retry attempts for invoice %s have been exhausted.
+
+Action taken: %s
+
+Please contact us to resolve this matter.
+
+— Velox Billing
+`, customerName, invoiceNumber, action)
+
+	return s.send(to, subject, body, "", nil)
+}
+
 // SendPaymentFailed notifies a customer about a failed payment.
 func (s *Sender) SendPaymentFailed(to, customerName, invoiceNumber, reason string) error {
 	subject := fmt.Sprintf("Payment failed for invoice %s", invoiceNumber)
@@ -65,6 +112,25 @@ Please update your payment method to avoid service interruption.
 
 — Velox Billing
 `, customerName, invoiceNumber, reason)
+
+	return s.send(to, subject, body, "", nil)
+}
+
+// SendPaymentUpdateRequest sends an email requesting the customer to update their payment method.
+func (s *Sender) SendPaymentUpdateRequest(to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
+	subject := fmt.Sprintf("Action required — update payment method for invoice %s", invoiceNumber)
+	body := fmt.Sprintf(`Dear %s,
+
+We were unable to process payment for invoice %s (%s).
+
+Please update your payment method using the secure link below:
+
+%s
+
+This link will expire in 24 hours.
+
+— Velox Billing
+`, customerName, invoiceNumber, formatAmount(amountDueCents, currency), updateURL)
 
 	return s.send(to, subject, body, "", nil)
 }

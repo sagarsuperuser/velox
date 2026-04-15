@@ -9,18 +9,23 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 type Handler struct {
-	svc *Service
+	svc         *Service
+	auditLogger *audit.Logger
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
+
+// SetAuditLogger configures audit logging for financial operations.
+func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
@@ -44,6 +49,20 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	cn, err := h.svc.Create(r.Context(), tenantID, input)
 	if err != nil {
 		respond.Validation(w, r, err.Error())
+		return
+	}
+
+	// Auto-issue if requested (create + issue in one call)
+	if input.AutoIssue {
+		issued, err := h.svc.Issue(r.Context(), tenantID, cn.ID)
+		if err != nil {
+			// CN was created but issue failed — void the draft to avoid orphans
+			h.svc.Void(r.Context(), tenantID, cn.ID)
+			respond.Validation(w, r, err.Error())
+			return
+		}
+		h.auditLogCreditNote(r, tenantID, issued)
+		respond.JSON(w, r, http.StatusCreated, issued)
 		return
 	}
 
@@ -101,6 +120,8 @@ func (h *Handler) issue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.auditLogCreditNote(r, tenantID, cn)
+
 	respond.JSON(w, r, http.StatusOK, cn)
 }
 
@@ -119,4 +140,21 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, cn)
+}
+
+// auditLogCreditNote logs a credit note issue event. Shared by issue and auto-issue paths.
+func (h *Handler) auditLogCreditNote(r *http.Request, tenantID string, cn domain.CreditNote) {
+	if h.auditLogger == nil {
+		return
+	}
+	h.auditLogger.Log(r.Context(), tenantID, "credit_note.issued", "credit_note", cn.ID, map[string]any{
+		"credit_note_number": cn.CreditNoteNumber,
+		"invoice_id":         cn.InvoiceID,
+		"customer_id":        cn.CustomerID,
+		"total_cents":        cn.TotalCents,
+		"refund_amount_cents": cn.RefundAmountCents,
+		"credit_amount_cents": cn.CreditAmountCents,
+		"reason":             cn.Reason,
+		"currency":           cn.Currency,
+	})
 }

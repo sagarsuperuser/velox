@@ -99,6 +99,17 @@ func IsUniqueViolation(err error) bool {
 	return false
 }
 
+func IsForeignKeyViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23503"
+	}
+	return false
+}
+
 func NullableString(v string) any {
 	if strings.TrimSpace(v) == "" {
 		return nil
@@ -106,9 +117,92 @@ func NullableString(v string) any {
 	return v
 }
 
+func NullableFloat64(v *float64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
 func NullableTime(v *time.Time) any {
 	if v == nil {
 		return nil
 	}
 	return *v
+}
+
+// StringArray is a []string that implements sql.Scanner and driver.Valuer
+// for PostgreSQL TEXT[] columns.
+type StringArray []string
+
+// Value converts the StringArray to a PostgreSQL array literal.
+func (a StringArray) Value() (interface{}, error) {
+	if a == nil {
+		return "{}", nil
+	}
+	if len(a) == 0 {
+		return "{}", nil
+	}
+	elements := make([]string, len(a))
+	for i, s := range a {
+		// Escape double quotes and backslashes inside elements
+		escaped := strings.ReplaceAll(s, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		elements[i] = `"` + escaped + `"`
+	}
+	return "{" + strings.Join(elements, ",") + "}", nil
+}
+
+// Scan parses a PostgreSQL TEXT[] value into a StringArray.
+func (a *StringArray) Scan(src interface{}) error {
+	if src == nil {
+		*a = StringArray{}
+		return nil
+	}
+	var s string
+	switch v := src.(type) {
+	case string:
+		s = v
+	case []byte:
+		s = string(v)
+	default:
+		return fmt.Errorf("StringArray.Scan: unsupported type %T", src)
+	}
+	// Trim outer braces
+	s = strings.TrimSpace(s)
+	if s == "{}" || s == "" {
+		*a = StringArray{}
+		return nil
+	}
+	s = s[1 : len(s)-1] // Remove { and }
+	var result []string
+	var current strings.Builder
+	inQuote := false
+	escaped := false
+	for _, ch := range s {
+		if escaped {
+			current.WriteRune(ch)
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if ch == ',' && !inQuote {
+			result = append(result, current.String())
+			current.Reset()
+			continue
+		}
+		current.WriteRune(ch)
+	}
+	if current.Len() > 0 {
+		result = append(result, current.String())
+	}
+	*a = result
+	return nil
 }

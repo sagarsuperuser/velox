@@ -54,6 +54,9 @@ func ParsePageParams(r *http.Request) PageParams {
 	}
 
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset > 10000 {
+		offset = 10000
+	}
 
 	return PageParams{
 		Limit:  limit,

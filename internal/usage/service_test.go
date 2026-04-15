@@ -32,7 +32,7 @@ func (m *memStore) Ingest(_ context.Context, tenantID string, e domain.UsageEven
 	return e, nil
 }
 
-func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.UsageEvent, error) {
+func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.UsageEvent, int, error) {
 	var result []domain.UsageEvent
 	for _, e := range m.events {
 		if e.TenantID != filter.TenantID {
@@ -43,10 +43,14 @@ func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.UsageEve
 		}
 		result = append(result, e)
 	}
-	return result, nil
+	return result, len(result), nil
 }
 
 func (m *memStore) AggregateForBillingPeriod(_ context.Context, _, _ string, _ []string, _, _ time.Time) (map[string]int64, error) {
+	return map[string]int64{}, nil
+}
+
+func (m *memStore) AggregateForBillingPeriodByAgg(_ context.Context, _, _ string, _ map[string]string, _, _ time.Time) (map[string]int64, error) {
 	return map[string]int64{}, nil
 }
 

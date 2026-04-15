@@ -11,9 +11,10 @@ import (
 )
 
 type memStore struct {
-	policy *domain.DunningPolicy
-	runs   map[string]domain.InvoiceDunningRun
-	events []domain.InvoiceDunningEvent
+	policy            *domain.DunningPolicy
+	runs              map[string]domain.InvoiceDunningRun
+	events            []domain.InvoiceDunningEvent
+	customerOverrides map[string]domain.CustomerDunningOverride
 }
 
 func newMemStore() *memStore {
@@ -21,10 +22,11 @@ func newMemStore() *memStore {
 		policy: &domain.DunningPolicy{
 			ID: "dpol_1", TenantID: "t1", Name: "Default",
 			Enabled: true, MaxRetryAttempts: 3, GracePeriodDays: 3,
-			RetrySchedule: []string{"24h", "72h", "168h"},
+			RetrySchedule: []string{"72h", "120h"},
 			FinalAction:   domain.DunningActionManualReview,
 		},
-		runs: make(map[string]domain.InvoiceDunningRun),
+		runs:              make(map[string]domain.InvoiceDunningRun),
+		customerOverrides: make(map[string]domain.CustomerDunningOverride),
 	}
 }
 
@@ -61,14 +63,14 @@ func (m *memStore) GetRun(_ context.Context, _, id string) (domain.InvoiceDunnin
 
 func (m *memStore) GetActiveRunByInvoice(_ context.Context, _, invoiceID string) (domain.InvoiceDunningRun, error) {
 	for _, r := range m.runs {
-		if r.InvoiceID == invoiceID && r.State != domain.DunningResolved && r.State != domain.DunningExhausted {
+		if r.InvoiceID == invoiceID && r.State != domain.DunningResolved && r.State != domain.DunningEscalated {
 			return r, nil
 		}
 	}
 	return domain.InvoiceDunningRun{}, errs.ErrNotFound
 }
 
-func (m *memStore) ListRuns(_ context.Context, filter RunListFilter) ([]domain.InvoiceDunningRun, error) {
+func (m *memStore) ListRuns(_ context.Context, filter RunListFilter) ([]domain.InvoiceDunningRun, int, error) {
 	var result []domain.InvoiceDunningRun
 	for _, r := range m.runs {
 		if filter.State != "" && string(r.State) != filter.State {
@@ -76,7 +78,7 @@ func (m *memStore) ListRuns(_ context.Context, filter RunListFilter) ([]domain.I
 		}
 		result = append(result, r)
 	}
-	return result, nil
+	return result, len(result), nil
 }
 
 func (m *memStore) UpdateRun(_ context.Context, _ string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error) {
@@ -88,7 +90,7 @@ func (m *memStore) ListDueRuns(_ context.Context, _ string, before time.Time, li
 	var result []domain.InvoiceDunningRun
 	for _, r := range m.runs {
 		if r.NextActionAt != nil && !r.NextActionAt.After(before) && !r.Paused &&
-			r.State != domain.DunningResolved && r.State != domain.DunningExhausted {
+			r.State != domain.DunningResolved && r.State != domain.DunningEscalated {
 			result = append(result, r)
 		}
 	}
@@ -114,6 +116,28 @@ func (m *memStore) ListEvents(_ context.Context, _, runID string) ([]domain.Invo
 	return result, nil
 }
 
+func (m *memStore) GetCustomerOverride(_ context.Context, _, customerID string) (domain.CustomerDunningOverride, error) {
+	o, ok := m.customerOverrides[customerID]
+	if !ok {
+		return domain.CustomerDunningOverride{}, errs.ErrNotFound
+	}
+	return o, nil
+}
+
+func (m *memStore) UpsertCustomerOverride(_ context.Context, tenantID string, o domain.CustomerDunningOverride) (domain.CustomerDunningOverride, error) {
+	o.TenantID = tenantID
+	m.customerOverrides[o.CustomerID] = o
+	return o, nil
+}
+
+func (m *memStore) DeleteCustomerOverride(_ context.Context, _, customerID string) error {
+	if _, ok := m.customerOverrides[customerID]; !ok {
+		return errs.ErrNotFound
+	}
+	delete(m.customerOverrides, customerID)
+	return nil
+}
+
 type noopRetrier struct{}
 
 func (n *noopRetrier) RetryPayment(_ context.Context, _, _, _ string) error { return nil }
@@ -137,7 +161,7 @@ func TestStartDunning(t *testing.T) {
 		if run.InvoiceID != "inv_1" {
 			t.Errorf("invoice_id: got %q, want inv_1", run.InvoiceID)
 		}
-		if run.State != domain.DunningScheduled {
+		if run.State != domain.DunningActive {
 			t.Errorf("state: got %q, want scheduled", run.State)
 		}
 		if run.NextActionAt == nil {
@@ -210,7 +234,7 @@ func TestProcessDueRuns(t *testing.T) {
 	if updated.AttemptCount != 1 {
 		t.Errorf("attempt_count: got %d, want 1", updated.AttemptCount)
 	}
-	if updated.State != domain.DunningScheduled {
+	if updated.State != domain.DunningActive {
 		t.Errorf("state: got %q, want scheduled", updated.State)
 	}
 }
@@ -234,8 +258,8 @@ func TestProcessDueRuns_MaxRetriesExhausted(t *testing.T) {
 	if updated.State != domain.DunningEscalated {
 		t.Errorf("state: got %q, want escalated (manual_review policy)", updated.State)
 	}
-	if updated.Resolution != domain.ResolutionEscalated {
-		t.Errorf("resolution: got %q, want escalated", updated.Resolution)
+	if updated.Resolution != domain.ResolutionRetriesExhausted {
+		t.Errorf("resolution: got %q, want retries_exhausted", updated.Resolution)
 	}
 	if updated.ResolvedAt == nil {
 		t.Error("resolved_at should be set")
@@ -249,14 +273,14 @@ func TestResolveRun(t *testing.T) {
 
 	run, _ := svc.StartDunning(ctx, "t1", "inv_1", "cus_1")
 
-	resolved, err := svc.ResolveRun(ctx, "t1", run.ID, domain.ResolutionPaymentSucceeded)
+	resolved, err := svc.ResolveRun(ctx, "t1", run.ID, domain.ResolutionPaymentRecovered)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if resolved.State != domain.DunningResolved {
 		t.Errorf("state: got %q, want resolved", resolved.State)
 	}
-	if resolved.Resolution != domain.ResolutionPaymentSucceeded {
+	if resolved.Resolution != domain.ResolutionPaymentRecovered {
 		t.Errorf("resolution: got %q, want payment_succeeded", resolved.Resolution)
 	}
 	if resolved.ResolvedAt == nil {
