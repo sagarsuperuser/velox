@@ -22,7 +22,7 @@ type UsageSummary struct {
 
 // GetSummary aggregates usage for a customer in the current billing period.
 func (s *Service) GetSummary(ctx context.Context, tenantID, customerID string, from, to time.Time) (UsageSummary, error) {
-	events, err := s.store.List(ctx, ListFilter{
+	events, _, err := s.store.List(ctx, ListFilter{
 		TenantID:   tenantID,
 		CustomerID: customerID,
 		From:       &from,

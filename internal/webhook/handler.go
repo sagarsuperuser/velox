@@ -26,11 +26,29 @@ func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/endpoints", h.createEndpoint)
 	r.Get("/endpoints", h.listEndpoints)
+	r.Get("/endpoints/stats", h.getEndpointStats)
 	r.Delete("/endpoints/{id}", h.deleteEndpoint)
+	r.Post("/endpoints/{id}/rotate-secret", h.rotateSecret)
 	r.Get("/events", h.listEvents)
 	r.Get("/events/{id}/deliveries", h.listDeliveries)
 	r.Post("/events/{id}/replay", h.replayEvent)
 	return r
+}
+
+func (h *Handler) getEndpointStats(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+
+	stats, err := h.svc.GetEndpointStats(r.Context(), tenantID)
+	if err != nil {
+		respond.InternalError(w, r)
+		slog.Error("get webhook endpoint stats", "error", err)
+		return
+	}
+	if stats == nil {
+		stats = []EndpointStats{}
+	}
+
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": stats})
 }
 
 func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +100,24 @@ func (h *Handler) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *Handler) rotateSecret(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	newSecret, err := h.svc.RotateSecret(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "webhook endpoint")
+		return
+	}
+	if err != nil {
+		respond.InternalError(w, r)
+		slog.Error("rotate webhook secret", "error", err)
+		return
+	}
+
+	respond.JSON(w, r, http.StatusOK, map[string]string{"secret": newSecret})
 }
 
 func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {

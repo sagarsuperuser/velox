@@ -3,10 +3,13 @@ package invoice
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
-	"github.com/go-pdf/fpdf"
+	"github.com/signintech/gopdf"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
@@ -21,9 +24,12 @@ type CompanyInfo struct {
 
 // CreditNoteInfo holds credit note data for the totals section.
 type CreditNoteInfo struct {
-	Number string
-	Reason string
-	Amount int64
+	Number            string
+	Reason            string
+	Amount            int64
+	RefundAmountCents int64
+	CreditAmountCents int64
+	RefundStatus      string
 }
 
 // BillToInfo holds the customer's billing address for the PDF.
@@ -38,12 +44,91 @@ type BillToInfo struct {
 	Country      string
 }
 
+// Currency symbol map
+var currencySymbols = map[string]string{
+	"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CNY": "¥",
+	"INR": "₹", "BRL": "R$", "CAD": "CA$", "AUD": "A$", "CHF": "CHF ",
+	"SGD": "S$", "HKD": "HK$", "NZD": "NZ$", "MXN": "MX$",
+	"KRW": "₩", "ZAR": "R", "PLN": "zł", "AED": "AED ", "SAR": "SAR ",
+	"THB": "฿", "MYR": "RM ", "IDR": "Rp ", "PHP": "₱", "VND": "₫",
+}
+
+var pdfCurrencySymbol = "$"
+
+// getFontDir returns the absolute path to the fonts directory.
+func getFontDir() string {
+	_, filename, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(filename), "fonts")
+}
+
 func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo BillToInfo, creditNotes []CreditNoteInfo, company ...CompanyInfo) ([]byte, error) {
-	pdf := fpdf.New("P", "mm", "A4", "")
-	pdf.SetAutoPageBreak(true, 20)
+	// Set currency symbol
+	if sym, ok := currencySymbols[strings.ToUpper(inv.Currency)]; ok {
+		pdfCurrencySymbol = sym
+	} else if inv.Currency != "" {
+		pdfCurrencySymbol = inv.Currency + " "
+	} else {
+		pdfCurrencySymbol = "$"
+	}
+
+	pdf := &gopdf.GoPdf{}
+	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
 	pdf.AddPage()
 
-	// ── Header: Company info (left) + INVOICE title (right) ──
+	// Load Unicode fonts
+	fontDir := getFontDir()
+	regularFont := filepath.Join(fontDir, "NotoSans-Regular.ttf")
+	boldFont := filepath.Join(fontDir, "NotoSans-Bold.ttf")
+
+	// Check if font files exist
+	if _, err := os.Stat(regularFont); err != nil {
+		return nil, fmt.Errorf("font file not found: %s", regularFont)
+	}
+
+	if err := pdf.AddTTFFont("noto", regularFont); err != nil {
+		return nil, fmt.Errorf("load regular font: %w", err)
+	}
+	if err := pdf.AddTTFFont("noto-bold", boldFont); err != nil {
+		return nil, fmt.Errorf("load bold font: %w", err)
+	}
+
+	// Helper functions
+	setFont := func(bold bool, size int) {
+		name := "noto"
+		if bold {
+			name = "noto-bold"
+		}
+		pdf.SetFont(name, "", size)
+	}
+
+	setColor := func(r, g, b uint8) {
+		pdf.SetTextColor(r, g, b)
+	}
+
+	textAt := func(x, y float64, text string) {
+		pdf.SetXY(x, y)
+		pdf.Cell(nil, text)
+	}
+
+	rightAlignAt := func(x, y, width float64, text string) {
+		tw, _ := pdf.MeasureTextWidth(text)
+		pdf.SetXY(x+width-tw, y)
+		pdf.Cell(nil, text)
+	}
+
+	// ── VOID watermark ──
+	if inv.Status == domain.InvoiceVoided {
+		setFont(true, 72)
+		setColor(230, 230, 230)
+		textAt(55, 400, "VOID")
+	}
+
+	pageW := 595.28 // A4 width in points
+	margin := 40.0
+	contentW := pageW - margin*2
+	y := 40.0
+
+	// ── Header ──
 	companyName := "Velox"
 	companyAddr := ""
 	companyContact := ""
@@ -62,80 +147,86 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		}
 	}
 
-	// Company name
-	pdf.SetFont("Helvetica", "B", 18)
-	pdf.SetTextColor(30, 30, 30)
-	pdf.CellFormat(100, 10, companyName, "", 0, "L", false, 0, "")
+	setFont(true, 18)
+	setColor(30, 30, 30)
+	textAt(margin, y, companyName)
 
-	// INVOICE label (right)
-	pdf.SetFont("Helvetica", "B", 18)
-	pdf.SetTextColor(100, 100, 100)
-	pdf.CellFormat(0, 10, "INVOICE", "", 1, "R", false, 0, "")
+	setFont(true, 18)
+	setColor(100, 100, 100)
+	rightAlignAt(margin, y, contentW, "INVOICE")
+	y += 24
 
-	// Company address
 	if companyAddr != "" {
-		pdf.SetFont("Helvetica", "", 8)
-		pdf.SetTextColor(100, 100, 100)
+		setFont(false, 8)
+		setColor(100, 100, 100)
 		for _, line := range strings.Split(companyAddr, "\n") {
 			if line = strings.TrimSpace(line); line != "" {
-				pdf.CellFormat(0, 4, line, "", 1, "L", false, 0, "")
+				textAt(margin, y, line)
+				y += 11
 			}
 		}
 	}
 	if companyContact != "" {
-		pdf.SetFont("Helvetica", "", 8)
-		pdf.SetTextColor(120, 120, 120)
-		pdf.CellFormat(0, 4, companyContact, "", 1, "L", false, 0, "")
+		setFont(false, 8)
+		setColor(120, 120, 120)
+		textAt(margin, y, companyContact)
+		y += 11
 	}
 
-	pdf.Ln(8)
+	y += 16
 
-	// ── Invoice details (left) + Bill To (right) ──
-	y := pdf.GetY()
+	// ── Invoice Details (left) + Bill To (right) ──
+	detailStartY := y
 
-	// Left column: invoice details
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(100, 100, 100)
-	pdf.CellFormat(100, 5, "INVOICE DETAILS", "", 1, "L", false, 0, "")
-	pdf.Ln(1)
+	setFont(true, 9)
+	setColor(100, 100, 100)
+	textAt(margin, y, "INVOICE DETAILS")
+	y += 14
 
-	pdf.SetTextColor(40, 40, 40)
-	detailRow(pdf, "Number", inv.InvoiceNumber)
+	detailRow := func(label, value string) {
+		setFont(false, 9)
+		setColor(100, 100, 100)
+		textAt(margin, y, label)
+		setColor(40, 40, 40)
+		textAt(margin+70, y, value)
+		y += 14
+	}
+
+	detailRow("Number", inv.InvoiceNumber)
 	if inv.IssuedAt != nil {
-		detailRow(pdf, "Issued", inv.IssuedAt.Format("January 2, 2006"))
+		detailRow("Issued", inv.IssuedAt.Format("January 2, 2006"))
 	}
 	if inv.DueAt != nil {
-		detailRow(pdf, "Due Date", inv.DueAt.Format("January 2, 2006"))
+		detailRow("Due Date", inv.DueAt.Format("January 2, 2006"))
 	}
-	detailRow(pdf, "Period", fmt.Sprintf("%s - %s",
-		inv.BillingPeriodStart.Format("Jan 2, 2006"),
-		inv.BillingPeriodEnd.Format("Jan 2, 2006")))
-	detailRow(pdf, "Currency", strings.ToUpper(inv.Currency))
+	detailRow("Period", fmt.Sprintf("%s - %s", inv.BillingPeriodStart.Format("Jan 2, 2006"), inv.BillingPeriodEnd.Format("Jan 2, 2006")))
+	detailRow("Currency", strings.ToUpper(inv.Currency))
 
-	bottomLeft := pdf.GetY()
+	leftBottom := y
 
-	// Right column: bill to
-	pdf.SetY(y)
-	pdf.SetX(120)
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(100, 100, 100)
-	pdf.CellFormat(0, 5, "BILL TO", "", 1, "L", false, 0, "")
-	pdf.Ln(1)
+	// Bill To (right column)
+	rightX := 340.0
+	by := detailStartY
 
-	pdf.SetX(120)
-	pdf.SetFont("Helvetica", "B", 10)
-	pdf.SetTextColor(40, 40, 40)
-	pdf.CellFormat(0, 5, billTo.Name, "", 1, "L", false, 0, "")
+	setFont(true, 9)
+	setColor(100, 100, 100)
+	textAt(rightX, by, "BILL TO")
+	by += 14
 
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
+	setFont(true, 10)
+	setColor(40, 40, 40)
+	textAt(rightX, by, billTo.Name)
+	by += 14
+
+	setFont(false, 9)
+	setColor(80, 80, 80)
 	if billTo.AddressLine1 != "" {
-		pdf.SetX(120)
-		pdf.CellFormat(0, 4, billTo.AddressLine1, "", 1, "L", false, 0, "")
+		textAt(rightX, by, billTo.AddressLine1)
+		by += 12
 	}
 	if billTo.AddressLine2 != "" {
-		pdf.SetX(120)
-		pdf.CellFormat(0, 4, billTo.AddressLine2, "", 1, "L", false, 0, "")
+		textAt(rightX, by, billTo.AddressLine2)
+		by += 12
 	}
 	cityLine := ""
 	if billTo.City != "" {
@@ -151,178 +242,244 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		cityLine += " " + billTo.PostalCode
 	}
 	if cityLine != "" {
-		pdf.SetX(120)
-		pdf.CellFormat(0, 4, cityLine, "", 1, "L", false, 0, "")
+		textAt(rightX, by, cityLine)
+		by += 12
 	}
 	if billTo.Country != "" {
-		pdf.SetX(120)
-		pdf.CellFormat(0, 4, billTo.Country, "", 1, "L", false, 0, "")
+		textAt(rightX, by, billTo.Country)
+		by += 12
 	}
 	if billTo.Email != "" {
-		pdf.SetX(120)
-		pdf.SetFont("Helvetica", "", 8)
-		pdf.SetTextColor(100, 100, 100)
-		pdf.CellFormat(0, 4, billTo.Email, "", 1, "L", false, 0, "")
+		setFont(false, 8)
+		setColor(100, 100, 100)
+		textAt(rightX, by, billTo.Email)
+		by += 12
 	}
 
-	bottomRight := pdf.GetY()
-	if bottomLeft > bottomRight {
-		pdf.SetY(bottomLeft)
+	if by > leftBottom {
+		y = by
+	} else {
+		y = leftBottom
 	}
-
-	pdf.Ln(8)
+	y += 16
 
 	// ── Line items table ──
-	pdf.SetFillColor(245, 245, 245)
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(80, 80, 80)
+	colX := []float64{margin, margin + 240, margin + 320, margin + 400}
+	colEnd := margin + contentW
 
-	colWidths := []float64{85, 30, 35, 40}
-	headers := []string{"Description", "Qty", "Unit Price", "Amount"}
-	for i, h := range headers {
-		align := "L"
-		if i > 0 {
-			align = "R"
-		}
-		pdf.CellFormat(colWidths[i], 8, h, "", 0, align, true, 0, "")
-	}
-	pdf.Ln(-1)
+	// Header row
+	setFont(true, 9)
+	setColor(80, 80, 80)
+	pdf.SetFillColor(245, 245, 245)
+	pdf.RectFromUpperLeftWithStyle(margin, y-2, contentW, 20, "F")
+
+	textAt(colX[0], y, "Description")
+	rightAlignAt(colX[1], y, colX[2]-colX[1], "Qty")
+	rightAlignAt(colX[2], y, colX[3]-colX[2], "Unit Price")
+	rightAlignAt(colX[3], y, colEnd-colX[3], "Amount")
+	y += 22
 
 	// Line items
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(40, 40, 40)
-
+	setFont(false, 9)
+	setColor(40, 40, 40)
 	for _, item := range lineItems {
-		pdf.CellFormat(colWidths[0], 7, truncate(item.Description, 50), "", 0, "L", false, 0, "")
-		pdf.CellFormat(colWidths[1], 7, formatQuantity(item.Quantity, item.LineType), "", 0, "R", false, 0, "")
-		pdf.CellFormat(colWidths[2], 7, formatCents(item.UnitAmountCents), "", 0, "R", false, 0, "")
-		pdf.CellFormat(colWidths[3], 7, formatCents(item.TotalAmountCents), "", 0, "R", false, 0, "")
-		pdf.Ln(-1)
+		desc := item.Description
+		if len([]rune(desc)) > 50 {
+			desc = string([]rune(desc)[:47]) + "..."
+		}
+		textAt(colX[0], y, desc)
+		rightAlignAt(colX[1], y, colX[2]-colX[1], formatQuantity(item.Quantity, item.LineType))
+		rightAlignAt(colX[2], y, colX[3]-colX[2], formatCents(item.UnitAmountCents))
+		rightAlignAt(colX[3], y, colEnd-colX[3], formatCents(item.AmountCents))
+		y += 18
 	}
 
-	// ── Totals section ──
-	pdf.Ln(2)
-	pdf.SetDrawColor(200, 200, 200)
-	pdf.Line(10, pdf.GetY(), 200, pdf.GetY())
-	pdf.Ln(4)
+	// Separator
+	y += 4
+	pdf.SetLineWidth(0.5)
+	pdf.SetStrokeColor(200, 200, 200)
+	pdf.Line(margin, y, margin+contentW, y)
+	y += 8
 
-	totalsX := 120.0
-	totalsW := 50.0
-	valW := 30.0
+	// ── Totals ──
+	totalsX := 340.0
+	totalsW := 140.0
+	labelW := 90.0
 
-	// Subtotal
-	pdf.SetFont("Helvetica", "", 10)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.SetX(totalsX)
-	pdf.CellFormat(totalsW, 6, "Subtotal", "", 0, "L", false, 0, "")
-	pdf.CellFormat(valW, 6, formatCents(inv.SubtotalCents), "", 1, "R", false, 0, "")
+	totalsRow := func(label string, amount string, bold bool, labelR, labelG, labelB, valR, valG, valB uint8) {
+		if bold {
+			setFont(true, 10)
+		} else {
+			setFont(false, 10)
+		}
+		setColor(labelR, labelG, labelB)
+		textAt(totalsX, y, label)
+		setColor(valR, valG, valB)
+		rightAlignAt(totalsX+labelW, y, totalsW-labelW, amount)
+		y += 16
+	}
 
-	// Credit notes
-	if len(creditNotes) > 0 {
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.SetTextColor(0, 128, 80) // green
-		for _, cn := range creditNotes {
-			label := fmt.Sprintf("CN %s", cn.Number)
-			if cn.Reason != "" {
-				label += " - " + truncate(cn.Reason, 25)
-			}
-			pdf.SetX(totalsX)
-			pdf.CellFormat(totalsW, 6, label, "", 0, "L", false, 0, "")
-			pdf.CellFormat(valW, 6, "-"+formatCents(cn.Amount), "", 1, "R", false, 0, "")
+	totalsRow("Subtotal", formatCents(inv.SubtotalCents), false, 80, 80, 80, 40, 40, 40)
+
+	if inv.DiscountCents > 0 {
+		totalsRow("Discount", "-"+formatCents(inv.DiscountCents), false, 80, 80, 80, 40, 40, 40)
+	}
+
+	if inv.TaxAmountCents > 0 {
+		taxLabel := "Tax"
+		if inv.TaxName != "" {
+			taxLabel = inv.TaxName
+		}
+		if inv.TaxRate > 0 {
+			taxLabel = fmt.Sprintf("%s (%.4g%%)", taxLabel, inv.TaxRate)
+		}
+		if inv.TaxCountry != "" {
+			taxLabel = fmt.Sprintf("%s [%s]", taxLabel, inv.TaxCountry)
+		}
+		totalsRow(taxLabel, formatCents(inv.TaxAmountCents), false, 80, 80, 80, 40, 40, 40)
+
+		// Show customer's Tax ID below the tax line
+		if inv.TaxID != "" {
+			setFont(false, 7)
+			setColor(120, 120, 120)
+			textAt(totalsX, y-12, inv.TaxID)
+			y += 2
 		}
 	}
 
-	// Prepaid credits (calculated: total - amount_due - credit_notes)
-	var creditNotesTotal int64
+	// Total line
+	pdf.SetStrokeColor(220, 220, 220)
+	pdf.Line(totalsX, y-4, totalsX+totalsW, y-4)
+	y += 2
+	totalsRow("Total", formatCents(inv.TotalAmountCents), true, 30, 30, 30, 30, 30, 30)
+
+	// Credit notes (pre-payment)
+	var postPaymentCNs []CreditNoteInfo
 	for _, cn := range creditNotes {
-		creditNotesTotal += cn.Amount
-	}
-	prepaidCredits := inv.TotalAmountCents - inv.AmountDueCents - creditNotesTotal
-	if prepaidCredits > 0 {
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.SetTextColor(0, 128, 80) // green
-		pdf.SetX(totalsX)
-		pdf.CellFormat(totalsW, 6, "Prepaid credits", "", 0, "L", false, 0, "")
-		pdf.CellFormat(valW, 6, "-"+formatCents(prepaidCredits), "", 1, "R", false, 0, "")
-	}
-
-	// Discount
-	if inv.DiscountCents > 0 {
-		pdf.SetFont("Helvetica", "", 10)
-		pdf.SetTextColor(80, 80, 80)
-		pdf.SetX(totalsX)
-		pdf.CellFormat(totalsW, 6, "Discount", "", 0, "L", false, 0, "")
-		pdf.CellFormat(valW, 6, "-"+formatCents(inv.DiscountCents), "", 1, "R", false, 0, "")
-	}
-
-	// Tax
-	if inv.TaxAmountCents > 0 {
-		pdf.SetFont("Helvetica", "", 10)
-		pdf.SetTextColor(80, 80, 80)
-		pdf.SetX(totalsX)
-		pdf.CellFormat(totalsW, 6, "Tax", "", 0, "L", false, 0, "")
-		pdf.CellFormat(valW, 6, formatCents(inv.TaxAmountCents), "", 1, "R", false, 0, "")
+		if cn.RefundAmountCents > 0 || cn.CreditAmountCents > 0 {
+			postPaymentCNs = append(postPaymentCNs, cn)
+			continue
+		}
+		setFont(false, 8)
+		setColor(0, 128, 80)
+		label := cn.Number
+		if cn.Reason != "" {
+			r := []rune(cn.Reason)
+			if len(r) > 20 {
+				r = append(r[:17], []rune("...")...)
+			}
+			label += " - " + string(r)
+		}
+		textAt(totalsX, y, label)
+		rightAlignAt(totalsX+labelW, y, totalsW-labelW, "-"+formatCents(cn.Amount))
+		y += 16
 	}
 
-	// Amount Due
-	pdf.Ln(2)
-	pdf.SetDrawColor(200, 200, 200)
-	pdf.Line(totalsX, pdf.GetY(), 200, pdf.GetY())
-	pdf.Ln(3)
-
-	pdf.SetFont("Helvetica", "B", 12)
-	pdf.SetTextColor(30, 30, 30)
-	pdf.SetX(totalsX)
-	pdf.CellFormat(totalsW, 8, "Amount Due", "", 0, "L", false, 0, "")
-	pdf.CellFormat(valW, 8, formatCents(inv.AmountDueCents), "", 1, "R", false, 0, "")
-
-	// ── Payment terms / paid notice ──
-	pdf.Ln(8)
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(120, 120, 120)
-	if inv.PaymentStatus == domain.PaymentSucceeded && inv.PaidAt != nil {
-		pdf.CellFormat(0, 5, fmt.Sprintf("Paid on %s - Thank you!", inv.PaidAt.Format("January 2, 2006")), "", 1, "L", false, 0, "")
+	if inv.Status == domain.InvoiceVoided {
+		pdf.SetStrokeColor(200, 200, 200)
+		pdf.Line(totalsX, y-4, totalsX+totalsW, y-4)
+		y += 4
+		setFont(true, 12)
+		setColor(30, 30, 30)
+		textAt(totalsX, y, "Amount Due")
+		rightAlignAt(totalsX+labelW, y, totalsW-labelW, formatCents(0))
+		y += 20
 	} else {
-		pdf.CellFormat(0, 5, fmt.Sprintf("Payment due within %d days of issue date.", inv.NetPaymentTermDays), "", 1, "L", false, 0, "")
-	}
+		if inv.CreditsAppliedCents > 0 {
+			setFont(false, 9)
+			setColor(0, 128, 80)
+			textAt(totalsX, y, "Prepaid credits")
+			rightAlignAt(totalsX+labelW, y, totalsW-labelW, "-"+formatCents(inv.CreditsAppliedCents))
+			y += 16
+		}
 
-	if inv.Memo != "" {
-		pdf.Ln(4)
-		pdf.SetFont("Helvetica", "I", 9)
-		pdf.MultiCell(0, 5, inv.Memo, "", "L", false)
+		if inv.AmountPaidCents > 0 {
+			totalsRow("Amount Paid", "-"+formatCents(inv.AmountPaidCents), false, 80, 80, 80, 40, 40, 40)
+		}
+
+		pdf.SetStrokeColor(200, 200, 200)
+		pdf.Line(totalsX, y-4, totalsX+totalsW, y-4)
+		y += 4
+		setFont(true, 12)
+		setColor(30, 30, 30)
+		textAt(totalsX, y, "Amount Due")
+		rightAlignAt(totalsX+labelW, y, totalsW-labelW, formatCents(inv.AmountDueCents))
+		y += 20
+
+		// Post-payment adjustments
+		var completedCNs []CreditNoteInfo
+		for _, cn := range postPaymentCNs {
+			if cn.CreditAmountCents > 0 {
+				completedCNs = append(completedCNs, cn)
+			} else if cn.RefundAmountCents > 0 && cn.RefundStatus == string(domain.RefundSucceeded) {
+				completedCNs = append(completedCNs, cn)
+			}
+		}
+		if len(completedCNs) > 0 {
+			y += 8
+			setFont(false, 7)
+			setColor(150, 150, 150)
+			textAt(margin, y, "POST-PAYMENT ADJUSTMENTS")
+			y += 12
+			setFont(false, 8)
+			setColor(120, 120, 120)
+			for _, cn := range completedCNs {
+				kind := "credited to balance"
+				if cn.RefundAmountCents > 0 {
+					kind = "refunded"
+				}
+				reason := cn.Reason
+				if len([]rune(reason)) > 40 {
+					reason = string([]rune(reason)[:37]) + "..."
+				}
+				textAt(margin, y, fmt.Sprintf("%s - %s (%s)", cn.Number, reason, kind))
+				rightAlignAt(totalsX+labelW, y, totalsW-labelW, formatCents(cn.Amount))
+				y += 12
+			}
+		}
 	}
 
 	// ── Footer ──
-	pdf.Ln(10)
-	pdf.SetFont("Helvetica", "", 7)
-	pdf.SetTextColor(170, 170, 170)
-	pdf.CellFormat(0, 4, fmt.Sprintf("Generated on %s  |  %s", time.Now().UTC().Format("Jan 2, 2006 15:04 UTC"), inv.ID), "", 1, "C", false, 0, "")
+	y += 16
+	setFont(false, 9)
+	setColor(120, 120, 120)
+	if inv.Status == domain.InvoiceVoided {
+		voidDate := "N/A"
+		if inv.VoidedAt != nil {
+			voidDate = inv.VoidedAt.Format("January 2, 2006")
+		}
+		setColor(200, 80, 80)
+		textAt(margin, y, fmt.Sprintf("This invoice was voided on %s. No payment is due.", voidDate))
+	} else if inv.PaymentStatus == domain.PaymentSucceeded && inv.PaidAt != nil {
+		textAt(margin, y, fmt.Sprintf("Paid on %s - Thank you!", inv.PaidAt.Format("January 2, 2006")))
+	} else {
+		textAt(margin, y, fmt.Sprintf("Payment due within %d days of issue date.", inv.NetPaymentTermDays))
+	}
+
+	if inv.Memo != "" {
+		y += 12
+		setFont(false, 9)
+		setColor(120, 120, 120)
+		textAt(margin, y, inv.Memo)
+	}
+
+	y += 24
+	setFont(false, 7)
+	setColor(170, 170, 170)
+	footer := fmt.Sprintf("Generated on %s  |  %s", time.Now().UTC().Format("Jan 2, 2006 15:04 UTC"), inv.ID)
+	fw, _ := pdf.MeasureTextWidth(footer)
+	textAt((pageW-fw)/2, y, footer)
 
 	var buf bytes.Buffer
-	if err := pdf.Output(&buf); err != nil {
+	if _, err := pdf.WriteTo(&buf); err != nil {
 		return nil, fmt.Errorf("render pdf: %w", err)
 	}
 	return buf.Bytes(), nil
 }
 
-func detailRow(pdf *fpdf.Fpdf, label, value string) {
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(100, 100, 100)
-	pdf.CellFormat(25, 5, label, "", 0, "L", false, 0, "")
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(40, 40, 40)
-	pdf.CellFormat(75, 5, value, "", 1, "L", false, 0, "")
-}
-
-func totalRow(pdf *fpdf.Fpdf, x float64, label, value string) {
-	pdf.SetX(x)
-	pdf.CellFormat(40, 7, label, "", 0, "L", false, 0, "")
-	pdf.CellFormat(30, 7, value, "", 1, "R", false, 0, "")
-}
-
 func formatCents(cents int64) string {
 	if cents == 0 {
-		return "$0.00"
+		return pdfCurrencySymbol + "0.00"
 	}
 	sign := ""
 	if cents < 0 {
@@ -331,7 +488,7 @@ func formatCents(cents int64) string {
 	}
 	dollars := cents / 100
 	remainder := cents % 100
-	return fmt.Sprintf("%s$%s.%02d", sign, formatNumber(dollars), remainder)
+	return fmt.Sprintf("%s%s%s.%02d", sign, pdfCurrencySymbol, formatNumber(dollars), remainder)
 }
 
 func formatQuantity(qty int64, lineType domain.InvoiceLineItemType) string {
@@ -354,11 +511,4 @@ func formatNumber(n int64) string {
 		result = append(result, byte(c))
 	}
 	return string(result)
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-3] + "..."
 }

@@ -9,13 +9,16 @@ import (
 type Store interface {
 	AppendEntry(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error)
 	GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error)
+	ListBalances(ctx context.Context, tenantID string) ([]domain.CreditBalance, error)
 	ListEntries(ctx context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error)
+	ListExpiredGrants(ctx context.Context) ([]domain.CreditLedgerEntry, error)
 }
 
 type ListFilter struct {
 	TenantID   string
 	CustomerID string
 	EntryType  string
+	InvoiceID  string
 	Limit      int
 	Offset     int
 }

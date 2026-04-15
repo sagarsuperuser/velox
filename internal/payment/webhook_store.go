@@ -67,3 +67,40 @@ func (s *PostgresWebhookStore) IngestEvent(ctx context.Context, tenantID string,
 	}
 	return event, true, nil
 }
+
+// ListByInvoice returns all webhook events for an invoice, ordered chronologically.
+func (s *PostgresWebhookStore) ListByInvoice(ctx context.Context, tenantID, invoiceID string) ([]domain.StripeWebhookEvent, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, tenant_id, stripe_event_id, event_type, object_type,
+			COALESCE(invoice_id,''), COALESCE(customer_external_id,''),
+			COALESCE(payment_intent_id,''), COALESCE(payment_status,''),
+			amount_cents, COALESCE(currency,''), COALESCE(failure_message,''),
+			received_at, occurred_at
+		FROM stripe_webhook_events
+		WHERE invoice_id = $1
+		ORDER BY occurred_at ASC
+	`, invoiceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []domain.StripeWebhookEvent
+	for rows.Next() {
+		var e domain.StripeWebhookEvent
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.StripeEventID, &e.EventType, &e.ObjectType,
+			&e.InvoiceID, &e.CustomerExternalID, &e.PaymentIntentID, &e.PaymentStatus,
+			&e.AmountCents, &e.Currency, &e.FailureMessage,
+			&e.ReceivedAt, &e.OccurredAt); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}

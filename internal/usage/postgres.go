@@ -53,10 +53,10 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 	return event, nil
 }
 
-func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.UsageEvent, error) {
+func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.UsageEvent, int, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, filter.TenantID)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer postgres.Rollback(tx)
 
@@ -66,6 +66,13 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	}
 
 	where, args := buildUsageWhere(filter)
+
+	var total int
+	countQuery := `SELECT COUNT(*) FROM usage_events` + where
+	if err := tx.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	query := `SELECT id, tenant_id, customer_id, meter_id, COALESCE(subscription_id,''),
 		quantity, COALESCE(idempotency_key,''), timestamp
 		FROM usage_events` + where + ` ORDER BY timestamp DESC LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
@@ -73,7 +80,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -82,11 +89,60 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 		var e domain.UsageEvent
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.MeterID,
 			&e.SubscriptionID, &e.Quantity, &e.IdempotencyKey, &e.Timestamp); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		events = append(events, e)
 	}
-	return events, rows.Err()
+	return events, total, rows.Err()
+}
+
+func (s *PostgresStore) AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]int64, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if len(meters) == 0 {
+		return map[string]int64{}, nil
+	}
+
+	result := make(map[string]int64)
+
+	// Query each meter individually with its correct aggregation function
+	for meterID, agg := range meters {
+		aggFunc := "SUM"
+		switch agg {
+		case "max":
+			aggFunc = "MAX"
+		case "count":
+			aggFunc = "COUNT"
+		case "last":
+			// "last" = most recent value; use a subquery
+			var val int64
+			err := tx.QueryRowContext(ctx, `
+				SELECT COALESCE(quantity, 0) FROM usage_events
+				WHERE customer_id = $1 AND meter_id = $2 AND timestamp >= $3 AND timestamp < $4
+				ORDER BY timestamp DESC LIMIT 1
+			`, customerID, meterID, from, to).Scan(&val)
+			if err == nil && val > 0 {
+				result[meterID] = val
+			}
+			continue
+		}
+
+		var val int64
+		err := tx.QueryRowContext(ctx,
+			fmt.Sprintf(`SELECT COALESCE(%s(quantity), 0) FROM usage_events
+				WHERE customer_id = $1 AND meter_id = $2 AND timestamp >= $3 AND timestamp < $4`,
+				aggFunc),
+			customerID, meterID, from, to).Scan(&val)
+		if err == nil && val > 0 {
+			result[meterID] = val
+		}
+	}
+
+	return result, nil
 }
 
 func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]int64, error) {

@@ -133,6 +133,10 @@ func (m *mockWebhookStore) IngestEvent(_ context.Context, _ string, event domain
 	return event, true, nil
 }
 
+func (m *mockWebhookStore) ListByInvoice(_ context.Context, _, _ string) ([]domain.StripeWebhookEvent, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

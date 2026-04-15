@@ -103,7 +103,10 @@ func (s *Service) ListRatingRules(ctx context.Context, filter RatingRuleFilter) 
 
 func validateRatingRuleInput(input CreateRatingRuleInput) error {
 	if strings.TrimSpace(input.RuleKey) == "" {
-		return fmt.Errorf("rule_key is required")
+		return fmt.Errorf("key is required")
+	}
+	if err := domain.MaxLen("rule_key", input.RuleKey, 100); err != nil {
+		return err
 	}
 	if !slugPattern.MatchString(input.RuleKey) {
 		return fmt.Errorf("rule_key must contain only alphanumeric characters, hyphens, and underscores")
@@ -111,22 +114,33 @@ func validateRatingRuleInput(input CreateRatingRuleInput) error {
 	if strings.TrimSpace(input.Name) == "" {
 		return fmt.Errorf("name is required")
 	}
-	if strings.TrimSpace(input.Currency) == "" {
-		return fmt.Errorf("currency is required")
+	if err := domain.MaxLen("name", input.Name, 255); err != nil {
+		return err
+	}
+	if err := domain.ValidateCurrency(input.Currency); err != nil {
+		return err
 	}
 
 	switch input.Mode {
 	case domain.PricingFlat:
-		if input.FlatAmountCents < 0 {
-			return fmt.Errorf("flat_amount_cents must be >= 0")
+		if input.FlatAmountCents <= 0 {
+			return fmt.Errorf("unit price must be greater than 0")
 		}
 	case domain.PricingGraduated:
 		if len(input.GraduatedTiers) == 0 {
-			return fmt.Errorf("graduated_tiers is required for graduated mode")
+			return fmt.Errorf("at least one pricing tier is required")
+		}
+		for i, tier := range input.GraduatedTiers {
+			if tier.UnitAmountCents <= 0 {
+				return fmt.Errorf("tier %d: unit price must be greater than 0", i+1)
+			}
 		}
 	case domain.PricingPackage:
 		if input.PackageSize <= 0 {
-			return fmt.Errorf("package_size must be > 0")
+			return fmt.Errorf("package size must be greater than 0")
+		}
+		if input.PackageAmountCents <= 0 {
+			return fmt.Errorf("package price must be greater than 0")
 		}
 	default:
 		return fmt.Errorf("mode must be one of: flat, graduated, package")
@@ -153,11 +167,17 @@ func (s *Service) CreateMeter(ctx context.Context, tenantID string, input Create
 	if key == "" {
 		return domain.Meter{}, fmt.Errorf("key is required")
 	}
+	if err := domain.MaxLen("key", key, 100); err != nil {
+		return domain.Meter{}, err
+	}
 	if !slugPattern.MatchString(key) {
 		return domain.Meter{}, fmt.Errorf("key must contain only alphanumeric characters, hyphens, and underscores")
 	}
 	if name == "" {
 		return domain.Meter{}, fmt.Errorf("name is required")
+	}
+	if err := domain.MaxLen("name", name, 255); err != nil {
+		return domain.Meter{}, err
 	}
 
 	unit := input.Unit
@@ -216,20 +236,26 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 	if code == "" {
 		return domain.Plan{}, fmt.Errorf("code is required")
 	}
+	if err := domain.MaxLen("code", code, 100); err != nil {
+		return domain.Plan{}, err
+	}
 	if !slugPattern.MatchString(code) {
 		return domain.Plan{}, fmt.Errorf("code must contain only alphanumeric characters, hyphens, and underscores")
 	}
 	if name == "" {
 		return domain.Plan{}, fmt.Errorf("name is required")
 	}
-	if currency == "" {
-		return domain.Plan{}, fmt.Errorf("currency is required")
+	if err := domain.MaxLen("name", name, 255); err != nil {
+		return domain.Plan{}, err
+	}
+	if err := domain.ValidateCurrency(currency); err != nil {
+		return domain.Plan{}, err
 	}
 	if input.BillingInterval != domain.BillingMonthly && input.BillingInterval != domain.BillingYearly {
 		return domain.Plan{}, fmt.Errorf("billing_interval must be monthly or yearly")
 	}
 	if input.BaseAmountCents < 0 {
-		return domain.Plan{}, fmt.Errorf("base_amount_cents must be >= 0")
+		return domain.Plan{}, fmt.Errorf("base fee must be 0 or more")
 	}
 
 	if input.MeterIDs == nil {

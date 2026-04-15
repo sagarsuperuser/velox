@@ -21,13 +21,15 @@ func NewService(store Store) *Service {
 }
 
 type CreateInput struct {
-	Code        string                      `json:"code"`
-	DisplayName string                      `json:"display_name"`
-	CustomerID  string                      `json:"customer_id"`
-	PlanID      string                      `json:"plan_id"`
-	BillingTime domain.SubscriptionBillingTime `json:"billing_time"`
-	TrialDays   int                         `json:"trial_days,omitempty"`
-	StartNow    bool                        `json:"start_now,omitempty"`
+	Code           string                         `json:"code"`
+	DisplayName    string                         `json:"display_name"`
+	CustomerID     string                         `json:"customer_id"`
+	PlanID         string                         `json:"plan_id"`
+	BillingTime    domain.SubscriptionBillingTime `json:"billing_time"`
+	TrialDays      int                            `json:"trial_days,omitempty"`
+	StartNow       bool                           `json:"start_now,omitempty"`
+	UsageCapUnits  *int64                         `json:"usage_cap_units,omitempty"`
+	OverageAction  string                         `json:"overage_action,omitempty"`
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Subscription, error) {
@@ -92,6 +94,11 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		nextBilling = &nb
 	}
 
+	overageAction := input.OverageAction
+	if overageAction == "" {
+		overageAction = "charge"
+	}
+
 	return s.store.Create(ctx, tenantID, domain.Subscription{
 		Code:                      code,
 		DisplayName:               displayName,
@@ -105,6 +112,8 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		CurrentBillingPeriodStart: periodStart,
 		CurrentBillingPeriodEnd:   periodEnd,
 		NextBillingAt:             nextBilling,
+		UsageCapUnits:             input.UsageCapUnits,
+		OverageAction:             overageAction,
 	})
 }
 
@@ -112,7 +121,7 @@ func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Subscrip
 	return s.store.Get(ctx, tenantID, id)
 }
 
-func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Subscription, error) {
+func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Subscription, int, error) {
 	return s.store.List(ctx, filter)
 }
 
@@ -147,10 +156,20 @@ type ChangePlanInput struct {
 	Immediate bool   `json:"immediate"` // true = change now with proration, false = change at period end
 }
 
+type ProrationDetail struct {
+	OldPlanID       string  `json:"old_plan_id"`
+	NewPlanID       string  `json:"new_plan_id"`
+	ProrationFactor float64 `json:"proration_factor"`
+	AmountCents     int64   `json:"amount_cents"`
+	Type            string  `json:"type"`       // "invoice" or "credit"
+	InvoiceID       string  `json:"invoice_id,omitempty"`
+}
+
 type ChangePlanResult struct {
 	Subscription    domain.Subscription `json:"subscription"`
 	ProrationFactor float64             `json:"proration_factor,omitempty"`
 	EffectiveAt     time.Time           `json:"effective_at"`
+	Proration       *ProrationDetail    `json:"proration,omitempty"`
 }
 
 // ChangePlan upgrades or downgrades a subscription's plan.

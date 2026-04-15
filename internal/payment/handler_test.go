@@ -261,3 +261,7 @@ func (m *mockWebhookStoreH) IngestEvent(_ context.Context, _ string, event domai
 	m.seen[event.StripeEventID] = true
 	return event, true, nil
 }
+
+func (m *mockWebhookStoreH) ListByInvoice(_ context.Context, _, _ string) ([]domain.StripeWebhookEvent, error) {
+	return nil, nil
+}

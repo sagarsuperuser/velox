@@ -1,0 +1,47 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/sagarsuperuser/velox
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: nginx
+  host: api.velox.dev
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    secretName: velox-tls
+
+resources:
+  limits:
+    memory: 256Mi
+    cpu: 250m
+  requests:
+    memory: 128Mi
+    cpu: 100m
+
+config:
+  logLevel: info
+  appEnv: production
+  corsOrigins: "*"
+  runMigrations: true
+
+secrets:
+  databaseUrl: ""
+  stripeSecretKey: ""
+  stripeWebhookSecret: ""
+  smtpHost: ""
+  smtpUsername: ""
+  smtpPassword: ""
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPU: 70

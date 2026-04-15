@@ -41,7 +41,7 @@ func (m *memStore) Get(_ context.Context, tenantID, id string) (domain.Subscript
 	return s, nil
 }
 
-func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.Subscription, error) {
+func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.Subscription, int, error) {
 	var result []domain.Subscription
 	for _, s := range m.subs {
 		if s.TenantID != filter.TenantID {
@@ -52,7 +52,7 @@ func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.Subscrip
 		}
 		result = append(result, s)
 	}
-	return result, nil
+	return result, len(result), nil
 }
 
 func (m *memStore) Update(_ context.Context, tenantID string, s domain.Subscription) (domain.Subscription, error) {

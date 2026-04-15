@@ -135,7 +135,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
-	events, err := h.svc.List(r.Context(), ListFilter{
+	events, total, err := h.svc.List(r.Context(), ListFilter{
 		TenantID:   tenantID,
 		CustomerID: r.URL.Query().Get("customer_id"),
 		MeterID:    r.URL.Query().Get("meter_id"),
@@ -151,7 +151,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		events = []domain.UsageEvent{}
 	}
 
-	respond.JSON(w, r, http.StatusOK, map[string]any{"data": events})
+	respond.List(w, r, events, total)
 }
 
 func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {

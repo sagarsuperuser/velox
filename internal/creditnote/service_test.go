@@ -70,6 +70,17 @@ func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status d
 	return cn, nil
 }
 
+func (m *memStore) UpdateRefundStatus(_ context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error {
+	cn, ok := m.notes[id]
+	if !ok || cn.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	cn.RefundStatus = status
+	cn.StripeRefundID = stripeRefundID
+	m.notes[id] = cn
+	return nil
+}
+
 func (m *memStore) CreateLineItem(_ context.Context, tenantID string, item domain.CreditNoteLineItem) (domain.CreditNoteLineItem, error) {
 	item.ID = fmt.Sprintf("vlx_cnli_%d", len(m.lineItems[item.CreditNoteID])+1)
 	item.TenantID = tenantID
@@ -118,7 +129,7 @@ func TestCreate_CreditNote(t *testing.T) {
 			"inv_1": {
 				ID: "inv_1", TenantID: "t1", CustomerID: "cus_1",
 				Status: domain.InvoiceFinalized, Currency: "USD",
-				TotalAmountCents: 19900,
+				TotalAmountCents: 19900, AmountDueCents: 19900,
 			},
 		},
 	}
@@ -142,8 +153,8 @@ func TestCreate_CreditNote(t *testing.T) {
 		if cn.TotalCents != 2500 {
 			t.Errorf("total: got %d, want 2500", cn.TotalCents)
 		}
-		if cn.CreditAmountCents != 2500 {
-			t.Errorf("credit_amount: got %d, want 2500 (not paid, so credit not refund)", cn.CreditAmountCents)
+		if cn.CreditAmountCents != 0 {
+			t.Errorf("credit_amount: got %d, want 0 (unpaid invoice reduces amount_due directly)", cn.CreditAmountCents)
 		}
 		if cn.CustomerID != "cus_1" {
 			t.Errorf("customer_id: got %q", cn.CustomerID)
@@ -154,6 +165,7 @@ func TestCreate_CreditNote(t *testing.T) {
 		invoices.invoices["inv_paid"] = domain.Invoice{
 			ID: "inv_paid", TenantID: "t1", CustomerID: "cus_1",
 			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents: 10000,
 		}
 		cn, err := svc.Create(ctx, "t1", CreateInput{
 			InvoiceID:  "inv_paid",
@@ -214,7 +226,7 @@ func TestIssueAndVoid_CreditNote(t *testing.T) {
 	store := newMemStore()
 	invoices := &memInvoiceReader{
 		invoices: map[string]domain.Invoice{
-			"inv_1": {ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized, Currency: "USD"},
+			"inv_1": {ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized, Currency: "USD", TotalAmountCents: 10000, AmountDueCents: 10000},
 		},
 	}
 	svc := NewService(store, invoices, nil)
@@ -245,10 +257,22 @@ func TestIssueAndVoid_CreditNote(t *testing.T) {
 		}
 	})
 
-	t.Run("void", func(t *testing.T) {
-		voided, err := svc.Void(ctx, "t1", cn.ID)
+	t.Run("cannot void issued", func(t *testing.T) {
+		_, err := svc.Void(ctx, "t1", cn.ID)
+		if err == nil {
+			t.Fatal("expected error voiding issued credit note")
+		}
+	})
+
+	t.Run("void draft", func(t *testing.T) {
+		// Create a new CN and void it while still draft
+		draft, _ := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID: "inv_1", Reason: "Draft to void",
+			Lines: []CreditLineInput{{Description: "test", Quantity: 1, UnitAmountCents: 500}},
+		})
+		voided, err := svc.Void(ctx, "t1", draft.ID)
 		if err != nil {
-			t.Fatalf("void: %v", err)
+			t.Fatalf("void draft: %v", err)
 		}
 		if voided.Status != domain.CreditNoteVoided {
 			t.Errorf("status: got %q, want voided", voided.Status)

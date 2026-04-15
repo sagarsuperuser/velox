@@ -186,6 +186,24 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 	return s.Get(ctx, tenantID, id)
 }
 
+func (s *PostgresStore) UpdateRefundStatus(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE credit_notes SET refund_status=$1, stripe_refund_id=COALESCE(NULLIF($2,''), stripe_refund_id),
+			updated_at=$3
+		WHERE id=$4`,
+		status, stripeRefundID, time.Now().UTC(), id)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, item domain.CreditNoteLineItem) (domain.CreditNoteLineItem, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

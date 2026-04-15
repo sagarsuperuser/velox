@@ -9,23 +9,29 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 type Handler struct {
-	svc *Service
+	svc         *Service
+	auditLogger *audit.Logger
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// SetAuditLogger configures audit logging for financial operations.
+func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
+
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/grant", h.grant)
 	r.Post("/adjust", h.adjust)
+	r.Get("/balances", h.listBalances)
 	r.Get("/balance/{customer_id}", h.getBalance)
 	r.Get("/ledger/{customer_id}", h.listEntries)
 	return r
@@ -46,6 +52,14 @@ func (h *Handler) grant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionGrant, "credit", entry.ID, map[string]any{
+			"customer_id":  entry.CustomerID,
+			"amount_cents": entry.AmountCents,
+			"description":  entry.Description,
+		})
+	}
+
 	respond.JSON(w, r, http.StatusCreated, entry)
 }
 
@@ -64,7 +78,35 @@ func (h *Handler) adjust(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		action := "credit.adjustment"
+		if entry.AmountCents < 0 {
+			action = "credit.deduction"
+		}
+		h.auditLogger.Log(r.Context(), tenantID, action, "credit", entry.ID, map[string]any{
+			"customer_id":  entry.CustomerID,
+			"amount_cents": entry.AmountCents,
+			"description":  entry.Description,
+		})
+	}
+
 	respond.JSON(w, r, http.StatusCreated, entry)
+}
+
+func (h *Handler) listBalances(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+
+	balances, err := h.svc.ListBalances(r.Context(), tenantID)
+	if err != nil {
+		respond.InternalError(w, r)
+		slog.Error("list credit balances", "error", err)
+		return
+	}
+	if balances == nil {
+		balances = []domain.CreditBalance{}
+	}
+
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": balances})
 }
 
 func (h *Handler) getBalance(w http.ResponseWriter, r *http.Request) {

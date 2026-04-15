@@ -116,6 +116,33 @@ func (s *PostgresStore) DeleteEndpoint(ctx context.Context, tenantID, id string)
 	return tx.Commit()
 }
 
+func (s *PostgresStore) UpdateEndpointSecret(ctx context.Context, tenantID, id, newSecret string) (domain.WebhookEndpoint, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var ep domain.WebhookEndpoint
+	var eventsJSON []byte
+	err = tx.QueryRowContext(ctx, `
+		UPDATE webhook_endpoints SET secret = $1, updated_at = NOW()
+		WHERE id = $2
+		RETURNING id, tenant_id, url, COALESCE(description,''), events, active, created_at, updated_at
+	`, newSecret, id).Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return domain.WebhookEndpoint{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	json.Unmarshal(eventsJSON, &ep.Events)
+	if err := tx.Commit(); err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	return ep, nil
+}
+
 func (s *PostgresStore) CreateEvent(ctx context.Context, tenantID string, event domain.WebhookEvent) (domain.WebhookEvent, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -214,10 +241,12 @@ func (s *PostgresStore) UpdateDelivery(ctx context.Context, tenantID string, d d
 
 	_, err = tx.ExecContext(ctx, `
 		UPDATE webhook_deliveries SET status=$1, http_status_code=$2,
-			response_body=$3, error_message=$4, attempt_count=$5, completed_at=$6
-		WHERE id=$7`,
+			response_body=$3, error_message=$4, attempt_count=$5, completed_at=$6,
+			next_retry_at=$7
+		WHERE id=$8`,
 		d.Status, d.HTTPStatusCode, postgres.NullableString(d.ResponseBody),
-		postgres.NullableString(d.ErrorMessage), d.AttemptCount, postgres.NullableTime(d.CompletedAt), d.ID)
+		postgres.NullableString(d.ErrorMessage), d.AttemptCount, postgres.NullableTime(d.CompletedAt),
+		postgres.NullableTime(d.NextRetryAt), d.ID)
 	if err != nil {
 		return domain.WebhookDelivery{}, err
 	}
@@ -225,6 +254,78 @@ func (s *PostgresStore) UpdateDelivery(ctx context.Context, tenantID string, d d
 		return domain.WebhookDelivery{}, err
 	}
 	return d, nil
+}
+
+func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([]domain.WebhookDelivery, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, tenant_id, webhook_endpoint_id, webhook_event_id, status,
+			COALESCE(http_status_code, 0), COALESCE(response_body,''), COALESCE(error_message,''),
+			attempt_count, next_retry_at, created_at, completed_at
+		FROM webhook_deliveries
+		WHERE status = 'pending' AND next_retry_at <= NOW()
+		ORDER BY next_retry_at ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deliveries []domain.WebhookDelivery
+	for rows.Next() {
+		var d domain.WebhookDelivery
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.WebhookEndpointID, &d.WebhookEventID,
+			&d.Status, &d.HTTPStatusCode, &d.ResponseBody, &d.ErrorMessage,
+			&d.AttemptCount, &d.NextRetryAt, &d.CreatedAt, &d.CompletedAt); err != nil {
+			return nil, err
+		}
+		deliveries = append(deliveries, d)
+	}
+	return deliveries, rows.Err()
+}
+
+func (s *PostgresStore) GetEndpointStats(ctx context.Context, tenantID string) ([]EndpointStats, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT webhook_endpoint_id,
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+			COUNT(*) FILTER (WHERE status = 'failed') AS failed
+		FROM webhook_deliveries
+		GROUP BY webhook_endpoint_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []EndpointStats
+	for rows.Next() {
+		var s EndpointStats
+		if err := rows.Scan(&s.EndpointID, &s.TotalDeliveries, &s.Succeeded, &s.Failed); err != nil {
+			return nil, err
+		}
+		if s.TotalDeliveries > 0 {
+			s.SuccessRate = float64(s.Succeeded) / float64(s.TotalDeliveries) * 100
+		}
+		stats = append(stats, s)
+	}
+	return stats, rows.Err()
 }
 
 func (s *PostgresStore) ListDeliveries(ctx context.Context, tenantID, eventID string) ([]domain.WebhookDelivery, error) {
