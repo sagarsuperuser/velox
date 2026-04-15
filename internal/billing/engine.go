@@ -4,9 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/telemetry"
+	"github.com/sagarsuperuser/velox/internal/tax"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Engine orchestrates the billing cycle: finds subscriptions due for billing,
@@ -29,11 +35,18 @@ type Engine struct {
 	settings      SettingsReader
 	paymentSetups PaymentSetupReader
 	charger       InvoiceCharger
+	profiles      BillingProfileReader
+	taxCalc       tax.Calculator
 }
 
 // CreditApplier applies customer credits to an invoice before charging.
 type CreditApplier interface {
 	ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64, invoiceNumber ...string) (int64, error)
+}
+
+// BillingProfileReader reads customer billing profiles for tax exemption checks.
+type BillingProfileReader interface {
+	GetBillingProfile(ctx context.Context, tenantID, customerID string) (domain.CustomerBillingProfile, error)
 }
 
 // PaymentSetupReader checks if a customer has a payment method.
@@ -55,7 +68,8 @@ type SubscriptionReader interface {
 
 // UsageAggregator aggregates usage events for a billing period.
 type UsageAggregator interface {
-	AggregateForBillingPeriod(ctx context.Context, tenantID, subscriptionID string, meterIDs []string, from, to time.Time) (map[string]int64, error)
+	AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]int64, error)
+	AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]int64, error)
 }
 
 // PricingReader reads plan, rating rule, and override data.
@@ -70,13 +84,27 @@ type PricingReader interface {
 // InvoiceWriter creates invoices and line items.
 type InvoiceWriter interface {
 	CreateInvoice(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error)
+	CreateInvoiceWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
 	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
 	ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 	GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error)
+	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
+	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
+	ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error)
 }
 
-func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader, paymentSetups PaymentSetupReader, charger InvoiceCharger) *Engine {
-	return &Engine{subs: subs, usage: usage, pricing: pricing, invoices: invoices, credits: credits, settings: settings, paymentSetups: paymentSetups, charger: charger}
+func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader, paymentSetups PaymentSetupReader, charger InvoiceCharger, profiles ...BillingProfileReader) *Engine {
+	e := &Engine{subs: subs, usage: usage, pricing: pricing, invoices: invoices, credits: credits, settings: settings, paymentSetups: paymentSetups, charger: charger}
+	if len(profiles) > 0 {
+		e.profiles = profiles[0]
+	}
+	return e
+}
+
+// SetTaxCalculator sets the tax calculator used during billing.
+// When nil, the engine falls back to inline manual tax logic for backward compatibility.
+func (e *Engine) SetTaxCalculator(c tax.Calculator) {
+	e.taxCalc = c
 }
 
 // RunCycle finds all subscriptions due for billing and generates invoices.
@@ -86,10 +114,18 @@ func (e *Engine) RunCycle(ctx context.Context, batchSize int) (int, []error) {
 		batchSize = 50
 	}
 
+	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.RunCycle",
+		trace.WithAttributes(attribute.Int("batch_size", batchSize)),
+	)
+	defer span.End()
+
 	due, err := e.subs.GetDueBilling(ctx, time.Now().UTC(), batchSize)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "fetch due subscriptions")
 		return 0, []error{fmt.Errorf("fetch due subscriptions: %w", err)}
 	}
+	span.SetAttributes(attribute.Int("due_count", len(due)))
 
 	if len(due) == 0 {
 		return 0, nil
@@ -123,6 +159,21 @@ func (e *Engine) RunCycle(ctx context.Context, batchSize int) (int, []error) {
 // billSubscription generates an invoice for one subscription.
 // Returns (true, nil) if an invoice was created, (false, nil) if skipped (e.g. trial).
 func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) (bool, error) {
+	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillSubscription",
+		trace.WithAttributes(
+			attribute.String("subscription_id", sub.ID),
+			attribute.String("tenant_id", sub.TenantID),
+			attribute.String("customer_id", sub.CustomerID),
+		),
+	)
+	defer span.End()
+
+	// Guard: only bill active subscriptions
+	if sub.Status != domain.SubscriptionActive {
+		slog.Info("skipping billing (not active)", "subscription_id", sub.ID, "status", sub.Status)
+		return false, nil
+	}
+
 	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
 		return false, fmt.Errorf("subscription has no billing period set")
 	}
@@ -142,11 +193,52 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		return false, fmt.Errorf("get plan: %w", err)
 	}
 
-	// Aggregate usage for each meter in the plan (by customer, not subscription —
-	// events are ingested with customer context, not subscription context)
-	usageTotals, err := e.usage.AggregateForBillingPeriod(ctx, sub.TenantID, sub.CustomerID, plan.MeterIDs, periodStart, periodEnd)
+	// Resolve invoice currency: customer billing profile > tenant settings > plan > "usd"
+	invoiceCurrency := plan.Currency
+	if e.profiles != nil {
+		if bp, err := e.profiles.GetBillingProfile(ctx, sub.TenantID, sub.CustomerID); err == nil && bp.Currency != "" {
+			invoiceCurrency = bp.Currency
+		}
+	}
+	if invoiceCurrency == "" && e.settings != nil {
+		if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil && ts.DefaultCurrency != "" {
+			invoiceCurrency = ts.DefaultCurrency
+		}
+	}
+	if invoiceCurrency == "" {
+		invoiceCurrency = "usd"
+	}
+
+	// Build meter aggregation map (meter_id → aggregation type)
+	meterAggs := make(map[string]string)
+	for _, meterID := range plan.MeterIDs {
+		m, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
+		if err == nil {
+			meterAggs[meterID] = m.Aggregation
+		} else {
+			meterAggs[meterID] = "sum" // default
+		}
+	}
+
+	// Aggregate usage for each meter using its configured aggregation type
+	usageTotals, err := e.usage.AggregateForBillingPeriodByAgg(ctx, sub.TenantID, sub.CustomerID, meterAggs, periodStart, periodEnd)
 	if err != nil {
 		return false, fmt.Errorf("aggregate usage: %w", err)
+	}
+
+	// Enforce usage cap if configured (integer math only)
+	if sub.UsageCapUnits != nil && *sub.UsageCapUnits > 0 && sub.OverageAction == "block" {
+		totalUsage := int64(0)
+		for _, qty := range usageTotals {
+			totalUsage += qty
+		}
+		if totalUsage > *sub.UsageCapUnits {
+			cap := *sub.UsageCapUnits
+			for mid, qty := range usageTotals {
+				// Integer proportional cap: qty * cap / totalUsage (no float)
+				usageTotals[mid] = qty * cap / totalUsage
+			}
+		}
 	}
 
 	// Build line items
@@ -156,13 +248,13 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	// Base fee line item
 	if plan.BaseAmountCents > 0 {
 		lineItems = append(lineItems, domain.InvoiceLineItem{
-			LineType:        domain.LineTypeBaseFee,
-			Description:     fmt.Sprintf("%s - base fee", plan.Name),
-			Quantity:        1,
-			UnitAmountCents: plan.BaseAmountCents,
-			AmountCents:     plan.BaseAmountCents,
+			LineType:         domain.LineTypeBaseFee,
+			Description:      fmt.Sprintf("%s - base fee", plan.Name),
+			Quantity:         1,
+			UnitAmountCents:  plan.BaseAmountCents,
+			AmountCents:      plan.BaseAmountCents,
 			TotalAmountCents: plan.BaseAmountCents,
-			Currency:        plan.Currency,
+			Currency:         invoiceCurrency,
 		})
 		subtotal += plan.BaseAmountCents
 	}
@@ -220,7 +312,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			UnitAmountCents:     unitAmount,
 			AmountCents:         amount,
 			TotalAmountCents:    amount,
-			Currency:            plan.Currency,
+			Currency:            invoiceCurrency,
 			PricingMode:         string(rule.Mode),
 			RatingRuleVersionID: rule.ID,
 			BillingPeriodStart:  &periodStart,
@@ -234,85 +326,230 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	netDays := 30
 	invoiceNumber := fmt.Sprintf("VLX-%s-%04d", now.Format("200601"), now.UnixMilli()%10000)
 
+	var taxRateBP int // basis points: 1850 = 18.50%
+	var taxRate float64
+	var taxName string
+	var taxCountry string
+	var taxID string
 	if e.settings != nil {
 		if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil {
 			if ts.NetPaymentTerms > 0 {
 				netDays = ts.NetPaymentTerms
 			}
+			// Prefer basis points; fall back to converting float
+			taxRateBP = ts.TaxRateBP
+			if taxRateBP == 0 && ts.TaxRate > 0 {
+				taxRateBP = int(ts.TaxRate * 100)
+			}
+			taxRate = ts.TaxRate
+			taxName = ts.TaxName
 		}
 		if num, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID); err == nil && num != "" {
 			invoiceNumber = num
 		}
 	}
 
+	// Resolve per-customer billing profile for tax overrides and address
+	var customerAddr tax.CustomerAddress
+	if e.profiles != nil {
+		if bp, err := e.profiles.GetBillingProfile(ctx, sub.TenantID, sub.CustomerID); err == nil {
+			customerAddr = tax.CustomerAddress{
+				Line1:      bp.AddressLine1,
+				City:       bp.City,
+				State:      bp.State,
+				PostalCode: bp.PostalCode,
+				Country:    bp.Country,
+			}
+			if bp.TaxExempt {
+				taxRateBP = 0
+				taxRate = 0
+				taxName = ""
+			} else {
+				// Per-customer rate override takes precedence over tenant default
+				if bp.TaxOverrideRateBP != nil {
+					taxRateBP = *bp.TaxOverrideRateBP
+					taxRate = float64(taxRateBP) / 100
+				} else if bp.TaxOverrideRate != nil {
+					taxRate = *bp.TaxOverrideRate
+					taxRateBP = int(taxRate * 100)
+				}
+				if bp.TaxOverrideName != "" {
+					taxName = bp.TaxOverrideName
+				}
+				taxCountry = bp.TaxCountry
+				taxID = bp.TaxID
+			}
+		}
+	}
+
+	// Calculate tax — delegate to the tax calculator if set, otherwise use inline math
+	var taxAmountCents int64
+	if e.taxCalc != nil && subtotal > 0 {
+		taxInputs := make([]tax.LineItemInput, len(lineItems))
+		for i, li := range lineItems {
+			taxInputs[i] = tax.LineItemInput{
+				AmountCents: li.AmountCents,
+				Description: li.Description,
+				Quantity:    li.Quantity,
+			}
+		}
+
+		taxResult, taxErr := e.taxCalc.CalculateTax(ctx, invoiceCurrency, customerAddr, taxInputs)
+		if taxErr != nil {
+			slog.Warn("tax calculation failed, proceeding with zero tax",
+				"error", taxErr, "subscription_id", sub.ID)
+		} else if taxResult != nil && taxResult.TotalTaxAmountCents > 0 {
+			taxAmountCents = taxResult.TotalTaxAmountCents
+			taxRateBP = taxResult.TaxRateBP
+			taxRate = float64(taxRateBP) / 100
+			if taxResult.TaxName != "" {
+				taxName = taxResult.TaxName
+			}
+			if taxResult.TaxCountry != "" {
+				taxCountry = taxResult.TaxCountry
+			}
+			// Apply per-line-item taxes
+			for _, lt := range taxResult.LineItemTaxes {
+				if lt.Index >= 0 && lt.Index < len(lineItems) {
+					lineItems[lt.Index].TaxRateBP = lt.TaxRateBP
+					lineItems[lt.Index].TaxRate = float64(lt.TaxRateBP) / 100
+					lineItems[lt.Index].TaxAmountCents = lt.TaxAmountCents
+					lineItems[lt.Index].TotalAmountCents = lineItems[lt.Index].AmountCents + lt.TaxAmountCents
+				}
+			}
+		}
+	} else if taxRateBP > 0 && subtotal > 0 {
+		// Inline manual tax math (legacy path when no calculator is wired)
+		taxAmountCents = subtotal * int64(taxRateBP) / 10000
+		if (subtotal*int64(taxRateBP))%10000 >= 5000 {
+			taxAmountCents++
+		}
+
+		var lineTaxSum int64
+		for i := range lineItems {
+			lineTax := lineItems[i].AmountCents * int64(taxRateBP) / 10000
+			if (lineItems[i].AmountCents*int64(taxRateBP))%10000 >= 5000 {
+				lineTax++
+			}
+			lineItems[i].TaxRateBP = taxRateBP
+			lineItems[i].TaxRate = taxRate
+			lineItems[i].TaxAmountCents = lineTax
+			lineItems[i].TotalAmountCents = lineItems[i].AmountCents + lineTax
+			lineTaxSum += lineTax
+		}
+		if len(lineItems) > 0 && lineTaxSum != taxAmountCents {
+			diff := taxAmountCents - lineTaxSum
+			last := &lineItems[len(lineItems)-1]
+			last.TaxAmountCents += diff
+			last.TotalAmountCents += diff
+		}
+	}
+
+	totalWithTax := subtotal + taxAmountCents
 	dueAt := now.AddDate(0, 0, netDays)
 
-	inv, err := e.invoices.CreateInvoice(ctx, sub.TenantID, domain.Invoice{
+	// ATOMIC: Create invoice + all line items in a single transaction.
+	// This prevents orphaned invoices with missing line items on partial failure.
+	// The unique index on (tenant_id, subscription_id, billing_period_start, billing_period_end)
+	// provides idempotency — duplicate calls return an error instead of double-billing.
+	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
 		CustomerID:         sub.CustomerID,
 		SubscriptionID:     sub.ID,
 		InvoiceNumber:      invoiceNumber,
 		Status:             domain.InvoiceFinalized,
 		PaymentStatus:      domain.PaymentPending,
-		Currency:           plan.Currency,
+		Currency:           invoiceCurrency,
 		SubtotalCents:      subtotal,
-		TotalAmountCents:   subtotal,
-		AmountDueCents:     subtotal,
+		TaxRate:            taxRate,
+		TaxRateBP:          taxRateBP,
+		TaxName:            taxName,
+		TaxCountry:         taxCountry,
+		TaxID:              taxID,
+		TaxAmountCents:     taxAmountCents,
+		TotalAmountCents:   totalWithTax,
+		AmountDueCents:     totalWithTax,
 		BillingPeriodStart: periodStart,
 		BillingPeriodEnd:   periodEnd,
 		IssuedAt:           &now,
 		DueAt:              &dueAt,
 		NetPaymentTermDays: netDays,
-	})
+	}, lineItems)
 	if err != nil {
+		// Idempotency: if this invoice already exists, skip silently
+		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "duplicate") {
+			slog.Info("invoice already exists for billing period (idempotent skip)",
+				"subscription_id", sub.ID,
+				"period_start", periodStart,
+				"period_end", periodEnd,
+			)
+			// Still advance the billing cycle in case it was missed
+			nextPeriodStart := periodEnd
+			nextPeriodEnd := advanceBillingPeriod(periodEnd, plan.BillingInterval)
+			_ = e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd)
+			return false, nil
+		}
 		return false, fmt.Errorf("create invoice: %w", err)
 	}
 
-	// Create line items
-	for _, item := range lineItems {
-		item.InvoiceID = inv.ID
-		if _, err := e.invoices.CreateLineItem(ctx, sub.TenantID, item); err != nil {
-			return false, fmt.Errorf("create line item: %w", err)
-		}
-	}
-
 	// Apply customer credits before charging (reduces amount_due)
-	if e.credits != nil && subtotal > 0 {
-		credited, err := e.credits.ApplyToInvoice(ctx, sub.TenantID, sub.CustomerID, inv.ID, subtotal, inv.InvoiceNumber)
+	if e.credits != nil && totalWithTax > 0 {
+		credited, err := e.credits.ApplyToInvoice(ctx, sub.TenantID, sub.CustomerID, inv.ID, totalWithTax, inv.InvoiceNumber)
 		if err != nil {
 			slog.Warn("failed to apply credits", "invoice_id", inv.ID, "error", err)
 		} else if credited > 0 {
-			// Actually reduce the invoice amount_due
 			if _, err := e.invoices.ApplyCreditAmount(ctx, sub.TenantID, inv.ID, credited); err != nil {
 				slog.Warn("failed to reduce invoice amount_due", "invoice_id", inv.ID, "error", err)
 			} else {
 				slog.Info("credits applied to invoice",
 					"invoice_id", inv.ID,
 					"credited_cents", credited,
-					"remaining_due", subtotal-credited,
 				)
 			}
 		}
 	}
 
-	// Auto-charge: if customer has payment method, create PaymentIntent (async)
+	// If credits covered 100%, mark as paid immediately (no Stripe charge needed)
+	if totalWithTax > 0 {
+		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
+		if err == nil && updatedInv.AmountDueCents <= 0 {
+			paidNow := time.Now().UTC()
+			if _, err := e.invoices.MarkPaid(ctx, sub.TenantID, inv.ID, "", paidNow); err != nil {
+				slog.Warn("failed to mark fully-credited invoice as paid", "invoice_id", inv.ID, "error", err)
+			} else {
+				slog.Info("invoice fully covered by credits, marked as paid", "invoice_id", inv.ID)
+				// Still advance the billing cycle
+				nextPeriodStart := periodEnd
+				nextPeriodEnd := advanceBillingPeriod(periodEnd, plan.BillingInterval)
+				if err := e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd); err != nil {
+					return true, fmt.Errorf("advance billing cycle: %w", err)
+				}
+				return true, nil
+			}
+		}
+	}
+
+	// Auto-charge: synchronous with timeout. If it fails, mark for scheduler retry
+	// instead of fire-and-forget goroutine that loses failures.
 	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
 		if ps, err := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID); err == nil &&
 			ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
-			// Fire-and-forget: charge in background so billing cycle isn't blocked
-			go func(tenantID string, invID string, stripeCustomerID string) {
-				chargeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				// Re-read invoice to get updated amount_due after credits
-				chargeInv, err := e.invoices.GetInvoice(chargeCtx, tenantID, invID)
-				if err != nil || chargeInv.AmountDueCents <= 0 {
-					return
-				}
-				if _, err := e.charger.ChargeInvoice(chargeCtx, tenantID, chargeInv, stripeCustomerID); err != nil {
-					slog.Warn("auto-charge failed", "invoice_id", invID, "error", err)
+
+			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+
+			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
+			if err == nil && chargeInv.AmountDueCents > 0 {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, ps.StripeCustomerID); err != nil {
+					slog.Warn("auto-charge failed, marking for retry",
+						"invoice_id", inv.ID,
+						"error", err,
+					)
+					// Mark for scheduler-based retry instead of losing the failure
+					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
 				} else {
-					slog.Info("auto-charge initiated", "invoice_id", invID)
+					slog.Info("auto-charge succeeded", "invoice_id", inv.ID)
 				}
-			}(sub.TenantID, inv.ID, ps.StripeCustomerID)
+			}
 		}
 	}
 
@@ -327,11 +564,49 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	slog.Info("invoice generated",
 		"invoice_id", inv.ID,
 		"subscription_id", sub.ID,
-		"total_cents", subtotal,
+		"total_cents", totalWithTax,
+		"tax_bp", taxRateBP,
 		"line_items", len(lineItems),
 	)
 
 	return true, nil
+}
+
+// RetryPendingCharges picks up invoices flagged for auto-charge retry
+// and attempts to charge them. Called by the scheduler.
+func (e *Engine) RetryPendingCharges(ctx context.Context, limit int) (int, []error) {
+	if e.charger == nil || e.paymentSetups == nil {
+		return 0, nil
+	}
+
+	pending, err := e.invoices.ListAutoChargePending(ctx, limit)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list pending charges: %w", err)}
+	}
+
+	charged := 0
+	var errs []error
+	for _, inv := range pending {
+		ps, err := e.paymentSetups.GetPaymentSetup(ctx, inv.TenantID, inv.CustomerID)
+		if err != nil || ps.SetupStatus != domain.PaymentSetupReady || ps.StripeCustomerID == "" {
+			continue
+		}
+
+		chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if _, err := e.charger.ChargeInvoice(chargeCtx, inv.TenantID, inv, ps.StripeCustomerID); err != nil {
+			errs = append(errs, fmt.Errorf("charge invoice %s: %w", inv.ID, err))
+			cancel()
+			continue
+		}
+		cancel()
+
+		// Clear the pending flag on success
+		_ = e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false)
+		charged++
+		slog.Info("auto-charge retry succeeded", "invoice_id", inv.ID)
+	}
+
+	return charged, errs
 }
 
 func advanceBillingPeriod(from time.Time, interval domain.BillingInterval) time.Time {

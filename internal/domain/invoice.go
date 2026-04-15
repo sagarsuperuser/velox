@@ -32,9 +32,15 @@ type Invoice struct {
 	SubtotalCents         int64                `json:"subtotal_cents"`
 	DiscountCents         int64                `json:"discount_cents"`
 	TaxAmountCents        int64                `json:"tax_amount_cents"`
+	TaxRate               float64              `json:"tax_rate"`      // Deprecated: use TaxRateBP
+	TaxRateBP             int                  `json:"tax_rate_bp"`   // Basis points (1850 = 18.50%)
+	TaxName               string               `json:"tax_name,omitempty"`
+	TaxCountry            string               `json:"tax_country,omitempty"`
+	TaxID                 string               `json:"tax_id,omitempty"`
 	TotalAmountCents      int64                `json:"total_amount_cents"`
 	AmountDueCents        int64                `json:"amount_due_cents"`
 	AmountPaidCents       int64                `json:"amount_paid_cents"`
+	CreditsAppliedCents   int64                `json:"credits_applied_cents"`
 	BillingPeriodStart    time.Time            `json:"billing_period_start"`
 	BillingPeriodEnd      time.Time            `json:"billing_period_end"`
 	IssuedAt              *time.Time           `json:"issued_at,omitempty"`
@@ -44,6 +50,7 @@ type Invoice struct {
 	StripePaymentIntentID string               `json:"stripe_payment_intent_id,omitempty"`
 	LastPaymentError      string               `json:"last_payment_error,omitempty"`
 	PaymentOverdue        bool                 `json:"payment_overdue"`
+	AutoChargePending     bool                 `json:"auto_charge_pending,omitempty"`
 	PDFObjectKey          string               `json:"-"`
 	NetPaymentTermDays    int                  `json:"net_payment_term_days"`
 	Memo                  string               `json:"memo,omitempty"`
@@ -73,7 +80,8 @@ type InvoiceLineItem struct {
 	Quantity            int64               `json:"quantity"`
 	UnitAmountCents     int64               `json:"unit_amount_cents"`
 	AmountCents         int64               `json:"amount_cents"`
-	TaxRate             float64             `json:"tax_rate"`
+	TaxRate             float64             `json:"tax_rate"`      // Deprecated: use TaxRateBP
+	TaxRateBP           int                 `json:"tax_rate_bp"`   // Basis points (1850 = 18.50%)
 	TaxAmountCents      int64               `json:"tax_amount_cents"`
 	TotalAmountCents    int64               `json:"total_amount_cents"`
 	Currency            string              `json:"currency"`

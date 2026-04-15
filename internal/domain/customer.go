@@ -41,8 +41,16 @@ type CustomerBillingProfile struct {
 	PostalCode    string               `json:"postal_code,omitempty"`
 	Country       string               `json:"country,omitempty"`
 	Currency      string               `json:"currency,omitempty"`
-	TaxIdentifier string               `json:"tax_identifier,omitempty"`
-	ProfileStatus BillingProfileStatus `json:"profile_status"`
+	TaxIdentifier   string               `json:"tax_identifier,omitempty"`
+	TaxExempt       bool                 `json:"tax_exempt"`
+	TaxID           string               `json:"tax_id"`
+	TaxIDType       string               `json:"tax_id_type"`
+	TaxCountry      string               `json:"tax_country"`
+	TaxState        string               `json:"tax_state"`
+	TaxOverrideRate   *float64             `json:"tax_override_rate,omitempty"`   // Deprecated: use TaxOverrideRateBP
+	TaxOverrideRateBP *int                 `json:"tax_override_rate_bp,omitempty"` // Basis points
+	TaxOverrideName string               `json:"tax_override_name,omitempty"`
+	ProfileStatus   BillingProfileStatus `json:"profile_status"`
 	CreatedAt     time.Time            `json:"created_at"`
 	UpdatedAt     time.Time            `json:"updated_at"`
 }
@@ -64,6 +72,10 @@ type CustomerPaymentSetup struct {
 	PaymentMethodType           string             `json:"payment_method_type,omitempty"`
 	StripeCustomerID            string             `json:"stripe_customer_id,omitempty"`
 	StripePaymentMethodID       string             `json:"stripe_payment_method_id,omitempty"`
+	CardBrand                   string             `json:"card_brand,omitempty"`
+	CardLast4                   string             `json:"card_last4,omitempty"`
+	CardExpMonth                int                `json:"card_exp_month,omitempty"`
+	CardExpYear                 int                `json:"card_exp_year,omitempty"`
 	LastVerifiedAt              *time.Time         `json:"last_verified_at,omitempty"`
 	CreatedAt                   time.Time          `json:"created_at"`
 	UpdatedAt                   time.Time          `json:"updated_at"`

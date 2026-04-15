@@ -78,6 +78,10 @@ func (a *usageStoreAdapter) AggregateForBillingPeriod(ctx context.Context, tenan
 	return a.store.AggregateForBillingPeriod(ctx, tenantID, subID, meterIDs, from, to)
 }
 
+func (a *usageStoreAdapter) AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]int64, error) {
+	return a.store.AggregateForBillingPeriodByAgg(ctx, tenantID, customerID, meters, from, to)
+}
+
 // invoiceStoreAdapter wraps invoice.PostgresStore to implement billing.InvoiceWriter
 type invoiceStoreAdapter struct {
 	store *invoice.PostgresStore
@@ -92,11 +96,27 @@ func (a *invoiceStoreAdapter) CreateLineItem(ctx context.Context, tenantID strin
 }
 
 func (a *invoiceStoreAdapter) ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
-	return a.store.ApplyCreditNote(ctx, tenantID, id, amountCents)
+	return a.store.ApplyCredits(ctx, tenantID, id, amountCents)
 }
 
 func (a *invoiceStoreAdapter) GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
 	return a.store.Get(ctx, tenantID, id)
+}
+
+func (a *invoiceStoreAdapter) MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error) {
+	return a.store.MarkPaid(ctx, tenantID, id, stripePaymentIntentID, paidAt)
+}
+
+func (a *invoiceStoreAdapter) CreateInvoiceWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return a.store.CreateWithLineItems(ctx, tenantID, inv, items)
+}
+
+func (a *invoiceStoreAdapter) SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error {
+	return a.store.SetAutoChargePending(ctx, tenantID, id, pending)
+}
+
+func (a *invoiceStoreAdapter) ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error) {
+	return a.store.ListAutoChargePending(ctx, limit)
 }
 
 // TestFullBillingCycle_E2E tests the complete flow against real Postgres:
