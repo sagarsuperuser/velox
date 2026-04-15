@@ -56,7 +56,80 @@ var (
 			Help: "Total usage events ingested.",
 		},
 	)
+
+	billingCycleDuration = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "velox_billing_cycle_duration_seconds",
+			Help:    "Duration of billing cycle runs in seconds.",
+			Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300},
+		},
+	)
+
+	billingCycleErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "velox_billing_cycle_errors_total",
+			Help: "Total billing cycle errors.",
+		},
+	)
+
+	paymentCharges = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "velox_payment_charges_total",
+			Help: "Total payment charges by result.",
+		},
+		[]string{"result"},
+	)
+
+	webhookDeliveries = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "velox_webhook_deliveries_total",
+			Help: "Total outbound webhook deliveries by status.",
+		},
+		[]string{"status"},
+	)
+
+	dunningRunsProcessed = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "velox_dunning_runs_processed_total",
+			Help: "Total dunning runs processed.",
+		},
+	)
+
+	creditOperations = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "velox_credit_operations_total",
+			Help: "Total credit operations by type.",
+		},
+		[]string{"type"},
+	)
+
+	autoChargeRetries = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "velox_auto_charge_retries_total",
+			Help: "Total auto-charge retries by result.",
+		},
+		[]string{"result"},
+	)
+
+	auditFailures prometheus.Counter
 )
+
+func init() {
+	c := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "velox_audit_failures_total",
+		Help: "Total failed audit log writes.",
+	})
+	if err := prometheus.DefaultRegisterer.Register(c); err != nil {
+		// Already registered by another package — reuse the existing collector.
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			auditFailures = are.ExistingCollector.(prometheus.Counter)
+		} else {
+			panic(err)
+		}
+	} else {
+		auditFailures = c
+	}
+}
 
 // Metrics returns middleware that records HTTP request metrics.
 func Metrics() func(http.Handler) http.Handler {
@@ -98,6 +171,46 @@ func RecordBillingCycle(generated int) {
 // RecordUsageIngested records usage event ingestion.
 func RecordUsageIngested(count int) {
 	usageEventsIngested.Add(float64(count))
+}
+
+// RecordBillingCycleDuration records how long a billing cycle took.
+func RecordBillingCycleDuration(seconds float64) {
+	billingCycleDuration.Observe(seconds)
+}
+
+// RecordBillingCycleError increments the billing cycle error counter.
+func RecordBillingCycleError() {
+	billingCycleErrors.Inc()
+}
+
+// RecordPaymentCharge records a payment charge result ("succeeded" or "failed").
+func RecordPaymentCharge(result string) {
+	paymentCharges.WithLabelValues(result).Inc()
+}
+
+// RecordWebhookDelivery records a webhook delivery status ("succeeded", "failed", or "pending").
+func RecordWebhookDelivery(status string) {
+	webhookDeliveries.WithLabelValues(status).Inc()
+}
+
+// RecordDunningRun increments the dunning runs processed counter.
+func RecordDunningRun() {
+	dunningRunsProcessed.Inc()
+}
+
+// RecordCreditOperation records a credit operation by type ("grant", "usage", "expiry", "adjustment").
+func RecordCreditOperation(opType string) {
+	creditOperations.WithLabelValues(opType).Inc()
+}
+
+// RecordAutoChargeRetry records an auto-charge retry result ("succeeded" or "failed").
+func RecordAutoChargeRetry(result string) {
+	autoChargeRetries.WithLabelValues(result).Inc()
+}
+
+// RecordAuditFailure increments the audit logging failure counter.
+func RecordAuditFailure() {
+	auditFailures.Inc()
 }
 
 // sanitizePath normalizes paths to prevent high-cardinality metric labels.

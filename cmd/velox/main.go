@@ -17,6 +17,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/config"
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/platform/telemetry"
 )
 
 func main() {
@@ -49,6 +50,15 @@ func serve() {
 		slog.Error("load config", "error", err)
 		os.Exit(1)
 	}
+
+	// Initialize OpenTelemetry tracing (noop if OTEL_EXPORTER_OTLP_ENDPOINT not set)
+	tracingShutdown, err := telemetry.Init(context.Background())
+	if err != nil {
+		slog.Error("init tracing", "error", err)
+		os.Exit(1)
+	}
+	defer tracingShutdown(context.Background())
+
 	slog.Info("velox starting", "env", cfg.Env, "port", cfg.Port)
 
 	pool, err := config.OpenPostgres(cfg.DB)
@@ -88,7 +98,7 @@ func serve() {
 	}
 
 	db := postgres.NewDB(appPool, cfg.DB.QueryTimeout)
-	webhookSecret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
+	webhookSecret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")) // set by injectSecret above
 
 	server := api.NewServer(db, webhookSecret)
 
@@ -96,20 +106,30 @@ func serve() {
 	if cfg.Env == "local" {
 		billingInterval = 5 * time.Minute
 	}
-	scheduler := billing.NewScheduler(server.BillingEngine, billingInterval, 50, server.DunningSvc, server.SettingsStore)
+	scheduler := billing.NewScheduler(server.BillingEngine, billingInterval, 50, server.DunningSvc, server.SettingsStore, server.CreditSvc)
+	scheduler.SetReminders(server.InvoiceSvc)
+	if server.TokenSvc != nil {
+		scheduler.SetTokenCleaner(server.TokenSvc)
+	}
+
+	// Wire scheduler health tracking so /health/ready can detect stalled schedulers
+	api.SetSchedulerInterval(billingInterval)
+	scheduler.SetOnRun(api.RecordSchedulerRun)
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%s", cfg.Port),
-		Handler:      server,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:           fmt.Sprintf(":%s", cfg.Port),
+		Handler:        server,
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 13, // 8 KB
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	go scheduler.Start(ctx)
+	go server.WebhookOutSvc.StartRetryWorker(ctx, 30*time.Second)
 
 	go func() {
 		slog.Info("listening", "addr", srv.Addr)
@@ -166,5 +186,9 @@ Environment:
   APP_ENV                   Environment: local, staging, production (default: local)
   RUN_MIGRATIONS_ON_BOOT    Run migrations on server start (default: false)
   STRIPE_WEBHOOK_SECRET     Stripe webhook signing secret
-  VELOX_BOOTSTRAP_TOKEN     Token for POST /v1/bootstrap endpoint`)
+  VELOX_BOOTSTRAP_TOKEN     Token for POST /v1/bootstrap endpoint
+  PAYMENT_UPDATE_URL        Base URL for payment update page (e.g. https://app.example.com/update-payment)
+  VELOX_ENCRYPTION_KEY      64-char hex key for PII encryption at rest
+  REDIS_URL                 Redis URL for distributed rate limiting`)
 }
+

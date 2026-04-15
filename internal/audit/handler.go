@@ -32,10 +32,13 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
-	entries, err := h.logger.Query(r.Context(), tenantID, QueryFilter{
+	entries, total, err := h.logger.Query(r.Context(), tenantID, QueryFilter{
 		ResourceType: r.URL.Query().Get("resource_type"),
 		ResourceID:   r.URL.Query().Get("resource_id"),
 		Action:       r.URL.Query().Get("action"),
+		ActorID:      r.URL.Query().Get("actor_id"),
+		DateFrom:     r.URL.Query().Get("date_from"),
+		DateTo:       r.URL.Query().Get("date_to"),
 		Limit:        limit,
 		Offset:       offset,
 	})
@@ -52,5 +55,5 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]any{"data": entries})
+	json.NewEncoder(w).Encode(map[string]any{"data": entries, "total": total})
 }
