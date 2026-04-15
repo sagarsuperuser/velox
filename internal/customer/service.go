@@ -3,6 +3,7 @@ package customer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -11,12 +12,30 @@ import (
 
 var phonePattern = regexp.MustCompile(`^[\+\d\s\-\(\)]{7,20}$`)
 
+// StripeSyncer syncs billing profile data to Stripe when a Stripe customer exists.
+type StripeSyncer interface {
+	SyncBillingProfile(ctx context.Context, stripeCustomerID string, bp domain.CustomerBillingProfile) error
+}
+
+// PaymentSetupReader reads customer payment setup to find Stripe customer ID.
+type PaymentSetupReader interface {
+	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
+}
+
 type Service struct {
-	store Store
+	store         Store
+	stripeSyncer  StripeSyncer
+	paymentSetups PaymentSetupReader
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
+}
+
+// SetStripeSyncer configures Stripe sync (optional, breaks circular dep).
+func (s *Service) SetStripeSyncer(syncer StripeSyncer, setups PaymentSetupReader) {
+	s.stripeSyncer = syncer
+	s.paymentSetups = setups
 }
 
 type CreateInput struct {
@@ -33,8 +52,14 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	if input.ExternalID == "" {
 		return domain.Customer{}, fmt.Errorf("external_id is required")
 	}
+	if err := domain.MaxLen("external_id", input.ExternalID, 255); err != nil {
+		return domain.Customer{}, err
+	}
 	if input.DisplayName == "" {
 		return domain.Customer{}, fmt.Errorf("display_name is required")
+	}
+	if err := domain.MaxLen("display_name", input.DisplayName, 255); err != nil {
+		return domain.Customer{}, err
 	}
 	if input.Email != "" {
 		if err := validateEmail(input.Email); err != nil {
@@ -102,7 +127,24 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 	if bp.ProfileStatus == "" {
 		bp.ProfileStatus = domain.BillingProfileIncomplete
 	}
-	return s.store.UpsertBillingProfile(ctx, tenantID, bp)
+	result, err := s.store.UpsertBillingProfile(ctx, tenantID, bp)
+	if err != nil {
+		return result, err
+	}
+
+	// Sync to Stripe if a Stripe customer exists
+	if s.stripeSyncer != nil && s.paymentSetups != nil {
+		ps, psErr := s.paymentSetups.GetPaymentSetup(ctx, tenantID, bp.CustomerID)
+		if psErr == nil && ps.StripeCustomerID != "" {
+			if syncErr := s.stripeSyncer.SyncBillingProfile(ctx, ps.StripeCustomerID, result); syncErr != nil {
+				slog.Warn("failed to sync billing profile to Stripe",
+					"customer_id", bp.CustomerID, "stripe_customer_id", ps.StripeCustomerID, "error", syncErr)
+				// Non-fatal: local save succeeded, Stripe sync is best-effort
+			}
+		}
+	}
+
+	return result, nil
 }
 
 func (s *Service) GetBillingProfile(ctx context.Context, tenantID, customerID string) (domain.CustomerBillingProfile, error) {

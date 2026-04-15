@@ -16,11 +16,17 @@ import (
 )
 
 type Handler struct {
-	svc *Service
+	svc  *Service
+	gdpr *GDPRHandler
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// SetGDPR attaches the GDPR handler so its routes are served under /customers.
+func (h *Handler) SetGDPR(gh *GDPRHandler) {
+	h.gdpr = gh
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -33,6 +39,11 @@ func (h *Handler) Routes() chi.Router {
 		r.Put("/", h.upsertBillingProfile)
 		r.Get("/", h.getBillingProfile)
 	})
+	// GDPR endpoints (data export + right to erasure)
+	if h.gdpr != nil {
+		r.Get("/{id}/export", h.gdpr.exportData)
+		r.Post("/{id}/delete-data", h.gdpr.deleteData)
+	}
 	return r
 }
 
