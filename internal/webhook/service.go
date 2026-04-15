@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	mrand "math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,9 +22,20 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
+const maxAttempts = 5
+
+// retryBackoffs defines the delay before each retry attempt (index 0 = after attempt 1).
+var retryBackoffs = [maxAttempts]time.Duration{
+	1 * time.Minute,
+	5 * time.Minute,
+	30 * time.Minute,
+	2 * time.Hour,
+	24 * time.Hour,
+}
+
 type Service struct {
-	store      Store
-	client     HTTPClient
+	store       Store
+	client      HTTPClient
 	syncDeliver bool // When true, deliver synchronously (for tests)
 }
 
@@ -45,6 +58,69 @@ func NewTestService(store Store, client HTTPClient) *Service {
 	return svc
 }
 
+// privateRanges defines CIDR blocks that webhook URLs must not resolve to.
+var privateRanges = []net.IPNet{
+	parseCIDR("10.0.0.0/8"),       // RFC 1918
+	parseCIDR("172.16.0.0/12"),    // RFC 1918
+	parseCIDR("192.168.0.0/16"),   // RFC 1918
+	parseCIDR("127.0.0.0/8"),      // Loopback
+	parseCIDR("169.254.0.0/16"),   // Link-local
+	parseCIDR("0.0.0.0/8"),        // "This" network
+}
+
+func parseCIDR(s string) net.IPNet {
+	_, ipNet, err := net.ParseCIDR(s)
+	if err != nil {
+		panic("invalid CIDR: " + s)
+	}
+	return *ipNet
+}
+
+// isPrivateIP returns true if the IP falls within a blocked private/reserved range.
+func isPrivateIP(ip net.IP) bool {
+	for _, r := range privateRanges {
+		if r.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateWebhookURL checks that a webhook URL uses HTTPS (or http for localhost)
+// and does not resolve to a private/internal IP address (SSRF protection).
+func validateWebhookURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("url must be a valid URL")
+	}
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && strings.HasPrefix(parsed.Host, "localhost")) {
+		return fmt.Errorf("webhook URL must use HTTPS (except localhost)")
+	}
+
+	// Skip SSRF check for localhost (local development).
+	host := parsed.Hostname()
+	if host == "localhost" {
+		return nil
+	}
+
+	// Resolve hostname and check all IPs against blocked ranges.
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve webhook host %q: %w", host, err)
+	}
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if isPrivateIP(ip) {
+			return fmt.Errorf("webhook URL must not resolve to a private/internal IP address (got %s)", ipStr)
+		}
+	}
+
+	return nil
+}
+
 type CreateEndpointInput struct {
 	URL         string   `json:"url"`
 	Description string   `json:"description,omitempty"`
@@ -61,12 +137,8 @@ func (s *Service) CreateEndpoint(ctx context.Context, tenantID string, input Cre
 	if rawURL == "" {
 		return CreateEndpointResult{}, fmt.Errorf("url is required")
 	}
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Host == "" {
-		return CreateEndpointResult{}, fmt.Errorf("url must be a valid URL")
-	}
-	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && strings.HasPrefix(parsed.Host, "localhost")) {
-		return CreateEndpointResult{}, fmt.Errorf("webhook URL must use HTTPS (except localhost)")
+	if err := validateWebhookURL(rawURL); err != nil {
+		return CreateEndpointResult{}, err
 	}
 
 	events := input.Events
@@ -91,6 +163,19 @@ func (s *Service) CreateEndpoint(ctx context.Context, tenantID string, input Cre
 	}
 
 	return CreateEndpointResult{Endpoint: ep, Secret: secret}, nil
+}
+
+// RotateSecret generates a new signing secret for an endpoint and returns it.
+// The new secret is shown once to the user.
+func (s *Service) RotateSecret(ctx context.Context, tenantID, endpointID string) (string, error) {
+	secretBytes := make([]byte, 24)
+	rand.Read(secretBytes)
+	newSecret := "whsec_" + hex.EncodeToString(secretBytes)
+
+	if _, err := s.store.UpdateEndpointSecret(ctx, tenantID, endpointID, newSecret); err != nil {
+		return "", err
+	}
+	return newSecret, nil
 }
 
 func (s *Service) ListEndpoints(ctx context.Context, tenantID string) ([]domain.WebhookEndpoint, error) {
@@ -160,7 +245,7 @@ func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.Webhoo
 
 	req, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		s.recordFailure(ctx, tenantID, delivery, err.Error())
+		s.scheduleRetryOrFail(ctx, tenantID, delivery, err.Error())
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -169,24 +254,25 @@ func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.Webhoo
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		s.recordFailure(ctx, tenantID, delivery, err.Error())
+		s.scheduleRetryOrFail(ctx, tenantID, delivery, err.Error())
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 
-	now := time.Now().UTC()
 	delivery.HTTPStatusCode = resp.StatusCode
 	delivery.ResponseBody = string(respBody)
-	delivery.AttemptCount = 1
-	delivery.CompletedAt = &now
+	delivery.AttemptCount++
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		now := time.Now().UTC()
 		delivery.Status = domain.DeliverySucceeded
+		delivery.CompletedAt = &now
+		delivery.NextRetryAt = nil
 	} else {
-		delivery.Status = domain.DeliveryFailed
-		delivery.ErrorMessage = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		s.scheduleRetryOrFail(ctx, tenantID, delivery, fmt.Sprintf("HTTP %d", resp.StatusCode))
+		return
 	}
 
 	s.store.UpdateDelivery(ctx, tenantID, delivery)
@@ -199,18 +285,41 @@ func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.Webhoo
 	)
 }
 
-func (s *Service) recordFailure(ctx context.Context, tenantID string, d domain.WebhookDelivery, errMsg string) {
-	now := time.Now().UTC()
-	d.Status = domain.DeliveryFailed
+// scheduleRetryOrFail increments the attempt count and either schedules a retry
+// with exponential backoff or marks the delivery as permanently failed.
+func (s *Service) scheduleRetryOrFail(ctx context.Context, tenantID string, d domain.WebhookDelivery, errMsg string) {
+	d.AttemptCount++
+	if len(errMsg) > 500 {
+		errMsg = errMsg[:500]
+	}
 	d.ErrorMessage = errMsg
-	d.AttemptCount = 1
-	d.CompletedAt = &now
-	s.store.UpdateDelivery(ctx, tenantID, d)
 
-	slog.Error("webhook delivery failed",
-		"endpoint_id", d.WebhookEndpointID,
-		"error", errMsg,
-	)
+	if d.AttemptCount >= maxAttempts {
+		now := time.Now().UTC()
+		d.Status = domain.DeliveryFailed
+		d.CompletedAt = &now
+		d.NextRetryAt = nil
+		slog.Error("webhook delivery permanently failed",
+			"delivery_id", d.ID,
+			"endpoint_id", d.WebhookEndpointID,
+			"attempts", d.AttemptCount,
+			"error", errMsg,
+		)
+	} else {
+		jitter := time.Duration(mrand.IntN(30)) * time.Second
+		nextRetry := time.Now().UTC().Add(retryBackoffs[d.AttemptCount-1] + jitter)
+		d.Status = domain.DeliveryPending
+		d.NextRetryAt = &nextRetry
+		slog.Warn("webhook delivery scheduled for retry",
+			"delivery_id", d.ID,
+			"endpoint_id", d.WebhookEndpointID,
+			"attempt", d.AttemptCount,
+			"next_retry_at", nextRetry.Format(time.RFC3339),
+			"error", errMsg,
+		)
+	}
+
+	s.store.UpdateDelivery(ctx, tenantID, d)
 }
 
 func matchesEvent(subscribed []string, eventType string) bool {
@@ -233,6 +342,11 @@ func computeSignature(payload []byte, timestamp, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(timestamp + "." + string(payload)))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// GetEndpointStats returns delivery success/failure stats per endpoint.
+func (s *Service) GetEndpointStats(ctx context.Context, tenantID string) ([]EndpointStats, error) {
+	return s.store.GetEndpointStats(ctx, tenantID)
 }
 
 // ListEvents returns recent webhook events for a tenant.
@@ -284,4 +398,129 @@ func (s *Service) Replay(ctx context.Context, tenantID, eventID string) error {
 
 	slog.Info("webhook event replayed", "event_id", eventID, "event_type", event.EventType)
 	return nil
+}
+
+// RetryPendingDeliveries picks up deliveries due for retry and re-attempts them.
+func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
+	deliveries, err := s.store.ListPendingDeliveries(ctx, 100)
+	if err != nil {
+		return fmt.Errorf("list pending deliveries: %w", err)
+	}
+
+	if len(deliveries) == 0 {
+		return nil
+	}
+
+	slog.Info("retrying webhook deliveries", "count", len(deliveries))
+
+	for _, d := range deliveries {
+		ep, err := s.store.GetEndpoint(ctx, d.TenantID, d.WebhookEndpointID)
+		if err != nil {
+			slog.Error("get endpoint for retry", "delivery_id", d.ID, "error", err)
+			continue
+		}
+		if !ep.Active {
+			// Endpoint was disabled; mark delivery as failed.
+			now := time.Now().UTC()
+			d.Status = domain.DeliveryFailed
+			d.ErrorMessage = "endpoint disabled"
+			d.CompletedAt = &now
+			d.NextRetryAt = nil
+			s.store.UpdateDelivery(ctx, d.TenantID, d)
+			continue
+		}
+
+		events, err := s.store.ListEvents(ctx, d.TenantID, 1000)
+		if err != nil {
+			slog.Error("list events for retry", "delivery_id", d.ID, "error", err)
+			continue
+		}
+		var event *domain.WebhookEvent
+		for i := range events {
+			if events[i].ID == d.WebhookEventID {
+				event = &events[i]
+				break
+			}
+		}
+		if event == nil {
+			slog.Error("event not found for retry", "delivery_id", d.ID, "event_id", d.WebhookEventID)
+			continue
+		}
+
+		s.retryDeliver(ctx, d, ep, *event)
+	}
+
+	return nil
+}
+
+// retryDeliver re-attempts an existing delivery (does not create a new delivery row).
+func (s *Service) retryDeliver(ctx context.Context, d domain.WebhookDelivery, ep domain.WebhookEndpoint, event domain.WebhookEvent) {
+	body := map[string]any{
+		"id":         event.ID,
+		"event_type": event.EventType,
+		"created_at": event.CreatedAt.Format(time.RFC3339),
+		"data":       event.Payload,
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	signature := computeSignature(bodyBytes, timestamp, ep.Secret)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		s.scheduleRetryOrFail(ctx, d.TenantID, d, err.Error())
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Velox-Signature", fmt.Sprintf("t=%s,v1=%s", timestamp, signature))
+	req.Header.Set("Velox-Event-Type", event.EventType)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		s.scheduleRetryOrFail(ctx, d.TenantID, d, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+
+	d.HTTPStatusCode = resp.StatusCode
+	d.ResponseBody = string(respBody)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		now := time.Now().UTC()
+		d.AttemptCount++
+		d.Status = domain.DeliverySucceeded
+		d.CompletedAt = &now
+		d.NextRetryAt = nil
+		s.store.UpdateDelivery(ctx, d.TenantID, d)
+		slog.Info("webhook retry succeeded",
+			"delivery_id", d.ID,
+			"endpoint_id", ep.ID,
+			"attempt", d.AttemptCount,
+		)
+	} else {
+		s.scheduleRetryOrFail(ctx, d.TenantID, d, fmt.Sprintf("HTTP %d", resp.StatusCode))
+	}
+}
+
+// StartRetryWorker runs a background loop that retries pending deliveries on
+// the given interval. It blocks until the context is cancelled.
+func (s *Service) StartRetryWorker(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	slog.Info("webhook retry worker started", "interval", interval.String())
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("webhook retry worker stopped")
+			return
+		case <-ticker.C:
+			if err := s.RetryPendingDeliveries(ctx); err != nil {
+				slog.Error("webhook retry worker error", "error", err)
+			}
+		}
+	}
 }

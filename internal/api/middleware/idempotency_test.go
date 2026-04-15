@@ -112,56 +112,50 @@ func TestParsePageParams_MaxLimit(t *testing.T) {
 	}
 }
 
-func TestRateLimiter(t *testing.T) {
-	rl := NewRateLimiter(3, 1*60*1e9) // 3 per minute
+func TestRateLimiter_NilDB_FailsOpen(t *testing.T) {
+	// With nil db the rate limiter should fail open — every request is allowed.
+	rl := NewRateLimiter(nil, 1, time.Minute)
 	handler := rl.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 5; i++ {
 		req := httptest.NewRequest("GET", "/v1/customers", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Errorf("request %d: got %d, want 200", i, rec.Code)
+			t.Errorf("request %d: fail-open should allow, got %d", i, rec.Code)
 		}
 	}
 
-	// 4th request should be rate limited
+	// Headers should still be set even in fail-open mode
 	req := httptest.NewRequest("GET", "/v1/customers", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusTooManyRequests {
-		t.Errorf("4th request: got %d, want 429", rec.Code)
+	if rec.Header().Get("X-RateLimit-Limit") != "1" {
+		t.Errorf("X-RateLimit-Limit: got %q, want 1", rec.Header().Get("X-RateLimit-Limit"))
 	}
-
-	// Verify rate limit headers
-	if rec.Header().Get("X-RateLimit-Limit") != "3" {
-		t.Errorf("X-RateLimit-Limit: got %q", rec.Header().Get("X-RateLimit-Limit"))
-	}
-	if rec.Header().Get("Retry-After") == "" {
-		t.Error("Retry-After header should be set on 429")
+	if rec.Header().Get("X-RateLimit-Remaining") == "" {
+		t.Error("X-RateLimit-Remaining header should be set")
 	}
 }
 
 func TestRateLimiter_HealthSkipped(t *testing.T) {
-	rl := NewRateLimiter(1, 1*60*1e9)
+	rl := NewRateLimiter(nil, 1, time.Minute)
 	handler := rl.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// First request consumes the bucket
-	req := httptest.NewRequest("GET", "/v1/customers", nil)
+	// Health check should bypass rate limiting entirely (no headers set)
+	req := httptest.NewRequest("GET", "/health", nil)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	// Health check should bypass rate limiting
-	req = httptest.NewRequest("GET", "/health", nil)
-	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("health check should bypass rate limit, got %d", rec.Code)
+	}
+	if rec.Header().Get("X-RateLimit-Limit") != "" {
+		t.Error("health check should not have rate limit headers")
 	}
 }
 

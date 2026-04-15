@@ -1,59 +1,83 @@
 package middleware
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
+	"github.com/go-redis/redis_rate/v10"
+	goredis "github.com/redis/go-redis/v9"
+
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/auth"
 )
 
-// RateLimiter is a simple in-memory token bucket rate limiter.
-// For production, swap this out for Redis-backed rate limiting.
+// RateLimiter implements distributed rate limiting using the GCRA (Generic Cell
+// Rate Algorithm) backed by Redis. GCRA is a leaky-bucket variant that smooths
+// traffic instead of allowing burst-then-block at window boundaries.
+//
+// Powered by go-redis/redis_rate — the official rate limiting companion for
+// go-redis, used across the go-redis ecosystem.
 type RateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	rate    int           // requests per window
-	window  time.Duration // window size
+	limiter *redis_rate.Limiter
+	limit   redis_rate.Limit
+	rdb     *goredis.Client
 }
 
-type bucket struct {
-	tokens    int
-	lastReset time.Time
-}
+// NewRateLimiter creates a Redis-backed GCRA rate limiter.
+// Example: NewRateLimiter(rdb, 100, time.Minute) = 100 requests per minute
+// with smooth distribution (no boundary bursts).
+// If rdb is nil, the limiter fails open (all requests allowed).
+func NewRateLimiter(rdb *goredis.Client, rate int, window time.Duration) *RateLimiter {
+	rl := &RateLimiter{rdb: rdb}
 
-// NewRateLimiter creates a rate limiter with the given rate per window.
-// Example: NewRateLimiter(100, time.Minute) = 100 requests per minute.
-func NewRateLimiter(rate int, window time.Duration) *RateLimiter {
-	return &RateLimiter{
-		buckets: make(map[string]*bucket),
-		rate:    rate,
-		window:  window,
+	// Convert rate + window to redis_rate.Limit
+	switch {
+	case window <= time.Second:
+		rl.limit = redis_rate.PerSecond(rate)
+	case window <= time.Minute:
+		rl.limit = redis_rate.PerMinute(rate)
+	default:
+		rl.limit = redis_rate.Limit{
+			Rate:   rate,
+			Burst:  rate, // allow full rate as burst capacity
+			Period: window,
+		}
 	}
+
+	if rdb != nil {
+		rl.limiter = redis_rate.NewLimiter(rdb)
+	}
+
+	return rl
 }
 
 // Middleware returns chi-compatible rate limiting middleware.
-// Keys by API key ID (from auth context) or IP address.
+// Keys by tenant ID (from auth context) or IP address for unauthenticated requests.
 func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip rate limiting for health checks
-			if r.URL.Path == "/health" {
+			// Skip rate limiting for infrastructure endpoints
+			if r.URL.Path == "/health" || r.URL.Path == "/health/ready" || r.URL.Path == "/metrics" {
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			key := rateLimitKey(r)
-			remaining, resetAt := rl.allow(key)
+			remaining, resetAt, allowed := rl.allow(r, key)
 
 			// Set rate limit headers (Stripe convention)
-			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rl.rate))
+			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rl.limit.Rate))
 			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
 
-			if remaining < 0 {
-				w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(resetAt).Seconds())+1))
+			if !allowed {
+				retryAfter := int(time.Until(resetAt).Seconds()) + 1
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				respond.RateLimited(w, r)
 				return
 			}
@@ -63,28 +87,35 @@ func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 	}
 }
 
-func (rl *RateLimiter) allow(key string) (int, time.Time) {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
+// allow checks the rate limit for the given key.
+// Returns (remaining, resetAt, allowed). Fails open on any error.
+func (rl *RateLimiter) allow(r *http.Request, key string) (int, time.Time, bool) {
+	now := time.Now().UTC()
 
-	now := time.Now()
-	b, ok := rl.buckets[key]
-	if !ok || now.Sub(b.lastReset) >= rl.window {
-		rl.buckets[key] = &bucket{tokens: rl.rate - 1, lastReset: now}
-		return rl.rate - 1, now.Add(rl.window)
+	// No Redis configured — fail open
+	if rl.limiter == nil {
+		return rl.limit.Rate - 1, now.Add(rl.limit.Period), true
 	}
 
-	b.tokens--
-	return b.tokens, b.lastReset.Add(rl.window)
+	res, err := rl.limiter.Allow(r.Context(), "rl:"+key, rl.limit)
+	if err != nil {
+		// Fail open: availability > perfect rate enforcement
+		slog.Warn("rate_limiter: redis error, failing open",
+			"error", err,
+			"key", key,
+		)
+		return rl.limit.Rate - 1, now.Add(rl.limit.Period), true
+	}
+
+	resetAt := now.Add(res.ResetAfter)
+	return res.Remaining, resetAt, res.Allowed > 0
 }
 
 func rateLimitKey(r *http.Request) string {
-	// Use API key ID if authenticated
-	if keyID := r.Context().Value("api_key_id"); keyID != nil {
-		if id, ok := keyID.(string); ok && id != "" {
-			return "key:" + id
-		}
+	// Prefer tenant-scoped bucket so all keys for the same tenant share a limit
+	if tenantID := auth.TenantID(r.Context()); tenantID != "" {
+		return "tenant:" + tenantID
 	}
-	// Fallback to IP
+	// Fallback to IP for unauthenticated requests
 	return "ip:" + r.RemoteAddr
 }

@@ -67,6 +67,17 @@ func (m *memStore) DeleteEndpoint(_ context.Context, tenantID, id string) error 
 	return nil
 }
 
+func (m *memStore) UpdateEndpointSecret(_ context.Context, tenantID, id, newSecret string) (domain.WebhookEndpoint, error) {
+	ep, ok := m.endpoints[id]
+	if !ok || ep.TenantID != tenantID {
+		return domain.WebhookEndpoint{}, errs.ErrNotFound
+	}
+	ep.Secret = newSecret
+	ep.UpdatedAt = time.Now().UTC()
+	m.endpoints[id] = ep
+	return ep, nil
+}
+
 func (m *memStore) CreateEvent(_ context.Context, tenantID string, event domain.WebhookEvent) (domain.WebhookEvent, error) {
 	event.ID = fmt.Sprintf("vlx_whevt_%d", len(m.events)+1)
 	event.TenantID = tenantID
@@ -113,6 +124,48 @@ func (m *memStore) ListDeliveries(_ context.Context, _, eventID string) ([]domai
 	return result, nil
 }
 
+func (m *memStore) GetEndpointStats(_ context.Context, tenantID string) ([]EndpointStats, error) {
+	counts := make(map[string]*EndpointStats)
+	for _, d := range m.deliveries {
+		if d.TenantID != tenantID {
+			continue
+		}
+		s, ok := counts[d.WebhookEndpointID]
+		if !ok {
+			s = &EndpointStats{EndpointID: d.WebhookEndpointID}
+			counts[d.WebhookEndpointID] = s
+		}
+		s.TotalDeliveries++
+		if d.Status == domain.DeliverySucceeded {
+			s.Succeeded++
+		} else if d.Status == domain.DeliveryFailed {
+			s.Failed++
+		}
+	}
+	var result []EndpointStats
+	for _, s := range counts {
+		if s.TotalDeliveries > 0 {
+			s.SuccessRate = float64(s.Succeeded) / float64(s.TotalDeliveries) * 100
+		}
+		result = append(result, *s)
+	}
+	return result, nil
+}
+
+func (m *memStore) ListPendingDeliveries(_ context.Context, limit int) ([]domain.WebhookDelivery, error) {
+	var result []domain.WebhookDelivery
+	now := time.Now()
+	for _, d := range m.deliveries {
+		if d.Status == domain.DeliveryPending && d.NextRetryAt != nil && !d.NextRetryAt.After(now) {
+			result = append(result, d)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
 // mockHTTPClient captures requests and returns configurable responses.
 type mockHTTPClient struct {
 	lastRequest *http.Request
@@ -138,9 +191,9 @@ func TestCreateEndpoint(t *testing.T) {
 	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
 
-	t.Run("valid", func(t *testing.T) {
+	t.Run("valid localhost", func(t *testing.T) {
 		result, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
-			URL:    "https://api.acme.com/webhooks",
+			URL:    "http://localhost:8080/webhooks",
 			Events: []string{"invoice.created", "payment.succeeded"},
 		})
 		if err != nil {
@@ -149,11 +202,21 @@ func TestCreateEndpoint(t *testing.T) {
 		if !strings.HasPrefix(result.Secret, "whsec_") {
 			t.Errorf("secret should start with whsec_, got %q", result.Secret[:10])
 		}
-		if result.Endpoint.URL != "https://api.acme.com/webhooks" {
+		if result.Endpoint.URL != "http://localhost:8080/webhooks" {
 			t.Errorf("url: got %q", result.Endpoint.URL)
 		}
 		if len(result.Endpoint.Events) != 2 {
 			t.Errorf("events: got %d, want 2", len(result.Endpoint.Events))
+		}
+	})
+
+	t.Run("private IP blocked", func(t *testing.T) {
+		_, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{URL: "https://10.0.0.1/hook"})
+		if err == nil {
+			t.Fatal("expected error for private IP URL")
+		}
+		if !strings.Contains(err.Error(), "private/internal IP") {
+			t.Errorf("expected private IP error, got: %v", err)
 		}
 	})
 
@@ -179,7 +242,7 @@ func TestCreateEndpoint(t *testing.T) {
 	})
 
 	t.Run("default wildcard events", func(t *testing.T) {
-		result, _ := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{URL: "https://example.com/hook"})
+		result, _ := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{URL: "http://localhost:8080/hook"})
 		if len(result.Endpoint.Events) != 1 || result.Endpoint.Events[0] != "*" {
 			t.Errorf("default events should be [*], got %v", result.Endpoint.Events)
 		}
@@ -192,9 +255,9 @@ func TestDispatch(t *testing.T) {
 	svc := NewTestService(store, httpClient)
 	ctx := context.Background()
 
-	// Register an endpoint
+	// Register an endpoint (localhost to bypass SSRF DNS check in tests)
 	result, _ := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
-		URL:    "https://api.acme.com/webhooks",
+		URL:    "http://localhost:9999/webhooks",
 		Events: []string{"invoice.created"},
 	})
 
@@ -284,7 +347,7 @@ func TestDispatch_NonMatchingEvent(t *testing.T) {
 
 	// Register endpoint for invoice events only
 	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
-		URL:    "https://example.com/hook",
+		URL:    "http://localhost:9999/hook",
 		Events: []string{"invoice.*"},
 	})
 
@@ -306,7 +369,7 @@ func TestDispatch_WildcardEndpoint(t *testing.T) {
 
 	// Register endpoint for all events
 	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
-		URL:    "https://example.com/hook",
+		URL:    "http://localhost:9999/hook",
 		Events: []string{"*"},
 	})
 
@@ -348,18 +411,22 @@ func TestDelivery_FailedHTTP(t *testing.T) {
 	svc := NewTestService(store, httpClient)
 	ctx := context.Background()
 
-	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{URL: "https://example.com/hook"})
+	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{URL: "http://localhost:9999/hook"})
 	svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{})
 	// Delivery is synchronous in test mode
 
 	if len(store.deliveries) != 1 {
 		t.Fatalf("deliveries: got %d", len(store.deliveries))
 	}
-	if store.deliveries[0].Status != domain.DeliveryFailed {
-		t.Errorf("status: got %q, want failed", store.deliveries[0].Status)
+	// First failure schedules a retry (status stays pending)
+	if store.deliveries[0].Status != domain.DeliveryPending {
+		t.Errorf("status: got %q, want pending (scheduled for retry)", store.deliveries[0].Status)
 	}
-	if store.deliveries[0].HTTPStatusCode != 500 {
-		t.Errorf("http_status: got %d, want 500", store.deliveries[0].HTTPStatusCode)
+	if store.deliveries[0].AttemptCount != 2 {
+		t.Errorf("attempt_count: got %d, want 2", store.deliveries[0].AttemptCount)
+	}
+	if store.deliveries[0].NextRetryAt == nil {
+		t.Error("next_retry_at should be set for retry")
 	}
 }
 
@@ -371,7 +438,7 @@ func TestReplay(t *testing.T) {
 
 	// Setup: create endpoint + dispatch event
 	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
-		URL:    "https://example.com/hook",
+		URL:    "http://localhost:9999/hook",
 		Events: []string{"invoice.created"},
 	})
 	svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{"id": "inv_1"})

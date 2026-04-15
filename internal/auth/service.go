@@ -64,8 +64,15 @@ func (s *Service) CreateKey(ctx context.Context, tenantID string, input CreateKe
 	// DB prefix: type prefix + first N hex chars (for indexed lookup)
 	dbPrefix := prefix + secretHex[:keyPrefixLen]
 
-	// Hash: SHA-256 of the full raw key
-	hash := sha256.Sum256([]byte(rawKey))
+	// Generate a 16-byte random salt for this key
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return CreateKeyResult{}, fmt.Errorf("generate salt: %w", err)
+	}
+	saltHex := hex.EncodeToString(salt)
+
+	// Hash: SHA-256(salt + rawKey)
+	hash := sha256.Sum256(append(salt, []byte(rawKey)...))
 	hashHex := hex.EncodeToString(hash[:])
 
 	id := postgres.NewID("vlx_key")
@@ -74,6 +81,7 @@ func (s *Service) CreateKey(ctx context.Context, tenantID string, input CreateKe
 		ID:        id,
 		KeyPrefix: dbPrefix,
 		KeyHash:   hashHex,
+		KeySalt:   saltHex,
 		KeyType:   string(keyType),
 		Name:      name,
 		TenantID:  tenantID,
@@ -116,8 +124,12 @@ func (s *Service) ValidateKey(ctx context.Context, rawKey string) (domain.APIKey
 		return domain.APIKey{}, fmt.Errorf("invalid api key")
 	}
 
-	// Verify hash
-	hash := sha256.Sum256([]byte(rawKey))
+	// Verify hash using the stored salt
+	salt, err := hex.DecodeString(key.KeySalt)
+	if err != nil {
+		return domain.APIKey{}, fmt.Errorf("invalid api key")
+	}
+	hash := sha256.Sum256(append(salt, []byte(rawKey)...))
 	hashHex := hex.EncodeToString(hash[:])
 	if hashHex != key.KeyHash {
 		return domain.APIKey{}, fmt.Errorf("invalid api key")

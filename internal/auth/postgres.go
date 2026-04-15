@@ -37,10 +37,10 @@ func (s *PostgresStore) Create(ctx context.Context, key domain.APIKey) (domain.A
 
 	now := time.Now().UTC()
 	k, err := scanKey(tx.QueryRowContext(ctx, `
-		INSERT INTO api_keys (id, key_prefix, key_hash, key_type, name, tenant_id, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO api_keys (id, key_prefix, key_hash, key_salt, key_type, name, tenant_id, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING `+keyCols,
-		key.ID, key.KeyPrefix, key.KeyHash, key.KeyType, key.Name, key.TenantID, now,
+		key.ID, key.KeyPrefix, key.KeyHash, key.KeySalt, key.KeyType, key.Name, key.TenantID, now,
 		postgres.NullableTime(key.ExpiresAt),
 	))
 	if err != nil {
@@ -62,11 +62,11 @@ func (s *PostgresStore) GetByPrefix(ctx context.Context, prefix string) (domain.
 
 	var key domain.APIKey
 	err = tx.QueryRowContext(ctx, `
-		SELECT `+keyCols+`, key_hash
+		SELECT `+keyCols+`, key_hash, key_salt
 		FROM api_keys
 		WHERE key_prefix = $1 AND revoked_at IS NULL
 	`, prefix).Scan(&key.ID, &key.KeyPrefix, &key.KeyType, &key.Name, &key.TenantID,
-		&key.CreatedAt, &key.ExpiresAt, &key.RevokedAt, &key.LastUsedAt, &key.KeyHash)
+		&key.CreatedAt, &key.ExpiresAt, &key.RevokedAt, &key.LastUsedAt, &key.KeyHash, &key.KeySalt)
 
 	if err == sql.ErrNoRows {
 		return domain.APIKey{}, errs.ErrNotFound
