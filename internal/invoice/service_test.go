@@ -100,6 +100,33 @@ func (m *memStore) ApplyCreditNote(_ context.Context, tenantID, id string, amoun
 	return inv, nil
 }
 
+func (m *memStore) ApplyCredits(_ context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv.AmountDueCents -= amountCents
+	if inv.AmountDueCents < 0 {
+		inv.AmountDueCents = 0
+	}
+	inv.CreditsAppliedCents += amountCents
+	m.invoices[id] = inv
+	return inv, nil
+}
+
+func (m *memStore) UpdateTotals(_ context.Context, tenantID, id string, subtotal, total, amountDue int64) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv.SubtotalCents = subtotal
+	inv.TotalAmountCents = total
+	inv.AmountDueCents = amountDue
+	inv.UpdatedAt = time.Now().UTC()
+	m.invoices[id] = inv
+	return inv, nil
+}
+
 func (m *memStore) CreateLineItem(_ context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error) {
 	item.ID = fmt.Sprintf("vlx_ili_%d", len(m.lineItems[item.InvoiceID])+1)
 	item.TenantID = tenantID
@@ -109,6 +136,45 @@ func (m *memStore) CreateLineItem(_ context.Context, tenantID string, item domai
 
 func (m *memStore) ListLineItems(_ context.Context, _, invoiceID string) ([]domain.InvoiceLineItem, error) {
 	return m.lineItems[invoiceID], nil
+}
+
+func (m *memStore) ListApproachingDue(_ context.Context, _ int) ([]domain.Invoice, error) {
+	return nil, nil
+}
+
+func (m *memStore) CreateWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	inv.ID = fmt.Sprintf("vlx_inv_%d", len(m.invoices)+1)
+	inv.TenantID = tenantID
+	now := time.Now().UTC()
+	inv.CreatedAt = now
+	inv.UpdatedAt = now
+	m.invoices[inv.ID] = inv
+	for _, item := range items {
+		item.InvoiceID = inv.ID
+		item.TenantID = tenantID
+		m.lineItems[inv.ID] = append(m.lineItems[inv.ID], item)
+	}
+	return inv, nil
+}
+
+func (m *memStore) SetAutoChargePending(_ context.Context, _, id string, pending bool) error {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return errs.ErrNotFound
+	}
+	inv.AutoChargePending = pending
+	m.invoices[id] = inv
+	return nil
+}
+
+func (m *memStore) ListAutoChargePending(_ context.Context, _ int) ([]domain.Invoice, error) {
+	var result []domain.Invoice
+	for _, inv := range m.invoices {
+		if inv.AutoChargePending {
+			result = append(result, inv)
+		}
+	}
+	return result, nil
 }
 
 func TestCreate(t *testing.T) {

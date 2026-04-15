@@ -91,7 +91,10 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 		return domain.Invoice{}, err
 	}
 	if inv.Status == domain.InvoicePaid {
-		return domain.Invoice{}, fmt.Errorf("cannot void a paid invoice")
+		return domain.Invoice{}, fmt.Errorf("cannot void a paid invoice — issue a credit note instead")
+	}
+	if inv.Status == domain.InvoiceVoided {
+		return domain.Invoice{}, fmt.Errorf("invoice is already voided")
 	}
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceVoided)
 }
@@ -115,6 +118,79 @@ func (s *Service) GetWithLineItems(ctx context.Context, tenantID, id string) (do
 		return domain.Invoice{}, nil, err
 	}
 	return inv, items, nil
+}
+
+type AddLineItemInput struct {
+	Description     string `json:"description"`
+	LineType        string `json:"line_type"`
+	Quantity        int64  `json:"quantity"`
+	UnitAmountCents int64  `json:"unit_amount_cents"`
+}
+
+func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, input AddLineItemInput) (domain.InvoiceLineItem, error) {
+	inv, err := s.store.Get(ctx, tenantID, invoiceID)
+	if err != nil {
+		return domain.InvoiceLineItem{}, err
+	}
+	if inv.Status != domain.InvoiceDraft {
+		return domain.InvoiceLineItem{}, fmt.Errorf("can only add line items to draft invoices, current status: %s", inv.Status)
+	}
+
+	desc := strings.TrimSpace(input.Description)
+	if desc == "" {
+		return domain.InvoiceLineItem{}, fmt.Errorf("description is required")
+	}
+	if input.Quantity <= 0 {
+		return domain.InvoiceLineItem{}, fmt.Errorf("quantity must be greater than 0")
+	}
+	if input.UnitAmountCents <= 0 {
+		return domain.InvoiceLineItem{}, fmt.Errorf("unit_amount_cents must be greater than 0")
+	}
+
+	lineType := strings.TrimSpace(input.LineType)
+	if lineType == "" {
+		lineType = "manual"
+	}
+
+	amountCents := input.Quantity * input.UnitAmountCents
+
+	item, err := s.store.CreateLineItem(ctx, tenantID, domain.InvoiceLineItem{
+		InvoiceID:        invoiceID,
+		LineType:         domain.InvoiceLineItemType(lineType),
+		Description:      desc,
+		Quantity:         input.Quantity,
+		UnitAmountCents:  input.UnitAmountCents,
+		AmountCents:      amountCents,
+		TotalAmountCents: amountCents,
+		Currency:         inv.Currency,
+	})
+	if err != nil {
+		return domain.InvoiceLineItem{}, err
+	}
+
+	// Recalculate invoice totals from all line items
+	items, err := s.store.ListLineItems(ctx, tenantID, invoiceID)
+	if err != nil {
+		return item, nil // Line item created but totals not updated — non-fatal
+	}
+
+	var subtotal int64
+	for _, li := range items {
+		subtotal += li.AmountCents
+	}
+	total := subtotal + inv.TaxAmountCents - inv.DiscountCents
+	amountDue := total - inv.AmountPaidCents - inv.CreditsAppliedCents
+	if amountDue < 0 {
+		amountDue = 0
+	}
+
+	s.store.UpdateTotals(ctx, tenantID, invoiceID, subtotal, total, amountDue)
+
+	return item, nil
+}
+
+func (s *Service) ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error) {
+	return s.store.ListApproachingDue(ctx, daysBeforeDue)
 }
 
 func generateInvoiceNumber(t time.Time) string {

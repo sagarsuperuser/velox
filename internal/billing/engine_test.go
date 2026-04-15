@@ -66,6 +66,16 @@ func (m *mockUsage) AggregateForBillingPeriod(_ context.Context, _, _ string, me
 	return result, nil
 }
 
+func (m *mockUsage) AggregateForBillingPeriodByAgg(_ context.Context, _, _ string, meters map[string]string, _, _ time.Time) (map[string]int64, error) {
+	result := make(map[string]int64)
+	for id := range meters {
+		if qty, ok := m.totals[id]; ok {
+			result[id] = qty
+		}
+	}
+	return result, nil
+}
+
 type mockPricing struct {
 	plans     map[string]domain.Plan
 	meters    map[string]domain.Meter
@@ -149,6 +159,7 @@ func (m *mockInvoices) ApplyCreditAmount(_ context.Context, _, id string, amount
 	for i, inv := range m.invoices {
 		if inv.ID == id {
 			m.invoices[i].AmountDueCents -= amountCents
+			m.invoices[i].CreditsAppliedCents += amountCents
 			return m.invoices[i], nil
 		}
 	}
@@ -162,6 +173,56 @@ func (m *mockInvoices) GetInvoice(_ context.Context, _, id string) (domain.Invoi
 		}
 	}
 	return domain.Invoice{}, fmt.Errorf("not found")
+}
+
+func (m *mockInvoices) MarkPaid(_ context.Context, _, id string, stripePI string, paidAt time.Time) (domain.Invoice, error) {
+	for i, inv := range m.invoices {
+		if inv.ID == id {
+			m.invoices[i].Status = domain.InvoicePaid
+			m.invoices[i].PaymentStatus = domain.PaymentSucceeded
+			m.invoices[i].AmountPaidCents = m.invoices[i].AmountDueCents
+			m.invoices[i].AmountDueCents = 0
+			m.invoices[i].PaidAt = &paidAt
+			return m.invoices[i], nil
+		}
+	}
+	return domain.Invoice{}, fmt.Errorf("not found")
+}
+
+func (m *mockInvoices) CreateInvoiceWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	inv.ID = fmt.Sprintf("vlx_inv_%d", len(m.invoices)+1)
+	inv.TenantID = tenantID
+	m.invoices = append(m.invoices, inv)
+	for _, item := range items {
+		item.InvoiceID = inv.ID
+		item.ID = fmt.Sprintf("vlx_ili_%d", len(m.lineItems)+1)
+		item.TenantID = tenantID
+		m.lineItems = append(m.lineItems, item)
+	}
+	return inv, nil
+}
+
+func (m *mockInvoices) SetAutoChargePending(_ context.Context, _, id string, pending bool) error {
+	for i, inv := range m.invoices {
+		if inv.ID == id {
+			m.invoices[i].AutoChargePending = pending
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
+func (m *mockInvoices) ListAutoChargePending(_ context.Context, limit int) ([]domain.Invoice, error) {
+	var result []domain.Invoice
+	for _, inv := range m.invoices {
+		if inv.AutoChargePending {
+			result = append(result, inv)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -37,8 +37,11 @@ type TenantSettings struct {
 	Timezone        string `json:"timezone"`
 	InvoicePrefix   string `json:"invoice_prefix"`
 	InvoiceNextSeq  int    `json:"invoice_next_seq"`
-	NetPaymentTerms int    `json:"net_payment_terms"`
-	CompanyName     string `json:"company_name,omitempty"`
+	NetPaymentTerms int     `json:"net_payment_terms"`
+	TaxRate         float64 `json:"tax_rate"`       // Deprecated: use TaxRateBP
+	TaxRateBP       int     `json:"tax_rate_bp"`    // Basis points (1850 = 18.50%)
+	TaxName         string  `json:"tax_name,omitempty"`
+	CompanyName     string  `json:"company_name,omitempty"`
 	CompanyAddress  string `json:"company_address,omitempty"`
 	CompanyEmail    string `json:"company_email,omitempty"`
 	CompanyPhone    string `json:"company_phone,omitempty"`
