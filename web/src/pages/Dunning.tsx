@@ -10,6 +10,8 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { Pagination } from '@/components/Pagination'
+import { Loader2 } from 'lucide-react'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 
 function relativeTime(dateStr: string): string {
   const now = Date.now()
@@ -46,6 +48,7 @@ export function DunningPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'Configuration' }, { label: 'Dunning' }]} />
       <div>
         <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Dunning</h1>
         <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Automatically recover failed payments and manage delinquent invoices</p>
@@ -364,8 +367,8 @@ function PolicyTab() {
                 Discard
               </button>
               <button onClick={handleSave} disabled={saving}
-                className="px-4 py-1.5 bg-velox-500 hover:bg-velox-400 text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors">
-                {saving ? 'Saving...' : 'Save changes'}
+                className="flex items-center justify-center gap-2 px-4 py-1.5 bg-velox-500 hover:bg-velox-400 text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors">
+                {saving ? (<><Loader2 size={14} className="animate-spin" /> Saving...</>) : 'Save changes'}
               </button>
             </div>
           </div>
@@ -538,13 +541,13 @@ function RunsTab() {
 
                     {/* Customer */}
                     <td className="px-4 py-3">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{cust?.display_name || run.customer_id.slice(0, 8) + '...'}</p>
+                      <Link to={`/customers/${run.customer_id}`} onClick={e => e.stopPropagation()} className="text-sm font-medium text-velox-600 dark:text-velox-400 hover:underline">{cust?.display_name || run.customer_id.slice(0, 8) + '...'}</Link>
                       {cust?.email && <p className="text-xs text-gray-500 truncate max-w-[180px]">{cust.email}</p>}
                     </td>
 
                     {/* Invoice */}
                     <td className="px-4 py-3">
-                      <Link to={`/invoices/${run.invoice_id}`} className="text-sm font-mono text-velox-600 hover:text-velox-700 transition-colors">
+                      <Link to={`/invoices/${run.invoice_id}`} onClick={e => e.stopPropagation()} className="text-sm font-mono text-velox-600 dark:text-velox-400 hover:underline">
                         {inv?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
                       </Link>
                     </td>
@@ -615,7 +618,7 @@ function RunsTab() {
               </tbody>
             </table>
             </div>
-            <Pagination page={page} totalPages={Math.ceil(total / RUNS_PAGE_SIZE)} onPageChange={setPage} />
+            <Pagination page={page} totalPages={Math.ceil(total / RUNS_PAGE_SIZE)} onPageChange={setPage} pageSize={RUNS_PAGE_SIZE} total={total} />
           </>
         )}
       </div>

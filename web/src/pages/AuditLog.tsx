@@ -9,6 +9,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { Pagination } from '@/components/Pagination'
 import { Download, ChevronRight } from 'lucide-react'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { DatePicker } from '@/components/DatePicker'
 import { downloadCSV } from '@/lib/csv'
 
@@ -137,6 +138,7 @@ export function AuditLogPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'System' }, { label: 'Audit Log' }]} />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Audit Log</h1>
@@ -217,10 +219,10 @@ export function AuditLogPage() {
         </div>
         <input type="text" value={actorFilter} onChange={e => { setActorFilter(e.target.value); setPage(1) }}
           placeholder="Filter by actor..."
-          className="w-40 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" />
+          className="w-40 px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white dark:bg-gray-800 dark:text-gray-100" />
         <input type="text" value={resourceIdFilter} onChange={e => { setResourceIdFilter(e.target.value); setPage(1) }}
           placeholder="Filter by resource ID..."
-          className="w-44 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white" />
+          className="w-44 px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 bg-white dark:bg-gray-800 dark:text-gray-100" />
         <div className="w-36">
           <DatePicker value={dateFrom} onChange={v => { setDateFrom(v); setPage(1) }} placeholder="From" clearable />
         </div>
@@ -263,13 +265,13 @@ export function AuditLogPage() {
                       <div key={entry.id}>
                         <div
                           className={`flex items-center px-6 py-2.5 transition-colors cursor-pointer ${
-                            isExpanded ? 'bg-gray-50' : 'hover:bg-gray-50/50'
+                            isExpanded ? 'bg-gray-50 dark:bg-gray-800/50' : 'hover:bg-gray-50/50 dark:hover:bg-gray-800/30'
                           } ${isHigh ? 'border-l-2 border-l-red-400' : isMedium ? 'border-l-2 border-l-amber-300' : 'border-l-2 border-l-transparent'}`}
                           onClick={() => setExpandedId(isExpanded ? null : entry.id)}
                         >
                           <span className="text-sm text-gray-400 w-20 shrink-0 tabular-nums">{time}</span>
                           <Badge status={entry.action} />
-                          <span className="text-sm text-gray-900 ml-2.5 flex-1 truncate">
+                          <span className="text-sm text-gray-900 dark:text-gray-100 ml-2.5 flex-1 truncate">
                             {describeAction(entry)}
                           </span>
                           {link && (
@@ -289,23 +291,23 @@ export function AuditLogPage() {
 
                         {/* Expanded detail */}
                         {isExpanded && (
-                          <div className="bg-gray-50 px-6 py-3 border-t border-gray-100 dark:border-gray-800">
+                          <div className="bg-gray-50 dark:bg-gray-800/50 px-6 py-3 border-t border-gray-100 dark:border-gray-800">
                             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
                               <div>
                                 <p className="text-xs text-gray-500">Resource Type</p>
-                                <p className="text-gray-700 mt-0.5">{entry.resource_type.replace(/_/g, ' ')}</p>
+                                <p className="text-gray-700 dark:text-gray-300 mt-0.5">{entry.resource_type.replace(/_/g, ' ')}</p>
                               </div>
                               <div>
                                 <p className="text-xs text-gray-500">Resource ID</p>
-                                <p className="text-gray-700 font-mono text-xs mt-0.5 truncate" title={entry.resource_id}>{entry.resource_id}</p>
+                                <p className="text-gray-700 dark:text-gray-300 font-mono text-xs mt-0.5 truncate" title={entry.resource_id}>{entry.resource_id}</p>
                               </div>
                               <div>
                                 <p className="text-xs text-gray-500">Actor</p>
-                                <p className="text-gray-700 mt-0.5">{formatActorName(entry)}</p>
+                                <p className="text-gray-700 dark:text-gray-300 mt-0.5">{formatActorName(entry)}</p>
                               </div>
                               <div>
                                 <p className="text-xs text-gray-500">Timestamp</p>
-                                <p className="text-gray-700 mt-0.5">{formatDateTime(entry.created_at)}</p>
+                                <p className="text-gray-700 dark:text-gray-300 mt-0.5">{formatDateTime(entry.created_at)}</p>
                               </div>
                             </div>
                             {meta.length > 0 && (
@@ -313,9 +315,9 @@ export function AuditLogPage() {
                                 <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Details</p>
                                 <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
                                   {meta.map(m => (
-                                    <div key={m.label} className="bg-white rounded-lg px-3 py-2 border border-gray-100">
-                                      <p className="text-xs text-gray-500">{m.label}</p>
-                                      <p className="text-sm text-gray-900 mt-0.5 font-mono truncate" title={m.value}>{m.value}</p>
+                                    <div key={m.label} className="bg-white dark:bg-gray-800 rounded-lg px-3 py-2 border border-gray-100 dark:border-gray-700">
+                                      <p className="text-xs text-gray-500 dark:text-gray-400">{m.label}</p>
+                                      <p className="text-sm text-gray-900 dark:text-gray-100 mt-0.5 font-mono truncate" title={m.value}>{m.value}</p>
                                     </div>
                                   ))}
                                 </div>
@@ -330,7 +332,7 @@ export function AuditLogPage() {
               </div>
             ))}
           </div>
-          <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
+          <Pagination page={page} totalPages={totalPages} onPageChange={setPage} pageSize={PAGE_SIZE} total={total} />
           </>
         )}
       </div>

@@ -8,7 +8,8 @@ import { FormField, FormSelect } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus, Trash2, Loader2 } from 'lucide-react'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 
 export function PricingPage() {
   const [meters, setMeters] = useState<Meter[]>([])
@@ -35,6 +36,7 @@ export function PricingPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'Configuration' }, { label: 'Pricing' }]} />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Pricing</h1>
@@ -140,8 +142,8 @@ function Buttons({ onClose, saving, label }: { onClose: () => void; saving: bool
   return (<div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
     <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
     <button type="submit" disabled={saving}
-      className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-      {saving ? 'Saving...' : label}
+      className="flex items-center justify-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
+      {saving ? (<><Loader2 size={14} className="animate-spin" /> Saving...</>) : label}
     </button>
   </div>)
 }

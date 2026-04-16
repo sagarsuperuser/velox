@@ -12,6 +12,7 @@ import { useSortable } from '@/hooks/useSortable'
 import { Search, Download } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
 import { Pagination } from '@/components/Pagination'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { DatePicker } from '@/components/DatePicker'
 
 const PAGE_SIZE = 25
@@ -75,6 +76,7 @@ export function InvoicesPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'Billing' }, { label: 'Invoices' }]} />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Invoices</h1>
@@ -189,8 +191,10 @@ export function InvoicesPage() {
                       {inv.invoice_number}
                     </Link>
                   </td>
-                  <td className="px-6 py-3 text-sm text-gray-600 dark:text-gray-400">
-                    {customerMap[inv.customer_id]?.display_name || 'Unknown'}
+                  <td className="px-6 py-3 text-sm">
+                    <Link to={`/customers/${inv.customer_id}`} onClick={e => e.stopPropagation()} className="text-velox-600 dark:text-velox-400 hover:underline">
+                      {customerMap[inv.customer_id]?.display_name || 'Unknown'}
+                    </Link>
                   </td>
                   <td className="px-6 py-3"><Badge status={inv.status} /></td>
                   <td className="px-6 py-3"><Badge status={inv.payment_status} /></td>
@@ -219,7 +223,7 @@ export function InvoicesPage() {
             </tbody>
           </table>
           </div>
-          <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
+          <Pagination page={page} totalPages={totalPages} onPageChange={setPage} pageSize={PAGE_SIZE} total={total} />
           </>
         )}
       </div>

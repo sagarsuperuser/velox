@@ -11,9 +11,10 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Plus, Search, Download } from 'lucide-react'
+import { Plus, Search, Download, Loader2 } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
 import { Pagination } from '@/components/Pagination'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 
 const PAGE_SIZE = 25
 
@@ -70,6 +71,7 @@ export function SubscriptionsPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'Billing' }, { label: 'Subscriptions' }]} />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Subscriptions</h1>
@@ -184,8 +186,10 @@ export function SubscriptionsPage() {
                       {sub.display_name}
                     </Link>
                   </td>
-                  <td className="px-6 py-3 text-sm text-gray-600 dark:text-gray-400">
-                    {customerMap[sub.customer_id]?.display_name || 'Unknown'}
+                  <td className="px-6 py-3 text-sm">
+                    <Link to={`/customers/${sub.customer_id}`} onClick={e => e.stopPropagation()} className="text-velox-600 dark:text-velox-400 hover:underline">
+                      {customerMap[sub.customer_id]?.display_name || 'Unknown'}
+                    </Link>
                   </td>
                   <td className="px-6 py-3 text-sm text-gray-600 dark:text-gray-400">{plans.find(p => p.id === sub.plan_id)?.name || '\u2014'}</td>
                   <td className="px-6 py-3 text-sm text-gray-600 dark:text-gray-400 font-mono">{sub.code}</td>
@@ -198,7 +202,7 @@ export function SubscriptionsPage() {
             </tbody>
           </table>
           </div>
-          <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
+          <Pagination page={page} totalPages={totalPages} onPageChange={setPage} pageSize={PAGE_SIZE} total={total} />
           </>
         )}
       </div>
@@ -317,8 +321,8 @@ function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
-            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Creating...' : 'Create Subscription'}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
+            {saving ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Subscription'}
           </button>
         </div>
       </form>
