@@ -136,7 +136,13 @@
     }
 }
 
-/* Smooth transitions */
+/* Clickable elements: hand cursor + smooth transitions */
+a, button, [role="button"], [role="tab"], [role="option"], [role="menuitem"],
+[role="checkbox"], [role="switch"], [role="radio"],
+summary, label[for], select, [data-clickable], tr[onclick], tr[data-clickable] {
+  cursor: pointer;
+}
+
 a, button, [role="button"] {
   transition: color 0.15s, background-color 0.15s, transform 0.15s;
 }
