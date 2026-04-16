@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatDateTime, type WebhookEndpoint, type WebhookEvent } from '@/lib/api'
+import { api, formatDate, type WebhookEndpoint, type WebhookEvent } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 
@@ -170,7 +170,7 @@ function EndpointsTab() {
               <TableBody>
                 {endpoints.map(ep => (
                   <TableRow key={ep.id}>
-                    <TableCell className="font-mono text-sm max-w-xs truncate">{ep.url}</TableCell>
+                    <TableCell className="font-mono text-sm max-w-xs truncate" title={ep.url}>{ep.url}</TableCell>
                     <TableCell className="text-muted-foreground">{ep.description || '\u2014'}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
@@ -192,7 +192,7 @@ function EndpointsTab() {
                         return <span className={color}>{rate.toFixed(1)}%</span>
                       })()}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{formatDateTime(ep.created_at)}</TableCell>
+                    <TableCell className="text-muted-foreground">{formatDate(ep.created_at)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
                         <Button variant="outline" size="sm" className="h-7 text-xs"
@@ -573,7 +573,7 @@ function EventsTab() {
                 <TableRow key={ev.id}>
                   <TableCell><Badge variant="outline">{ev.event_type}</Badge></TableCell>
                   <TableCell className="font-mono text-muted-foreground">{ev.id.slice(0, 12)}...</TableCell>
-                  <TableCell className="text-muted-foreground">{formatDateTime(ev.created_at)}</TableCell>
+                  <TableCell className="text-muted-foreground">{formatDate(ev.created_at)}</TableCell>
                   <TableCell className="text-right">
                     <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => handleReplay(ev.id)}>
                       Replay

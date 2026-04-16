@@ -111,7 +111,7 @@ export default function DashboardPage() {
       ) : (
         <>
           {/* KPI Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
             <StatCard title="MRR" value={formatCents(overview.mrr)} subtitle="Monthly recurring revenue" />
             <StatCard title="Active Customers" value={String(overview.active_customers)} />
             <StatCard title="Outstanding AR" value={formatCents(overview.outstanding_ar)} subtitle="Unpaid invoices" />
@@ -146,37 +146,43 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {chartData.length > 0 ? (
+              {chartData.length > 0 ? (() => {
+                const isDark = document.documentElement.classList.contains('dark')
+                const gridStroke = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'
+                const tickColor = isDark ? '#a1a1aa' : '#71717a'
+                const tooltipBg = isDark ? '#27272a' : '#ffffff'
+                const tooltipBorder = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'
+                const tooltipColor = isDark ? '#fafafa' : '#09090b'
+                return (
                 <ResponsiveContainer width="100%" height={280}>
                   <BarChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                    <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
                     <XAxis
                       dataKey="date"
                       tickFormatter={(d) => formatDate(d)}
-                      tick={{ fontSize: 12 }}
-                      className="fill-muted-foreground"
+                      tick={{ fontSize: 12, fill: tickColor }}
                     />
                     <YAxis
                       tickFormatter={(v) => formatCents(v)}
-                      tick={{ fontSize: 12 }}
+                      tick={{ fontSize: 12, fill: tickColor }}
                       width={80}
-                      className="fill-muted-foreground"
                     />
                     <Tooltip
                       formatter={(value) => [formatCents(Number(value)), 'Revenue']}
                       labelFormatter={(label) => formatDate(String(label))}
                       contentStyle={{
-                        backgroundColor: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
+                        backgroundColor: tooltipBg,
+                        border: `1px solid ${tooltipBorder}`,
                         borderRadius: '8px',
                         fontSize: '13px',
-                        color: 'hsl(var(--card-foreground))',
+                        color: tooltipColor,
                       }}
                     />
-                    <Bar dataKey="revenue_cents" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="revenue_cents" fill="#635BFF" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
-              ) : (
+                )
+              })() : (
                 <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
                   No revenue data for this period
                 </div>
@@ -233,7 +239,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Additional stats */}
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
             <StatCard title="Active Subscriptions" value={String(overview.active_subscriptions)} />
             <StatCard title="Total Revenue" value={formatCents(overview.total_revenue)} subtitle="All-time paid invoices" />
             <StatCard title="Avg Invoice Value" value={formatCents(overview.avg_invoice_value)} />

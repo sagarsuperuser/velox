@@ -4,7 +4,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatDateTime, type ApiKeyInfo } from '@/lib/api'
+import { api, formatDate, formatRelativeTime, type ApiKeyInfo } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 
@@ -50,17 +50,10 @@ const createApiKeySchema = z.object({
 type CreateApiKeyData = z.infer<typeof createApiKeySchema>
 
 function relativeTime(dateStr: string): string {
-  const now = Date.now()
-  const d = new Date(dateStr).getTime()
-  const diff = now - d
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'Just now'
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
-  return formatDateTime(dateStr)
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000)
+  const days = Math.floor(seconds / 86400)
+  if (days < 7) return formatRelativeTime(dateStr)
+  return formatDate(dateStr)
 }
 
 function keyTypeVariant(type: string): 'default' | 'secondary' | 'outline' {
@@ -79,7 +72,9 @@ export default function ApiKeysPage() {
   const [showRevoked, setShowRevoked] = useState(false)
   const queryClient = useQueryClient()
 
-  const currentKeyPrefix = localStorage.getItem('velox_api_key')?.slice(0, 20) || ''
+  let currentKeyPrefix = ''
+  try { currentKeyPrefix = localStorage.getItem('velox_api_key')?.slice(0, 20) || '' }
+  catch { /* Private browsing mode */ }
 
   const { data: keysData, isLoading: loading, error: loadError, refetch } = useQuery({
     queryKey: ['api-keys'],

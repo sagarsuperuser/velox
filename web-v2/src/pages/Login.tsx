@@ -19,7 +19,7 @@ export default function LoginPage() {
     setError('')
 
     if (!key.startsWith('vlx_')) {
-      setError('API key must start with vlx_secret_ or vlx_pub_')
+      setError('API key must start with vlx_ (e.g. vlx_secret_... or vlx_pub_...)')
       return
     }
 

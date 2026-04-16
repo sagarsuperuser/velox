@@ -11,6 +11,7 @@ import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable } from '@/hooks/useSortable'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -94,15 +95,6 @@ function SortableHead({
       </button>
     </TableHead>
   )
-}
-
-function cnStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'issued': return 'default'
-    case 'draft': return 'outline'
-    case 'voided': return 'destructive'
-    default: return 'outline'
-  }
 }
 
 export default function CreditNotesPage() {
@@ -229,7 +221,7 @@ export default function CreditNotesPage() {
 
       {/* Summary cards */}
       {!loading && notes.length > 0 && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
           <Card>
             <CardContent className="px-5 py-4">
               <p className="text-xs font-medium text-muted-foreground">Total Credited</p>
@@ -359,7 +351,7 @@ export default function CreditNotesPage() {
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-1.5">
-                            <Badge variant={cnStatusVariant(note.status)}>{note.status}</Badge>
+                            <Badge variant={statusBadgeVariant(note.status)}>{note.status}</Badge>
                             {isRefund && note.status === 'issued' && note.refund_status && note.refund_status !== 'none' && (
                               <Badge variant={note.refund_status === 'succeeded' ? 'default' : note.refund_status === 'failed' ? 'destructive' : 'secondary'}>
                                 {note.refund_status === 'succeeded' ? 'refunded' : note.refund_status === 'failed' ? 'refund failed' : 'refund pending'}

@@ -2,8 +2,18 @@ import { useEffect, useState } from 'react'
 
 const STORAGE_KEY = 'velox-theme'
 
+function safeGetItem(key: string): string | null {
+  try { return localStorage.getItem(key) }
+  catch { return null }
+}
+
+function safeSetItem(key: string, value: string) {
+  try { localStorage.setItem(key, value) }
+  catch { /* Private browsing mode, silently fail */ }
+}
+
 function getInitialTheme(): boolean {
-  const stored = localStorage.getItem(STORAGE_KEY)
+  const stored = safeGetItem(STORAGE_KEY)
   if (stored === 'dark') return true
   if (stored === 'light') return false
   return window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -19,7 +29,7 @@ export function useDarkMode() {
     } else {
       root.classList.remove('dark')
     }
-    localStorage.setItem(STORAGE_KEY, dark ? 'dark' : 'light')
+    safeSetItem(STORAGE_KEY, dark ? 'dark' : 'light')
   }, [dark])
 
   const toggle = () => setDark(prev => !prev)

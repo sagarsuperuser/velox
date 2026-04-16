@@ -146,3 +146,13 @@ summary, label[for], select, [data-clickable], tr[onclick], tr[data-clickable] {
 a, button, [role="button"] {
   transition: color 0.15s, background-color 0.15s, transform 0.15s;
 }
+
+/* Ensure placeholder text is visible in dark mode */
+::placeholder {
+  opacity: 0.5;
+}
+
+.dark ::placeholder {
+  opacity: 0.4;
+  color: oklch(0.6 0 0);
+}

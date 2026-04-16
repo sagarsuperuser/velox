@@ -5,12 +5,13 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatDateTime } from '@/lib/api'
+import { api, formatDate } from '@/lib/api'
 import type { Customer } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable } from '@/hooks/useSortable'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -84,14 +85,6 @@ function SortableHead({
       </button>
     </TableHead>
   )
-}
-
-function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'active': return 'default'
-    case 'archived': return 'secondary'
-    default: return 'outline'
-  }
 }
 
 export default function CustomersPage() {
@@ -168,7 +161,7 @@ export default function CustomersPage() {
         c.external_id,
         c.email || '',
         c.status,
-        formatDateTime(c.created_at),
+        formatDate(c.created_at),
       ])
       downloadCSV('customers.csv', ['Name', 'External ID', 'Email', 'Status', 'Created'], rows)
     })
@@ -276,7 +269,7 @@ export default function CustomersPage() {
                   {sorted.map((c: Customer) => (
                     <TableRow
                       key={c.id}
-                      className="cursor-pointer"
+                      className="cursor-pointer hover:bg-muted/50 transition-colors"
                       onClick={(e) => {
                         const target = e.target as HTMLElement
                         if (target.closest('button, a, input, select')) return
@@ -286,22 +279,23 @@ export default function CustomersPage() {
                       <TableCell>
                         <Link
                           to={`/customers/${c.id}`}
-                          className="text-sm font-medium text-foreground hover:text-primary transition-colors"
+                          className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[200px]"
+                          title={c.display_name}
                         >
                           {c.display_name}
                         </Link>
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground font-mono">
+                      <TableCell className="text-sm text-muted-foreground font-mono truncate max-w-[160px]" title={c.external_id}>
                         {c.external_id}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {c.email || '\u2014'}
                       </TableCell>
                       <TableCell>
-                        <Badge variant={statusVariant(c.status)}>{c.status}</Badge>
+                        <Badge variant={statusBadgeVariant(c.status)}>{c.status}</Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {formatDateTime(c.created_at)}
+                        {formatDate(c.created_at)}
                       </TableCell>
                     </TableRow>
                   ))}
