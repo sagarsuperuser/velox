@@ -93,7 +93,7 @@ func TestValidate_InvalidStripePrefix(t *testing.T) {
 		Port:            "8080",
 		Env:             "local",
 		StripeSecretKey: "bad_key_123",
-		DB:              DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5000},
+		DB:              DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second},
 	}
 	warnings := cfg.Validate()
 	for _, w := range warnings {
@@ -182,7 +182,7 @@ func TestValidate_DBPoolSanity(t *testing.T) {
 		Env:                 "local",
 		StripeSecretKey:     "sk_test_abc",
 		StripeWebhookSecret: "whsec_abc",
-		DB:                  DBConfig{MaxOpenConns: 5, MaxIdleConns: 10, QueryTimeout: 5000},
+		DB:                  DBConfig{MaxOpenConns: 5, MaxIdleConns: 10, QueryTimeout: 5 * time.Second},
 	}
 	warnings := cfg.Validate()
 	found := false
