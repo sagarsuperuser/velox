@@ -79,10 +79,10 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   }, [navigate, onClose])
 
   return (
-    <CommandDialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose() }}>
+    <CommandDialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose() }} className="sm:max-w-[560px] top-[15%] translate-y-0">
       <Command className="rounded-lg border-none shadow-none">
-      <CommandInput placeholder="Search or jump to..." />
-      <CommandList>
+      <CommandInput placeholder="Search or jump to..." className="h-12 text-base" />
+      <CommandList className="max-h-[400px]">
         <CommandEmpty>No results found</CommandEmpty>
 
         <CommandGroup heading="Navigation">
@@ -93,7 +93,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                 key={item.id}
                 value={item.title}
                 onSelect={() => go(item.href)}
-                className="data-selected:bg-primary data-selected:text-primary-foreground"
+                className="py-2.5 px-3 data-selected:bg-primary data-selected:text-primary-foreground"
               >
                 <Icon className="mr-2 h-4 w-4" />
                 <div className="flex flex-col">
@@ -114,7 +114,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                   key={`cust-${c.id}`}
                   value={`customer ${c.display_name} ${c.external_id} ${c.email || ''}`}
                   onSelect={() => go(`/customers/${c.id}`)}
-                  className="data-selected:bg-primary data-selected:text-primary-foreground"
+                  className="py-2.5 px-3 data-selected:bg-primary data-selected:text-primary-foreground"
                 >
                   <User className="mr-2 h-4 w-4" />
                   <div className="flex flex-col">
@@ -136,7 +136,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                   key={`inv-${inv.id}`}
                   value={`invoice ${inv.invoice_number} ${inv.status}`}
                   onSelect={() => go(`/invoices/${inv.id}`)}
-                  className="data-selected:bg-primary data-selected:text-primary-foreground"
+                  className="py-2.5 px-3 data-selected:bg-primary data-selected:text-primary-foreground"
                 >
                   <FileText className="mr-2 h-4 w-4" />
                   <div className="flex flex-col">
@@ -158,7 +158,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                   key={`plan-${p.id}`}
                   value={`plan ${p.name} ${p.code}`}
                   onSelect={() => go('/pricing')}
-                  className="data-selected:bg-primary data-selected:text-primary-foreground"
+                  className="py-2.5 px-3 data-selected:bg-primary data-selected:text-primary-foreground"
                 >
                   <Zap className="mr-2 h-4 w-4" />
                   <div className="flex flex-col">
@@ -180,7 +180,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                   key={`sub-${s.id}`}
                   value={`subscription ${s.display_name} ${s.code} ${s.status}`}
                   onSelect={() => go(`/subscriptions/${s.id}`)}
-                  className="data-selected:bg-primary data-selected:text-primary-foreground"
+                  className="py-2.5 px-3 data-selected:bg-primary data-selected:text-primary-foreground"
                 >
                   <Hash className="mr-2 h-4 w-4" />
                   <div className="flex flex-col">
