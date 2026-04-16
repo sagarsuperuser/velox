@@ -143,6 +143,25 @@ func (c Config) Validate() []string {
 	return warnings
 }
 
+// LoadDBOnly loads just the database config without validating
+// Stripe, Redis, or encryption settings. Used by CLI commands
+// (migrate, rollback) that only need a DB connection.
+func LoadDBOnly() (DBConfig, error) {
+	dbURL, err := loadDatabaseURL()
+	if err != nil {
+		return DBConfig{}, err
+	}
+	return DBConfig{
+		URL:             dbURL,
+		MaxOpenConns:    intEnv("DB_MAX_OPEN_CONNS", 20),
+		MaxIdleConns:    intEnv("DB_MAX_IDLE_CONNS", 5),
+		ConnMaxLifetime: time.Duration(intEnv("DB_CONN_MAX_LIFETIME_MIN", 30)) * time.Minute,
+		ConnMaxIdleTime: time.Duration(intEnv("DB_CONN_MAX_IDLE_TIME_SEC", 120)) * time.Second,
+		PingTimeout:     time.Duration(intEnv("DB_PING_TIMEOUT_SEC", 5)) * time.Second,
+		QueryTimeout:    time.Duration(intEnv("DB_QUERY_TIMEOUT_MS", 5000)) * time.Millisecond,
+	}, nil
+}
+
 func OpenPostgres(cfg DBConfig) (*sql.DB, error) {
 	db, err := sql.Open("pgx", cfg.URL)
 	if err != nil {

@@ -10,12 +10,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/golang-migrate/migrate/v4"
+	mpg "github.com/golang-migrate/migrate/v4/database/postgres"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
 //go:embed sql/*.sql
 var sqlFS embed.FS
-
-const defaultTimeout = 60 * time.Second
 
 // MigrationStatus represents the state of a single migration file.
 type MigrationStatus struct {
@@ -26,281 +28,230 @@ type MigrationStatus struct {
 }
 
 type Runner struct {
-	db      *sql.DB
-	timeout time.Duration
+	db *sql.DB
 }
 
-type Option func(*Runner)
-
-func WithTimeout(d time.Duration) Option {
-	return func(r *Runner) {
-		if d > 0 {
-			r.timeout = d
-		}
-	}
+func NewRunner(db *sql.DB) *Runner {
+	return &Runner{db: db}
 }
 
-func NewRunner(db *sql.DB, opts ...Option) *Runner {
-	r := &Runner{db: db, timeout: defaultTimeout}
-	for _, opt := range opts {
-		opt(r)
-	}
-	return r
-}
-
-// isUpMigration returns true if the filename is a forward (up) migration,
-// i.e. it ends in .sql but NOT .down.sql.
-func isUpMigration(name string) bool {
-	return strings.HasSuffix(name, ".sql") && !strings.HasSuffix(name, ".down.sql")
-}
-
-// upMigrationFiles returns sorted up-migration filenames from the embedded FS.
-func upMigrationFiles() ([]string, error) {
-	entries, err := fs.ReadDir(sqlFS, "sql")
+// newMigrate creates a golang-migrate instance from the embedded SQL files.
+func (r *Runner) newMigrate() (*migrate.Migrate, error) {
+	subFS, err := fs.Sub(sqlFS, "sql")
 	if err != nil {
-		return nil, fmt.Errorf("read embedded migrations: %w", err)
+		return nil, fmt.Errorf("sub fs: %w", err)
 	}
 
-	var names []string
-	for _, entry := range entries {
-		if !entry.IsDir() && isUpMigration(entry.Name()) {
-			names = append(names, entry.Name())
-		}
+	source, err := iofs.New(subFS, ".")
+	if err != nil {
+		return nil, fmt.Errorf("iofs source: %w", err)
 	}
-	sort.Strings(names)
-	return names, nil
+
+	driver, err := mpg.WithInstance(r.db, &mpg.Config{
+		MigrationsTable: "schema_migrations",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("postgres driver: %w", err)
+	}
+
+	m, err := migrate.NewWithInstance("iofs", source, "postgres", driver)
+	if err != nil {
+		return nil, fmt.Errorf("create migrate: %w", err)
+	}
+
+	return m, nil
 }
 
-// versionFromFilename extracts the version string from an up-migration filename.
-// Example: "0019_enterprise_hardening.sql" -> "0019_enterprise_hardening"
-func versionFromFilename(name string) string {
-	return strings.TrimSuffix(name, ".sql")
+// convertLegacyTable migrates from our old schema_migrations format
+// (version TEXT, applied_at TIMESTAMPTZ) to golang-migrate's format
+// (version BIGINT, dirty BOOLEAN). Only runs once on first upgrade.
+func (r *Runner) convertLegacyTable(ctx context.Context) {
+	// Check if legacy table exists (has applied_at column)
+	var hasAppliedAt bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'schema_migrations' AND column_name = 'applied_at'
+		)
+	`).Scan(&hasAppliedAt)
+	if err != nil || !hasAppliedAt {
+		return // Not a legacy table, nothing to do
+	}
+
+	// Find the highest applied version number
+	var maxVersion int
+	err = r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(CAST(SUBSTRING(version FROM '^[0-9]+') AS INTEGER)), 0)
+		FROM schema_migrations
+	`).Scan(&maxVersion)
+	if err != nil || maxVersion == 0 {
+		// Can't determine version — drop and let golang-migrate recreate
+		r.db.ExecContext(ctx, `DROP TABLE IF EXISTS schema_migrations`)
+		return
+	}
+
+	slog.Info("converting legacy schema_migrations table", "max_version", maxVersion)
+
+	// Drop and recreate in golang-migrate format
+	r.db.ExecContext(ctx, `DROP TABLE IF EXISTS schema_migrations`)
+	r.db.ExecContext(ctx, `CREATE TABLE schema_migrations (version BIGINT PRIMARY KEY, dirty BOOLEAN NOT NULL)`)
+	r.db.ExecContext(ctx, `INSERT INTO schema_migrations (version, dirty) VALUES ($1, false)`, maxVersion)
+
+	slog.Info("legacy migration table converted", "version", maxVersion)
 }
 
-// downFilename returns the expected down-migration filename for a version.
-// Example: "0019_enterprise_hardening" -> "0019_enterprise_hardening.down.sql"
-func downFilename(version string) string {
-	return version + ".down.sql"
-}
-
+// Run applies all pending migrations. Uses golang-migrate with advisory
+// locking (safe for concurrent execution) and dirty state tracking.
 func (r *Runner) Run(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, r.timeout)
-	defer cancel()
+	r.convertLegacyTable(ctx)
 
-	if err := r.ensureTable(ctx); err != nil {
-		return err
-	}
-
-	applied, err := r.appliedVersions(ctx)
+	m, err := r.newMigrate()
 	if err != nil {
-		return err
+		return fmt.Errorf("init migrate: %w", err)
 	}
 
-	names, err := upMigrationFiles()
+	err = m.Up()
+	if err == migrate.ErrNoChange {
+		slog.Info("migrations up to date")
+		return nil
+	}
 	if err != nil {
-		return err
+		return fmt.Errorf("apply migrations: %w", err)
 	}
 
-	for _, name := range names {
-		version := versionFromFilename(name)
-		if applied[version] {
-			continue
-		}
-
-		content, err := fs.ReadFile(sqlFS, "sql/"+name)
-		if err != nil {
-			return fmt.Errorf("read migration %s: %w", name, err)
-		}
-
-		tx, err := r.db.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("begin tx for %s: %w", name, err)
-		}
-
-		if _, err := tx.ExecContext(ctx, string(content)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("apply %s: %w", name, err)
-		}
-
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("record %s: %w", name, err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit %s: %w", name, err)
-		}
-
-		slog.Info("migration applied", "version", version)
-	}
-
+	version, dirty, _ := m.Version()
+	slog.Info("migrations applied", "version", version, "dirty", dirty)
 	return nil
 }
 
-// Rollback reverses a single applied migration by running its .down.sql file.
-// It returns an error if the version was never applied, or if no down file exists.
+// Rollback reverts a specific migration version.
 func (r *Runner) Rollback(ctx context.Context, version string) error {
-	ctx, cancel := context.WithTimeout(ctx, r.timeout)
-	defer cancel()
-
-	if err := r.ensureTable(ctx); err != nil {
-		return err
+	// Extract numeric version from name like "0021_stripe_tax_flag"
+	vNum := extractVersion(version)
+	if vNum == 0 {
+		return fmt.Errorf("invalid version: %s", version)
 	}
 
-	// Verify the version is actually applied.
-	applied, err := r.appliedVersions(ctx)
+	r.convertLegacyTable(ctx)
+
+	m, err := r.newMigrate()
 	if err != nil {
-		return err
-	}
-	if !applied[version] {
-		return fmt.Errorf("rollback %s: version is not applied", version)
+		return fmt.Errorf("init migrate: %w", err)
 	}
 
-	// Read the down migration file.
-	downFile := downFilename(version)
-	content, err := fs.ReadFile(sqlFS, "sql/"+downFile)
-	if err != nil {
-		return fmt.Errorf("rollback %s: no down migration file found (expected sql/%s)", version, downFile)
+	currentVersion, _, _ := m.Version()
+	if uint(vNum) != currentVersion {
+		return fmt.Errorf("can only rollback the latest version (current: %d, requested: %d)", currentVersion, vNum)
 	}
 
-	// Execute the down migration and remove the version record in one transaction.
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("rollback begin tx for %s: %w", version, err)
-	}
-
-	if _, err := tx.ExecContext(ctx, string(content)); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("rollback execute %s: %w", version, err)
-	}
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = $1`, version); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("rollback remove record %s: %w", version, err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("rollback commit %s: %w", version, err)
+	// Steps(−1) reverts exactly one migration
+	if err := m.Steps(-1); err != nil {
+		return fmt.Errorf("rollback %s: %w", version, err)
 	}
 
 	slog.Info("migration rolled back", "version", version)
 	return nil
 }
 
-// DryRun returns the list of pending migration filenames that would be applied
-// by Run, without actually executing them. Useful for CI/CD validation.
+// DryRun returns the list of pending migration filenames without applying them.
 func (r *Runner) DryRun(ctx context.Context) ([]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.timeout)
-	defer cancel()
+	r.convertLegacyTable(ctx)
 
-	if err := r.ensureTable(ctx); err != nil {
-		return nil, err
-	}
-
-	applied, err := r.appliedVersions(ctx)
+	m, err := r.newMigrate()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("init migrate: %w", err)
 	}
 
-	names, err := upMigrationFiles()
+	currentVersion, _, verr := m.Version()
+	if verr == migrate.ErrNilVersion {
+		currentVersion = 0
+	} else if verr != nil {
+		return nil, fmt.Errorf("get version: %w", verr)
+	}
+
+	// List all up migration files with version > current
+	files, err := upMigrationFiles()
 	if err != nil {
 		return nil, err
 	}
 
 	var pending []string
-	for _, name := range names {
-		version := versionFromFilename(name)
-		if !applied[version] {
-			pending = append(pending, name)
+	for _, f := range files {
+		v := extractVersion(strings.TrimSuffix(f, ".up.sql"))
+		if v > int(currentVersion) {
+			pending = append(pending, f)
 		}
 	}
 	return pending, nil
 }
 
-// Status returns the full state of every known migration: which are applied
-// (with timestamps) and which are pending. Results are sorted by version.
+// Status returns the state of every known migration.
 func (r *Runner) Status(ctx context.Context) ([]MigrationStatus, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.timeout)
-	defer cancel()
+	r.convertLegacyTable(ctx)
 
-	if err := r.ensureTable(ctx); err != nil {
-		return nil, err
-	}
-
-	// Fetch applied versions with their timestamps.
-	appliedMap, err := r.appliedVersionsWithTimestamps(ctx)
+	m, err := r.newMigrate()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("init migrate: %w", err)
 	}
 
-	names, err := upMigrationFiles()
+	currentVersion, dirty, verr := m.Version()
+	if verr == migrate.ErrNilVersion {
+		currentVersion = 0
+	} else if verr != nil {
+		return nil, fmt.Errorf("get version: %w", verr)
+	}
+
+	files, err := upMigrationFiles()
 	if err != nil {
 		return nil, err
 	}
 
 	var statuses []MigrationStatus
-	for _, name := range names {
-		version := versionFromFilename(name)
+	for _, f := range files {
+		name := strings.TrimSuffix(f, ".up.sql")
+		v := extractVersion(name)
+		applied := v > 0 && uint(v) <= currentVersion
 		s := MigrationStatus{
-			Version:  version,
-			Filename: name,
+			Version:  name,
+			Filename: f,
+			Applied:  applied,
 		}
-		if ts, ok := appliedMap[version]; ok {
-			s.Applied = true
-			s.AppliedAt = ts
+		if applied && dirty && uint(v) == currentVersion {
+			s.Version = name + " (DIRTY)"
 		}
 		statuses = append(statuses, s)
 	}
 	return statuses, nil
 }
 
-// ensureTable creates the schema_migrations table if it does not exist.
-func (r *Runner) ensureTable(ctx context.Context) error {
-	if _, err := r.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			version TEXT PRIMARY KEY,
-			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-		)
-	`); err != nil {
-		return fmt.Errorf("create schema_migrations: %w", err)
+// upMigrationFiles returns sorted list of *.up.sql filenames.
+func upMigrationFiles() ([]string, error) {
+	entries, err := fs.ReadDir(sqlFS, "sql")
+	if err != nil {
+		return nil, fmt.Errorf("read migrations: %w", err)
 	}
-	return nil
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") {
+			files = append(files, e.Name())
+		}
+	}
+	sort.Strings(files)
+	return files, nil
 }
 
-func (r *Runner) appliedVersions(ctx context.Context) (map[string]bool, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT version FROM schema_migrations ORDER BY version`)
-	if err != nil {
-		return nil, fmt.Errorf("list applied migrations: %w", err)
+// extractVersion parses the numeric prefix from a migration name.
+// "0021_stripe_tax_flag" → 21
+func extractVersion(name string) int {
+	parts := strings.SplitN(name, "_", 2)
+	if len(parts) == 0 {
+		return 0
 	}
-	defer rows.Close()
-
-	applied := make(map[string]bool)
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err != nil {
-			return nil, err
+	v := 0
+	for _, c := range parts[0] {
+		if c >= '0' && c <= '9' {
+			v = v*10 + int(c-'0')
 		}
-		applied[v] = true
 	}
-	return applied, rows.Err()
-}
-
-// appliedVersionsWithTimestamps returns applied versions mapped to their applied_at timestamps.
-func (r *Runner) appliedVersionsWithTimestamps(ctx context.Context) (map[string]time.Time, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT version, applied_at FROM schema_migrations ORDER BY version`)
-	if err != nil {
-		return nil, fmt.Errorf("list applied migrations: %w", err)
-	}
-	defer rows.Close()
-
-	applied := make(map[string]time.Time)
-	for rows.Next() {
-		var v string
-		var ts time.Time
-		if err := rows.Scan(&v, &ts); err != nil {
-			return nil, err
-		}
-		applied[v] = ts
-	}
-	return applied, rows.Err()
+	return v
 }
