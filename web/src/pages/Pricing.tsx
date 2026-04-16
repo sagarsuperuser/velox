@@ -42,11 +42,13 @@ export function PricingPage() {
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Pricing</h1>
           <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Plans, meters, and rating rules</p>
         </div>
-        <button onClick={() => setCreateFor(tab)}
-          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
-          <Plus size={16} />
-          {tab === 'plans' ? 'Add Plan' : tab === 'meters' ? 'Add Meter' : 'Add Rule'}
-        </button>
+        {((tab === 'plans' && plans.length > 0) || (tab === 'meters' && meters.length > 0) || (tab === 'rules' && rules.length > 0)) && (
+          <button onClick={() => setCreateFor(tab)}
+            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
+            <Plus size={16} />
+            {tab === 'plans' ? 'Add Plan' : tab === 'meters' ? 'Add Meter' : 'Add Rule'}
+          </button>
+        )}
       </div>
 
       <div className="flex gap-1 mt-6 bg-gray-100 dark:bg-gray-800 rounded-lg p-1 w-fit">

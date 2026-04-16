@@ -272,10 +272,12 @@ export function CreditsPage() {
               : 'Manage customer prepaid balances'}
           </p>
         </div>
-        <button onClick={() => { setModalCustomerId(''); setShowGrant(true) }}
-          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
-          <Plus size={16} /> Grant Credits
-        </button>
+        {customersWithCredits.length > 0 && (
+          <button onClick={() => { setModalCustomerId(''); setShowGrant(true) }}
+            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
+            <Plus size={16} /> Grant Credits
+          </button>
+        )}
       </div>
 
       {/* Customer balances table */}
@@ -285,7 +287,7 @@ export function CreditsPage() {
         ) : loading ? (
           <LoadingSkeleton rows={6} columns={3} />
         ) : customersWithCredits.length === 0 ? (
-          <EmptyState title="No credit activity" description="Grant credits to a customer to get started" />
+          <EmptyState title="No credit activity" description="Grant credits to a customer to get started" actionLabel="Grant Credits" onAction={() => { setModalCustomerId(''); setShowGrant(true) }} />
         ) : (
           <>
           <div className="overflow-x-auto">
