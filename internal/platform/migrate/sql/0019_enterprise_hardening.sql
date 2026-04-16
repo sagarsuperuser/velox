@@ -66,9 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_resource
 CREATE INDEX IF NOT EXISTS idx_audit_log_created
     ON audit_log (tenant_id, created_at DESC);
 
--- Credit ledger: balance lookups per customer
-CREATE INDEX IF NOT EXISTS idx_credit_ledger_customer
-    ON credit_ledger (tenant_id, customer_id);
+-- Credit ledger: balance lookups per customer (index already exists from 0003)
 
 -- Subscriptions: billing scheduler looks up due subscriptions
 CREATE INDEX IF NOT EXISTS idx_subscriptions_next_billing

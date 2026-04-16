@@ -53,7 +53,7 @@ DROP INDEX IF EXISTS idx_invoices_billing_idempotency;
 ------------------------------------------------------------------------
 
 DROP INDEX IF EXISTS idx_subscriptions_next_billing;
-DROP INDEX IF EXISTS idx_credit_ledger_customer;
+-- idx_credit_ledger_customer belongs to 0003, not dropped here
 DROP INDEX IF EXISTS idx_audit_log_created;
 DROP INDEX IF EXISTS idx_audit_log_resource;
 DROP INDEX IF EXISTS idx_webhook_deliveries_pending;
