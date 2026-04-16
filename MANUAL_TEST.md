@@ -3,17 +3,23 @@
 ## Prerequisites
 
 ```bash
-cp .env.example .env          # fill in Stripe test keys
-docker compose up -d postgres
-DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
-  RUN_MIGRATIONS_ON_BOOT=true \
-  PAYMENT_UPDATE_URL=http://localhost:5173/update-payment \
-  go run ./cmd/velox
-cd web && npm run dev          # frontend at localhost:5173
+# 1. First-time setup
+cp .env.example .env               # Fill in STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET
+
+# 2. Start infrastructure + backend + frontend (3 terminals)
+make up                             # Terminal 1: Postgres + Redis
+make dev                            # Terminal 2: API server on :8080 (auto-migrates)
+make web-dev                        # Terminal 3: Frontend on :5173
+
+# 3. Stripe webhook forwarding (4th terminal)
 stripe listen --forward-to localhost:8080/v1/webhooks/stripe
 ```
 
-Bootstrap: `POST /v1/bootstrap` or open the UI and follow Get Started.
+**First run:** Open http://localhost:5173 and follow the Get Started flow, or run `make bootstrap`.
+
+**Fresh DB:** `docker compose down -v && make up` then `make dev` (re-runs all migrations).
+
+**Run tests:** `make test-unit` (all 26 packages).
 
 ### Test Cards
 | Card | Behavior |
@@ -852,3 +858,4 @@ VELOX_ENCRYPTION_KEY=tooshort go run ./cmd/velox
 | 20 | Settings + Billing Profile | | |
 | 21 | Edge Cases | | |
 | 22 | Responsive / Mobile | | |
+,main
