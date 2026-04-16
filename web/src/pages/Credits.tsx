@@ -1,5 +1,8 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { api, formatCents, formatDateTime, getCurrencySymbol, type Customer, type CreditBalance, type CreditLedgerEntry } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -12,13 +15,20 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { toast } from 'sonner'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { useSortable } from '@/hooks/useSortable'
 import { DatePicker } from '@/components/DatePicker'
 import { Plus, Minus, Download, ChevronRight, ArrowLeft, Loader2 } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
 import { Pagination } from '@/components/Pagination'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
+
+const creditSchema = z.object({
+  amount: z.string().min(1, 'Amount is required').refine(v => parseFloat(v) >= 0.01, 'Must be at least 0.01'),
+  description: z.string().min(1, 'Description is required'),
+  expiresAt: z.string(),
+})
+
+type CreditFormData = z.infer<typeof creditSchema>
 
 const ENTRY_TYPES = ['All', 'grant', 'usage', 'adjustment'] as const
 
@@ -342,30 +352,27 @@ function CreditModal({ mode, customerId, customerName, customers, onClose, onDon
   onDone: () => void
 }) {
   const [selectedCustomer, setSelectedCustomer] = useState(customerId)
-  const [amount, setAmount] = useState('')
-  const [description, setDescription] = useState('')
-  const [expiresAt, setExpiresAt] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
 
   const isDeduct = mode === 'deduct'
 
-  const fieldRules = useMemo(() => ({
-    amount: [rules.required('Amount'), rules.minAmount(0.01)],
-    description: [rules.required('Description')],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+  const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<CreditFormData>({
+    resolver: zodResolver(creditSchema),
+    defaultValues: { amount: '', description: '', expiresAt: '' },
+  })
 
   const effectiveCustomerId = selectedCustomer || customerId
   const effectiveCustomerName = customers?.find(c => c.id === effectiveCustomerId)?.display_name || customerName
+  const expiresAt = watch('expiresAt')
+  const amount = watch('amount')
+  const description = watch('description')
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll({ amount, description })) return
+  const onFormSubmit = handleSubmit(() => {
     if (!effectiveCustomerId) { setError('Select a customer'); return }
     setShowConfirm(true)
-  }
+  })
 
   const handleConfirm = async () => {
     setShowConfirm(false)
@@ -399,7 +406,7 @@ function CreditModal({ mode, customerId, customerName, customers, onClose, onDon
   return (
     <>
       <Modal open onClose={onClose} title={isDeduct ? 'Deduct Credits' : 'Grant Credits'}>
-        <form onSubmit={handleSubmit} noValidate className="space-y-4">
+        <form onSubmit={onFormSubmit} noValidate className="space-y-4">
           {!customerId && customers && (
             <SearchSelect label="Customer" required value={selectedCustomer}
               onChange={setSelectedCustomer}
@@ -413,24 +420,22 @@ function CreditModal({ mode, customerId, customerName, customers, onClose, onDon
             </div>
           )}
 
-          <FormField label={`Amount (${getCurrencySymbol()})`} required type="number" step="0.01" min="0.01" max={999999.99} value={amount}
+          <FormField label={`Amount (${getCurrencySymbol()})`} required type="number" step="0.01" min="0.01" max={999999.99}
             placeholder="50.00"
-            ref={registerRef('amount')} error={fieldError('amount')}
-            onChange={e => setAmount(e.target.value)}
-            onBlur={() => onBlur('amount', amount)}
-            hint={isDeduct ? 'Removed from the customer\'s prepaid balance' : 'Added to the customer\'s prepaid balance'} />
+            error={errors.amount?.message}
+            hint={isDeduct ? 'Removed from the customer\'s prepaid balance' : 'Added to the customer\'s prepaid balance'}
+            {...register('amount')} />
 
-          <FormField label="Description" required value={description}
+          <FormField label="Description" required
             placeholder={isDeduct ? 'e.g. Billing correction, clawback' : 'e.g. Welcome credit, compensation'}
             maxLength={500}
-            ref={registerRef('description')} error={fieldError('description')}
-            onChange={e => setDescription(e.target.value)}
-            onBlur={() => onBlur('description', description)} />
+            error={errors.description?.message}
+            {...register('description')} />
 
           {!isDeduct && (
             <DatePicker
-              value={expiresAt}
-              onChange={setExpiresAt}
+              value={expiresAt ?? ''}
+              onChange={v => setValue('expiresAt', v, { shouldDirty: true })}
               label="Expires At"
               includeTime
               hint="Leave empty for credits that never expire" />

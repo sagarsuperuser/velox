@@ -1,5 +1,8 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { api, formatDateTime, type WebhookEndpoint, type WebhookEvent } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -10,9 +13,17 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { toast } from 'sonner'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Loader2 } from 'lucide-react'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
+
+const createEndpointSchema = z.object({
+  url: z.string().min(1, 'URL is required').refine(v => {
+    try { const u = new URL(v); return u.protocol === 'https:' || u.protocol === 'http:' } catch { return false }
+  }, 'Must be a valid URL'),
+  description: z.string(),
+})
+
+type CreateEndpointData = z.infer<typeof createEndpointSchema>
 
 export function WebhooksPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -271,17 +282,14 @@ const EVENT_GROUPS: { label: string; events: { type: string; description: string
 const ALL_EVENT_TYPES = EVENT_GROUPS.flatMap(g => g.events.map(e => e.type))
 
 function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCreated: (secret: string) => void }) {
-  const [url, setUrl] = useState('')
-  const [description, setDescription] = useState('')
   const [listenMode, setListenMode] = useState<'all' | 'specific'>('all')
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set())
-  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const fieldRules = useMemo(() => ({
-    url: [rules.required('URL'), rules.url()],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<CreateEndpointData>({
+    resolver: zodResolver(createEndpointSchema),
+    defaultValues: { url: '', description: '' },
+  })
 
   const toggleEvent = (eventType: string) => {
     setSelectedEvents(prev => {
@@ -302,39 +310,33 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
     })
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll({ url })) return
-    setSaving(true); setError('')
+  const onSubmit = handleSubmit(async (data) => {
+    setError('')
     try {
       const eventList = listenMode === 'all' ? undefined : Array.from(selectedEvents)
       if (listenMode === 'specific' && (!eventList || eventList.length === 0)) {
         setError('Select at least one event')
-        setSaving(false)
         return
       }
       const res = await api.createWebhookEndpoint({
-        url,
-        description: description || undefined,
+        url: data.url,
+        description: data.description || undefined,
         events: eventList,
       })
       onCreated(res.secret)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create endpoint')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   return (
     <Modal open onClose={onClose} title="Add Webhook Endpoint">
-      <form onSubmit={handleSubmit} noValidate className="space-y-4">
-        <FormField label="URL" required type="url" value={url} placeholder="https://example.com/webhooks" maxLength={2048}
-          ref={registerRef('url')} error={fieldError('url')}
-          onChange={e => setUrl(e.target.value)}
-          onBlur={() => onBlur('url', url)} />
-        <FormField label="Description" value={description} placeholder="Production webhook" maxLength={500}
-          onChange={e => setDescription(e.target.value)} />
+      <form onSubmit={onSubmit} noValidate className="space-y-4">
+        <FormField label="URL" required type="url" placeholder="https://example.com/webhooks" maxLength={2048}
+          error={errors.url?.message}
+          {...register('url')} />
+        <FormField label="Description" placeholder="Production webhook" maxLength={500}
+          {...register('description')} />
 
         {/* Event selection */}
         <div>
@@ -414,9 +416,9 @@ function CreateEndpointModal({ onClose, onCreated }: { onClose: () => void; onCr
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={isSubmitting}
             className="flex items-center justify-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Endpoint'}
+            {isSubmitting ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Endpoint'}
           </button>
         </div>
       </form>

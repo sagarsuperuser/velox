@@ -1,5 +1,8 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type Customer, type Subscription, type CreditNote, type TimelineEvent } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -11,9 +14,19 @@ import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { toast } from 'sonner'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Mail, CreditCard } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
+
+const emailSchema = z.object({
+  email: z.string().min(1, 'Email is required').email('Invalid email address'),
+})
+type EmailFormData = z.infer<typeof emailSchema>
+
+const creditModalSchema = z.object({
+  reason: z.string().min(1, 'Reason is required'),
+  amount: z.string().min(1, 'Amount is required').refine(v => parseFloat(v) >= 0.01, 'Must be at least 0.01').refine(v => parseFloat(v) <= 999999.99, 'Must be at most 999999.99'),
+})
+type CreditModalData = z.infer<typeof creditModalSchema>
 
 const LINE_TYPE_LABELS: Record<string, string> = {
   base_fee: 'Base Fee',
@@ -737,40 +750,31 @@ function EmailInvoiceModal({ invoiceId, defaultEmail, onClose, onSent, onError }
   onSent: () => void
   onError: (msg: string) => void
 }) {
-  const [email, setEmail] = useState(defaultEmail)
-  const [sending, setSending] = useState(false)
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<EmailFormData>({
+    resolver: zodResolver(emailSchema),
+    defaultValues: { email: defaultEmail },
+  })
 
-  const fieldRules = useMemo(() => ({
-    email: [rules.required('Email'), rules.email()],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll({ email })) return
-    setSending(true)
+  const onSubmit = handleSubmit(async (data) => {
     try {
-      await api.sendInvoiceEmail(invoiceId, email)
+      await api.sendInvoiceEmail(invoiceId, data.email)
       onSent()
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Failed to send email')
-    } finally {
-      setSending(false)
     }
-  }
+  })
 
   return (
     <Modal open onClose={onClose} title="Email Invoice">
-      <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <FormField label="Recipient Email" required type="email" value={email} placeholder="customer@example.com" maxLength={254}
-          ref={registerRef('email')} error={fieldError('email')}
-          onChange={e => setEmail(e.target.value)}
-          onBlur={() => onBlur('email', email)} />
+      <form onSubmit={onSubmit} noValidate className="space-y-3">
+        <FormField label="Recipient Email" required type="email" placeholder="customer@example.com" maxLength={254}
+          error={errors.email?.message}
+          {...register('email')} />
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={sending}
+          <button type="submit" disabled={isSubmitting}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {sending ? 'Sending...' : 'Send Email'}
+            {isSubmitting ? 'Sending...' : 'Send Email'}
           </button>
         </div>
       </form>
@@ -784,53 +788,42 @@ function IssueCreditModal({ invoice, onClose, onCreated, onError }: {
   onCreated: () => void
   onError: (msg: string) => void
 }) {
-  const [reason, setReason] = useState('')
-  const [amount, setAmount] = useState('')
   const [type, setType] = useState<'credit' | 'refund'>('credit')
-  const [saving, setSaving] = useState(false)
 
-  const fieldRules = useMemo(() => ({
-    reason: [rules.required('Reason')],
-    amount: [rules.required('Amount'), rules.minAmount(0.01), rules.maxAmount(999999.99)],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<CreditModalData>({
+    resolver: zodResolver(creditModalSchema),
+    defaultValues: { reason: '', amount: '' },
+  })
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll({ reason, amount })) return
-    setSaving(true)
+  const onSubmit = handleSubmit(async (data) => {
     try {
-      const amountCents = Math.round(parseFloat(amount) * 100)
+      const amountCents = Math.round(parseFloat(data.amount) * 100)
       await api.createCreditNote({
         invoice_id: invoice.id,
-        reason,
+        reason: data.reason,
         refund_type: type,
         auto_issue: true,
-        lines: [{ description: reason, quantity: 1, unit_amount_cents: amountCents }],
+        lines: [{ description: data.reason, quantity: 1, unit_amount_cents: amountCents }],
       })
       onCreated()
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Failed to create credit note')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   return (
     <Modal open onClose={onClose} title="Issue Credit / Refund">
-      <form onSubmit={handleSubmit} noValidate className="space-y-3">
+      <form onSubmit={onSubmit} noValidate className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Invoice</label>
           <p className="text-sm text-gray-600 dark:text-gray-400 font-mono">{invoice.invoice_number}</p>
         </div>
-        <FormField label="Reason" required value={reason} placeholder="e.g. Service disruption, billing error" maxLength={500}
-          ref={registerRef('reason')} error={fieldError('reason')}
-          onChange={e => setReason(e.target.value)}
-          onBlur={() => onBlur('reason', reason)} />
-        <FormField label={`Amount (${getCurrencySymbol()})`} required type="number" step="0.01" min={0.01} max={999999.99} value={amount}
-          ref={registerRef('amount')} error={fieldError('amount')}
-          onChange={e => setAmount(e.target.value)}
-          onBlur={() => onBlur('amount', amount)} />
+        <FormField label="Reason" required placeholder="e.g. Service disruption, billing error" maxLength={500}
+          error={errors.reason?.message}
+          {...register('reason')} />
+        <FormField label={`Amount (${getCurrencySymbol()})`} required type="number" step="0.01" min={0.01} max={999999.99}
+          error={errors.amount?.message}
+          {...register('amount')} />
         <FormSelect label="Type" value={type}
           onChange={e => setType(e.target.value as 'credit' | 'refund')}
           options={[
@@ -839,9 +832,9 @@ function IssueCreditModal({ invoice, onClose, onCreated, onError }: {
           ]} />
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={isSubmitting}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Creating...' : 'Create Credit Note'}
+            {isSubmitting ? 'Creating...' : 'Create Credit Note'}
           </button>
         </div>
       </form>

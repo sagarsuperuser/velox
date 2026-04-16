@@ -1,5 +1,8 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
+import { useForm, Controller } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, type CreditNote, type Invoice, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -11,12 +14,20 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { toast } from 'sonner'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { useSortable } from '@/hooks/useSortable'
 import { Plus, Search, Download, Loader2 } from 'lucide-react'
 import { Pagination } from '@/components/Pagination'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { downloadCSV } from '@/lib/csv'
+
+const creditNoteSchema = z.object({
+  invoice_id: z.string().min(1, 'Invoice is required'),
+  reason: z.string().min(1, 'Reason is required'),
+  amount: z.string().min(1, 'Amount is required').refine(v => parseFloat(v) >= 0.01, 'Must be at least 0.01'),
+  refundType: z.string(),
+})
+
+type CreditNoteFormData = z.infer<typeof creditNoteSchema>
 
 export function CreditNotesPage() {
   const [notes, setNotes] = useState<CreditNote[]>([])
@@ -309,21 +320,19 @@ function CreateCreditNoteModal({ customerMap, onClose, onCreated }: {
   onClose: () => void
   onCreated: () => void
 }) {
-  const [invoiceId, setInvoiceId] = useState('')
   const [invoices, setInvoices] = useState<Invoice[]>([])
-  const [reason, setReason] = useState('')
-  const [refundType, setRefundType] = useState('credit')
-  const [amount, setAmount] = useState('')
   const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
   const [loadingInvoices, setLoadingInvoices] = useState(true)
 
-  const fieldRules = useMemo(() => ({
-    invoice_id: [rules.required('Invoice')],
-    reason: [rules.required('Reason')],
-    amount: [rules.required('Amount'), rules.minAmount(0.01)],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+  const { register, handleSubmit, watch, setValue, control, formState: { errors, isSubmitting, isDirty } } = useForm<CreditNoteFormData>({
+    resolver: zodResolver(creditNoteSchema),
+    defaultValues: { invoice_id: '', reason: '', amount: '', refundType: 'credit' },
+  })
+
+  const invoiceId = watch('invoice_id')
+  const reason = watch('reason')
+  const amount = watch('amount')
+  const refundType = watch('refundType')
 
   useEffect(() => {
     Promise.all([
@@ -342,49 +351,50 @@ function CreateCreditNoteModal({ customerMap, onClose, onCreated }: {
     : 0
 
   const handleInvoiceChange = (id: string) => {
-    setInvoiceId(id)
-    onBlur('invoice_id', id)
+    setValue('invoice_id', id, { shouldValidate: true })
     const inv = invoices.find(i => i.id === id)
-    if (inv?.status !== 'paid') setRefundType('credit')
+    if (inv?.status !== 'paid') setValue('refundType', 'credit')
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll({ invoice_id: invoiceId, reason, amount })) return
-    setSaving(true); setError('')
+  const onSubmit = handleSubmit(async (data) => {
+    setError('')
     try {
-      const amountCents = Math.round(parseFloat(amount) * 100)
+      const amountCents = Math.round(parseFloat(data.amount) * 100)
       await api.createCreditNote({
-        invoice_id: invoiceId,
-        reason,
-        refund_type: refundType,
+        invoice_id: data.invoice_id,
+        reason: data.reason,
+        refund_type: data.refundType,
         auto_issue: true,
-        lines: [{ description: reason, quantity: 1, unit_amount_cents: amountCents }],
+        lines: [{ description: data.reason, quantity: 1, unit_amount_cents: amountCents }],
       })
       onCreated()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create credit note')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   return (
-    <Modal open onClose={onClose} title="Issue Credit Note" dirty={!!(reason || amount)}>
+    <Modal open onClose={onClose} title="Issue Credit Note" dirty={isDirty}>
       {loadingInvoices ? (
         <div className="py-8 text-center">
           <div className="w-6 h-6 border-2 border-velox-600 border-t-transparent rounded-full animate-spin mx-auto" />
           <p className="text-sm text-gray-400 mt-3">Loading invoices...</p>
         </div>
       ) : (
-      <form onSubmit={handleSubmit} noValidate className="space-y-4">
-        <SearchSelect label="Invoice" required value={invoiceId} error={fieldError('invoice_id')}
-          onChange={handleInvoiceChange}
-          placeholder="Select invoice..."
-          options={invoices.map(inv => {
-            const custName = customerMap[inv.customer_id]?.display_name || ''
-            return { value: inv.id, label: `${inv.invoice_number} — ${custName}`, sublabel: formatCents(inv.total_amount_cents) }
-          })} />
+      <form onSubmit={onSubmit} noValidate className="space-y-4">
+        <Controller
+          name="invoice_id"
+          control={control}
+          render={({ field }) => (
+            <SearchSelect label="Invoice" required value={field.value} error={errors.invoice_id?.message}
+              onChange={handleInvoiceChange}
+              placeholder="Select invoice..."
+              options={invoices.map(inv => {
+                const custName = customerMap[inv.customer_id]?.display_name || ''
+                return { value: inv.id, label: `${inv.invoice_number} — ${custName}`, sublabel: formatCents(inv.total_amount_cents) }
+              })} />
+          )}
+        />
 
         {selectedInvoice && (
           <div className="bg-gray-50 dark:bg-gray-800 rounded-lg px-4 py-3">
@@ -409,29 +419,27 @@ function CreateCreditNoteModal({ customerMap, onClose, onCreated }: {
           <label className="block text-sm font-medium text-gray-700 mb-2">Reason</label>
           <div className="flex flex-wrap gap-1.5 mb-2">
             {['Service disruption', 'Billing error', 'Goodwill credit', 'Feature downgrade', 'Contract adjustment'].map(r => (
-              <button key={r} type="button" onClick={() => setReason(r)}
+              <button key={r} type="button" onClick={() => setValue('reason', r, { shouldValidate: true })}
                 className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
                   reason === r ? 'bg-velox-100 text-velox-700 ring-1 ring-velox-300' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}>{r}</button>
             ))}
           </div>
-          <FormField label="" required value={reason} placeholder="Or type a custom reason..." maxLength={500}
-            ref={registerRef('reason')} error={fieldError('reason')}
-            onChange={e => setReason(e.target.value)}
-            onBlur={() => onBlur('reason', reason)} />
+          <FormField label="" required placeholder="Or type a custom reason..." maxLength={500}
+            error={errors.reason?.message}
+            {...register('reason')} />
         </div>
 
         <div className="grid grid-cols-2 gap-4">
           <FormField label={`Amount (${getCurrencySymbol()})`} required type="number" step="0.01" min="0.01"
             max={maxAmount ? (maxAmount / 100).toFixed(2) : '999999.99'}
-            value={amount} placeholder="25.00"
-            ref={registerRef('amount')} error={fieldError('amount')}
-            onChange={e => setAmount(e.target.value)}
-            onBlur={() => onBlur('amount', amount)}
-            hint={maxAmount ? `Max: ${formatCents(maxAmount)}` : undefined} />
+            placeholder="25.00"
+            error={errors.amount?.message}
+            hint={maxAmount ? `Max: ${formatCents(maxAmount)}` : undefined}
+            {...register('amount')} />
           {isPaid ? (
-            <FormSelect label="Credit Type" value={refundType}
-              onChange={e => setRefundType(e.target.value)}
+            <FormSelect label="Credit Type"
+              {...register('refundType')}
               options={[
                 { value: 'credit', label: 'Credit to balance' },
                 { value: 'refund', label: 'Refund to payment method' },
@@ -459,9 +467,9 @@ function CreateCreditNoteModal({ customerMap, onClose, onCreated }: {
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={isSubmitting}
             className="flex items-center justify-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? (<><Loader2 size={14} className="animate-spin" /> Issuing...</>) : 'Issue Credit Note'}
+            {isSubmitting ? (<><Loader2 size={14} className="animate-spin" /> Issuing...</>) : 'Issue Credit Note'}
           </button>
         </div>
       </form>

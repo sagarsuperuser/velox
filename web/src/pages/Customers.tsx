@@ -1,6 +1,9 @@
 import { useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDateTime } from '@/lib/api'
 import { Layout } from '@/components/Layout'
@@ -10,13 +13,20 @@ import { Modal } from '@/components/Modal'
 import { FormField } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { useSortable } from '@/hooks/useSortable'
 import { Plus, Search, Download, Loader2 } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
 import { Pagination } from '@/components/Pagination'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { DatePicker } from '@/components/DatePicker'
+
+const createCustomerSchema = z.object({
+  external_id: z.string().min(1, 'External ID is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
+  display_name: z.string().min(1, 'Display name is required'),
+  email: z.string().email('Invalid email address').or(z.literal('')),
+})
+
+type CreateCustomerData = z.infer<typeof createCustomerSchema>
 
 const PAGE_SIZE = 25
 
@@ -25,19 +35,16 @@ export function CustomersPage() {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({ external_id: '', display_name: '', email: '' })
   const [error, setError] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
   const [page, setPage] = useState(1)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const fieldRules = useMemo(() => ({
-    display_name: [rules.required('Display name')],
-    external_id: [rules.required('External ID'), rules.slug()],
-    email: [rules.email()],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef, clearErrors } = useFormValidation(fieldRules)
+  const { register, handleSubmit: rhfHandleSubmit, formState: { errors: formErrors, isSubmitting: creating }, reset } = useForm<CreateCustomerData>({
+    resolver: zodResolver(createCustomerSchema),
+    defaultValues: { external_id: '', display_name: '', email: '' },
+  })
 
   // Server-side paginated fetch via React Query
   const queryParams = useMemo(() => {
@@ -58,13 +65,12 @@ export function CustomersPage() {
   const loadError = loadErrorObj instanceof Error ? loadErrorObj.message : loadErrorObj ? String(loadErrorObj) : null
 
   const createMutation = useMutation({
-    mutationFn: (data: typeof form) => api.createCustomer(data),
+    mutationFn: (data: CreateCustomerData) => api.createCustomer(data),
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['customers'] })
       toast.success(`Customer "${created.display_name}" created`)
       setShowCreate(false)
-      setForm({ external_id: '', display_name: '', email: '' })
-      clearErrors()
+      reset()
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : 'Failed to create customer')
@@ -90,14 +96,10 @@ export function CustomersPage() {
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll(form)) return
+  const onSubmit = rhfHandleSubmit((data: CreateCustomerData) => {
     setError('')
-    createMutation.mutate(form)
-  }
-
-  const creating = createMutation.isPending
+    createMutation.mutate(data)
+  })
 
   return (
     <Layout>
@@ -238,20 +240,17 @@ export function CustomersPage() {
       </div>
 
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="Create Customer">
-        <form onSubmit={handleCreate} noValidate className="space-y-4">
-          <FormField label="Display Name" required value={form.display_name} placeholder="Acme Corporation" maxLength={255}
-            ref={registerRef('display_name')} error={fieldError('display_name')}
-            onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-            onBlur={() => onBlur('display_name', form.display_name)} />
-          <FormField label="External ID" required value={form.external_id} placeholder="acme_corp" maxLength={100} mono
-            ref={registerRef('external_id')} error={fieldError('external_id')}
-            onChange={e => setForm(f => ({ ...f, external_id: e.target.value }))}
-            onBlur={() => onBlur('external_id', form.external_id)}
-            hint="Only letters, numbers, hyphens, and underscores" />
-          <FormField label="Email" type="email" value={form.email} placeholder="billing@acme.com" maxLength={254}
-            ref={registerRef('email')} error={fieldError('email')}
-            onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-            onBlur={() => onBlur('email', form.email)} />
+        <form onSubmit={onSubmit} noValidate className="space-y-4">
+          <FormField label="Display Name" required placeholder="Acme Corporation" maxLength={255}
+            error={formErrors.display_name?.message}
+            {...register('display_name')} />
+          <FormField label="External ID" required placeholder="acme_corp" maxLength={100} mono
+            error={formErrors.external_id?.message}
+            hint="Only letters, numbers, hyphens, and underscores"
+            {...register('external_id')} />
+          <FormField label="Email" type="email" placeholder="billing@acme.com" maxLength={254}
+            error={formErrors.email?.message}
+            {...register('email')} />
           {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
           <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
             <button type="button" onClick={() => setShowCreate(false)} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>

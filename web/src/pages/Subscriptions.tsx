@@ -1,6 +1,9 @@
 import { useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useForm, Controller } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, formatDateTime, type Subscription, type Customer, type Plan } from '@/lib/api'
 import { Layout } from '@/components/Layout'
@@ -11,11 +14,24 @@ import { FormSelect } from '@/components/FormField'
 import { SearchSelect } from '@/components/SearchSelect'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus, Search, Download, Loader2 } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
 import { Pagination } from '@/components/Pagination'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
+
+const createSubSchema = z.object({
+  code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
+  display_name: z.string().min(1, 'Display name is required'),
+  customer_id: z.string().min(1, 'Customer is required'),
+  plan_id: z.string().min(1, 'Plan is required'),
+  start_now: z.boolean(),
+  billing_time: z.string(),
+  trial_days: z.string(),
+  usage_cap_units: z.string(),
+  overage_action: z.string(),
+})
+
+type CreateSubData = z.infer<typeof createSubSchema>
 
 const PAGE_SIZE = 25
 
@@ -230,90 +246,97 @@ export function SubscriptionsPage() {
 function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
   onClose: () => void; onCreated: (sub: Subscription) => void; customers: Customer[]; plans: Plan[]
 }) {
-  const [form, setForm] = useState({
-    code: '', display_name: '', customer_id: '', plan_id: '', start_now: true,
-    billing_time: 'calendar', trial_days: '' as string,
-    usage_cap_units: '' as string, overage_action: 'charge',
-  })
   const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
 
-  const fieldRules = useMemo(() => ({
-    display_name: [rules.required('Display name')],
-    code: [rules.required('Code'), rules.slug()],
-    customer_id: [rules.required('Customer')],
-    plan_id: [rules.required('Plan')],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+  const { register, handleSubmit, control, formState: { errors, isSubmitting, isDirty } } = useForm<CreateSubData>({
+    resolver: zodResolver(createSubSchema),
+    defaultValues: {
+      code: '', display_name: '', customer_id: '', plan_id: '', start_now: true,
+      billing_time: 'calendar', trial_days: '',
+      usage_cap_units: '', overage_action: 'charge',
+    },
+  })
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll(form)) return
-    setSaving(true); setError('')
+  const onSubmit = handleSubmit(async (data) => {
+    setError('')
     try {
       const sub = await api.createSubscription({
-        code: form.code,
-        display_name: form.display_name,
-        customer_id: form.customer_id,
-        plan_id: form.plan_id,
-        start_now: form.start_now,
-        billing_time: form.billing_time,
-        ...(form.trial_days ? { trial_days: parseInt(form.trial_days) } : {}),
-        ...(form.usage_cap_units ? { usage_cap_units: parseInt(form.usage_cap_units) } : {}),
-        ...(form.overage_action !== 'charge' ? { overage_action: form.overage_action } : {}),
+        code: data.code,
+        display_name: data.display_name,
+        customer_id: data.customer_id,
+        plan_id: data.plan_id,
+        start_now: data.start_now,
+        billing_time: data.billing_time,
+        ...(data.trial_days ? { trial_days: parseInt(data.trial_days) } : {}),
+        ...(data.usage_cap_units ? { usage_cap_units: parseInt(data.usage_cap_units) } : {}),
+        ...(data.overage_action !== 'charge' ? { overage_action: data.overage_action } : {}),
       })
       onCreated(sub)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create subscription')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   return (
-    <Modal open onClose={onClose} title="Create Subscription" dirty={!!(form.display_name || form.code)}>
-      <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <FormField label="Display Name" required value={form.display_name} placeholder="Acme Pro Monthly" maxLength={255}
-          ref={registerRef('display_name')} error={fieldError('display_name')}
-          onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-          onBlur={() => onBlur('display_name', form.display_name)} />
-        <FormField label="Code" required value={form.code} placeholder="acme-pro" maxLength={100} mono
-          ref={registerRef('code')} error={fieldError('code')}
-          onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
-          onBlur={() => onBlur('code', form.code)}
-          hint="Only letters, numbers, hyphens, and underscores" />
-        <SearchSelect label="Customer" required value={form.customer_id} placeholder="Select customer..."
-          error={fieldError('customer_id')}
-          onChange={(v) => { setForm(f => ({ ...f, customer_id: v })); onBlur('customer_id', v) }}
-          options={customers.map(c => ({ value: c.id, label: c.display_name, sublabel: c.external_id }))} />
-        <SearchSelect label="Plan" required value={form.plan_id} placeholder="Select plan..."
-          error={fieldError('plan_id')}
-          onChange={(v) => { setForm(f => ({ ...f, plan_id: v })); onBlur('plan_id', v) }}
-          options={plans.map(p => ({ value: p.id, label: p.name, sublabel: p.code }))} />
+    <Modal open onClose={onClose} title="Create Subscription" dirty={isDirty}>
+      <form onSubmit={onSubmit} noValidate className="space-y-3">
+        <FormField label="Display Name" required placeholder="Acme Pro Monthly" maxLength={255}
+          error={errors.display_name?.message}
+          {...register('display_name')} />
+        <FormField label="Code" required placeholder="acme-pro" maxLength={100} mono
+          error={errors.code?.message}
+          hint="Only letters, numbers, hyphens, and underscores"
+          {...register('code')} />
+        <Controller
+          name="customer_id"
+          control={control}
+          render={({ field }) => (
+            <SearchSelect label="Customer" required value={field.value} placeholder="Select customer..."
+              error={errors.customer_id?.message}
+              onChange={field.onChange}
+              options={customers.map(c => ({ value: c.id, label: c.display_name, sublabel: c.external_id }))} />
+          )}
+        />
+        <Controller
+          name="plan_id"
+          control={control}
+          render={({ field }) => (
+            <SearchSelect label="Plan" required value={field.value} placeholder="Select plan..."
+              error={errors.plan_id?.message}
+              onChange={field.onChange}
+              options={plans.map(p => ({ value: p.id, label: p.name, sublabel: p.code }))} />
+          )}
+        />
         <div className="grid grid-cols-2 gap-3">
-          <FormSelect label="Billing Time" value={form.billing_time}
-            onChange={e => setForm(f => ({ ...f, billing_time: e.target.value }))}
+          <FormSelect label="Billing Time"
+            {...register('billing_time')}
             options={[
               { value: 'calendar', label: 'Calendar (month start)' },
               { value: 'anniversary', label: 'Anniversary (sub start date)' },
             ]} />
-          <FormField label="Trial Days" type="number" min={0} value={form.trial_days}
-            onChange={e => setForm(f => ({ ...f, trial_days: e.target.value }))}
-            placeholder="0" hint="0 for no trial" />
+          <FormField label="Trial Days" type="number" min={0}
+            placeholder="0" hint="0 for no trial"
+            {...register('trial_days')} />
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={form.start_now} onChange={e => setForm(f => ({ ...f, start_now: e.target.checked }))} />
-          Start immediately (activate + set billing period)
-        </label>
+        <Controller
+          name="start_now"
+          control={control}
+          render={({ field }) => (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={field.value} onChange={e => field.onChange(e.target.checked)} />
+              Start immediately (activate + set billing period)
+            </label>
+          )}
+        />
 
         <div className="border-t border-gray-100 dark:border-gray-800 pt-4 mt-2">
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Usage Limits</p>
           <div className="grid grid-cols-2 gap-3">
-            <FormField label="Usage Cap (units)" type="number" min={0} value={form.usage_cap_units}
-              onChange={e => setForm(f => ({ ...f, usage_cap_units: e.target.value }))}
-              placeholder="Unlimited" hint="Max units per billing period" />
-            <FormSelect label="Over-limit Action" value={form.overage_action}
-              onChange={e => setForm(f => ({ ...f, overage_action: e.target.value }))}
+            <FormField label="Usage Cap (units)" type="number" min={0}
+              placeholder="Unlimited" hint="Max units per billing period"
+              {...register('usage_cap_units')} />
+            <FormSelect label="Over-limit Action"
+              {...register('overage_action')}
               options={[
                 { value: 'charge', label: 'Charge overage' },
                 { value: 'block', label: 'Cap at limit' },
@@ -324,9 +347,9 @@ function CreateSubscriptionModal({ onClose, onCreated, customers, plans }: {
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={isSubmitting}
             className="flex items-center justify-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Subscription'}
+            {isSubmitting ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Subscription'}
           </button>
         </div>
       </form>

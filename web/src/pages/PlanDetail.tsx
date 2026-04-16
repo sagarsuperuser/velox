@@ -1,5 +1,8 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { api, formatCents, formatDate, formatDateTime, type Plan, type Meter, type Subscription, type RatingRule, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -11,9 +14,13 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { toast } from 'sonner'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus, Pencil } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
+
+const editPlanSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+})
+type EditPlanData = z.infer<typeof editPlanSchema>
 
 export function PlanDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -372,42 +379,37 @@ export function PlanDetailPage() {
 function EditPlanModal({ plan, onClose, onSaved }: {
   plan: Plan; onClose: () => void; onSaved: (p: Plan) => void
 }) {
-  const [name, setName] = useState(plan.name)
   const [basePrice, setBasePrice] = useState((plan.base_amount_cents / 100).toFixed(2))
   const [status, setStatus] = useState(plan.status)
-  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  const { register, handleSubmit, watch, formState: { errors, isSubmitting } } = useForm<EditPlanData>({
+    resolver: zodResolver(editPlanSchema),
+    defaultValues: { name: plan.name },
+  })
+
+  const name = watch('name')
   const hasChanges = name !== plan.name ||
     basePrice !== (plan.base_amount_cents / 100).toFixed(2) ||
     status !== plan.status
 
-  const fieldRules = useMemo(() => ({
-    name: [rules.required('Name')],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll({ name })) return
-    setSaving(true); setError('')
+  const onSubmit = handleSubmit(async (data) => {
+    setError('')
     try {
       const updated = await api.updatePlan(plan.id, {
-        name,
+        name: data.name,
         base_amount_cents: Math.round(parseFloat(basePrice || '0') * 100),
         status,
       })
       onSaved(updated)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update plan')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   return (
     <Modal open onClose={onClose} title="Edit Plan">
-      <form onSubmit={handleSubmit} noValidate className="space-y-4">
+      <form onSubmit={onSubmit} noValidate className="space-y-4">
         <div className="bg-gray-50 dark:bg-gray-800 rounded-lg px-4 py-3 flex items-center justify-between">
           <div>
             <p className="text-xs text-gray-500">Code</p>
@@ -418,10 +420,9 @@ function EditPlanModal({ plan, onClose, onSaved }: {
             <p className="text-sm text-gray-900 mt-0.5">{plan.billing_interval === 'yearly' ? 'Yearly' : 'Monthly'}</p>
           </div>
         </div>
-        <FormField label="Plan Name" required value={name} maxLength={255}
-          ref={registerRef('name')} error={fieldError('name')}
-          onChange={e => setName(e.target.value)}
-          onBlur={() => onBlur('name', name)} />
+        <FormField label="Plan Name" required maxLength={255}
+          error={errors.name?.message}
+          {...register('name')} />
         <FormField label={`Base Price (${plan.currency.toUpperCase()})`} type="number" step="0.01" min={0} max={999999.99}
           value={basePrice} placeholder="49.00"
           onChange={e => setBasePrice(e.target.value)}
@@ -435,9 +436,9 @@ function EditPlanModal({ plan, onClose, onSaved }: {
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving || !hasChanges}
+          <button type="submit" disabled={isSubmitting || !hasChanges}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Saving...' : hasChanges ? 'Save' : 'No changes'}
+            {isSubmitting ? 'Saving...' : hasChanges ? 'Save' : 'No changes'}
           </button>
         </div>
       </form>

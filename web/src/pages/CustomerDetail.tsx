@@ -1,5 +1,8 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
+import { useForm, Controller } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary, type Meter, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride } from '@/lib/api'
 import { Layout } from '@/components/Layout'
@@ -11,9 +14,36 @@ import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { CreditCard, Pencil } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
+
+const editCustomerSchema = z.object({
+  display_name: z.string().min(1, 'Display name is required'),
+  email: z.string().email('Invalid email address').or(z.literal('')),
+})
+type EditCustomerData = z.infer<typeof editCustomerSchema>
+
+const billingProfileSchema = z.object({
+  legal_name: z.string(),
+  email: z.string().email('Invalid email address').or(z.literal('')),
+  phone: z.string().regex(/^[\+\d\s\-\(\)]{7,20}$/, 'Invalid phone number').or(z.literal('')),
+  address_line1: z.string(), address_line2: z.string(),
+  city: z.string(), state: z.string(), postal_code: z.string(),
+  country: z.string(), currency: z.string(),
+  tax_identifier: z.string(), tax_exempt: z.boolean(),
+  tax_id: z.string(), tax_id_type: z.string(),
+  tax_country: z.string(), tax_state: z.string(),
+  tax_override_rate: z.string(), tax_override_name: z.string(),
+})
+type BillingProfileData = z.infer<typeof billingProfileSchema>
+
+const createSubFromCustomerSchema = z.object({
+  display_name: z.string().min(1, 'Display name is required'),
+  code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
+  plan_id: z.string().min(1, 'Plan is required'),
+  start_now: z.boolean(),
+})
+type CreateSubFromCustomerData = z.infer<typeof createSubFromCustomerSchema>
 
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -535,50 +565,39 @@ export function CustomerDetailPage() {
 function EditCustomerModal({ customer, onClose, onSaved }: {
   customer: Customer; onClose: () => void; onSaved: (c: Customer) => void
 }) {
-  const [form, setForm] = useState({ display_name: customer.display_name, email: customer.email || '' })
-  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const hasChanges = form.display_name !== customer.display_name || form.email !== (customer.email || '')
+  const { register, handleSubmit, formState: { errors, isSubmitting, isDirty } } = useForm<EditCustomerData>({
+    resolver: zodResolver(editCustomerSchema),
+    defaultValues: { display_name: customer.display_name, email: customer.email || '' },
+  })
 
-  const fieldRules = useMemo(() => ({
-    display_name: [rules.required('Display name')],
-    email: [rules.email()],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!hasChanges) return
-    if (!validateAll(form)) return
-    setSaving(true); setError('')
+  const onSubmit = handleSubmit(async (data) => {
+    if (!isDirty) return
+    setError('')
     try {
-      const updated = await api.updateCustomer(customer.id, form)
+      const updated = await api.updateCustomer(customer.id, data)
       onSaved(updated)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update customer')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   return (
     <Modal open onClose={onClose} title="Edit Customer">
-      <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <FormField label="Display Name" required value={form.display_name} maxLength={255}
-          ref={registerRef('display_name')} error={fieldError('display_name')}
-          onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-          onBlur={() => onBlur('display_name', form.display_name)} />
-        <FormField label="Email" type="email" value={form.email} maxLength={254}
-          ref={registerRef('email')} error={fieldError('email')}
-          onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-          onBlur={() => onBlur('email', form.email)} />
+      <form onSubmit={onSubmit} noValidate className="space-y-3">
+        <FormField label="Display Name" required maxLength={255}
+          error={errors.display_name?.message}
+          {...register('display_name')} />
+        <FormField label="Email" type="email" maxLength={254}
+          error={errors.email?.message}
+          {...register('email')} />
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving || !hasChanges}
+          <button type="submit" disabled={isSubmitting || !isDirty}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Saving...' : hasChanges ? 'Save' : 'No changes'}
+            {isSubmitting ? 'Saving...' : isDirty ? 'Save' : 'No changes'}
           </button>
         </div>
       </form>
@@ -589,7 +608,9 @@ function EditCustomerModal({ customer, onClose, onSaved }: {
 function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
   customerId: string; profile: BillingProfile | null; onClose: () => void; onSaved: (bp: BillingProfile) => void
 }) {
-  const [form, setForm] = useState({
+  const [error, setError] = useState('')
+
+  const defaultValues: BillingProfileData = {
     legal_name: profile?.legal_name || '',
     email: profile?.email || '',
     phone: profile?.phone || '',
@@ -608,46 +629,30 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
     tax_state: profile?.tax_state || '',
     tax_override_rate: profile?.tax_override_rate != null ? String(profile.tax_override_rate) : '',
     tax_override_name: profile?.tax_override_name || '',
+  }
+
+  const { register, handleSubmit, watch, setValue, control, formState: { errors: formErrors, isSubmitting, isDirty } } = useForm<BillingProfileData>({
+    resolver: zodResolver(billingProfileSchema),
+    defaultValues,
   })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
 
-  const initialForm = useMemo(() => JSON.stringify({
-    legal_name: profile?.legal_name || '', email: profile?.email || '', phone: profile?.phone || '',
-    address_line1: profile?.address_line1 || '', address_line2: profile?.address_line2 || '',
-    city: profile?.city || '', state: profile?.state || '', postal_code: profile?.postal_code || '',
-    country: profile?.country || '', currency: profile?.currency || '', tax_identifier: profile?.tax_identifier || '', tax_exempt: profile?.tax_exempt || false,
-    tax_id: profile?.tax_id || '', tax_id_type: profile?.tax_id_type || '',
-    tax_country: profile?.tax_country || '', tax_state: profile?.tax_state || '',
-    tax_override_rate: profile?.tax_override_rate != null ? String(profile.tax_override_rate) : '',
-    tax_override_name: profile?.tax_override_name || '',
-  }), [profile])
-  const hasChanges = JSON.stringify(form) !== initialForm
+  const form = watch()
+  const hasChanges = isDirty
 
-  const fieldRules = useMemo(() => ({
-    email: [rules.email()],
-    phone: [rules.phone()],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const onSubmit = handleSubmit(async (data) => {
     if (!hasChanges) return
-    if (!validateAll(form)) return
-    setSaving(true); setError('')
+    setError('')
     try {
       const payload = {
-        ...form,
-        tax_override_rate: form.tax_override_rate !== '' ? parseFloat(form.tax_override_rate) : null,
+        ...data,
+        tax_override_rate: data.tax_override_rate !== '' ? parseFloat(data.tax_override_rate) : null,
       }
       const updated = await api.upsertBillingProfile(customerId, payload)
       onSaved(updated)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save billing profile')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   const usStates = [
     ['AL','Alabama'],['AK','Alaska'],['AZ','Arizona'],['AR','Arkansas'],['CA','California'],
@@ -679,21 +684,19 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
 
   return (
     <Modal open onClose={onClose} title="Billing Profile" wide>
-      <form onSubmit={handleSubmit} noValidate className="max-h-[70vh] overflow-y-auto -mx-6 px-6 pb-1">
+      <form onSubmit={onSubmit} noValidate className="max-h-[70vh] overflow-y-auto -mx-6 px-6 pb-1">
         {/* Contact */}
         <div className="space-y-3 pb-5">
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Contact</p>
-          <FormField label="Legal Name" value={form.legal_name} maxLength={255} placeholder="Acme Corporation Inc."
-            onChange={e => setForm(f => ({ ...f, legal_name: e.target.value }))} />
+          <FormField label="Legal Name" maxLength={255} placeholder="Acme Corporation Inc."
+            {...register('legal_name')} />
           <div className="grid grid-cols-2 gap-4">
-            <FormField label="Email" type="email" value={form.email} maxLength={254} placeholder="billing@acme.com"
-              ref={registerRef('email')} error={fieldError('email')}
-              onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-              onBlur={() => onBlur('email', form.email)} />
-            <FormField label="Phone" type="tel" value={form.phone} placeholder="+1 (555) 123-4567" maxLength={20}
-              ref={registerRef('phone')} error={fieldError('phone')}
-              onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
-              onBlur={() => onBlur('phone', form.phone)} />
+            <FormField label="Email" type="email" maxLength={254} placeholder="billing@acme.com"
+              error={formErrors.email?.message}
+              {...register('email')} />
+            <FormField label="Phone" type="tel" placeholder="+1 (555) 123-4567" maxLength={20}
+              error={formErrors.phone?.message}
+              {...register('phone')} />
           </div>
         </div>
 
@@ -701,38 +704,35 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
         <div className="space-y-3 py-5 border-t border-gray-100 dark:border-gray-800">
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Address</p>
           <FormSelect label="Country" value={form.country}
-            onChange={e => setForm(f => ({ ...f, country: e.target.value, state: '' }))}
+            onChange={e => { setValue('country', e.target.value, { shouldDirty: true }); setValue('state', '', { shouldDirty: true }) }}
             placeholder="Select country..."
             options={[['US','United States'],['CA','Canada'],['GB','United Kingdom'],['DE','Germany'],['FR','France'],['IN','India'],['JP','Japan'],['AU','Australia'],['BR','Brazil'],['MX','Mexico'],['SG','Singapore'],['NL','Netherlands'],['SE','Sweden'],['CH','Switzerland']].map(([code, name]) => ({ value: code, label: name }))} />
-          <FormField label="Street Address" value={form.address_line1} maxLength={200} placeholder="123 Main Street"
-            onChange={e => setForm(f => ({ ...f, address_line1: e.target.value }))} />
-          <FormField label="Apt / Suite / Floor" value={form.address_line2} maxLength={200} placeholder="Suite 100"
-            onChange={e => setForm(f => ({ ...f, address_line2: e.target.value }))} />
+          <FormField label="Street Address" maxLength={200} placeholder="123 Main Street"
+            {...register('address_line1')} />
+          <FormField label="Apt / Suite / Floor" maxLength={200} placeholder="Suite 100"
+            {...register('address_line2')} />
           <div className="grid grid-cols-3 gap-4">
-            <FormField label="City" value={form.city} maxLength={100} placeholder="San Francisco"
-              onChange={e => setForm(f => ({ ...f, city: e.target.value }))} />
+            <FormField label="City" maxLength={100} placeholder="San Francisco"
+              {...register('city')} />
             {form.country === 'US' ? (
-              <FormSelect label="State" value={form.state}
-                onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
+              <FormSelect label="State" {...register('state')}
                 placeholder="Select state..."
                 options={usStates.map(([code, name]) => ({ value: code, label: name }))} />
             ) : form.country === 'CA' ? (
-              <FormSelect label="Province" value={form.state}
-                onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
+              <FormSelect label="Province" {...register('state')}
                 placeholder="Select province..."
                 options={caProvinces.map(([code, name]) => ({ value: code, label: name }))} />
             ) : form.country === 'IN' ? (
-              <FormSelect label="State" value={form.state}
-                onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
+              <FormSelect label="State" {...register('state')}
                 placeholder="Select state..."
                 options={inStates.map(([code, name]) => ({ value: code, label: name }))} />
             ) : (
-              <FormField label="State / Province" value={form.state} placeholder="State" maxLength={50}
-                onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
+              <FormField label="State / Province" placeholder="State" maxLength={50}
+                {...register('state')} />
             )}
-            <FormField label="Postal Code" value={form.postal_code}
+            <FormField label="Postal Code"
               placeholder={form.country === 'US' ? '94105' : form.country === 'GB' ? 'SW1A 1AA' : form.country === 'IN' ? '400001' : 'Postal code'} maxLength={10}
-              onChange={e => setForm(f => ({ ...f, postal_code: e.target.value }))} />
+              {...register('postal_code')} />
           </div>
         </div>
 
@@ -740,11 +740,11 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
         <div className="space-y-3 py-5 border-t border-gray-100 dark:border-gray-800">
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Tax & Billing</p>
           <div className="grid grid-cols-2 gap-4">
-            <FormField label="Tax ID" value={form.tax_id} maxLength={50}
+            <FormField label="Tax ID" maxLength={50}
               placeholder={form.tax_country === 'US' ? 'EIN (e.g. 12-3456789)' : form.tax_country === 'IN' ? 'GSTIN (e.g. 29ABCDE1234F1Z5)' : form.tax_country === 'GB' ? 'VAT number' : 'Tax ID'} mono
-              onChange={e => setForm(f => ({ ...f, tax_id: e.target.value }))} />
-            <FormSelect label="Tax ID Type" value={form.tax_id_type}
-              onChange={e => setForm(f => ({ ...f, tax_id_type: e.target.value }))}
+              {...register('tax_id')} />
+            <FormSelect label="Tax ID Type"
+              {...register('tax_id_type')}
               placeholder="Select type..."
               options={[
                 { value: '', label: 'None' },
@@ -754,32 +754,54 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
                 { value: 'abn', label: 'ABN' },
                 { value: 'other', label: 'Other' },
               ]} />
-            <FormField label="Tax Country" value={form.tax_country} maxLength={2}
-              placeholder="ISO code (e.g. US, IN, DE)"
-              onChange={e => setForm(f => ({ ...f, tax_country: e.target.value.toUpperCase() }))} />
-            <FormField label="Tax State" value={form.tax_state} maxLength={10}
-              placeholder="State/province code (e.g. KA, CA)"
-              onChange={e => setForm(f => ({ ...f, tax_state: e.target.value.toUpperCase() }))} />
-            <FormField label="Tax Rate Override" value={form.tax_override_rate} maxLength={6}
+            <Controller
+              name="tax_country"
+              control={control}
+              render={({ field }) => (
+                <FormField label="Tax Country" maxLength={2}
+                  placeholder="ISO code (e.g. US, IN, DE)"
+                  name={field.name} ref={field.ref} onBlur={field.onBlur}
+                  value={field.value}
+                  onChange={e => field.onChange(e.target.value.toUpperCase())} />
+              )}
+            />
+            <Controller
+              name="tax_state"
+              control={control}
+              render={({ field }) => (
+                <FormField label="Tax State" maxLength={10}
+                  placeholder="State/province code (e.g. KA, CA)"
+                  name={field.name} ref={field.ref} onBlur={field.onBlur}
+                  value={field.value}
+                  onChange={e => field.onChange(e.target.value.toUpperCase())} />
+              )}
+            />
+            <FormField label="Tax Rate Override" maxLength={6}
               placeholder="e.g. 18.00 (leave empty for default)"
-              onChange={e => setForm(f => ({ ...f, tax_override_rate: e.target.value }))} />
-            <FormField label="Tax Name Override" value={form.tax_override_name} maxLength={30}
+              {...register('tax_override_rate')} />
+            <FormField label="Tax Name Override" maxLength={30}
               placeholder="e.g. VAT, GST, Sales Tax"
-              onChange={e => setForm(f => ({ ...f, tax_override_name: e.target.value }))} />
+              {...register('tax_override_name')} />
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <FormField label="Tax Identifier (legacy)" value={form.tax_identifier} maxLength={30}
+            <FormField label="Tax Identifier (legacy)" maxLength={30}
               placeholder="Legacy tax identifier" mono
-              onChange={e => setForm(f => ({ ...f, tax_identifier: e.target.value }))} />
+              {...register('tax_identifier')} />
             <div className="flex items-center gap-3 pt-6">
-              <button type="button" onClick={() => setForm(f => ({ ...f, tax_exempt: !f.tax_exempt }))}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${form.tax_exempt ? 'bg-velox-600' : 'bg-gray-200'}`}>
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${form.tax_exempt ? 'translate-x-[18px]' : 'translate-x-[2px]'}`} />
-              </button>
+              <Controller
+                name="tax_exempt"
+                control={control}
+                render={({ field }) => (
+                  <button type="button" onClick={() => field.onChange(!field.value)}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${field.value ? 'bg-velox-600' : 'bg-gray-200'}`}>
+                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${field.value ? 'translate-x-[18px]' : 'translate-x-[2px]'}`} />
+                  </button>
+                )}
+              />
               <span className="text-sm text-gray-700">Tax Exempt</span>
             </div>
-            <FormSelect label="Billing Currency" value={form.currency}
-              onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}
+            <FormSelect label="Billing Currency"
+              {...register('currency')}
               placeholder="Default (from settings)"
               options={[
                 { value: '', label: 'Default (from settings)' },
@@ -805,9 +827,9 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-4">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 mt-4 border-t border-gray-100 dark:border-gray-800">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving || !hasChanges}
+          <button type="submit" disabled={isSubmitting || !hasChanges}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Saving...' : hasChanges ? 'Save' : 'No changes'}
+            {isSubmitting ? 'Saving...' : hasChanges ? 'Save' : 'No changes'}
           </button>
         </div>
       </form>
@@ -818,61 +840,61 @@ function EditBillingProfileModal({ customerId, profile, onClose, onSaved }: {
 function CreateSubscriptionFromCustomerModal({ customerId, plans, onClose, onCreated }: {
   customerId: string; plans: Plan[]; onClose: () => void; onCreated: (sub: Subscription) => void
 }) {
-  const [form, setForm] = useState({
-    code: '', display_name: '', plan_id: '', start_now: true,
-  })
   const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
 
-  const fieldRules = useMemo(() => ({
-    display_name: [rules.required('Display name')],
-    code: [rules.required('Code'), rules.slug()],
-    plan_id: [rules.required('Plan')],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+  const { register, handleSubmit, control, formState: { errors, isSubmitting } } = useForm<CreateSubFromCustomerData>({
+    resolver: zodResolver(createSubFromCustomerSchema),
+    defaultValues: { code: '', display_name: '', plan_id: '', start_now: true },
+  })
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll(form)) return
-    setSaving(true); setError('')
+  const onSubmit = handleSubmit(async (data) => {
+    setError('')
     try {
       const sub = await api.createSubscription({
-        ...form,
+        ...data,
         customer_id: customerId,
       })
       onCreated(sub)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create subscription')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   return (
     <Modal open onClose={onClose} title="Create Subscription">
-      <form onSubmit={handleSubmit} noValidate className="space-y-3">
-        <FormField label="Display Name" required value={form.display_name} placeholder="Pro Monthly" maxLength={255}
-          ref={registerRef('display_name')} error={fieldError('display_name')}
-          onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))}
-          onBlur={() => onBlur('display_name', form.display_name)} />
-        <FormField label="Code" required value={form.code} placeholder="pro-monthly" maxLength={100} mono
-          ref={registerRef('code')} error={fieldError('code')}
-          onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
-          onBlur={() => onBlur('code', form.code)} />
-        <SearchSelect label="Plan" required value={form.plan_id} error={fieldError('plan_id')}
-          onChange={(v) => { setForm(f => ({ ...f, plan_id: v })); onBlur('plan_id', v) }}
-          placeholder="Select plan..."
-          options={plans.map(p => ({ value: p.id, label: p.name, sublabel: p.code }))} />
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={form.start_now} onChange={e => setForm(f => ({ ...f, start_now: e.target.checked }))} />
-          Start immediately (activate + set billing period)
-        </label>
+      <form onSubmit={onSubmit} noValidate className="space-y-3">
+        <FormField label="Display Name" required placeholder="Pro Monthly" maxLength={255}
+          error={errors.display_name?.message}
+          {...register('display_name')} />
+        <FormField label="Code" required placeholder="pro-monthly" maxLength={100} mono
+          error={errors.code?.message}
+          {...register('code')} />
+        <Controller
+          name="plan_id"
+          control={control}
+          render={({ field }) => (
+            <SearchSelect label="Plan" required value={field.value} error={errors.plan_id?.message}
+              onChange={field.onChange}
+              placeholder="Select plan..."
+              options={plans.map(p => ({ value: p.id, label: p.name, sublabel: p.code }))} />
+          )}
+        />
+        <Controller
+          name="start_now"
+          control={control}
+          render={({ field }) => (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={field.value} onChange={e => field.onChange(e.target.checked)} />
+              Start immediately (activate + set billing period)
+            </label>
+          )}
+        />
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={isSubmitting}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Creating...' : 'Create Subscription'}
+            {isSubmitting ? 'Creating...' : 'Create Subscription'}
           </button>
         </div>
       </form>
