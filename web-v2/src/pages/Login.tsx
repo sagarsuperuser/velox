@@ -43,7 +43,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 via-white to-[#F7F7FF] dark:from-gray-950 dark:via-gray-900 dark:to-[#1A1523] relative overflow-hidden">
       {/* Background pattern */}
       <div className="absolute inset-0 opacity-[0.03]" style={{
         backgroundImage: 'radial-gradient(circle at 1px 1px, currentColor 1px, transparent 0)',
@@ -53,14 +53,14 @@ export default function LoginPage() {
       <div className="w-full max-w-sm relative z-10">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary shadow-lg mb-4">
-            <Zap size={28} className="text-primary-foreground" />
+            <Zap size={28} className="text-white" />
           </div>
           <h1 className="text-3xl font-bold text-foreground">Velox</h1>
           <p className="text-muted-foreground mt-1">Billing Dashboard</p>
           <p className="text-sm text-muted-foreground/70 mt-0.5">Open-source usage-based billing</p>
         </div>
 
-        <Card>
+        <Card className="shadow-lg">
           <CardHeader className="pb-4">
             <CardTitle className="text-base">Sign in</CardTitle>
             <CardDescription>Enter your API key to access the dashboard</CardDescription>
