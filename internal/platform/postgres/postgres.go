@@ -2,15 +2,14 @@ package postgres
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/rs/xid"
 )
 
 const (
@@ -79,13 +78,10 @@ func Rollback(tx *sql.Tx) {
 	}
 }
 
-// NewID generates a prefixed random ID (e.g., vlx_cus_a1b2c3d4e5f6).
+// NewID generates a prefixed, time-sortable ID (e.g., vlx_cus_cv2q6ktjml6ng3v2q0tg).
+// Uses xid: globally unique, 20-char, URL-safe, naturally ordered by creation time.
 func NewID(prefix string) string {
-	buf := make([]byte, 12)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
-	}
-	return fmt.Sprintf("%s_%s", prefix, hex.EncodeToString(buf))
+	return fmt.Sprintf("%s_%s", prefix, xid.New().String())
 }
 
 func IsUniqueViolation(err error) bool {

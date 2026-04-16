@@ -13,63 +13,54 @@ import (
 	"strings"
 	"time"
 
+	env "github.com/caarlos0/env/v11"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type Config struct {
-	Port    string
-	Env     string // local, staging, production
-	DB      DBConfig
-	Migrate bool
+	Port    string `env:"PORT" envDefault:"8080"`
+	Env     string `env:"APP_ENV" envDefault:"local"`
+	Migrate bool   `env:"RUN_MIGRATIONS_ON_BOOT" envDefault:"false"`
+
+	DB DBConfig
 
 	// Stripe
-	StripeSecretKey     string
-	StripeWebhookSecret string
+	StripeSecretKey     string `env:"STRIPE_SECRET_KEY"`
+	StripeWebhookSecret string `env:"STRIPE_WEBHOOK_SECRET"`
 
 	// Redis (optional — rate limiting fails open without it)
-	RedisURL string
+	RedisURL string `env:"REDIS_URL"`
 
 	// Bootstrap
-	BootstrapToken string
+	BootstrapToken string `env:"VELOX_BOOTSTRAP_TOKEN"`
 }
 
 type DBConfig struct {
-	URL             string
-	MaxOpenConns    int
-	MaxIdleConns    int
-	ConnMaxLifetime time.Duration
-	ConnMaxIdleTime time.Duration
-	PingTimeout     time.Duration
-	QueryTimeout    time.Duration
+	URL             string        // Populated by loadDatabaseURL fallback, not env tags
+	MaxOpenConns    int           `env:"DB_MAX_OPEN_CONNS" envDefault:"20"`
+	MaxIdleConns    int           `env:"DB_MAX_IDLE_CONNS" envDefault:"5"`
+	ConnMaxLifetime time.Duration `env:"DB_CONN_MAX_LIFETIME" envDefault:"30m"`
+	ConnMaxIdleTime time.Duration `env:"DB_CONN_MAX_IDLE_TIME" envDefault:"120s"`
+	PingTimeout     time.Duration `env:"DB_PING_TIMEOUT" envDefault:"5s"`
+	QueryTimeout    time.Duration `env:"DB_QUERY_TIMEOUT" envDefault:"5s"`
 }
 
 func Load() (Config, error) {
-	env := envOr("APP_ENV", "local")
-
-	dbURL, err := loadDatabaseURL()
-	if err != nil {
-		return Config{}, err
+	cfg := Config{}
+	if err := env.Parse(&cfg); err != nil {
+		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
 
-	cfg := Config{
-		Port:    envOr("PORT", "8080"),
-		Env:     env,
-		Migrate: boolEnv("RUN_MIGRATIONS_ON_BOOT", false),
-		DB: DBConfig{
-			URL:             dbURL,
-			MaxOpenConns:    intEnv("DB_MAX_OPEN_CONNS", 20),
-			MaxIdleConns:    intEnv("DB_MAX_IDLE_CONNS", 5),
-			ConnMaxLifetime: time.Duration(intEnv("DB_CONN_MAX_LIFETIME_MIN", 30)) * time.Minute,
-			ConnMaxIdleTime: time.Duration(intEnv("DB_CONN_MAX_IDLE_TIME_SEC", 120)) * time.Second,
-			PingTimeout:     time.Duration(intEnv("DB_PING_TIMEOUT_SEC", 5)) * time.Second,
-			QueryTimeout:    time.Duration(intEnv("DB_QUERY_TIMEOUT_MS", 5000)) * time.Millisecond,
-		},
-		StripeSecretKey:     strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
-		StripeWebhookSecret: strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
-		RedisURL:            strings.TrimSpace(os.Getenv("REDIS_URL")),
-		BootstrapToken:      strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_TOKEN")),
+	// Handle DATABASE_URL fallback from discrete vars
+	if cfg.DB.URL == "" {
+		url, err := loadDatabaseURL()
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.DB.URL = url
 	}
 
+	// Run validation
 	if warnings := cfg.Validate(); len(warnings) > 0 {
 		for _, w := range warnings {
 			slog.Warn("config validation", "warning", w)
@@ -147,19 +138,20 @@ func (c Config) Validate() []string {
 // Stripe, Redis, or encryption settings. Used by CLI commands
 // (migrate, rollback) that only need a DB connection.
 func LoadDBOnly() (DBConfig, error) {
-	dbURL, err := loadDatabaseURL()
-	if err != nil {
-		return DBConfig{}, err
+	cfg := DBConfig{}
+	if err := env.Parse(&cfg); err != nil {
+		return DBConfig{}, fmt.Errorf("parse db config: %w", err)
 	}
-	return DBConfig{
-		URL:             dbURL,
-		MaxOpenConns:    intEnv("DB_MAX_OPEN_CONNS", 20),
-		MaxIdleConns:    intEnv("DB_MAX_IDLE_CONNS", 5),
-		ConnMaxLifetime: time.Duration(intEnv("DB_CONN_MAX_LIFETIME_MIN", 30)) * time.Minute,
-		ConnMaxIdleTime: time.Duration(intEnv("DB_CONN_MAX_IDLE_TIME_SEC", 120)) * time.Second,
-		PingTimeout:     time.Duration(intEnv("DB_PING_TIMEOUT_SEC", 5)) * time.Second,
-		QueryTimeout:    time.Duration(intEnv("DB_QUERY_TIMEOUT_MS", 5000)) * time.Millisecond,
-	}, nil
+
+	if cfg.URL == "" {
+		url, err := loadDatabaseURL()
+		if err != nil {
+			return DBConfig{}, err
+		}
+		cfg.URL = url
+	}
+
+	return cfg, nil
 }
 
 func OpenPostgres(cfg DBConfig) (*sql.DB, error) {
@@ -221,26 +213,3 @@ func envOr(key, fallback string) string {
 	return v
 }
 
-func intEnv(key string, fallback int) int {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fallback
-	}
-	return n
-}
-
-func boolEnv(key string, fallback bool) bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-	switch v {
-	case "1", "true", "yes":
-		return true
-	case "0", "false", "no":
-		return false
-	default:
-		return fallback
-	}
-}
