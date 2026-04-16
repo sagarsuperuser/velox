@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatCents, formatDate, type AnalyticsOverview, type RevenueDataPoint } from '@/lib/api'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { api, formatCents, formatDate } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { StatCard } from '@/components/StatCard'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
@@ -17,55 +18,44 @@ const periodLabels: Record<Period, string> = {
 }
 
 export function DashboardPage() {
-  const [overview, setOverview] = useState<AnalyticsOverview | null>(null)
-  const [chartData, setChartData] = useState<RevenueDataPoint[]>([])
   const [period, setPeriod] = useState<Period>('30d')
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [billingResult, setBillingResult] = useState<string | null>(null)
-  const [runningBilling, setRunningBilling] = useState(false)
   const [getStartedOpen, setGetStartedOpen] = useState(true)
+  const queryClient = useQueryClient()
 
-  const loadDashboard = async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const [ov, chart] = await Promise.all([
-        api.getAnalyticsOverview(),
-        api.getRevenueChart(period),
-      ])
-      setOverview(ov)
-      setChartData(chart.data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load dashboard')
-    } finally {
-      setLoading(false)
-    }
-  }
+  const { data: overview, isLoading: overviewLoading, error: overviewError, refetch: refetchOverview } = useQuery({
+    queryKey: ['dashboard-overview'],
+    queryFn: () => api.getAnalyticsOverview(),
+  })
 
-  useEffect(() => { loadDashboard() }, [])
+  const { data: chartRes } = useQuery({
+    queryKey: ['dashboard-chart', period],
+    queryFn: () => api.getRevenueChart(period),
+  })
 
-  // Reload chart when period changes (but not on initial mount)
-  useEffect(() => {
-    if (!loading && overview) {
-      api.getRevenueChart(period).then(res => setChartData(res.data)).catch(() => setChartData([]))
-    }
-  }, [period])
+  const chartData = chartRes?.data ?? []
+  const loading = overviewLoading
+  const error = overviewError instanceof Error ? overviewError.message : overviewError ? String(overviewError) : null
 
-  const handleTriggerBilling = async () => {
-    setRunningBilling(true)
-    setBillingResult(null)
-    try {
-      const res = await api.triggerBilling()
+  const billingMutation = useMutation({
+    mutationFn: () => api.triggerBilling(),
+    onSuccess: (res) => {
       const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       setBillingResult(`${res.invoices_generated} invoice(s) generated at ${now}`)
-      loadDashboard()
-    } catch (err) {
+      queryClient.invalidateQueries({ queryKey: ['dashboard-overview'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-chart'] })
+    },
+    onError: (err) => {
       setBillingResult('Failed: ' + (err instanceof Error ? err.message : 'unknown error'))
-    } finally {
-      setRunningBilling(false)
-    }
+    },
+  })
+
+  const handleTriggerBilling = () => {
+    setBillingResult(null)
+    billingMutation.mutate()
   }
+
+  const runningBilling = billingMutation.isPending
 
   return (
     <Layout>
@@ -91,7 +81,7 @@ export function DashboardPage() {
 
       {error ? (
         <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">
-          <ErrorState message={error} onRetry={loadDashboard} />
+          <ErrorState message={error} onRetry={() => refetchOverview()} />
         </div>
       ) : loading || !overview ? (
         <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6">

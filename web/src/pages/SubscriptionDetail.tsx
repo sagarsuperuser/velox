@@ -10,7 +10,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { CopyButton } from '@/components/CopyButton'
 
@@ -29,7 +29,6 @@ export function SubscriptionDetailPage() {
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   const [showPauseConfirm, setShowPauseConfirm] = useState(false)
   const [showChangePlan, setShowChangePlan] = useState(false)
-  const toast = useToast()
   const navigate = useNavigate()
 
   const loadData = () => {

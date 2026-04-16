@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
+import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary, type Meter, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -10,7 +11,6 @@ import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { CreditCard, Pencil } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
@@ -34,8 +34,6 @@ export function CustomerDetailPage() {
   const [settingUpPayment, setSettingUpPayment] = useState(false)
   const [dunningOverride, setDunningOverride] = useState<CustomerDunningOverride | null>(null)
   const [showDunningOverride, setShowDunningOverride] = useState(false)
-  const toast = useToast()
-
   const loadData = () => {
     if (!id) return
     setLoading(true)

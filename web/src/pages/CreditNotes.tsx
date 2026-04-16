@@ -10,7 +10,7 @@ import { SearchSelect } from '@/components/SearchSelect'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { useSortable } from '@/hooks/useSortable'
 import { Plus, Search, Download, Loader2 } from 'lucide-react'
@@ -31,7 +31,6 @@ export function CreditNotesPage() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const pageSize = 25
-  const toast = useToast()
 
   const loadNotes = () => {
     setLoading(true)

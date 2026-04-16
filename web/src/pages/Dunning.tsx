@@ -8,7 +8,7 @@ import { Modal } from '@/components/Modal'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { Pagination } from '@/components/Pagination'
 import { Loader2 } from 'lucide-react'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
@@ -91,7 +91,6 @@ function PolicyTab() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [savedForm, setSavedForm] = useState<string>('')
-  const toast = useToast()
 
   const loadPolicy = () => {
     setLoading(true)
@@ -394,7 +393,6 @@ function RunsTab() {
   const [runEvents, setRunEvents] = useState<Record<string, DunningEvent[]>>({})
   const [filterStatus, setFilterStatus] = useState('')
   const [page, setPage] = useState(1)
-  const toast = useToast()
 
   // Server-side paginated fetch
   const loadRuns = useCallback(() => {

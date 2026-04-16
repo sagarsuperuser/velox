@@ -3,7 +3,7 @@ import { api, setActiveCurrency, formatCents } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Building2, FileText, Receipt, Globe, Check, AlertCircle, Loader2 } from 'lucide-react'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
@@ -35,7 +35,6 @@ export function SettingsPage() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [savedForm, setSavedForm] = useState<string>('')
-  const toast = useToast()
 
   const [form, setForm] = useState({
     company_name: '', company_email: '', company_phone: '', company_address: '',

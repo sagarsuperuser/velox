@@ -7,7 +7,7 @@ import { Modal } from '@/components/Modal'
 import { FormField, FormSelect } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { Plus, Trash2, Loader2 } from 'lucide-react'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 
@@ -21,7 +21,6 @@ export function PricingPage() {
   const tab = (['plans', 'meters', 'rules'].includes(searchParams.get('tab') || '') ? searchParams.get('tab') : 'plans') as 'plans' | 'meters' | 'rules'
   const setTab = (t: 'plans' | 'meters' | 'rules') => setSearchParams(t === 'plans' ? {} : { tab: t })
   const [createFor, setCreateFor] = useState<'plans' | 'meters' | 'rules' | null>(null)
-  const toast = useToast()
   const navigate = useNavigate()
 
   const loadAll = () => {

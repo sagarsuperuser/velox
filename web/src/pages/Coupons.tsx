@@ -8,7 +8,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus, Power, Eye, Copy, Search, Loader2 } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
@@ -36,7 +36,6 @@ export function CouponsPage() {
   const [filterStatus, setFilterStatus] = useState('')
   const [search, setSearch] = useState('')
 
-  const toast = useToast()
 
   const loadData = () => {
     setLoading(true)
