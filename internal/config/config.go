@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net"
 	neturl "net/url"
 	"os"
@@ -71,7 +72,7 @@ func Load() (Config, error) {
 
 	if warnings := cfg.Validate(); len(warnings) > 0 {
 		for _, w := range warnings {
-			fmt.Fprintf(os.Stderr, "config warning: %s\n", w)
+			slog.Warn("config validation", "warning", w)
 		}
 	}
 
