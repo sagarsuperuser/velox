@@ -225,12 +225,11 @@ export function SettingsPage() {
               </div>
               <div>
                 <label className={labelCls}>Payment Terms</label>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-gray-500 dark:text-gray-400 shrink-0">Net</span>
+                <div className="relative">
                   <input type="number" min={0} max={365} value={form.net_payment_terms}
                     onChange={e => setForm(f => ({ ...f, net_payment_terms: parseInt(e.target.value) || 0 }))}
-                    className={inputCls + ' w-20 text-center'} />
-                  <span className="text-sm text-gray-500 dark:text-gray-400 shrink-0">days</span>
+                    className={inputCls + ' pr-16'} />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-gray-400 pointer-events-none">days</span>
                 </div>
                 <p className={hintCls}>Days after issue before payment is due</p>
               </div>
@@ -260,12 +259,12 @@ export function SettingsPage() {
               </div>
               <div>
                 <label className={labelCls}>Tax Rate</label>
-                <div className="flex items-center gap-2">
+                <div className="relative">
                   <input type="number" step="0.01" min={0} max={100}
                     value={form.tax_rate || ''}
                     onChange={e => setForm(f => ({ ...f, tax_rate: parseFloat(e.target.value) || 0 }))}
-                    className={inputCls + ' w-24 text-center'} placeholder="0" />
-                  <span className="text-sm text-gray-500 dark:text-gray-400 shrink-0">%</span>
+                    className={inputCls + ' pr-8'} placeholder="0" />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-gray-400 pointer-events-none">%</span>
                 </div>
                 <p className={hintCls}>Set to 0 to disable tax</p>
               </div>
@@ -297,14 +296,14 @@ export function SettingsPage() {
             </div>
           </div>
           <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card border border-gray-100 dark:border-gray-800 p-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="flex items-center justify-between py-2 px-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                <span className="text-sm text-gray-600 dark:text-gray-400">API Endpoint</span>
-                <code className="text-sm font-mono text-gray-900 dark:text-gray-100">{window.location.origin}/v1</code>
+            <div className="space-y-3">
+              <div className="py-2.5 px-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">API Endpoint</p>
+                <code className="text-sm font-mono text-gray-900 dark:text-gray-100 break-all">{window.location.origin}/v1</code>
               </div>
-              <div className="flex items-center justify-between py-2 px-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                <span className="text-sm text-gray-600 dark:text-gray-400">Webhook URL</span>
-                <code className="text-sm font-mono text-gray-900 dark:text-gray-100">{window.location.origin}/v1/webhooks/stripe</code>
+              <div className="py-2.5 px-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Stripe Webhook URL</p>
+                <code className="text-sm font-mono text-gray-900 dark:text-gray-100 break-all">{window.location.origin}/v1/webhooks/stripe</code>
               </div>
             </div>
           </div>
