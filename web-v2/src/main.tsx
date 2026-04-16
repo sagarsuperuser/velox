@@ -65,6 +65,24 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
 const LoginPage = lazy(() => import('@/pages/Login'))
 const DashboardPage = lazy(() => import('@/pages/Dashboard'))
 const CustomersPage = lazy(() => import('@/pages/Customers'))
+const PricingPage = lazy(() => import('@/pages/Pricing'))
+const DunningPage = lazy(() => import('@/pages/Dunning'))
+const WebhooksPage = lazy(() => import('@/pages/Webhooks'))
+const ApiKeysPage = lazy(() => import('@/pages/ApiKeys'))
+const SettingsPage = lazy(() => import('@/pages/Settings'))
+const InvoicesPage = lazy(() => import('@/pages/Invoices'))
+const SubscriptionsPage = lazy(() => import('@/pages/Subscriptions'))
+const UsageEventsPage = lazy(() => import('@/pages/UsageEvents'))
+const CouponsPage = lazy(() => import('@/pages/Coupons'))
+const CreditsPage = lazy(() => import('@/pages/Credits'))
+const CreditNotesPage = lazy(() => import('@/pages/CreditNotes'))
+const AuditLogPage = lazy(() => import('@/pages/AuditLog'))
+const UpdatePaymentPage = lazy(() => import('@/pages/UpdatePayment'))
+const CustomerDetailPage = lazy(() => import('@/pages/CustomerDetail'))
+const InvoiceDetailPage = lazy(() => import('@/pages/InvoiceDetail'))
+const SubscriptionDetailPage = lazy(() => import('@/pages/SubscriptionDetail'))
+const PlanDetailPage = lazy(() => import('@/pages/PlanDetail'))
+const MeterDetailPage = lazy(() => import('@/pages/MeterDetail'))
 
 const App = () => (
   <ErrorBoundary>
@@ -82,6 +100,24 @@ const App = () => (
               <Route path="/login" element={<LoginPage />} />
               <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
               <Route path="/customers" element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
+              <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
+              <Route path="/dunning" element={<ProtectedRoute><DunningPage /></ProtectedRoute>} />
+              <Route path="/webhooks" element={<ProtectedRoute><WebhooksPage /></ProtectedRoute>} />
+              <Route path="/api-keys" element={<ProtectedRoute><ApiKeysPage /></ProtectedRoute>} />
+              <Route path="/invoices" element={<ProtectedRoute><InvoicesPage /></ProtectedRoute>} />
+              <Route path="/subscriptions" element={<ProtectedRoute><SubscriptionsPage /></ProtectedRoute>} />
+              <Route path="/usage" element={<ProtectedRoute><UsageEventsPage /></ProtectedRoute>} />
+              <Route path="/coupons" element={<ProtectedRoute><CouponsPage /></ProtectedRoute>} />
+              <Route path="/credits" element={<ProtectedRoute><CreditsPage /></ProtectedRoute>} />
+              <Route path="/credit-notes" element={<ProtectedRoute><CreditNotesPage /></ProtectedRoute>} />
+              <Route path="/audit-log" element={<ProtectedRoute><AuditLogPage /></ProtectedRoute>} />
+              <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+              <Route path="/customers/:id" element={<ProtectedRoute><CustomerDetailPage /></ProtectedRoute>} />
+              <Route path="/invoices/:id" element={<ProtectedRoute><InvoiceDetailPage /></ProtectedRoute>} />
+              <Route path="/subscriptions/:id" element={<ProtectedRoute><SubscriptionDetailPage /></ProtectedRoute>} />
+              <Route path="/plans/:id" element={<ProtectedRoute><PlanDetailPage /></ProtectedRoute>} />
+              <Route path="/meters/:id" element={<ProtectedRoute><MeterDetailPage /></ProtectedRoute>} />
+              <Route path="/update-payment" element={<UpdatePaymentPage />} />
             </Routes>
           </Suspense>
         </BrowserRouter>
