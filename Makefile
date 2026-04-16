@@ -18,10 +18,14 @@ dev:
 
 # Run all tests
 test:
-	go test ./... -v -count=1
+	go test ./... -count=1
 
-# Run tests with short flag (unit only)
+# Run tests with short flag (unit only, sequential to avoid env var leaks)
 test-unit:
+	go test -p 1 ./... -short -count=1
+
+# Run tests verbose (for debugging)
+test-verbose:
 	go test ./... -v -short -count=1
 
 # Run linter
