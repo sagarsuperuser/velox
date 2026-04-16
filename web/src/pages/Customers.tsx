@@ -128,13 +128,15 @@ export function CustomersPage() {
               Export CSV
             </button>
           )}
-          <button
-            onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors"
-          >
-            <Plus size={16} />
-            Add Customer
-          </button>
+          {total > 0 && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors"
+            >
+              <Plus size={16} />
+              Add Customer
+            </button>
+          )}
         </div>
       </div>
 

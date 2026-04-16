@@ -72,10 +72,12 @@ export function ApiKeysPage() {
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">API Keys</h1>
           <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Manage API keys for programmatic access</p>
         </div>
-        <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
-          <Plus size={16} /> Create API Key
-        </button>
+        {keys.length > 0 && (
+          <button onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
+            <Plus size={16} /> Create API Key
+          </button>
+        )}
       </div>
 
       {error ? (

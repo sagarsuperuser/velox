@@ -88,17 +88,19 @@ function EndpointsTab() {
 
   return (
     <>
-      <div className="flex justify-end mt-4">
-        <button onClick={() => setShowCreate(true)}
-          className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
-          Add Endpoint
-        </button>
-      </div>
+      {endpoints.length > 0 && (
+        <div className="flex justify-end mt-4">
+          <button onClick={() => setShowCreate(true)}
+            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
+            Add Endpoint
+          </button>
+        </div>
+      )}
 
       <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-4">
         {error ? <ErrorState message={error} onRetry={loadEndpoints} />
         : loading ? <LoadingSkeleton rows={5} columns={5} />
-        : endpoints.length === 0 ? <EmptyState title="No webhook endpoints" description="Add an endpoint to receive event notifications" />
+        : endpoints.length === 0 ? <EmptyState title="No webhook endpoints" description="Add an endpoint to receive event notifications" actionLabel="Add Endpoint" onAction={() => setShowCreate(true)} />
         : (
           <div className="overflow-x-auto">
           <table className="w-full">

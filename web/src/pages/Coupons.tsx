@@ -100,10 +100,12 @@ export function CouponsPage() {
               : 'Create discount codes for your customers'}
           </p>
         </div>
-        <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
-          <Plus size={16} /> Create Coupon
-        </button>
+        {coupons.length > 0 && (
+          <button onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow transition-colors">
+            <Plus size={16} /> Create Coupon
+          </button>
+        )}
       </div>
 
       {/* Tab filters + search */}
@@ -144,7 +146,7 @@ export function CouponsPage() {
         ) : loading ? (
           <LoadingSkeleton rows={6} columns={7} />
         ) : coupons.length === 0 ? (
-          <EmptyState title="No coupons" description="Create your first coupon to offer discounts" />
+          <EmptyState title="No coupons" description="Create your first coupon to offer discounts" actionLabel="Create Coupon" onAction={() => setShowCreate(true)} />
         ) : filteredCoupons.length === 0 ? (
           <p className="px-6 py-8 text-sm text-gray-400 text-center">No coupons match your filters</p>
         ) : (
