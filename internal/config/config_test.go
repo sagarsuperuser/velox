@@ -7,9 +7,12 @@ import (
 )
 
 func TestLoad_Defaults(t *testing.T) {
-	// Set minimum required env
-	os.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
-	defer os.Unsetenv("DATABASE_URL")
+	// Explicitly control env to avoid .env file interference via Makefile
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	t.Setenv("PORT", "")
+	t.Setenv("APP_ENV", "")
+	t.Setenv("RUN_MIGRATIONS_ON_BOOT", "")
+	t.Setenv("DB_MAX_OPEN_CONNS", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -103,8 +106,7 @@ func TestValidate_InvalidStripePrefix(t *testing.T) {
 
 func TestValidate_ValidConfig(t *testing.T) {
 	// Set a valid 64-char hex encryption key so the validator doesn't warn
-	os.Setenv("VELOX_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-	defer os.Unsetenv("VELOX_ENCRYPTION_KEY")
+	t.Setenv("VELOX_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 
 	cfg := Config{
 		Port:                "8080",
@@ -137,8 +139,7 @@ func TestValidate_EncryptionKeyWarnings(t *testing.T) {
 	}
 
 	// Invalid length should warn
-	os.Setenv("VELOX_ENCRYPTION_KEY", "tooshort")
-	defer os.Unsetenv("VELOX_ENCRYPTION_KEY")
+	t.Setenv("VELOX_ENCRYPTION_KEY", "tooshort")
 	warnings = cfg.Validate()
 	found = false
 	for _, w := range warnings {
@@ -151,7 +152,7 @@ func TestValidate_EncryptionKeyWarnings(t *testing.T) {
 	}
 
 	// Invalid hex should warn
-	os.Setenv("VELOX_ENCRYPTION_KEY", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+	t.Setenv("VELOX_ENCRYPTION_KEY", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
 	warnings = cfg.Validate()
 	found = false
 	for _, w := range warnings {
