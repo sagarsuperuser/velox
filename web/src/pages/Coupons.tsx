@@ -1,4 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
+import { useForm, Controller } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { api, formatCents, formatDate, formatDateTime, type Coupon, type CouponRedemption } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -9,10 +12,22 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { toast } from 'sonner'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus, Power, Eye, Copy, Search, Loader2 } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
+
+const createCouponSchema = z.object({
+  code: z.string().min(1, 'Code is required'),
+  name: z.string().min(1, 'Name is required'),
+  type: z.enum(['percentage', 'fixed_amount']),
+  discountValue: z.string().min(1, 'Discount value is required').refine(v => parseFloat(v) >= 0.01, 'Must be at least 0.01'),
+  currency: z.string(),
+  maxRedemptions: z.string(),
+  expiresAt: z.string(),
+  planIds: z.array(z.string()),
+})
+
+type CreateCouponData = z.infer<typeof createCouponSchema>
 
 function couponStatus(c: Coupon): string {
   if (!c.active) return 'inactive'
@@ -242,71 +257,66 @@ export function CouponsPage() {
 // --- Create Coupon Modal ---
 
 function CreateCouponModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-  const [code, setCode] = useState('')
-  const [name, setName] = useState('')
-  const [type, setType] = useState<'percentage' | 'fixed_amount'>('percentage')
-  const [discountValue, setDiscountValue] = useState('')
-  const [currency, setCurrency] = useState('USD')
-  const [maxRedemptions, setMaxRedemptions] = useState('')
-  const [expiresAt, setExpiresAt] = useState('')
-  const [planIds, setPlanIds] = useState<string[]>([])
   const [plans, setPlans] = useState<{ id: string; name: string; code: string }[]>([])
   const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     api.listPlans().then(res => setPlans(res.data || [])).catch(() => {})
   }, [])
 
-  const fieldRules = useMemo(() => ({
-    code: [rules.required('Code')],
-    name: [rules.required('Name')],
-    discountValue: [rules.required('Discount value'), rules.minAmount(0.01)],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+  const { register, handleSubmit, watch, setValue, control, formState: { errors, isSubmitting, isDirty } } = useForm<CreateCouponData>({
+    resolver: zodResolver(createCouponSchema),
+    defaultValues: { code: '', name: '', type: 'percentage', discountValue: '', currency: 'USD', maxRedemptions: '', expiresAt: '', planIds: [] },
+  })
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll({ code, name, discountValue })) return
-    setSaving(true)
+  const type = watch('type')
+  const planIds = watch('planIds')
+  const expiresAt = watch('expiresAt')
+
+  const onSubmit = handleSubmit(async (data) => {
     setError('')
     try {
       const payload: Parameters<typeof api.createCoupon>[0] = {
-        code,
-        name,
-        type,
-        ...(type === 'percentage'
-          ? { percent_off: parseFloat(discountValue) }
-          : { amount_off: Math.round(parseFloat(discountValue) * 100), currency }),
-        ...(maxRedemptions ? { max_redemptions: parseInt(maxRedemptions, 10) } : {}),
-        ...(expiresAt ? { expires_at: new Date(expiresAt).toISOString() } : {}),
-        ...(planIds.length > 0 ? { plan_ids: planIds } : {}),
+        code: data.code,
+        name: data.name,
+        type: data.type,
+        ...(data.type === 'percentage'
+          ? { percent_off: parseFloat(data.discountValue) }
+          : { amount_off: Math.round(parseFloat(data.discountValue) * 100), currency: data.currency }),
+        ...(data.maxRedemptions ? { max_redemptions: parseInt(data.maxRedemptions, 10) } : {}),
+        ...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
+        ...(data.planIds.length > 0 ? { plan_ids: data.planIds } : {}),
       }
       await api.createCoupon(payload)
       onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create coupon')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   return (
-    <Modal open onClose={onClose} title="Create Coupon" dirty={!!(code || name || discountValue)}>
-      <form onSubmit={handleSubmit} noValidate className="space-y-4">
-        <FormField label="Code" required value={code} placeholder="LAUNCH20"
-          ref={registerRef('code')} error={fieldError('code')}
-          onChange={e => setCode(e.target.value.toUpperCase())}
-          onBlur={() => onBlur('code', code)}
-          hint="3-50 characters, alphanumeric and dashes" />
+    <Modal open onClose={onClose} title="Create Coupon" dirty={isDirty}>
+      <form onSubmit={onSubmit} noValidate className="space-y-4">
+        <Controller
+          name="code"
+          control={control}
+          render={({ field }) => (
+            <FormField label="Code" required placeholder="LAUNCH20"
+              error={errors.code?.message}
+              hint="3-50 characters, alphanumeric and dashes"
+              name={field.name} ref={field.ref} onBlur={field.onBlur}
+              value={field.value}
+              onChange={e => field.onChange(e.target.value.toUpperCase())} />
+          )}
+        />
 
-        <FormField label="Name" required value={name} placeholder="Launch Discount"
-          ref={registerRef('name')} error={fieldError('name')}
-          onChange={e => setName(e.target.value)}
-          onBlur={() => onBlur('name', name)} />
+        <FormField label="Name" required placeholder="Launch Discount"
+          error={errors.name?.message}
+          {...register('name')} />
 
-        <FormSelect label="Discount Type" required value={type}
-          onChange={e => setType(e.target.value as 'percentage' | 'fixed_amount')}
+        <FormSelect label="Discount Type" required
+          value={type}
+          onChange={e => setValue('type', e.target.value as 'percentage' | 'fixed_amount')}
           options={[
             { value: 'percentage', label: 'Percentage (%)' },
             { value: 'fixed_amount', label: 'Fixed Amount' },
@@ -318,28 +328,35 @@ function CreateCouponModal({ onClose, onDone }: { onClose: () => void; onDone: (
               label={type === 'percentage' ? 'Percent Off (%)' : 'Amount Off'}
               required type="number" step={type === 'percentage' ? '0.01' : '0.01'}
               min="0.01" max={type === 'percentage' ? '100' : '999999.99'}
-              value={discountValue} placeholder={type === 'percentage' ? '20' : '10.00'}
-              ref={registerRef('discountValue')} error={fieldError('discountValue')}
-              onChange={e => setDiscountValue(e.target.value)}
-              onBlur={() => onBlur('discountValue', discountValue)} />
+              placeholder={type === 'percentage' ? '20' : '10.00'}
+              error={errors.discountValue?.message}
+              {...register('discountValue')} />
           </div>
           {type === 'fixed_amount' && (
             <div className="w-28">
-              <FormField label="Currency" required value={currency}
-                onChange={e => setCurrency(e.target.value.toUpperCase())}
-                placeholder="USD" />
+              <Controller
+                name="currency"
+                control={control}
+                render={({ field }) => (
+                  <FormField label="Currency" required
+                    placeholder="USD"
+                    name={field.name} ref={field.ref} onBlur={field.onBlur}
+                    value={field.value}
+                    onChange={e => field.onChange(e.target.value.toUpperCase())} />
+                )}
+              />
             </div>
           )}
         </div>
 
         <FormField label="Max Redemptions" type="number" min="1" step="1"
-          value={maxRedemptions} placeholder="Unlimited"
-          onChange={e => setMaxRedemptions(e.target.value)}
-          hint="Leave empty for unlimited" />
+          placeholder="Unlimited"
+          hint="Leave empty for unlimited"
+          {...register('maxRedemptions')} />
 
         <DatePicker
-          value={expiresAt}
-          onChange={setExpiresAt}
+          value={expiresAt ?? ''}
+          onChange={v => setValue('expiresAt', v, { shouldDirty: true })}
           label="Expiry Date"
           includeTime
           hint="Leave empty for no expiration" />
@@ -352,7 +369,7 @@ function CreateCouponModal({ onClose, onDone }: { onClose: () => void; onDone: (
                 <label key={p.id} className="flex items-center gap-3 px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 transition-colors">
                   <input type="checkbox" checked={planIds.includes(p.id)}
                     className="rounded border-gray-300 text-velox-600 focus:ring-velox-500"
-                    onChange={e => setPlanIds(e.target.checked ? [...planIds, p.id] : planIds.filter(id => id !== p.id))} />
+                    onChange={e => setValue('planIds', e.target.checked ? [...planIds, p.id] : planIds.filter(id => id !== p.id), { shouldDirty: true })} />
                   <span className="text-gray-900 dark:text-gray-100">{p.name}</span>
                   <span className="text-gray-400 font-mono text-xs ml-auto">{p.code}</span>
                 </label>
@@ -369,9 +386,9 @@ function CreateCouponModal({ onClose, onDone }: { onClose: () => void; onDone: (
             className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
             Cancel
           </button>
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={isSubmitting}
             className="flex items-center justify-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50 transition-colors">
-            {saving ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Coupon'}
+            {isSubmitting ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Coupon'}
           </button>
         </div>
       </form>

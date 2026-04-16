@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api, formatCents, formatDate, formatDateTime, type Subscription, type Customer, type Plan, type Invoice, type InvoicePreview } from '@/lib/api'
 import { Layout } from '@/components/Layout'
@@ -11,7 +11,9 @@ import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { toast } from 'sonner'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
+import { useForm, Controller } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { CopyButton } from '@/components/CopyButton'
 
 export function SubscriptionDetailPage() {
@@ -456,6 +458,12 @@ export function SubscriptionDetailPage() {
   )
 }
 
+const changePlanSchema = z.object({
+  plan_id: z.string().min(1, 'Plan is required'),
+  immediate: z.boolean(),
+})
+type ChangePlanData = z.infer<typeof changePlanSchema>
+
 function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans, onClose, onChanged }: {
   subscriptionId: string
   currentPlanId: string
@@ -464,64 +472,71 @@ function ChangePlanModal({ subscriptionId, currentPlanId, currentPlanName, plans
   onClose: () => void
   onChanged: (sub: Subscription, proration?: { type: string; amount_cents: number; invoice_id?: string }) => void
 }) {
-  const [newPlanId, setNewPlanId] = useState('')
-  const [immediate, setImmediate] = useState(false)
-  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const fieldRules = useMemo(() => ({
-    plan_id: [rules.required('Plan')],
-  }), [])
-  const { onBlur, validateAll, fieldError } = useFormValidation(fieldRules)
+  const { handleSubmit, watch, control, formState: { errors, isSubmitting } } = useForm<ChangePlanData>({
+    resolver: zodResolver(changePlanSchema),
+    defaultValues: { plan_id: '', immediate: false },
+  })
 
+  const planId = watch('plan_id')
+  const immediate = watch('immediate')
   const availablePlans = plans.filter(p => p.id !== currentPlanId && p.status === 'active')
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll({ plan_id: newPlanId })) return
-    setSaving(true); setError('')
+  const onSubmit = handleSubmit(async (data) => {
+    setError('')
     try {
-      const res = await api.changePlan(subscriptionId, { new_plan_id: newPlanId, immediate })
+      const res = await api.changePlan(subscriptionId, { new_plan_id: data.plan_id, immediate: data.immediate })
       onChanged(res.subscription, res.proration)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to change plan')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   return (
     <Modal open onClose={onClose} title="Change Plan">
-      <form onSubmit={handleSubmit} noValidate className="space-y-4">
+      <form onSubmit={onSubmit} noValidate className="space-y-4">
         <div>
           <p className="text-sm text-gray-600 dark:text-gray-400">Current plan</p>
           <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 mt-0.5">{currentPlanName}</p>
         </div>
 
-        <SearchSelect label="New Plan" required value={newPlanId} error={fieldError('plan_id')}
-          onChange={(v) => { setNewPlanId(v); onBlur('plan_id', v) }}
-          placeholder="Select a plan..."
-          options={availablePlans.map(p => ({ value: p.id, label: `${p.name} — ${formatCents(p.base_amount_cents)}/${p.billing_interval}`, sublabel: p.code }))} />
+        <Controller
+          name="plan_id"
+          control={control}
+          render={({ field }) => (
+            <SearchSelect label="New Plan" required value={field.value} error={errors.plan_id?.message}
+              onChange={field.onChange}
+              placeholder="Select a plan..."
+              options={availablePlans.map(p => ({ value: p.id, label: `${p.name} — ${formatCents(p.base_amount_cents)}/${p.billing_interval}`, sublabel: p.code }))} />
+          )}
+        />
 
-        <label className="flex items-start gap-2 text-sm">
-          <input type="checkbox" checked={immediate} onChange={e => setImmediate(e.target.checked)}
-            className="mt-0.5" />
-          <div>
-            <span className="font-medium text-gray-700">Apply immediately (with proration)</span>
-            {immediate && (
-              <p className="text-xs text-gray-500 mt-1">
-                The remaining time on the current billing period will be prorated. A credit or charge will be applied based on the price difference between plans.
-              </p>
-            )}
-          </div>
-        </label>
+        <Controller
+          name="immediate"
+          control={control}
+          render={({ field }) => (
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" checked={field.value} onChange={e => field.onChange(e.target.checked)}
+                className="mt-0.5" />
+              <div>
+                <span className="font-medium text-gray-700">Apply immediately (with proration)</span>
+                {immediate && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    The remaining time on the current billing period will be prorated. A credit or charge will be applied based on the price difference between plans.
+                  </p>
+                )}
+              </div>
+            </label>
+          )}
+        />
 
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving || !newPlanId}
+          <button type="submit" disabled={isSubmitting || !planId}
             className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Changing...' : 'Change Plan'}
+            {isSubmitting ? 'Changing...' : 'Change Plan'}
           </button>
         </div>
       </form>

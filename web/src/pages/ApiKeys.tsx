@@ -1,4 +1,7 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { api, formatDateTime, type ApiKeyInfo } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -8,9 +11,14 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { toast } from 'sonner'
-import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus, Key, Shield, Eye, ChevronDown, Loader2 } from 'lucide-react'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
+
+const createApiKeySchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+})
+
+type CreateApiKeyData = z.infer<typeof createApiKeySchema>
 
 function relativeTime(dateStr: string): string {
   const now = Date.now()
@@ -239,38 +247,31 @@ export function ApiKeysPage() {
 }
 
 function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated: (rawKey: string) => void }) {
-  const [name, setName] = useState('')
   const [keyType, setKeyType] = useState('secret')
-  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const fieldRules = useMemo(() => ({
-    name: [rules.required('Name')],
-  }), [])
-  const { onBlur, validateAll, fieldError, registerRef } = useFormValidation(fieldRules)
+  const { register, handleSubmit, formState: { errors, isSubmitting, isDirty } } = useForm<CreateApiKeyData>({
+    resolver: zodResolver(createApiKeySchema),
+    defaultValues: { name: '' },
+  })
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!validateAll({ name })) return
-    setSaving(true); setError('')
+  const onSubmit = handleSubmit(async (data) => {
+    setError('')
     try {
-      const res = await api.createApiKey({ name, key_type: keyType })
+      const res = await api.createApiKey({ name: data.name, key_type: keyType })
       onCreated(res.raw_key)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create API key')
-    } finally {
-      setSaving(false)
     }
-  }
+  })
 
   return (
-    <Modal open onClose={onClose} title="Create API Key" dirty={!!name}>
-      <form onSubmit={handleSubmit} noValidate className="space-y-4">
-        <FormField label="Name" required value={name} placeholder="e.g. Production, Staging, CI/CD" maxLength={100}
-          ref={registerRef('name')} error={fieldError('name')}
-          onChange={e => setName(e.target.value)}
-          onBlur={() => onBlur('name', name)}
-          hint="A descriptive name to identify this key" />
+    <Modal open onClose={onClose} title="Create API Key" dirty={isDirty}>
+      <form onSubmit={onSubmit} noValidate className="space-y-4">
+        <FormField label="Name" required placeholder="e.g. Production, Staging, CI/CD" maxLength={100}
+          error={errors.name?.message}
+          hint="A descriptive name to identify this key"
+          {...register('name')} />
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">Key Type</label>
@@ -301,9 +302,9 @@ function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated
         {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={isSubmitting}
             className="flex items-center justify-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Key'}
+            {isSubmitting ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Key'}
           </button>
         </div>
       </form>
