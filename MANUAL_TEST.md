@@ -2,24 +2,53 @@
 
 ## Prerequisites
 
+### What you need installed
+- Go 1.25+
+- Docker & Docker Compose
+- Node.js 22+ and npm
+- [Stripe CLI](https://stripe.com/docs/stripe-cli) (`brew install stripe/stripe-cli/stripe`)
+- Stripe test API keys from https://dashboard.stripe.com/test/apikeys
+
+### First-time setup
 ```bash
-# 1. First-time setup
-cp .env.example .env               # Fill in STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET
-
-# 2. Start infrastructure + backend + frontend (3 terminals)
-make up                             # Terminal 1: Postgres + Redis
-make dev                            # Terminal 2: API server on :8080 (auto-migrates)
-make web-dev                        # Terminal 3: Frontend on :5173
-
-# 3. Stripe webhook forwarding (4th terminal)
-stripe listen --forward-to localhost:8080/v1/webhooks/stripe
+cp .env.example .env
+# Edit .env — fill in:
+#   STRIPE_SECRET_KEY=sk_test_...
+#   STRIPE_WEBHOOK_SECRET=whsec_...  (from `stripe listen` output below)
 ```
 
-**First run:** Open http://localhost:5173 and follow the Get Started flow, or run `make bootstrap`.
+### Start everything (4 terminals)
+```bash
+# Terminal 1 — Infrastructure
+make up                             # Starts Postgres + Redis
 
-**Fresh DB:** `docker compose down -v && make up` then `make dev` (re-runs all migrations).
+# Terminal 2 — Backend API
+make dev                            # Runs migrations, starts server on :8080
 
-**Run tests:** `make test-unit` (all 26 packages).
+# Terminal 3 — Frontend
+make web-install                    # First time only (npm install)
+make web-dev                        # Starts dev server on :5173
+
+# Terminal 4 — Stripe webhooks
+stripe listen --forward-to localhost:8080/v1/webhooks/stripe
+# Copy the "whsec_..." signing secret into your .env file
+```
+
+### Bootstrap (first run only)
+```bash
+make bootstrap                      # Creates tenant + prints API key
+```
+Then open http://localhost:5173, paste the API key, sign in.
+
+### Useful commands
+| Command | What it does |
+|---------|-------------|
+| `make dev` | Start backend (auto-migrates) |
+| `make web-dev` | Start frontend |
+| `make test-unit` | Run all 26 test packages |
+| `make up` / `make down` | Start/stop Postgres + Redis |
+| `docker compose down -v && make up` | Fresh DB (destroy + recreate) |
+| `make stats` | Show project stats |
 
 ### Test Cards
 | Card | Behavior |
@@ -36,31 +65,49 @@ stripe listen --forward-to localhost:8080/v1/webhooks/stripe
 
 ## FLOW 1: Config Validation
 
+> **Note:** These tests use direct commands (not `make dev`) because we need to control specific env vars.
 ### 1.1 Missing Stripe Key
 ```bash
-unset STRIPE_SECRET_KEY
-go run ./cmd/velox
+DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
+  go run ./cmd/velox
 ```
-- [ ] Verify: stderr shows "config warning: STRIPE_SECRET_KEY is not set — payment processing will fail"
-- [ ] Verify: server still starts (warnings, not errors)
+- [ ] Verify: JSON log with `"level":"WARN","msg":"config validation","warning":"STRIPE_SECRET_KEY is not set — payment processing will fail"`
+- [ ] Verify: also warns about STRIPE_WEBHOOK_SECRET
+- [ ] Verify: server still starts (warnings, not fatal)
 
 ### 1.2 Invalid Stripe Key Prefix
 ```bash
-STRIPE_SECRET_KEY=bad_key_123 go run ./cmd/velox
+DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
+  STRIPE_SECRET_KEY="bad_key_123" \
+  go run ./cmd/velox
 ```
-- [ ] Verify: warning about key not starting with `sk_`
+- [ ] Verify: warns "does not start with 'sk_' — may be invalid"
 
 ### 1.3 Production Without Redis
 ```bash
-APP_ENV=production unset REDIS_URL go run ./cmd/velox
+DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
+  STRIPE_SECRET_KEY="sk_test_fake" \
+  STRIPE_WEBHOOK_SECRET="whsec_fake" \
+  APP_ENV="production" \
+  go run ./cmd/velox
 ```
-- [ ] Verify: warning about rate limiting failing open
+- [ ] Verify: warns "REDIS_URL is not set — rate limiting will fail open"
+- [ ] Verify: warns about VELOX_ENCRYPTION_KEY in production
 
 ### 1.4 Invalid Encryption Key
 ```bash
-VELOX_ENCRYPTION_KEY=tooshort go run ./cmd/velox
+DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
+  VELOX_ENCRYPTION_KEY="tooshort" \
+  go run ./cmd/velox
 ```
-- [ ] Verify: warning about encryption key length
+- [ ] Verify: warns "VELOX_ENCRYPTION_KEY must be exactly 64 hex characters"
+
+### 1.5 All Valid (no warnings)
+```bash
+make dev
+```
+- [ ] Verify: no WARN-level config validation logs (all env vars set correctly via .env)
+- [ ] Verify: server starts cleanly with INFO logs only
 
 ---
 
