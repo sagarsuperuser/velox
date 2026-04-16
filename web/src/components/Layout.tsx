@@ -33,18 +33,22 @@ const bottomNav = [
 ]
 
 function NavLink({ to, icon: Icon, label, pathname, onClick }: { to: string; icon: typeof LayoutDashboard; label: string; pathname: string; onClick?: () => void }) {
+  const active = pathname === to
   return (
     <Link
       to={to}
       onClick={onClick}
-      aria-current={pathname === to ? 'page' : undefined}
+      aria-current={active ? 'page' : undefined}
       className={cn(
-        'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
-        pathname === to
+        'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-150 relative',
+        active
           ? 'bg-velox-50 text-velox-700 font-medium dark:bg-velox-900/20 dark:text-velox-300'
-          : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800'
+          : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50 hover:translate-x-0.5 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800'
       )}
     >
+      {active && (
+        <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-velox-500" />
+      )}
       <Icon size={18} />
       {label}
     </Link>
@@ -96,6 +100,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </nav>
 
       <div className="p-3 border-t border-gray-100 dark:border-gray-800 space-y-1">
+        <div className="px-3 pb-2">
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 tracking-wide">
+            v1.0
+          </span>
+        </div>
         <button
           onClick={toggleDark}
           className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800 w-full transition-colors"

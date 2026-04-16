@@ -15,6 +15,28 @@ button:disabled, [role="button"][aria-disabled="true"] {
   @apply cursor-not-allowed opacity-40 saturate-50;
 }
 
+/* Visible focus rings for keyboard navigation */
+:focus-visible {
+  @apply outline-none ring-2 ring-velox-500 ring-offset-2 dark:ring-offset-gray-950;
+}
+
+/* Enterprise table styling */
+table tbody tr {
+  @apply transition-colors;
+}
+
+table tbody tr:nth-child(even) {
+  @apply bg-gray-50/50 dark:bg-gray-800/20;
+}
+
+table th {
+  @apply text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 font-semibold;
+}
+
+table tbody tr:hover {
+  @apply bg-gray-50 dark:bg-gray-800/40;
+}
+
 @keyframes fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -33,6 +55,11 @@ button:disabled, [role="button"][aria-disabled="true"] {
 @keyframes slide-in {
   from { transform: translateX(100%); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes progress-shrink {
+  from { width: 100%; }
+  to { width: 0%; }
 }
 
 .animate-fade-in {
