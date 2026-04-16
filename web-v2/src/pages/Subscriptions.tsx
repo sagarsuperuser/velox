@@ -419,88 +419,93 @@ export default function SubscriptionsPage() {
             </DialogDescription>
           </DialogHeader>
           <Form {...form}>
-            <form onSubmit={onSubmit} noValidate className="space-y-4">
-              <FormField
-                control={form.control}
-                name="display_name"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Display Name</FormLabel>
-                    <FormControl>
-                      <Input placeholder="Acme Pro Monthly" maxLength={255} {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="code"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Code</FormLabel>
-                    <FormControl>
-                      <Input placeholder="acme-pro" maxLength={100} className="font-mono" {...field} />
-                    </FormControl>
-                    <FormDescription>
-                      Only letters, numbers, hyphens, and underscores
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="customer_id"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Customer</FormLabel>
-                    <FormControl>
-                      <select
-                        value={field.value}
-                        onChange={field.onChange}
-                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      >
-                        <option value="">Select customer...</option>
-                        {customers.map(c => (
-                          <option key={c.id} value={c.id}>{c.display_name} ({c.external_id})</option>
-                        ))}
-                      </select>
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="plan_id"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Plan</FormLabel>
-                    <FormControl>
-                      <select
-                        value={field.value}
-                        onChange={field.onChange}
-                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      >
-                        <option value="">Select plan...</option>
-                        {plans.map(p => (
-                          <option key={p.id} value={p.id}>{p.name} ({p.code})</option>
-                        ))}
-                      </select>
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+            <form onSubmit={onSubmit} noValidate className="space-y-5">
+              {/* Basic info */}
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="display_name"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Display Name</FormLabel>
+                      <FormControl>
+                        <Input placeholder="Acme Pro Monthly" maxLength={255} {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="code"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Code</FormLabel>
+                      <FormControl>
+                        <Input placeholder="acme-pro" maxLength={100} className="font-mono" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="customer_id"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Customer</FormLabel>
+                      <FormControl>
+                        <select
+                          value={field.value}
+                          onChange={field.onChange}
+                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        >
+                          <option value="">Select customer...</option>
+                          {customers.map(c => (
+                            <option key={c.id} value={c.id}>{c.display_name}</option>
+                          ))}
+                        </select>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="plan_id"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Plan</FormLabel>
+                      <FormControl>
+                        <select
+                          value={field.value}
+                          onChange={field.onChange}
+                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        >
+                          <option value="">Select plan...</option>
+                          {plans.map(p => (
+                            <option key={p.id} value={p.id}>{p.name}</option>
+                          ))}
+                        </select>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              {/* Billing config */}
+              <Separator />
+              <div className="grid grid-cols-2 gap-4">
                 <FormField
                   control={form.control}
                   name="billing_time"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Billing Time</FormLabel>
+                      <FormLabel>Billing Cycle</FormLabel>
                       <FormControl>
                         <select
                           value={field.value}
@@ -519,11 +524,10 @@ export default function SubscriptionsPage() {
                   name="trial_days"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Trial Days</FormLabel>
+                      <FormLabel>Trial Period</FormLabel>
                       <FormControl>
-                        <Input type="number" min={0} placeholder="0" {...field} />
+                        <Input type="number" min={0} placeholder="0 days" {...field} />
                       </FormControl>
-                      <FormDescription>0 for no trial</FormDescription>
                     </FormItem>
                   )}
                 />
@@ -533,34 +537,34 @@ export default function SubscriptionsPage() {
                 control={form.control}
                 name="start_now"
                 render={({ field }) => (
-                  <FormItem className="flex flex-row items-center gap-2">
+                  <FormItem className="flex flex-row items-center gap-2 rounded-md border border-input px-3 py-2.5">
                     <FormControl>
                       <Checkbox
                         checked={field.value}
                         onCheckedChange={field.onChange}
                       />
                     </FormControl>
-                    <FormLabel className="text-sm font-normal">
-                      Start immediately (activate + set billing period)
-                    </FormLabel>
+                    <div>
+                      <FormLabel className="text-sm font-medium">Start immediately</FormLabel>
+                      <p className="text-xs text-muted-foreground">Activate and set the first billing period now</p>
+                    </div>
                   </FormItem>
                 )}
               />
 
+              {/* Usage limits */}
               <Separator />
-
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Usage Limits</p>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-4">
                 <FormField
                   control={form.control}
                   name="usage_cap_units"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Usage Cap (units)</FormLabel>
+                      <FormLabel>Usage Cap</FormLabel>
                       <FormControl>
                         <Input type="number" min={0} placeholder="Unlimited" {...field} />
                       </FormControl>
-                      <FormDescription>Max units per billing period</FormDescription>
+                      <FormDescription>Max units per period</FormDescription>
                     </FormItem>
                   )}
                 />
