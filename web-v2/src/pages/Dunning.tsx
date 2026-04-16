@@ -52,7 +52,7 @@ import {
   PaginationPrevious,
 } from '@/components/ui/pagination'
 
-import { Loader2 } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 
 function relativeTime(dateStr: string): string {
   const now = Date.now()
@@ -264,9 +264,9 @@ function PolicyTab() {
             <div className="px-6 py-4">
               {/* Payment fails */}
               <div className="flex items-start gap-3 relative pb-5">
-                <div className="absolute left-[11px] top-6 bottom-0 w-px bg-border" />
-                <div className="relative z-10 mt-0.5 w-[23px] h-[23px] rounded-full bg-destructive/10 border-2 border-destructive/30 flex items-center justify-center shrink-0">
-                  <span className="text-[10px] font-bold text-destructive">!</span>
+                <div className="absolute left-[15px] top-6 bottom-0 w-px bg-border" />
+                <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-destructive/10 border-2 border-destructive/30 flex items-center justify-center shrink-0">
+                  <span className="text-xs font-bold text-destructive">!</span>
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-foreground">Payment fails</p>
@@ -276,8 +276,8 @@ function PolicyTab() {
 
               {/* Grace period wait */}
               <div className="flex items-start gap-3 relative pb-5">
-                <div className="absolute left-[11px] top-6 bottom-0 w-px bg-border" />
-                <div className="relative z-10 mt-0.5 w-[23px] h-[23px] rounded-full bg-muted border-2 border-border border-dashed flex items-center justify-center shrink-0" />
+                <div className="absolute left-[15px] top-6 bottom-0 w-px bg-border" />
+                <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-muted border-2 border-border border-dashed flex items-center justify-center shrink-0" />
                 <div className="flex-1 flex items-center gap-3">
                   <p className="text-sm text-muted-foreground">Wait</p>
                   <Select value={String(graceDays)} onValueChange={v => setForm(f => ({ ...f, grace_period_days: parseInt(v) }))}>
@@ -302,9 +302,9 @@ function PolicyTab() {
               {Array.from({ length: retryCount }, (_, i) => (
                 <div key={i}>
                   <div className="flex items-start gap-3 relative pb-2">
-                    <div className="absolute left-[11px] top-6 bottom-0 w-px bg-border" />
-                    <div className="relative z-10 mt-0.5 w-[23px] h-[23px] rounded-full bg-primary/10 border-2 border-primary/40 flex items-center justify-center shrink-0">
-                      <span className="text-[10px] font-bold text-primary">{i + 1}</span>
+                    <div className="absolute left-[15px] top-6 bottom-0 w-px bg-border" />
+                    <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-primary/10 border-2 border-primary/40 flex items-center justify-center shrink-0">
+                      <span className="text-xs font-bold text-primary">{i + 1}</span>
                     </div>
                     <div className="flex-1 flex items-center gap-3 flex-wrap min-w-0">
                       <p className="text-sm font-medium text-foreground shrink-0">Retry {i + 1}</p>
@@ -324,13 +324,11 @@ function PolicyTab() {
                         </Select>
                       )}
                       <span className="text-xs text-muted-foreground shrink-0 tabular-nums">Day {timelineSteps[i]?.day ?? 0}</span>
-                      {retryCount > 1 && (
-                        <button onClick={() => setRetryCount(retryCount - 1)}
-                          className="ml-auto shrink-0 text-muted-foreground hover:text-destructive transition-colors p-1" title="Remove last retry">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
+                      {retryCount > 1 && i === retryCount - 1 && (
+                        <Button variant="ghost" size="sm" onClick={() => setRetryCount(retryCount - 1)}
+                          className="ml-auto shrink-0 text-muted-foreground hover:text-destructive h-7 w-7 p-0" title="Remove retry">
+                          <X size={14} />
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -341,21 +339,20 @@ function PolicyTab() {
               {/* Add retry */}
               {retryCount < 8 && (
                 <div className="flex items-start gap-3 relative pb-5">
-                  <div className="absolute left-[11px] top-6 bottom-0 w-px bg-border" />
-                  <div className="relative z-10 mt-0.5 w-[23px] h-[23px] rounded-full bg-background border-2 border-dashed border-border flex items-center justify-center shrink-0">
-                    <span className="text-[10px] font-bold text-muted-foreground">+</span>
+                  <div className="absolute left-[15px] top-6 bottom-0 w-px bg-border" />
+                  <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-background border-2 border-dashed border-border flex items-center justify-center shrink-0">
+                    <span className="text-xs font-bold text-muted-foreground">+</span>
                   </div>
-                  <button onClick={() => setRetryCount(retryCount + 1)}
-                    className="text-sm text-primary hover:text-primary/80 font-medium transition-colors">
-                    Add retry attempt
-                  </button>
+                  <Button variant="outline" size="sm" onClick={() => setRetryCount(retryCount + 1)}>
+                    + Add retry attempt
+                  </Button>
                 </div>
               )}
 
               {/* Final action marker */}
               <div className="flex items-start gap-3 relative">
-                <div className="relative z-10 mt-0.5 w-[23px] h-[23px] rounded-full bg-amber-100 dark:bg-amber-500/20 border-2 border-amber-400 flex items-center justify-center shrink-0">
-                  <span className="text-[10px] font-bold text-amber-600">!</span>
+                <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-amber-100 dark:bg-amber-500/20 border-2 border-amber-400 flex items-center justify-center shrink-0">
+                  <span className="text-xs font-bold text-amber-600">!</span>
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
