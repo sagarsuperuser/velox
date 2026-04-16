@@ -3,11 +3,12 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
   Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3, Ticket,
-  Sun, Moon,
+  Sun, Moon, Search,
 } from 'lucide-react'
 import { useDarkMode } from '@/hooks/useDarkMode'
 import { cn } from '@/lib/cn'
 import { clearApiKey, api, setActiveCurrency } from '@/lib/api'
+import { CommandPalette } from './CommandPalette'
 
 const billingNav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -58,12 +59,25 @@ function NavLink({ to, icon: Icon, label, pathname, onClick }: { to: string; ico
 export function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [commandOpen, setCommandOpen] = useState(false)
 
   // Load tenant currency once on mount
   useEffect(() => {
     api.getSettings().then(s => {
       if (s.default_currency) setActiveCurrency(s.default_currency)
     }).catch(() => {})
+  }, [])
+
+  // Global Cmd+K / Ctrl+K shortcut
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setCommandOpen(prev => !prev)
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
   }, [])
 
   const { dark, toggle: toggleDark } = useDarkMode()
@@ -78,6 +92,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
         <button onClick={closeSidebar} aria-label="Close menu" className="md:hidden text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
           <X size={20} />
+        </button>
+      </div>
+
+      <div className="px-3 pt-3">
+        <button
+          onClick={() => setCommandOpen(true)}
+          className="w-full flex items-center gap-2 px-3 py-2 bg-gray-50 dark:bg-gray-800 rounded-lg text-sm text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+        >
+          <Search size={14} />
+          <span className="flex-1 text-left">Search...</span>
+          <kbd className="text-[11px] bg-white dark:bg-gray-700 px-1.5 py-0.5 rounded border border-gray-200 dark:border-gray-600 font-medium text-gray-400">
+            {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl+'}K
+          </kbd>
         </button>
       </div>
 
@@ -156,11 +183,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <Menu size={22} />
           </button>
           <h1 className="text-lg font-bold tracking-tight text-velox-900 dark:text-gray-100">Velox</h1>
+          <button
+            onClick={() => setCommandOpen(true)}
+            aria-label="Search"
+            className="ml-auto text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+          >
+            <Search size={20} />
+          </button>
         </div>
         <div className="max-w-7xl mx-auto p-4 md:p-8">
           {children}
         </div>
       </main>
+
+      <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} />
     </div>
   )
 }
