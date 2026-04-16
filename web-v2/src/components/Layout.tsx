@@ -43,6 +43,7 @@ function NavLink({
 }) {
   const active = pathname === to
   return (
+    <div>
     <Tooltip>
       <TooltipTrigger asChild>
         <Link
@@ -67,6 +68,7 @@ function NavLink({
         {label}
       </TooltipContent>
     </Tooltip>
+    </div>
   )
 }
 
