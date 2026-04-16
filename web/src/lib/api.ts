@@ -16,6 +16,17 @@ export function clearApiKey() {
   localStorage.removeItem('velox_api_key')
 }
 
+export class ApiError extends Error {
+  fields?: Record<string, string>
+  status: number
+  constructor(message: string, status: number, fields?: Record<string, string>) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.fields = fields
+  }
+}
+
 function humanizeError(msg: string): string {
   // "already exists: subscription code "acme-pro"" → "A subscription with code "acme-pro" already exists"
   const alreadyExists = msg.match(/already exists: (\w+) (?:code|with external_id|key) "(.+?)"/)
@@ -50,8 +61,13 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: { message: res.statusText } }))
-    const raw = err.error?.message || `HTTP ${res.status}`
-    throw new Error(humanizeError(raw))
+    // Extract message from { error: { message: "..." } } or { error: "..." }
+    const raw = typeof err.error === 'string' ? err.error : (err.error?.message || `HTTP ${res.status}`)
+    // Extract field-level errors from 422 responses
+    const fields = res.status === 422 && err.error?.fields && typeof err.error.fields === 'object'
+      ? (err.error.fields as Record<string, string>)
+      : undefined
+    throw new ApiError(humanizeError(raw), res.status, fields)
   }
 
   return res.json()

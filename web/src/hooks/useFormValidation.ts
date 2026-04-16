@@ -75,6 +75,17 @@ export function useFormValidation(fieldRules: FieldRules) {
     })
   }, [validateField])
 
+  const onChange = useCallback((name: string, value: string) => {
+    // Only show errors after the field has been touched (first blur)
+    if (!touched[name]) return
+    const error = validateField(name, value)
+    setErrors(e => {
+      if (error) return { ...e, [name]: error }
+      const { [name]: _, ...rest } = e
+      return rest
+    })
+  }, [validateField, touched])
+
   const validateAll = useCallback((values: Record<string, unknown>): boolean => {
     const newErrors: Record<string, string> = {}
     const newTouched: Record<string, boolean> = {}
@@ -110,5 +121,20 @@ export function useFormValidation(fieldRules: FieldRules) {
     setTouched({})
   }, [])
 
-  return { onBlur, validateAll, fieldError, registerRef, clearErrors, errors }
+  const setServerErrors = useCallback((fieldErrors: Record<string, string>) => {
+    const newTouched: Record<string, boolean> = {}
+    for (const name of Object.keys(fieldErrors)) {
+      newTouched[name] = true
+    }
+    setErrors(prev => ({ ...prev, ...fieldErrors }))
+    setTouched(prev => ({ ...prev, ...newTouched }))
+
+    // Focus first error field
+    const firstField = Object.keys(fieldErrors)[0]
+    if (firstField && fieldRefs.current[firstField]) {
+      fieldRefs.current[firstField]?.focus()
+    }
+  }, [])
+
+  return { onBlur, onChange, validateAll, fieldError, registerRef, clearErrors, setServerErrors, errors }
 }
