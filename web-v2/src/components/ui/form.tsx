@@ -128,7 +128,10 @@ const FormDescription = React.forwardRef<
   HTMLParagraphElement,
   React.HTMLAttributes<HTMLParagraphElement>
 >(({ className, ...props }, ref) => {
-  const { formDescriptionId } = useFormField()
+  const { formDescriptionId, error } = useFormField()
+
+  // Hide description when error is showing to avoid redundant messages
+  if (error) return null
 
   return (
     <p

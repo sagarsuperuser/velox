@@ -54,9 +54,9 @@ import {
 import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 
 const createCustomerSchema = z.object({
-  external_id: z.string().min(1, 'External ID is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
+  external_id: z.string().min(1, 'External ID is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores allowed'),
   display_name: z.string().min(1, 'Display name is required'),
-  email: z.string().email('Invalid email address').or(z.literal('')),
+  email: z.string().email('Invalid email address').optional().or(z.literal('')),
 })
 
 type CreateCustomerData = z.infer<typeof createCustomerSchema>
