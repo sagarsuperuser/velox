@@ -76,13 +76,14 @@ const FINAL_ACTIONS: { value: string; label: string; description: string; icon: 
 ]
 
 function PolicyTab() {
-  const [form, setForm] = useState<Partial<DunningPolicy>>({
+  const defaultPolicy: Partial<DunningPolicy> = {
     name: '',
     enabled: false,
     max_retry_attempts: 3,
     grace_period_days: 3,
     final_action: 'manual_review',
-  })
+  }
+  const [form, setForm] = useState<Partial<DunningPolicy>>(defaultPolicy)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -99,6 +100,9 @@ function PolicyTab() {
         if (!msg.includes('not found') && !msg.includes('could not be found') && !msg.includes('404') && !msg.includes('Not Found')) {
           setError(msg)
         }
+        // No policy exists yet — use defaults and mark as "saved" so the
+        // unsaved-changes bar doesn't appear on first load
+        setSavedForm(JSON.stringify(defaultPolicy))
         setLoading(false)
       })
   }
@@ -194,7 +198,11 @@ function PolicyTab() {
         </div>
       </div>
 
-      {form.enabled && (
+      {/* Retry schedule builder — shown always, disabled when dunning is off */}
+      <div className={!form.enabled ? 'opacity-50 pointer-events-none select-none' : ''}>
+        {!form.enabled && (
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-3 italic">Enable automatic payment recovery above to configure these settings</p>
+        )}
         <>
           {/* Retry schedule builder */}
           <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card">
@@ -343,7 +351,7 @@ function PolicyTab() {
             </div>
           </div>
         </>
-      )}
+      </div>
 
       {/* Sticky save bar */}
       {hasChanges && (
