@@ -40,6 +40,16 @@ bench:
 tidy:
 	go mod tidy
 
+# Migration management
+migrate:
+	go run ./cmd/velox migrate
+
+migrate-status:
+	go run ./cmd/velox migrate status
+
+migrate-dry-run:
+	go run ./cmd/velox migrate dry-run
+
 # Clean build artifacts
 clean:
 	rm -rf bin/

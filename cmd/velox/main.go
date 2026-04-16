@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,11 +27,34 @@ func main() {
 		cmd = os.Args[1]
 	}
 
+	subcmd := ""
+	if len(os.Args) > 2 {
+		subcmd = os.Args[2]
+	}
+
 	switch cmd {
 	case "serve":
 		serve()
 	case "migrate":
-		runMigrate()
+		switch subcmd {
+		case "status":
+			runMigrateStatus()
+		case "dry-run":
+			runMigrateDryRun()
+		case "rollback":
+			if len(os.Args) < 4 {
+				fmt.Fprintf(os.Stderr, "usage: velox migrate rollback <version>\n")
+				fmt.Fprintf(os.Stderr, "example: velox migrate rollback 0019_enterprise_hardening\n")
+				os.Exit(1)
+			}
+			runMigrateRollback(os.Args[3])
+		case "":
+			runMigrate()
+		default:
+			fmt.Fprintf(os.Stderr, "unknown migrate subcommand: %s\n", subcmd)
+			fmt.Fprintf(os.Stderr, "available: status, dry-run, rollback\n")
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println("velox 2026-04-07")
 	case "help", "-h", "--help":
@@ -149,20 +173,23 @@ func serve() {
 	}
 }
 
-func runMigrate() {
+func openDB() *sql.DB {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
 	}
-
 	pool, err := config.OpenPostgres(cfg.DB)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open database: %v\n", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	return pool
+}
 
+func runMigrate() {
+	pool := openDB()
+	defer pool.Close()
 	if err := migrate.NewRunner(pool).Run(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "migration failed: %v\n", err)
 		os.Exit(1)
@@ -170,14 +197,68 @@ func runMigrate() {
 	fmt.Println("migrations applied successfully")
 }
 
+func runMigrateStatus() {
+	pool := openDB()
+	defer pool.Close()
+	statuses, err := migrate.NewRunner(pool).Status(context.Background())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "status failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%-45s %-10s %s\n", "MIGRATION", "STATUS", "APPLIED AT")
+	fmt.Printf("%-45s %-10s %s\n", "---------", "------", "----------")
+	for _, s := range statuses {
+		status := "pending"
+		appliedAt := ""
+		if s.Applied {
+			status = "applied"
+			if !s.AppliedAt.IsZero() {
+				appliedAt = s.AppliedAt.Format("2006-01-02 15:04:05")
+			}
+		}
+		fmt.Printf("%-45s %-10s %s\n", s.Version, status, appliedAt)
+	}
+}
+
+func runMigrateDryRun() {
+	pool := openDB()
+	defer pool.Close()
+	pending, err := migrate.NewRunner(pool).DryRun(context.Background())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dry-run failed: %v\n", err)
+		os.Exit(1)
+	}
+	if len(pending) == 0 {
+		fmt.Println("no pending migrations")
+		return
+	}
+	fmt.Printf("%d pending migration(s):\n", len(pending))
+	for _, p := range pending {
+		fmt.Printf("  - %s\n", p)
+	}
+}
+
+func runMigrateRollback(version string) {
+	pool := openDB()
+	defer pool.Close()
+	if err := migrate.NewRunner(pool).Rollback(context.Background(), version); err != nil {
+		fmt.Fprintf(os.Stderr, "rollback failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("rolled back: %s\n", version)
+}
+
 func printUsage() {
 	fmt.Println(`velox — usage-based billing engine
 
 Commands:
-  serve       Start the API server (default)
-  migrate     Run database migrations
-  version     Print version
-  help        Show this help
+  serve                    Start the API server (default)
+  migrate                  Run pending database migrations
+  migrate status           Show applied/pending migrations
+  migrate dry-run          List pending migrations without applying
+  migrate rollback <ver>   Rollback a specific migration (e.g. 0019_enterprise_hardening)
+  version                  Print version
+  help                     Show this help
 
 Environment:
   DATABASE_URL              PostgreSQL connection string (required, used for migrations if APP_DATABASE_URL set)
