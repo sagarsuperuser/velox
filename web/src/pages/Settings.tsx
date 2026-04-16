@@ -1,25 +1,32 @@
 import { useEffect, useState, useMemo } from 'react'
-import { api, setActiveCurrency } from '@/lib/api'
+import { api, setActiveCurrency, formatCents } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Check } from 'lucide-react'
+import { Building2, FileText, Receipt, Globe, Check, AlertCircle } from 'lucide-react'
 
 const CURRENCIES = [
-  { value: 'USD', label: 'USD', symbol: '$' },
-  { value: 'EUR', label: 'EUR', symbol: '\u20AC' },
-  { value: 'GBP', label: 'GBP', symbol: '\u00A3' },
-  { value: 'INR', label: 'INR', symbol: '\u20B9' },
-  { value: 'CAD', label: 'CAD', symbol: 'CA$' },
-  { value: 'AUD', label: 'AUD', symbol: 'A$' },
-  { value: 'JPY', label: 'JPY', symbol: '\u00A5' },
-  { value: 'CHF', label: 'CHF', symbol: 'CHF' },
-  { value: 'SGD', label: 'SGD', symbol: 'S$' },
-  { value: 'BRL', label: 'BRL', symbol: 'R$' },
-  { value: 'MXN', label: 'MXN', symbol: 'MX$' },
-  { value: 'KRW', label: 'KRW', symbol: '\u20A9' },
+  { value: 'USD', label: 'US Dollar', symbol: '$' },
+  { value: 'EUR', label: 'Euro', symbol: '\u20AC' },
+  { value: 'GBP', label: 'British Pound', symbol: '\u00A3' },
+  { value: 'INR', label: 'Indian Rupee', symbol: '\u20B9' },
+  { value: 'CAD', label: 'Canadian Dollar', symbol: 'CA$' },
+  { value: 'AUD', label: 'Australian Dollar', symbol: 'A$' },
+  { value: 'JPY', label: 'Japanese Yen', symbol: '\u00A5' },
+  { value: 'CHF', label: 'Swiss Franc', symbol: 'CHF' },
+  { value: 'SGD', label: 'Singapore Dollar', symbol: 'S$' },
+  { value: 'BRL', label: 'Brazilian Real', symbol: 'R$' },
+  { value: 'MXN', label: 'Mexican Peso', symbol: 'MX$' },
+  { value: 'KRW', label: 'Korean Won', symbol: '\u20A9' },
+]
+
+const TIMEZONES = [
+  'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+  'America/Toronto', 'America/Sao_Paulo', 'Europe/London', 'Europe/Paris', 'Europe/Berlin',
+  'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Dubai',
+  'Australia/Sydney', 'Pacific/Auckland',
 ]
 
 export function SettingsPage() {
@@ -31,6 +38,7 @@ export function SettingsPage() {
 
   const [form, setForm] = useState({
     company_name: '', company_email: '', company_phone: '', company_address: '',
+    logo_url: '',
     invoice_prefix: '', net_payment_terms: 0, tax_rate: 0, tax_name: '',
     default_currency: '', timezone: '',
   })
@@ -57,6 +65,7 @@ export function SettingsPage() {
       const f = {
         company_name: s.company_name || '', company_email: s.company_email || '',
         company_phone: s.company_phone || '', company_address: s.company_address || '',
+        logo_url: s.logo_url || '',
         invoice_prefix: s.invoice_prefix || '', net_payment_terms: s.net_payment_terms || 0,
         tax_rate: s.tax_rate || 0, tax_name: s.tax_name || '',
         default_currency: s.default_currency || '', timezone: s.timezone || '',
@@ -75,6 +84,7 @@ export function SettingsPage() {
       const f = {
         company_name: updated.company_name || '', company_email: updated.company_email || '',
         company_phone: updated.company_phone || '', company_address: updated.company_address || '',
+        logo_url: updated.logo_url || '',
         invoice_prefix: updated.invoice_prefix || '', net_payment_terms: updated.net_payment_terms || 0,
         tax_rate: updated.tax_rate || 0, tax_name: updated.tax_name || '',
         default_currency: updated.default_currency || '', timezone: updated.timezone || '',
@@ -87,11 +97,15 @@ export function SettingsPage() {
     } finally { setSaving(false) }
   }
 
-  if (loading) return <Layout><h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Settings</h1><div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6"><LoadingSkeleton rows={6} columns={2} /></div></Layout>
-  if (error) return <Layout><h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Settings</h1><div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-6"><ErrorState message={error} onRetry={loadSettings} /></div></Layout>
+  if (loading) return <Layout><h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Settings</h1><div className="mt-6"><LoadingSkeleton variant="detail" /></div></Layout>
+  if (error) return <Layout><h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Settings</h1><div className="mt-6"><ErrorState message={error} onRetry={loadSettings} /></div></Layout>
 
   const currencyObj = CURRENCIES.find(c => c.value === form.default_currency)
-  const inputCls = 'w-full px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 dark:bg-gray-800 dark:text-gray-100'
+  const symbol = currencyObj?.symbol || '$'
+
+  const inputCls = 'w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-velox-500 focus:border-transparent bg-white dark:bg-gray-800 dark:text-gray-100 transition-colors'
+  const labelCls = 'block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
+  const hintCls = 'text-xs text-gray-500 dark:text-gray-500 mt-1'
 
   return (
     <Layout>
@@ -101,164 +115,200 @@ export function SettingsPage() {
           <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Configure your billing tenant</p>
         </div>
         {!hasChanges && savedForm && (
-          <span className="text-sm text-emerald-600 flex items-center gap-1">
-            <Check size={16} /> All changes saved
+          <span className="text-sm text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-1.5 rounded-lg">
+            <Check size={14} /> Saved
           </span>
         )}
       </div>
 
-      <div className="max-w-2xl mt-6 space-y-6">
+      <div className="max-w-3xl mt-6 space-y-8">
 
-        {/* Business Details */}
-        <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card">
-          <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Business Details</h2>
-            <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">Appears on invoices and customer-facing documents</p>
+        {/* ─── Business Details ─── */}
+        <section>
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-velox-50 dark:bg-velox-900/20 flex items-center justify-center">
+              <Building2 size={16} className="text-velox-600 dark:text-velox-400" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Business Details</h2>
+              <p className="text-xs text-gray-500">Appears on invoices and customer-facing documents</p>
+            </div>
           </div>
-          <div className="divide-y divide-gray-100 dark:divide-gray-800">
-            <div className="px-6 py-4 flex items-center justify-between">
+          <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card border border-gray-100 dark:border-gray-800 p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               <div>
-                <p className="text-sm text-gray-900 dark:text-gray-100">Business Name</p>
-                <p className="text-xs text-gray-500">Displayed on invoice headers and emails</p>
-              </div>
-              <div className="w-48">
+                <label className={labelCls}>Business Name</label>
                 <input type="text" value={form.company_name} placeholder="Acme Inc." maxLength={255}
                   onChange={e => setForm(f => ({ ...f, company_name: e.target.value }))}
                   className={inputCls} />
+                <p className={hintCls}>Displayed on invoice headers</p>
               </div>
-            </div>
-            <div className="px-6 py-4 flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-900 dark:text-gray-100">Email</p>
-                <p className="text-xs text-gray-500">Reply-to address on invoice emails</p>
-              </div>
-              <div className="w-48">
+                <label className={labelCls}>Email</label>
                 <input type="email" value={form.company_email} placeholder="billing@acme.com" maxLength={254}
                   ref={registerRef('company_email')}
                   onChange={e => setForm(f => ({ ...f, company_email: e.target.value }))}
                   onBlur={() => onBlur('company_email', form.company_email)}
-                  className={`${inputCls} ${fieldError('company_email') ? 'border-red-300' : ''}`} />
+                  className={`${inputCls} ${fieldError('company_email') ? 'border-red-300 dark:border-red-700' : ''}`} />
+                {fieldError('company_email') && <p className="text-xs text-red-600 mt-1">{fieldError('company_email')}</p>}
+                <p className={hintCls}>Reply-to address on invoice emails</p>
               </div>
-            </div>
-            <div className="px-6 py-4 flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-900 dark:text-gray-100">Phone</p>
-                <p className="text-xs text-gray-500">Shown on invoice PDFs</p>
-              </div>
-              <div className="w-48">
+                <label className={labelCls}>Phone</label>
                 <input type="tel" value={form.company_phone} placeholder="+1 (555) 123-4567" maxLength={20}
                   ref={registerRef('company_phone')}
                   onChange={e => setForm(f => ({ ...f, company_phone: e.target.value }))}
                   onBlur={() => onBlur('company_phone', form.company_phone)}
-                  className={`${inputCls} ${fieldError('company_phone') ? 'border-red-300' : ''}`} />
+                  className={`${inputCls} ${fieldError('company_phone') ? 'border-red-300 dark:border-red-700' : ''}`} />
+                {fieldError('company_phone') && <p className="text-xs text-red-600 mt-1">{fieldError('company_phone')}</p>}
               </div>
-            </div>
-            <div className="px-6 py-4 flex items-start justify-between">
-              <div className="pt-1.5">
-                <p className="text-sm text-gray-900 dark:text-gray-100">Address</p>
-                <p className="text-xs text-gray-500">Shown in the "From" section on PDFs</p>
+              <div>
+                <label className={labelCls}>Logo URL</label>
+                <input type="url" value={form.logo_url} placeholder="https://acme.com/logo.png" maxLength={500}
+                  onChange={e => setForm(f => ({ ...f, logo_url: e.target.value }))}
+                  className={inputCls} />
+                <p className={hintCls}>Used on invoice PDFs</p>
               </div>
-              <div className="w-48">
+              <div className="md:col-span-2">
+                <label className={labelCls}>Address</label>
                 <textarea value={form.company_address}
                   onChange={e => setForm(f => ({ ...f, company_address: e.target.value }))}
                   className={inputCls} rows={2}
                   placeholder={"123 Main St\nSan Francisco, CA 94105"} maxLength={500} />
+                <p className={hintCls}>Shown in the "From" section on invoice PDFs</p>
               </div>
             </div>
           </div>
-        </div>
+        </section>
 
-        {/* Billing */}
-        <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card">
-          <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Billing</h2>
-            <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">Currency, invoice numbering, and payment terms</p>
+        {/* ─── Invoice & Billing ─── */}
+        <section>
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center">
+              <FileText size={16} className="text-blue-600 dark:text-blue-400" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Invoice & Billing</h2>
+              <p className="text-xs text-gray-500">Currency, invoice numbering, and payment terms</p>
+            </div>
           </div>
-          <div className="divide-y divide-gray-100 dark:divide-gray-800">
-            <div className="px-6 py-4 flex items-center justify-between">
+          <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card border border-gray-100 dark:border-gray-800 p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               <div>
-                <p className="text-sm text-gray-900 dark:text-gray-100">Currency</p>
-                <p className="text-xs text-gray-500">Used across all invoices, plans, and charges</p>
-              </div>
-              <div className="w-48">
+                <label className={labelCls}>Currency</label>
                 <select value={form.default_currency}
                   onChange={e => setForm(f => ({ ...f, default_currency: e.target.value }))}
-                  className={inputCls + ' bg-white'}>
-                  <option value="">Select...</option>
-                  {CURRENCIES.map(c => <option key={c.value} value={c.value}>{c.symbol} {c.value}</option>)}
+                  className={inputCls}>
+                  <option value="">Select currency...</option>
+                  {CURRENCIES.map(c => <option key={c.value} value={c.value}>{c.symbol} {c.label} ({c.value})</option>)}
                 </select>
+                <p className={hintCls}>Used across all invoices, plans, and charges</p>
               </div>
-            </div>
-            <div className="px-6 py-4 flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-900 dark:text-gray-100">Invoice Prefix</p>
-                <p className="text-xs text-gray-500">Numbers will be PREFIX-YYYYMM-XXXX</p>
+                <label className={labelCls}>Timezone</label>
+                <select value={form.timezone}
+                  onChange={e => setForm(f => ({ ...f, timezone: e.target.value }))}
+                  className={inputCls}>
+                  <option value="">Select timezone...</option>
+                  {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz.replace(/_/g, ' ')}</option>)}
+                </select>
+                <p className={hintCls}>Used for billing cycle boundaries and reports</p>
               </div>
-              <div className="w-48">
+              <div>
+                <label className={labelCls}>Invoice Prefix</label>
                 <input type="text" value={form.invoice_prefix} maxLength={20}
                   onChange={e => setForm(f => ({ ...f, invoice_prefix: e.target.value.toUpperCase() }))}
                   className={inputCls + ' font-mono uppercase'} placeholder="INV" />
                 {form.invoice_prefix && (
-                  <p className="text-xs text-gray-500 dark:text-gray-500 font-mono mt-1">{form.invoice_prefix}-202604-0001</p>
+                  <p className={hintCls + ' font-mono'}>Preview: {form.invoice_prefix}-000001</p>
                 )}
               </div>
-            </div>
-            <div className="px-6 py-4 flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-900 dark:text-gray-100">Payment Terms</p>
-                <p className="text-xs text-gray-500">Days after issue before payment is due</p>
-              </div>
-              <div className="w-48 flex items-center gap-2">
-                <span className="text-sm text-gray-600 shrink-0">Net</span>
-                <input type="number" min={0} max={365} value={form.net_payment_terms}
-                  onChange={e => setForm(f => ({ ...f, net_payment_terms: parseInt(e.target.value) || 0 }))}
-                  className={inputCls + ' text-center'} />
-                <span className="text-sm text-gray-600 shrink-0">days</span>
+                <label className={labelCls}>Payment Terms</label>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-500 dark:text-gray-400 shrink-0">Net</span>
+                  <input type="number" min={0} max={365} value={form.net_payment_terms}
+                    onChange={e => setForm(f => ({ ...f, net_payment_terms: parseInt(e.target.value) || 0 }))}
+                    className={inputCls + ' w-20 text-center'} />
+                  <span className="text-sm text-gray-500 dark:text-gray-400 shrink-0">days</span>
+                </div>
+                <p className={hintCls}>Days after issue before payment is due</p>
               </div>
             </div>
           </div>
-        </div>
+        </section>
 
-        {/* Tax */}
-        <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card">
-          <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Tax</h2>
-            <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">Default tax rate applied to all invoices. Per-customer overrides available on billing profiles.</p>
+        {/* ─── Tax ─── */}
+        <section>
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-900/20 flex items-center justify-center">
+              <Receipt size={16} className="text-amber-600 dark:text-amber-400" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Tax</h2>
+              <p className="text-xs text-gray-500">Default tax rate applied to all invoices. Per-customer overrides available on billing profiles.</p>
+            </div>
           </div>
-          <div className="divide-y divide-gray-100 dark:divide-gray-800">
-            <div className="px-6 py-4 flex items-center justify-between">
+          <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card border border-gray-100 dark:border-gray-800 p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               <div>
-                <p className="text-sm text-gray-900 dark:text-gray-100">Tax Name</p>
-                <p className="text-xs text-gray-500">Label shown on invoices (e.g. GST, VAT)</p>
-              </div>
-              <div className="w-48">
-                <input type="text" value={form.tax_name} maxLength={50} placeholder="e.g. GST"
+                <label className={labelCls}>Tax Name</label>
+                <input type="text" value={form.tax_name} maxLength={50} placeholder="e.g. GST, VAT, Sales Tax"
                   onChange={e => setForm(f => ({ ...f, tax_name: e.target.value }))}
                   className={inputCls} />
+                <p className={hintCls}>Label shown on invoice line items</p>
               </div>
-            </div>
-            <div className="px-6 py-4 flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-900 dark:text-gray-100">Tax Rate</p>
-                <p className="text-xs text-gray-500">Applied to subtotal. Set to 0 to disable.</p>
-              </div>
-              <div className="w-48 flex items-center gap-2">
-                <input type="number" step="0.01" min={0} max={100}
-                  value={form.tax_rate || 0}
-                  onChange={e => setForm(f => ({ ...f, tax_rate: parseFloat(e.target.value) || 0 }))}
-                  className={inputCls + ' text-center'} />
-                <span className="text-sm text-gray-600 shrink-0">%</span>
+                <label className={labelCls}>Tax Rate</label>
+                <div className="flex items-center gap-2">
+                  <input type="number" step="0.01" min={0} max={100}
+                    value={form.tax_rate || ''}
+                    onChange={e => setForm(f => ({ ...f, tax_rate: parseFloat(e.target.value) || 0 }))}
+                    className={inputCls + ' w-24 text-center'} placeholder="0" />
+                  <span className="text-sm text-gray-500 dark:text-gray-400 shrink-0">%</span>
+                </div>
+                <p className={hintCls}>Set to 0 to disable tax</p>
               </div>
             </div>
-            {form.tax_rate > 0 && form.tax_name && (
-              <div className="px-6 py-3 bg-gray-50 rounded-b-xl">
-                <p className="text-xs text-gray-500">
-                  Example: {currencyObj?.symbol || '$'}100.00 + {form.tax_name} {form.tax_rate}% = {currencyObj?.symbol || '$'}{(100 + form.tax_rate).toFixed(2)}
+            {form.tax_rate > 0 && (
+              <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/20 rounded-lg">
+                <p className="text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
+                  <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                  <span>
+                    Example: {symbol}100.00 subtotal {form.tax_name ? `+ ${form.tax_name} ` : '+ tax '}
+                    {form.tax_rate}% = <strong>{formatCents(10000 + Math.round(form.tax_rate * 100), form.default_currency || 'USD')}</strong> total.
+                    For automatic jurisdiction-based tax, enable Stripe Tax in Feature Flags.
+                  </span>
                 </p>
               </div>
             )}
           </div>
-        </div>
+        </section>
+
+        {/* ─── Region ─── */}
+        <section className="pb-24">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 flex items-center justify-center">
+              <Globe size={16} className="text-emerald-600 dark:text-emerald-400" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Environment</h2>
+              <p className="text-xs text-gray-500">Read-only configuration set by your deployment</p>
+            </div>
+          </div>
+          <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card border border-gray-100 dark:border-gray-800 p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex items-center justify-between py-2 px-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <span className="text-sm text-gray-600 dark:text-gray-400">API Endpoint</span>
+                <code className="text-sm font-mono text-gray-900 dark:text-gray-100">{window.location.origin}/v1</code>
+              </div>
+              <div className="flex items-center justify-between py-2 px-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <span className="text-sm text-gray-600 dark:text-gray-400">Webhook URL</span>
+                <code className="text-sm font-mono text-gray-900 dark:text-gray-100">{window.location.origin}/v1/webhooks/stripe</code>
+              </div>
+            </div>
+          </div>
+        </section>
 
       </div>
 
@@ -269,11 +319,11 @@ export function SettingsPage() {
             <div className="bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 shadow-[0_-4px_12px_rgba(0,0,0,0.05)] rounded-t-xl px-6 py-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                <span className="text-sm text-gray-700 dark:text-gray-300">You have unsaved changes</span>
+                <span className="text-sm text-gray-700 dark:text-gray-300">Unsaved changes</span>
               </div>
               <div className="flex items-center gap-3">
                 <button onClick={loadSettings}
-                  className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
+                  className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors">
                   Discard
                 </button>
                 <button onClick={handleSave} disabled={saving}
