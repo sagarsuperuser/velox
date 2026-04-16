@@ -52,12 +52,12 @@ function NavLink({
           className={cn(
             'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-all duration-150 relative',
             active
-              ? 'bg-accent text-accent-foreground font-medium'
-              : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+              ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
+              : 'text-muted-foreground hover:text-foreground hover:bg-sidebar-accent/50 hover:translate-x-0.5'
           )}
         >
           {active && (
-            <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-primary" />
+            <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-sidebar-primary" />
           )}
           <Icon size={18} />
           {label}
@@ -143,8 +143,8 @@ export function Layout({ children }: { children: ReactNode }) {
       {/* Footer */}
       <div className="p-3 border-t border-border space-y-1">
         <div className="px-3 pb-2">
-          <Badge variant="secondary" className="text-[10px] tracking-wide">
-            v1.0
+          <Badge variant="outline" className="text-[10px] tracking-wide border-primary/30 text-primary">
+            v2.0
           </Badge>
         </div>
         <Button
