@@ -13,54 +13,63 @@ import (
 	"strings"
 	"time"
 
-	env "github.com/caarlos0/env/v11"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type Config struct {
-	Port    string `env:"PORT" envDefault:"8080"`
-	Env     string `env:"APP_ENV" envDefault:"local"`
-	Migrate bool   `env:"RUN_MIGRATIONS_ON_BOOT" envDefault:"false"`
-
-	DB DBConfig
+	Port    string
+	Env     string // local, staging, production
+	DB      DBConfig
+	Migrate bool
 
 	// Stripe
-	StripeSecretKey     string `env:"STRIPE_SECRET_KEY"`
-	StripeWebhookSecret string `env:"STRIPE_WEBHOOK_SECRET"`
+	StripeSecretKey     string
+	StripeWebhookSecret string
 
 	// Redis (optional — rate limiting fails open without it)
-	RedisURL string `env:"REDIS_URL"`
+	RedisURL string
 
 	// Bootstrap
-	BootstrapToken string `env:"VELOX_BOOTSTRAP_TOKEN"`
+	BootstrapToken string
 }
 
 type DBConfig struct {
-	URL             string        // Populated by loadDatabaseURL fallback, not env tags
-	MaxOpenConns    int           `env:"DB_MAX_OPEN_CONNS" envDefault:"20"`
-	MaxIdleConns    int           `env:"DB_MAX_IDLE_CONNS" envDefault:"5"`
-	ConnMaxLifetime time.Duration `env:"DB_CONN_MAX_LIFETIME" envDefault:"30m"`
-	ConnMaxIdleTime time.Duration `env:"DB_CONN_MAX_IDLE_TIME" envDefault:"120s"`
-	PingTimeout     time.Duration `env:"DB_PING_TIMEOUT" envDefault:"5s"`
-	QueryTimeout    time.Duration `env:"DB_QUERY_TIMEOUT" envDefault:"5s"`
+	URL             string
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
+	PingTimeout     time.Duration
+	QueryTimeout    time.Duration
 }
 
 func Load() (Config, error) {
-	cfg := Config{}
-	if err := env.Parse(&cfg); err != nil {
-		return Config{}, fmt.Errorf("parse config: %w", err)
+	env := envOr("APP_ENV", "local")
+
+	dbURL, err := loadDatabaseURL()
+	if err != nil {
+		return Config{}, err
 	}
 
-	// Handle DATABASE_URL fallback from discrete vars
-	if cfg.DB.URL == "" {
-		url, err := loadDatabaseURL()
-		if err != nil {
-			return Config{}, err
-		}
-		cfg.DB.URL = url
+	cfg := Config{
+		Port:    envOr("PORT", "8080"),
+		Env:     env,
+		Migrate: boolEnv("RUN_MIGRATIONS_ON_BOOT", false),
+		DB: DBConfig{
+			URL:             dbURL,
+			MaxOpenConns:    intEnv("DB_MAX_OPEN_CONNS", 20),
+			MaxIdleConns:    intEnv("DB_MAX_IDLE_CONNS", 5),
+			ConnMaxLifetime: time.Duration(intEnv("DB_CONN_MAX_LIFETIME_MIN", 30)) * time.Minute,
+			ConnMaxIdleTime: time.Duration(intEnv("DB_CONN_MAX_IDLE_TIME_SEC", 120)) * time.Second,
+			PingTimeout:     time.Duration(intEnv("DB_PING_TIMEOUT_SEC", 5)) * time.Second,
+			QueryTimeout:    time.Duration(intEnv("DB_QUERY_TIMEOUT_MS", 5000)) * time.Millisecond,
+		},
+		StripeSecretKey:     strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
+		StripeWebhookSecret: strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+		RedisURL:            strings.TrimSpace(os.Getenv("REDIS_URL")),
+		BootstrapToken:      strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_TOKEN")),
 	}
 
-	// Run validation
 	if warnings := cfg.Validate(); len(warnings) > 0 {
 		for _, w := range warnings {
 			slog.Warn("config validation", "warning", w)
@@ -71,12 +80,9 @@ func Load() (Config, error) {
 }
 
 // Validate checks the config for common misconfigurations.
-// Returns warnings (not errors) so the server can still start in dev mode,
-// but operators see exactly what's missing before production traffic hits.
 func (c Config) Validate() []string {
 	var warnings []string
 
-	// Stripe — required for payment processing
 	if c.StripeSecretKey == "" {
 		warnings = append(warnings, "STRIPE_SECRET_KEY is not set — payment processing will fail")
 	} else if !strings.HasPrefix(c.StripeSecretKey, "sk_") {
@@ -88,7 +94,6 @@ func (c Config) Validate() []string {
 		warnings = append(warnings, "STRIPE_WEBHOOK_SECRET does not start with 'whsec_' — may be invalid")
 	}
 
-	// PII encryption — strongly recommended in production
 	encKey := strings.TrimSpace(os.Getenv("VELOX_ENCRYPTION_KEY"))
 	if encKey == "" {
 		if c.Env == "production" {
@@ -102,25 +107,20 @@ func (c Config) Validate() []string {
 		}
 	}
 
-	// Redis — optional but recommended
 	if c.RedisURL == "" && c.Env == "production" {
 		warnings = append(warnings, "REDIS_URL is not set — rate limiting will fail open (not enforced)")
 	}
 
-	// Environment sanity
 	switch c.Env {
 	case "local", "staging", "production":
-		// valid
 	default:
 		warnings = append(warnings, fmt.Sprintf("APP_ENV=%q is not a recognized environment (expected: local, staging, production)", c.Env))
 	}
 
-	// Port sanity
 	if port, err := strconv.Atoi(c.Port); err != nil || port < 1 || port > 65535 {
 		warnings = append(warnings, fmt.Sprintf("PORT=%q is not a valid port number", c.Port))
 	}
 
-	// DB pool sanity
 	if c.DB.MaxOpenConns < 1 {
 		warnings = append(warnings, "DB_MAX_OPEN_CONNS must be at least 1")
 	}
@@ -134,24 +134,21 @@ func (c Config) Validate() []string {
 	return warnings
 }
 
-// LoadDBOnly loads just the database config without validating
-// Stripe, Redis, or encryption settings. Used by CLI commands
-// (migrate, rollback) that only need a DB connection.
+// LoadDBOnly loads just the database config without validating Stripe/Redis/etc.
 func LoadDBOnly() (DBConfig, error) {
-	cfg := DBConfig{}
-	if err := env.Parse(&cfg); err != nil {
-		return DBConfig{}, fmt.Errorf("parse db config: %w", err)
+	dbURL, err := loadDatabaseURL()
+	if err != nil {
+		return DBConfig{}, err
 	}
-
-	if cfg.URL == "" {
-		url, err := loadDatabaseURL()
-		if err != nil {
-			return DBConfig{}, err
-		}
-		cfg.URL = url
-	}
-
-	return cfg, nil
+	return DBConfig{
+		URL:             dbURL,
+		MaxOpenConns:    intEnv("DB_MAX_OPEN_CONNS", 20),
+		MaxIdleConns:    intEnv("DB_MAX_IDLE_CONNS", 5),
+		ConnMaxLifetime: time.Duration(intEnv("DB_CONN_MAX_LIFETIME_MIN", 30)) * time.Minute,
+		ConnMaxIdleTime: time.Duration(intEnv("DB_CONN_MAX_IDLE_TIME_SEC", 120)) * time.Second,
+		PingTimeout:     time.Duration(intEnv("DB_PING_TIMEOUT_SEC", 5)) * time.Second,
+		QueryTimeout:    time.Duration(intEnv("DB_QUERY_TIMEOUT_MS", 5000)) * time.Millisecond,
+	}, nil
 }
 
 func OpenPostgres(cfg DBConfig) (*sql.DB, error) {
@@ -213,3 +210,26 @@ func envOr(key, fallback string) string {
 	return v
 }
 
+func intEnv(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func boolEnv(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "1", "true", "yes":
+		return true
+	case "0", "false", "no":
+		return false
+	default:
+		return fallback
+	}
+}
