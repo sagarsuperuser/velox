@@ -218,7 +218,7 @@ export default function UsageEventsPage() {
       ) : (
         <>
           {/* Stat cards */}
-          <div className="grid grid-cols-4 gap-4 mt-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
             {statCards.map(card => (
               <Card key={card.label}>
                 <CardContent className="px-5 py-4">
@@ -245,7 +245,7 @@ export default function UsageEventsPage() {
               <CardContent className="space-y-3">
                 {meterBreakdown.map(m => (
                   <div key={m.id} className="flex items-center gap-3">
-                    <span className="text-sm text-foreground w-32 shrink-0 truncate">{m.name}</span>
+                    <span className="text-sm text-foreground w-32 shrink-0 truncate" title={m.name}>{m.name}</span>
                     <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                       <div className="h-full bg-primary rounded-full" style={{ width: `${m.pct}%` }} />
                     </div>

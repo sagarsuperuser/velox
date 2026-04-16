@@ -8,6 +8,7 @@ import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable } from '@/hooks/useSortable'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -55,26 +56,6 @@ function SortableHead({
       </button>
     </TableHead>
   )
-}
-
-function invoiceStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'paid': return 'default'
-    case 'finalized': return 'outline'
-    case 'draft': return 'secondary'
-    case 'voided': return 'destructive'
-    default: return 'outline'
-  }
-}
-
-function paymentStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'paid': return 'default'
-    case 'unpaid': return 'outline'
-    case 'failed': return 'destructive'
-    case 'pending': return 'secondary'
-    default: return 'outline'
-  }
 }
 
 export default function InvoicesPage() {
@@ -264,7 +245,7 @@ export default function InvoicesPage() {
                   {sorted.map((inv: Invoice) => (
                     <TableRow
                       key={inv.id}
-                      className="cursor-pointer"
+                      className="cursor-pointer hover:bg-muted/50 transition-colors"
                       onClick={(e) => {
                         const target = e.target as HTMLElement
                         if (target.closest('button, a, input, select')) return
@@ -274,7 +255,8 @@ export default function InvoicesPage() {
                       <TableCell>
                         <Link
                           to={`/invoices/${inv.id}`}
-                          className="text-sm font-medium text-foreground hover:text-primary transition-colors"
+                          className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[140px]"
+                          title={inv.invoice_number}
                         >
                           {inv.invoice_number}
                         </Link>
@@ -283,16 +265,17 @@ export default function InvoicesPage() {
                         <Link
                           to={`/customers/${inv.customer_id}`}
                           onClick={e => e.stopPropagation()}
-                          className="text-primary hover:underline"
+                          className="text-primary hover:underline truncate block max-w-[160px]"
+                          title={customerMap[inv.customer_id]?.display_name || 'Unknown'}
                         >
                           {customerMap[inv.customer_id]?.display_name || 'Unknown'}
                         </Link>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={invoiceStatusVariant(inv.status)}>{inv.status}</Badge>
+                        <Badge variant={statusBadgeVariant(inv.status)}>{inv.status}</Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={paymentStatusVariant(inv.payment_status)}>{inv.payment_status}</Badge>
+                        <Badge variant={statusBadgeVariant(inv.payment_status)}>{inv.payment_status}</Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {formatDate(inv.billing_period_start)} {'\u2014'} {formatDate(inv.billing_period_end)}

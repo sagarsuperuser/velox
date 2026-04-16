@@ -411,7 +411,7 @@ export default function SubscriptionDetailPage() {
                 {invoices.slice(0, 5).map(inv => (
                   <TableRow
                     key={inv.id}
-                    className="cursor-pointer"
+                    className="cursor-pointer hover:bg-muted/50 transition-colors"
                     onClick={(e) => {
                       const target = e.target as HTMLElement
                       if (target.closest('button, a, input, select')) return
@@ -426,7 +426,7 @@ export default function SubscriptionDetailPage() {
                     <TableCell><Badge variant={statusVariant(inv.status)}>{inv.status}</Badge></TableCell>
                     <TableCell><Badge variant={statusVariant(inv.payment_status)}>{inv.payment_status}</Badge></TableCell>
                     <TableCell className="text-right font-medium">{formatCents(inv.total_amount_cents)}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{formatDateTime(inv.created_at)}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{formatDate(inv.created_at)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

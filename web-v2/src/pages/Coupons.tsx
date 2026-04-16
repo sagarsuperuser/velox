@@ -4,7 +4,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime } from '@/lib/api'
+import { api, formatCents, formatDate } from '@/lib/api'
 import type { Coupon, CouponRedemption } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
@@ -244,7 +244,7 @@ export default function CouponsPage() {
                     <TableRow key={c.id}>
                       <TableCell>
                         <div className="flex items-center gap-1.5">
-                          <span className="text-sm font-mono font-medium text-foreground">{c.code}</span>
+                          <span className="text-sm font-mono font-medium text-foreground truncate max-w-[140px]" title={c.code}>{c.code}</span>
                           <button
                             onClick={() => { navigator.clipboard.writeText(c.code); toast.success('Code copied') }}
                             className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
@@ -254,7 +254,7 @@ export default function CouponsPage() {
                           </button>
                         </div>
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{c.name || '\u2014'}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground truncate max-w-[160px]" title={c.name || ''}>{c.name || '\u2014'}</TableCell>
                       <TableCell>
                         <Badge variant="outline">{c.type === 'percentage' ? 'Percentage' : 'Fixed'}</Badge>
                       </TableCell>
@@ -402,7 +402,7 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
       onOpenChange(o)
       if (!o) { form.reset(); setError('') }
     }}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Create Coupon</DialogTitle>
           <DialogDescription>
@@ -637,7 +637,7 @@ function RedemptionsDialog({ coupon, open, onOpenChange }: {
                   <TableRow key={r.id}>
                     <TableCell className="text-sm text-foreground font-mono">{r.customer_id.slice(0, 20)}...</TableCell>
                     <TableCell className="text-sm font-medium text-emerald-600 text-right tabular-nums">{formatCents(r.discount_cents)}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{formatDateTime(r.created_at)}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{formatDate(r.created_at)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

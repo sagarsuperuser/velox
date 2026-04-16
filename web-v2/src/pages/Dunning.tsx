@@ -14,6 +14,7 @@ import {
 } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -79,15 +80,6 @@ function futureRelativeTime(dateStr: string): string {
   if (diffHrs < 24) return `in ${diffHrs}h`
   const diffDays = Math.floor(diffHrs / 24)
   return `in ${diffDays}d`
-}
-
-function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'active': return 'default'
-    case 'resolved': return 'secondary'
-    case 'escalated': return 'destructive'
-    default: return 'outline'
-  }
 }
 
 export default function DunningPage() {
@@ -525,7 +517,7 @@ function RunsTab() {
     <>
       {/* Summary stats */}
       {!loading && total > 0 && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
           {statCards.map(stat => (
             <div key={stat.label} className={cn(stat.bg, 'rounded-xl px-4 py-3 ring-1', stat.ring)}>
               <p className="text-xs font-medium text-muted-foreground">{stat.label}</p>
@@ -619,7 +611,7 @@ function RunsTab() {
                               className="text-sm font-medium text-primary hover:underline">
                               {cust?.display_name || run.customer_id.slice(0, 8) + '...'}
                             </Link>
-                            {cust?.email && <p className="text-xs text-muted-foreground truncate max-w-[180px]">{cust.email}</p>}
+                            {cust?.email && <p className="text-xs text-muted-foreground truncate max-w-[180px]" title={cust.email}>{cust.email}</p>}
                           </TableCell>
                           <TableCell>
                             <Link to={`/invoices/${run.invoice_id}`} onClick={e => e.stopPropagation()}
@@ -632,7 +624,7 @@ function RunsTab() {
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-2">
-                              <Badge variant={statusVariant(run.state)}>{run.state}</Badge>
+                              <Badge variant={statusBadgeVariant(run.state)}>{run.state}</Badge>
                               {run.resolution && run.resolution !== run.state && (
                                 <Badge variant="outline">{run.resolution}</Badge>
                               )}

@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatDateTime } from '@/lib/api'
 import type { AuditEntry } from '@/lib/api'
@@ -319,7 +319,7 @@ export default function AuditLogPage() {
                             >
                               <span className="text-sm text-muted-foreground w-20 shrink-0 tabular-nums">{time}</span>
                               <Badge variant={actionVariant(entry.action)}>{entry.action}</Badge>
-                              <span className="text-sm text-foreground ml-2.5 flex-1 truncate">
+                              <span className="text-sm text-foreground ml-2.5 flex-1 truncate" title={describeAction(entry)}>
                                 {describeAction(entry)}
                               </span>
                               {link && (

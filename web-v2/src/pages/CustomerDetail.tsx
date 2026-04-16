@@ -578,7 +578,7 @@ export default function CustomerDetailPage() {
                 <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-accent/50 transition-colors">
                   <div>
                     <p className="text-sm font-medium text-foreground">{inv.invoice_number}</p>
-                    <p className="text-xs text-muted-foreground">{formatDateTime(inv.created_at)}</p>
+                    <p className="text-xs text-muted-foreground">{formatDate(inv.created_at)}</p>
                   </div>
                   <div className="flex items-center gap-3">
                     <Badge variant={statusVariant(inv.status)}>{inv.status}</Badge>

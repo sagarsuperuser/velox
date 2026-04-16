@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
+import { CommandPalette } from '@/components/CommandPalette'
 
 const billingNav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -75,7 +76,20 @@ function NavLink({
 export function Layout({ children }: { children: ReactNode }) {
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [commandOpen, setCommandOpen] = useState(false)
   const { dark, toggle: toggleDark } = useDarkMode()
+
+  // Cmd+K / Ctrl+K keyboard shortcut
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setCommandOpen(prev => !prev)
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   // Load tenant currency once on mount
   useEffect(() => {
@@ -106,6 +120,7 @@ export function Layout({ children }: { children: ReactNode }) {
       {/* Search trigger */}
       <div className="px-3 pt-3">
         <button
+          onClick={() => setCommandOpen(true)}
           className="w-full flex items-center gap-2 px-3 py-2 bg-muted rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors"
         >
           <Search size={14} />
@@ -211,6 +226,9 @@ export function Layout({ children }: { children: ReactNode }) {
           {children}
         </div>
       </main>
+
+      {/* Command Palette */}
+      <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} />
     </div>
   )
 }

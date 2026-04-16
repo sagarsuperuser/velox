@@ -8,7 +8,7 @@ import { toast } from 'sonner'
 import {
   api,
   formatCents,
-  formatDateTime,
+  formatDate,
   getCurrencySymbol,
   getActiveCurrency,
   type Meter,
@@ -17,6 +17,7 @@ import {
 } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -164,7 +165,7 @@ export default function PricingPage() {
                         {plans.map(p => (
                           <TableRow
                             key={p.id}
-                            className="cursor-pointer"
+                            className="cursor-pointer hover:bg-muted/50 transition-colors"
                             onClick={(e) => {
                               const target = e.target as HTMLElement
                               if (target.closest('button, a, input, select')) return
@@ -178,7 +179,7 @@ export default function PricingPage() {
                             </TableCell>
                             <TableCell className="font-mono text-muted-foreground">{p.code}</TableCell>
                             <TableCell><Badge variant={badgeVariant(p.billing_interval)}>{p.billing_interval}</Badge></TableCell>
-                            <TableCell><Badge variant={badgeVariant(p.status)}>{p.status}</Badge></TableCell>
+                            <TableCell><Badge variant={statusBadgeVariant(p.status)}>{p.status}</Badge></TableCell>
                             <TableCell className="text-right font-medium">{formatCents(p.base_amount_cents)}</TableCell>
                             <TableCell className="text-right text-muted-foreground">{p.meter_ids?.length || 0}</TableCell>
                           </TableRow>
@@ -206,7 +207,7 @@ export default function PricingPage() {
                         {meters.map(m => (
                           <TableRow
                             key={m.id}
-                            className="cursor-pointer"
+                            className="cursor-pointer hover:bg-muted/50 transition-colors"
                             onClick={(e) => {
                               const target = e.target as HTMLElement
                               if (target.closest('button, a, input, select')) return
@@ -221,7 +222,7 @@ export default function PricingPage() {
                             <TableCell className="font-mono text-muted-foreground">{m.key}</TableCell>
                             <TableCell className="text-muted-foreground">{m.unit}</TableCell>
                             <TableCell><Badge variant={badgeVariant(m.aggregation)}>{m.aggregation}</Badge></TableCell>
-                            <TableCell className="text-muted-foreground">{formatDateTime(m.created_at)}</TableCell>
+                            <TableCell className="text-muted-foreground">{formatDate(m.created_at)}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>

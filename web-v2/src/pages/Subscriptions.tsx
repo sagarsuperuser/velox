@@ -11,10 +11,10 @@ import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable } from '@/hooks/useSortable'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -92,16 +92,6 @@ function SortableHead({
       </button>
     </TableHead>
   )
-}
-
-function subStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'active': return 'default'
-    case 'paused': return 'secondary'
-    case 'canceled': return 'destructive'
-    case 'draft': return 'outline'
-    default: return 'outline'
-  }
 }
 
 export default function SubscriptionsPage() {
@@ -320,7 +310,7 @@ export default function SubscriptionsPage() {
                   {sorted.map((sub: Subscription) => (
                     <TableRow
                       key={sub.id}
-                      className="cursor-pointer"
+                      className="cursor-pointer hover:bg-muted/50 transition-colors"
                       onClick={(e) => {
                         const target = e.target as HTMLElement
                         if (target.closest('button, a, input, select')) return
@@ -330,7 +320,8 @@ export default function SubscriptionsPage() {
                       <TableCell>
                         <Link
                           to={`/subscriptions/${sub.id}`}
-                          className="text-sm font-medium text-foreground hover:text-primary transition-colors"
+                          className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[180px]"
+                          title={sub.display_name}
                         >
                           {sub.display_name}
                         </Link>
@@ -339,7 +330,8 @@ export default function SubscriptionsPage() {
                         <Link
                           to={`/customers/${sub.customer_id}`}
                           onClick={e => e.stopPropagation()}
-                          className="text-primary hover:underline"
+                          className="text-primary hover:underline truncate block max-w-[160px]"
+                          title={customerMap[sub.customer_id]?.display_name || 'Unknown'}
                         >
                           {customerMap[sub.customer_id]?.display_name || 'Unknown'}
                         </Link>
@@ -347,11 +339,11 @@ export default function SubscriptionsPage() {
                       <TableCell className="text-sm text-muted-foreground">
                         {plans.find(p => p.id === sub.plan_id)?.name || '\u2014'}
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground font-mono">
+                      <TableCell className="text-sm text-muted-foreground font-mono truncate max-w-[120px]" title={sub.code}>
                         {sub.code}
                       </TableCell>
                       <TableCell>
-                        <Badge variant={subStatusVariant(sub.status)}>{sub.status}</Badge>
+                        <Badge variant={statusBadgeVariant(sub.status)}>{sub.status}</Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {sub.next_billing_at ? formatDate(sub.next_billing_at) : '\u2014'}

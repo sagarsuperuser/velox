@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDateTime, getCurrencySymbol } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol } from '@/lib/api'
 import type { Customer, CreditBalance, CreditLedgerEntry } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
@@ -288,7 +288,7 @@ export default function CreditsPage() {
                   <TableBody>
                     {ledgerPaginated.map(entry => (
                       <TableRow key={entry.id}>
-                        <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDateTime(entry.created_at)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(entry.created_at)}</TableCell>
                         <TableCell><Badge variant={entryTypeVariant(entry.entry_type)}>{entry.entry_type}</Badge></TableCell>
                         <TableCell className="text-sm text-foreground">{entry.description || '\u2014'}</TableCell>
                         <TableCell className="text-sm">
@@ -301,7 +301,7 @@ export default function CreditsPage() {
                           )}
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                          {entry.expires_at ? formatDateTime(entry.expires_at) : '\u2014'}
+                          {entry.expires_at ? formatDate(entry.expires_at) : '\u2014'}
                         </TableCell>
                         <TableCell className={cn('text-sm font-medium text-right tabular-nums', entry.amount_cents >= 0 ? 'text-emerald-600' : 'text-destructive')}>
                           {entry.amount_cents >= 0 ? '+' : ''}{formatCents(entry.amount_cents)}
@@ -444,7 +444,7 @@ export default function CreditsPage() {
                 {customersWithCredits.map(({ customer, balance }) => (
                   <TableRow
                     key={customer.id}
-                    className="cursor-pointer"
+                    className="cursor-pointer hover:bg-muted/50 transition-colors"
                     onClick={() => openCustomerDetail(customer.id)}
                   >
                     <TableCell>

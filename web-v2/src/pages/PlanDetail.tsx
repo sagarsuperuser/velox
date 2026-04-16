@@ -355,7 +355,7 @@ export default function PlanDetailPage() {
                 {subscriptions.map(sub => (
                   <TableRow
                     key={sub.id}
-                    className="cursor-pointer"
+                    className="cursor-pointer hover:bg-muted/50 transition-colors"
                     onClick={(e) => {
                       const target = e.target as HTMLElement
                       if (target.closest('button, a, input, select')) return
@@ -379,7 +379,7 @@ export default function PlanDetailPage() {
                         ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
                         : '\u2014'}
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{formatDateTime(sub.created_at)}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{formatDate(sub.created_at)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

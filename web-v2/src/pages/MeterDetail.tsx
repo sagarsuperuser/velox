@@ -171,7 +171,7 @@ export default function MeterDetailPage() {
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">ID</span>
               <div className="flex items-center gap-2">
-                <span className="text-sm text-foreground font-mono truncate max-w-xs">{meter.id}</span>
+                <span className="text-sm text-foreground font-mono truncate max-w-xs" title={meter.id}>{meter.id}</span>
                 <CopyId text={meter.id} />
               </div>
             </div>
@@ -267,7 +267,7 @@ export default function MeterDetailPage() {
                 {plans.map(plan => (
                   <TableRow
                     key={plan.id}
-                    className="cursor-pointer"
+                    className="cursor-pointer hover:bg-muted/50 transition-colors"
                     onClick={(e) => {
                       const target = e.target as HTMLElement
                       if (target.closest('button, a, input, select')) return

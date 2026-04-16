@@ -1,10 +1,25 @@
 const API_BASE = '/v1'
 
-let apiKey = localStorage.getItem('velox_api_key') || ''
+function safeGetItem(key: string): string {
+  try { return localStorage.getItem(key) || '' }
+  catch { return '' }
+}
+
+function safeSetItem(key: string, value: string) {
+  try { localStorage.setItem(key, value) }
+  catch { /* Private browsing mode, silently fail */ }
+}
+
+function safeRemoveItem(key: string) {
+  try { localStorage.removeItem(key) }
+  catch { /* Private browsing mode, silently fail */ }
+}
+
+let apiKey = safeGetItem('velox_api_key')
 
 export function setApiKey(key: string) {
   apiKey = key
-  localStorage.setItem('velox_api_key', key)
+  safeSetItem('velox_api_key', key)
 }
 
 export function getApiKey(): string {
@@ -13,7 +28,7 @@ export function getApiKey(): string {
 
 export function clearApiKey() {
   apiKey = ''
-  localStorage.removeItem('velox_api_key')
+  safeRemoveItem('velox_api_key')
 }
 
 export class ApiError extends Error {
