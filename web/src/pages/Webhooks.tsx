@@ -9,7 +9,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Loader2 } from 'lucide-react'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
@@ -51,7 +51,6 @@ function EndpointsTab() {
   const [showCreate, setShowCreate] = useState(false)
   const [createdSecret, setCreatedSecret] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<WebhookEndpoint | null>(null)
-  const toast = useToast()
 
   const loadEndpoints = () => {
     setLoading(true)
@@ -429,7 +428,6 @@ function EventsTab() {
   const [events, setEvents] = useState<WebhookEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const toast = useToast()
 
   const loadEvents = () => {
     setLoading(true)

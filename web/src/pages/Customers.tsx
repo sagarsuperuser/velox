@@ -1,6 +1,8 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { api, formatDateTime, type Customer } from '@/lib/api'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { api, formatDateTime } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { SortableHeader } from '@/components/SortableHeader'
@@ -8,7 +10,6 @@ import { Modal } from '@/components/Modal'
 import { FormField } from '@/components/FormField'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { useSortable } from '@/hooks/useSortable'
 import { Plus, Search, Download, Loader2 } from 'lucide-react'
@@ -20,21 +21,16 @@ import { DatePicker } from '@/components/DatePicker'
 const PAGE_SIZE = 25
 
 export function CustomersPage() {
-  const [customers, setCustomers] = useState<Customer[]>([])
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [showCreate, setShowCreate] = useState(false)
-  const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ external_id: '', display_name: '', email: '' })
   const [error, setError] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
   const [page, setPage] = useState(1)
-  const toast = useToast()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   const fieldRules = useMemo(() => ({
     display_name: [rules.required('Display name')],
@@ -43,22 +39,37 @@ export function CustomersPage() {
   }), [])
   const { onBlur, validateAll, fieldError, registerRef, clearErrors } = useFormValidation(fieldRules)
 
-  // Server-side paginated fetch
-  const loadCustomers = useCallback(() => {
-    setLoading(true)
-    setLoadError(null)
+  // Server-side paginated fetch via React Query
+  const queryParams = useMemo(() => {
     const params = new URLSearchParams()
     params.set('limit', String(PAGE_SIZE))
     params.set('offset', String((page - 1) * PAGE_SIZE))
     if (filterStatus) params.set('status', filterStatus)
-    api.listCustomers(params.toString()).then(res => {
-      setCustomers(res.data)
-      setTotal(res.total)
-      setLoading(false)
-    }).catch(err => { setLoadError(err instanceof Error ? err.message : 'Failed to load customers'); setLoading(false) })
+    return params.toString()
   }, [page, filterStatus])
 
-  useEffect(() => { loadCustomers() }, [loadCustomers])
+  const { data: customersData, isLoading: loading, error: loadErrorObj, refetch } = useQuery({
+    queryKey: ['customers', page, filterStatus],
+    queryFn: () => api.listCustomers(queryParams),
+  })
+
+  const customers = customersData?.data ?? []
+  const total = customersData?.total ?? 0
+  const loadError = loadErrorObj instanceof Error ? loadErrorObj.message : loadErrorObj ? String(loadErrorObj) : null
+
+  const createMutation = useMutation({
+    mutationFn: (data: typeof form) => api.createCustomer(data),
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ['customers'] })
+      toast.success(`Customer "${created.display_name}" created`)
+      setShowCreate(false)
+      setForm({ external_id: '', display_name: '', email: '' })
+      clearErrors()
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : 'Failed to create customer')
+    },
+  })
 
   // Client-side search + date filter on current page data
   const filtered = useMemo(() => {
@@ -83,20 +94,10 @@ export function CustomersPage() {
     e.preventDefault()
     if (!validateAll(form)) return
     setError('')
-    setCreating(true)
-    try {
-      const created = await api.createCustomer(form)
-      setShowCreate(false)
-      setForm({ external_id: '', display_name: '', email: '' })
-      clearErrors()
-      toast.success(`Customer "${created.display_name}" created`)
-      loadCustomers()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create customer')
-    } finally {
-      setCreating(false)
-    }
+    createMutation.mutate(form)
   }
+
+  const creating = createMutation.isPending
 
   return (
     <Layout>
@@ -183,7 +184,7 @@ export function CustomersPage() {
 
       <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-4">
         {loadError ? (
-          <ErrorState message={loadError} onRetry={loadCustomers} />
+          <ErrorState message={loadError} onRetry={() => refetch()} />
         ) : loading ? (
           <LoadingSkeleton rows={6} columns={5} />
         ) : total === 0 ? (

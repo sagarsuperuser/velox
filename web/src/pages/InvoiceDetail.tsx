@@ -10,7 +10,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Mail, CreditCard } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
@@ -43,7 +43,6 @@ export function InvoiceDetailPage() {
   const [creditNotes, setCreditNotes] = useState<CreditNote[]>([])
   const [timeline, setTimeline] = useState<TimelineEvent[]>([])
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null)
-  const toast = useToast()
 
   useEffect(() => {
     return () => { if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl) }

@@ -10,7 +10,7 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus, Pencil } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
@@ -28,7 +28,6 @@ export function PlanDetailPage() {
   const [showAttachMeter, setShowAttachMeter] = useState(false)
   const [detachTarget, setDetachTarget] = useState<Meter | null>(null)
   const [updatingMeters, setUpdatingMeters] = useState(false)
-  const toast = useToast()
   const navigate = useNavigate()
 
   const loadData = () => {

@@ -1,13 +1,14 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { api, downloadPDF, formatCents, formatDate, formatDateTime, type Invoice, type Customer } from '@/lib/api'
+import { useQuery } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { api, downloadPDF, formatCents, formatDate, formatDateTime, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { SortableHeader } from '@/components/SortableHeader'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
 import { useSortable } from '@/hooks/useSortable'
 import { Search, Download } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
@@ -18,42 +19,41 @@ import { DatePicker } from '@/components/DatePicker'
 const PAGE_SIZE = 25
 
 export function InvoicesPage() {
-  const [invoices, setInvoices] = useState<Invoice[]>([])
-  const [total, setTotal] = useState(0)
-  const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [search, setSearch] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [page, setPage] = useState(1)
-  const toast = useToast()
   const navigate = useNavigate()
 
-  // Server-side paginated fetch
-  const loadInvoices = useCallback(() => {
-    setLoading(true)
-    setError(null)
+  // Server-side paginated fetch via React Query
+  const queryParams = useMemo(() => {
     const params = new URLSearchParams()
     params.set('limit', String(PAGE_SIZE))
     params.set('offset', String((page - 1) * PAGE_SIZE))
     if (statusFilter) params.set('status', statusFilter)
-
-    Promise.all([
-      api.listInvoices(params.toString()),
-      api.listCustomers(),
-    ]).then(([invRes, custRes]) => {
-      setInvoices(invRes.data)
-      setTotal(invRes.total)
-      const cMap: Record<string, Customer> = {}
-      custRes.data.forEach(c => { cMap[c.id] = c })
-      setCustomerMap(cMap)
-      setLoading(false)
-    }).catch(err => { setError(err instanceof Error ? err.message : 'Failed to load invoices'); setLoading(false) })
+    return params.toString()
   }, [page, statusFilter])
 
-  useEffect(() => { loadInvoices() }, [loadInvoices])
+  const { data: invoicesData, isLoading: invLoading, error: invError, refetch } = useQuery({
+    queryKey: ['invoices', page, statusFilter],
+    queryFn: () => api.listInvoices(queryParams),
+  })
+
+  const { data: customersData } = useQuery({
+    queryKey: ['customers-map'],
+    queryFn: () => api.listCustomers(),
+  })
+
+  const invoices = invoicesData?.data ?? []
+  const total = invoicesData?.total ?? 0
+  const customerMap = useMemo(() => {
+    const cMap: Record<string, Customer> = {}
+    ;(customersData?.data ?? []).forEach(c => { cMap[c.id] = c })
+    return cMap
+  }, [customersData])
+  const loading = invLoading
+  const error = invError instanceof Error ? invError.message : invError ? String(invError) : null
 
   // Client-side search + date filter on current page data
   const filtered = useMemo(() => invoices.filter(inv => {
@@ -156,7 +156,7 @@ export function InvoicesPage() {
 
       <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-4">
         {error ? (
-          <ErrorState message={error} onRetry={loadInvoices} />
+          <ErrorState message={error} onRetry={() => refetch()} />
         ) : loading ? (
           <LoadingSkeleton rows={6} columns={6} />
         ) : sorted.length === 0 ? (

@@ -1,13 +1,24 @@
 import { StrictMode, lazy, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Toaster } from 'sonner'
 import { getApiKey } from '@/lib/api'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { ToastProvider } from '@/components/Toast'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { LoginPage } from '@/pages/Login'
 import { UpdatePaymentPage } from '@/pages/UpdatePayment'
 import './index.css'
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      retry: 1,
+      refetchOnWindowFocus: true,
+    },
+  },
+})
 
 // Lazy-loaded pages
 const DashboardPage = lazy(() => import('@/pages/Dashboard').then(m => ({ default: m.DashboardPage })))
@@ -40,7 +51,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
-      <ToastProvider>
+      <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <Suspense fallback={<div className="flex h-screen items-center justify-center"><LoadingSkeleton variant="detail" /></div>}>
             <Routes>
@@ -67,8 +78,9 @@ createRoot(document.getElementById('root')!).render(
               <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
             </Routes>
           </Suspense>
+          <Toaster position="bottom-right" richColors closeButton toastOptions={{ className: 'font-sans text-sm' }} />
         </BrowserRouter>
-      </ToastProvider>
+      </QueryClientProvider>
     </ErrorBoundary>
   </StrictMode>,
 )

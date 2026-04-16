@@ -11,7 +11,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { useSortable } from '@/hooks/useSortable'
 import { DatePicker } from '@/components/DatePicker'
@@ -41,7 +41,6 @@ export function CreditsPage() {
   const [showDeduct, setShowDeduct] = useState(false)
   const [modalCustomerId, setModalCustomerId] = useState('')
 
-  const toast = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
 
   const customerMap = useMemo(() => {

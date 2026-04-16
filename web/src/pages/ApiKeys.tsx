@@ -7,7 +7,7 @@ import { FormField } from '@/components/FormField'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
+import { toast } from 'sonner'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus, Key, Shield, Eye, ChevronDown, Loader2 } from 'lucide-react'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
@@ -35,7 +35,6 @@ export function ApiKeysPage() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null)
   const [isRevokingSelf, setIsRevokingSelf] = useState(false)
   const [showRevoked, setShowRevoked] = useState(false)
-  const toast = useToast()
 
   const currentKeyPrefix = localStorage.getItem('velox_api_key')?.slice(0, 20) || ''
 

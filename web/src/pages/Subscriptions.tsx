@@ -1,5 +1,7 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { api, formatDate, formatDateTime, type Subscription, type Customer, type Plan } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
@@ -9,7 +11,6 @@ import { FormSelect } from '@/components/FormField'
 import { SearchSelect } from '@/components/SearchSelect'
 import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
-import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { Plus, Search, Download, Loader2 } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
@@ -19,44 +20,47 @@ import { Breadcrumbs } from '@/components/Breadcrumbs'
 const PAGE_SIZE = 25
 
 export function SubscriptionsPage() {
-  const [subs, setSubs] = useState<Subscription[]>([])
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [showCreate, setShowCreate] = useState(false)
-  const [customers, setCustomers] = useState<Customer[]>([])
-  const [customerMap, setCustomerMap] = useState<Record<string, Customer>>({})
-  const [plans, setPlans] = useState<Plan[]>([])
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
   const [page, setPage] = useState(1)
-  const toast = useToast()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
-  // Server-side paginated fetch
-  const loadSubs = useCallback(() => {
-    setLoading(true)
-    setError(null)
+  // Server-side paginated fetch via React Query
+  const queryParams = useMemo(() => {
     const params = new URLSearchParams()
     params.set('limit', String(PAGE_SIZE))
     params.set('offset', String((page - 1) * PAGE_SIZE))
     if (filterStatus) params.set('status', filterStatus)
-    api.listSubscriptions(params.toString()).then(res => { setSubs(res.data); setTotal(res.total); setLoading(false) })
-      .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load subscriptions'); setLoading(false) })
+    return params.toString()
   }, [page, filterStatus])
 
-  useEffect(() => { loadSubs() }, [loadSubs])
+  const { data: subsData, isLoading: loading, error: subsError, refetch } = useQuery({
+    queryKey: ['subscriptions', page, filterStatus],
+    queryFn: () => api.listSubscriptions(queryParams),
+  })
 
-  // Load reference data (customers/plans) once
-  useEffect(() => {
-    api.listCustomers().then(res => {
-      setCustomers(res.data)
-      const cMap: Record<string, Customer> = {}
-      res.data.forEach(c => { cMap[c.id] = c })
-      setCustomerMap(cMap)
-    })
-    api.listPlans().then(res => setPlans(res.data))
-  }, [])
+  const { data: customersData } = useQuery({
+    queryKey: ['customers-ref'],
+    queryFn: () => api.listCustomers(),
+  })
+
+  const { data: plansData } = useQuery({
+    queryKey: ['plans-ref'],
+    queryFn: () => api.listPlans(),
+  })
+
+  const subs = subsData?.data ?? []
+  const total = subsData?.total ?? 0
+  const error = subsError instanceof Error ? subsError.message : subsError ? String(subsError) : null
+  const customers = customersData?.data ?? []
+  const customerMap = useMemo(() => {
+    const cMap: Record<string, Customer> = {}
+    customers.forEach(c => { cMap[c.id] = c })
+    return cMap
+  }, [customers])
+  const plans = plansData?.data ?? []
 
   // Client-side search on current page data
   const filtered = useMemo(() => {
@@ -146,7 +150,7 @@ export function SubscriptionsPage() {
 
       <div className="bg-white dark:bg-gray-900 rounded-xl shadow-card mt-4">
         {error ? (
-          <ErrorState message={error} onRetry={loadSubs} />
+          <ErrorState message={error} onRetry={() => refetch()} />
         ) : loading ? (
           <LoadingSkeleton rows={5} columns={6} />
         ) : total === 0 ? (
@@ -215,7 +219,7 @@ export function SubscriptionsPage() {
           onCreated={(sub) => {
             setShowCreate(false)
             toast.success(`Subscription "${sub.display_name}" created`)
-            loadSubs()
+            queryClient.invalidateQueries({ queryKey: ['subscriptions'] })
           }}
         />
       )}
