@@ -173,13 +173,15 @@ func serve() {
 	}
 }
 
+// openDB loads only the database config (skips Stripe/Redis/encryption
+// validation that's irrelevant for migrate commands).
 func openDB() *sql.DB {
-	cfg, err := config.Load()
+	cfg, err := config.LoadDBOnly()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
 	}
-	pool, err := config.OpenPostgres(cfg.DB)
+	pool, err := config.OpenPostgres(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open database: %v\n", err)
 		os.Exit(1)

@@ -133,26 +133,33 @@ make dev
 
 ## FLOW 3: Migration Management (CLI)
 
+> **Note:** Use `make` commands (they load `.env` automatically). Direct `go run` requires passing `DATABASE_URL` manually.
+
 ### 3.1 Status
 ```bash
-go run ./cmd/velox migrate status
+make migrate-status
 ```
-- [ ] Verify: lists all migrations with applied/pending status and timestamps
+- [ ] Verify: table showing all 21 migrations with "applied" status and timestamps
+- [ ] Verify: no "pending" migrations listed
 
 ### 3.2 Dry Run
 ```bash
-go run ./cmd/velox migrate dry-run
+make migrate-dry-run
 ```
-- [ ] Verify: shows pending migrations without applying them
+- [ ] Verify: "no pending migrations" (all already applied)
 - [ ] Verify: database state unchanged
 
-### 3.3 Rollback (Staging Only)
+### 3.3 Rollback (Staging Only — careful!)
 ```bash
-go run ./cmd/velox migrate rollback 0020_feature_flags
+make migrate-status                                     # Note current state
+DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
+  go run ./cmd/velox migrate rollback 0021_stripe_tax_flag
+make migrate-status                                     # Verify 0021 now shows "pending"
+make migrate                                            # Re-apply it
+make migrate-status                                     # Verify 0021 is "applied" again
 ```
-- [ ] Verify: feature_flags tables dropped
-- [ ] Verify: migration removed from schema_migrations
-- [ ] Re-apply: `go run ./cmd/velox migrate` > verify: tables recreated
+- [ ] Verify: rollback removes the migration from schema_migrations
+- [ ] Verify: re-running `make migrate` re-applies it cleanly
 
 ---
 
