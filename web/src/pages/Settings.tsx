@@ -5,7 +5,8 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Building2, FileText, Receipt, Globe, Check, AlertCircle } from 'lucide-react'
+import { Building2, FileText, Receipt, Globe, Check, AlertCircle, Loader2 } from 'lucide-react'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 
 const CURRENCIES = [
   { value: 'USD', label: 'US Dollar', symbol: '$' },
@@ -109,6 +110,7 @@ export function SettingsPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'System' }, { label: 'Settings' }]} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Settings</h1>
@@ -326,8 +328,8 @@ export function SettingsPage() {
                   Discard
                 </button>
                 <button onClick={handleSave} disabled={saving}
-                  className="px-5 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm disabled:opacity-50 transition-colors">
-                  {saving ? 'Saving...' : 'Save Changes'}
+                  className="flex items-center justify-center gap-2 px-5 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm disabled:opacity-50 transition-colors">
+                  {saving ? (<><Loader2 size={14} className="animate-spin" /> Saving...</>) : 'Save Changes'}
                 </button>
               </div>
             </div>

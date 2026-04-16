@@ -15,9 +15,10 @@ import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { useSortable } from '@/hooks/useSortable'
 import { DatePicker } from '@/components/DatePicker'
-import { Plus, Minus, Download, ChevronRight, ArrowLeft } from 'lucide-react'
+import { Plus, Minus, Download, ChevronRight, ArrowLeft, Loader2 } from 'lucide-react'
 import { downloadCSV } from '@/lib/csv'
 import { Pagination } from '@/components/Pagination'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 
 const ENTRY_TYPES = ['All', 'grant', 'usage', 'adjustment'] as const
 
@@ -229,7 +230,7 @@ export function CreditsPage() {
               </tbody>
             </table>
             </div>
-            <Pagination page={ledgerCurrentPage} totalPages={ledgerTotalPages} onPageChange={setLedgerPage} />
+            <Pagination page={ledgerCurrentPage} totalPages={ledgerTotalPages} onPageChange={setLedgerPage} pageSize={ledgerPageSize} total={sortedLedger.length} />
             </>
           )}
         </div>
@@ -261,6 +262,7 @@ export function CreditsPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'Configuration' }, { label: 'Credits' }]} />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Credits</h1>
@@ -300,7 +302,7 @@ export function CreditsPage() {
                 <tr key={customer.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer transition-colors group"
                   onClick={() => openCustomerDetail(customer.id)}>
                   <td className="px-6 py-3">
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 group-hover:text-velox-600 transition-colors">{customer.display_name}</p>
+                    <Link to={`/customers/${customer.id}`} onClick={e => e.stopPropagation()} className="text-sm font-medium text-velox-600 dark:text-velox-400 hover:underline transition-colors">{customer.display_name}</Link>
                     <p className="text-xs text-gray-500">{customer.external_id}</p>
                   </td>
                   <td className={`px-6 py-3 text-sm font-semibold text-right tabular-nums ${balance.balance_cents > 0 ? 'text-emerald-600' : balance.balance_cents === 0 ? 'text-gray-400' : 'text-red-600'}`}>
@@ -438,10 +440,10 @@ function CreditModal({ mode, customerId, customerName, customers, onClose, onDon
           <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
             <button type="submit" disabled={saving}
-              className={`px-4 py-2 text-white rounded-lg text-sm font-medium shadow-sm hover:shadow disabled:opacity-50 transition-colors ${
+              className={`flex items-center justify-center gap-2 px-4 py-2 text-white rounded-lg text-sm font-medium shadow-sm hover:shadow disabled:opacity-50 transition-colors ${
                 isDeduct ? 'bg-red-600 hover:bg-red-700' : 'bg-velox-600 hover:bg-velox-700'
               }`}>
-              {saving ? 'Processing...' : isDeduct ? 'Deduct Credits' : 'Grant Credits'}
+              {saving ? (<><Loader2 size={14} className="animate-spin" /> Processing...</>) : isDeduct ? 'Deduct Credits' : 'Grant Credits'}
             </button>
           </div>
         </form>

@@ -13,8 +13,9 @@ import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
 import { useSortable } from '@/hooks/useSortable'
-import { Plus, Search, Download } from 'lucide-react'
+import { Plus, Search, Download, Loader2 } from 'lucide-react'
 import { Pagination } from '@/components/Pagination'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { downloadCSV } from '@/lib/csv'
 
 export function CreditNotesPage() {
@@ -104,6 +105,7 @@ export function CreditNotesPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'Configuration' }, { label: 'Credit Notes' }]} />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Credit Notes</h1>
@@ -226,12 +228,12 @@ export function CreditNotesPage() {
                       <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">{isRefund ? 'Refund to card' : 'Credit to balance'}</p>
                     </td>
                     <td className="px-6 py-3 text-sm">
-                      <Link to={`/customers/${note.customer_id}`} className="text-gray-700 hover:text-velox-600 transition-colors">
+                      <Link to={`/customers/${note.customer_id}`} onClick={e => e.stopPropagation()} className="text-velox-600 dark:text-velox-400 hover:underline">
                         {customerMap[note.customer_id]?.display_name || 'Unknown'}
                       </Link>
                     </td>
                     <td className="px-6 py-3 text-sm">
-                      <Link to={`/invoices/${note.invoice_id}`} className="text-velox-600 hover:underline font-mono">
+                      <Link to={`/invoices/${note.invoice_id}`} onClick={e => e.stopPropagation()} className="text-velox-600 dark:text-velox-400 hover:underline font-mono">
                         {invoiceMap[note.invoice_id]?.invoice_number || note.invoice_id.slice(0, 12) + '...'}
                       </Link>
                     </td>
@@ -270,7 +272,7 @@ export function CreditNotesPage() {
             </tbody>
           </table>
           </div>
-          <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} />
+          <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} pageSize={pageSize} total={sorted.length} />
           </>
         )}
       </div>
@@ -459,8 +461,8 @@ function CreateCreditNoteModal({ customerMap, onClose, onCreated }: {
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800 mt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
-            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Issuing...' : 'Issue Credit Note'}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
+            {saving ? (<><Loader2 size={14} className="animate-spin" /> Issuing...</>) : 'Issue Credit Note'}
           </button>
         </div>
       </form>

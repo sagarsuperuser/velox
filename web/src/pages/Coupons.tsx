@@ -10,8 +10,9 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Plus, Power, Eye, Copy, Search } from 'lucide-react'
+import { Plus, Power, Eye, Copy, Search, Loader2 } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 
 function couponStatus(c: Coupon): string {
   if (!c.active) return 'inactive'
@@ -89,6 +90,7 @@ export function CouponsPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'Configuration' }, { label: 'Coupons' }]} />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Coupons</h1>
@@ -174,10 +176,10 @@ export function CouponsPage() {
                           </button>
                         </div>
                       </td>
-                      <td className="px-6 py-3 text-sm text-gray-700">{c.name || '---'}</td>
+                      <td className="px-6 py-3 text-sm text-gray-700 dark:text-gray-300">{c.name || '---'}</td>
                       <td className="px-6 py-3"><Badge status={c.type} /></td>
                       <td className="px-6 py-3 text-sm font-medium text-gray-900 dark:text-gray-100 text-right tabular-nums">{formatDiscount(c)}</td>
-                      <td className="px-6 py-3 text-sm text-gray-700">
+                      <td className="px-6 py-3 text-sm text-gray-700 dark:text-gray-300">
                         {c.times_redeemed}{c.max_redemptions !== null ? ` / ${c.max_redemptions}` : ''}
                       </td>
                       <td className="px-6 py-3 text-sm text-gray-600 dark:text-gray-400">
@@ -350,7 +352,7 @@ function CreateCouponModal({ onClose, onDone }: { onClose: () => void; onDone: (
                   <input type="checkbox" checked={planIds.includes(p.id)}
                     className="rounded border-gray-300 text-velox-600 focus:ring-velox-500"
                     onChange={e => setPlanIds(e.target.checked ? [...planIds, p.id] : planIds.filter(id => id !== p.id))} />
-                  <span className="text-gray-900">{p.name}</span>
+                  <span className="text-gray-900 dark:text-gray-100">{p.name}</span>
                   <span className="text-gray-400 font-mono text-xs ml-auto">{p.code}</span>
                 </label>
               ))}
@@ -367,8 +369,8 @@ function CreateCouponModal({ onClose, onDone }: { onClose: () => void; onDone: (
             Cancel
           </button>
           <button type="submit" disabled={saving}
-            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50 transition-colors">
-            {saving ? 'Creating...' : 'Create Coupon'}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50 transition-colors">
+            {saving ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Coupon'}
           </button>
         </div>
       </form>
@@ -393,7 +395,7 @@ function RedemptionsModal({ coupon, onClose }: { coupon: Coupon; onClose: () => 
     <Modal open onClose={onClose} title={`Redemptions -- ${coupon.code}`}>
       <div className="mb-3 flex items-center gap-3">
         <Badge status={coupon.type} />
-        <span className="text-sm text-gray-700 font-medium">{formatDiscount(coupon)}</span>
+        <span className="text-sm text-gray-700 dark:text-gray-300 font-medium">{formatDiscount(coupon)}</span>
         <span className="text-sm text-gray-600 dark:text-gray-400">{coupon.times_redeemed} redemption{coupon.times_redeemed !== 1 ? 's' : ''}</span>
       </div>
 

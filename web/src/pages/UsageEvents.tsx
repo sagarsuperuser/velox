@@ -9,6 +9,7 @@ import { Pagination } from '@/components/Pagination'
 import { downloadCSV } from '@/lib/csv'
 import { Download, Activity, Hash, Gauge, Users } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 
 const PAGE_SIZE = 25
 
@@ -103,6 +104,7 @@ export function UsageEventsPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'Billing' }, { label: 'Usage' }]} />
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
@@ -202,7 +204,7 @@ export function UsageEventsPage() {
               <div className="px-6 py-4 space-y-3">
                 {meterBreakdown.map(m => (
                   <div key={m.id} className="flex items-center gap-3">
-                    <span className="text-sm text-gray-700 w-32 shrink-0 truncate">{m.name}</span>
+                    <span className="text-sm text-gray-700 dark:text-gray-300 w-32 shrink-0 truncate">{m.name}</span>
                     <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
                       <div className="h-full bg-velox-500 rounded-full" style={{ width: `${m.pct}%` }} />
                     </div>
@@ -246,7 +248,7 @@ export function UsageEventsPage() {
                 </tbody>
               </table>
             </div>
-            <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
+            <Pagination page={page} totalPages={totalPages} onPageChange={setPage} pageSize={PAGE_SIZE} total={total} />
           </div>
         </>
       )}

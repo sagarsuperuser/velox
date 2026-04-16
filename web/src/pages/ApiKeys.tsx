@@ -9,7 +9,8 @@ import { LoadingSkeleton } from '@/components/LoadingSkeleton'
 import { ErrorState } from '@/components/ErrorState'
 import { useToast } from '@/components/Toast'
 import { useFormValidation, rules } from '@/hooks/useFormValidation'
-import { Plus, Key, Shield, Eye, ChevronDown } from 'lucide-react'
+import { Plus, Key, Shield, Eye, ChevronDown, Loader2 } from 'lucide-react'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 
 function relativeTime(dateStr: string): string {
   const now = Date.now()
@@ -65,6 +66,7 @@ export function ApiKeysPage() {
 
   return (
     <Layout>
+      <Breadcrumbs items={[{ label: 'System' }, { label: 'API Keys' }]} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">API Keys</h1>
@@ -299,8 +301,8 @@ function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-800">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancel</button>
           <button type="submit" disabled={saving}
-            className="px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
-            {saving ? 'Creating...' : 'Create Key'}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-velox-600 text-white rounded-lg text-sm font-medium hover:bg-velox-700 shadow-sm hover:shadow disabled:opacity-50">
+            {saving ? (<><Loader2 size={14} className="animate-spin" /> Creating...</>) : 'Create Key'}
           </button>
         </div>
       </form>
