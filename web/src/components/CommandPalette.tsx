@@ -167,7 +167,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
               onChange={e => setQuery(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Search or jump to..."
-              className="flex-1 py-4 text-[15px] bg-transparent border-0 outline-none text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
+              className="flex-1 py-4 text-[15px] bg-transparent border-0 outline-none ring-0 focus:ring-0 focus:outline-none text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
             />
             <kbd className="hidden sm:inline-flex px-2 py-1 text-[11px] font-medium text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700">
               ESC
