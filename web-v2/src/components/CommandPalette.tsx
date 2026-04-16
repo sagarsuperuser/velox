@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { api, type Customer, type Invoice, type Plan, type Subscription, formatCents } from '@/lib/api'
 import {
+  Command,
   CommandDialog,
   CommandInput,
   CommandList,
@@ -79,6 +80,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 
   return (
     <CommandDialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose() }}>
+      <Command className="rounded-lg border-none shadow-none">
       <CommandInput placeholder="Search or jump to..." />
       <CommandList>
         <CommandEmpty>No results found</CommandEmpty>
@@ -191,6 +193,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           </>
         )}
       </CommandList>
+      </Command>
     </CommandDialog>
   )
 }
