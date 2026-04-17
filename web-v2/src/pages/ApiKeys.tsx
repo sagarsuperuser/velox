@@ -104,7 +104,7 @@ export default function ApiKeysPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">API Keys</h1>
-          <p className="text-sm text-muted-foreground mt-1">Manage API keys for programmatic access</p>
+          <p className="text-sm text-muted-foreground mt-1">Manage API authentication keys{activeKeys.length > 0 ? ` · ${activeKeys.length} active` : ''}</p>
         </div>
         {keys.length > 0 && (
           <Button size="sm" onClick={() => setShowCreate(true)}>

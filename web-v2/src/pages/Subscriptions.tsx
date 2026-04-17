@@ -210,7 +210,7 @@ export default function SubscriptionsPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Subscriptions</h1>
-          <p className="text-sm text-muted-foreground mt-1">{total} total</p>
+          <p className="text-sm text-muted-foreground mt-1">Manage subscriptions and billing cycles{total > 0 ? ` · ${total} total` : ''}</p>
         </div>
         <div className="flex items-center gap-2">
           {total > 0 && (

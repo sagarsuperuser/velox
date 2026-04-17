@@ -147,9 +147,7 @@ export default function CouponsPage() {
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Coupons</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {coupons.length > 0
-              ? `${stats.active} active coupon${stats.active !== 1 ? 's' : ''} of ${coupons.length} total`
-              : 'Create discount codes for your customers'}
+            Create and manage discount codes{coupons.length > 0 ? ` · ${stats.active} active of ${coupons.length} total` : ''}
           </p>
         </div>
         {coupons.length > 0 && (

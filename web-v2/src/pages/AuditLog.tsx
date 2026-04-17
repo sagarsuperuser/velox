@@ -179,7 +179,7 @@ export default function AuditLogPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Audit Log</h1>
-          <p className="text-sm text-muted-foreground mt-1">Track all changes across your billing system</p>
+          <p className="text-sm text-muted-foreground mt-1">Review all changes and actions{total > 0 ? ` · ${total} total` : ''}</p>
         </div>
         {entries.length > 0 && (
           <Button variant="outline" size="sm" onClick={handleExport}>
