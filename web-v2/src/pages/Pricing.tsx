@@ -112,7 +112,7 @@ export default function PricingPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Pricing</h1>
-          <p className="text-sm text-muted-foreground mt-1">Plans, meters, and rating rules</p>
+          <p className="text-sm text-muted-foreground mt-1">Configure plans, meters, and rating rules</p>
         </div>
         {showAdd && (
           <Button size="sm" onClick={() => setCreateFor(tab)}>

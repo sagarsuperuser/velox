@@ -205,7 +205,7 @@ export default function CreditNotesPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Credit Notes</h1>
-          <p className="text-sm text-muted-foreground mt-1">Issue credits and refunds against invoices</p>
+          <p className="text-sm text-muted-foreground mt-1">Issue refunds and adjustments on invoices{notes.length > 0 ? ` · ${notes.length} total` : ''}</p>
         </div>
         <div className="flex items-center gap-2">
           {notes.length > 0 && (

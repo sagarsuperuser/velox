@@ -93,7 +93,7 @@ export default function DunningPage() {
       <div>
         <h1 className="text-2xl font-semibold text-foreground">Dunning</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Automatically recover failed payments and manage delinquent invoices
+          Recover failed payments automatically
         </p>
       </div>
 

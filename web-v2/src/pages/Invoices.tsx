@@ -139,7 +139,7 @@ export default function InvoicesPage() {
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Invoices</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {statusFilter ? `Showing ${statusFilter} invoices` : `${total} total`}
+            Track invoices, payments, and billing history{statusFilter ? ` · Showing ${statusFilter}` : total > 0 ? ` · ${total} total` : ''}
           </p>
         </div>
         <div className="flex items-center gap-2">

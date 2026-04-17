@@ -399,9 +399,7 @@ export default function CreditsPage() {
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Credits</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {customersWithCredits.length > 0
-              ? `${formatCents(totalOutstanding)} outstanding across ${customersWithCredits.length} customer${customersWithCredits.length !== 1 ? 's' : ''}`
-              : 'Manage customer prepaid balances'}
+            Manage prepaid credit balances{customersWithCredits.length > 0 ? ` · ${formatCents(totalOutstanding)} across ${customersWithCredits.length} customer${customersWithCredits.length !== 1 ? 's' : ''}` : ''}
           </p>
         </div>
         {customersWithCredits.length > 0 && (
