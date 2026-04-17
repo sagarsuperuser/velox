@@ -629,7 +629,7 @@ function RunsTab() {
                             <div className="flex items-center gap-2">
                               <Badge variant={statusBadgeVariant(run.state)}>{run.state}</Badge>
                               {run.resolution && run.resolution !== run.state && (
-                                <Badge variant="outline">{run.resolution}</Badge>
+                                <Badge variant={run.resolution === 'payment_recovered' ? 'success' : run.resolution === 'manually_resolved' ? 'info' : run.resolution === 'write_off' ? 'warning' : 'outline'}>{run.resolution}</Badge>
                               )}
                               {!isFinished && (
                                 <Button variant="outline" size="sm" className="h-6 text-xs ml-1"

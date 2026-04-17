@@ -181,7 +181,7 @@ function EndpointsTab() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={ep.active ? 'default' : 'secondary'}>{ep.active ? 'active' : 'paused'}</Badge>
+                      <Badge variant={ep.active ? 'success' : 'secondary'}>{ep.active ? 'active' : 'paused'}</Badge>
                     </TableCell>
                     <TableCell className="font-medium">
                       {(() => {

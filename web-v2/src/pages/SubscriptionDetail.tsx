@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Subscription, type Customer, type Plan, type Invoice, type InvoicePreview } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -43,15 +44,7 @@ function CopyId({ text }: { text: string }) {
   )
 }
 
-function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'active': return 'default'
-    case 'paused': return 'secondary'
-    case 'canceled': case 'cancelled': return 'destructive'
-    case 'draft': return 'outline'
-    default: return 'outline'
-  }
-}
+const statusVariant = statusBadgeVariant
 
 export default function SubscriptionDetailPage() {
   const { id } = useParams<{ id: string }>()

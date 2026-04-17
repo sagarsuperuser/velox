@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api, formatCents, formatDateTime, type Meter, type Plan, type RatingRule } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -27,13 +28,7 @@ function CopyId({ text }: { text: string }) {
   )
 }
 
-function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'active': return 'default'
-    case 'archived': return 'secondary'
-    default: return 'outline'
-  }
-}
+const statusVariant = statusBadgeVariant
 
 export default function MeterDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -142,7 +137,7 @@ export default function MeterDetailPage() {
             <CopyId text={meter.id} />
           </div>
         </div>
-        <Badge variant="outline">{meter.aggregation}</Badge>
+        <Badge variant="secondary">{meter.aggregation}</Badge>
       </div>
 
       {/* Properties */}
@@ -162,7 +157,7 @@ export default function MeterDetailPage() {
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Aggregation</span>
-              <Badge variant="outline">{meter.aggregation}</Badge>
+              <Badge variant="secondary">{meter.aggregation}</Badge>
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Created</span>
@@ -190,7 +185,7 @@ export default function MeterDetailPage() {
               )}
             </div>
             {ratingRule && (
-              <Badge variant="outline">v{ratingRule.version}</Badge>
+              <Badge variant="secondary">v{ratingRule.version}</Badge>
             )}
           </div>
         </CardHeader>
@@ -198,7 +193,7 @@ export default function MeterDetailPage() {
           {ratingRule ? (
             <div>
               <div className="flex items-center gap-2 mb-4">
-                <Badge variant="outline">{ratingRule.mode}</Badge>
+                <Badge variant="info">{ratingRule.mode}</Badge>
                 {ratingRule.currency && (
                   <span className="text-xs text-muted-foreground font-medium uppercase">{ratingRule.currency}</span>
                 )}

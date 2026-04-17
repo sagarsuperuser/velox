@@ -162,7 +162,7 @@ export default function ApiKeysPage() {
                           <div className="flex items-center gap-2">
                             <p className="text-sm font-medium text-foreground">{k.name}</p>
                             {isCurrent && (
-                              <Badge variant="outline" className="text-[10px]">Current session</Badge>
+                              <Badge variant="info" className="text-[10px]">Current session</Badge>
                             )}
                           </div>
                           <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded mt-1 inline-block">

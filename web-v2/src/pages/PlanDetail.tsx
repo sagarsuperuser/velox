@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Plan, type Meter, type Subscription, type RatingRule, type Customer } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -43,13 +44,7 @@ function CopyId({ text }: { text: string }) {
   )
 }
 
-function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'active': return 'default'
-    case 'archived': return 'secondary'
-    default: return 'outline'
-  }
-}
+const statusVariant = statusBadgeVariant
 
 const editPlanSchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -252,7 +247,7 @@ export default function PlanDetailPage() {
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Billing Interval</span>
-              <Badge variant="outline">{plan.billing_interval === 'yearly' ? 'yearly' : 'monthly'}</Badge>
+              <Badge variant="info">{plan.billing_interval === 'yearly' ? 'yearly' : 'monthly'}</Badge>
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Currency</span>
@@ -302,7 +297,7 @@ export default function PlanDetailPage() {
                       <p className="text-xs text-muted-foreground font-mono mt-0.5">{meter.key}</p>
                     </Link>
                     <div className="flex items-center gap-2">
-                      <Badge variant="outline">{meter.aggregation}</Badge>
+                      <Badge variant="secondary">{meter.aggregation}</Badge>
                       <span className="text-xs text-muted-foreground">{meter.unit}</span>
                       {rule && (
                         <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">{rule.name}</span>
@@ -411,7 +406,7 @@ export default function PlanDetailPage() {
                     <p className="text-xs text-muted-foreground font-mono mt-0.5">{meter.key}</p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge variant="outline">{meter.aggregation}</Badge>
+                    <Badge variant="secondary">{meter.aggregation}</Badge>
                     <span className="text-xs text-muted-foreground">{meter.unit}</span>
                   </div>
                 </button>

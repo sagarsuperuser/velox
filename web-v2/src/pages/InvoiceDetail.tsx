@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime, getApiKey, getCurrencySymbol, type Invoice, type LineItem, type Customer, type Subscription, type CreditNote, type TimelineEvent, type TenantSettings } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -43,15 +44,7 @@ function CopyId({ text }: { text: string }) {
   )
 }
 
-function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'paid': case 'succeeded': case 'active': return 'default'
-    case 'voided': case 'failed': case 'canceled': return 'destructive'
-    case 'draft': case 'pending': return 'outline'
-    case 'finalized': return 'secondary'
-    default: return 'outline'
-  }
-}
+const statusVariant = statusBadgeVariant
 
 const LINE_TYPE_LABELS: Record<string, string> = {
   base_fee: 'Base Fee',
