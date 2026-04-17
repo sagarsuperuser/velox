@@ -218,6 +218,72 @@ export default function SubscriptionDetailPage() {
         </div>
       </div>
 
+      {/* Subscription Timeline */}
+      {(() => {
+        const timelinePoints: { label: string; date: string; isPast: boolean }[] = []
+        const now = new Date()
+
+        timelinePoints.push({
+          label: 'Created',
+          date: formatDate(sub.created_at),
+          isPast: true,
+        })
+
+        if (sub.current_billing_period_start) {
+          const periodStart = new Date(sub.current_billing_period_start)
+          timelinePoints.push({
+            label: sub.status === 'active' ? 'Period Start' : 'Last Period',
+            date: formatDate(sub.current_billing_period_start),
+            isPast: periodStart <= now,
+          })
+        }
+
+        if (sub.current_billing_period_end) {
+          const periodEnd = new Date(sub.current_billing_period_end)
+          timelinePoints.push({
+            label: 'Period End',
+            date: formatDate(sub.current_billing_period_end),
+            isPast: periodEnd <= now,
+          })
+        }
+
+        if (sub.next_billing_at) {
+          const nextBilling = new Date(sub.next_billing_at)
+          timelinePoints.push({
+            label: 'Next Billing',
+            date: formatDate(sub.next_billing_at),
+            isPast: nextBilling <= now,
+          })
+        }
+
+        if (timelinePoints.length < 2) return null
+
+        return (
+          <Card className="mt-6 mb-6">
+            <CardContent className="py-6">
+              <div className="flex items-center justify-between relative px-4">
+                {/* Background line */}
+                <div className="absolute left-4 right-4 top-1/2 h-0.5 bg-border -translate-y-1/2" />
+
+                {/* Timeline points */}
+                {timelinePoints.map((point, i) => (
+                  <div key={i} className="relative flex flex-col items-center z-10">
+                    <div className={cn(
+                      'w-3 h-3 rounded-full border-2',
+                      point.isPast
+                        ? 'bg-primary border-primary'
+                        : 'bg-background border-border'
+                    )} />
+                    <p className="text-xs font-medium text-foreground mt-2">{point.label}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">{point.date}</p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )
+      })()}
+
       {/* Key metrics */}
       <Card>
         <CardContent className="p-0">

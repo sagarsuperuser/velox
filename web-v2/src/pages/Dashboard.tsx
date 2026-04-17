@@ -6,7 +6,7 @@ import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { ChevronDown, ChevronUp, Loader2, Zap } from 'lucide-react'
+import { ChevronDown, ChevronUp, Loader2, Zap, Check, ArrowRight, Rocket, Tag, Users as UsersIcon, CreditCard, BarChart3 } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area } from 'recharts'
 
 type Period = '30d' | '90d' | '12m'
@@ -266,66 +266,131 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
 
-          {/* Get Started */}
+          {/* Get Started with Velox */}
           {(() => {
             const steps = [
-              { done: overview.active_subscriptions > 0 || overview.total_revenue > 0, label: 'Configure pricing', desc: 'create meters, rating rules, and plans', to: '/pricing' },
-              { done: overview.active_customers > 0, label: 'Add customers', desc: 'create your first customer', to: '/customers' },
-              { done: overview.active_subscriptions > 0, label: 'Create subscriptions', desc: 'subscribe customers to plans', to: '/subscriptions' },
-              { done: overview.total_revenue > 0, label: 'Generate revenue', desc: 'ingest usage events and run billing', to: undefined },
+              { done: overview.active_subscriptions > 0 || overview.total_revenue > 0, label: 'Configure pricing', desc: 'Create meters, rating rules, and plans', to: '/pricing', icon: Tag, cta: 'Go to Pricing' },
+              { done: overview.active_customers > 0, label: 'Add customers', desc: 'Create your first customer', to: '/customers', icon: UsersIcon, cta: 'Go to Customers' },
+              { done: overview.active_subscriptions > 0, label: 'Create subscriptions', desc: 'Subscribe customers to plans', to: '/subscriptions', icon: CreditCard, cta: 'Go to Subscriptions' },
+              { done: overview.total_revenue > 0, label: 'Generate revenue', desc: 'Ingest usage events and run billing', to: undefined, icon: BarChart3, cta: 'Run Billing' },
             ]
             const completedCount = steps.filter(s => s.done).length
-            if (completedCount >= steps.length) return null
+            const totalSteps = steps.length
+            if (completedCount >= totalSteps) return null
             return (
-              <Card className="mt-6 bg-accent/30">
+              <Card className="mt-6 border-primary/20 bg-gradient-to-br from-primary/[0.03] to-transparent">
                 <button
                   onClick={() => setGetStartedOpen(!getStartedOpen)}
-                  className="w-full px-6 py-4 flex items-center justify-between text-left"
+                  className="w-full px-6 py-5 flex items-center justify-between text-left"
                 >
-                  <div>
-                    <h3 className="text-sm font-semibold text-foreground">Get Started</h3>
-                    <p className="text-sm text-muted-foreground mt-0.5">
-                      {completedCount} of {steps.length} steps completed
-                    </p>
-                  </div>
                   <div className="flex items-center gap-3">
-                    <div className="w-24 h-1.5 bg-border rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-primary rounded-full transition-all"
-                        style={{ width: `${(completedCount / steps.length) * 100}%` }}
-                      />
+                    <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                      <Rocket size={18} className="text-primary" />
                     </div>
-                    {getStartedOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                    <div>
+                      <h3 className="text-base font-semibold text-foreground">Get Started with Velox</h3>
+                      <p className="text-sm text-muted-foreground mt-0.5">
+                        Complete these steps to start billing
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <span className="text-xs font-medium text-muted-foreground tabular-nums">
+                      {completedCount} of {totalSteps}
+                    </span>
+                    {getStartedOpen ? <ChevronUp size={16} className="text-muted-foreground" /> : <ChevronDown size={16} className="text-muted-foreground" />}
                   </div>
                 </button>
                 {getStartedOpen && (
-                  <CardContent className="pb-6 pt-0">
-                    <ol className="space-y-2 text-sm">
-                      {steps.map((step, i) => (
-                        <li key={i} className="flex items-center gap-3">
-                          {step.done ? (
-                            <span className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                              </svg>
-                            </span>
-                          ) : (
-                            <span className="w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold shrink-0">
-                              {i + 1}
-                            </span>
-                          )}
-                          <span className={step.done ? 'text-muted-foreground line-through' : 'text-foreground'}>
-                            {step.to ? (
-                              <Link to={step.to} className="font-medium hover:underline">{step.label}</Link>
-                            ) : (
-                              <span className="font-medium">{step.label}</span>
+                  <CardContent className="pb-6 pt-0 px-6">
+                    <div className="space-y-3">
+                      {steps.map((step, i) => {
+                        const Icon = step.icon
+                        return (
+                          <div
+                            key={i}
+                            className={cn(
+                              'flex items-center gap-4 p-3 rounded-lg border transition-colors',
+                              step.done
+                                ? 'bg-emerald-500/5 border-emerald-500/20'
+                                : 'bg-card border-border hover:border-primary/30 hover:bg-primary/[0.02]'
                             )}
-                            {' '}
-                            <span className="text-muted-foreground">-- {step.desc}</span>
-                          </span>
-                        </li>
-                      ))}
-                    </ol>
+                          >
+                            {/* Step number / check */}
+                            <div className="shrink-0">
+                              {step.done ? (
+                                <div className="w-8 h-8 rounded-full bg-emerald-500 text-white flex items-center justify-center">
+                                  <Check size={16} strokeWidth={3} />
+                                </div>
+                              ) : (
+                                <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold">
+                                  {i + 1}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Icon */}
+                            <div className={cn(
+                              'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
+                              step.done ? 'bg-emerald-500/10' : 'bg-muted'
+                            )}>
+                              <Icon size={18} className={step.done ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'} />
+                            </div>
+
+                            {/* Content */}
+                            <div className="flex-1 min-w-0">
+                              <p className={cn(
+                                'text-sm font-medium',
+                                step.done ? 'text-muted-foreground line-through' : 'text-foreground'
+                              )}>
+                                {step.label}
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-0.5">{step.desc}</p>
+                            </div>
+
+                            {/* CTA */}
+                            {!step.done && step.to && (
+                              <Link to={step.to} className="shrink-0">
+                                <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+                                  {step.cta}
+                                  <ArrowRight size={14} />
+                                </Button>
+                              </Link>
+                            )}
+                            {!step.done && !step.to && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-1.5 text-xs shrink-0"
+                                onClick={handleTriggerBilling}
+                                disabled={billingMutation.isPending}
+                              >
+                                {step.cta}
+                                <ArrowRight size={14} />
+                              </Button>
+                            )}
+                            {step.done && (
+                              <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 shrink-0">
+                                Complete
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    {/* Progress bar */}
+                    <div className="mt-4 flex items-center gap-3">
+                      <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-primary rounded-full transition-all duration-500"
+                          style={{ width: `${(completedCount / totalSteps) * 100}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+                        {completedCount} of {totalSteps} complete
+                      </span>
+                    </div>
                   </CardContent>
                 )}
               </Card>

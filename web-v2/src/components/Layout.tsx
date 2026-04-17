@@ -3,9 +3,10 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
   Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3, Ticket,
-  Sun, Moon, Search, type LucideIcon,
+  Sun, Moon, Search, TrendingUp, type LucideIcon,
 } from 'lucide-react'
 import { useDarkMode } from '@/hooks/useDarkMode'
+import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { cn } from '@/lib/utils'
 import { clearApiKey, api, setActiveCurrency } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -13,6 +14,7 @@ import { Separator } from '@/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 import { CommandPalette } from '@/components/CommandPalette'
+import { KeyboardHelp } from '@/components/KeyboardHelp'
 
 const billingNav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -20,6 +22,7 @@ const billingNav = [
   { to: '/invoices', icon: FileText, label: 'Invoices' },
   { to: '/subscriptions', icon: CreditCard, label: 'Subscriptions' },
   { to: '/usage', icon: BarChart3, label: 'Usage' },
+  { to: '/analytics', icon: TrendingUp, label: 'Analytics' },
 ]
 
 const configNav = [
@@ -88,6 +91,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const [commandOpen, setCommandOpen] = useState(false)
   const [navCounts, setNavCounts] = useState<Record<string, number>>({})
   const { dark, toggle: toggleDark } = useDarkMode()
+  useKeyboardShortcuts()
 
   // Cmd+K / Ctrl+K keyboard shortcut
   useEffect(() => {
@@ -249,6 +253,9 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {/* Command Palette */}
       <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} />
+
+      {/* Keyboard Shortcuts Help */}
+      <KeyboardHelp />
     </div>
   )
 }
