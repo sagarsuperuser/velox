@@ -6,7 +6,7 @@ import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { AlertTriangle, Wallet, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
+import { AlertTriangle, Wallet, ChevronDown, ChevronUp, Loader2, Zap } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 
 type Period = '30d' | '90d' | '12m'
@@ -81,15 +81,18 @@ export default function DashboardPage() {
           <Button
             onClick={handleTriggerBilling}
             disabled={billingMutation.isPending}
-            size="sm"
+            variant="outline"
           >
             {billingMutation.isPending ? (
               <>
                 <Loader2 size={16} className="animate-spin mr-2" />
-                Running...
+                Running cycle...
               </>
             ) : (
-              'Run Billing'
+              <>
+                <Zap size={16} className="mr-2" />
+                Trigger Billing Cycle
+              </>
             )}
           </Button>
         </div>
