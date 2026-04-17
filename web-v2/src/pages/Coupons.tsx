@@ -8,6 +8,7 @@ import { api, formatCents, formatDate } from '@/lib/api'
 import type { Coupon, CouponRedemption } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
+import { DatePicker } from '@/components/ui/date-picker'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -527,9 +528,11 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Expiry Date</FormLabel>
-                  <FormControl>
-                    <Input type="datetime-local" {...field} />
-                  </FormControl>
+                  <DatePicker
+                    value={field.value}
+                    onChange={field.onChange}
+                    placeholder="No expiration"
+                  />
                   <FormDescription>Leave empty for no expiration</FormDescription>
                 </FormItem>
               )}
