@@ -146,21 +146,25 @@ export default function DashboardPage() {
           )}
 
           {/* Revenue Chart (compact, no controls — Analytics has the full version) */}
-          {chartData.length > 0 && (
-            <Card className="mt-4">
-              <CardContent className="p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <p className="text-sm font-medium text-foreground">Revenue</p>
-                  <Link to="/analytics" className="text-xs text-primary hover:underline">Analytics →</Link>
-                </div>
+          <Card className="mt-4">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-medium text-foreground">Revenue</p>
+                <Link to="/analytics" className="text-xs text-primary hover:underline">Analytics →</Link>
+              </div>
+              {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height={120}>
                   <BarChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
                     <Bar dataKey="revenue_cents" fill="#635BFF" radius={[2, 2, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          )}
+              ) : (
+                <div className="h-[120px] flex items-center justify-center text-sm text-muted-foreground">
+                  Revenue data will appear after your first billing cycle
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Recent Activity */}
           <Card className="mt-6">
@@ -196,13 +200,6 @@ export default function DashboardPage() {
               )}
             </CardContent>
           </Card>
-
-          {/* Analytics link */}
-          <div className="mt-4 text-center">
-            <Link to="/analytics" className="text-sm text-primary hover:underline">
-              View detailed analytics →
-            </Link>
-          </div>
 
           {/* Get Started (new users only) */}
           {(() => {
