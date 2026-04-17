@@ -11,7 +11,7 @@ import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable } from '@/hooks/useSortable'
 import { cn } from '@/lib/utils'
-import { statusBadgeVariant } from '@/lib/status'
+import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -333,7 +333,7 @@ export default function CreditNotesPage() {
                   {paginated.map((note: CreditNote) => {
                     const isRefund = note.refund_amount_cents > 0
                     return (
-                      <TableRow key={note.id}>
+                      <TableRow key={note.id} className={cn('border-l-[3px]', statusBorderColor(note.status))}>
                         <TableCell>
                           <p className="text-sm font-medium text-foreground">{note.credit_note_number}</p>
                           <p className="text-xs text-muted-foreground mt-0.5">{isRefund ? 'Refund to card' : 'Credit to balance'}</p>
@@ -361,7 +361,7 @@ export default function CreditNotesPage() {
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="text-sm font-semibold text-foreground text-right tabular-nums">
+                        <TableCell className="text-right tabular-nums font-mono text-sm">
                           {formatCents(note.total_cents)}
                         </TableCell>
                         <TableCell>

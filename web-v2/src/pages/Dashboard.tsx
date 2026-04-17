@@ -4,10 +4,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, formatCents, formatDate } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { AlertTriangle, Wallet, ChevronDown, ChevronUp, Loader2, Zap } from 'lucide-react'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { ChevronDown, ChevronUp, Loader2, Zap } from 'lucide-react'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area } from 'recharts'
 
 type Period = '30d' | '90d' | '12m'
 
@@ -17,12 +17,12 @@ const periodLabels: Record<Period, string> = {
   '12m': 'Last 12 months',
 }
 
-function StatCard({ title, value, subtitle }: { title: string; value: string; subtitle?: string }) {
+function StatCard({ title, value, subtitle, valueClass }: { title: string; value: string; subtitle?: string; valueClass?: string }) {
   return (
     <Card>
       <CardContent className="pt-6">
-        <p className="text-sm font-medium text-muted-foreground">{title}</p>
-        <p className="text-2xl font-semibold text-foreground mt-1">{value}</p>
+        <p className="text-xs uppercase tracking-wider text-muted-foreground">{title}</p>
+        <p className={cn('text-xl font-semibold tabular-nums mt-1', valueClass ?? 'text-foreground')}>{value}</p>
         {subtitle && <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>}
       </CardContent>
     </Card>
@@ -113,12 +113,85 @@ export default function DashboardPage() {
         </Card>
       ) : (
         <>
-          {/* KPI Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-            <StatCard title="MRR" value={formatCents(overview.mrr)} subtitle="Monthly recurring revenue" />
-            <StatCard title="Active Customers" value={String(overview.active_customers)} />
-            <StatCard title="Outstanding AR" value={formatCents(overview.outstanding_ar)} subtitle="Unpaid invoices" />
-            <StatCard title="Paid Invoices (30d)" value={String(overview.paid_invoices_30d)} subtitle={`${overview.failed_payments_30d} failed`} />
+          {/* Hero MRR Section */}
+          <Card className="mt-6">
+            <CardContent className="p-6">
+              <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                <div className="flex-1">
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">Monthly Recurring Revenue</p>
+                  <div className="flex items-baseline gap-3 mt-1">
+                    <p className="text-4xl font-bold tabular-nums text-foreground">{formatCents(overview.mrr)}</p>
+                    {chartData.length >= 2 && (() => {
+                      const recent = chartData[chartData.length - 1].revenue_cents
+                      const prev = chartData[chartData.length - 2].revenue_cents
+                      if (prev === 0) return null
+                      const pct = Math.round(((recent - prev) / prev) * 100)
+                      return (
+                        <span className={cn(
+                          'text-sm font-medium',
+                          pct >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'
+                        )}>
+                          {pct >= 0 ? '\u25B2' : '\u25BC'} {Math.abs(pct)}% vs last period
+                        </span>
+                      )
+                    })()}
+                  </div>
+                  {/* Mini sparkline */}
+                  {chartData.length > 1 && (
+                    <div className="mt-3 w-48 h-[40px]">
+                      <ResponsiveContainer width="100%" height={40}>
+                        <AreaChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                          <defs>
+                            <linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#635BFF" stopOpacity={0.3} />
+                              <stop offset="100%" stopColor="#635BFF" stopOpacity={0.05} />
+                            </linearGradient>
+                          </defs>
+                          <Area type="monotone" dataKey="revenue_cents" stroke="#635BFF" strokeWidth={2} fill="url(#sparkFill)" dot={false} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-6 mt-6 pt-5 border-t border-border">
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">Active Customers</p>
+                  <p className="text-2xl font-semibold tabular-nums text-foreground mt-1">{overview.active_customers}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">Active Subscriptions</p>
+                  <p className="text-2xl font-semibold tabular-nums text-foreground mt-1">{overview.active_subscriptions}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">Paid Invoices (30d)</p>
+                  <p className="text-2xl font-semibold tabular-nums text-foreground mt-1">{overview.paid_invoices_30d}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Secondary Stats Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
+            <StatCard
+              title="Outstanding AR"
+              value={formatCents(overview.outstanding_ar)}
+              subtitle="Unpaid invoices"
+              valueClass={overview.outstanding_ar > 0 ? 'text-amber-600 dark:text-amber-400' : undefined}
+            />
+            <StatCard title="Open Invoices" value={String(overview.open_invoices)} />
+            <StatCard
+              title="Failed Payments (30d)"
+              value={String(overview.failed_payments_30d)}
+              valueClass={overview.failed_payments_30d > 0 ? 'text-destructive' : undefined}
+            />
+            <StatCard
+              title="Dunning Active"
+              value={String(overview.dunning_active)}
+              valueClass={overview.dunning_active > 0 ? 'text-destructive' : undefined}
+            />
+            <StatCard title="Credit Balance" value={formatCents(overview.credit_balance_total)} subtitle="Total across all customers" />
+            <StatCard title="Avg Invoice Value" value={formatCents(overview.avg_invoice_value)} />
           </div>
 
           {/* Revenue Chart */}
@@ -192,61 +265,6 @@ export default function DashboardPage() {
               )}
             </CardContent>
           </Card>
-
-          {/* Dunning & Credits row */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-            <Link to="/dunning?tab=runs" className="block">
-              <Card className="hover:shadow-md transition-shadow h-full">
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3">
-                    <div className={cn(
-                      'w-10 h-10 rounded-lg flex items-center justify-center',
-                      overview.dunning_active > 0
-                        ? 'bg-amber-50 text-amber-500 dark:bg-amber-950 dark:text-amber-400'
-                        : 'bg-muted text-muted-foreground'
-                    )}>
-                      <AlertTriangle size={18} />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-muted-foreground">Active Dunning</p>
-                      <p className="text-2xl font-semibold text-foreground">{overview.dunning_active}</p>
-                    </div>
-                  </div>
-                  {overview.dunning_active > 0 && (
-                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-3">
-                      {overview.dunning_active} customer{overview.dunning_active !== 1 ? 's' : ''} with failed payments requiring attention
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            </Link>
-
-            <Link to="/credits" className="block">
-              <Card className="hover:shadow-md transition-shadow h-full">
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-500 dark:bg-emerald-950 dark:text-emerald-400 flex items-center justify-center">
-                      <Wallet size={18} />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-muted-foreground">Credit Balance</p>
-                      <p className="text-2xl font-semibold text-foreground">{formatCents(overview.credit_balance_total)}</p>
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-3">
-                    Total outstanding credits across all customers
-                  </p>
-                </CardContent>
-              </Card>
-            </Link>
-          </div>
-
-          {/* Additional stats */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
-            <StatCard title="Active Subscriptions" value={String(overview.active_subscriptions)} />
-            <StatCard title="Total Revenue" value={formatCents(overview.total_revenue)} subtitle="All-time paid invoices" />
-            <StatCard title="Avg Invoice Value" value={formatCents(overview.avg_invoice_value)} />
-          </div>
 
           {/* Get Started */}
           {(() => {

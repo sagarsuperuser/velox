@@ -11,6 +11,7 @@ import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable } from '@/hooks/useSortable'
 import { cn } from '@/lib/utils'
+import { InitialsAvatar } from '@/components/InitialsAvatar'
 import { DatePicker } from '@/components/ui/date-picker'
 
 import { Button } from '@/components/ui/button'
@@ -304,10 +305,10 @@ export default function CreditsPage() {
                         <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
                           {entry.expires_at ? formatDate(entry.expires_at) : '\u2014'}
                         </TableCell>
-                        <TableCell className={cn('text-sm font-medium text-right tabular-nums', entry.amount_cents >= 0 ? 'text-emerald-600' : 'text-destructive')}>
+                        <TableCell className={cn('text-right tabular-nums font-mono text-sm', entry.amount_cents >= 0 ? 'text-emerald-600' : 'text-destructive')}>
                           {entry.amount_cents >= 0 ? '+' : ''}{formatCents(entry.amount_cents)}
                         </TableCell>
-                        <TableCell className="text-sm text-foreground text-right tabular-nums">{formatCents(entry.balance_after)}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono text-sm">{formatCents(entry.balance_after)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -449,16 +450,21 @@ export default function CreditsPage() {
                     onClick={() => openCustomerDetail(customer.id)}
                   >
                     <TableCell>
-                      <Link
-                        to={`/customers/${customer.id}`}
-                        onClick={e => e.stopPropagation()}
-                        className="text-sm font-medium text-primary hover:underline"
-                      >
-                        {customer.display_name}
-                      </Link>
-                      <p className="text-xs text-muted-foreground">{customer.external_id}</p>
+                      <div className="flex items-center gap-2.5">
+                        <InitialsAvatar name={customer.display_name} />
+                        <div>
+                          <Link
+                            to={`/customers/${customer.id}`}
+                            onClick={e => e.stopPropagation()}
+                            className="text-sm font-medium text-foreground hover:text-primary"
+                          >
+                            {customer.display_name}
+                          </Link>
+                          <p className="text-xs text-muted-foreground">{customer.external_id}</p>
+                        </div>
+                      </div>
                     </TableCell>
-                    <TableCell className={cn('text-sm font-semibold text-right tabular-nums',
+                    <TableCell className={cn('text-right tabular-nums font-mono text-sm',
                       balance.balance_cents > 0 ? 'text-emerald-600' : balance.balance_cents === 0 ? 'text-muted-foreground' : 'text-destructive'
                     )}>
                       {formatCents(balance.balance_cents)}

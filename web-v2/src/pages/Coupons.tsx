@@ -259,7 +259,7 @@ export default function CouponsPage() {
                       <TableCell>
                         <Badge variant="outline">{c.type === 'percentage' ? 'Percentage' : 'Fixed'}</Badge>
                       </TableCell>
-                      <TableCell className="text-sm font-medium text-foreground text-right tabular-nums">
+                      <TableCell className="text-right tabular-nums font-mono text-sm">
                         {formatDiscount(c)}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
@@ -639,7 +639,7 @@ function RedemptionsDialog({ coupon, open, onOpenChange }: {
                 {redemptions.map((r: CouponRedemption) => (
                   <TableRow key={r.id}>
                     <TableCell className="text-sm text-foreground font-mono">{r.customer_id.slice(0, 20)}...</TableCell>
-                    <TableCell className="text-sm font-medium text-emerald-600 text-right tabular-nums">{formatCents(r.discount_cents)}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono text-sm text-emerald-600">{formatCents(r.discount_cents)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{formatDate(r.created_at)}</TableCell>
                   </TableRow>
                 ))}
