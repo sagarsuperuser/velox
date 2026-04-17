@@ -130,6 +130,10 @@
   body {
     @apply bg-background text-foreground;
     font-family: 'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     }
   html {
     @apply font-sans;
