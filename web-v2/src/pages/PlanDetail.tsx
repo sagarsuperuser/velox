@@ -120,6 +120,7 @@ export default function PlanDetailPage() {
     mutationFn: (data: { meter_ids: string[] }) => api.updatePlan(id!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['plan', id] })
+      queryClient.invalidateQueries({ queryKey: ['plans'] })
     },
   })
 
@@ -452,6 +453,7 @@ export default function PlanDetailPage() {
           onSaved={() => {
             setShowEdit(false)
             queryClient.invalidateQueries({ queryKey: ['plan', id] })
+            queryClient.invalidateQueries({ queryKey: ['plans'] })
             toast.success('Plan updated')
           }}
         />

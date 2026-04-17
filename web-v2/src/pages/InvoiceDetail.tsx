@@ -129,6 +129,7 @@ export default function InvoiceDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['invoice', id] })
     queryClient.invalidateQueries({ queryKey: ['invoice-credit-notes', id] })
     queryClient.invalidateQueries({ queryKey: ['invoice-timeline', id] })
+    queryClient.invalidateQueries({ queryKey: ['invoices'] })
   }
 
   const finalizeMutation = useMutation({

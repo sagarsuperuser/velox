@@ -163,6 +163,7 @@ export default function CustomerDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['customer-usage', id] })
     queryClient.invalidateQueries({ queryKey: ['customer-payment-status', id] })
     queryClient.invalidateQueries({ queryKey: ['customer-dunning-override', id] })
+    queryClient.invalidateQueries({ queryKey: ['customers'] })
   }
 
   const handleSetupPayment = async () => {

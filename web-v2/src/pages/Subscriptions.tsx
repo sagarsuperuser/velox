@@ -219,7 +219,7 @@ export default function SubscriptionsPage() {
               Export CSV
             </Button>
           )}
-          {total > 0 && (
+          {(total > 0 || filterStatus) && (
             <div className="flex gap-1 bg-muted rounded-lg p-1">
               {[
                 { value: '', label: 'All' },
@@ -283,12 +283,24 @@ export default function SubscriptionsPage() {
             </div>
           ) : total === 0 ? (
             <div className="p-12 text-center">
-              <p className="text-sm font-medium text-foreground">No subscriptions yet</p>
-              <p className="text-sm text-muted-foreground mt-1">Create a subscription to start billing a customer</p>
-              <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>
-                <Plus size={16} className="mr-2" />
-                Add Subscription
-              </Button>
+              {filterStatus ? (
+                <>
+                  <p className="text-sm font-medium text-foreground">No {filterStatus} subscriptions</p>
+                  <p className="text-sm text-muted-foreground mt-1">Try a different filter</p>
+                  <Button variant="outline" size="sm" className="mt-4" onClick={() => { setFilterStatus(''); setPage(1) }}>
+                    Clear filter
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-medium text-foreground">No subscriptions yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">Create a subscription to start billing a customer</p>
+                  <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>
+                    <Plus size={16} className="mr-2" />
+                    Add Subscription
+                  </Button>
+                </>
+              )}
             </div>
           ) : sorted.length === 0 ? (
             <p className="px-6 py-8 text-sm text-muted-foreground text-center">

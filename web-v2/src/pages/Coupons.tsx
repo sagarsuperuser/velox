@@ -159,7 +159,7 @@ export default function CouponsPage() {
       </div>
 
       {/* Tab filters + search */}
-      {coupons.length > 0 && (
+      {(coupons.length > 0 || filterStatus) && (
         <div className="flex items-center gap-3 mt-6">
           <div className="flex gap-1 bg-muted rounded-lg p-1">
             {[
@@ -211,12 +211,24 @@ export default function CouponsPage() {
             </div>
           ) : coupons.length === 0 ? (
             <div className="p-12 text-center">
-              <p className="text-sm font-medium text-foreground">No coupons</p>
-              <p className="text-sm text-muted-foreground mt-1">Create your first coupon to offer discounts</p>
-              <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>
-                <Plus size={16} className="mr-2" />
-                Create Coupon
-              </Button>
+              {filterStatus ? (
+                <>
+                  <p className="text-sm font-medium text-foreground">No {filterStatus} coupons</p>
+                  <p className="text-sm text-muted-foreground mt-1">Try a different filter</p>
+                  <Button variant="outline" size="sm" className="mt-4" onClick={() => setFilterStatus('')}>
+                    Clear filter
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-medium text-foreground">No coupons</p>
+                  <p className="text-sm text-muted-foreground mt-1">Create your first coupon to offer discounts</p>
+                  <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>
+                    <Plus size={16} className="mr-2" />
+                    Create Coupon
+                  </Button>
+                </>
+              )}
             </div>
           ) : filteredCoupons.length === 0 ? (
             <p className="px-6 py-8 text-sm text-muted-foreground text-center">

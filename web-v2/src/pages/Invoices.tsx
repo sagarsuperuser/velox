@@ -220,8 +220,20 @@ export default function InvoicesPage() {
             </div>
           ) : total === 0 ? (
             <div className="p-12 text-center">
-              <p className="text-sm font-medium text-foreground">No invoices found</p>
-              <p className="text-sm text-muted-foreground mt-1">Trigger a billing cycle to generate invoices</p>
+              {statusFilter ? (
+                <>
+                  <p className="text-sm font-medium text-foreground">No {statusFilter} invoices</p>
+                  <p className="text-sm text-muted-foreground mt-1">Try a different filter</p>
+                  <Button variant="outline" size="sm" className="mt-4" onClick={() => { setStatusFilter(''); setPage(1) }}>
+                    Clear filter
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-medium text-foreground">No invoices yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">Trigger a billing cycle to generate invoices</p>
+                </>
+              )}
             </div>
           ) : sorted.length === 0 ? (
             <p className="px-6 py-8 text-sm text-muted-foreground text-center">
