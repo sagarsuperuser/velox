@@ -23,8 +23,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 
-import { ArrowLeft, Copy, Check, Loader2, Pencil, CreditCard } from 'lucide-react'
+import { ArrowLeft, Copy, Check, Loader2, Pencil, CreditCard, Archive } from 'lucide-react'
 
 function CopyId({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -258,6 +262,38 @@ export default function CustomerDetailPage() {
             <Pencil size={14} className="mr-1.5" />
             Edit
           </Button>
+          {customer.status === 'active' && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" size="sm" className="text-destructive hover:text-destructive">
+                  <Archive size={14} className="mr-1.5" />
+                  Archive
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Archive {customer.display_name}?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This customer will be archived. They won't appear in active lists and billing will stop for their subscriptions. This can be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    onClick={() => {
+                      api.updateCustomer(customer.id, { status: 'archived' } as any).then(() => {
+                        toast.success('Customer archived')
+                        refetch()
+                      }).catch((err: Error) => toast.error(err.message))
+                    }}
+                  >
+                    Archive Customer
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
           <Badge variant={statusVariant(customer.status)}>{customer.status}</Badge>
         </div>
       </div>
