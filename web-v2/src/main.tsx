@@ -6,6 +6,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { getApiKey } from '@/lib/api'
+import '@fontsource-variable/geist'
+import '@fontsource-variable/geist-mono'
 import './index.css'
 
 // Error Boundary
