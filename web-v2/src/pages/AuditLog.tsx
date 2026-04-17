@@ -104,9 +104,13 @@ function groupByDate(entries: AuditEntry[]): { date: string; entries: AuditEntry
   return groups
 }
 
-function actionVariant(action: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  if (HIGH_SEVERITY.has(action)) return 'destructive'
-  if (MEDIUM_SEVERITY.has(action)) return 'default'
+function actionVariant(action: string): 'default' | 'secondary' | 'destructive' | 'outline' | 'success' | 'info' | 'warning' | 'danger' {
+  if (HIGH_SEVERITY.has(action)) return 'danger'
+  if (MEDIUM_SEVERITY.has(action)) return 'warning'
+  // Green for positive actions
+  if (['create', 'activate', 'resume', 'grant', 'resolve'].includes(action)) return 'success'
+  // Blue for updates/changes
+  if (['update', 'finalize', 'run', 'subscription.plan_changed', 'credit_note.issued'].includes(action)) return 'info'
   return 'secondary'
 }
 
@@ -187,6 +191,44 @@ export default function AuditLogPage() {
           </Button>
         )}
       </div>
+
+      {/* Summary stats */}
+      {!loading && entries.length > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">Total Entries</p>
+              <p className="text-xl font-semibold tabular-nums text-foreground mt-1">{total}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">Today</p>
+              <p className="text-xl font-semibold tabular-nums text-foreground mt-1">
+                {entries.filter(e => e.created_at.slice(0, 10) === new Date().toISOString().slice(0, 10)).length}
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">Unique Actors</p>
+              <p className="text-xl font-semibold tabular-nums text-foreground mt-1">
+                {new Set(entries.map(e => e.actor_id)).size}
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">Destructive Actions</p>
+              <p className={cn('text-xl font-semibold tabular-nums mt-1',
+                entries.filter(e => HIGH_SEVERITY.has(e.action)).length > 0 ? 'text-destructive' : 'text-foreground'
+              )}>
+                {entries.filter(e => HIGH_SEVERITY.has(e.action)).length}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3 mt-6">
