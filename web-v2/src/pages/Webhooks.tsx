@@ -397,6 +397,7 @@ function CreateEndpointDialog({ onClose, onCreated }: { onClose: () => void; onC
           <DialogTitle>Add Webhook Endpoint</DialogTitle>
           <DialogDescription>Configure a URL to receive event notifications</DialogDescription>
         </DialogHeader>
+        <Form {...form}>
         <form onSubmit={onSubmit} noValidate className="space-y-4">
           <FormField
             control={form.control}
@@ -516,6 +517,7 @@ function CreateEndpointDialog({ onClose, onCreated }: { onClose: () => void; onC
             </Button>
           </DialogFooter>
         </form>
+        </Form>
       </DialogContent>
     </Dialog>
   )
