@@ -213,9 +213,11 @@ export default function CreditNotesPage() {
               <Download size={16} className="mr-2" /> Export
             </Button>
           )}
-          <Button size="sm" onClick={() => setShowCreate(true)}>
-            <Plus size={16} className="mr-2" /> Issue Credit Note
-          </Button>
+          {notes.length > 0 && (
+            <Button size="sm" onClick={() => setShowCreate(true)}>
+              <Plus size={16} className="mr-2" /> Issue Credit Note
+            </Button>
+          )}
         </div>
       </div>
 
