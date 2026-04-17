@@ -33,7 +33,7 @@ func main() {
 	defer pool.Close()
 
 	// Run migrations
-	if err := migrate.NewRunner(pool).Run(context.Background()); err != nil {
+	if err := migrate.Up(pool); err != nil {
 		fatal("migrations: %v", err)
 	}
 

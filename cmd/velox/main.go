@@ -39,20 +39,12 @@ func main() {
 		switch subcmd {
 		case "status":
 			runMigrateStatus()
-		case "dry-run":
-			runMigrateDryRun()
 		case "rollback":
-			if len(os.Args) < 4 {
-				fmt.Fprintf(os.Stderr, "usage: velox migrate rollback <version>\n")
-				fmt.Fprintf(os.Stderr, "example: velox migrate rollback 0019_enterprise_hardening\n")
-				os.Exit(1)
-			}
-			runMigrateRollback(os.Args[3])
+			runMigrateRollback(subcmd)
 		case "":
 			runMigrate()
 		default:
-			fmt.Fprintf(os.Stderr, "unknown migrate subcommand: %s\n", subcmd)
-			fmt.Fprintf(os.Stderr, "available: status, dry-run, rollback\n")
+			fmt.Fprintf(os.Stderr, "unknown migrate subcommand: %s\navailable: status, rollback\n", subcmd)
 			os.Exit(1)
 		}
 	case "version":
@@ -100,7 +92,7 @@ func serve() {
 			// DATABASE_URL is already the superuser connection — use it for migrations
 			slog.Info("running migrations with admin connection")
 		}
-		if err := migrate.NewRunner(migrationPool).Run(context.Background()); err != nil {
+		if err := migrate.Up(migrationPool); err != nil {
 			slog.Error("run migrations", "error", err)
 			os.Exit(1)
 		}
@@ -192,7 +184,7 @@ func openDB() *sql.DB {
 func runMigrate() {
 	pool := openDB()
 	defer pool.Close()
-	if err := migrate.NewRunner(pool).Run(context.Background()); err != nil {
+	if err := migrate.Up(pool); err != nil {
 		fmt.Fprintf(os.Stderr, "migration failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -202,65 +194,45 @@ func runMigrate() {
 func runMigrateStatus() {
 	pool := openDB()
 	defer pool.Close()
-	statuses, err := migrate.NewRunner(pool).Status(context.Background())
+	m, err := migrate.New(pool)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("%-45s %-10s %s\n", "MIGRATION", "STATUS", "APPLIED AT")
-	fmt.Printf("%-45s %-10s %s\n", "---------", "------", "----------")
-	for _, s := range statuses {
-		status := "pending"
-		appliedAt := ""
-		if s.Applied {
-			status = "applied"
-			if !s.AppliedAt.IsZero() {
-				appliedAt = s.AppliedAt.Format("2006-01-02 15:04:05")
-			}
-		}
-		fmt.Printf("%-45s %-10s %s\n", s.Version, status, appliedAt)
-	}
-}
-
-func runMigrateDryRun() {
-	pool := openDB()
-	defer pool.Close()
-	pending, err := migrate.NewRunner(pool).DryRun(context.Background())
+	v, dirty, err := m.Version()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dry-run failed: %v\n", err)
-		os.Exit(1)
-	}
-	if len(pending) == 0 {
-		fmt.Println("no pending migrations")
+		fmt.Println("no migrations applied")
 		return
 	}
-	fmt.Printf("%d pending migration(s):\n", len(pending))
-	for _, p := range pending {
-		fmt.Printf("  - %s\n", p)
-	}
+	fmt.Printf("version: %d, dirty: %v\n", v, dirty)
 }
 
-func runMigrateRollback(version string) {
+func runMigrateRollback(_ string) {
 	pool := openDB()
 	defer pool.Close()
-	if err := migrate.NewRunner(pool).Rollback(context.Background(), version); err != nil {
+	m, err := migrate.New(pool)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "rollback failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("rolled back: %s\n", version)
+	if err := m.Steps(-1); err != nil {
+		fmt.Fprintf(os.Stderr, "rollback failed: %v\n", err)
+		os.Exit(1)
+	}
+	v, _, _ := m.Version()
+	fmt.Printf("rolled back to version %d\n", v)
 }
 
 func printUsage() {
 	fmt.Println(`velox — usage-based billing engine
 
 Commands:
-  serve                    Start the API server (default)
-  migrate                  Run pending database migrations
-  migrate status           Show applied/pending migrations
-  migrate dry-run          List pending migrations without applying
-  migrate rollback <ver>   Rollback a specific migration (e.g. 0019_enterprise_hardening)
-  version                  Print version
-  help                     Show this help
+  serve                Start the API server (default)
+  migrate              Apply pending migrations
+  migrate status       Show current migration version
+  migrate rollback     Rollback the latest migration
+  version              Print version
+  help                 Show this help
 
 Environment:
   DATABASE_URL              PostgreSQL connection string (required, used for migrations if APP_DATABASE_URL set)
