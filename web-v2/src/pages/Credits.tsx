@@ -11,6 +11,7 @@ import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable } from '@/hooks/useSortable'
 import { cn } from '@/lib/utils'
+import { DatePicker } from '@/components/ui/date-picker'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -627,9 +628,11 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Expires At</FormLabel>
-                      <FormControl>
-                        <Input type="datetime-local" {...field} />
-                      </FormControl>
+                      <DatePicker
+                        value={field.value}
+                        onChange={field.onChange}
+                        placeholder="Never expires"
+                      />
                       <FormDescription>Leave empty for credits that never expire</FormDescription>
                     </FormItem>
                   )}
