@@ -4,6 +4,7 @@ import { api, formatCents, formatDate } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
+import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -36,7 +37,7 @@ function chartTheme() {
 function StatCard({ title, value, subtitle, valueClass }: { title: string; value: string; subtitle?: string; valueClass?: string }) {
   return (
     <Card>
-      <CardContent className="pt-6">
+      <CardContent className="p-5">
         <p className="text-xs uppercase tracking-wider text-muted-foreground">{title}</p>
         <p className={cn('text-xl font-semibold tabular-nums mt-1', valueClass ?? 'text-foreground')}>{value}</p>
         {subtitle && <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>}
@@ -111,7 +112,7 @@ export default function AnalyticsPage() {
               title="Outstanding AR"
               value={formatCents(overview.outstanding_ar)}
               subtitle="Unpaid invoices"
-              valueClass={overview.outstanding_ar > 0 ? 'text-amber-600 dark:text-amber-400' : undefined}
+              valueClass={overview.outstanding_ar > 0 ? 'text-amber-600' : undefined}
             />
             <StatCard
               title="Avg Invoice Value"
@@ -128,14 +129,16 @@ export default function AnalyticsPage() {
             />
           </div>
 
-          {/* Period Tabs + Revenue Trend */}
+          <Separator className="mt-6" />
+
+          {/* Period Tabs + Revenue Trend — full width */}
           <Card className="mt-6">
-            <CardContent className="p-6">
+            <CardContent className="p-5">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h2 className="text-sm font-semibold text-foreground">Revenue Trend</h2>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Total revenue: {formatCents(overview.total_revenue)}
+                    Total revenue: <span className="tabular-nums font-mono">{formatCents(overview.total_revenue)}</span>
                   </p>
                 </div>
                 <Tabs value={period} onValueChange={v => setPeriod(v as Period)}>
@@ -149,8 +152,18 @@ export default function AnalyticsPage() {
 
               {chartData.length > 0 ? (() => {
                 const theme = chartTheme()
+                const fmtShortDate = (d: string) => {
+                  const dt = new Date(d)
+                  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                }
+                const fmtCompactAmount = (v: number) => {
+                  if (v === 0) return '$0'
+                  if (v >= 100000) return `$${Math.round(v / 100000)}K`
+                  if (v >= 10000) return `$${(v / 100).toFixed(0)}`
+                  return formatCents(v)
+                }
                 return (
-                  <ResponsiveContainer width="100%" height={300}>
+                  <ResponsiveContainer width="100%" height={280}>
                     <AreaChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
                       <defs>
                         <linearGradient id="revGradient" x1="0" y1="0" x2="0" y2="1">
@@ -158,27 +171,33 @@ export default function AnalyticsPage() {
                           <stop offset="100%" stopColor={COLORS.purple} stopOpacity={0.05} />
                         </linearGradient>
                       </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} />
+                      <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
                       <XAxis
                         dataKey="date"
-                        tickFormatter={d => formatDate(d)}
-                        tick={{ fontSize: 12, fill: theme.tick }}
+                        tickFormatter={fmtShortDate}
+                        tick={{ fontSize: 11, fill: theme.tick }}
+                        axisLine={{ stroke: theme.grid }}
+                        tickLine={false}
                       />
                       <YAxis
-                        tickFormatter={v => formatCents(v)}
-                        tick={{ fontSize: 12, fill: theme.tick }}
-                        width={80}
+                        tickFormatter={fmtCompactAmount}
+                        tick={{ fontSize: 11, fill: theme.tick }}
+                        width={60}
+                        axisLine={false}
+                        tickLine={false}
                       />
                       <Tooltip
                         formatter={(value) => [formatCents(Number(value)), 'Revenue']}
-                        labelFormatter={label => formatDate(String(label))}
+                        labelFormatter={label => fmtShortDate(String(label))}
                         contentStyle={{
-                          backgroundColor: theme.tooltipBg,
-                          border: `1px solid ${theme.tooltipBorder}`,
+                          backgroundColor: '#18181b',
+                          border: '1px solid rgba(255,255,255,0.1)',
                           borderRadius: '8px',
                           fontSize: '13px',
-                          color: theme.tooltipColor,
+                          color: '#fafafa',
                         }}
+                        itemStyle={{ color: '#fafafa' }}
+                        labelStyle={{ color: '#a1a1aa', fontSize: '11px', marginBottom: '2px' }}
                       />
                       <Area
                         type="monotone"
@@ -187,68 +206,39 @@ export default function AnalyticsPage() {
                         strokeWidth={2}
                         fill="url(#revGradient)"
                         dot={false}
+                        activeDot={{ r: 4, stroke: COLORS.purple, fill: '#fff', strokeWidth: 2 }}
                       />
                     </AreaChart>
                   </ResponsiveContainer>
                 )
               })() : (
-                <div className="h-[300px] flex items-center justify-center text-sm text-muted-foreground">
+                <div className="h-[280px] flex items-center justify-center text-sm text-muted-foreground">
                   No revenue data for this period
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Middle Row: Revenue Breakdown + Payment Success */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
-            {/* Revenue Breakdown */}
-            <Card>
-              <CardContent className="p-6">
-                <h2 className="text-sm font-semibold text-foreground mb-1">Revenue Breakdown</h2>
-                <p className="text-xs text-muted-foreground mb-4">Key financial metrics</p>
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Monthly Recurring Revenue</span>
-                    <span className="text-sm font-semibold tabular-nums">{formatCents(overview.mrr)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Total Revenue</span>
-                    <span className="text-sm font-semibold tabular-nums">{formatCents(overview.total_revenue)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Outstanding AR</span>
-                    <span className="text-sm font-semibold tabular-nums text-amber-600 dark:text-amber-400">
-                      {formatCents(overview.outstanding_ar)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Average Invoice Value</span>
-                    <span className="text-sm font-semibold tabular-nums">{formatCents(overview.avg_invoice_value)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Credit Balance (all customers)</span>
-                    <span className="text-sm font-semibold tabular-nums">{formatCents(overview.credit_balance_total)}</span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+          <Separator className="mt-6" />
 
+          {/* Middle Row: Payment Success (donut) + Invoice Summary (bar) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
             {/* Payment Success Rate Donut */}
             <Card>
-              <CardContent className="p-6">
+              <CardContent className="p-5">
                 <h2 className="text-sm font-semibold text-foreground mb-1">Payment Success Rate</h2>
                 <p className="text-xs text-muted-foreground mb-4">Last 30 days</p>
                 {totalPayments > 0 ? (
-                  <div className="flex items-center justify-center">
+                  <div className="flex flex-col items-center">
                     <div className="relative">
-                      <ResponsiveContainer width={180} height={180}>
+                      <ResponsiveContainer width={200} height={200}>
                         <PieChart>
                           <Pie
                             data={donutData}
                             cx="50%"
                             cy="50%"
-                            innerRadius={55}
-                            outerRadius={75}
+                            innerRadius={60}
+                            outerRadius={80}
                             dataKey="value"
                             startAngle={90}
                             endAngle={-270}
@@ -261,67 +251,66 @@ export default function AnalyticsPage() {
                           <Tooltip
                             formatter={(value, name) => [value, name]}
                             contentStyle={{
-                              backgroundColor: chartTheme().tooltipBg,
-                              border: `1px solid ${chartTheme().tooltipBorder}`,
+                              backgroundColor: '#18181b',
+                              border: '1px solid rgba(255,255,255,0.1)',
                               borderRadius: '8px',
                               fontSize: '13px',
-                              color: chartTheme().tooltipColor,
+                              color: '#fafafa',
                             }}
+                            itemStyle={{ color: '#fafafa' }}
                           />
                         </PieChart>
                       </ResponsiveContainer>
                       {/* Center label */}
                       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                         <div className="text-center">
-                          <p className="text-2xl font-bold tabular-nums text-foreground">{successRate}%</p>
+                          <p className="text-3xl font-bold tabular-nums font-mono text-foreground">{successRate}%</p>
                           <p className="text-[10px] text-muted-foreground uppercase tracking-wider">success</p>
                         </div>
                       </div>
                     </div>
-                    <div className="ml-4 space-y-2">
+                    <div className="flex items-center gap-6 mt-2">
                       <div className="flex items-center gap-2">
-                        <span className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS.emerald }} />
-                        <span className="text-sm text-muted-foreground">Paid: {paidCount}</span>
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS.emerald }} />
+                        <span className="text-sm text-muted-foreground">Paid <span className="font-mono tabular-nums font-medium text-foreground">{paidCount}</span></span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS.red }} />
-                        <span className="text-sm text-muted-foreground">Failed: {failedCount}</span>
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS.red }} />
+                        <span className="text-sm text-muted-foreground">Failed <span className="font-mono tabular-nums font-medium text-foreground">{failedCount}</span></span>
                       </div>
                     </div>
                   </div>
                 ) : (
-                  <div className="h-[180px] flex items-center justify-center text-sm text-muted-foreground">
+                  <div className="h-[200px] flex items-center justify-center text-sm text-muted-foreground">
                     No payment data yet
                   </div>
                 )}
               </CardContent>
             </Card>
-          </div>
 
-          {/* Bottom Row: Invoice Summary + Customer Growth */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
             {/* Invoice Summary Bar Chart */}
             <Card>
-              <CardContent className="p-6">
+              <CardContent className="p-5">
                 <h2 className="text-sm font-semibold text-foreground mb-1">Invoice Summary</h2>
                 <p className="text-xs text-muted-foreground mb-4">Current invoice status breakdown</p>
                 {invoiceSummaryData.some(d => d.count > 0) ? (() => {
                   const theme = chartTheme()
                   return (
-                    <ResponsiveContainer width="100%" height={200}>
+                    <ResponsiveContainer width="100%" height={220}>
                       <BarChart data={invoiceSummaryData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} />
-                        <XAxis dataKey="name" tick={{ fontSize: 12, fill: theme.tick }} />
-                        <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: theme.tick }} width={40} />
+                        <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
+                        <XAxis dataKey="name" tick={{ fontSize: 11, fill: theme.tick }} axisLine={{ stroke: theme.grid }} tickLine={false} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: theme.tick }} width={40} axisLine={false} tickLine={false} />
                         <Tooltip
                           formatter={(value) => [value, 'Invoices']}
                           contentStyle={{
-                            backgroundColor: theme.tooltipBg,
-                            border: `1px solid ${theme.tooltipBorder}`,
+                            backgroundColor: '#18181b',
+                            border: '1px solid rgba(255,255,255,0.1)',
                             borderRadius: '8px',
                             fontSize: '13px',
-                            color: theme.tooltipColor,
+                            color: '#fafafa',
                           }}
+                          itemStyle={{ color: '#fafafa' }}
                         />
                         <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                           {invoiceSummaryData.map((entry, i) => (
@@ -332,42 +321,89 @@ export default function AnalyticsPage() {
                     </ResponsiveContainer>
                   )
                 })() : (
-                  <div className="h-[200px] flex items-center justify-center text-sm text-muted-foreground">
+                  <div className="h-[220px] flex items-center justify-center text-sm text-muted-foreground">
                     No invoice data yet
                   </div>
                 )}
               </CardContent>
             </Card>
+          </div>
 
-            {/* Customer Growth */}
+          <Separator className="mt-6" />
+
+          {/* Bottom Row: Customer Stats + Revenue Breakdown */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+            {/* Customer Stats */}
             <Card>
-              <CardContent className="p-6">
-                <h2 className="text-sm font-semibold text-foreground mb-1">Customer Growth</h2>
+              <CardContent className="p-5">
+                <h2 className="text-sm font-semibold text-foreground mb-1">Customer Stats</h2>
                 <p className="text-xs text-muted-foreground mb-4">Current customer and subscription counts</p>
-                <div className="space-y-5 mt-2">
-                  <div>
-                    <p className="text-xs uppercase tracking-wider text-muted-foreground">Active Customers</p>
-                    <p className="text-3xl font-bold tabular-nums text-foreground mt-1">{overview.active_customers}</p>
+                <div className="space-y-4 mt-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Active Customers</span>
+                    <span className="text-2xl font-semibold tabular-nums text-foreground">{overview.active_customers}</span>
                   </div>
-                  <div className="h-px bg-border" />
-                  <div>
-                    <p className="text-xs uppercase tracking-wider text-muted-foreground">Active Subscriptions</p>
-                    <p className="text-3xl font-bold tabular-nums text-foreground mt-1">{overview.active_subscriptions}</p>
+                  <Separator />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Active Subscriptions</span>
+                    <span className="text-2xl font-semibold tabular-nums text-foreground">{overview.active_subscriptions}</span>
                   </div>
-                  <div className="h-px bg-border" />
-                  <div className="flex gap-8">
-                    <div>
-                      <p className="text-xs uppercase tracking-wider text-muted-foreground">Dunning Active</p>
-                      <p className="text-xl font-semibold tabular-nums text-foreground mt-1">
-                        {overview.dunning_active}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase tracking-wider text-muted-foreground">Open Invoices</p>
-                      <p className="text-xl font-semibold tabular-nums text-foreground mt-1">
-                        {overview.open_invoices}
-                      </p>
-                    </div>
+                  <Separator />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Dunning Active</span>
+                    <span className={cn('text-xl font-semibold tabular-nums', overview.dunning_active > 0 ? 'text-amber-600' : 'text-foreground')}>{overview.dunning_active}</span>
+                  </div>
+                  <Separator />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Open Invoices</span>
+                    <span className="text-xl font-semibold tabular-nums text-foreground">{overview.open_invoices}</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Revenue Breakdown */}
+            <Card>
+              <CardContent className="p-5">
+                <h2 className="text-sm font-semibold text-foreground mb-1">Revenue Breakdown</h2>
+                <p className="text-xs text-muted-foreground mb-4">Key financial metrics</p>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between py-1">
+                    <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                      Monthly Recurring Revenue
+                    </span>
+                    <span className="text-sm font-semibold tabular-nums font-mono">{formatCents(overview.mrr)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-1">
+                    <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                      Total Revenue
+                    </span>
+                    <span className="text-sm font-semibold tabular-nums font-mono">{formatCents(overview.total_revenue)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-1">
+                    <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                      Outstanding AR
+                    </span>
+                    <span className="text-sm font-semibold tabular-nums font-mono text-amber-600 dark:text-amber-400">
+                      {formatCents(overview.outstanding_ar)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between py-1">
+                    <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+                      Average Invoice Value
+                    </span>
+                    <span className="text-sm font-semibold tabular-nums font-mono">{formatCents(overview.avg_invoice_value)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-1">
+                    <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0" />
+                      Credit Balance (all customers)
+                    </span>
+                    <span className="text-sm font-semibold tabular-nums font-mono">{formatCents(overview.credit_balance_total)}</span>
                   </div>
                 </div>
               </CardContent>
