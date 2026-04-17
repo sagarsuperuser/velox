@@ -91,6 +91,7 @@ export default function SubscriptionDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['subscription', id] })
     queryClient.invalidateQueries({ queryKey: ['subscription-invoices', id] })
     queryClient.invalidateQueries({ queryKey: ['subscription-preview', id] })
+    queryClient.invalidateQueries({ queryKey: ['subscriptions'] })
   }
 
   const activateMutation = useMutation({
