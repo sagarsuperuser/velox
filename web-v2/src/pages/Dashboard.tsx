@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { ChevronDown, ChevronUp, Loader2, Zap, Check, ArrowRight } from 'lucide-react'
+import { Loader2, Zap, Check, ChevronUp, ChevronDown, ArrowRight } from 'lucide-react'
 import { AreaChart, Area, BarChart, Bar, CartesianGrid, ResponsiveContainer } from 'recharts'
 import { statusBadgeVariant } from '@/lib/status'
 
@@ -21,12 +21,10 @@ export default function DashboardPage() {
     queryKey: ['dashboard-overview'],
     queryFn: () => api.getAnalyticsOverview(),
   })
-
   const { data: chartRes } = useQuery({
     queryKey: ['dashboard-chart'],
     queryFn: () => api.getRevenueChart('30d'),
   })
-
   const { data: recentInvoices } = useQuery({
     queryKey: ['dashboard-recent-invoices'],
     queryFn: () => api.listInvoices('limit=5'),
@@ -38,8 +36,7 @@ export default function DashboardPage() {
   const billingMutation = useMutation({
     mutationFn: () => api.triggerBilling(),
     onSuccess: (res) => {
-      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      setBillingResult(`${res.invoices_generated} invoice(s) at ${now}`)
+      setBillingResult(`${res.invoices_generated} invoice(s) at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`)
       queryClient.invalidateQueries({ queryKey: ['dashboard-overview'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard-chart'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard-recent-invoices'] })
@@ -71,7 +68,7 @@ export default function DashboardPage() {
         </CardContent></Card>
       ) : (
         <>
-          {/* KPI Cards — flat, no decoration, pure data */}
+          {/* KPI Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
             <Card>
               <CardContent className="p-5">
@@ -107,43 +104,23 @@ export default function DashboardPage() {
             </Card>
             <Card>
               <CardContent className="p-5">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">Outstanding</p>
-                <p className={cn('text-[28px] font-semibold tabular-nums mt-1', overview.outstanding_ar > 0 ? 'text-amber-600' : 'text-foreground')}>
-                  {formatCents(overview.outstanding_ar)}
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">Failed Payments</p>
+                <p className={cn('text-[28px] font-semibold tabular-nums mt-1', overview.failed_payments_30d > 0 ? 'text-destructive' : 'text-foreground')}>
+                  {overview.failed_payments_30d}
                 </p>
-                <p className="text-xs text-muted-foreground mt-0.5">{overview.open_invoices} open invoices</p>
+                <p className="text-xs text-muted-foreground mt-0.5">last 30 days</p>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="p-5">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">Paid (30d)</p>
-                <p className="text-[28px] font-semibold tabular-nums text-foreground mt-1">{overview.paid_invoices_30d}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">{formatCents(overview.total_revenue)} revenue</p>
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">Revenue (30d)</p>
+                <p className="text-[28px] font-semibold tabular-nums text-foreground mt-1">{formatCents(overview.total_revenue)}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{overview.paid_invoices_30d} invoices paid</p>
               </CardContent>
             </Card>
           </div>
 
-          {/* Alerts — simple text with left color bar, Stripe pattern */}
-          {(overview.failed_payments_30d > 0 || overview.dunning_active > 0) && (
-            <Card className="mt-6 overflow-hidden">
-              <CardContent className="p-0 divide-y divide-border">
-                {overview.failed_payments_30d > 0 && (
-                  <Link to="/invoices?payment_status=failed" className="flex items-center justify-between px-5 py-3 border-l-[3px] border-l-destructive hover:bg-muted/50 transition-colors">
-                    <span className="text-sm text-foreground">{overview.failed_payments_30d} failed payment{overview.failed_payments_30d > 1 ? 's' : ''} in the last 30 days</span>
-                    <ArrowRight size={14} className="text-muted-foreground" />
-                  </Link>
-                )}
-                {overview.dunning_active > 0 && (
-                  <Link to="/dunning?tab=runs" className="flex items-center justify-between px-5 py-3 border-l-[3px] border-l-amber-500 hover:bg-muted/50 transition-colors">
-                    <span className="text-sm text-foreground">{overview.dunning_active} active dunning run{overview.dunning_active > 1 ? 's' : ''}</span>
-                    <ArrowRight size={14} className="text-muted-foreground" />
-                  </Link>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Revenue Chart — 200px, single color, light gridlines */}
+          {/* Revenue Chart — full width */}
           <Card className="mt-6">
             <CardContent className="p-5">
               <div className="flex items-center justify-between mb-4">
@@ -151,88 +128,56 @@ export default function DashboardPage() {
                 <Link to="/analytics" className="text-xs text-muted-foreground hover:text-foreground transition-colors">View analytics →</Link>
               </div>
               {chartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={200}>
+                <ResponsiveContainer width="100%" height={180}>
                   <BarChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(0,0,0,0.05)" />
                     <Bar dataKey="revenue_cents" fill="#635BFF" radius={[3, 3, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="h-[200px] flex items-center justify-center text-sm text-muted-foreground">
+                <div className="h-[180px] flex items-center justify-center text-sm text-muted-foreground">
                   Revenue data will appear after your first billing cycle
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Recent Invoices + Financial Summary */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-6">
-            <Card className="lg:col-span-2">
-              <CardContent className="p-0">
-                <div className="flex items-center justify-between px-5 py-3 border-b border-border">
-                  <p className="text-sm font-medium text-foreground">Recent Invoices</p>
-                  <Link to="/invoices" className="text-xs text-muted-foreground hover:text-foreground transition-colors">View all →</Link>
-                </div>
-                {recentInvoices?.data && recentInvoices.data.length > 0 ? (
-                  <div className="divide-y divide-border">
-                    {recentInvoices.data.slice(0, 5).map((inv: Invoice) => (
-                      <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-5 py-3 hover:bg-muted/50 transition-colors">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <span className={cn('w-2 h-2 rounded-full shrink-0',
-                            inv.payment_status === 'succeeded' ? 'bg-emerald-500' :
-                            inv.payment_status === 'failed' ? 'bg-destructive' :
-                            inv.payment_status === 'processing' ? 'bg-blue-500' : 'bg-amber-500'
-                          )} />
-                          <span className="text-sm font-mono text-foreground">{inv.invoice_number}</span>
-                          <Badge variant={statusBadgeVariant(inv.payment_status)} className="text-[10px]">{inv.payment_status}</Badge>
-                        </div>
-                        <div className="flex items-center gap-4 shrink-0">
-                          <span className="text-sm tabular-nums text-foreground">{formatCents(inv.amount_due_cents, inv.currency)}</span>
-                          <span className="text-xs text-muted-foreground w-16 text-right">{formatRelativeTime(inv.created_at)}</span>
-                        </div>
-                      </Link>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-                    No invoices yet. Run billing to generate your first invoice.
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="p-0">
-                <div className="px-5 py-3 border-b border-border">
-                  <p className="text-sm font-medium text-foreground">Financial Summary</p>
-                </div>
+          {/* Recent Activity */}
+          <Card className="mt-6">
+            <CardContent className="p-0">
+              <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+                <p className="text-sm font-medium text-foreground">Recent Activity</p>
+                <Link to="/invoices" className="text-xs text-muted-foreground hover:text-foreground transition-colors">View all →</Link>
+              </div>
+              {recentInvoices?.data && recentInvoices.data.length > 0 ? (
                 <div className="divide-y divide-border">
-                  <div className="flex items-center justify-between px-5 py-3">
-                    <span className="text-sm text-muted-foreground">Outstanding AR</span>
-                    <span className={cn('text-sm font-medium tabular-nums', overview.outstanding_ar > 0 ? 'text-amber-600' : 'text-foreground')}>{formatCents(overview.outstanding_ar)}</span>
-                  </div>
-                  <div className="flex items-center justify-between px-5 py-3">
-                    <span className="text-sm text-muted-foreground">Total Revenue</span>
-                    <span className="text-sm font-medium tabular-nums text-foreground">{formatCents(overview.total_revenue)}</span>
-                  </div>
-                  <div className="flex items-center justify-between px-5 py-3">
-                    <span className="text-sm text-muted-foreground">Avg Invoice</span>
-                    <span className="text-sm font-medium tabular-nums text-foreground">{formatCents(overview.avg_invoice_value)}</span>
-                  </div>
-                  <div className="flex items-center justify-between px-5 py-3">
-                    <span className="text-sm text-muted-foreground">Credit Balance</span>
-                    <span className="text-sm font-medium tabular-nums text-foreground">{formatCents(overview.credit_balance_total)}</span>
-                  </div>
-                  <div className="flex items-center justify-between px-5 py-3">
-                    <span className="text-sm text-muted-foreground">Open Invoices</span>
-                    <span className="text-sm font-medium tabular-nums text-foreground">{overview.open_invoices}</span>
-                  </div>
+                  {recentInvoices.data.slice(0, 5).map((inv: Invoice) => (
+                    <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-5 py-3 hover:bg-muted/50 transition-colors">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className={cn('w-2 h-2 rounded-full shrink-0',
+                          inv.payment_status === 'succeeded' ? 'bg-emerald-500' :
+                          inv.payment_status === 'failed' ? 'bg-destructive' :
+                          inv.payment_status === 'processing' ? 'bg-blue-500' : 'bg-amber-500'
+                        )} />
+                        <span className="text-sm font-mono text-foreground">{inv.invoice_number}</span>
+                        <Badge variant={statusBadgeVariant(inv.payment_status)} className="text-[10px]">{inv.payment_status}</Badge>
+                      </div>
+                      <div className="flex items-center gap-4 shrink-0">
+                        <span className="text-sm tabular-nums text-foreground">{formatCents(inv.amount_due_cents, inv.currency)}</span>
+                        <span className="text-xs text-muted-foreground w-16 text-right">{formatRelativeTime(inv.created_at)}</span>
+                      </div>
+                    </Link>
+                  ))}
                 </div>
-              </CardContent>
-            </Card>
-          </div>
+              ) : (
+                <div className="px-5 py-8 text-center text-sm text-muted-foreground">
+                  No invoices yet. Run billing to generate your first invoice.
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
-          {/* Get Started — only for new users */}
+          {/* Get Started — new users only */}
           {(() => {
             const steps = [
               { done: overview.active_subscriptions > 0 || overview.total_revenue > 0, label: 'Configure pricing', desc: 'create meters, rating rules, and plans', to: '/pricing' },
