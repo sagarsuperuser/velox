@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, downloadPDF, formatCents, formatDate, formatDateTime, getApiKey, getCurrencySymbol, type Invoice, type LineItem, type Customer, type Subscription, type CreditNote, type TimelineEvent } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, formatDateTime, getApiKey, getCurrencySymbol, type Invoice, type LineItem, type Customer, type Subscription, type CreditNote, type TimelineEvent, type TenantSettings } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 
@@ -126,6 +126,11 @@ export default function InvoiceDetailPage() {
     enabled: !!id && invoice?.status !== 'draft',
   })
   const timeline = timelineData ?? []
+
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => api.getSettings(),
+  })
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ['invoice', id] })
@@ -272,114 +277,253 @@ export default function InvoiceDetailPage() {
         </div>
       </div>
 
-      {/* Status banner */}
+      {/* Invoice Document */}
       <Card className={cn(
-        'mb-4',
-        invoice.status === 'paid' ? 'border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20' :
-        invoice.status === 'voided' ? 'border-destructive/30 bg-destructive/5' :
-        invoice.status === 'draft' ? '' :
-        invoice.payment_status === 'failed' ? 'border-destructive/30 bg-destructive/5' :
-        'border-blue-200 bg-blue-50 dark:bg-blue-950/20'
+        'overflow-hidden',
+        invoice.status === 'voided' && 'border-destructive/30'
       )}>
-        <CardContent className="py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <CardContent className="p-8 sm:p-10">
+          {/* Document Header */}
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-2xl font-bold tracking-tight text-foreground">
+                {settings?.company_name || 'VELOX'}
+              </p>
+              {settings?.company_address && (
+                <p className="text-sm text-muted-foreground mt-1 whitespace-pre-line">{settings.company_address}</p>
+              )}
+            </div>
+            <div className="text-right">
+              <p className="text-sm font-medium uppercase tracking-widest text-muted-foreground">Invoice</p>
+              <p className="text-xl font-semibold text-foreground mt-0.5">{invoice.invoice_number}</p>
+            </div>
+          </div>
+
+          {/* Status badges */}
+          <div className="flex items-center gap-2 mt-5">
             <Badge variant={statusVariant(invoice.status)}>{invoice.status}</Badge>
-            {invoice.status === 'finalized' && <Badge variant={statusVariant(invoice.payment_status)}>{invoice.payment_status}</Badge>}
-            <span className="text-sm font-medium text-foreground">
-              {invoice.status === 'paid' && invoice.paid_at ? `Paid on ${formatDate(invoice.paid_at)}` :
-               invoice.status === 'voided' && invoice.voided_at ? `Voided on ${formatDate(invoice.voided_at)}` :
-               invoice.status === 'draft' ? 'Draft -- not yet finalized' :
-               invoice.payment_status === 'failed' ? `Payment failed -- ${formatCents(invoice.amount_due_cents, invoice.currency)} outstanding` :
-               invoice.amount_due_cents > 0 ? `Due on ${invoice.due_at ? formatDate(invoice.due_at) : 'N/A'}` :
-               'Finalized'}
-            </span>
+            {invoice.status === 'finalized' && (
+              <Badge variant={statusVariant(invoice.payment_status)}>{invoice.payment_status}</Badge>
+            )}
+            {invoice.status === 'voided' && (
+              <span className="text-xs font-semibold text-destructive uppercase tracking-wider ml-1">
+                {invoice.voided_at ? `Voided ${formatDate(invoice.voided_at)}` : 'Voided'}
+              </span>
+            )}
+            {invoice.status === 'paid' && invoice.paid_at && (
+              <span className="text-xs text-muted-foreground ml-1">Paid {formatDate(invoice.paid_at)}</span>
+            )}
           </div>
-          <span className="text-2xl font-semibold text-foreground tabular-nums">{formatCents(invoice.amount_due_cents, invoice.currency)}</span>
-        </CardContent>
-      </Card>
 
-      {/* Key metrics */}
-      <Card>
-        <CardContent className="p-0">
-          <div className="flex divide-x divide-border">
-            <div className="flex-1 px-6 py-4">
-              <p className="text-sm text-muted-foreground">Subtotal</p>
-              <p className="text-lg font-semibold text-foreground mt-0.5 tabular-nums">{formatCents(invoice.subtotal_cents, invoice.currency)}</p>
-            </div>
-            <div className="flex-1 px-6 py-4">
-              <p className="text-sm text-muted-foreground">Total</p>
-              <p className="text-lg font-semibold text-foreground mt-0.5 tabular-nums">{formatCents(invoice.total_amount_cents, invoice.currency)}</p>
-            </div>
-            <div className="flex-1 px-6 py-4">
-              <p className="text-sm text-muted-foreground">Amount Due</p>
-              <p className="text-lg font-semibold text-foreground mt-0.5 tabular-nums">{formatCents(invoice.amount_due_cents, invoice.currency)}</p>
-            </div>
-            <div className="flex-1 px-6 py-4">
-              <p className="text-sm text-muted-foreground">Due Date</p>
-              <p className="text-lg font-semibold text-foreground mt-0.5">{invoice.due_at ? formatDate(invoice.due_at) : '\u2014'}</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+          <Separator className="my-6" />
 
-      {/* Properties */}
-      <Card className="mt-6">
-        <CardHeader>
-          <CardTitle className="text-sm">Properties</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="divide-y divide-border">
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground">Invoice Number</span>
-              <span className="text-sm font-medium text-foreground">{invoice.invoice_number}</span>
+          {/* FROM / BILL TO */}
+          <div className="grid grid-cols-2 gap-8">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">From</p>
+              <p className="text-sm font-medium text-foreground">{settings?.company_name || 'Your Company'}</p>
+              {settings?.company_address && (
+                <p className="text-sm text-muted-foreground mt-0.5 whitespace-pre-line">{settings.company_address}</p>
+              )}
+              {settings?.company_email && (
+                <p className="text-sm text-muted-foreground mt-0.5">{settings.company_email}</p>
+              )}
+              {settings?.company_phone && (
+                <p className="text-sm text-muted-foreground mt-0.5">{settings.company_phone}</p>
+              )}
             </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground">Customer</span>
-              <span className="text-sm font-medium text-foreground">
-                {customer ? (
-                  <Link to={`/customers/${customer.id}`} className="text-primary hover:underline">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Bill To</p>
+              {customer ? (
+                <>
+                  <Link to={`/customers/${customer.id}`} className="text-sm font-medium text-primary hover:underline">
                     {customer.display_name}
                   </Link>
-                ) : (
-                  invoice.customer_id
-                )}
-              </span>
+                  {customer.email && (
+                    <p className="text-sm text-muted-foreground mt-0.5">{customer.email}</p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm font-mono text-muted-foreground">{invoice.customer_id}</p>
+              )}
+              {subscription && (
+                <p className="text-sm text-muted-foreground mt-0.5">
+                  Sub: <Link to={`/subscriptions/${subscription.id}`} className="text-primary hover:underline">{subscription.display_name}</Link>
+                </p>
+              )}
             </div>
-            {subscription && (
-              <div className="flex items-center justify-between px-6 py-3">
-                <span className="text-sm text-muted-foreground">Subscription</span>
-                <Link to={`/subscriptions/${subscription.id}`} className="text-sm font-medium text-primary hover:underline">{subscription.display_name}</Link>
+          </div>
+
+          <Separator className="my-6" />
+
+          {/* Dates row */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Issued</p>
+              <p className="text-sm text-foreground">{invoice.issued_at ? formatDate(invoice.issued_at) : formatDate(invoice.created_at)}</p>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Due</p>
+              <p className="text-sm text-foreground">{invoice.due_at ? formatDate(invoice.due_at) : '\u2014'}</p>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Period</p>
+              <p className="text-sm text-foreground">
+                {formatDate(invoice.billing_period_start)} \u2013 {formatDate(invoice.billing_period_end)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Terms</p>
+              <p className="text-sm text-foreground">
+                {settings?.net_payment_terms ? `Net ${settings.net_payment_terms}` : '\u2014'}
+              </p>
+            </div>
+          </div>
+
+          <Separator className="my-6" />
+
+          {/* Line Items Table */}
+          <div className="-mx-2">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[50%]">Item</TableHead>
+                  <TableHead className="text-right">Qty</TableHead>
+                  <TableHead className="text-right">Unit Price</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {lineItems.map(item => (
+                  <TableRow key={item.id} className={cn(invoice.status === 'voided' && 'opacity-50')}>
+                    <TableCell>
+                      <span className="text-sm text-foreground">{item.description}</span>
+                      <span className="ml-2 text-xs text-muted-foreground">({formatLineType(item.line_type)})</span>
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums text-sm">{item.quantity.toLocaleString()}</TableCell>
+                    <TableCell className="text-right font-mono tabular-nums text-sm">{formatCents(item.unit_amount_cents, invoice.currency)}</TableCell>
+                    <TableCell className="text-right font-mono tabular-nums text-sm font-medium">{formatCents(item.amount_cents, invoice.currency)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+
+          {/* Summary section */}
+          <div className="flex justify-end mt-4">
+            <div className="w-72 space-y-2">
+              {/* Subtotal */}
+              <div className={cn('flex justify-between text-sm', invoice.status === 'voided' && 'text-muted-foreground')}>
+                <span>Subtotal</span>
+                <span className="font-mono tabular-nums">{formatCents(invoice.subtotal_cents, invoice.currency)}</span>
               </div>
-            )}
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground">Billing Period</span>
-              <span className="text-sm font-medium text-foreground">
-                {formatDate(invoice.billing_period_start)} -- {formatDate(invoice.billing_period_end)}
-              </span>
+
+              {/* Discount */}
+              {invoice.discount_cents > 0 && (
+                <div className={cn('flex justify-between text-sm', invoice.status === 'voided' && 'text-muted-foreground')}>
+                  <span>Discount</span>
+                  <span className="font-mono tabular-nums">-{formatCents(invoice.discount_cents, invoice.currency)}</span>
+                </div>
+              )}
+
+              {/* Tax */}
+              {invoice.tax_amount_cents > 0 && (
+                <div className={cn('flex justify-between text-sm', invoice.status === 'voided' && 'text-muted-foreground')}>
+                  <span>{invoice.tax_name || 'Tax'}{invoice.tax_rate > 0 ? ` (${invoice.tax_rate}%)` : ''}</span>
+                  <span className="font-mono tabular-nums">{formatCents(invoice.tax_amount_cents, invoice.currency)}</span>
+                </div>
+              )}
+
+              {/* Total */}
+              {(invoice.discount_cents > 0 || invoice.tax_amount_cents > 0) && (
+                <div className={cn('flex justify-between text-sm font-medium', invoice.status === 'voided' && 'text-muted-foreground')}>
+                  <span>Total</span>
+                  <span className="font-mono tabular-nums">{formatCents(invoice.total_amount_cents, invoice.currency)}</span>
+                </div>
+              )}
+
+              {/* Settlement waterfall */}
+              {invoice.status === 'voided' ? (
+                <>
+                  <Separator />
+                  <div className="flex justify-between text-sm font-semibold">
+                    <span>Amount Due</span>
+                    <span className="font-mono tabular-nums">$0.00</span>
+                  </div>
+                </>
+              ) : (() => {
+                const prePaymentCNs = invoice.status === 'paid'
+                  ? creditNotes.filter(cn => cn.refund_amount_cents === 0 && cn.credit_amount_cents === 0)
+                  : creditNotes
+                const postPaymentCNs = invoice.status === 'paid'
+                  ? creditNotes.filter(cn => cn.refund_amount_cents > 0 || cn.credit_amount_cents > 0)
+                  : []
+
+                return (
+                  <>
+                    {prePaymentCNs.map(cn => (
+                      <div key={cn.id} className="flex justify-between text-sm text-emerald-600">
+                        <span className="truncate mr-2">Credit {cn.credit_note_number}</span>
+                        <span className="font-mono tabular-nums shrink-0">-{formatCents(cn.total_cents, invoice.currency)}</span>
+                      </div>
+                    ))}
+
+                    {invoice.credits_applied_cents > 0 && (
+                      <div className="flex justify-between text-sm text-emerald-600">
+                        <span>Credits Applied</span>
+                        <span className="font-mono tabular-nums">-{formatCents(invoice.credits_applied_cents, invoice.currency)}</span>
+                      </div>
+                    )}
+
+                    {invoice.amount_paid_cents > 0 && (
+                      <div className="flex justify-between text-sm text-muted-foreground">
+                        <span>Amount Paid</span>
+                        <span className="font-mono tabular-nums">-{formatCents(invoice.amount_paid_cents, invoice.currency)}</span>
+                      </div>
+                    )}
+
+                    <Separator />
+                    <div className="flex justify-between font-semibold text-base pt-1">
+                      <span>Amount Due</span>
+                      <span className="font-mono tabular-nums">{formatCents(invoice.amount_due_cents, invoice.currency)}</span>
+                    </div>
+
+                    {/* Post-payment adjustments */}
+                    {(() => {
+                      const completedCNs = postPaymentCNs.filter(cn =>
+                        cn.credit_amount_cents > 0 ||
+                        (cn.refund_amount_cents > 0 && cn.refund_status === 'succeeded')
+                      )
+                      return completedCNs.length > 0 ? (
+                        <div className="mt-3 pt-3 border-t border-dashed border-border space-y-1.5">
+                          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Post-payment adjustments</p>
+                          {completedCNs.map(cn => (
+                            <div key={cn.id} className="flex justify-between text-xs text-muted-foreground">
+                              <span className="truncate mr-2">
+                                {cn.credit_note_number} -- {cn.reason}
+                                <span className="ml-1">
+                                  {cn.refund_amount_cents > 0 ? '(refunded)' : '(credited)'}
+                                </span>
+                              </span>
+                              <span className="font-mono tabular-nums shrink-0">{formatCents(cn.total_cents, invoice.currency)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null
+                    })()}
+                  </>
+                )
+              })()}
             </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground">Status</span>
-              <Badge variant={statusVariant(invoice.status)}>{invoice.status}</Badge>
+          </div>
+
+          {/* ID footer */}
+          <div className="mt-8 pt-4 border-t border-dashed border-border flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="font-mono">{invoice.id}</span>
+              <CopyId text={invoice.id} />
             </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground">Payment Status</span>
-              <Badge variant={statusVariant(invoice.payment_status)}>{invoice.payment_status}</Badge>
-            </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground">Currency</span>
-              <span className="text-sm font-medium text-foreground uppercase">{invoice.currency}</span>
-            </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground">Created</span>
-              <span className="text-sm font-medium text-foreground">{formatDateTime(invoice.created_at)}</span>
-            </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground">ID</span>
-              <div className="flex items-center gap-1.5">
-                <span className="text-sm font-mono text-muted-foreground">{invoice.id}</span>
-                <CopyId text={invoice.id} />
-              </div>
-            </div>
+            <span className="text-xs text-muted-foreground uppercase">{invoice.currency}</span>
           </div>
         </CardContent>
       </Card>
@@ -484,143 +628,6 @@ export default function InvoiceDetailPage() {
           </CardContent>
         </Card>
       )}
-
-      {/* Line Items */}
-      <Card className="mt-6">
-        <CardHeader>
-          <CardTitle className="text-sm">Line Items</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Description</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead className="text-right">Qty</TableHead>
-                <TableHead className="text-right">Unit Price</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {lineItems.map(item => (
-                <TableRow key={item.id} className={cn(invoice.status === 'voided' && 'opacity-50')}>
-                  <TableCell>{item.description}</TableCell>
-                  <TableCell><Badge variant="outline">{formatLineType(item.line_type)}</Badge></TableCell>
-                  <TableCell className="text-right">{item.quantity}</TableCell>
-                  <TableCell className="text-right">{formatCents(item.unit_amount_cents, invoice.currency)}</TableCell>
-                  <TableCell className="text-right font-medium">{formatCents(item.amount_cents, invoice.currency)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-            <tfoot>
-              {/* Subtotal */}
-              <TableRow className="border-t-2">
-                <TableCell colSpan={4} className={cn('text-right', invoice.status === 'voided' ? 'text-muted-foreground' : '')}>Subtotal</TableCell>
-                <TableCell className={cn('text-right', invoice.status === 'voided' ? 'text-muted-foreground' : '')}>{formatCents(invoice.subtotal_cents, invoice.currency)}</TableCell>
-              </TableRow>
-
-              {/* Discount */}
-              {invoice.discount_cents > 0 && (
-                <TableRow>
-                  <TableCell colSpan={4} className={cn('text-right', invoice.status === 'voided' ? 'text-muted-foreground' : '')}>Discount</TableCell>
-                  <TableCell className={cn('text-right', invoice.status === 'voided' ? 'text-muted-foreground' : '')}>-{formatCents(invoice.discount_cents, invoice.currency)}</TableCell>
-                </TableRow>
-              )}
-
-              {/* Tax */}
-              {invoice.tax_amount_cents > 0 && (
-                <TableRow>
-                  <TableCell colSpan={4} className={cn('text-right', invoice.status === 'voided' ? 'text-muted-foreground' : '')}>
-                    {invoice.tax_name || 'Tax'}{invoice.tax_rate > 0 ? ` (${invoice.tax_rate}%)` : ''}
-                  </TableCell>
-                  <TableCell className={cn('text-right', invoice.status === 'voided' ? 'text-muted-foreground' : '')}>{formatCents(invoice.tax_amount_cents, invoice.currency)}</TableCell>
-                </TableRow>
-              )}
-
-              {/* Total */}
-              <TableRow>
-                <TableCell colSpan={4} className={cn('text-right font-medium', invoice.status === 'voided' ? 'text-muted-foreground' : '')}>Total</TableCell>
-                <TableCell className={cn('text-right font-medium', invoice.status === 'voided' ? 'text-muted-foreground' : '')}>{formatCents(invoice.total_amount_cents, invoice.currency)}</TableCell>
-              </TableRow>
-
-              {/* Settlement waterfall */}
-              {invoice.status === 'voided' ? (
-                <TableRow className="border-t-2">
-                  <TableCell colSpan={4} className="text-right font-semibold">Amount Due</TableCell>
-                  <TableCell className="text-right font-semibold">$0.00</TableCell>
-                </TableRow>
-              ) : (() => {
-                const prePaymentCNs = invoice.status === 'paid'
-                  ? creditNotes.filter(cn => cn.refund_amount_cents === 0 && cn.credit_amount_cents === 0)
-                  : creditNotes
-                const postPaymentCNs = invoice.status === 'paid'
-                  ? creditNotes.filter(cn => cn.refund_amount_cents > 0 || cn.credit_amount_cents > 0)
-                  : []
-
-                return (
-                  <>
-                    {prePaymentCNs.map(cn => (
-                      <TableRow key={cn.id}>
-                        <TableCell colSpan={4} className="text-right text-emerald-600">
-                          Credit note {cn.credit_note_number} -- {cn.reason}
-                        </TableCell>
-                        <TableCell className="text-right text-emerald-600">-{formatCents(cn.total_cents, invoice.currency)}</TableCell>
-                      </TableRow>
-                    ))}
-
-                    {invoice.credits_applied_cents > 0 && (
-                      <TableRow>
-                        <TableCell colSpan={4} className="text-right text-emerald-600">Prepaid credits applied</TableCell>
-                        <TableCell className="text-right text-emerald-600">-{formatCents(invoice.credits_applied_cents, invoice.currency)}</TableCell>
-                      </TableRow>
-                    )}
-
-                    {invoice.amount_paid_cents > 0 && (
-                      <TableRow>
-                        <TableCell colSpan={4} className="text-right text-muted-foreground">Amount Paid</TableCell>
-                        <TableCell className="text-right">-{formatCents(invoice.amount_paid_cents, invoice.currency)}</TableCell>
-                      </TableRow>
-                    )}
-
-                    <TableRow className="border-t-2">
-                      <TableCell colSpan={4} className="text-right font-semibold">Amount Due</TableCell>
-                      <TableCell className="text-right font-semibold">{formatCents(invoice.amount_due_cents, invoice.currency)}</TableCell>
-                    </TableRow>
-
-                    {/* Post-payment adjustments */}
-                    {(() => {
-                      const completedCNs = postPaymentCNs.filter(cn =>
-                        cn.credit_amount_cents > 0 ||
-                        (cn.refund_amount_cents > 0 && cn.refund_status === 'succeeded')
-                      )
-                      return completedCNs.length > 0 ? (
-                        <>
-                          <TableRow>
-                            <TableCell colSpan={5} className="pt-4 pb-2">
-                              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Post-payment adjustments</span>
-                            </TableCell>
-                          </TableRow>
-                          {completedCNs.map(cn => (
-                            <TableRow key={cn.id}>
-                              <TableCell colSpan={4} className="text-right text-muted-foreground">
-                                {cn.credit_note_number} -- {cn.reason}
-                                <span className="ml-2 text-xs">
-                                  {cn.refund_amount_cents > 0 ? '(refunded)' : '(credited to balance)'}
-                                </span>
-                              </TableCell>
-                              <TableCell className="text-right text-muted-foreground">{formatCents(cn.total_cents, invoice.currency)}</TableCell>
-                            </TableRow>
-                          ))}
-                        </>
-                      ) : null
-                    })()}
-                  </>
-                )
-              })()}
-            </tfoot>
-          </Table>
-        </CardContent>
-      </Card>
 
       {/* Void Confirm */}
       <AlertDialog open={showVoidConfirm} onOpenChange={setShowVoidConfirm}>

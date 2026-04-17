@@ -76,6 +76,7 @@ const UsageEventsPage = lazy(() => import('@/pages/UsageEvents'))
 const CouponsPage = lazy(() => import('@/pages/Coupons'))
 const CreditsPage = lazy(() => import('@/pages/Credits'))
 const CreditNotesPage = lazy(() => import('@/pages/CreditNotes'))
+const AnalyticsPage = lazy(() => import('@/pages/Analytics'))
 const AuditLogPage = lazy(() => import('@/pages/AuditLog'))
 const UpdatePaymentPage = lazy(() => import('@/pages/UpdatePayment'))
 const CustomerDetailPage = lazy(() => import('@/pages/CustomerDetail'))
@@ -107,6 +108,7 @@ const App = () => (
               <Route path="/invoices" element={<ProtectedRoute><InvoicesPage /></ProtectedRoute>} />
               <Route path="/subscriptions" element={<ProtectedRoute><SubscriptionsPage /></ProtectedRoute>} />
               <Route path="/usage" element={<ProtectedRoute><UsageEventsPage /></ProtectedRoute>} />
+              <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
               <Route path="/coupons" element={<ProtectedRoute><CouponsPage /></ProtectedRoute>} />
               <Route path="/credits" element={<ProtectedRoute><CreditsPage /></ProtectedRoute>} />
               <Route path="/credit-notes" element={<ProtectedRoute><CreditNotesPage /></ProtectedRoute>} />
