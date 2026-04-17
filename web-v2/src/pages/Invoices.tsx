@@ -12,6 +12,7 @@ import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import {
@@ -184,19 +185,17 @@ export default function InvoicesPage() {
               className="pl-9"
             />
           </div>
-          <Input
-            type="date"
+          <DatePicker
             value={dateFrom}
-            onChange={e => setDateFrom(e.target.value)}
-            placeholder="From"
-            className="w-40"
+            onChange={setDateFrom}
+            placeholder="From date"
+            className="w-44"
           />
-          <Input
-            type="date"
+          <DatePicker
             value={dateTo}
-            onChange={e => setDateTo(e.target.value)}
-            placeholder="To"
-            className="w-40"
+            onChange={setDateTo}
+            placeholder="To date"
+            className="w-44"
           />
           {(search || dateFrom || dateTo) && (
             <span className="text-xs text-muted-foreground">Filtering within current page</span>
