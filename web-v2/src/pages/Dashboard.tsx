@@ -166,8 +166,9 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
 
-          {/* Recent Activity */}
-          <Card className="mt-6">
+          {/* Recent Invoices + Financial Summary */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-6">
+          <Card className="lg:col-span-2">
             <CardContent className="p-0">
               <div className="flex items-center justify-between px-5 py-3 border-b border-border">
                 <p className="text-sm font-medium text-foreground">Recent Invoices</p>
@@ -200,6 +201,40 @@ export default function DashboardPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* Financial Summary */}
+          <Card>
+            <CardContent className="p-0">
+              <div className="px-5 py-3 border-b border-border">
+                <p className="text-sm font-medium text-foreground">Financial Summary</p>
+              </div>
+              <div className="divide-y divide-border">
+                <div className="flex items-center justify-between px-5 py-2.5">
+                  <span className="text-sm text-muted-foreground">Outstanding AR</span>
+                  <span className={cn('text-sm font-medium tabular-nums font-mono', overview.outstanding_ar > 0 ? 'text-amber-600' : 'text-foreground')}>
+                    {formatCents(overview.outstanding_ar)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-5 py-2.5">
+                  <span className="text-sm text-muted-foreground">Total Revenue</span>
+                  <span className="text-sm font-medium tabular-nums font-mono text-foreground">{formatCents(overview.total_revenue)}</span>
+                </div>
+                <div className="flex items-center justify-between px-5 py-2.5">
+                  <span className="text-sm text-muted-foreground">Avg Invoice</span>
+                  <span className="text-sm font-medium tabular-nums font-mono text-foreground">{formatCents(overview.avg_invoice_value)}</span>
+                </div>
+                <div className="flex items-center justify-between px-5 py-2.5">
+                  <span className="text-sm text-muted-foreground">Credit Balance</span>
+                  <span className="text-sm font-medium tabular-nums font-mono text-foreground">{formatCents(overview.credit_balance_total)}</span>
+                </div>
+                <div className="flex items-center justify-between px-5 py-2.5">
+                  <span className="text-sm text-muted-foreground">Open Invoices</span>
+                  <span className="text-sm font-medium tabular-nums text-foreground">{overview.open_invoices}</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          </div>
 
           {/* Get Started (new users only) */}
           {(() => {
