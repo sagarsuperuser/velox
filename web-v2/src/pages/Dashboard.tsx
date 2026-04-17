@@ -1,36 +1,15 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api, formatCents, formatDate } from '@/lib/api'
+import { api, formatCents } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { ChevronDown, ChevronUp, Loader2, Zap, Check, ArrowRight, Rocket, Tag, Users as UsersIcon, CreditCard, BarChart3 } from 'lucide-react'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area } from 'recharts'
-
-type Period = '30d' | '90d' | '12m'
-
-const periodLabels: Record<Period, string> = {
-  '30d': 'Last 30 days',
-  '90d': 'Last 90 days',
-  '12m': 'Last 12 months',
-}
-
-function StatCard({ title, value, subtitle, valueClass }: { title: string; value: string; subtitle?: string; valueClass?: string }) {
-  return (
-    <Card>
-      <CardContent className="pt-6">
-        <p className="text-xs uppercase tracking-wider text-muted-foreground">{title}</p>
-        <p className={cn('text-xl font-semibold tabular-nums mt-1', valueClass ?? 'text-foreground')}>{value}</p>
-        {subtitle && <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>}
-      </CardContent>
-    </Card>
-  )
-}
+import { AreaChart, Area, ResponsiveContainer } from 'recharts'
 
 export default function DashboardPage() {
-  const [period, setPeriod] = useState<Period>('30d')
   const [billingResult, setBillingResult] = useState<string | null>(null)
   const [getStartedOpen, setGetStartedOpen] = useState(true)
   const queryClient = useQueryClient()
@@ -41,8 +20,8 @@ export default function DashboardPage() {
   })
 
   const { data: chartRes } = useQuery({
-    queryKey: ['dashboard-chart', period],
-    queryFn: () => api.getRevenueChart(period),
+    queryKey: ['dashboard-chart', '30d'],
+    queryFn: () => api.getRevenueChart('30d'),
   })
 
   const chartData = chartRes?.data ?? []
@@ -72,7 +51,7 @@ export default function DashboardPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Dashboard</h1>
-          <p className="text-sm text-muted-foreground mt-1">Billing analytics overview</p>
+          <p className="text-sm text-muted-foreground mt-1">Operational overview</p>
         </div>
         <div className="flex items-center gap-3">
           {billingResult && (
@@ -171,100 +150,48 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
 
-          {/* Secondary Stats Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
-            <StatCard
-              title="Outstanding AR"
-              value={formatCents(overview.outstanding_ar)}
-              subtitle="Unpaid invoices"
-              valueClass={overview.outstanding_ar > 0 ? 'text-amber-600 dark:text-amber-400' : undefined}
-            />
-            <StatCard title="Open Invoices" value={String(overview.open_invoices)} />
-            <StatCard
-              title="Failed Payments (30d)"
-              value={String(overview.failed_payments_30d)}
-              valueClass={overview.failed_payments_30d > 0 ? 'text-destructive' : undefined}
-            />
-            <StatCard
-              title="Dunning Active"
-              value={String(overview.dunning_active)}
-              valueClass={overview.dunning_active > 0 ? 'text-destructive' : undefined}
-            />
-            <StatCard title="Credit Balance" value={formatCents(overview.credit_balance_total)} subtitle="Total across all customers" />
-            <StatCard title="Avg Invoice Value" value={formatCents(overview.avg_invoice_value)} />
-          </div>
-
-          {/* Revenue Chart */}
-          <Card className="mt-6">
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-sm font-semibold text-foreground">Revenue Over Time</h2>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Total revenue: {formatCents(overview.total_revenue)}
-                  </p>
-                </div>
-                <div className="flex gap-1 bg-muted rounded-lg p-0.5">
-                  {(Object.keys(periodLabels) as Period[]).map(p => (
-                    <button
-                      key={p}
-                      onClick={() => setPeriod(p)}
-                      className={cn(
-                        'px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
-                        period === p
-                          ? 'bg-background text-foreground shadow-sm'
-                          : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      {periodLabels[p]}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {chartData.length > 0 ? (() => {
-                const isDark = document.documentElement.classList.contains('dark')
-                const gridStroke = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'
-                const tickColor = isDark ? '#a1a1aa' : '#71717a'
-                const tooltipBg = isDark ? '#27272a' : '#ffffff'
-                const tooltipBorder = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'
-                const tooltipColor = isDark ? '#fafafa' : '#09090b'
-                return (
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-                    <XAxis
-                      dataKey="date"
-                      tickFormatter={(d) => formatDate(d)}
-                      tick={{ fontSize: 12, fill: tickColor }}
-                    />
-                    <YAxis
-                      tickFormatter={(v) => formatCents(v)}
-                      tick={{ fontSize: 12, fill: tickColor }}
-                      width={80}
-                    />
-                    <Tooltip
-                      formatter={(value) => [formatCents(Number(value)), 'Revenue']}
-                      labelFormatter={(label) => formatDate(String(label))}
-                      contentStyle={{
-                        backgroundColor: tooltipBg,
-                        border: `1px solid ${tooltipBorder}`,
-                        borderRadius: '8px',
-                        fontSize: '13px',
-                        color: tooltipColor,
-                      }}
-                    />
-                    <Bar dataKey="revenue_cents" fill="#635BFF" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-                )
-              })() : (
-                <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
-                  No revenue data for this period
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          {/* Attention Items */}
+          {(overview.failed_payments_30d > 0 || overview.dunning_active > 0 || overview.open_invoices > 0) && (
+            <Card className="mt-6">
+              <CardContent className="p-0 divide-y divide-border">
+                {overview.failed_payments_30d > 0 && (
+                  <Link to="/invoices?payment_status=failed" className="flex items-center justify-between px-5 py-3 hover:bg-muted/50 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-2 rounded-full bg-destructive" />
+                      <span className="text-sm text-foreground">{overview.failed_payments_30d} failed payment{overview.failed_payments_30d > 1 ? 's' : ''} in the last 30 days</span>
+                    </div>
+                    <ArrowRight size={14} className="text-muted-foreground" />
+                  </Link>
+                )}
+                {overview.dunning_active > 0 && (
+                  <Link to="/dunning?tab=runs" className="flex items-center justify-between px-5 py-3 hover:bg-muted/50 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-2 rounded-full bg-amber-500" />
+                      <span className="text-sm text-foreground">{overview.dunning_active} active dunning run{overview.dunning_active > 1 ? 's' : ''}</span>
+                    </div>
+                    <ArrowRight size={14} className="text-muted-foreground" />
+                  </Link>
+                )}
+                {overview.open_invoices > 0 && (
+                  <Link to="/invoices?status=finalized" className="flex items-center justify-between px-5 py-3 hover:bg-muted/50 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-2 rounded-full bg-blue-500" />
+                      <span className="text-sm text-foreground">{overview.open_invoices} open invoice{overview.open_invoices > 1 ? 's' : ''} awaiting payment</span>
+                    </div>
+                    <ArrowRight size={14} className="text-muted-foreground" />
+                  </Link>
+                )}
+              </CardContent>
+            </Card>
+          )}
+          {overview.failed_payments_30d === 0 && overview.dunning_active === 0 && overview.open_invoices === 0 && (
+            <Card className="mt-6">
+              <CardContent className="py-4 px-5 flex items-center gap-3">
+                <Check size={16} className="text-emerald-500" />
+                <span className="text-sm text-muted-foreground">All clear — no failed payments, no active dunning, no overdue invoices</span>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Get Started with Velox */}
           {(() => {
@@ -278,7 +205,7 @@ export default function DashboardPage() {
             const totalSteps = steps.length
             if (completedCount >= totalSteps) return null
             return (
-              <Card className="mt-6 border-primary/20">
+              <Card className="mt-6 border-primary/20 max-w-2xl">
                 <CardContent className="p-0">
                   <button
                     onClick={() => setGetStartedOpen(!getStartedOpen)}
