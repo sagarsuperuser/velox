@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary, type Meter, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
+import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -42,14 +43,7 @@ function CopyId({ text }: { text: string }) {
   )
 }
 
-function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'active': case 'ready': return 'default'
-    case 'archived': case 'canceled': return 'secondary'
-    case 'draft': case 'pending': case 'missing': return 'outline'
-    default: return 'outline'
-  }
-}
+const statusVariant = statusBadgeVariant
 
 const editCustomerSchema = z.object({
   display_name: z.string().min(1, 'Display name is required'),
@@ -469,7 +463,7 @@ export default function CustomerDetailPage() {
               {dunningOverride.final_action && (
                 <div className="flex items-center justify-between px-6 py-3">
                   <span className="text-sm text-muted-foreground">Final Action</span>
-                  <Badge variant="outline">{dunningOverride.final_action}</Badge>
+                  <Badge variant="warning">{dunningOverride.final_action}</Badge>
                 </div>
               )}
             </div>
@@ -569,7 +563,7 @@ export default function CustomerDetailPage() {
               )}
             </div>
             {paymentSetup?.setup_status === 'ready' && (
-              <Badge variant="default">Active</Badge>
+              <Badge variant="success">Active</Badge>
             )}
           </div>
         </CardContent>

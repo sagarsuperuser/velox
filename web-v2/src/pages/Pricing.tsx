@@ -61,14 +61,14 @@ import {
 
 import { Plus, Trash2, Loader2 } from 'lucide-react'
 
-function badgeVariant(val: string): 'default' | 'secondary' | 'outline' | 'destructive' {
+function badgeVariant(val: string): 'success' | 'info' | 'secondary' | 'outline' {
   switch (val) {
-    case 'active': return 'default'
-    case 'monthly': return 'secondary'
-    case 'yearly': return 'outline'
-    case 'flat': return 'secondary'
-    case 'graduated': return 'outline'
-    case 'package': return 'outline'
+    case 'active': return 'success'
+    case 'monthly': return 'info'
+    case 'yearly': return 'info'
+    case 'flat': return 'info'
+    case 'graduated': return 'info'
+    case 'package': return 'info'
     default: return 'secondary'
   }
 }

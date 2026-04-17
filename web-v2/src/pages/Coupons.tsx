@@ -79,12 +79,12 @@ function formatDiscount(c: Coupon): string {
   return formatCents(c.amount_off, c.currency)
 }
 
-function couponStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+function couponStatusVariant(status: string): 'success' | 'secondary' | 'danger' | 'warning' | 'outline' {
   switch (status) {
-    case 'active': return 'default'
+    case 'active': return 'success'
     case 'expired': return 'secondary'
-    case 'maxed': return 'secondary'
-    case 'inactive': return 'destructive'
+    case 'maxed': return 'warning'
+    case 'inactive': return 'danger'
     default: return 'outline'
   }
 }
@@ -255,7 +255,7 @@ export default function CouponsPage() {
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground truncate max-w-[160px]" title={c.name || ''}>{c.name || '\u2014'}</TableCell>
                       <TableCell>
-                        <Badge variant="outline">{c.type === 'percentage' ? 'Percentage' : 'Fixed'}</Badge>
+                        <Badge variant="info">{c.type === 'percentage' ? 'Percentage' : 'Fixed'}</Badge>
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-mono text-sm">
                         {formatDiscount(c)}

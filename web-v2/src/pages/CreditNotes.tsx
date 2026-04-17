@@ -355,7 +355,7 @@ export default function CreditNotesPage() {
                           <div className="flex items-center gap-1.5">
                             <Badge variant={statusBadgeVariant(note.status)}>{note.status}</Badge>
                             {isRefund && note.status === 'issued' && note.refund_status && note.refund_status !== 'none' && (
-                              <Badge variant={note.refund_status === 'succeeded' ? 'default' : note.refund_status === 'failed' ? 'destructive' : 'secondary'}>
+                              <Badge variant={note.refund_status === 'succeeded' ? 'success' : note.refund_status === 'failed' ? 'danger' : 'warning'}>
                                 {note.refund_status === 'succeeded' ? 'refunded' : note.refund_status === 'failed' ? 'refund failed' : 'refund pending'}
                               </Badge>
                             )}
@@ -626,7 +626,7 @@ function CreateCreditNoteDialog({ open, onOpenChange, customerMap, onCreated }: 
                     <div>
                       <p className="text-muted-foreground">Invoice Status</p>
                       <div className="mt-0.5">
-                        <Badge variant={selectedInvoice.status === 'paid' ? 'default' : 'outline'}>{selectedInvoice.status}</Badge>
+                        <Badge variant={statusBadgeVariant(selectedInvoice.status)}>{selectedInvoice.status}</Badge>
                       </div>
                     </div>
                   </div>
