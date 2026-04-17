@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, formatCents, formatDate } from '@/lib/api'
 import { Layout } from '@/components/Layout'
+import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Loader2 } from 'lucide-react'
@@ -30,6 +31,18 @@ function chartTheme() {
     tooltipBorder: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)',
     tooltipColor: isDark ? '#fafafa' : '#09090b',
   }
+}
+
+function StatCard({ title, value, subtitle, valueClass }: { title: string; value: string; subtitle?: string; valueClass?: string }) {
+  return (
+    <Card>
+      <CardContent className="pt-6">
+        <p className="text-xs uppercase tracking-wider text-muted-foreground">{title}</p>
+        <p className={cn('text-xl font-semibold tabular-nums mt-1', valueClass ?? 'text-foreground')}>{value}</p>
+        {subtitle && <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>}
+      </CardContent>
+    </Card>
+  )
 }
 
 export default function AnalyticsPage() {
@@ -92,6 +105,29 @@ export default function AnalyticsPage() {
         </Card>
       ) : (
         <>
+          {/* Key Financial Metrics */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+            <StatCard
+              title="Outstanding AR"
+              value={formatCents(overview.outstanding_ar)}
+              subtitle="Unpaid invoices"
+              valueClass={overview.outstanding_ar > 0 ? 'text-amber-600 dark:text-amber-400' : undefined}
+            />
+            <StatCard
+              title="Avg Invoice Value"
+              value={formatCents(overview.avg_invoice_value)}
+            />
+            <StatCard
+              title="Credit Balance"
+              value={formatCents(overview.credit_balance_total)}
+              subtitle="Total across all customers"
+            />
+            <StatCard
+              title="Open Invoices"
+              value={String(overview.open_invoices)}
+            />
+          </div>
+
           {/* Period Tabs + Revenue Trend */}
           <Card className="mt-6">
             <CardContent className="p-6">
