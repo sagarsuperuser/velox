@@ -205,55 +205,48 @@ export default function DashboardPage() {
             const totalSteps = steps.length
             if (completedCount >= totalSteps) return null
             return (
-              <Card className="mt-6 border-primary/20 max-w-2xl">
+              <Card className="mt-6 bg-accent/50">
                 <CardContent className="p-0">
                   <button
                     onClick={() => setGetStartedOpen(!getStartedOpen)}
-                    className="w-full flex items-center justify-between px-5 py-3.5"
+                    className="w-full px-6 py-4 flex items-center justify-between text-left"
                   >
-                    <div className="flex items-center gap-3">
-                      <Rocket size={16} className="text-primary" />
-                      <span className="text-sm font-semibold text-foreground">Setup Guide</span>
-                      <div className="flex items-center gap-1.5 ml-1">
-                        {steps.map((step, i) => (
-                          <div key={i} className={cn('w-2 h-2 rounded-full', step.done ? 'bg-emerald-500' : 'bg-border')} />
-                        ))}
-                      </div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">Get Started</h3>
+                      <p className="text-sm text-muted-foreground mt-0.5">{completedCount} of {totalSteps} steps completed</p>
                     </div>
-                    {getStartedOpen ? <ChevronUp size={14} className="text-muted-foreground" /> : <ChevronDown size={14} className="text-muted-foreground" />}
+                    <div className="flex items-center gap-3">
+                      <div className="w-24 h-1.5 bg-border rounded-full overflow-hidden">
+                        <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${(completedCount / totalSteps) * 100}%` }} />
+                      </div>
+                      {getStartedOpen ? <ChevronUp size={16} className="text-muted-foreground" /> : <ChevronDown size={16} className="text-muted-foreground" />}
+                    </div>
                   </button>
                   {getStartedOpen && (
-                    <div className="border-t border-border">
-                      {steps.map((step, i) => (
-                        <div key={i} className={cn(
-                          'flex items-center gap-3 px-5 py-2.5 border-b border-border last:border-b-0',
-                          step.done ? 'bg-muted/30' : 'hover:bg-muted/50 transition-colors'
-                        )}>
-                          {step.done ? (
-                            <Check size={15} className="text-emerald-500 shrink-0" />
-                          ) : (
-                            <span className="w-[15px] h-[15px] rounded-full border-2 border-primary/40 shrink-0" />
-                          )}
-                          <span className={cn('text-sm flex-1', step.done ? 'text-muted-foreground line-through' : 'font-medium text-foreground')}>
-                            {step.label}
-                          </span>
-                          <span className="text-xs text-muted-foreground hidden sm:inline">{step.desc}</span>
-                          {!step.done && (
-                            step.to ? (
-                              <Link to={step.to} onClick={e => e.stopPropagation()}>
-                                <Button variant="ghost" size="sm" className="h-7 text-xs text-primary gap-1">
-                                  Go <ArrowRight size={12} />
-                                </Button>
-                              </Link>
+                    <div className="px-6 pb-5">
+                      <ol className="space-y-2.5 text-sm">
+                        {steps.map((step, i) => (
+                          <li key={i} className="flex items-center gap-3">
+                            {step.done ? (
+                              <span className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
+                                <Check size={12} strokeWidth={3} />
+                              </span>
                             ) : (
-                              <Button variant="ghost" size="sm" className="h-7 text-xs text-primary gap-1"
-                                onClick={handleTriggerBilling} disabled={billingMutation.isPending}>
-                                Run <ArrowRight size={12} />
-                              </Button>
-                            )
-                          )}
-                        </div>
-                      ))}
+                              <span className="w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold shrink-0">
+                                {i + 1}
+                              </span>
+                            )}
+                            <span className={step.done ? 'text-muted-foreground line-through' : 'text-foreground'}>
+                              {step.to ? (
+                                <Link to={step.to} className="font-medium hover:underline">{step.label}</Link>
+                              ) : (
+                                <span className="font-medium">{step.label}</span>
+                              )}
+                              {' '}<span className={step.done ? 'text-muted-foreground' : 'text-muted-foreground'}>— {step.desc}</span>
+                            </span>
+                          </li>
+                        ))}
+                      </ol>
                     </div>
                   )}
                 </CardContent>
