@@ -29,6 +29,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ArrowLeft, Copy, Check, Loader2, Pencil, CreditCard, Archive } from 'lucide-react'
 
 function CopyId({ text }: { text: string }) {
@@ -151,6 +152,8 @@ export default function CustomerDetailPage() {
     enabled: !!id,
   })
 
+  const isArchived = customer?.status === 'archived'
+
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ['customer', id] })
     queryClient.invalidateQueries({ queryKey: ['customer-overview', id] })
@@ -242,6 +245,24 @@ export default function CustomerDetailPage() {
         <span className="text-foreground">{customer.display_name}</span>
       </div>
 
+      {/* Archived Banner */}
+      {isArchived && (
+        <Card className="mb-4 border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/20">
+          <CardContent className="px-5 py-3 flex items-center justify-between">
+            <p className="text-sm text-amber-800 dark:text-amber-300">This customer has been archived. All data is read-only.</p>
+            <Button variant="outline" size="sm"
+              onClick={() => {
+                api.updateCustomer(customer.id, { status: 'active' } as any).then(() => {
+                  toast.success('Customer restored')
+                  invalidateAll()
+                }).catch((err: Error) => toast.error(err.message))
+              }}>
+              Restore Customer
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div>
@@ -252,10 +273,12 @@ export default function CustomerDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <Button variant="outline" size="sm" onClick={() => setShowEditCustomer(true)}>
-            <Pencil size={14} className="mr-1.5" />
-            Edit
-          </Button>
+          {!isArchived && (
+            <Button variant="outline" size="sm" onClick={() => setShowEditCustomer(true)}>
+              <Pencil size={14} className="mr-1.5" />
+              Edit
+            </Button>
+          )}
           {customer.status === 'active' && (
             <AlertDialog>
               <AlertDialogTrigger asChild>
@@ -357,10 +380,12 @@ export default function CustomerDetailPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm">Billing Profile</CardTitle>
-                <Button variant="outline" size="sm" onClick={() => setShowEditBilling(true)}>
-                  <Pencil size={12} className="mr-1.5" />
-                  Edit
-                </Button>
+                {!isArchived && (
+                  <Button variant="outline" size="sm" onClick={() => setShowEditBilling(true)}>
+                    <Pencil size={12} className="mr-1.5" />
+                    Edit
+                  </Button>
+                )}
               </div>
             </CardHeader>
             <CardContent>
@@ -427,9 +452,11 @@ export default function CustomerDetailPage() {
               </div>
               <p className="text-sm text-foreground">No billing profile</p>
               <p className="text-sm text-muted-foreground mt-1 max-w-xs mx-auto">Set up billing details to enable invoicing and payments for this customer</p>
-              <Button size="sm" className="mt-4" onClick={() => setShowEditBilling(true)}>
-                Set Up Billing Profile
-              </Button>
+              {!isArchived && (
+                <Button size="sm" className="mt-4" onClick={() => setShowEditBilling(true)}>
+                  Set Up Billing Profile
+                </Button>
+              )}
             </CardContent>
           </>
         )}
@@ -440,9 +467,11 @@ export default function CustomerDetailPage() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-sm">Dunning Override</CardTitle>
-            <Button variant="ghost" size="sm" onClick={() => setShowDunningOverride(true)}>
-              {dunningOverride ? 'Edit' : 'Configure'}
-            </Button>
+            {!isArchived && (
+              <Button variant="ghost" size="sm" onClick={() => setShowDunningOverride(true)}>
+                {dunningOverride ? 'Edit' : 'Configure'}
+              </Button>
+            )}
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -512,14 +541,16 @@ export default function CustomerDetailPage() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-sm">Payment Method</CardTitle>
-            <Button
-              variant={paymentSetup?.setup_status === 'ready' ? 'outline' : 'default'}
-              size="sm"
-              onClick={handleSetupPayment}
-              disabled={settingUpPayment}
-            >
-              {settingUpPayment ? 'Setting up...' : paymentSetup?.setup_status === 'ready' ? 'Update Payment Method' : paymentSetup?.setup_status === 'pending' ? 'Complete Setup' : 'Set Up Payment'}
-            </Button>
+            {!isArchived && (
+              <Button
+                variant={paymentSetup?.setup_status === 'ready' ? 'outline' : 'default'}
+                size="sm"
+                onClick={handleSetupPayment}
+                disabled={settingUpPayment}
+              >
+                {settingUpPayment ? 'Setting up...' : paymentSetup?.setup_status === 'ready' ? 'Update Payment Method' : paymentSetup?.setup_status === 'pending' ? 'Complete Setup' : 'Set Up Payment'}
+              </Button>
+            )}
           </div>
         </CardHeader>
         <CardContent>
@@ -576,7 +607,7 @@ export default function CustomerDetailPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">Subscriptions ({allSubs?.length ?? 0})</CardTitle>
-              <Button size="sm" onClick={() => setShowCreateSub(true)}>+ Add</Button>
+              {!isArchived && <Button size="sm" onClick={() => setShowCreateSub(true)}>+ Add</Button>}
             </div>
           </CardHeader>
           <CardContent className="p-0">
