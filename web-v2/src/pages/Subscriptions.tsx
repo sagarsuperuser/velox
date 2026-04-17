@@ -11,7 +11,8 @@ import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable } from '@/hooks/useSortable'
 import { cn } from '@/lib/utils'
-import { statusBadgeVariant } from '@/lib/status'
+import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
+import { InitialsAvatar } from '@/components/InitialsAvatar'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -310,7 +311,7 @@ export default function SubscriptionsPage() {
                   {sorted.map((sub: Subscription) => (
                     <TableRow
                       key={sub.id}
-                      className="cursor-pointer hover:bg-muted/50 transition-colors"
+                      className={cn('cursor-pointer hover:bg-muted/50 transition-colors border-l-[3px]', statusBorderColor(sub.status))}
                       onClick={(e) => {
                         const target = e.target as HTMLElement
                         if (target.closest('button, a, input, select')) return
@@ -327,14 +328,17 @@ export default function SubscriptionsPage() {
                         </Link>
                       </TableCell>
                       <TableCell className="text-sm">
-                        <Link
-                          to={`/customers/${sub.customer_id}`}
-                          onClick={e => e.stopPropagation()}
-                          className="text-primary hover:underline truncate block max-w-[160px]"
-                          title={customerMap[sub.customer_id]?.display_name || 'Unknown'}
-                        >
-                          {customerMap[sub.customer_id]?.display_name || 'Unknown'}
-                        </Link>
+                        <div className="flex items-center gap-2.5">
+                          <InitialsAvatar name={customerMap[sub.customer_id]?.display_name || 'Unknown'} size="xs" />
+                          <Link
+                            to={`/customers/${sub.customer_id}`}
+                            onClick={e => e.stopPropagation()}
+                            className="text-sm font-medium text-foreground hover:text-primary truncate block max-w-[160px]"
+                            title={customerMap[sub.customer_id]?.display_name || 'Unknown'}
+                          >
+                            {customerMap[sub.customer_id]?.display_name || 'Unknown'}
+                          </Link>
+                        </div>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {plans.find(p => p.id === sub.plan_id)?.name || '\u2014'}

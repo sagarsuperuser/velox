@@ -8,7 +8,8 @@ import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable } from '@/hooks/useSortable'
 import { cn } from '@/lib/utils'
-import { statusBadgeVariant } from '@/lib/status'
+import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
+import { InitialsAvatar } from '@/components/InitialsAvatar'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -244,7 +245,7 @@ export default function InvoicesPage() {
                   {sorted.map((inv: Invoice) => (
                     <TableRow
                       key={inv.id}
-                      className="cursor-pointer hover:bg-muted/50 transition-colors"
+                      className={cn('cursor-pointer hover:bg-muted/50 transition-colors border-l-[3px]', statusBorderColor(inv.payment_status))}
                       onClick={(e) => {
                         const target = e.target as HTMLElement
                         if (target.closest('button, a, input, select')) return
@@ -261,14 +262,17 @@ export default function InvoicesPage() {
                         </Link>
                       </TableCell>
                       <TableCell className="text-sm">
-                        <Link
-                          to={`/customers/${inv.customer_id}`}
-                          onClick={e => e.stopPropagation()}
-                          className="text-primary hover:underline truncate block max-w-[160px]"
-                          title={customerMap[inv.customer_id]?.display_name || 'Unknown'}
-                        >
-                          {customerMap[inv.customer_id]?.display_name || 'Unknown'}
-                        </Link>
+                        <div className="flex items-center gap-2.5">
+                          <InitialsAvatar name={customerMap[inv.customer_id]?.display_name || 'Unknown'} size="xs" />
+                          <Link
+                            to={`/customers/${inv.customer_id}`}
+                            onClick={e => e.stopPropagation()}
+                            className="text-sm font-medium text-foreground hover:text-primary truncate block max-w-[160px]"
+                            title={customerMap[inv.customer_id]?.display_name || 'Unknown'}
+                          >
+                            {customerMap[inv.customer_id]?.display_name || 'Unknown'}
+                          </Link>
+                        </div>
                       </TableCell>
                       <TableCell>
                         <Badge variant={statusBadgeVariant(inv.status)}>{inv.status}</Badge>
@@ -279,7 +283,7 @@ export default function InvoicesPage() {
                       <TableCell className="text-sm text-muted-foreground">
                         {formatDate(inv.billing_period_start)} {'\u2014'} {formatDate(inv.billing_period_end)}
                       </TableCell>
-                      <TableCell className="text-sm font-medium text-foreground text-right tabular-nums">
+                      <TableCell className="text-right tabular-nums font-mono text-sm">
                         {formatCents(inv.amount_due_cents, inv.currency)}
                       </TableCell>
                       <TableCell className="text-right">

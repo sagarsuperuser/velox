@@ -11,7 +11,8 @@ import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable } from '@/hooks/useSortable'
 import { cn } from '@/lib/utils'
-import { statusBadgeVariant } from '@/lib/status'
+import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
+import { InitialsAvatar } from '@/components/InitialsAvatar'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -269,7 +270,7 @@ export default function CustomersPage() {
                   {sorted.map((c: Customer) => (
                     <TableRow
                       key={c.id}
-                      className="cursor-pointer hover:bg-muted/50 transition-colors"
+                      className={cn('cursor-pointer hover:bg-muted/50 transition-colors border-l-[3px]', statusBorderColor(c.status))}
                       onClick={(e) => {
                         const target = e.target as HTMLElement
                         if (target.closest('button, a, input, select')) return
@@ -277,13 +278,19 @@ export default function CustomersPage() {
                       }}
                     >
                       <TableCell>
-                        <Link
-                          to={`/customers/${c.id}`}
-                          className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[200px]"
-                          title={c.display_name}
-                        >
-                          {c.display_name}
-                        </Link>
+                        <div className="flex items-center gap-2.5">
+                          <InitialsAvatar name={c.display_name} />
+                          <div>
+                            <Link
+                              to={`/customers/${c.id}`}
+                              className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[200px]"
+                              title={c.display_name}
+                            >
+                              {c.display_name}
+                            </Link>
+                            <p className="text-xs text-muted-foreground">{c.external_id}</p>
+                          </div>
+                        </div>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground font-mono truncate max-w-[160px]" title={c.external_id}>
                         {c.external_id}

@@ -38,9 +38,9 @@ const systemNav = [
 ]
 
 function NavLink({
-  to, icon: Icon, label, pathname, onClick,
+  to, icon: Icon, label, pathname, onClick, count,
 }: {
-  to: string; icon: LucideIcon; label: string; pathname: string; onClick?: () => void
+  to: string; icon: LucideIcon; label: string; pathname: string; onClick?: () => void; count?: number
 }) {
   const active = pathname === to
   return (
@@ -61,8 +61,17 @@ function NavLink({
           {active && (
             <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-sidebar-primary" />
           )}
-          <Icon size={18} />
-          {label}
+          <div className="flex items-center justify-between w-full">
+            <div className="flex items-center gap-3">
+              <Icon size={18} />
+              {label}
+            </div>
+            {count != null && count > 0 && (
+              <span className="text-[10px] font-medium bg-destructive text-destructive-foreground rounded-full px-1.5 py-0.5 min-w-[18px] text-center">
+                {count}
+              </span>
+            )}
+          </div>
         </Link>
       </TooltipTrigger>
       <TooltipContent side="right" className="md:hidden">
@@ -77,6 +86,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [commandOpen, setCommandOpen] = useState(false)
+  const [navCounts, setNavCounts] = useState<Record<string, number>>({})
   const { dark, toggle: toggleDark } = useDarkMode()
 
   // Cmd+K / Ctrl+K keyboard shortcut
@@ -96,6 +106,16 @@ export function Layout({ children }: { children: ReactNode }) {
     api.getSettings().then(s => {
       if (s.default_currency) setActiveCurrency(s.default_currency)
     }).catch(() => { /* ignore */ })
+  }, [])
+
+  // Fetch nav badge counts on mount
+  useEffect(() => {
+    api.getAnalyticsOverview().then(ov => {
+      const counts: Record<string, number> = {}
+      if (ov.open_invoices > 0) counts['/invoices'] = ov.open_invoices
+      if (ov.dunning_active > 0) counts['/dunning'] = ov.dunning_active
+      setNavCounts(counts)
+    }).catch(() => {})
   }, [])
 
   const closeSidebar = () => setSidebarOpen(false)
@@ -137,14 +157,14 @@ export function Layout({ children }: { children: ReactNode }) {
           Billing
         </p>
         {billingNav.map(item => (
-          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} />
+          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} count={navCounts[item.to]} />
         ))}
 
         <p className="text-xs uppercase text-muted-foreground tracking-wider px-3 pt-4 pb-1">
           Configuration
         </p>
         {configNav.map(item => (
-          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} />
+          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} count={navCounts[item.to]} />
         ))}
 
         <Separator className="my-2" />
@@ -153,7 +173,7 @@ export function Layout({ children }: { children: ReactNode }) {
           System
         </p>
         {systemNav.map(item => (
-          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} />
+          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} count={navCounts[item.to]} />
         ))}
       </nav>
 

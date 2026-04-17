@@ -14,7 +14,8 @@ import {
 } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
-import { statusBadgeVariant } from '@/lib/status'
+import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
+import { InitialsAvatar } from '@/components/InitialsAvatar'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -593,7 +594,7 @@ function RunsTab() {
 
                     return (
                       <Fragment key={run.id}>
-                        <TableRow className={cn(isExpanded && 'bg-accent')}>
+                        <TableRow className={cn(isExpanded && 'bg-accent', 'border-l-[3px]', statusBorderColor(run.state))}>
                           <TableCell className="px-3">
                             <button onClick={() => toggleExpand(run.id)}
                               className="w-6 h-6 flex items-center justify-center rounded hover:bg-accent transition-colors">
@@ -604,11 +605,16 @@ function RunsTab() {
                             </button>
                           </TableCell>
                           <TableCell>
-                            <Link to={`/customers/${run.customer_id}`} onClick={e => e.stopPropagation()}
-                              className="text-sm font-medium text-primary hover:underline">
-                              {cust?.display_name || run.customer_id.slice(0, 8) + '...'}
-                            </Link>
-                            {cust?.email && <p className="text-xs text-muted-foreground truncate max-w-[180px]" title={cust.email}>{cust.email}</p>}
+                            <div className="flex items-center gap-2.5">
+                              <InitialsAvatar name={cust?.display_name || 'Unknown'} size="xs" />
+                              <div>
+                                <Link to={`/customers/${run.customer_id}`} onClick={e => e.stopPropagation()}
+                                  className="text-sm font-medium text-foreground hover:text-primary">
+                                  {cust?.display_name || run.customer_id.slice(0, 8) + '...'}
+                                </Link>
+                                {cust?.email && <p className="text-xs text-muted-foreground truncate max-w-[180px]" title={cust.email}>{cust.email}</p>}
+                              </div>
+                            </div>
                           </TableCell>
                           <TableCell>
                             <Link to={`/invoices/${run.invoice_id}`} onClick={e => e.stopPropagation()}
@@ -616,7 +622,7 @@ function RunsTab() {
                               {inv?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
                             </Link>
                           </TableCell>
-                          <TableCell className="text-sm font-semibold text-right tabular-nums">
+                          <TableCell className="text-right tabular-nums font-mono text-sm">
                             {inv ? formatCents(inv.amount_due_cents) : '\u2014'}
                           </TableCell>
                           <TableCell>
