@@ -278,121 +278,58 @@ export default function DashboardPage() {
             const totalSteps = steps.length
             if (completedCount >= totalSteps) return null
             return (
-              <Card className="mt-6 border-primary/20 bg-gradient-to-br from-primary/[0.03] to-transparent">
-                <button
-                  onClick={() => setGetStartedOpen(!getStartedOpen)}
-                  className="w-full px-6 py-5 flex items-center justify-between text-left"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                      <Rocket size={18} className="text-primary" />
+              <Card className="mt-6 border-primary/20">
+                <CardContent className="p-0">
+                  <button
+                    onClick={() => setGetStartedOpen(!getStartedOpen)}
+                    className="w-full flex items-center justify-between px-5 py-3.5"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Rocket size={16} className="text-primary" />
+                      <span className="text-sm font-semibold text-foreground">Setup Guide</span>
+                      <div className="flex items-center gap-1.5 ml-1">
+                        {steps.map((step, i) => (
+                          <div key={i} className={cn('w-2 h-2 rounded-full', step.done ? 'bg-emerald-500' : 'bg-border')} />
+                        ))}
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="text-base font-semibold text-foreground">Get Started with Velox</h3>
-                      <p className="text-sm text-muted-foreground mt-0.5">
-                        Complete these steps to start billing
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <span className="text-xs font-medium text-muted-foreground tabular-nums">
-                      {completedCount} of {totalSteps}
-                    </span>
-                    {getStartedOpen ? <ChevronUp size={16} className="text-muted-foreground" /> : <ChevronDown size={16} className="text-muted-foreground" />}
-                  </div>
-                </button>
-                {getStartedOpen && (
-                  <CardContent className="pb-6 pt-0 px-6">
-                    <div className="space-y-3">
-                      {steps.map((step, i) => {
-                        const Icon = step.icon
-                        return (
-                          <div
-                            key={i}
-                            className={cn(
-                              'flex items-center gap-4 p-3 rounded-lg border transition-colors',
-                              step.done
-                                ? 'bg-emerald-500/5 border-emerald-500/20'
-                                : 'bg-card border-border hover:border-primary/30 hover:bg-primary/[0.02]'
-                            )}
-                          >
-                            {/* Step number / check */}
-                            <div className="shrink-0">
-                              {step.done ? (
-                                <div className="w-8 h-8 rounded-full bg-emerald-500 text-white flex items-center justify-center">
-                                  <Check size={16} strokeWidth={3} />
-                                </div>
-                              ) : (
-                                <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold">
-                                  {i + 1}
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Icon */}
-                            <div className={cn(
-                              'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
-                              step.done ? 'bg-emerald-500/10' : 'bg-muted'
-                            )}>
-                              <Icon size={18} className={step.done ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'} />
-                            </div>
-
-                            {/* Content */}
-                            <div className="flex-1 min-w-0">
-                              <p className={cn(
-                                'text-sm font-medium',
-                                step.done ? 'text-muted-foreground line-through' : 'text-foreground'
-                              )}>
-                                {step.label}
-                              </p>
-                              <p className="text-xs text-muted-foreground mt-0.5">{step.desc}</p>
-                            </div>
-
-                            {/* CTA */}
-                            {!step.done && step.to && (
-                              <Link to={step.to} className="shrink-0">
-                                <Button variant="outline" size="sm" className="gap-1.5 text-xs">
-                                  {step.cta}
-                                  <ArrowRight size={14} />
+                    {getStartedOpen ? <ChevronUp size={14} className="text-muted-foreground" /> : <ChevronDown size={14} className="text-muted-foreground" />}
+                  </button>
+                  {getStartedOpen && (
+                    <div className="border-t border-border">
+                      {steps.map((step, i) => (
+                        <div key={i} className={cn(
+                          'flex items-center gap-3 px-5 py-2.5 border-b border-border last:border-b-0',
+                          step.done ? 'bg-muted/30' : 'hover:bg-muted/50 transition-colors'
+                        )}>
+                          {step.done ? (
+                            <Check size={15} className="text-emerald-500 shrink-0" />
+                          ) : (
+                            <span className="w-[15px] h-[15px] rounded-full border-2 border-primary/40 shrink-0" />
+                          )}
+                          <span className={cn('text-sm flex-1', step.done ? 'text-muted-foreground line-through' : 'font-medium text-foreground')}>
+                            {step.label}
+                          </span>
+                          <span className="text-xs text-muted-foreground hidden sm:inline">{step.desc}</span>
+                          {!step.done && (
+                            step.to ? (
+                              <Link to={step.to} onClick={e => e.stopPropagation()}>
+                                <Button variant="ghost" size="sm" className="h-7 text-xs text-primary gap-1">
+                                  Go <ArrowRight size={12} />
                                 </Button>
                               </Link>
-                            )}
-                            {!step.done && !step.to && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="gap-1.5 text-xs shrink-0"
-                                onClick={handleTriggerBilling}
-                                disabled={billingMutation.isPending}
-                              >
-                                {step.cta}
-                                <ArrowRight size={14} />
+                            ) : (
+                              <Button variant="ghost" size="sm" className="h-7 text-xs text-primary gap-1"
+                                onClick={handleTriggerBilling} disabled={billingMutation.isPending}>
+                                Run <ArrowRight size={12} />
                               </Button>
-                            )}
-                            {step.done && (
-                              <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 shrink-0">
-                                Complete
-                              </span>
-                            )}
-                          </div>
-                        )
-                      })}
+                            )
+                          )}
+                        </div>
+                      ))}
                     </div>
-
-                    {/* Progress bar */}
-                    <div className="mt-4 flex items-center gap-3">
-                      <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all duration-500"
-                          style={{ width: `${(completedCount / totalSteps) * 100}%` }}
-                        />
-                      </div>
-                      <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
-                        {completedCount} of {totalSteps} complete
-                      </span>
-                    </div>
-                  </CardContent>
-                )}
+                  )}
+                </CardContent>
               </Card>
             )
           })()}
