@@ -37,8 +37,7 @@ func SetupTestDB(t *testing.T) *postgres.DB {
 	// Admin connection: migrations + cleanup
 	adminPool := openPool(t, adminURL)
 
-	runner := migrate.NewRunner(adminPool)
-	if err := runner.Run(context.Background()); err != nil {
+	if err := migrate.Up(adminPool); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
 
