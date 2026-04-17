@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Table,
@@ -177,19 +178,17 @@ export default function UsageEventsPage() {
             <option key={m.id} value={m.id}>{m.name}</option>
           ))}
         </select>
-        <Input
-          type="date"
+        <DatePicker
           value={filterFrom}
-          onChange={e => { setFilterFrom(e.target.value); setPage(1) }}
-          placeholder="From"
-          className="w-36"
+          onChange={v => { setFilterFrom(v); setPage(1) }}
+          placeholder="From date"
+          className="w-44"
         />
-        <Input
-          type="date"
+        <DatePicker
           value={filterTo}
-          onChange={e => { setFilterTo(e.target.value); setPage(1) }}
-          placeholder="To"
-          className="w-36"
+          onChange={v => { setFilterTo(v); setPage(1) }}
+          placeholder="To date"
+          className="w-44"
         />
       </div>
 

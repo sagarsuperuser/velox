@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import {
@@ -241,19 +242,17 @@ export default function AuditLogPage() {
           placeholder="Filter by resource ID..."
           className="w-44"
         />
-        <Input
-          type="date"
+        <DatePicker
           value={dateFrom}
-          onChange={e => { setDateFrom(e.target.value); setPage(1) }}
-          placeholder="From"
-          className="w-36"
+          onChange={v => { setDateFrom(v); setPage(1) }}
+          placeholder="From date"
+          className="w-44"
         />
-        <Input
-          type="date"
+        <DatePicker
           value={dateTo}
-          onChange={e => { setDateTo(e.target.value); setPage(1) }}
-          placeholder="To"
-          className="w-36"
+          onChange={v => { setDateTo(v); setPage(1) }}
+          placeholder="To date"
+          className="w-44"
         />
         {hasFilters && (
           <Button
