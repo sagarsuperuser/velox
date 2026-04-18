@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -116,6 +117,10 @@ func rateLimitKey(r *http.Request) string {
 	if tenantID := auth.TenantID(r.Context()); tenantID != "" {
 		return "tenant:" + tenantID
 	}
-	// Fallback to IP for unauthenticated requests
-	return "ip:" + r.RemoteAddr
+	// Fallback to IP for unauthenticated requests (strip port)
+	ip := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+	return "ip:" + ip
 }
