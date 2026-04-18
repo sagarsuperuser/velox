@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, downloadPDF, formatCents, formatDate, formatDateTime, getApiKey, getCurrencySymbol, type Invoice, type LineItem, type Customer, type Subscription, type CreditNote, type TimelineEvent, type TenantSettings } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type Customer, type Subscription, type CreditNote, type TimelineEvent, type TenantSettings } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
@@ -253,7 +253,7 @@ export default function InvoiceDetailPage() {
             onClick={async () => {
               try {
                 const res = await fetch(`/v1/invoices/${invoice.id}/pdf`, {
-                  headers: { 'Authorization': `Bearer ${getApiKey()}` },
+                  credentials: 'same-origin',
                 })
                 const blob = await res.blob()
                 const url = URL.createObjectURL(blob)

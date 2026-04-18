@@ -1,39 +1,48 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { setApiKey } from '@/lib/api'
+import { useNavigate, Link } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { Zap, Eye, EyeOff, Loader2 } from 'lucide-react'
+import { Zap, Loader2 } from 'lucide-react'
 
 export default function LoginPage() {
-  const [key, setKey] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [showKey, setShowKey] = useState(false)
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
 
-    if (!key.startsWith('vlx_')) {
-      setError('API key must start with vlx_ (e.g. vlx_secret_... or vlx_pub_...)')
+    if (!email || !password) {
+      setError('Email and password are required')
       return
     }
 
-    setApiKey(key)
     setLoading(true)
 
     try {
-      const res = await fetch('/v1/customers', {
-        headers: { Authorization: `Bearer ${key}` },
+      const res = await fetch('/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+        credentials: 'same-origin',
       })
-      if (res.status === 401) {
-        setError('Invalid API key')
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: { message: 'Login failed' } }))
+        const msg = typeof err.error === 'string' ? err.error : (err.error?.message || 'Invalid email or password')
+        setError(msg)
         return
       }
+
+      // Invalidate any cached auth state
+      queryClient.invalidateQueries({ queryKey: ['auth-me'] })
       navigate('/')
     } catch {
       setError('Cannot connect to Velox API')
@@ -63,32 +72,33 @@ export default function LoginPage() {
         <Card className="shadow-lg">
           <CardHeader className="pb-4">
             <CardTitle className="text-base">Sign in</CardTitle>
-            <CardDescription>Enter your API key to access the dashboard</CardDescription>
+            <CardDescription>Enter your credentials to access the dashboard</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} noValidate className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="api-key">API Key</Label>
-                <div className="relative">
-                  <Input
-                    id="api-key"
-                    type={showKey ? 'text' : 'password'}
-                    value={key}
-                    onChange={e => setKey(e.target.value)}
-                    placeholder="vlx_secret_..."
-                    className="pr-10"
-                    autoFocus
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowKey(!showKey)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                    tabIndex={-1}
-                    aria-label={showKey ? 'Hide API key' : 'Show API key'}
-                  >
-                    {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="admin@velox.dev"
+                  autoFocus
+                  autoComplete="email"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="Password"
+                  autoComplete="current-password"
+                />
               </div>
 
               {error && (
@@ -108,11 +118,17 @@ export default function LoginPage() {
                 )}
               </Button>
 
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <p>
+                  Press <kbd className="px-1.5 py-0.5 bg-muted border border-border rounded text-[10px] font-mono">Enter</kbd> to sign in
+                </p>
+                <Link to="/forgot-password" className="hover:text-foreground transition-colors underline underline-offset-2">
+                  Forgot password?
+                </Link>
+              </div>
+
               <p className="text-xs text-muted-foreground text-center">
-                Press <kbd className="px-1.5 py-0.5 bg-muted border border-border rounded text-[10px] font-mono">Enter</kbd> to sign in
-              </p>
-              <p className="text-xs text-muted-foreground text-center">
-                Run <code className="bg-muted px-1 py-0.5 rounded text-[11px]">make bootstrap</code> to get an API key
+                Run <code className="bg-muted px-1 py-0.5 rounded text-[11px]">make bootstrap</code> to create an account
               </p>
             </form>
           </CardContent>
