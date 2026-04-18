@@ -618,7 +618,7 @@ function ChangePlanDialog({ subscriptionId, currentPlanId, currentPlanName, plan
               </SelectTrigger>
               <SelectContent>
                 {availablePlans.map(p => (
-                  <SelectItem key={p.id} value={p.id}>
+                  <SelectItem key={p.id} value={p.id} label={`${p.name} — ${formatCents(p.base_amount_cents)}/${p.billing_interval}`}>
                     {p.name} -- {formatCents(p.base_amount_cents)}/{p.billing_interval}
                   </SelectItem>
                 ))}
