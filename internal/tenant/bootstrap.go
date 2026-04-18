@@ -53,20 +53,24 @@ type bootstrapResponse struct {
 func (h *BootstrapHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Bootstrap token is always required
+	if h.token == "" {
+		respond.Error(w, r, http.StatusForbidden, "authentication_error", "forbidden",
+			"bootstrap disabled — set VELOX_BOOTSTRAP_TOKEN env var to enable")
+		return
+	}
+
 	var req bootstrapRequest
 	json.NewDecoder(r.Body).Decode(&req)
 
-	// Verify bootstrap token if configured
-	if h.token != "" {
-		provided := strings.TrimSpace(req.Token)
-		if provided == "" {
-			provided = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		}
-		if provided != h.token {
-			respond.Error(w, r, http.StatusForbidden, "authentication_error", "forbidden",
-				"invalid bootstrap token — set VELOX_BOOTSTRAP_TOKEN env var and pass it as token field or Authorization header")
-			return
-		}
+	provided := strings.TrimSpace(req.Token)
+	if provided == "" {
+		provided = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	if provided != h.token {
+		respond.Error(w, r, http.StatusForbidden, "authentication_error", "forbidden",
+			"invalid bootstrap token")
+		return
 	}
 
 	if strings.TrimSpace(req.TenantName) == "" {

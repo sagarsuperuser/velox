@@ -250,7 +250,7 @@ export const api = {
 
   // API Keys
   listApiKeys: () => request<{ data: ApiKeyInfo[] }>('GET', '/api-keys'),
-  createApiKey: (data: { name: string; key_type: string }) => request<{ key: ApiKeyInfo; raw_key: string }>('POST', '/api-keys', data),
+  createApiKey: (data: { name: string; key_type: string; expires_at?: string }) => request<{ key: ApiKeyInfo; raw_key: string }>('POST', '/api-keys', data),
   revokeApiKey: (id: string) => request<ApiKeyInfo>('DELETE', `/api-keys/${id}`),
 }
 
