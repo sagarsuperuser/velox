@@ -252,26 +252,48 @@ export default function SubscriptionDetailPage() {
 
         if (timelinePoints.length < 2) return null
 
+        // Find the last past point to draw the progress fill
+        const lastPastIndex = timelinePoints.reduce((acc, p, i) => (p.isPast ? i : acc), -1)
+        const progressPercent = lastPastIndex >= 0
+          ? (lastPastIndex / (timelinePoints.length - 1)) * 100
+          : 0
+
         return (
           <Card className="mt-6 mb-6">
-            <CardContent className="py-6">
-              <div className="flex items-center justify-between relative px-4">
-                {/* Background line */}
-                <div className="absolute left-4 right-4 top-1/2 h-0.5 bg-border -translate-y-1/2" />
+            <CardContent className="py-5 px-6">
+              <div className="relative">
+                {/* Track */}
+                <div className="absolute left-[calc(0%+6px)] right-[calc(0%+6px)] top-[11px] h-[2px] bg-border" />
+                {/* Progress fill */}
+                <div
+                  className="absolute left-[calc(0%+6px)] top-[11px] h-[2px] bg-primary transition-all duration-300"
+                  style={{ width: `calc(${progressPercent}% - 12px)` }}
+                />
 
-                {/* Timeline points */}
-                {timelinePoints.map((point, i) => (
-                  <div key={i} className="relative flex flex-col items-center z-10">
-                    <div className={cn(
-                      'w-3 h-3 rounded-full border-2',
-                      point.isPast
-                        ? 'bg-primary border-primary'
-                        : 'bg-background border-border'
-                    )} />
-                    <p className="text-xs font-medium text-foreground mt-2">{point.label}</p>
-                    <p className="text-[10px] text-muted-foreground mt-0.5">{point.date}</p>
-                  </div>
-                ))}
+                {/* Points */}
+                <div className="relative flex justify-between">
+                  {timelinePoints.map((point, i) => (
+                    <div key={i} className="flex flex-col items-center" style={{ width: 90 }}>
+                      <div className={cn(
+                        'w-6 h-6 rounded-full flex items-center justify-center',
+                        point.isPast
+                          ? 'bg-primary'
+                          : 'bg-background border-2 border-border'
+                      )}>
+                        {point.isPast && (
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                            <path d="M2 5L4.5 7.5L8 3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </div>
+                      <p className={cn(
+                        'text-xs mt-2 text-center',
+                        point.isPast ? 'font-medium text-foreground' : 'text-muted-foreground'
+                      )}>{point.label}</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">{point.date}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             </CardContent>
           </Card>

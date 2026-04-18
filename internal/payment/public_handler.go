@@ -126,7 +126,7 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	// Build return URL
 	returnURL := h.returnURL
 	if returnURL == "" {
-		returnURL = fmt.Sprintf("http://localhost:3000/customers/%s?payment=updated", token.CustomerID)
+		returnURL = fmt.Sprintf("http://localhost:5173/customers/%s?payment=updated", token.CustomerID)
 	}
 
 	stripe.Key = h.apiKey

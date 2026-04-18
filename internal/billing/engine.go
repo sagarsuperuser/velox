@@ -245,18 +245,33 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	var lineItems []domain.InvoiceLineItem
 	subtotal := int64(0)
 
-	// Base fee line item
+	// Base fee line item — prorate for partial periods (e.g., mid-month start)
 	if plan.BaseAmountCents > 0 {
+		baseFee := plan.BaseAmountCents
+		description := fmt.Sprintf("%s - base fee", plan.Name)
+
+		// Detect partial period: compare actual days to a full billing cycle
+		periodDays := int(periodEnd.Sub(periodStart).Hours() / 24)
+		fullCycleDays := int(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart).Hours() / 24)
+		if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
+			// Prorate: baseFee * (periodDays / fullCycleDays), rounded to nearest cent
+			baseFee = (plan.BaseAmountCents * int64(periodDays)) / int64(fullCycleDays)
+			if (plan.BaseAmountCents*int64(periodDays))%int64(fullCycleDays) >= int64(fullCycleDays)/2 {
+				baseFee++
+			}
+			description = fmt.Sprintf("%s - base fee (prorated %d/%d days)", plan.Name, periodDays, fullCycleDays)
+		}
+
 		lineItems = append(lineItems, domain.InvoiceLineItem{
 			LineType:         domain.LineTypeBaseFee,
-			Description:      fmt.Sprintf("%s - base fee", plan.Name),
+			Description:      description,
 			Quantity:         1,
-			UnitAmountCents:  plan.BaseAmountCents,
-			AmountCents:      plan.BaseAmountCents,
-			TotalAmountCents: plan.BaseAmountCents,
+			UnitAmountCents:  baseFee,
+			AmountCents:      baseFee,
+			TotalAmountCents: baseFee,
 			Currency:         invoiceCurrency,
 		})
-		subtotal += plan.BaseAmountCents
+		subtotal += baseFee
 	}
 
 	// Usage line items — one per meter

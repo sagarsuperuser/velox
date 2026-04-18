@@ -68,7 +68,7 @@ func (h *PortalHandler) createUpdateSession(w http.ResponseWriter, r *http.Reque
 	// Build return URL
 	returnURL := req.ReturnURL
 	if returnURL == "" {
-		returnURL = fmt.Sprintf("http://localhost:3000/customers/%s?payment=updated", customerID)
+		returnURL = fmt.Sprintf("http://localhost:5173/customers/%s?payment=updated", customerID)
 	}
 
 	// Create a Checkout Session in setup mode to collect a new payment method
