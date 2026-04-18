@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS password_reset_tokens CASCADE;
+DROP TABLE IF EXISTS user_sessions CASCADE;
+DROP TABLE IF EXISTS user_accounts CASCADE;

@@ -1,36 +1,5 @@
 const API_BASE = '/v1'
 
-function safeGetItem(key: string): string {
-  try { return localStorage.getItem(key) || '' }
-  catch { return '' }
-}
-
-function safeSetItem(key: string, value: string) {
-  try { localStorage.setItem(key, value) }
-  catch { /* Private browsing mode, silently fail */ }
-}
-
-function safeRemoveItem(key: string) {
-  try { localStorage.removeItem(key) }
-  catch { /* Private browsing mode, silently fail */ }
-}
-
-let apiKey = safeGetItem('velox_api_key')
-
-export function setApiKey(key: string) {
-  apiKey = key
-  safeSetItem('velox_api_key', key)
-}
-
-export function getApiKey(): string {
-  return apiKey
-}
-
-export function clearApiKey() {
-  apiKey = ''
-  safeRemoveItem('velox_api_key')
-}
-
 export class ApiError extends Error {
   fields?: Record<string, string>
   status: number
@@ -64,13 +33,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`
-  }
 
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
+    credentials: 'same-origin',
     body: body ? JSON.stringify(body) : undefined,
   })
 
@@ -640,7 +607,7 @@ export interface RevenueDataPoint {
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {
   const res = await fetch(`${API_BASE}/invoices/${invoiceId}/pdf`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
+    credentials: 'same-origin',
   })
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
