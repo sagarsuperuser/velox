@@ -280,7 +280,6 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 
 	r.Use(mw.SecurityHeaders())
 	r.Use(middleware.Timeout(30 * time.Second))
-	r.Use(rateLimiter.Middleware())
 
 	// Public
 	r.Get("/health", handleHealth)
@@ -309,6 +308,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	// Tenant-scoped routes
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(authSvc))
+		r.Use(rateLimiter.Middleware()) // After auth so tenant ID is available for bucket key
 		r.Use(mw.Idempotency(db))
 		r.Use(mw.AuditLog(db))
 
