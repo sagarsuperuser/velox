@@ -41,15 +41,10 @@ type CustomerBillingProfile struct {
 	PostalCode    string               `json:"postal_code,omitempty"`
 	Country       string               `json:"country,omitempty"`
 	Currency      string               `json:"currency,omitempty"`
-	TaxIdentifier   string               `json:"tax_identifier,omitempty"`
-	TaxExempt       bool                 `json:"tax_exempt"`
-	TaxID           string               `json:"tax_id"`
-	TaxIDType       string               `json:"tax_id_type"`
-	TaxCountry      string               `json:"tax_country"`
-	TaxState        string               `json:"tax_state"`
-	TaxOverrideRate   *float64             `json:"tax_override_rate,omitempty"`   // Deprecated: use TaxOverrideRateBP
+	TaxExempt         bool                 `json:"tax_exempt"`
+	TaxID             string               `json:"tax_id"`
+	TaxIDType         string               `json:"tax_id_type"`
 	TaxOverrideRateBP *int                 `json:"tax_override_rate_bp,omitempty"` // Basis points
-	TaxOverrideName string               `json:"tax_override_name,omitempty"`
 	ProfileStatus   BillingProfileStatus `json:"profile_status"`
 	CreatedAt     time.Time            `json:"created_at"`
 	UpdatedAt     time.Time            `json:"updated_at"`

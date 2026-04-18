@@ -74,9 +74,6 @@ func (s *PostgresStore) encryptBillingProfile(bp domain.CustomerBillingProfile) 
 	if bp.Phone, err = s.enc.Encrypt(bp.Phone); err != nil {
 		return bp, fmt.Errorf("encrypt billing phone: %w", err)
 	}
-	if bp.TaxIdentifier, err = s.enc.Encrypt(bp.TaxIdentifier); err != nil {
-		return bp, fmt.Errorf("encrypt billing tax_identifier: %w", err)
-	}
 	if bp.TaxID, err = s.enc.Encrypt(bp.TaxID); err != nil {
 		return bp, fmt.Errorf("encrypt billing tax_id: %w", err)
 	}
@@ -97,9 +94,6 @@ func (s *PostgresStore) decryptBillingProfile(bp domain.CustomerBillingProfile) 
 	}
 	if bp.Phone, err = s.enc.Decrypt(bp.Phone); err != nil {
 		return bp, fmt.Errorf("decrypt billing phone: %w", err)
-	}
-	if bp.TaxIdentifier, err = s.enc.Decrypt(bp.TaxIdentifier); err != nil {
-		return bp, fmt.Errorf("decrypt billing tax_identifier: %w", err)
 	}
 	if bp.TaxID, err = s.enc.Decrypt(bp.TaxID); err != nil {
 		return bp, fmt.Errorf("decrypt billing tax_id: %w", err)
@@ -288,48 +282,45 @@ func (s *PostgresStore) UpsertBillingProfile(ctx context.Context, tenantID strin
 	defer postgres.Rollback(tx)
 
 	now := time.Now().UTC()
+	var overrideBP sql.NullInt64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO customer_billing_profiles (customer_id, tenant_id, legal_name, email, phone,
 			address_line1, address_line2, city, state, postal_code, country, currency,
-			tax_identifier, tax_exempt,
-			tax_id, tax_id_type, tax_country, tax_state, tax_override_rate, tax_override_name,
+			tax_exempt, tax_id, tax_id_type, tax_override_rate_bp,
 			profile_status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $22)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $18)
 		ON CONFLICT (tenant_id, customer_id) DO UPDATE SET
 			legal_name = EXCLUDED.legal_name, email = EXCLUDED.email, phone = EXCLUDED.phone,
 			address_line1 = EXCLUDED.address_line1, address_line2 = EXCLUDED.address_line2,
 			city = EXCLUDED.city, state = EXCLUDED.state, postal_code = EXCLUDED.postal_code,
 			country = EXCLUDED.country, currency = EXCLUDED.currency,
-			tax_identifier = EXCLUDED.tax_identifier, tax_exempt = EXCLUDED.tax_exempt,
+			tax_exempt = EXCLUDED.tax_exempt,
 			tax_id = EXCLUDED.tax_id, tax_id_type = EXCLUDED.tax_id_type,
-			tax_country = EXCLUDED.tax_country, tax_state = EXCLUDED.tax_state,
-			tax_override_rate = EXCLUDED.tax_override_rate, tax_override_name = EXCLUDED.tax_override_name,
+			tax_override_rate_bp = EXCLUDED.tax_override_rate_bp,
 			profile_status = EXCLUDED.profile_status, updated_at = EXCLUDED.updated_at
 		RETURNING customer_id, tenant_id, COALESCE(legal_name,''), COALESCE(email,''), COALESCE(phone,''),
 			COALESCE(address_line1,''), COALESCE(address_line2,''), COALESCE(city,''), COALESCE(state,''),
 			COALESCE(postal_code,''), COALESCE(country,''), COALESCE(currency,''),
-			COALESCE(tax_identifier,''), tax_exempt,
-			COALESCE(tax_id,''), COALESCE(tax_id_type,''), COALESCE(tax_country,''), COALESCE(tax_state,''),
-			tax_override_rate, COALESCE(tax_override_name,''),
+			tax_exempt, COALESCE(tax_id,''), COALESCE(tax_id_type,''), tax_override_rate_bp,
 			profile_status, created_at, updated_at
 	`, bp.CustomerID, tenantID, postgres.NullableString(enc.LegalName), postgres.NullableString(enc.Email),
 		postgres.NullableString(enc.Phone), postgres.NullableString(bp.AddressLine1),
 		postgres.NullableString(bp.AddressLine2), postgres.NullableString(bp.City),
 		postgres.NullableString(bp.State), postgres.NullableString(bp.PostalCode),
 		postgres.NullableString(bp.Country), postgres.NullableString(bp.Currency),
-		postgres.NullableString(enc.TaxIdentifier), bp.TaxExempt,
-		enc.TaxID, bp.TaxIDType,
-		bp.TaxCountry, bp.TaxState,
-		postgres.NullableFloat64(bp.TaxOverrideRate), bp.TaxOverrideName,
+		bp.TaxExempt, enc.TaxID, bp.TaxIDType, bp.TaxOverrideRateBP,
 		bp.ProfileStatus, now,
 	).Scan(
 		&bp.CustomerID, &bp.TenantID, &bp.LegalName, &bp.Email, &bp.Phone,
 		&bp.AddressLine1, &bp.AddressLine2, &bp.City, &bp.State, &bp.PostalCode,
-		&bp.Country, &bp.Currency, &bp.TaxIdentifier, &bp.TaxExempt,
-		&bp.TaxID, &bp.TaxIDType, &bp.TaxCountry, &bp.TaxState,
-		&bp.TaxOverrideRate, &bp.TaxOverrideName,
+		&bp.Country, &bp.Currency, &bp.TaxExempt,
+		&bp.TaxID, &bp.TaxIDType, &overrideBP,
 		&bp.ProfileStatus, &bp.CreatedAt, &bp.UpdatedAt,
 	)
+	if overrideBP.Valid {
+		v := int(overrideBP.Int64)
+		bp.TaxOverrideRateBP = &v
+	}
 	if err != nil {
 		return domain.CustomerBillingProfile{}, err
 	}
@@ -353,23 +344,25 @@ func (s *PostgresStore) GetBillingProfile(ctx context.Context, tenantID, custome
 	defer postgres.Rollback(tx)
 
 	var bp domain.CustomerBillingProfile
+	var overrideBP sql.NullInt64
 	err = tx.QueryRowContext(ctx, `
 		SELECT customer_id, tenant_id, COALESCE(legal_name,''), COALESCE(email,''), COALESCE(phone,''),
 			COALESCE(address_line1,''), COALESCE(address_line2,''), COALESCE(city,''), COALESCE(state,''),
 			COALESCE(postal_code,''), COALESCE(country,''), COALESCE(currency,''),
-			COALESCE(tax_identifier,''), tax_exempt,
-			COALESCE(tax_id,''), COALESCE(tax_id_type,''), COALESCE(tax_country,''), COALESCE(tax_state,''),
-			tax_override_rate, COALESCE(tax_override_name,''),
+			tax_exempt, COALESCE(tax_id,''), COALESCE(tax_id_type,''), tax_override_rate_bp,
 			profile_status, created_at, updated_at
 		FROM customer_billing_profiles WHERE customer_id = $1
 	`, customerID).Scan(
 		&bp.CustomerID, &bp.TenantID, &bp.LegalName, &bp.Email, &bp.Phone,
 		&bp.AddressLine1, &bp.AddressLine2, &bp.City, &bp.State, &bp.PostalCode,
-		&bp.Country, &bp.Currency, &bp.TaxIdentifier, &bp.TaxExempt,
-		&bp.TaxID, &bp.TaxIDType, &bp.TaxCountry, &bp.TaxState,
-		&bp.TaxOverrideRate, &bp.TaxOverrideName,
+		&bp.Country, &bp.Currency, &bp.TaxExempt,
+		&bp.TaxID, &bp.TaxIDType, &overrideBP,
 		&bp.ProfileStatus, &bp.CreatedAt, &bp.UpdatedAt,
 	)
+	if overrideBP.Valid {
+		v := int(overrideBP.Int64)
+		bp.TaxOverrideRateBP = &v
+	}
 	if err == sql.ErrNoRows {
 		return domain.CustomerBillingProfile{}, errs.ErrNotFound
 	}

@@ -291,7 +291,7 @@ export interface Invoice {
   subtotal_cents: number
   discount_cents: number
   tax_amount_cents: number
-  tax_rate: number
+  tax_rate_bp: number
   tax_name: string
   tax_country?: string
   tax_id?: string
@@ -436,14 +436,10 @@ export interface BillingProfile {
   postal_code: string
   country: string
   currency: string
-  tax_identifier: string
   tax_exempt: boolean
   tax_id: string
   tax_id_type: string
-  tax_country: string
-  tax_state: string
-  tax_override_rate?: number | null
-  tax_override_name: string
+  tax_override_rate_bp?: number | null
   profile_status: string
 }
 
@@ -454,7 +450,7 @@ export interface TenantSettings {
   invoice_prefix: string
   invoice_next_seq: number
   net_payment_terms: number
-  tax_rate: number
+  tax_rate_bp: number
   tax_name: string
   company_name: string
   company_address: string

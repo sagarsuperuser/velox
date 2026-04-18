@@ -52,12 +52,12 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 	var ts domain.TenantSettings
 	err := s.db.Pool.QueryRowContext(ctx, `
 		SELECT tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
-			net_payment_terms, tax_rate, COALESCE(tax_name,''), COALESCE(company_name,''), COALESCE(company_address,''),
+			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), COALESCE(company_name,''), COALESCE(company_address,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1
 	`, tenantID).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
-		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRate, &ts.TaxName, &ts.CompanyName, &ts.CompanyAddress,
+		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.CompanyName, &ts.CompanyAddress,
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL, &ts.CreatedAt, &ts.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -70,26 +70,26 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 	now := time.Now().UTC()
 	err := s.db.Pool.QueryRowContext(ctx, `
 		INSERT INTO tenant_settings (tenant_id, default_currency, timezone, invoice_prefix,
-			net_payment_terms, tax_rate, tax_name, company_name, company_address, company_email, company_phone,
+			net_payment_terms, tax_rate_bp, tax_name, company_name, company_address, company_email, company_phone,
 			logo_url, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			default_currency = EXCLUDED.default_currency, timezone = EXCLUDED.timezone,
 			invoice_prefix = EXCLUDED.invoice_prefix, net_payment_terms = EXCLUDED.net_payment_terms,
-			tax_rate = EXCLUDED.tax_rate, tax_name = EXCLUDED.tax_name,
+			tax_rate_bp = EXCLUDED.tax_rate_bp, tax_name = EXCLUDED.tax_name,
 			company_name = EXCLUDED.company_name, company_address = EXCLUDED.company_address,
 			company_email = EXCLUDED.company_email, company_phone = EXCLUDED.company_phone,
 			logo_url = EXCLUDED.logo_url, updated_at = EXCLUDED.updated_at
 		RETURNING tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
-			net_payment_terms, tax_rate, COALESCE(tax_name,''), COALESCE(company_name,''), COALESCE(company_address,''),
+			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), COALESCE(company_name,''), COALESCE(company_address,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			created_at, updated_at
 	`, ts.TenantID, ts.DefaultCurrency, ts.Timezone, ts.InvoicePrefix,
-		ts.NetPaymentTerms, ts.TaxRate, ts.TaxName, postgres.NullableString(ts.CompanyName),
+		ts.NetPaymentTerms, ts.TaxRateBP, ts.TaxName, postgres.NullableString(ts.CompanyName),
 		postgres.NullableString(ts.CompanyAddress), postgres.NullableString(ts.CompanyEmail),
 		postgres.NullableString(ts.CompanyPhone), postgres.NullableString(ts.LogoURL), now,
 	).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
-		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRate, &ts.TaxName, &ts.CompanyName, &ts.CompanyAddress,
+		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.CompanyName, &ts.CompanyAddress,
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL, &ts.CreatedAt, &ts.UpdatedAt)
 
 	return ts, err
@@ -264,10 +264,10 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": "company_name must be at most 255 characters"})
 		return
 	}
-	if ts.TaxRate < 0 || ts.TaxRate > 100 {
+	if ts.TaxRateBP < 0 || ts.TaxRateBP > 10000 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		json.NewEncoder(w).Encode(map[string]string{"error": "tax_rate must be between 0 and 100 (e.g. 18 for 18%)"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "tax_rate_bp must be between 0 and 10000 (e.g. 1850 for 18.50%)"})
 		return
 	}
 

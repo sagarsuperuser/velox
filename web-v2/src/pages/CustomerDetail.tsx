@@ -59,10 +59,9 @@ const billingProfileSchema = z.object({
   address_line1: z.string(), address_line2: z.string(),
   city: z.string(), state: z.string(), postal_code: z.string(),
   country: z.string(), currency: z.string(),
-  tax_identifier: z.string(), tax_exempt: z.boolean(),
+  tax_exempt: z.boolean(),
   tax_id: z.string(), tax_id_type: z.string(),
-  tax_country: z.string(), tax_state: z.string(),
-  tax_override_rate: z.string(), tax_override_name: z.string(),
+  tax_override_rate_bp: z.string(),
 })
 type BillingProfileData = z.infer<typeof billingProfileSchema>
 
@@ -421,19 +420,16 @@ export default function CustomerDetailPage() {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Tax ID</p>
-                  <p className="text-sm text-foreground mt-1 font-mono">{billingProfile.tax_id || billingProfile.tax_identifier || '\u2014'}</p>
+                  <p className="text-sm text-foreground mt-1 font-mono">{billingProfile.tax_id || '\u2014'}</p>
                   {billingProfile.tax_id_type && <p className="text-xs text-muted-foreground mt-0.5 uppercase">{billingProfile.tax_id_type}</p>}
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">Tax Jurisdiction</p>
+                  <p className="text-sm text-muted-foreground">Tax Override</p>
                   <p className="text-sm text-foreground mt-1">
-                    {[billingProfile.tax_country, billingProfile.tax_state].filter(Boolean).join(' / ') || '\u2014'}
+                    {billingProfile.tax_override_rate_bp != null
+                      ? `${(billingProfile.tax_override_rate_bp / 100).toFixed(2)}%`
+                      : '\u2014'}
                   </p>
-                  {billingProfile.tax_override_rate != null && (
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Rate override: {billingProfile.tax_override_rate}%{billingProfile.tax_override_name ? ` (${billingProfile.tax_override_name})` : ''}
-                    </p>
-                  )}
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Currency</p>
@@ -923,14 +919,10 @@ function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
     postal_code: profile?.postal_code || '',
     country: profile?.country || '',
     currency: profile?.currency || '',
-    tax_identifier: profile?.tax_identifier || '',
     tax_exempt: profile?.tax_exempt || false,
     tax_id: profile?.tax_id || '',
     tax_id_type: profile?.tax_id_type || '',
-    tax_country: profile?.tax_country || '',
-    tax_state: profile?.tax_state || '',
-    tax_override_rate: profile?.tax_override_rate != null ? String(profile.tax_override_rate) : '',
-    tax_override_name: profile?.tax_override_name || '',
+    tax_override_rate_bp: profile?.tax_override_rate_bp != null ? String(profile.tax_override_rate_bp) : '',
   }
 
   const { register, handleSubmit, watch, setValue, control, formState: { errors: formErrors, isSubmitting, isDirty } } = useForm<BillingProfileData>({
@@ -946,7 +938,7 @@ function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
     try {
       const payload = {
         ...data,
-        tax_override_rate: data.tax_override_rate !== '' ? parseFloat(data.tax_override_rate) : null,
+        tax_override_rate_bp: data.tax_override_rate_bp !== '' ? parseInt(data.tax_override_rate_bp, 10) : null,
       }
       await api.upsertBillingProfile(customerId, payload)
       onSaved()
@@ -1073,40 +1065,13 @@ function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Tax Country</Label>
-                <Controller
-                  name="tax_country"
-                  control={control}
-                  render={({ field }) => (
-                    <Input maxLength={2} placeholder="ISO code (e.g. US, IN, DE)" value={field.value} onChange={e => field.onChange(e.target.value.toUpperCase())} />
-                  )}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Tax State</Label>
-                <Controller
-                  name="tax_state"
-                  control={control}
-                  render={({ field }) => (
-                    <Input maxLength={10} placeholder="State/province code" value={field.value} onChange={e => field.onChange(e.target.value.toUpperCase())} />
-                  )}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Tax Rate Override</Label>
-                <Input maxLength={6} placeholder="e.g. 18.00" {...register('tax_override_rate')} />
-              </div>
-              <div className="space-y-2">
-                <Label>Tax Name Override</Label>
-                <Input maxLength={30} placeholder="e.g. VAT, GST, Sales Tax" {...register('tax_override_name')} />
+                <Label>Tax Rate Override (basis points)</Label>
+                <Input maxLength={5} placeholder="e.g. 1850 = 18.50%" {...register('tax_override_rate_bp')} />
+                <p className="text-xs text-muted-foreground">Leave empty to use tenant default. 1850 = 18.50%</p>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Tax Identifier (legacy)</Label>
-                <Input maxLength={30} placeholder="Legacy tax identifier" className="font-mono" {...register('tax_identifier')} />
-              </div>
-              <div className="flex items-center gap-3 pt-6">
+              <div className="flex items-center gap-3 pt-2">
                 <Controller
                   name="tax_exempt"
                   control={control}
