@@ -12,9 +12,9 @@ import (
 
 func TestBootstrap_Success(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	h := NewBootstrapHandler(db)
+	h := &BootstrapHandler{db: db, token: "test-token"}
 
-	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"tenant_name":"Test Corp"}`))
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"tenant_name":"Test Corp","token":"test-token"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, req)
@@ -42,10 +42,10 @@ func TestBootstrap_Success(t *testing.T) {
 
 func TestBootstrap_RaceSafe(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	h := NewBootstrapHandler(db)
+	h := &BootstrapHandler{db: db, token: "test-token"}
 
 	// First bootstrap
-	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"tenant_name":"First"}`))
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"tenant_name":"First","token":"test-token"}`))
 	rec := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -53,7 +53,7 @@ func TestBootstrap_RaceSafe(t *testing.T) {
 	}
 
 	// Second bootstrap — should be rejected
-	req = httptest.NewRequest("POST", "/", strings.NewReader(`{"tenant_name":"Second"}`))
+	req = httptest.NewRequest("POST", "/", strings.NewReader(`{"tenant_name":"Second","token":"test-token"}`))
 	rec = httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
@@ -92,9 +92,9 @@ func TestBootstrap_TokenRequired(t *testing.T) {
 
 func TestBootstrap_DefaultTenantName(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	h := NewBootstrapHandler(db)
+	h := &BootstrapHandler{db: db, token: "test-token"}
 
-	req := httptest.NewRequest("POST", "/", strings.NewReader(`{}`))
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"token":"test-token"}`))
 	rec := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, req)
 

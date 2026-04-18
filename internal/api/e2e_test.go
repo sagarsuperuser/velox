@@ -126,10 +126,10 @@ func TestE2E_FullBillingCycle(t *testing.T) {
 	t.Run("ingest usage", func(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			resp := doPost(t, ts, "/v1/usage-events", auth, map[string]any{
-				"customer_id":     customerID,
-				"meter_id":        meterID,
-				"subscription_id": subID,
-				"quantity":        100,
+				"external_customer_id": customerID,
+				"meter_id":             meterID,
+				"subscription_id":      subID,
+				"quantity":             100,
 			})
 			assertStatus(t, resp, 201)
 		}
