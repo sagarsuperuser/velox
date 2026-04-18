@@ -16,8 +16,8 @@ type Coupon struct {
 	Name           string     `json:"name"`
 	Type           CouponType `json:"type"`
 	AmountOff      int64      `json:"amount_off"`
-	PercentOff     float64    `json:"percent_off"`       // Deprecated: use PercentOffBP
-	PercentOffBP   int        `json:"percent_off_bp"`    // Basis points (5050 = 50.50%)
+	PercentOff     float64    `json:"percent_off"`    // Deprecated: use PercentOffBP
+	PercentOffBP   int        `json:"percent_off_bp"` // Basis points (5050 = 50.50%)
 	Currency       string     `json:"currency"`
 	MaxRedemptions *int       `json:"max_redemptions"`
 	TimesRedeemed  int        `json:"times_redeemed"`

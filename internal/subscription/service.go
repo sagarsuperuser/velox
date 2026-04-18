@@ -21,15 +21,15 @@ func NewService(store Store) *Service {
 }
 
 type CreateInput struct {
-	Code           string                         `json:"code"`
-	DisplayName    string                         `json:"display_name"`
-	CustomerID     string                         `json:"customer_id"`
-	PlanID         string                         `json:"plan_id"`
-	BillingTime    domain.SubscriptionBillingTime `json:"billing_time"`
-	TrialDays      int                            `json:"trial_days,omitempty"`
-	StartNow       bool                           `json:"start_now,omitempty"`
-	UsageCapUnits  *int64                         `json:"usage_cap_units,omitempty"`
-	OverageAction  string                         `json:"overage_action,omitempty"`
+	Code          string                         `json:"code"`
+	DisplayName   string                         `json:"display_name"`
+	CustomerID    string                         `json:"customer_id"`
+	PlanID        string                         `json:"plan_id"`
+	BillingTime   domain.SubscriptionBillingTime `json:"billing_time"`
+	TrialDays     int                            `json:"trial_days,omitempty"`
+	StartNow      bool                           `json:"start_now,omitempty"`
+	UsageCapUnits *int64                         `json:"usage_cap_units,omitempty"`
+	OverageAction string                         `json:"overage_action,omitempty"`
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Subscription, error) {
@@ -176,7 +176,7 @@ type ProrationDetail struct {
 	NewPlanID       string  `json:"new_plan_id"`
 	ProrationFactor float64 `json:"proration_factor"`
 	AmountCents     int64   `json:"amount_cents"`
-	Type            string  `json:"type"`       // "invoice" or "credit"
+	Type            string  `json:"type"` // "invoice" or "credit"
 	InvoiceID       string  `json:"invoice_id,omitempty"`
 }
 

@@ -215,7 +215,7 @@ func TestRemoveOverride(t *testing.T) {
 	svc := NewService(store)
 
 	// Set override, then remove it
-	svc.SetOverride(context.Background(), "tenant_1", "dunning.enabled", true)
+	_ = svc.SetOverride(context.Background(), "tenant_1", "dunning.enabled", true)
 	if err := svc.RemoveOverride(context.Background(), "tenant_1", "dunning.enabled"); err != nil {
 		t.Fatalf("RemoveOverride: %v", err)
 	}
@@ -248,9 +248,9 @@ func TestListOverrides(t *testing.T) {
 	store.seedFlag("b.flag", false)
 	svc := NewService(store)
 
-	svc.SetOverride(context.Background(), "t1", "a.flag", false)
-	svc.SetOverride(context.Background(), "t1", "b.flag", true)
-	svc.SetOverride(context.Background(), "t2", "a.flag", true) // different tenant
+	_ = svc.SetOverride(context.Background(), "t1", "a.flag", false)
+	_ = svc.SetOverride(context.Background(), "t1", "b.flag", true)
+	_ = svc.SetOverride(context.Background(), "t2", "a.flag", true) // different tenant
 
 	overrides, err := svc.ListOverrides(context.Background(), "t1")
 	if err != nil {

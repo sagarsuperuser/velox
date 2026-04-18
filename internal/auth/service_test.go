@@ -264,7 +264,7 @@ func TestValidateKey_Revoked(t *testing.T) {
 	ctx := context.Background()
 
 	result, _ := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "Revokable", KeyType: KeyTypeSecret})
-	svc.RevokeKey(ctx, "t1", result.Key.ID)
+	_, _ = svc.RevokeKey(ctx, "t1", result.Key.ID)
 
 	_, err := svc.ValidateKey(ctx, result.RawKey)
 	if err == nil {

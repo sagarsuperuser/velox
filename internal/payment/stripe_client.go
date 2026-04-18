@@ -117,7 +117,7 @@ func (c *LiveStripeClient) FetchCardDetails(_ context.Context, stripeCustomerID 
 	}
 
 	// Set this card as the customer's default payment method
-	stripecustomer.Update(stripeCustomerID, &stripe.CustomerParams{
+	_, _ = stripecustomer.Update(stripeCustomerID, &stripe.CustomerParams{
 		InvoiceSettings: &stripe.CustomerInvoiceSettingsParams{
 			DefaultPaymentMethod: stripe.String(latest.ID),
 		},

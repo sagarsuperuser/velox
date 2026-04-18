@@ -50,10 +50,10 @@ type setupRequest struct {
 	CustomerName string `json:"customer_name"`
 	Email        string `json:"email"`
 	// Address fields for Stripe compliance (required for India)
-	AddressLine1 string `json:"address_line1,omitempty"`
-	AddressCity  string `json:"address_city,omitempty"`
-	AddressState string `json:"address_state,omitempty"`
-	AddressZip   string `json:"address_postal_code,omitempty"`
+	AddressLine1   string `json:"address_line1,omitempty"`
+	AddressCity    string `json:"address_city,omitempty"`
+	AddressState   string `json:"address_state,omitempty"`
+	AddressZip     string `json:"address_postal_code,omitempty"`
 	AddressCountry string `json:"address_country,omitempty"`
 }
 
@@ -128,12 +128,12 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 				Country:    stripe.String(req.AddressCountry),
 			}
 		}
-		stripecustomer.Update(stripeCustomerID, updateParams)
+		_, _ = stripecustomer.Update(stripeCustomerID, updateParams)
 	}
 
 	// Save Stripe customer ID immediately (status: pending until checkout completes)
 	now := time.Now().UTC()
-	h.store.UpsertPaymentSetup(r.Context(), tenantID, domain.CustomerPaymentSetup{
+	_, _ = h.store.UpsertPaymentSetup(r.Context(), tenantID, domain.CustomerPaymentSetup{
 		CustomerID:       req.CustomerID,
 		TenantID:         tenantID,
 		SetupStatus:      domain.PaymentSetupPending,
@@ -152,11 +152,11 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	sess, err := session.New(&stripe.CheckoutSessionParams{
-		Customer: stripe.String(stripeCustomerID),
-		Mode:     stripe.String(string(stripe.CheckoutSessionModeSetup)),
+		Customer:           stripe.String(stripeCustomerID),
+		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
-		SuccessURL: stripe.String(successURL),
-		CancelURL:  stripe.String(cancelURL),
+		SuccessURL:         stripe.String(successURL),
+		CancelURL:          stripe.String(cancelURL),
 		Params: stripe.Params{
 			Metadata: map[string]string{
 				"velox_customer_id": req.CustomerID,

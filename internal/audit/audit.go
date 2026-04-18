@@ -164,7 +164,7 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []domain.AuditEntry
 	for rows.Next() {
@@ -175,7 +175,7 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 			&metaJSON, &e.IPAddress, &e.CreatedAt); err != nil {
 			return nil, 0, err
 		}
-		json.Unmarshal(metaJSON, &e.Metadata)
+		_ = json.Unmarshal(metaJSON, &e.Metadata)
 		entries = append(entries, e)
 	}
 	return entries, total, rows.Err()

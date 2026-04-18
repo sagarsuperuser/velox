@@ -61,7 +61,7 @@ func (h *BootstrapHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req bootstrapRequest
-	json.NewDecoder(r.Body).Decode(&req)
+	_ = json.NewDecoder(r.Body).Decode(&req)
 
 	provided := strings.TrimSpace(req.Token)
 	if provided == "" {

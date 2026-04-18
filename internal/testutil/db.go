@@ -49,8 +49,8 @@ func SetupTestDB(t *testing.T) *postgres.DB {
 
 	t.Cleanup(func() {
 		cleanDB(t, adminPool)
-		appPool.Close()
-		adminPool.Close()
+		_ = appPool.Close()
+		_ = adminPool.Close()
 	})
 
 	return db

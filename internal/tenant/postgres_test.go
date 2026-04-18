@@ -56,8 +56,8 @@ func TestPostgresStore_List(t *testing.T) {
 	store := tenant.NewPostgresStore(db)
 	ctx := context.Background()
 
-	store.Create(ctx, domain.Tenant{Name: "Tenant A"})
-	store.Create(ctx, domain.Tenant{Name: "Tenant B"})
+	_, _ = store.Create(ctx, domain.Tenant{Name: "Tenant A"})
+	_, _ = store.Create(ctx, domain.Tenant{Name: "Tenant B"})
 
 	all, err := store.List(ctx, tenant.ListFilter{})
 	if err != nil {

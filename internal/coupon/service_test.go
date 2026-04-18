@@ -121,10 +121,10 @@ func (m *mockStore) seedCoupon(c domain.Coupon) {
 
 func TestCalculateDiscount_Percentage(t *testing.T) {
 	tests := []struct {
-		name      string
-		pct       float64
-		subtotal  int64
-		wantDisc  int64
+		name     string
+		pct      float64
+		subtotal int64
+		wantDisc int64
 	}{
 		{
 			name:     "25% of 10000 cents",

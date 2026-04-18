@@ -39,7 +39,7 @@ func (s *PostgresStore) CreateEndpoint(ctx context.Context, tenantID string, ep 
 	if err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
-	json.Unmarshal(eventsJSON, &ep.Events)
+	_ = json.Unmarshal(eventsJSON, &ep.Events)
 	if err := tx.Commit(); err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
@@ -65,7 +65,7 @@ func (s *PostgresStore) GetEndpoint(ctx context.Context, tenantID, id string) (d
 	if err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
-	json.Unmarshal(eventsJSON, &ep.Events)
+	_ = json.Unmarshal(eventsJSON, &ep.Events)
 	return ep, nil
 }
 
@@ -83,7 +83,7 @@ func (s *PostgresStore) ListEndpoints(ctx context.Context, tenantID string) ([]d
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var endpoints []domain.WebhookEndpoint
 	for rows.Next() {
@@ -92,7 +92,7 @@ func (s *PostgresStore) ListEndpoints(ctx context.Context, tenantID string) ([]d
 		if err := rows.Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(eventsJSON, &ep.Events)
+		_ = json.Unmarshal(eventsJSON, &ep.Events)
 		endpoints = append(endpoints, ep)
 	}
 	return endpoints, rows.Err()
@@ -136,7 +136,7 @@ func (s *PostgresStore) UpdateEndpointSecret(ctx context.Context, tenantID, id, 
 	if err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
-	json.Unmarshal(eventsJSON, &ep.Events)
+	_ = json.Unmarshal(eventsJSON, &ep.Events)
 	if err := tx.Commit(); err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
@@ -189,7 +189,7 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID string, limit i
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var events []domain.WebhookEvent
 	for rows.Next() {
@@ -198,7 +198,7 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID string, limit i
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.EventType, &payloadJSON, &e.CreatedAt); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(payloadJSON, &e.Payload)
+		_ = json.Unmarshal(payloadJSON, &e.Payload)
 		events = append(events, e)
 	}
 	return events, rows.Err()
@@ -279,7 +279,7 @@ func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var deliveries []domain.WebhookDelivery
 	for rows.Next() {
@@ -312,7 +312,7 @@ func (s *PostgresStore) GetEndpointStats(ctx context.Context, tenantID string) (
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var stats []EndpointStats
 	for rows.Next() {
@@ -345,7 +345,7 @@ func (s *PostgresStore) ListDeliveries(ctx context.Context, tenantID, eventID st
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var deliveries []domain.WebhookDelivery
 	for rows.Next() {

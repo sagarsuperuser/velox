@@ -27,9 +27,9 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 		"John Doe",
 		"+1-555-0100",
 		"US12345678",
-		"a",                          // single char
-		"unicode: 日本語テスト 🎉",  // multi-byte
-		strings.Repeat("x", 10000),   // large value
+		"a",                        // single char
+		"unicode: 日本語テスト 🎉",        // multi-byte
+		strings.Repeat("x", 10000), // large value
 	}
 
 	for _, plaintext := range cases {

@@ -128,7 +128,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.A
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var keys []domain.APIKey
 	for rows.Next() {

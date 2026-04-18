@@ -22,13 +22,13 @@ type MetricsInvoiceReader interface {
 }
 
 type Dashboard struct {
-	MRRCents           int64            `json:"mrr_cents"`
-	ARRCents           int64            `json:"arr_cents"`
-	ActiveSubscriptions int             `json:"active_subscriptions"`
-	TotalCustomers     int              `json:"total_customers"`
-	RevenueThisMonth   int64            `json:"revenue_this_month_cents"`
-	InvoicesByStatus   map[string]int   `json:"invoices_by_status"`
-	GeneratedAt        time.Time        `json:"generated_at"`
+	MRRCents            int64          `json:"mrr_cents"`
+	ARRCents            int64          `json:"arr_cents"`
+	ActiveSubscriptions int            `json:"active_subscriptions"`
+	TotalCustomers      int            `json:"total_customers"`
+	RevenueThisMonth    int64          `json:"revenue_this_month_cents"`
+	InvoicesByStatus    map[string]int `json:"invoices_by_status"`
+	GeneratedAt         time.Time      `json:"generated_at"`
 }
 
 func NewMetrics(subs MetricsSubReader, invoices MetricsInvoiceReader) *Metrics {

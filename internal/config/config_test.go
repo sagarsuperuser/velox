@@ -34,8 +34,8 @@ func TestLoad_Defaults(t *testing.T) {
 }
 
 func TestLoad_MissingDatabaseURL(t *testing.T) {
-	os.Unsetenv("DATABASE_URL")
-	os.Unsetenv("DB_HOST")
+	_ = os.Unsetenv("DATABASE_URL")
+	_ = os.Unsetenv("DB_HOST")
 
 	_, err := Load()
 	if err == nil {
@@ -44,10 +44,10 @@ func TestLoad_MissingDatabaseURL(t *testing.T) {
 }
 
 func TestLoad_CustomPort(t *testing.T) {
-	os.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
-	os.Setenv("PORT", "3000")
-	defer os.Unsetenv("DATABASE_URL")
-	defer os.Unsetenv("PORT")
+	_ = os.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	_ = os.Setenv("PORT", "3000")
+	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	defer func() { _ = os.Unsetenv("PORT") }()
 
 	cfg, err := Load()
 	if err != nil {
@@ -124,7 +124,7 @@ func TestValidate_ValidConfig(t *testing.T) {
 
 func TestValidate_EncryptionKeyWarnings(t *testing.T) {
 	// Production without key should warn
-	os.Unsetenv("VELOX_ENCRYPTION_KEY")
+	_ = os.Unsetenv("VELOX_ENCRYPTION_KEY")
 	cfg := Config{Env: "production", Port: "8080", StripeSecretKey: "sk_live_x", StripeWebhookSecret: "whsec_x",
 		RedisURL: "redis://localhost:6379", DB: DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second}}
 	warnings := cfg.Validate()
@@ -165,7 +165,7 @@ func TestValidate_EncryptionKeyWarnings(t *testing.T) {
 	}
 
 	// Local env without key should NOT warn
-	os.Unsetenv("VELOX_ENCRYPTION_KEY")
+	_ = os.Unsetenv("VELOX_ENCRYPTION_KEY")
 	localCfg := Config{Env: "local", Port: "8080", StripeSecretKey: "sk_test_x", StripeWebhookSecret: "whsec_x",
 		DB: DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second}}
 	warnings = localCfg.Validate()
@@ -197,16 +197,16 @@ func TestValidate_DBPoolSanity(t *testing.T) {
 }
 
 func TestLoad_DiscreteDBVars(t *testing.T) {
-	os.Unsetenv("DATABASE_URL")
-	os.Setenv("DB_HOST", "localhost")
-	os.Setenv("DB_NAME", "velox")
-	os.Setenv("DB_USER", "velox")
-	os.Setenv("DB_PASSWORD", "secret")
+	_ = os.Unsetenv("DATABASE_URL")
+	_ = os.Setenv("DB_HOST", "localhost")
+	_ = os.Setenv("DB_NAME", "velox")
+	_ = os.Setenv("DB_USER", "velox")
+	_ = os.Setenv("DB_PASSWORD", "secret")
 	defer func() {
-		os.Unsetenv("DB_HOST")
-		os.Unsetenv("DB_NAME")
-		os.Unsetenv("DB_USER")
-		os.Unsetenv("DB_PASSWORD")
+		_ = os.Unsetenv("DB_HOST")
+		_ = os.Unsetenv("DB_NAME")
+		_ = os.Unsetenv("DB_USER")
+		_ = os.Unsetenv("DB_PASSWORD")
 	}()
 
 	cfg, err := Load()

@@ -9,10 +9,10 @@ func TestComputeAmountCents_Flat(t *testing.T) {
 	rule := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: 500}
 
 	tests := []struct {
-		name     string
-		qty      int64
-		wantAmt  int64
-		wantErr  bool
+		name    string
+		qty     int64
+		wantAmt int64
+		wantErr bool
 	}{
 		{"zero quantity", 0, 0, false},
 		{"positive quantity", 100, 50000, false},
@@ -49,9 +49,9 @@ func TestComputeAmountCents_Graduated(t *testing.T) {
 	}{
 		{"within first tier", 5, 500},
 		{"exact first tier boundary", 10, 1000},
-		{"into second tier", 20, 1000 + 10*50},       // 1500
+		{"into second tier", 20, 1000 + 10*50},           // 1500
 		{"exact second tier boundary", 50, 1000 + 40*50}, // 3000
-		{"into overflow tier", 60, 1000 + 40*50 + 10*25},  // 3250
+		{"into overflow tier", 60, 1000 + 40*50 + 10*25}, // 3250
 	}
 
 	for _, tt := range tests {

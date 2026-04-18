@@ -228,11 +228,11 @@ func (h *Handler) changePlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		h.auditLogger.Log(r.Context(), tenantID, "subscription.plan_changed", "subscription", result.Subscription.ID, map[string]any{
-			"customer_id":  result.Subscription.CustomerID,
-			"old_plan_id":  oldPlanID,
-			"new_plan_id":  input.NewPlanID,
-			"immediate":    input.Immediate,
+		_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.plan_changed", "subscription", result.Subscription.ID, map[string]any{
+			"customer_id": result.Subscription.CustomerID,
+			"old_plan_id": oldPlanID,
+			"new_plan_id": input.NewPlanID,
+			"immediate":   input.Immediate,
 		})
 	}
 
@@ -271,19 +271,19 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 		invoiceNumber := fmt.Sprintf("VLX-PRO-%s-%04d", now.Format("200601"), now.UnixMilli()%10000)
 
 		inv, err := h.invoices.CreateInvoice(ctx, tenantID, domain.Invoice{
-			CustomerID:       result.Subscription.CustomerID,
-			SubscriptionID:   result.Subscription.ID,
-			InvoiceNumber:    invoiceNumber,
-			Status:           domain.InvoiceFinalized,
-			PaymentStatus:    domain.PaymentPending,
-			Currency:         newPlan.Currency,
-			SubtotalCents:    proratedCents,
-			TotalAmountCents: proratedCents,
-			AmountDueCents:   proratedCents,
-			IssuedAt:         &now,
-			DueAt:            &dueAt,
+			CustomerID:         result.Subscription.CustomerID,
+			SubscriptionID:     result.Subscription.ID,
+			InvoiceNumber:      invoiceNumber,
+			Status:             domain.InvoiceFinalized,
+			PaymentStatus:      domain.PaymentPending,
+			Currency:           newPlan.Currency,
+			SubtotalCents:      proratedCents,
+			TotalAmountCents:   proratedCents,
+			AmountDueCents:     proratedCents,
+			IssuedAt:           &now,
+			DueAt:              &dueAt,
 			NetPaymentTermDays: 30,
-			Memo:             fmt.Sprintf("Plan upgrade proration: %s -> %s", oldPlan.Name, newPlan.Name),
+			Memo:               fmt.Sprintf("Plan upgrade proration: %s -> %s", oldPlan.Name, newPlan.Name),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create proration invoice: %w", err)
@@ -352,7 +352,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCancel, "subscription", sub.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCancel, "subscription", sub.ID, map[string]any{
 			"customer_id": sub.CustomerID,
 			"plan_id":     sub.PlanID,
 		})

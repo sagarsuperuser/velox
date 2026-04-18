@@ -81,11 +81,11 @@ func extractLabel(body []byte, resourceType string) string {
 
 	// Try common label fields in order of specificity
 	for _, key := range []string{
-		"invoice_number",    // invoices
+		"invoice_number",     // invoices
 		"credit_note_number", // credit notes
-		"display_name",      // customers, subscriptions
-		"name",              // plans, meters, rating rules, webhooks
-		"key",               // meters
+		"display_name",       // customers, subscriptions
+		"name",               // plans, meters, rating rules, webhooks
+		"key",                // meters
 	} {
 		if v, ok := m[key]; ok {
 			if s, ok := v.(string); ok && s != "" {
@@ -216,5 +216,5 @@ func writeAudit(db *postgres.DB, tenantID, actorID, action, resourceType, resour
 		slog.Debug("audit write failed", "error", err)
 		return
 	}
-	tx.Commit()
+	_ = tx.Commit()
 }

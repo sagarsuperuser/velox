@@ -127,10 +127,10 @@ func TestCreate(t *testing.T) {
 
 	t.Run("validation errors", func(t *testing.T) {
 		cases := []CreateInput{
-			{DisplayName: "x", CustomerID: "c", PlanID: "p"},           // missing code
-			{Code: "x", CustomerID: "c", PlanID: "p"},                  // missing display_name
-			{Code: "x", DisplayName: "x", PlanID: "p"},                 // missing customer_id
-			{Code: "x", DisplayName: "x", CustomerID: "c"},             // missing plan_id
+			{DisplayName: "x", CustomerID: "c", PlanID: "p"},                                   // missing code
+			{Code: "x", CustomerID: "c", PlanID: "p"},                                          // missing display_name
+			{Code: "x", DisplayName: "x", PlanID: "p"},                                         // missing customer_id
+			{Code: "x", DisplayName: "x", CustomerID: "c"},                                     // missing plan_id
 			{Code: "x", DisplayName: "x", CustomerID: "c", PlanID: "p", BillingTime: "weekly"}, // invalid billing_time
 		}
 		for _, input := range cases {
@@ -268,7 +268,7 @@ func TestPauseAndResume(t *testing.T) {
 	})
 
 	t.Run("cannot pause non-active", func(t *testing.T) {
-		svc.Cancel(ctx, "t1", sub.ID)
+		_, _ = svc.Cancel(ctx, "t1", sub.ID)
 		_, err := svc.Pause(ctx, "t1", sub.ID)
 		if err == nil {
 			t.Fatal("expected error pausing canceled sub")

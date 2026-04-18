@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -36,7 +35,7 @@ func (s *SettingsStore) ListTenantIDs(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var ids []string
 	for rows.Next() {
 		var id string
@@ -166,7 +165,7 @@ func (h *SettingsHandler) get(w http.ResponseWriter, r *http.Request) {
 		// Return defaults
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(domain.TenantSettings{
+		_ = json.NewEncoder(w).Encode(domain.TenantSettings{
 			TenantID:        tenantID,
 			DefaultCurrency: "USD",
 			Timezone:        "UTC",
@@ -178,14 +177,14 @@ func (h *SettingsHandler) get(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
 		slog.Error("get settings", "error", err)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(ts)
+	_ = json.NewEncoder(w).Encode(ts)
 }
 
 func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
@@ -195,7 +194,7 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&ts); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON"})
 		return
 	}
 	ts.TenantID = tenantID
@@ -206,14 +205,14 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		if at < 1 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnprocessableEntity)
-			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("invalid email: must contain @")})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid email: must contain @"})
 			return
 		}
 		domain := email[at+1:]
 		if !strings.Contains(domain, ".") || strings.HasSuffix(domain, ".") {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnprocessableEntity)
-			json.NewEncoder(w).Encode(map[string]string{"error": "invalid email: domain must contain a dot"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid email: domain must contain a dot"})
 			return
 		}
 	}
@@ -221,7 +220,7 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		if !settingsPhonePattern.MatchString(phone) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnprocessableEntity)
-			json.NewEncoder(w).Encode(map[string]string{"error": "phone must be 7-20 characters and contain only digits, spaces, +, -, (, )"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "phone must be 7-20 characters and contain only digits, spaces, +, -, (, )"})
 			return
 		}
 	}
@@ -243,31 +242,31 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 	if err := domain.ValidateCurrency(ts.DefaultCurrency); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	if len(ts.InvoicePrefix) > 20 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invoice_prefix must be at most 20 characters"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invoice_prefix must be at most 20 characters"})
 		return
 	}
 	if ts.NetPaymentTerms > 365 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		json.NewEncoder(w).Encode(map[string]string{"error": "net_payment_terms cannot exceed 365 days"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "net_payment_terms cannot exceed 365 days"})
 		return
 	}
 	if len(ts.CompanyName) > 255 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		json.NewEncoder(w).Encode(map[string]string{"error": "company_name must be at most 255 characters"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "company_name must be at most 255 characters"})
 		return
 	}
 	if ts.TaxRateBP < 0 || ts.TaxRateBP > 10000 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		json.NewEncoder(w).Encode(map[string]string{"error": "tax_rate_bp must be between 0 and 10000 (e.g. 1850 for 18.50%)"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "tax_rate_bp must be between 0 and 10000 (e.g. 1850 for 18.50%)"})
 		return
 	}
 
@@ -275,12 +274,12 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
 		slog.Error("upsert settings", "error", err)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(result)
+	_ = json.NewEncoder(w).Encode(result)
 }

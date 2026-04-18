@@ -14,8 +14,8 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockSubs struct {
-	subs          map[string]domain.Subscription
-	cycleUpdated  map[string]bool
+	subs         map[string]domain.Subscription
+	cycleUpdated map[string]bool
 }
 
 func (m *mockSubs) GetDueBilling(_ context.Context, before time.Time, limit int) ([]domain.Subscription, error) {

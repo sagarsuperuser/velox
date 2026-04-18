@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	maxWebhookBodySize  = 65536 // 64KB
-	signatureToleranceSec = 300 // 5 minutes
+	maxWebhookBodySize    = 65536 // 64KB
+	signatureToleranceSec = 300   // 5 minutes
 )
 
 type Handler struct {
@@ -71,25 +71,25 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Extract payment intent details from the event object
 	var obj struct {
-		ID             string `json:"id"`
-		Object         string `json:"object"`
-		Status         string `json:"status"`
-		Amount         int64  `json:"amount"`
-		Currency       string `json:"currency"`
-		Customer       string `json:"customer"`
-		LastError      *struct {
+		ID        string `json:"id"`
+		Object    string `json:"object"`
+		Status    string `json:"status"`
+		Amount    int64  `json:"amount"`
+		Currency  string `json:"currency"`
+		Customer  string `json:"customer"`
+		LastError *struct {
 			Message string `json:"message"`
 		} `json:"last_payment_error"`
 		Metadata map[string]string `json:"metadata"`
 	}
-	json.Unmarshal(raw.Data.Object, &obj)
+	_ = json.Unmarshal(raw.Data.Object, &obj)
 
 	// Determine tenant from metadata
 	tenantID := obj.Metadata["velox_tenant_id"]
 	if tenantID == "" {
 		// Not a Velox-originated payment intent — acknowledge but skip
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "reason": "no velox metadata"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "reason": "no velox metadata"})
 		return
 	}
 
@@ -123,12 +123,12 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		// Return 200 anyway — Stripe will retry on 5xx and we don't want infinite retries
 		// for events we can't process (e.g., missing invoice). Log the error for investigation.
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "error_logged", "error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error_logged", "error": err.Error()})
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "processed"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "processed"})
 }
 
 // verifyStripeSignature verifies the Stripe-Signature header using HMAC-SHA256.
@@ -192,5 +192,5 @@ func abs(n int64) int64 {
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": message})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

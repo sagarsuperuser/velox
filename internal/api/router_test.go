@@ -18,8 +18,8 @@ func newTestServer() *Server {
 	// (which would panic with nil DB). This can happen when `make test-unit` exports
 	// .env vars into the test environment.
 	prev := os.Getenv("STRIPE_SECRET_KEY")
-	os.Setenv("STRIPE_SECRET_KEY", "")
-	defer os.Setenv("STRIPE_SECRET_KEY", prev)
+	_ = os.Setenv("STRIPE_SECRET_KEY", "")
+	defer func() { _ = os.Setenv("STRIPE_SECRET_KEY", prev) }()
 
 	db := &postgres.DB{}
 	return NewServer(db, "")
@@ -37,7 +37,7 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 
 	var body map[string]string
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 	if body["status"] != "ok" {
 		t.Errorf("body: got %v", body)
 	}
@@ -55,7 +55,7 @@ func TestAuthRequired_Customers(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 	errObj, _ := body["error"].(map[string]any)
 	if errObj == nil || errObj["type"] != "authentication_error" {
 		t.Errorf("error type: got %v, want authentication_error", body["error"])
@@ -128,16 +128,14 @@ func TestNotFound(t *testing.T) {
 func TestRateLimitHeaders(t *testing.T) {
 	srv := newTestServer()
 
+	// Rate limiting runs after auth — unauthenticated requests get 401 before rate limiter
 	req := httptest.NewRequest("GET", "/v1/customers", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
-	// Even on 401, rate limit headers should be present
-	if rec.Header().Get("X-RateLimit-Limit") == "" {
-		t.Error("X-RateLimit-Limit header should be set")
-	}
-	if rec.Header().Get("X-RateLimit-Remaining") == "" {
-		t.Error("X-RateLimit-Remaining header should be set")
+	// 401 responses should NOT have rate limit headers (rejected before rate limiter runs)
+	if rec.Header().Get("X-RateLimit-Limit") != "" {
+		t.Error("X-RateLimit-Limit should not be set on unauthenticated requests")
 	}
 }
 

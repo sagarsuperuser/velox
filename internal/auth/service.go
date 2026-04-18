@@ -141,7 +141,7 @@ func (s *Service) ValidateKey(ctx context.Context, rawKey string) (domain.APIKey
 	}
 
 	// Touch last used (async, fire and forget)
-	go s.store.TouchLastUsed(context.Background(), key.ID, time.Now().UTC())
+	go func() { _ = s.store.TouchLastUsed(context.Background(), key.ID, time.Now().UTC()) }()
 
 	return key, nil
 }

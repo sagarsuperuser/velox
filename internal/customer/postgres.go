@@ -214,7 +214,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var customers []domain.Customer
 	for rows.Next() {
@@ -468,7 +468,6 @@ func buildCustomerWhere(f ListFilter) (string, []any) {
 	if f.ExternalID != "" {
 		clauses = append(clauses, fmt.Sprintf("external_id = $%d", idx))
 		args = append(args, f.ExternalID)
-		idx++
 	}
 
 	if len(clauses) == 0 {

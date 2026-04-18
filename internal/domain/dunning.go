@@ -55,21 +55,21 @@ type DunningPolicy struct {
 }
 
 type InvoiceDunningRun struct {
-	ID            string          `json:"id"`
-	TenantID      string          `json:"tenant_id,omitempty"`
-	InvoiceID     string          `json:"invoice_id"`
-	CustomerID    string          `json:"customer_id,omitempty"`
-	PolicyID      string          `json:"policy_id"`
-	State         DunningRunState `json:"state"`
-	Reason        string          `json:"reason,omitempty"`
-	AttemptCount  int             `json:"attempt_count"`
-	LastAttemptAt *time.Time      `json:"last_attempt_at,omitempty"`
-	NextActionAt  *time.Time      `json:"next_action_at,omitempty"`
-	Paused        bool            `json:"paused"`
-	ResolvedAt    *time.Time      `json:"resolved_at,omitempty"`
+	ID            string            `json:"id"`
+	TenantID      string            `json:"tenant_id,omitempty"`
+	InvoiceID     string            `json:"invoice_id"`
+	CustomerID    string            `json:"customer_id,omitempty"`
+	PolicyID      string            `json:"policy_id"`
+	State         DunningRunState   `json:"state"`
+	Reason        string            `json:"reason,omitempty"`
+	AttemptCount  int               `json:"attempt_count"`
+	LastAttemptAt *time.Time        `json:"last_attempt_at,omitempty"`
+	NextActionAt  *time.Time        `json:"next_action_at,omitempty"`
+	Paused        bool              `json:"paused"`
+	ResolvedAt    *time.Time        `json:"resolved_at,omitempty"`
 	Resolution    DunningResolution `json:"resolution,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
 type CustomerDunningOverride struct {

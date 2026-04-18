@@ -83,12 +83,12 @@ type EmailSender interface {
 }
 
 type Handler struct {
-	svc            *Service
-	customers      CustomerGetter
-	settings       SettingsGetter
-	creditNotes    CreditNoteLister
-	charger        PaymentCharger
-	paymentSetups  PaymentSetupGetter
+	svc             *Service
+	customers       CustomerGetter
+	settings        SettingsGetter
+	creditNotes     CreditNoteLister
+	charger         PaymentCharger
+	paymentSetups   PaymentSetupGetter
 	creditReverser  CreditReverser
 	paymentCancel   PaymentCanceler
 	dunning         DunningResolver
@@ -100,9 +100,9 @@ type Handler struct {
 }
 
 type HandlerDeps struct {
-	CreditNotes    CreditNoteLister
-	Charger        PaymentCharger
-	PaymentSetups  PaymentSetupGetter
+	CreditNotes     CreditNoteLister
+	Charger         PaymentCharger
+	PaymentSetups   PaymentSetupGetter
 	CreditReverser  CreditReverser
 	PaymentCancel   PaymentCanceler
 	Dunning         DunningResolver
@@ -141,15 +141,15 @@ func (h *Handler) fireEvent(ctx context.Context, tenantID, eventType string, inv
 		return
 	}
 	go func() {
-		h.events.Dispatch(ctx, tenantID, eventType, map[string]any{
-			"invoice_id":       inv.ID,
-			"invoice_number":   inv.InvoiceNumber,
-			"customer_id":      inv.CustomerID,
-			"status":           string(inv.Status),
-			"payment_status":   string(inv.PaymentStatus),
+		_ = h.events.Dispatch(ctx, tenantID, eventType, map[string]any{
+			"invoice_id":         inv.ID,
+			"invoice_number":     inv.InvoiceNumber,
+			"customer_id":        inv.CustomerID,
+			"status":             string(inv.Status),
+			"payment_status":     string(inv.PaymentStatus),
 			"total_amount_cents": inv.TotalAmountCents,
-			"amount_due_cents": inv.AmountDueCents,
-			"currency":         inv.Currency,
+			"amount_due_cents":   inv.AmountDueCents,
+			"currency":           inv.Currency,
 		})
 	}()
 }
@@ -276,9 +276,9 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionFinalize, "invoice", inv.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionFinalize, "invoice", inv.ID, map[string]any{
 			"invoice_number":     inv.InvoiceNumber,
-			"customer_id":       inv.CustomerID,
+			"customer_id":        inv.CustomerID,
 			"total_amount_cents": inv.TotalAmountCents,
 			"currency":           inv.Currency,
 		})
@@ -386,9 +386,9 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionVoid, "invoice", inv.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionVoid, "invoice", inv.ID, map[string]any{
 			"invoice_number":     inv.InvoiceNumber,
-			"customer_id":       inv.CustomerID,
+			"customer_id":        inv.CustomerID,
 			"total_amount_cents": inv.TotalAmountCents,
 			"currency":           inv.Currency,
 		})
@@ -516,16 +516,16 @@ func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {
 }
 
 type timelineEvent struct {
-	Timestamp        string `json:"timestamp"`
-	Source           string `json:"source"` // "stripe" or "dunning"
-	EventType        string `json:"event_type"`
-	Status           string `json:"status"`
-	Description      string `json:"description"`
-	Error            string `json:"error,omitempty"`
-	AmountCents      *int64 `json:"amount_cents,omitempty"`
-	Currency         string `json:"currency,omitempty"`
-	PaymentIntentID  string `json:"payment_intent_id,omitempty"`
-	AttemptCount     int    `json:"attempt_count,omitempty"`
+	Timestamp       string `json:"timestamp"`
+	Source          string `json:"source"` // "stripe" or "dunning"
+	EventType       string `json:"event_type"`
+	Status          string `json:"status"`
+	Description     string `json:"description"`
+	Error           string `json:"error,omitempty"`
+	AmountCents     *int64 `json:"amount_cents,omitempty"`
+	Currency        string `json:"currency,omitempty"`
+	PaymentIntentID string `json:"payment_intent_id,omitempty"`
+	AttemptCount    int    `json:"attempt_count,omitempty"`
 }
 
 // relevantStripeEvents filters to only operator-meaningful events.
@@ -744,5 +744,5 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", "inline; filename=\""+inv.InvoiceNumber+".pdf\"")
 	w.WriteHeader(http.StatusOK)
-	w.Write(pdfBytes)
+	_, _ = w.Write(pdfBytes)
 }

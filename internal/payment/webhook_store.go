@@ -96,7 +96,7 @@ func (s *PostgresWebhookStore) ListByInvoice(ctx context.Context, tenantID, invo
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var events []domain.StripeWebhookEvent
 	for rows.Next() {

@@ -108,7 +108,6 @@ func (s *PostgresStore) ListRatingRules(ctx context.Context, filter RatingRuleFi
 	if filter.LifecycleState != "" {
 		clauses = append(clauses, fmt.Sprintf("lifecycle_state = $%d", idx))
 		args = append(args, filter.LifecycleState)
-		idx++
 	}
 
 	if len(clauses) > 0 {
@@ -126,7 +125,7 @@ func (s *PostgresStore) ListRatingRules(ctx context.Context, filter RatingRuleFi
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var rules []domain.RatingRuleVersion
 	for rows.Next() {
@@ -226,7 +225,7 @@ func (s *PostgresStore) ListMeters(ctx context.Context, tenantID string) ([]doma
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var meters []domain.Meter
 	for rows.Next() {
@@ -301,7 +300,7 @@ func (s *PostgresStore) CreatePlan(ctx context.Context, tenantID string, p domai
 		}
 		return domain.Plan{}, err
 	}
-	json.Unmarshal(meterIDsJSON, &p.MeterIDs)
+	_ = json.Unmarshal(meterIDsJSON, &p.MeterIDs)
 	if err := tx.Commit(); err != nil {
 		return domain.Plan{}, err
 	}
@@ -337,7 +336,7 @@ func (s *PostgresStore) ListPlans(ctx context.Context, tenantID string) ([]domai
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var plans []domain.Plan
 	for rows.Next() {
@@ -378,7 +377,7 @@ func (s *PostgresStore) UpdatePlan(ctx context.Context, tenantID string, p domai
 	if err != nil {
 		return domain.Plan{}, err
 	}
-	json.Unmarshal(meterIDsJSON, &p.MeterIDs)
+	_ = json.Unmarshal(meterIDsJSON, &p.MeterIDs)
 	if err := tx.Commit(); err != nil {
 		return domain.Plan{}, err
 	}
@@ -406,7 +405,7 @@ func scanRatingRule(row rowScanner) (domain.RatingRuleVersion, error) {
 	if err != nil {
 		return domain.RatingRuleVersion{}, err
 	}
-	json.Unmarshal(tiersJSON, &r.GraduatedTiers)
+	_ = json.Unmarshal(tiersJSON, &r.GraduatedTiers)
 	return r, nil
 }
 
@@ -426,7 +425,7 @@ func scanPlan(row rowScanner) (domain.Plan, error) {
 	if err != nil {
 		return domain.Plan{}, err
 	}
-	json.Unmarshal(meterIDsJSON, &p.MeterIDs)
+	_ = json.Unmarshal(meterIDsJSON, &p.MeterIDs)
 	return p, nil
 }
 

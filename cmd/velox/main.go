@@ -75,7 +75,7 @@ func serve() {
 		slog.Error("init tracing", "error", err)
 		os.Exit(1)
 	}
-	defer tracingShutdown(context.Background())
+	defer func() { _ = tracingShutdown(context.Background()) }()
 
 	slog.Info("velox starting", "env", cfg.Env, "port", cfg.Port)
 
@@ -84,7 +84,7 @@ func serve() {
 		slog.Error("open database", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 
 	if cfg.Migrate {
 		// Migrations need DDL privileges — use DATABASE_URL (superuser) if
@@ -118,7 +118,7 @@ func serve() {
 				"error", err)
 			appPool = pool
 		} else {
-			defer appPool.Close()
+			defer func() { _ = appPool.Close() }()
 			slog.Info("using app database connection (RLS enforced)")
 		}
 	} else {
@@ -195,7 +195,7 @@ func openDB() *sql.DB {
 
 func runMigrate() {
 	pool := openDB()
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	if err := migrate.Up(pool); err != nil {
 		fmt.Fprintf(os.Stderr, "migration failed: %v\n", err)
 		os.Exit(1)
@@ -205,7 +205,7 @@ func runMigrate() {
 
 func runMigrateStatus() {
 	pool := openDB()
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	m, err := migrate.New(pool)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status failed: %v\n", err)
@@ -221,7 +221,7 @@ func runMigrateStatus() {
 
 func runMigrateRollback(_ string) {
 	pool := openDB()
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	m, err := migrate.New(pool)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rollback failed: %v\n", err)
@@ -269,4 +269,3 @@ func deriveAppURL(adminURL string) string {
 	u.User = neturl.UserPassword("velox_app", "velox_app")
 	return u.String()
 }
-

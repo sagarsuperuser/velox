@@ -42,7 +42,7 @@ func (h *Handler) triggerCycle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"invoices_generated": generated,
 		"errors":             errStrings,
 	})
@@ -70,11 +70,11 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(preview)
+	_ = json.NewEncoder(w).Encode(preview)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
 }

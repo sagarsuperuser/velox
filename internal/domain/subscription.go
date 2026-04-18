@@ -5,11 +5,11 @@ import "time"
 type SubscriptionStatus string
 
 const (
-	SubscriptionDraft     SubscriptionStatus = "draft"
-	SubscriptionActive    SubscriptionStatus = "active"
-	SubscriptionPaused    SubscriptionStatus = "paused"
-	SubscriptionCanceled  SubscriptionStatus = "canceled"
-	SubscriptionArchived  SubscriptionStatus = "archived"
+	SubscriptionDraft    SubscriptionStatus = "draft"
+	SubscriptionActive   SubscriptionStatus = "active"
+	SubscriptionPaused   SubscriptionStatus = "paused"
+	SubscriptionCanceled SubscriptionStatus = "canceled"
+	SubscriptionArchived SubscriptionStatus = "archived"
 )
 
 type SubscriptionBillingTime string
@@ -38,8 +38,8 @@ type Subscription struct {
 	CurrentBillingPeriodStart *time.Time              `json:"current_billing_period_start,omitempty"`
 	CurrentBillingPeriodEnd   *time.Time              `json:"current_billing_period_end,omitempty"`
 	NextBillingAt             *time.Time              `json:"next_billing_at,omitempty"`
-	UsageCapUnits             *int64                  `json:"usage_cap_units,omitempty"`    // Max usage units per billing period (nil = unlimited)
-	OverageAction             string                  `json:"overage_action,omitempty"`     // "block" or "charge" (default: charge)
+	UsageCapUnits             *int64                  `json:"usage_cap_units,omitempty"` // Max usage units per billing period (nil = unlimited)
+	OverageAction             string                  `json:"overage_action,omitempty"`  // "block" or "charge" (default: charge)
 	CreatedAt                 time.Time               `json:"created_at"`
 	UpdatedAt                 time.Time               `json:"updated_at"`
 }

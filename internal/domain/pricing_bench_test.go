@@ -6,7 +6,7 @@ func BenchmarkComputeAmountCents_Flat(b *testing.B) {
 	rule := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: 500}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ComputeAmountCents(rule, 1000)
+		_, _ = ComputeAmountCents(rule, 1000)
 	}
 }
 
@@ -23,7 +23,7 @@ func BenchmarkComputeAmountCents_Graduated_5Tiers(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ComputeAmountCents(rule, 7500)
+		_, _ = ComputeAmountCents(rule, 7500)
 	}
 }
 
@@ -36,6 +36,6 @@ func BenchmarkComputeAmountCents_Package(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ComputeAmountCents(rule, 15750)
+		_, _ = ComputeAmountCents(rule, 15750)
 	}
 }

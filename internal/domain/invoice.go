@@ -32,7 +32,7 @@ type Invoice struct {
 	SubtotalCents         int64                `json:"subtotal_cents"`
 	DiscountCents         int64                `json:"discount_cents"`
 	TaxAmountCents        int64                `json:"tax_amount_cents"`
-	TaxRateBP             int                  `json:"tax_rate_bp"`   // Basis points (1850 = 18.50%)
+	TaxRateBP             int                  `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
 	TaxName               string               `json:"tax_name,omitempty"`
 	TaxCountry            string               `json:"tax_country,omitempty"`
 	TaxID                 string               `json:"tax_id,omitempty"`
@@ -79,7 +79,7 @@ type InvoiceLineItem struct {
 	Quantity            int64               `json:"quantity"`
 	UnitAmountCents     int64               `json:"unit_amount_cents"`
 	AmountCents         int64               `json:"amount_cents"`
-	TaxRateBP           int                 `json:"tax_rate_bp"`   // Basis points (1850 = 18.50%)
+	TaxRateBP           int                 `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
 	TaxAmountCents      int64               `json:"tax_amount_cents"`
 	TotalAmountCents    int64               `json:"total_amount_cents"`
 	Currency            string              `json:"currency"`

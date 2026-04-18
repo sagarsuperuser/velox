@@ -49,7 +49,7 @@ func TestPostgresStore_UniqueExternalID(t *testing.T) {
 	ctx := context.Background()
 	tenantID := testutil.CreateTestTenant(t, db, "Test")
 
-	store.Create(ctx, tenantID, domain.Customer{ExternalID: "dup", DisplayName: "First"})
+	_, _ = store.Create(ctx, tenantID, domain.Customer{ExternalID: "dup", DisplayName: "First"})
 
 	_, err := store.Create(ctx, tenantID, domain.Customer{ExternalID: "dup", DisplayName: "Second"})
 	if err == nil {
@@ -96,9 +96,9 @@ func TestPostgresStore_ListWithFilters(t *testing.T) {
 	ctx := context.Background()
 	tenantID := testutil.CreateTestTenant(t, db, "Test")
 
-	store.Create(ctx, tenantID, domain.Customer{ExternalID: "a", DisplayName: "Alpha"})
-	store.Create(ctx, tenantID, domain.Customer{ExternalID: "b", DisplayName: "Beta"})
-	store.Create(ctx, tenantID, domain.Customer{ExternalID: "c", DisplayName: "Charlie"})
+	_, _ = store.Create(ctx, tenantID, domain.Customer{ExternalID: "a", DisplayName: "Alpha"})
+	_, _ = store.Create(ctx, tenantID, domain.Customer{ExternalID: "b", DisplayName: "Beta"})
+	_, _ = store.Create(ctx, tenantID, domain.Customer{ExternalID: "c", DisplayName: "Charlie"})
 
 	// All
 	all, total, err := store.List(ctx, customer.ListFilter{TenantID: tenantID})

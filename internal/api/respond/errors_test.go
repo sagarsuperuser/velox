@@ -115,6 +115,6 @@ func decodeError(t *testing.T, rec *httptest.ResponseRecorder) errorResponse {
 	var body struct {
 		Error errorResponse `json:"error"`
 	}
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 	return body.Error
 }

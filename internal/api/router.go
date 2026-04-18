@@ -14,9 +14,9 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/sagarsuperuser/velox/internal/analytics"
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
-	"github.com/sagarsuperuser/velox/internal/analytics"
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/billing"
@@ -67,13 +67,13 @@ type Server struct {
 	router chi.Router
 
 	// Exported for main.go to wire the billing scheduler + dunning
-	BillingEngine  *billing.Engine
-	DunningSvc     *dunning.Service
-	SettingsStore  *tenant.SettingsStore
-	WebhookOutSvc  *webhook.Service
-	CreditSvc      *credit.Service
-	InvoiceSvc     *invoice.Service
-	TokenSvc       *payment.TokenService
+	BillingEngine *billing.Engine
+	DunningSvc    *dunning.Service
+	SettingsStore *tenant.SettingsStore
+	WebhookOutSvc *webhook.Service
+	CreditSvc     *credit.Service
+	InvoiceSvc    *invoice.Service
+	TokenSvc      *payment.TokenService
 }
 
 func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
@@ -160,11 +160,11 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 
 	invoiceSvc := invoice.NewService(invoiceStore)
 	invoiceH := invoice.NewHandler(invoiceSvc, customerStore, settingsStore, invoice.HandlerDeps{
-		CreditNotes:    &creditNoteListerAdapter{svc: creditNoteSvc},
-		Charger:        stripeAdapter,
-		PaymentSetups:  customerStore,
-		CreditReverser: creditSvc,
-		PaymentCancel:  stripeClient,
+		CreditNotes:     &creditNoteListerAdapter{svc: creditNoteSvc},
+		Charger:         stripeAdapter,
+		PaymentSetups:   customerStore,
+		CreditReverser:  creditSvc,
+		PaymentCancel:   stripeClient,
 		Dunning:         dunningSvc,
 		WebhookEvents:   webhookStore,
 		DunningTimeline: &dunningTimelineAdapter{store: dunningStore},

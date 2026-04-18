@@ -35,7 +35,7 @@ func (v *ValidationErrors) HasErrors() bool {
 func (v *ValidationErrors) WriteResponse(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
 			"type":    "validation_error",
 			"message": v.summary(),

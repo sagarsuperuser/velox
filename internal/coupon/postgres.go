@@ -102,7 +102,7 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string) ([]domain.Cou
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var coupons []domain.Coupon
 	for rows.Next() {
@@ -231,7 +231,7 @@ func (s *PostgresStore) ListRedemptions(ctx context.Context, tenantID, couponID 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var redemptions []domain.CouponRedemption
 	for rows.Next() {

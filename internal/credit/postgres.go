@@ -69,7 +69,7 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 		}
 		return domain.CreditLedgerEntry{}, err
 	}
-	json.Unmarshal(metaJSON, &entry.Metadata)
+	_ = json.Unmarshal(metaJSON, &entry.Metadata)
 	if err := tx.Commit(); err != nil {
 		return domain.CreditLedgerEntry{}, err
 	}
@@ -119,7 +119,7 @@ func (s *PostgresStore) ListBalances(ctx context.Context, tenantID string) ([]do
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var balances []domain.CreditBalance
 	for rows.Next() {
@@ -155,7 +155,7 @@ func (s *PostgresStore) ListExpiredGrants(ctx context.Context) ([]domain.CreditL
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []domain.CreditLedgerEntry
 	for rows.Next() {
@@ -204,7 +204,7 @@ func (s *PostgresStore) ListEntries(ctx context.Context, filter ListFilter) ([]d
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []domain.CreditLedgerEntry
 	for rows.Next() {
@@ -215,7 +215,7 @@ func (s *PostgresStore) ListEntries(ctx context.Context, filter ListFilter) ([]d
 			&e.ExpiresAt, &metaJSON, &e.CreatedAt); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(metaJSON, &e.Metadata)
+		_ = json.Unmarshal(metaJSON, &e.Metadata)
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()

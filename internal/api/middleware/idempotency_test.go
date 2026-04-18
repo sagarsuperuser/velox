@@ -16,7 +16,7 @@ func TestIdempotency_NoCaching_WithoutKey(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"id":"new"}`))
+		_, _ = w.Write([]byte(`{"id":"new"}`))
 	})
 
 	// No idempotency key — should execute every time

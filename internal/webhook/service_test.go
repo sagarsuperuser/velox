@@ -136,7 +136,7 @@ func (m *memStore) GetEndpointStats(_ context.Context, tenantID string) ([]Endpo
 			counts[d.WebhookEndpointID] = s
 		}
 		s.TotalDeliveries++
-		if d.Status == domain.DeliverySucceeded {
+		if d.Status == domain.DeliverySucceeded { //nolint:staticcheck
 			s.Succeeded++
 		} else if d.Status == domain.DeliveryFailed {
 			s.Failed++
@@ -328,7 +328,7 @@ func TestDispatch(t *testing.T) {
 	// Verify payload structure
 	if httpClient.lastBody != nil {
 		var payload map[string]any
-		json.Unmarshal(httpClient.lastBody, &payload)
+		_ = json.Unmarshal(httpClient.lastBody, &payload)
 		if payload["event_type"] != "invoice.created" {
 			t.Errorf("payload event_type: got %v", payload["event_type"])
 		}
@@ -346,13 +346,13 @@ func TestDispatch_NonMatchingEvent(t *testing.T) {
 	ctx := context.Background()
 
 	// Register endpoint for invoice events only
-	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+	_, _ = svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
 		URL:    "http://localhost:9999/hook",
 		Events: []string{"invoice.*"},
 	})
 
 	// Dispatch a payment event — should NOT trigger delivery
-	svc.Dispatch(ctx, "t1", "payment.succeeded", map[string]any{})
+	_ = svc.Dispatch(ctx, "t1", "payment.succeeded", map[string]any{})
 
 	// Delivery is synchronous in test mode
 
@@ -368,12 +368,12 @@ func TestDispatch_WildcardEndpoint(t *testing.T) {
 	ctx := context.Background()
 
 	// Register endpoint for all events
-	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+	_, _ = svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
 		URL:    "http://localhost:9999/hook",
 		Events: []string{"*"},
 	})
 
-	svc.Dispatch(ctx, "t1", "dunning.started", map[string]any{})
+	_ = svc.Dispatch(ctx, "t1", "dunning.started", map[string]any{})
 	// Delivery is synchronous in test mode
 
 	if len(store.deliveries) != 1 {
@@ -411,8 +411,8 @@ func TestDelivery_FailedHTTP(t *testing.T) {
 	svc := NewTestService(store, httpClient)
 	ctx := context.Background()
 
-	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{URL: "http://localhost:9999/hook"})
-	svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{})
+	_, _ = svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{URL: "http://localhost:9999/hook"})
+	_ = svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{})
 	// Delivery is synchronous in test mode
 
 	if len(store.deliveries) != 1 {
@@ -437,11 +437,11 @@ func TestReplay(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup: create endpoint + dispatch event
-	svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+	_, _ = svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
 		URL:    "http://localhost:9999/hook",
 		Events: []string{"invoice.created"},
 	})
-	svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{"id": "inv_1"})
+	_ = svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{"id": "inv_1"})
 
 	if len(store.deliveries) != 1 {
 		t.Fatalf("initial deliveries: got %d, want 1", len(store.deliveries))

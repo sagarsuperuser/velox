@@ -45,7 +45,7 @@ func Idempotency(db *postgres.DB) func(http.Handler) http.Handler {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Idempotency-Replayed", "true")
 				w.WriteHeader(cached.StatusCode)
-				w.Write(cached.Body)
+				_, _ = w.Write(cached.Body)
 				return
 			}
 
@@ -89,7 +89,7 @@ func storeCachedResponse(ctx context.Context, db *postgres.DB, tenantID, key, me
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	db.Pool.ExecContext(ctx,
+	_, _ = db.Pool.ExecContext(ctx,
 		`INSERT INTO idempotency_keys (key, tenant_id, http_method, http_path, status_code, response_body)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (tenant_id, key) DO NOTHING`,
@@ -125,7 +125,7 @@ func CleanExpired(ctx context.Context, db *postgres.DB) error {
 func ErrorJSON(w http.ResponseWriter, status int, errType, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{
 			"type":    errType,
 			"message": message,
