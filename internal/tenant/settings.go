@@ -85,7 +85,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			created_at, updated_at
 	`, ts.TenantID, ts.DefaultCurrency, ts.Timezone, ts.InvoicePrefix,
-		ts.NetPaymentTerms, ts.TaxRate, postgres.NullableString(ts.TaxName), postgres.NullableString(ts.CompanyName),
+		ts.NetPaymentTerms, ts.TaxRate, ts.TaxName, postgres.NullableString(ts.CompanyName),
 		postgres.NullableString(ts.CompanyAddress), postgres.NullableString(ts.CompanyEmail),
 		postgres.NullableString(ts.CompanyPhone), postgres.NullableString(ts.LogoURL), now,
 	).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
