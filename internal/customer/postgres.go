@@ -318,9 +318,9 @@ func (s *PostgresStore) UpsertBillingProfile(ctx context.Context, tenantID strin
 		postgres.NullableString(bp.State), postgres.NullableString(bp.PostalCode),
 		postgres.NullableString(bp.Country), postgres.NullableString(bp.Currency),
 		postgres.NullableString(enc.TaxIdentifier), bp.TaxExempt,
-		postgres.NullableString(enc.TaxID), postgres.NullableString(bp.TaxIDType),
-		postgres.NullableString(bp.TaxCountry), postgres.NullableString(bp.TaxState),
-		postgres.NullableFloat64(bp.TaxOverrideRate), postgres.NullableString(bp.TaxOverrideName),
+		enc.TaxID, bp.TaxIDType,
+		bp.TaxCountry, bp.TaxState,
+		postgres.NullableFloat64(bp.TaxOverrideRate), bp.TaxOverrideName,
 		bp.ProfileStatus, now,
 	).Scan(
 		&bp.CustomerID, &bp.TenantID, &bp.LegalName, &bp.Email, &bp.Phone,
