@@ -75,6 +75,12 @@ func (h *Handler) revoke(w http.ResponseWriter, r *http.Request) {
 	tenantID := TenantID(r.Context())
 	id := chi.URLParam(r, "id")
 
+	// Guard: prevent revoking your own active key
+	if id == KeyID(r.Context()) {
+		respond.Error(w, r, http.StatusUnprocessableEntity, "invalid_request_error", "self_revoke", "cannot revoke the API key you are currently using")
+		return
+	}
+
 	key, err := h.svc.RevokeKey(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
 		respond.NotFound(w, r, "api key")
