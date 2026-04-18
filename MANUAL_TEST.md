@@ -23,11 +23,11 @@ cp .env.example .env
 make up                             # Starts Postgres + Redis
 
 # Terminal 2 — Backend API
-make dev                            # Runs migrations, starts server on :8080
+make dev                            # Runs migrations (2 total), starts server on :8080
 
-# Terminal 3 — Frontend
-make web-install                    # First time only (npm install)
-make web-dev                        # Starts dev server on :5173
+# Terminal 3 — Frontend (web-v2 with shadcn/ui)
+cd web-v2 && npm install            # First time only
+cd web-v2 && npm run dev            # Starts dev server on :5173
 
 # Terminal 4 — Stripe webhooks
 stripe listen --forward-to localhost:8080/v1/webhooks/stripe
@@ -44,9 +44,10 @@ Then open http://localhost:5173, paste the API key, sign in.
 | Command | What it does |
 |---------|-------------|
 | `make dev` | Start backend (auto-migrates) |
-| `make web-dev` | Start frontend |
+| `cd web-v2 && npm run dev` | Start frontend (shadcn/ui) |
 | `make test-unit` | Run all 26 test packages |
 | `make up` / `make down` | Start/stop Postgres + Redis |
+| `make migrate-status` | Show current migration version |
 | `docker compose down -v && make up` | Fresh DB (destroy + recreate) |
 | `make stats` | Show project stats |
 
@@ -139,27 +140,27 @@ make dev
 ```bash
 make migrate-status
 ```
-- [ ] Verify: table showing all 21 migrations with "applied" status and timestamps
-- [ ] Verify: no "pending" migrations listed
+- [ ] Verify: shows `version: 2, dirty: false` (2 consolidated migrations)
 
-### 3.2 Dry Run
+### 3.2 Rollback (Staging Only — careful!)
 ```bash
-make migrate-dry-run
-```
-- [ ] Verify: "no pending migrations" (all already applied)
-- [ ] Verify: database state unchanged
-
-### 3.3 Rollback (Staging Only — careful!)
-```bash
-make migrate-status                                     # Note current state
+make migrate-status                                     # Note: version 2
 DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
-  go run ./cmd/velox migrate rollback 0021_stripe_tax_flag
-make migrate-status                                     # Verify 0021 now shows "pending"
-make migrate                                            # Re-apply it
-make migrate-status                                     # Verify 0021 is "applied" again
+  go run ./cmd/velox migrate rollback
+make migrate-status                                     # Verify: version 1
+make migrate                                            # Re-apply
+make migrate-status                                     # Verify: version 2 again
 ```
-- [ ] Verify: rollback removes the migration from schema_migrations
-- [ ] Verify: re-running `make migrate` re-applies it cleanly
+- [ ] Verify: rollback reverts one migration
+- [ ] Verify: re-running `make migrate` re-applies cleanly
+
+### 3.3 Fresh DB
+```bash
+docker compose down -v && make up
+make dev                                                # Migrations run on boot
+make migrate-status                                     # Verify: version 2
+```
+- [ ] Verify: clean start with all tables created
 
 ---
 
@@ -820,11 +821,28 @@ UPDATE payment_update_tokens SET expires_at = NOW() - INTERVAL '1 hour' WHERE id
 
 ## FLOW 40: Customer Archival Cascade
 
-- [ ] Archive a customer (`PATCH /v1/customers/{id}` with `status: "archived"`)
-- [ ] Verify: customer status shows "archived" in UI
+### 40.1 Archive from UI
+- [ ] Customer detail > click "Archive" button (only visible when active)
+- [ ] Verify: confirmation dialog appears with warning
+- [ ] Confirm > verify: amber banner "This customer has been archived. All data is read-only."
+- [ ] Verify: all action buttons hidden (Edit, Set Up Billing, Configure, Set Up Payment, + Add)
+- [ ] Verify: "Restore Customer" button visible in the banner
+- [ ] Verify: customer badge shows "archived" (gray)
+
+### 40.2 Billing stops
 - [ ] Run billing > verify: no invoice generated for archived customer's subscriptions
-- [ ] Verify: existing invoices for this customer are still accessible
-- [ ] Verify: credits balance still visible (not deleted)
+- [ ] Verify: existing invoices still accessible (read-only)
+- [ ] Verify: credits balance still visible
+
+### 40.3 Restore
+- [ ] Click "Restore Customer" in the banner
+- [ ] Verify: banner disappears, action buttons reappear
+- [ ] Verify: customer status back to "active"
+
+### 40.4 List filter
+- [ ] Customers list > click "Archived" tab
+- [ ] Verify: shows archived customers (or "No archived customers" + Clear filter)
+- [ ] Verify: tab stays visible even with zero results (can switch back to "All")
 
 ---
 
@@ -937,11 +955,28 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 
 ## FLOW 48: Dashboard Quality
 
-- [ ] Verify: KPI cards (MRR, Active Customers, Outstanding AR, Paid 30d)
-- [ ] Verify: revenue chart with period selector (30d/90d/12m)
-- [ ] Verify: dunning + credits cards link to their pages
-- [ ] Verify: Get Started checklist shows progress (steps checked off)
-- [ ] Verify: "Run Billing" button shows timestamp after run
+- [ ] Verify: 4 KPI cards — MRR (with sparkline + trend %), Active Customers, Failed Payments (red if >0), Revenue 30d
+- [ ] Verify: revenue bar chart (compact, no axes, link to Analytics)
+- [ ] Verify: "Recent Activity" — last 5 invoices with status dot, badge, amount, relative time
+- [ ] Verify: clicking an invoice row navigates to invoice detail
+- [ ] Verify: Get Started checklist shows progress (numbered steps, checkmarks when done)
+- [ ] Verify: Get Started disappears when all 4 steps complete
+- [ ] Verify: "Trigger Billing" button in header, shows result after run
+- [ ] Verify: no overlap with Analytics page (Dashboard has no period selector, no detailed charts)
+
+---
+
+## FLOW 48b: Analytics Page
+
+- [ ] Navigate to Analytics (sidebar or Dashboard "View analytics →" link)
+- [ ] Verify: revenue trend area chart with period tabs (30 days / 90 days / 12 months)
+- [ ] Switch periods > verify: chart data updates
+- [ ] Verify: chart has X-axis dates, Y-axis amounts, hover tooltips
+- [ ] Verify: Payment Success Rate donut with percentage in center
+- [ ] Verify: Invoice Summary bar chart (Paid/Open/Failed/Dunning)
+- [ ] Verify: Customer Stats card (Active Customers, Subscriptions, Dunning, Open Invoices)
+- [ ] Verify: Financial Summary card (MRR, Total Revenue, Outstanding AR, Avg Invoice, Credit Balance)
+- [ ] Verify: no overlap with Dashboard (Analytics has charts + details, Dashboard has activity + KPIs)
 
 ---
 
@@ -966,6 +1001,18 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 - [ ] Click a result > verify: navigates and closes palette
 - [ ] Press Escape > verify: palette closes
 - [ ] Verify: palette works from any page
+
+---
+
+## FLOW 50b: Keyboard Shortcuts
+
+- [ ] Press `?` > verify: keyboard help overlay appears
+- [ ] Verify: shows navigation shortcuts (g+d, g+c, g+i, g+s, g+u, g+p, g+a, g+k)
+- [ ] Press Escape > verify: overlay closes
+- [ ] Press `g` then `c` > verify: navigated to Customers
+- [ ] Press `g` then `i` > verify: navigated to Invoices
+- [ ] Press `g` then `a` > verify: navigated to Analytics
+- [ ] Verify: shortcuts don't fire when typing in an input field
 
 ---
 
@@ -1067,8 +1114,10 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 | 46 | Empty Billing Cycle | | |
 | 47 | OpenTelemetry Tracing | | |
 | 48 | Dashboard Quality | | |
+| 48b | Analytics Page | | |
 | 49 | Usage Events Page Quality | | |
 | 50 | Cmd+K Command Palette | | |
+| 50b | Keyboard Shortcuts | | |
 | 51 | Dark Mode | | |
 | 52 | Responsive / Mobile | | |
 | 53 | Edge Cases | | |
