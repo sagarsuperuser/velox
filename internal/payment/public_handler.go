@@ -42,8 +42,8 @@ func (h *PublicPaymentHandler) Routes() chi.Router {
 }
 
 type tokenValidateResponse struct {
-	CustomerName string `json:"customer_name"`
-	InvoiceNumber string `json:"invoice_number"`
+	CustomerName   string `json:"customer_name"`
+	InvoiceNumber  string `json:"invoice_number"`
 	AmountDueCents int64  `json:"amount_due_cents"`
 	Currency       string `json:"currency"`
 }

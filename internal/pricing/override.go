@@ -51,7 +51,7 @@ func (s *PostgresStore) CreateOverride(ctx context.Context, tenantID string, o d
 	if err != nil {
 		return domain.CustomerPriceOverride{}, err
 	}
-	json.Unmarshal(tiersJSON, &o.GraduatedTiers)
+	_ = json.Unmarshal(tiersJSON, &o.GraduatedTiers)
 	if err := tx.Commit(); err != nil {
 		return domain.CustomerPriceOverride{}, err
 	}
@@ -83,7 +83,7 @@ func (s *PostgresStore) GetOverride(ctx context.Context, tenantID, customerID, r
 	if err != nil {
 		return domain.CustomerPriceOverride{}, err
 	}
-	json.Unmarshal(tiersJSON, &o.GraduatedTiers)
+	_ = json.Unmarshal(tiersJSON, &o.GraduatedTiers)
 	return o, nil
 }
 
@@ -110,7 +110,7 @@ func (s *PostgresStore) ListOverrides(ctx context.Context, tenantID, customerID 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var overrides []domain.CustomerPriceOverride
 	for rows.Next() {
@@ -121,7 +121,7 @@ func (s *PostgresStore) ListOverrides(ctx context.Context, tenantID, customerID 
 			&o.OverageUnitAmountCents, &o.Reason, &o.Active, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(tiersJSON, &o.GraduatedTiers)
+		_ = json.Unmarshal(tiersJSON, &o.GraduatedTiers)
 		overrides = append(overrides, o)
 	}
 	return overrides, rows.Err()

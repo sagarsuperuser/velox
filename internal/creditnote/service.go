@@ -61,11 +61,11 @@ func (s *Service) SetNumberGenerator(ng NumberGenerator) {
 }
 
 type CreateInput struct {
-	InvoiceID  string             `json:"invoice_id"`
-	Reason     string             `json:"reason"`
-	Lines      []CreditLineInput  `json:"lines"`
-	RefundType string             `json:"refund_type"` // "refund" or "credit"
-	AutoIssue  bool               `json:"auto_issue"`  // create + issue atomically
+	InvoiceID  string            `json:"invoice_id"`
+	Reason     string            `json:"reason"`
+	Lines      []CreditLineInput `json:"lines"`
+	RefundType string            `json:"refund_type"` // "refund" or "credit"
+	AutoIssue  bool              `json:"auto_issue"`  // create + issue atomically
 }
 
 type CreditLineInput struct {

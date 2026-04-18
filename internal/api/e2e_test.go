@@ -238,7 +238,7 @@ func doPost(t *testing.T, ts *httptest.Server, path, auth string, body map[strin
 	t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
-		json.NewEncoder(&buf).Encode(body)
+		_ = json.NewEncoder(&buf).Encode(body)
 	}
 	req, _ := http.NewRequest("POST", ts.URL+path, &buf)
 	req.Header.Set("Content-Type", "application/json")
@@ -256,7 +256,7 @@ func assertStatus(t *testing.T, resp *http.Response, want int) {
 	t.Helper()
 	if resp.StatusCode != want {
 		var body map[string]any
-		json.NewDecoder(resp.Body).Decode(&body)
+		_ = json.NewDecoder(resp.Body).Decode(&body)
 		t.Fatalf("status: got %d, want %d. body: %v", resp.StatusCode, want, body)
 	}
 }
@@ -264,7 +264,7 @@ func assertStatus(t *testing.T, resp *http.Response, want int) {
 func readJSON(t *testing.T, resp *http.Response) map[string]any {
 	t.Helper()
 	var body map[string]any
-	json.NewDecoder(resp.Body).Decode(&body)
+	_ = json.NewDecoder(resp.Body).Decode(&body)
 	return body
 }
 
@@ -289,10 +289,10 @@ func createTestAPIKey(t *testing.T, db *postgres.DB, tenantID string) string {
 		VALUES ($1, $2, $3, 'secret', 'E2E Test Key', $4)`,
 		keyID, prefix, hashHex, tenantID)
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		t.Fatalf("create key: %v", err)
 	}
-	tx.Commit()
+	_ = tx.Commit()
 
 	return rawKey
 }

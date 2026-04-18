@@ -60,12 +60,12 @@ func NewTestService(store Store, client HTTPClient) *Service {
 
 // privateRanges defines CIDR blocks that webhook URLs must not resolve to.
 var privateRanges = []net.IPNet{
-	parseCIDR("10.0.0.0/8"),       // RFC 1918
-	parseCIDR("172.16.0.0/12"),    // RFC 1918
-	parseCIDR("192.168.0.0/16"),   // RFC 1918
-	parseCIDR("127.0.0.0/8"),      // Loopback
-	parseCIDR("169.254.0.0/16"),   // Link-local
-	parseCIDR("0.0.0.0/8"),        // "This" network
+	parseCIDR("10.0.0.0/8"),     // RFC 1918
+	parseCIDR("172.16.0.0/12"),  // RFC 1918
+	parseCIDR("192.168.0.0/16"), // RFC 1918
+	parseCIDR("127.0.0.0/8"),    // Loopback
+	parseCIDR("169.254.0.0/16"), // Link-local
+	parseCIDR("0.0.0.0/8"),      // "This" network
 }
 
 func parseCIDR(s string) net.IPNet {
@@ -93,7 +93,7 @@ func validateWebhookURL(rawURL string) error {
 	if err != nil || parsed.Host == "" {
 		return fmt.Errorf("url must be a valid URL")
 	}
-	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && strings.HasPrefix(parsed.Host, "localhost")) {
+	if parsed.Scheme != "https" && (parsed.Scheme != "http" || !strings.HasPrefix(parsed.Host, "localhost")) {
 		return fmt.Errorf("webhook URL must use HTTPS (except localhost)")
 	}
 
@@ -257,7 +257,7 @@ func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.Webhoo
 		s.scheduleRetryOrFail(ctx, tenantID, delivery, err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 
@@ -275,7 +275,7 @@ func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.Webhoo
 		return
 	}
 
-	s.store.UpdateDelivery(ctx, tenantID, delivery)
+	_, _ = s.store.UpdateDelivery(ctx, tenantID, delivery)
 
 	slog.Info("webhook delivered",
 		"endpoint_id", ep.ID,
@@ -319,7 +319,7 @@ func (s *Service) scheduleRetryOrFail(ctx context.Context, tenantID string, d do
 		)
 	}
 
-	s.store.UpdateDelivery(ctx, tenantID, d)
+	_, _ = s.store.UpdateDelivery(ctx, tenantID, d)
 }
 
 func matchesEvent(subscribed []string, eventType string) bool {
@@ -426,7 +426,7 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 			d.ErrorMessage = "endpoint disabled"
 			d.CompletedAt = &now
 			d.NextRetryAt = nil
-			s.store.UpdateDelivery(ctx, d.TenantID, d)
+			_, _ = s.store.UpdateDelivery(ctx, d.TenantID, d)
 			continue
 		}
 
@@ -480,7 +480,7 @@ func (s *Service) retryDeliver(ctx context.Context, d domain.WebhookDelivery, ep
 		s.scheduleRetryOrFail(ctx, d.TenantID, d, err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 
@@ -493,7 +493,7 @@ func (s *Service) retryDeliver(ctx context.Context, d domain.WebhookDelivery, ep
 		d.Status = domain.DeliverySucceeded
 		d.CompletedAt = &now
 		d.NextRetryAt = nil
-		s.store.UpdateDelivery(ctx, d.TenantID, d)
+		_, _ = s.store.UpdateDelivery(ctx, d.TenantID, d)
 		slog.Info("webhook retry succeeded",
 			"delivery_id", d.ID,
 			"endpoint_id", ep.ID,

@@ -13,7 +13,7 @@ const apiVersion = "2026-04-07"
 func JSON(w http.ResponseWriter, r *http.Request, status int, data any) {
 	setHeaders(w, r)
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 // List writes a paginated list response.
@@ -29,7 +29,7 @@ func List(w http.ResponseWriter, r *http.Request, data any, total int) {
 func Error(w http.ResponseWriter, r *http.Request, status int, errType, code, message string) {
 	setHeaders(w, r)
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ErrorBody{
+	_ = json.NewEncoder(w).Encode(ErrorBody{
 		Error: ErrorDetail{
 			Type:      errType,
 			Code:      code,

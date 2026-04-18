@@ -45,7 +45,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
 		slog.Error("list audit log", "error", err)
 		return
 	}
@@ -55,5 +55,5 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]any{"data": entries, "total": total})
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": entries, "total": total})
 }

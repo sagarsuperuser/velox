@@ -44,10 +44,10 @@ func computeLineTaxBP(amountCents int64, taxRateBP int) int64 {
 
 func TestTaxBP_BasicCases(t *testing.T) {
 	tests := []struct {
-		name      string
-		subtotal  int64
-		rateBP    int
-		wantTax   int64
+		name     string
+		subtotal int64
+		rateBP   int
+		wantTax  int64
 	}{
 		{
 			name:     "18.5% on $100",
@@ -202,9 +202,9 @@ func TestTaxBP_RoundingEdgeCases(t *testing.T) {
 
 func TestTaxBP_LineItemSumEqualsInvoiceTax(t *testing.T) {
 	tests := []struct {
-		name      string
-		lineAmts  []int64 // per-line amounts in cents
-		rateBP    int
+		name     string
+		lineAmts []int64 // per-line amounts in cents
+		rateBP   int
 	}{
 		{
 			name:     "two equal lines at 18.5%",

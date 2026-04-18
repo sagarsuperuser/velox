@@ -155,7 +155,7 @@ func TestApplyToInvoice(t *testing.T) {
 	ctx := context.Background()
 
 	// Grant $500
-	svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 50000, Description: "Test grant"})
+	_, _ = svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 50000, Description: "Test grant"})
 
 	t.Run("partial application", func(t *testing.T) {
 		deducted, err := svc.ApplyToInvoice(ctx, "t1", "cus_1", "inv_1", 19900)
@@ -203,7 +203,7 @@ func TestAdjust(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
 
-	svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 10000, Description: "Test grant"})
+	_, _ = svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 10000, Description: "Test grant"})
 
 	t.Run("positive adjustment", func(t *testing.T) {
 		entry, err := svc.Adjust(ctx, "t1", AdjustInput{
@@ -241,8 +241,8 @@ func TestGetBalance(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
 
-	svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 50000, Description: "Test grant"})
-	svc.ApplyToInvoice(ctx, "t1", "cus_1", "inv_1", 20000)
+	_, _ = svc.Grant(ctx, "t1", GrantInput{CustomerID: "cus_1", AmountCents: 50000, Description: "Test grant"})
+	_, _ = svc.ApplyToInvoice(ctx, "t1", "cus_1", "inv_1", 20000)
 
 	bal, err := svc.GetBalance(ctx, "t1", "cus_1")
 	if err != nil {

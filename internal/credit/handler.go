@@ -53,7 +53,7 @@ func (h *Handler) grant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionGrant, "credit", entry.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionGrant, "credit", entry.ID, map[string]any{
 			"customer_id":  entry.CustomerID,
 			"amount_cents": entry.AmountCents,
 			"description":  entry.Description,
@@ -83,7 +83,7 @@ func (h *Handler) adjust(w http.ResponseWriter, r *http.Request) {
 		if entry.AmountCents < 0 {
 			action = "credit.deduction"
 		}
-		h.auditLogger.Log(r.Context(), tenantID, action, "credit", entry.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, action, "credit", entry.ID, map[string]any{
 			"customer_id":  entry.CustomerID,
 			"amount_cents": entry.AmountCents,
 			"description":  entry.Description,

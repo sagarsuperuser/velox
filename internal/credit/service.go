@@ -80,7 +80,7 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, customerID, invo
 			}
 			return fmt.Sprintf("Applied to invoice %s", invoiceID)
 		}(),
-		InvoiceID:   invoiceID,
+		InvoiceID: invoiceID,
 	})
 	if err != nil {
 		return 0, err

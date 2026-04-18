@@ -41,7 +41,7 @@ func (s *PostgresStore) GetPolicy(ctx context.Context, tenantID string) (domain.
 	if err != nil {
 		return domain.DunningPolicy{}, err
 	}
-	json.Unmarshal(scheduleJSON, &p.RetrySchedule)
+	_ = json.Unmarshal(scheduleJSON, &p.RetrySchedule)
 	return p, nil
 }
 
@@ -77,7 +77,7 @@ func (s *PostgresStore) UpsertPolicy(ctx context.Context, tenantID string, p dom
 	if err != nil {
 		return domain.DunningPolicy{}, err
 	}
-	json.Unmarshal(scheduleOut, &p.RetrySchedule)
+	_ = json.Unmarshal(scheduleOut, &p.RetrySchedule)
 	if err := tx.Commit(); err != nil {
 		return domain.DunningPolicy{}, err
 	}
@@ -215,7 +215,7 @@ func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]d
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var runs []domain.InvoiceDunningRun
 	for rows.Next() {
@@ -280,7 +280,7 @@ func (s *PostgresStore) ListDueRuns(ctx context.Context, tenantID string, dueBef
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var runs []domain.InvoiceDunningRun
 	for rows.Next() {
@@ -343,7 +343,7 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID, runID string) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var events []domain.InvoiceDunningEvent
 	for rows.Next() {
@@ -353,7 +353,7 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID, runID string) 
 			&e.EventType, &e.State, &e.Reason, &e.AttemptCount, &metaJSON, &e.CreatedAt); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(metaJSON, &e.Metadata)
+		_ = json.Unmarshal(metaJSON, &e.Metadata)
 		events = append(events, e)
 	}
 	return events, rows.Err()

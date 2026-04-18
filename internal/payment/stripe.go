@@ -72,12 +72,12 @@ type StripeClient interface {
 }
 
 type PaymentIntentParams struct {
-	AmountCents       int64
-	Currency          string
-	CustomerID        string // Stripe customer ID
-	Description       string
-	IdempotencyKey    string
-	Metadata          map[string]string
+	AmountCents    int64
+	Currency       string
+	CustomerID     string // Stripe customer ID
+	Description    string
+	IdempotencyKey string
+	Metadata       map[string]string
 }
 
 type PaymentIntentResult struct {
@@ -144,7 +144,7 @@ func (s *Stripe) fireEvent(ctx context.Context, tenantID, eventType string, payl
 		return
 	}
 	go func() {
-		s.events.Dispatch(ctx, tenantID, eventType, payload)
+		_ = s.events.Dispatch(ctx, tenantID, eventType, payload)
 	}()
 }
 
@@ -181,7 +181,7 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		// Stripe creates the PI even on decline and sends a payment_intent.payment_failed
 		// webhook, which triggers dunning via handlePaymentFailed().
 		// Starting dunning here would cause duplicate runs.
-		s.invoices.UpdatePayment(ctx, tenantID, inv.ID, domain.PaymentFailed, "", err.Error(), nil)
+		_, _ = s.invoices.UpdatePayment(ctx, tenantID, inv.ID, domain.PaymentFailed, "", err.Error(), nil)
 		return domain.Invoice{}, fmt.Errorf("payment failed: %s", err.Error())
 	}
 
@@ -247,11 +247,11 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 	)
 
 	s.fireEvent(ctx, tenantID, domain.EventPaymentSucceeded, map[string]any{
-		"invoice_id":         inv.ID,
-		"customer_id":        inv.CustomerID,
-		"payment_intent_id":  event.PaymentIntentID,
-		"amount_cents":       inv.TotalAmountCents,
-		"currency":           inv.Currency,
+		"invoice_id":        inv.ID,
+		"customer_id":       inv.CustomerID,
+		"payment_intent_id": event.PaymentIntentID,
+		"amount_cents":      inv.TotalAmountCents,
+		"currency":          inv.Currency,
 	})
 
 	// Send payment receipt email asynchronously
@@ -304,12 +304,12 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 	)
 
 	s.fireEvent(ctx, tenantID, domain.EventPaymentFailed, map[string]any{
-		"invoice_id":         inv.ID,
-		"customer_id":        inv.CustomerID,
-		"payment_intent_id":  event.PaymentIntentID,
-		"failure_message":    failureMsg,
-		"amount_cents":       inv.TotalAmountCents,
-		"currency":           inv.Currency,
+		"invoice_id":        inv.ID,
+		"customer_id":       inv.CustomerID,
+		"payment_intent_id": event.PaymentIntentID,
+		"failure_message":   failureMsg,
+		"amount_cents":      inv.TotalAmountCents,
+		"currency":          inv.Currency,
 	})
 
 	// Auto-start dunning for failed payments
@@ -367,7 +367,7 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 			Data struct {
 				Object struct {
 					Customer string            `json:"customer"`
-					Metadata map[string]string  `json:"metadata"`
+					Metadata map[string]string `json:"metadata"`
 				} `json:"object"`
 			} `json:"data"`
 		}

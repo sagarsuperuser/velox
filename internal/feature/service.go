@@ -250,7 +250,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]Flag, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var flags []Flag
 	for rows.Next() {
@@ -271,7 +271,7 @@ func (s *PostgresStore) ListOverrides(ctx context.Context, tenantID string) ([]F
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var overrides []FlagOverride
 	for rows.Next() {

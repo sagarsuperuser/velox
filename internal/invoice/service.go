@@ -184,7 +184,7 @@ func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, i
 		amountDue = 0
 	}
 
-	s.store.UpdateTotals(ctx, tenantID, invoiceID, subtotal, total, amountDue)
+	_, _ = s.store.UpdateTotals(ctx, tenantID, invoiceID, subtotal, total, amountDue)
 
 	return item, nil
 }

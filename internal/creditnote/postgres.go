@@ -57,7 +57,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.C
 	if err != nil {
 		return domain.CreditNote{}, err
 	}
-	json.Unmarshal(metaJSON, &cn.Metadata)
+	_ = json.Unmarshal(metaJSON, &cn.Metadata)
 	if err := tx.Commit(); err != nil {
 		return domain.CreditNote{}, err
 	}
@@ -91,7 +91,7 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cr
 	if err != nil {
 		return domain.CreditNote{}, err
 	}
-	json.Unmarshal(metaJSON, &cn.Metadata)
+	_ = json.Unmarshal(metaJSON, &cn.Metadata)
 	return cn, nil
 }
 
@@ -120,7 +120,6 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	if filter.Status != "" {
 		clauses = append(clauses, fmt.Sprintf("status = $%d", idx))
 		args = append(args, filter.Status)
-		idx++
 	}
 	if len(clauses) > 0 {
 		query += " WHERE "
@@ -137,7 +136,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var notes []domain.CreditNote
 	for rows.Next() {
@@ -150,7 +149,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 			&metaJSON, &cn.CreatedAt, &cn.UpdatedAt); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(metaJSON, &cn.Metadata)
+		_ = json.Unmarshal(metaJSON, &cn.Metadata)
 		notes = append(notes, cn)
 	}
 	return notes, rows.Err()
@@ -247,7 +246,7 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, creditNoteI
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var items []domain.CreditNoteLineItem
 	for rows.Next() {

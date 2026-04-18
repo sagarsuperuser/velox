@@ -24,7 +24,7 @@ func TestBootstrap_Success(t *testing.T) {
 	}
 
 	var resp bootstrapResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	if resp.Tenant.Name != "Test Corp" {
 		t.Errorf("tenant name: got %q", resp.Tenant.Name)
@@ -99,7 +99,7 @@ func TestBootstrap_DefaultTenantName(t *testing.T) {
 	h.Routes().ServeHTTP(rec, req)
 
 	var resp bootstrapResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Tenant.Name != "Default Tenant" {
 		t.Errorf("default name: got %q, want 'Default Tenant'", resp.Tenant.Name)
 	}

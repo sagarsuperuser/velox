@@ -15,9 +15,9 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockStripeClient struct {
-	lastParams  PaymentIntentParams
-	shouldFail  bool
-	piID        string
+	lastParams PaymentIntentParams
+	shouldFail bool
+	piID       string
 }
 
 func (m *mockStripeClient) CreatePaymentIntent(_ context.Context, params PaymentIntentParams) (PaymentIntentResult, error) {
@@ -149,7 +149,7 @@ func TestChargeInvoice_Success(t *testing.T) {
 	inv := domain.Invoice{
 		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1",
 		InvoiceNumber: "VLX-202604-0001",
-		Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
+		Status:        domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
 		Currency: "USD", AmountDueCents: 19900,
 	}
 	invoices.invoices["inv_1"] = inv
@@ -228,7 +228,7 @@ func TestHandleWebhook_PaymentSucceeded(t *testing.T) {
 	invoices := newMockInvoiceUpdater()
 	invoices.invoices["inv_1"] = domain.Invoice{
 		ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized,
-		PaymentStatus: domain.PaymentProcessing,
+		PaymentStatus:         domain.PaymentProcessing,
 		StripePaymentIntentID: "pi_abc",
 	}
 	invoices.byPI["pi_abc"] = "inv_1"
@@ -261,7 +261,7 @@ func TestHandleWebhook_PaymentFailed(t *testing.T) {
 	invoices := newMockInvoiceUpdater()
 	invoices.invoices["inv_1"] = domain.Invoice{
 		ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized,
-		PaymentStatus: domain.PaymentProcessing,
+		PaymentStatus:         domain.PaymentProcessing,
 		StripePaymentIntentID: "pi_def",
 	}
 	invoices.byPI["pi_def"] = "inv_1"

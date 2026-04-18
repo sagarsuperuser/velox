@@ -108,7 +108,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.S
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var subs []domain.Subscription
 	for rows.Next() {
@@ -176,7 +176,7 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var subs []domain.Subscription
 	for rows.Next() {
@@ -242,7 +242,6 @@ func buildSubWhere(f ListFilter) (string, []any) {
 	if f.Status != "" {
 		clauses = append(clauses, fmt.Sprintf("status = $%d", idx))
 		args = append(args, f.Status)
-		idx++
 	}
 
 	if len(clauses) == 0 {

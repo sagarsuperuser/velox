@@ -149,8 +149,8 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 		LifecycleState: domain.RatingRuleActive, Mode: domain.PricingGraduated,
 		Currency: "USD",
 		GraduatedTiers: []domain.RatingTier{
-			{UpTo: 1000, UnitAmountCents: 10},  // $0.10 per call up to 1000
-			{UpTo: 0, UnitAmountCents: 5},       // $0.05 per call after 1000
+			{UpTo: 1000, UnitAmountCents: 10}, // $0.10 per call up to 1000
+			{UpTo: 0, UnitAmountCents: 5},     // $0.05 per call after 1000
 		},
 	})
 	if err != nil {

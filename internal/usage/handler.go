@@ -49,11 +49,11 @@ func (h *Handler) Routes() chi.Router {
 
 // apiEvent is the public API input — developers send external identifiers.
 type apiEvent struct {
-	ExternalCustomerID string         `json:"external_customer_id"`
-	EventName          string         `json:"event_name"`
-	Quantity           int64          `json:"quantity,omitempty"`
-	Properties         map[string]any `json:"properties,omitempty"`
-	IdempotencyKey     string         `json:"idempotency_key,omitempty"`
+	ExternalCustomerID string           `json:"external_customer_id"`
+	EventName          string           `json:"event_name"`
+	Quantity           int64            `json:"quantity,omitempty"`
+	Properties         map[string]any   `json:"properties,omitempty"`
+	IdempotencyKey     string           `json:"idempotency_key,omitempty"`
 	Timestamp          *json.RawMessage `json:"timestamp,omitempty"`
 }
 

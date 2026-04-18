@@ -102,7 +102,7 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp["status"] != "processed" {
 		t.Errorf("response status: got %q, want processed", resp["status"])
 	}
@@ -141,7 +141,7 @@ func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp["status"] != "skipped" {
 		t.Errorf("should skip non-Velox events, got %q", resp["status"])
 	}
@@ -165,7 +165,7 @@ func TestWebhookHandler_SignatureRequired(t *testing.T) {
 
 type mockInvoice struct {
 	id, tenantID, status, paymentStatus, stripePI, lastError string
-	paidAt                                                    *time.Time
+	paidAt                                                   *time.Time
 }
 
 type mockInvoiceUpdaterHandler struct {

@@ -147,28 +147,28 @@ func (s *Sender) send(to, subject, body, attachName string, attachData []byte) e
 	}
 
 	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("From: %s\r\n", s.from))
-	msg.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	fmt.Fprintf(&msg, "From: %s\r\n", s.from)
+	fmt.Fprintf(&msg, "To: %s\r\n", to)
+	fmt.Fprintf(&msg, "Subject: %s\r\n", subject)
 
 	if attachData != nil {
 		boundary := "velox-boundary-12345"
 		msg.WriteString("MIME-Version: 1.0\r\n")
-		msg.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=%s\r\n\r\n", boundary))
+		fmt.Fprintf(&msg, "Content-Type: multipart/mixed; boundary=%s\r\n\r\n", boundary)
 
 		// Text part
-		msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		fmt.Fprintf(&msg, "--%s\r\n", boundary)
 		msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
 		msg.WriteString(body)
 		msg.WriteString("\r\n")
 
 		// PDF attachment
-		msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
-		msg.WriteString(fmt.Sprintf("Content-Type: application/pdf; name=\"%s\"\r\n", attachName))
+		fmt.Fprintf(&msg, "--%s\r\n", boundary)
+		fmt.Fprintf(&msg, "Content-Type: application/pdf; name=\"%s\"\r\n", attachName)
 		msg.WriteString("Content-Transfer-Encoding: base64\r\n")
-		msg.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", attachName))
+		fmt.Fprintf(&msg, "Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", attachName)
 		msg.WriteString(encodeBase64(attachData))
-		msg.WriteString(fmt.Sprintf("\r\n--%s--\r\n", boundary))
+		fmt.Fprintf(&msg, "\r\n--%s--\r\n", boundary)
 	} else {
 		msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
 		msg.WriteString(body)

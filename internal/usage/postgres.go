@@ -82,7 +82,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var events []domain.UsageEvent
 	for rows.Next() {
@@ -173,7 +173,7 @@ func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make(map[string]int64)
 	for rows.Next() {
@@ -210,7 +210,6 @@ func buildUsageWhere(f ListFilter) (string, []any) {
 	if f.To != nil {
 		clauses = append(clauses, fmt.Sprintf("timestamp < $%d", idx))
 		args = append(args, *f.To)
-		idx++
 	}
 
 	if len(clauses) == 0 {

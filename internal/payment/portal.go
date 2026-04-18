@@ -52,7 +52,7 @@ func (h *PortalHandler) createUpdateSession(w http.ResponseWriter, r *http.Reque
 	// Parse optional return URL from request body (body may be empty)
 	var req updatePaymentMethodRequest
 	if r.Body != nil {
-		json.NewDecoder(r.Body).Decode(&req) // ignore decode errors — fields are optional
+		_ = json.NewDecoder(r.Body).Decode(&req) // ignore decode errors — fields are optional
 	}
 
 	// Look up the customer's existing Stripe customer ID
@@ -94,7 +94,7 @@ func (h *PortalHandler) createUpdateSession(w http.ResponseWriter, r *http.Reque
 
 	// Mark payment setup as pending update
 	now := time.Now().UTC()
-	h.store.UpsertPaymentSetup(r.Context(), tenantID, domain.CustomerPaymentSetup{
+	_, _ = h.store.UpsertPaymentSetup(r.Context(), tenantID, domain.CustomerPaymentSetup{
 		CustomerID:       customerID,
 		TenantID:         tenantID,
 		SetupStatus:      domain.PaymentSetupPending,

@@ -37,13 +37,13 @@ type EmailNotifier interface {
 }
 
 type Service struct {
-	store          Store
-	retrier        PaymentRetrier
-	subPauser      SubscriptionPauser
-	invoiceGet     InvoiceGetter
-	events         domain.EventDispatcher
-	emailNotifier  EmailNotifier
-	customerEmail  CustomerEmailFetcher
+	store         Store
+	retrier       PaymentRetrier
+	subPauser     SubscriptionPauser
+	invoiceGet    InvoiceGetter
+	events        domain.EventDispatcher
+	emailNotifier EmailNotifier
+	customerEmail CustomerEmailFetcher
 }
 
 func NewService(store Store, retrier PaymentRetrier) *Service {
@@ -80,7 +80,7 @@ func (s *Service) fireEvent(ctx context.Context, tenantID, eventType string, pay
 		return
 	}
 	go func() {
-		s.events.Dispatch(ctx, tenantID, eventType, payload)
+		_ = s.events.Dispatch(ctx, tenantID, eventType, payload)
 	}()
 }
 
@@ -137,7 +137,7 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 	}
 
 	// Record start event
-	s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
+	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 		RunID:     run.ID,
 		InvoiceID: invoiceID,
 		EventType: domain.DunningEventStarted,
@@ -232,7 +232,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 		)
 
 		// Record failed retry event
-		s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
+		_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 			RunID:        run.ID,
 			InvoiceID:    run.InvoiceID,
 			EventType:    domain.DunningEventRetryAttempted,
@@ -272,7 +272,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 		run.ResolvedAt = &now
 		run.NextActionAt = nil
 
-		s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
+		_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 			RunID:        run.ID,
 			InvoiceID:    run.InvoiceID,
 			EventType:    domain.DunningEventResolved,
@@ -365,7 +365,7 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		// write_off_later or unknown — resolution stays retries_exhausted
 	}
 
-	s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
+	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 		RunID:        run.ID,
 		InvoiceID:    run.InvoiceID,
 		EventType:    domain.DunningEventEscalated,
@@ -431,7 +431,7 @@ func (s *Service) ResolveRun(ctx context.Context, tenantID, runID string, resolu
 	run.ResolvedAt = &now
 	run.NextActionAt = nil
 
-	s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
+	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 		RunID:     run.ID,
 		InvoiceID: run.InvoiceID,
 		EventType: domain.DunningEventResolved,
@@ -456,7 +456,7 @@ func (s *Service) ResolveByInvoice(ctx context.Context, tenantID, invoiceID stri
 	run.ResolvedAt = &now
 	run.NextActionAt = nil
 
-	s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
+	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 		RunID:     run.ID,
 		InvoiceID: run.InvoiceID,
 		EventType: domain.DunningEventResolved,

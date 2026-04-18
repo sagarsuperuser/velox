@@ -57,7 +57,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		issued, err := h.svc.Issue(r.Context(), tenantID, cn.ID)
 		if err != nil {
 			// CN was created but issue failed — void the draft to avoid orphans
-			h.svc.Void(r.Context(), tenantID, cn.ID)
+			_, _ = h.svc.Void(r.Context(), tenantID, cn.ID)
 			respond.Validation(w, r, err.Error())
 			return
 		}
@@ -147,14 +147,14 @@ func (h *Handler) auditLogCreditNote(r *http.Request, tenantID string, cn domain
 	if h.auditLogger == nil {
 		return
 	}
-	h.auditLogger.Log(r.Context(), tenantID, "credit_note.issued", "credit_note", cn.ID, map[string]any{
-		"credit_note_number": cn.CreditNoteNumber,
-		"invoice_id":         cn.InvoiceID,
-		"customer_id":        cn.CustomerID,
-		"total_cents":        cn.TotalCents,
+	_ = h.auditLogger.Log(r.Context(), tenantID, "credit_note.issued", "credit_note", cn.ID, map[string]any{
+		"credit_note_number":  cn.CreditNoteNumber,
+		"invoice_id":          cn.InvoiceID,
+		"customer_id":         cn.CustomerID,
+		"total_cents":         cn.TotalCents,
 		"refund_amount_cents": cn.RefundAmountCents,
 		"credit_amount_cents": cn.CreditAmountCents,
-		"reason":             cn.Reason,
-		"currency":           cn.Currency,
+		"reason":              cn.Reason,
+		"currency":            cn.Currency,
 	})
 }

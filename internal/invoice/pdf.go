@@ -98,7 +98,7 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		if bold {
 			name = "noto-bold"
 		}
-		pdf.SetFont(name, "", size)
+		_ = pdf.SetFont(name, "", size)
 	}
 
 	setColor := func(r, g, b uint8) {
@@ -107,13 +107,13 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 
 	textAt := func(x, y float64, text string) {
 		pdf.SetXY(x, y)
-		pdf.Cell(nil, text)
+		_ = pdf.Cell(nil, text)
 	}
 
 	rightAlignAt := func(x, y, width float64, text string) {
 		tw, _ := pdf.MeasureTextWidth(text)
 		pdf.SetXY(x+width-tw, y)
-		pdf.Cell(nil, text)
+		_ = pdf.Cell(nil, text)
 	}
 
 	// ── VOID watermark ──

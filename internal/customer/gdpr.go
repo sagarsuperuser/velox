@@ -16,33 +16,33 @@ import (
 
 // GDPRExport is the full data export for a customer (right to portability).
 type GDPRExport struct {
-	ExportedAt    time.Time                    `json:"exported_at"`
-	Customer      domain.Customer              `json:"customer"`
+	ExportedAt     time.Time                      `json:"exported_at"`
+	Customer       domain.Customer                `json:"customer"`
 	BillingProfile *domain.CustomerBillingProfile `json:"billing_profile,omitempty"`
-	PaymentSetup  *RedactedPaymentSetup         `json:"payment_setup,omitempty"`
-	Invoices      []domain.Invoice              `json:"invoices"`
-	CreditEntries []domain.CreditLedgerEntry    `json:"credit_entries"`
-	CreditBalance *domain.CreditBalance         `json:"credit_balance,omitempty"`
-	Subscriptions []domain.Subscription         `json:"subscriptions"`
-	UsageSummary  map[string]int64              `json:"usage_summary,omitempty"`
+	PaymentSetup   *RedactedPaymentSetup          `json:"payment_setup,omitempty"`
+	Invoices       []domain.Invoice               `json:"invoices"`
+	CreditEntries  []domain.CreditLedgerEntry     `json:"credit_entries"`
+	CreditBalance  *domain.CreditBalance          `json:"credit_balance,omitempty"`
+	Subscriptions  []domain.Subscription          `json:"subscriptions"`
+	UsageSummary   map[string]int64               `json:"usage_summary,omitempty"`
 }
 
 // RedactedPaymentSetup contains payment setup data with Stripe IDs redacted
 // to show only the last 4 characters.
 type RedactedPaymentSetup struct {
-	CustomerID                  string             `json:"customer_id"`
+	CustomerID                  string                    `json:"customer_id"`
 	SetupStatus                 domain.PaymentSetupStatus `json:"setup_status"`
-	DefaultPaymentMethodPresent bool               `json:"default_payment_method_present"`
-	PaymentMethodType           string             `json:"payment_method_type,omitempty"`
-	StripeCustomerID            string             `json:"stripe_customer_id,omitempty"`
-	StripePaymentMethodID       string             `json:"stripe_payment_method_id,omitempty"`
-	CardBrand                   string             `json:"card_brand,omitempty"`
-	CardLast4                   string             `json:"card_last4,omitempty"`
-	CardExpMonth                int                `json:"card_exp_month,omitempty"`
-	CardExpYear                 int                `json:"card_exp_year,omitempty"`
-	LastVerifiedAt              *time.Time         `json:"last_verified_at,omitempty"`
-	CreatedAt                   time.Time          `json:"created_at"`
-	UpdatedAt                   time.Time          `json:"updated_at"`
+	DefaultPaymentMethodPresent bool                      `json:"default_payment_method_present"`
+	PaymentMethodType           string                    `json:"payment_method_type,omitempty"`
+	StripeCustomerID            string                    `json:"stripe_customer_id,omitempty"`
+	StripePaymentMethodID       string                    `json:"stripe_payment_method_id,omitempty"`
+	CardBrand                   string                    `json:"card_brand,omitempty"`
+	CardLast4                   string                    `json:"card_last4,omitempty"`
+	CardExpMonth                int                       `json:"card_exp_month,omitempty"`
+	CardExpYear                 int                       `json:"card_exp_year,omitempty"`
+	LastVerifiedAt              *time.Time                `json:"last_verified_at,omitempty"`
+	CreatedAt                   time.Time                 `json:"created_at"`
+	UpdatedAt                   time.Time                 `json:"updated_at"`
 }
 
 // GDPRService handles GDPR data export and right-to-deletion operations.
@@ -205,7 +205,7 @@ func (s *GDPRService) DeleteCustomerData(ctx context.Context, tenantID, customer
 
 	// Record audit entry for compliance
 	if s.auditLogger != nil {
-		s.auditLogger.Log(ctx, tenantID, "gdpr.delete", "customer", customerID, map[string]any{
+		_ = s.auditLogger.Log(ctx, tenantID, "gdpr.delete", "customer", customerID, map[string]any{
 			"original_display_name": cust.DisplayName,
 			"reason":                "GDPR right-to-erasure request",
 		})

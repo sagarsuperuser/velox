@@ -13,10 +13,10 @@ import (
 
 // UsageSummary represents aggregated usage for a customer in a period.
 type UsageSummary struct {
-	CustomerID string            `json:"customer_id"`
-	PeriodFrom time.Time         `json:"period_from"`
-	PeriodTo   time.Time         `json:"period_to"`
-	Meters     map[string]int64  `json:"meters"` // meter_id → total quantity
+	CustomerID  string           `json:"customer_id"`
+	PeriodFrom  time.Time        `json:"period_from"`
+	PeriodTo    time.Time        `json:"period_to"`
+	Meters      map[string]int64 `json:"meters"` // meter_id → total quantity
 	TotalEvents int              `json:"total_events"`
 }
 
@@ -79,11 +79,11 @@ func (h *Handler) getSummary(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(summary)
+	_ = json.NewEncoder(w).Encode(summary)
 }

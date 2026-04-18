@@ -34,7 +34,7 @@ func TestRoutes_RegistersExpectedEndpoints(t *testing.T) {
 	// Walk the route tree and collect registered routes.
 	type route struct{ method, pattern string }
 	var routes []route
-	chi.Walk(chiRouter, func(method, pattern string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+	_ = chi.Walk(chiRouter, func(method, pattern string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		routes = append(routes, route{method, pattern})
 		return nil
 	})
@@ -130,7 +130,7 @@ func TestOverviewResponse_ZeroValues(t *testing.T) {
 	}
 
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	_ = json.Unmarshal(data, &m)
 
 	for field, val := range m {
 		if v, ok := val.(float64); !ok || v != 0 {
@@ -152,7 +152,7 @@ func TestRevenueDataPoint_JSONShape(t *testing.T) {
 	}
 
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	_ = json.Unmarshal(data, &m)
 
 	if m["date"] != "2026-04-01" {
 		t.Errorf("date: got %v", m["date"])

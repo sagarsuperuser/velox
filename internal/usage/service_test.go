@@ -103,8 +103,8 @@ func TestIngest(t *testing.T) {
 
 	t.Run("validation", func(t *testing.T) {
 		cases := []IngestInput{
-			{MeterID: "m", Quantity: 1},           // missing customer_id
-			{CustomerID: "c", Quantity: 1},         // missing meter_id
+			{MeterID: "m", Quantity: 1},    // missing customer_id
+			{CustomerID: "c", Quantity: 1}, // missing meter_id
 		}
 		for _, input := range cases {
 			_, err := svc.Ingest(ctx, "t1", input)

@@ -30,7 +30,7 @@ func main() {
 	if err != nil {
 		fatal("open database: %v", err)
 	}
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 
 	// Run migrations
 	if err := migrate.Up(pool); err != nil {

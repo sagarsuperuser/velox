@@ -136,7 +136,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.I
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var invoices []domain.Invoice
 	for rows.Next() {
@@ -377,7 +377,7 @@ func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, ite
 	if err != nil {
 		return domain.InvoiceLineItem{}, err
 	}
-	json.Unmarshal(metaJSON, &item.Metadata)
+	_ = json.Unmarshal(metaJSON, &item.Metadata)
 	if err := tx.Commit(); err != nil {
 		return domain.InvoiceLineItem{}, err
 	}
@@ -403,7 +403,7 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var items []domain.InvoiceLineItem
 	for rows.Next() {
@@ -416,7 +416,7 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 			&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(metaJSON, &item.Metadata)
+		_ = json.Unmarshal(metaJSON, &item.Metadata)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -443,7 +443,7 @@ func (s *PostgresStore) ListApproachingDue(ctx context.Context, daysBeforeDue in
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var invoices []domain.Invoice
 	for rows.Next() {
@@ -576,7 +576,7 @@ func (s *PostgresStore) ListAutoChargePending(ctx context.Context, limit int) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var invoices []domain.Invoice
 	for rows.Next() {
@@ -633,7 +633,6 @@ func buildInvWhere(f ListFilter) (string, []any) {
 	if f.PaymentStatus != "" {
 		clauses = append(clauses, fmt.Sprintf("payment_status = $%d", idx))
 		args = append(args, f.PaymentStatus)
-		idx++
 	}
 
 	if len(clauses) == 0 {

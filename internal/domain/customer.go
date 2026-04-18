@@ -29,25 +29,25 @@ const (
 )
 
 type CustomerBillingProfile struct {
-	CustomerID    string               `json:"customer_id"`
-	TenantID      string               `json:"tenant_id,omitempty"`
-	LegalName     string               `json:"legal_name,omitempty"`
-	Email         string               `json:"email,omitempty"`
-	Phone         string               `json:"phone,omitempty"`
-	AddressLine1  string               `json:"address_line1,omitempty"`
-	AddressLine2  string               `json:"address_line2,omitempty"`
-	City          string               `json:"city,omitempty"`
-	State         string               `json:"state,omitempty"`
-	PostalCode    string               `json:"postal_code,omitempty"`
-	Country       string               `json:"country,omitempty"`
-	Currency      string               `json:"currency,omitempty"`
+	CustomerID        string               `json:"customer_id"`
+	TenantID          string               `json:"tenant_id,omitempty"`
+	LegalName         string               `json:"legal_name,omitempty"`
+	Email             string               `json:"email,omitempty"`
+	Phone             string               `json:"phone,omitempty"`
+	AddressLine1      string               `json:"address_line1,omitempty"`
+	AddressLine2      string               `json:"address_line2,omitempty"`
+	City              string               `json:"city,omitempty"`
+	State             string               `json:"state,omitempty"`
+	PostalCode        string               `json:"postal_code,omitempty"`
+	Country           string               `json:"country,omitempty"`
+	Currency          string               `json:"currency,omitempty"`
 	TaxExempt         bool                 `json:"tax_exempt"`
 	TaxID             string               `json:"tax_id"`
 	TaxIDType         string               `json:"tax_id_type"`
 	TaxOverrideRateBP *int                 `json:"tax_override_rate_bp,omitempty"` // Basis points
-	ProfileStatus   BillingProfileStatus `json:"profile_status"`
-	CreatedAt     time.Time            `json:"created_at"`
-	UpdatedAt     time.Time            `json:"updated_at"`
+	ProfileStatus     BillingProfileStatus `json:"profile_status"`
+	CreatedAt         time.Time            `json:"created_at"`
+	UpdatedAt         time.Time            `json:"updated_at"`
 }
 
 type PaymentSetupStatus string

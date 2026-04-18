@@ -84,7 +84,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.T
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tenants []domain.Tenant
 	for rows.Next() {

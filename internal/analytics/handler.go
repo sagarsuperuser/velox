@@ -61,7 +61,7 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		respond.InternalError(w, r)
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var resp OverviewResponse
 
@@ -222,7 +222,7 @@ func (h *Handler) revenueChart(w http.ResponseWriter, r *http.Request) {
 		respond.InternalError(w, r)
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(r.Context(), `
 		SELECT to_char(date_trunc($1, paid_at), CASE WHEN $1 = 'month' THEN 'YYYY-MM' ELSE 'YYYY-MM-DD' END) AS date,
@@ -238,7 +238,7 @@ func (h *Handler) revenueChart(w http.ResponseWriter, r *http.Request) {
 		respond.InternalError(w, r)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var data []RevenueDataPoint
 	for rows.Next() {

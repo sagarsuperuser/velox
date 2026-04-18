@@ -354,7 +354,7 @@ func TestCreatePlan(t *testing.T) {
 	})
 
 	t.Run("duplicate code", func(t *testing.T) {
-		svc.CreatePlan(ctx, "tenant1", CreatePlanInput{Code: "dup", Name: "x", Currency: "USD", BillingInterval: domain.BillingMonthly})
+		_, _ = svc.CreatePlan(ctx, "tenant1", CreatePlanInput{Code: "dup", Name: "x", Currency: "USD", BillingInterval: domain.BillingMonthly})
 		_, err := svc.CreatePlan(ctx, "tenant1", CreatePlanInput{Code: "dup", Name: "y", Currency: "USD", BillingInterval: domain.BillingMonthly})
 		if err == nil {
 			t.Fatal("expected error for duplicate code")
