@@ -144,11 +144,11 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 	// Create checkout session for payment method setup
 	successURL := h.successURL
 	if successURL == "" {
-		successURL = fmt.Sprintf("http://localhost:3000/customers/%s?payment=success", req.CustomerID)
+		successURL = fmt.Sprintf("http://localhost:5173/customers/%s?payment=success", req.CustomerID)
 	}
 	cancelURL := h.cancelURL
 	if cancelURL == "" {
-		cancelURL = fmt.Sprintf("http://localhost:3000/customers/%s?payment=cancel", req.CustomerID)
+		cancelURL = fmt.Sprintf("http://localhost:5173/customers/%s?payment=cancel", req.CustomerID)
 	}
 
 	sess, err := session.New(&stripe.CheckoutSessionParams{

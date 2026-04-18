@@ -75,23 +75,38 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		trialEnd = &te
 		status = domain.SubscriptionActive
 		startedAt = &now
-		// Billing starts after trial ends
-		ps := te
-		pe := te.AddDate(0, 1, 0)
-		periodStart = &ps
-		periodEnd = &pe
-		nextBilling = &pe
+		// After trial: align to calendar boundary if calendar billing
+		if billingTime == domain.BillingTimeCalendar {
+			ps := beginningOfMonth(te.AddDate(0, 1, 0)) // 1st of next month after trial
+			pe := ps.AddDate(0, 1, 0)
+			periodStart = &ps
+			periodEnd = &pe
+			nextBilling = &pe
+		} else {
+			ps := te
+			pe := te.AddDate(0, 1, 0)
+			periodStart = &ps
+			periodEnd = &pe
+			nextBilling = &pe
+		}
 	} else if input.StartNow {
 		status = domain.SubscriptionActive
 		startedAt = &now
-		// First billing period: beginning of current month → end of month
-		// next_billing_at = end of period (billed when period closes)
-		ps := beginningOfMonth(now)
-		pe := ps.AddDate(0, 1, 0)
-		nb := now // Immediately billable for the current partial period
-		periodStart = &ps
-		periodEnd = &pe
-		nextBilling = &nb
+		if billingTime == domain.BillingTimeCalendar {
+			// First partial period: today → 1st of next month (arrears billing)
+			ps := now
+			pe := beginningOfMonth(now).AddDate(0, 1, 0)
+			periodStart = &ps
+			periodEnd = &pe
+			nextBilling = &pe // Bill when period closes
+		} else {
+			// Anniversary: today → today + 1 month
+			ps := now
+			pe := now.AddDate(0, 1, 0)
+			periodStart = &ps
+			periodEnd = &pe
+			nextBilling = &pe
+		}
 	}
 
 	overageAction := input.OverageAction

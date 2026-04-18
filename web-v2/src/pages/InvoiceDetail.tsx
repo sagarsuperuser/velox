@@ -363,7 +363,7 @@ export default function InvoiceDetailPage() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Period</p>
               <p className="text-sm text-foreground">
-                {formatDate(invoice.billing_period_start)} \u2013 {formatDate(invoice.billing_period_end)}
+                {formatDate(invoice.billing_period_start)} – {formatDate(invoice.billing_period_end)}
               </p>
             </div>
             <div>
