@@ -90,7 +90,7 @@ jobs:
           node-version: '22'
 
       - name: Install and build frontend
-        run: cd web-v2 && npm ci && npx tsc --noEmit && npx vite build
+        run: cd web-v2 && npm install && npx tsc --noEmit && npx vite build
 
   docker:
     needs: [test, frontend]
