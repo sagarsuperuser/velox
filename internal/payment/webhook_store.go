@@ -2,7 +2,9 @@ package payment
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -52,12 +54,17 @@ func (s *PostgresWebhookStore) IngestEvent(ctx context.Context, tenantID string,
 	).Scan(&event.ID)
 
 	if err != nil {
-		// ON CONFLICT DO NOTHING → no row returned → duplicate
-		event.ID = ""
-		if err := tx.Commit(); err != nil {
-			return event, false, err
+		// ON CONFLICT DO NOTHING → Scan gets ErrNoRows → duplicate.
+		// Any other error (FK violation, etc.) is a real failure.
+		if err == sql.ErrNoRows {
+			event.ID = ""
+			if err := tx.Commit(); err != nil {
+				return event, false, err
+			}
+			return event, false, nil
 		}
-		return event, false, nil
+		_ = tx.Rollback()
+		return domain.StripeWebhookEvent{}, false, fmt.Errorf("insert webhook event: %w", err)
 	}
 
 	event.TenantID = tenantID
