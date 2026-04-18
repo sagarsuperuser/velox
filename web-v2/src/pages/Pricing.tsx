@@ -579,7 +579,7 @@ function CreateMeterDialog({ onClose, onCreated, rules }: { onClose: () => void;
                 </SelectTrigger>
                 <SelectContent>
                   {rules.map(r => (
-                    <SelectItem key={r.id} value={r.id}>{r.name} ({r.mode})</SelectItem>
+                    <SelectItem key={r.id} value={r.id} label={`${r.name} (${r.mode})`}>{r.name} ({r.mode})</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

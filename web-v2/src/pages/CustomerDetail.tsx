@@ -834,7 +834,7 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
               </SelectTrigger>
               <SelectContent>
                 {plans.map(p => (
-                  <SelectItem key={p.id} value={p.id}>{p.name} ({p.code})</SelectItem>
+                  <SelectItem key={p.id} value={p.id} label={`${p.name} (${p.code})`}>{p.name} ({p.code})</SelectItem>
                 ))}
               </SelectContent>
             </Select>
