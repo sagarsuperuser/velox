@@ -1,4 +1,17 @@
 const API_BASE = '/v1'
+const API_KEY_STORAGE = 'velox_api_key'
+
+export function getApiKey(): string | null {
+  return localStorage.getItem(API_KEY_STORAGE)
+}
+
+export function setApiKey(key: string) {
+  localStorage.setItem(API_KEY_STORAGE, key)
+}
+
+export function clearApiKey() {
+  localStorage.removeItem(API_KEY_STORAGE)
+}
 
 export class ApiError extends Error {
   fields?: Record<string, string>
@@ -30,14 +43,17 @@ function humanizeError(msg: string): string {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const apiKey = getApiKey()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+  }
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`
   }
 
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
-    credentials: 'same-origin',
     body: body ? JSON.stringify(body) : undefined,
   })
 
@@ -606,8 +622,13 @@ export interface RevenueDataPoint {
 }
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {
+  const apiKey = getApiKey()
+  const headers: Record<string, string> = {}
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`
+  }
   const res = await fetch(`${API_BASE}/invoices/${invoiceId}/pdf`, {
-    credentials: 'same-origin',
+    headers,
   })
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)

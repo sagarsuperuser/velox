@@ -8,7 +8,7 @@ import {
 import { useDarkMode } from '@/hooks/useDarkMode'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { cn } from '@/lib/utils'
-import { api, setActiveCurrency } from '@/lib/api'
+import { api, setActiveCurrency, clearApiKey } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -197,8 +197,8 @@ export function Layout({ children }: { children: ReactNode }) {
         <Button
           variant="ghost"
           className="w-full justify-start gap-3 text-muted-foreground hover:text-foreground"
-          onClick={async () => {
-            await fetch('/v1/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {})
+          onClick={() => {
+            clearApiKey()
             window.location.href = '/login'
           }}
         >

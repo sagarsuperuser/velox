@@ -36,7 +36,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
 	"github.com/sagarsuperuser/velox/internal/usage"
-	"github.com/sagarsuperuser/velox/internal/userauth"
 	"github.com/sagarsuperuser/velox/internal/webhook"
 )
 
@@ -88,10 +87,6 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	// Auth
 	authSvc := auth.NewService(auth.NewPostgresStore(db))
 	authH := auth.NewHandler(authSvc)
-
-	// User auth (email/password sessions for dashboard)
-	userAuthSvc := userauth.NewService(db)
-	userAuthH := userauth.NewHandler(userAuthSvc)
 
 	// Domain handlers
 	tenantH := tenant.NewHandler(tenant.NewService(tenant.NewPostgresStore(db)))
@@ -296,9 +291,6 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	bootstrapH := tenant.NewBootstrapHandler(db)
 	r.Mount("/v1/bootstrap", bootstrapH.Routes())
 
-	// User auth — no auth middleware (login/register must be public)
-	r.Mount("/v1/auth", userAuthH.Routes())
-
 	// Stripe webhooks — no API key auth (verified by signature)
 	r.Mount("/v1/webhooks", webhookH.Routes())
 
@@ -309,14 +301,14 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 
 	// Platform routes
 	r.Route("/v1/tenants", func(r chi.Router) {
-		r.Use(auth.Middleware(authSvc, userAuthSvc))
+		r.Use(auth.Middleware(authSvc))
 		r.Use(auth.Require(auth.PermTenantWrite))
 		r.Mount("/", tenantH.Routes())
 	})
 
 	// Tenant-scoped routes
 	r.Route("/v1", func(r chi.Router) {
-		r.Use(auth.Middleware(authSvc, userAuthSvc))
+		r.Use(auth.Middleware(authSvc))
 		r.Use(mw.Idempotency(db))
 		r.Use(mw.AuditLog(db))
 

@@ -16,7 +16,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/config"
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
-	"github.com/sagarsuperuser/velox/internal/userauth"
 )
 
 func main() {
@@ -103,23 +102,6 @@ func main() {
 		fatal("commit: %v", err)
 	}
 
-	// Create initial admin user for dashboard login
-	adminEmail := os.Getenv("VELOX_ADMIN_EMAIL")
-	if adminEmail == "" {
-		adminEmail = "admin@velox.dev"
-	}
-	adminPassword := os.Getenv("VELOX_ADMIN_PASSWORD")
-	if adminPassword == "" {
-		adminPassword = "changeme"
-	}
-
-	userAuthSvc := userauth.NewService(db)
-	_, err = userAuthSvc.Register(ctx, tenantID, adminEmail, adminPassword, "Admin")
-	if err != nil {
-		// Non-fatal — user might already exist from a previous bootstrap
-		slog.Warn("could not create admin user (may already exist)", "error", err)
-	}
-
 	fmt.Println("========================================")
 	fmt.Println("  Velox Bootstrap Complete")
 	fmt.Println("========================================")
@@ -132,8 +114,6 @@ func main() {
 	fmt.Println()
 	fmt.Println("  Publishable Key (restricted):")
 	fmt.Printf("  %s\n", pubRawKey)
-	fmt.Println()
-	fmt.Printf("  Dashboard login: %s / %s\n", adminEmail, adminPassword)
 	fmt.Println()
 	fmt.Println("  Try it:")
 	fmt.Printf("  curl -H 'Authorization: Bearer %s' http://localhost:8080/v1/customers\n", rawKey)
