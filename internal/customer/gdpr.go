@@ -194,7 +194,6 @@ func (s *GDPRService) DeleteCustomerData(ctx context.Context, tenantID, customer
 		bp.City = ""
 		bp.State = ""
 		bp.PostalCode = ""
-		bp.TaxIdentifier = ""
 		bp.TaxID = ""
 		bp.ProfileStatus = domain.BillingProfileIncomplete
 		if _, err := s.customers.UpsertBillingProfile(ctx, tenantID, bp); err != nil {

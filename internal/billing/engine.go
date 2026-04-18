@@ -327,7 +327,6 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	invoiceNumber := fmt.Sprintf("VLX-%s-%04d", now.Format("200601"), now.UnixMilli()%10000)
 
 	var taxRateBP int // basis points: 1850 = 18.50%
-	var taxRate float64
 	var taxName string
 	var taxCountry string
 	var taxID string
@@ -336,12 +335,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			if ts.NetPaymentTerms > 0 {
 				netDays = ts.NetPaymentTerms
 			}
-			// Prefer basis points; fall back to converting float
 			taxRateBP = ts.TaxRateBP
-			if taxRateBP == 0 && ts.TaxRate > 0 {
-				taxRateBP = int(ts.TaxRate * 100)
-			}
-			taxRate = ts.TaxRate
 			taxName = ts.TaxName
 		}
 		if num, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID); err == nil && num != "" {
@@ -362,21 +356,13 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			}
 			if bp.TaxExempt {
 				taxRateBP = 0
-				taxRate = 0
 				taxName = ""
 			} else {
 				// Per-customer rate override takes precedence over tenant default
 				if bp.TaxOverrideRateBP != nil {
 					taxRateBP = *bp.TaxOverrideRateBP
-					taxRate = float64(taxRateBP) / 100
-				} else if bp.TaxOverrideRate != nil {
-					taxRate = *bp.TaxOverrideRate
-					taxRateBP = int(taxRate * 100)
 				}
-				if bp.TaxOverrideName != "" {
-					taxName = bp.TaxOverrideName
-				}
-				taxCountry = bp.TaxCountry
+				taxCountry = bp.Country
 				taxID = bp.TaxID
 			}
 		}
@@ -401,7 +387,6 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		} else if taxResult != nil && taxResult.TotalTaxAmountCents > 0 {
 			taxAmountCents = taxResult.TotalTaxAmountCents
 			taxRateBP = taxResult.TaxRateBP
-			taxRate = float64(taxRateBP) / 100
 			if taxResult.TaxName != "" {
 				taxName = taxResult.TaxName
 			}
@@ -412,7 +397,6 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			for _, lt := range taxResult.LineItemTaxes {
 				if lt.Index >= 0 && lt.Index < len(lineItems) {
 					lineItems[lt.Index].TaxRateBP = lt.TaxRateBP
-					lineItems[lt.Index].TaxRate = float64(lt.TaxRateBP) / 100
 					lineItems[lt.Index].TaxAmountCents = lt.TaxAmountCents
 					lineItems[lt.Index].TotalAmountCents = lineItems[lt.Index].AmountCents + lt.TaxAmountCents
 				}
@@ -432,7 +416,6 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 				lineTax++
 			}
 			lineItems[i].TaxRateBP = taxRateBP
-			lineItems[i].TaxRate = taxRate
 			lineItems[i].TaxAmountCents = lineTax
 			lineItems[i].TotalAmountCents = lineItems[i].AmountCents + lineTax
 			lineTaxSum += lineTax
@@ -460,7 +443,6 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		PaymentStatus:      domain.PaymentPending,
 		Currency:           invoiceCurrency,
 		SubtotalCents:      subtotal,
-		TaxRate:            taxRate,
 		TaxRateBP:          taxRateBP,
 		TaxName:            taxName,
 		TaxCountry:         taxCountry,

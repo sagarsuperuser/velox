@@ -91,9 +91,9 @@ export default function PlanDetailPage() {
     },
   })
 
-  const subscriptions = subsData ?? []
-  const allMeters = meters ?? []
-  const allRules = ratingRules ?? []
+  const subscriptions = Array.isArray(subsData) ? subsData : []
+  const allMeters = Array.isArray(meters) ? meters : []
+  const allRules = Array.isArray(ratingRules) ? ratingRules : []
 
   const attachedMeters = useMemo(() => {
     if (!plan?.meter_ids) return []

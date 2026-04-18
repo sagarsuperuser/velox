@@ -330,8 +330,8 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		if inv.TaxName != "" {
 			taxLabel = inv.TaxName
 		}
-		if inv.TaxRate > 0 {
-			taxLabel = fmt.Sprintf("%s (%.4g%%)", taxLabel, inv.TaxRate)
+		if inv.TaxRateBP > 0 {
+			taxLabel = fmt.Sprintf("%s (%.4g%%)", taxLabel, float64(inv.TaxRateBP)/100)
 		}
 		if inv.TaxCountry != "" {
 			taxLabel = fmt.Sprintf("%s [%s]", taxLabel, inv.TaxCountry)

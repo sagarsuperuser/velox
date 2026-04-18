@@ -30,7 +30,7 @@ const settingsSchema = z.object({
   logo_url: z.string(),
   invoice_prefix: z.string(),
   net_payment_terms: z.number().min(0).max(365),
-  tax_rate: z.number().min(0).max(100),
+  tax_rate_bp: z.number().min(0).max(10000),
   tax_name: z.string(),
   default_currency: z.string(),
   timezone: z.string(),
@@ -70,7 +70,7 @@ export default function SettingsPage() {
     defaultValues: {
       company_name: '', company_email: '', company_phone: '', company_address: '',
       logo_url: '',
-      invoice_prefix: '', net_payment_terms: 0, tax_rate: 0, tax_name: '',
+      invoice_prefix: '', net_payment_terms: 0, tax_rate_bp: 0, tax_name: '',
       default_currency: '', timezone: '',
     },
   })
@@ -94,7 +94,7 @@ export default function SettingsPage() {
         company_phone: s.company_phone || '', company_address: s.company_address || '',
         logo_url: s.logo_url || '',
         invoice_prefix: s.invoice_prefix || '', net_payment_terms: s.net_payment_terms || 0,
-        tax_rate: s.tax_rate || 0, tax_name: s.tax_name || '',
+        tax_rate_bp: s.tax_rate_bp || 0, tax_name: s.tax_name || '',
         default_currency: s.default_currency || '', timezone: s.timezone || '',
       }
       reset(f)
@@ -113,7 +113,7 @@ export default function SettingsPage() {
         company_phone: updated.company_phone || '', company_address: updated.company_address || '',
         logo_url: updated.logo_url || '',
         invoice_prefix: updated.invoice_prefix || '', net_payment_terms: updated.net_payment_terms || 0,
-        tax_rate: updated.tax_rate || 0, tax_name: updated.tax_name || '',
+        tax_rate_bp: updated.tax_rate_bp || 0, tax_name: updated.tax_name || '',
         default_currency: updated.default_currency || '', timezone: updated.timezone || '',
       }
       reset(f)
@@ -308,20 +308,21 @@ export default function SettingsPage() {
                   <Label>Tax Rate</Label>
                   <div className="relative mt-1">
                     <Input type="number" step="0.01" min={0} max={100}
-                      {...register('tax_rate', { valueAsNumber: true })}
+                      value={form.tax_rate_bp / 100}
+                      onChange={e => setValue('tax_rate_bp', Math.round(parseFloat(e.target.value || '0') * 100), { shouldDirty: true })}
                       className="pr-8" placeholder="0" />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">%</span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">Set to 0 to disable tax</p>
                 </div>
               </div>
-              {form.tax_rate > 0 && (
+              {form.tax_rate_bp > 0 && (
                 <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 rounded-lg">
                   <p className="text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
                     <AlertCircle size={14} className="shrink-0 mt-0.5" />
                     <span>
                       Example: {symbol}100.00 subtotal {form.tax_name ? `+ ${form.tax_name} ` : '+ tax '}
-                      {form.tax_rate}% = <strong>{formatCents(10000 + Math.round(form.tax_rate * 100), form.default_currency || 'USD')}</strong> total.
+                      {(form.tax_rate_bp / 100).toFixed(2)}% = <strong>{formatCents(10000 + Math.round(10000 * form.tax_rate_bp / 10000), form.default_currency || 'USD')}</strong> total.
                       For automatic jurisdiction-based tax, enable Stripe Tax in Feature Flags.
                     </span>
                   </p>
