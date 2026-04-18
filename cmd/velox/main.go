@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	neturl "net/url"
+
 	"github.com/sagarsuperuser/velox/internal/api"
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/config"
@@ -99,18 +101,28 @@ func serve() {
 		slog.Info("migrations applied")
 	}
 
-	// If APP_DATABASE_URL is set, switch to it for the app (least-privilege)
+	// Use a non-superuser connection for the app so RLS policies are enforced.
+	// APP_DATABASE_URL takes priority; otherwise auto-derive from DATABASE_URL
+	// by replacing the credentials with velox_app/velox_app.
 	appPool := pool
-	if appURL := strings.TrimSpace(os.Getenv("APP_DATABASE_URL")); appURL != "" {
+	appURL := strings.TrimSpace(os.Getenv("APP_DATABASE_URL"))
+	if appURL == "" {
+		appURL = deriveAppURL(cfg.DB.URL)
+	}
+	if appURL != "" && appURL != cfg.DB.URL {
 		appCfg := cfg.DB
 		appCfg.URL = appURL
 		appPool, err = config.OpenPostgres(appCfg)
 		if err != nil {
-			slog.Error("open app database", "error", err)
-			os.Exit(1)
+			slog.Warn("could not open app database connection, falling back to admin connection",
+				"error", err)
+			appPool = pool
+		} else {
+			defer appPool.Close()
+			slog.Info("using app database connection (RLS enforced)")
 		}
-		defer appPool.Close()
-		slog.Info("using separate app database connection (least-privilege)")
+	} else {
+		slog.Warn("running with admin database connection — RLS policies will NOT be enforced. Set APP_DATABASE_URL or create the velox_app role.")
 	}
 
 	db := postgres.NewDB(appPool, cfg.DB.QueryTimeout)
@@ -245,5 +257,16 @@ Environment:
   PAYMENT_UPDATE_URL        Base URL for payment update page (e.g. https://app.example.com/update-payment)
   VELOX_ENCRYPTION_KEY      64-char hex key for PII encryption at rest
   REDIS_URL                 Redis URL for distributed rate limiting`)
+}
+
+// deriveAppURL replaces the user:password in a DATABASE_URL with velox_app:velox_app.
+// Returns "" if the URL can't be parsed.
+func deriveAppURL(adminURL string) string {
+	u, err := neturl.Parse(adminURL)
+	if err != nil {
+		return ""
+	}
+	u.User = neturl.UserPassword("velox_app", "velox_app")
+	return u.String()
 }
 

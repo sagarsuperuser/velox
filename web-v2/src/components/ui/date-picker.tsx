@@ -10,13 +10,23 @@ interface DatePickerProps {
   onChange: (value: string) => void
   placeholder?: string
   className?: string
+  minDate?: Date                   // Disable dates before this
 }
 
-export function DatePicker({ value, onChange, placeholder = 'Pick a date', className }: DatePickerProps) {
+export function DatePicker({ value, onChange, placeholder = 'Pick a date', className, minDate }: DatePickerProps) {
   const [open, setOpen] = React.useState(false)
+  const [dropUp, setDropUp] = React.useState(false)
   const ref = React.useRef<HTMLDivElement>(null)
 
   const selectedDate = value ? new Date(value + 'T00:00:00') : undefined
+
+  // Determine if calendar should open upward
+  React.useEffect(() => {
+    if (!open || !ref.current) return
+    const rect = ref.current.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - rect.bottom
+    setDropUp(spaceBelow < 380)
+  }, [open])
 
   // Close on outside click
   React.useEffect(() => {
@@ -70,7 +80,10 @@ export function DatePicker({ value, onChange, placeholder = 'Pick a date', class
       </Button>
 
       {open && (
-        <div className="absolute z-50 mt-1 rounded-lg border border-border bg-popover p-3 shadow-lg animate-in fade-in-0 zoom-in-95">
+        <div className={cn(
+          'absolute z-50 rounded-lg border border-border bg-popover p-3 shadow-lg animate-in fade-in-0 zoom-in-95',
+          dropUp ? 'bottom-full mb-1' : 'top-full mt-1'
+        )}>
           <DayPicker
             mode="single"
             selected={selectedDate}
@@ -78,6 +91,7 @@ export function DatePicker({ value, onChange, placeholder = 'Pick a date', class
             defaultMonth={selectedDate}
             showOutsideDays
             className="velox-cal"
+            disabled={minDate ? { before: minDate } : undefined}
           />
           <style>{`
             .velox-cal { --accent: var(--primary); }

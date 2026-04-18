@@ -32,7 +32,13 @@ export default function LoginPage() {
         headers: { Authorization: `Bearer ${key}` },
       })
       if (res.status === 401) {
-        setError('Invalid API key')
+        const body = await res.json().catch(() => null)
+        const msg = body?.message || ''
+        if (msg.includes('expired')) {
+          setError('This API key has expired. Please use a valid key.')
+        } else {
+          setError('Invalid API key')
+        }
         return
       }
       navigate('/')

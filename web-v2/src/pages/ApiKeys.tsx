@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import {
@@ -41,7 +42,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 
-import { Plus, Key, Shield, Eye, ChevronDown, Loader2 } from 'lucide-react'
+import { Plus, Key, Shield, Eye, ChevronDown, Loader2, Clock } from 'lucide-react'
 
 const createApiKeySchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -64,12 +65,36 @@ function keyTypeVariant(type: string): 'default' | 'secondary' | 'outline' {
   }
 }
 
+function isExpired(key: ApiKeyInfo): boolean {
+  return !!key.expires_at && new Date(key.expires_at) < new Date()
+}
+
+function daysUntilExpiry(expiresAt: string): number {
+  return Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86400000)
+}
+
+function expiryBadge(key: ApiKeyInfo) {
+  if (!key.expires_at) return null
+  if (isExpired(key)) {
+    return <Badge variant="destructive">Expired</Badge>
+  }
+  const days = daysUntilExpiry(key.expires_at)
+  if (days <= 7) {
+    return <Badge variant="warning">Expires in {days}d</Badge>
+  }
+  if (days <= 30) {
+    return <Badge variant="outline" className="text-muted-foreground">Expires in {days}d</Badge>
+  }
+  return null
+}
+
 export default function ApiKeysPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null)
   const [isRevokingSelf, setIsRevokingSelf] = useState(false)
   const [showRevoked, setShowRevoked] = useState(false)
+  const [showExpired, setShowExpired] = useState(false)
   const queryClient = useQueryClient()
 
   let currentKeyPrefix = ''
@@ -96,7 +121,8 @@ export default function ApiKeysPage() {
     }
   }
 
-  const activeKeys = keys.filter(k => !k.revoked_at)
+  const activeKeys = keys.filter(k => !k.revoked_at && !isExpired(k))
+  const expiredKeys = keys.filter(k => !k.revoked_at && isExpired(k))
   const revokedKeys = keys.filter(k => !!k.revoked_at)
 
   return (
@@ -164,6 +190,7 @@ export default function ApiKeysPage() {
                             {isCurrent && (
                               <Badge variant="info" className="text-[10px]">Current session</Badge>
                             )}
+                            {expiryBadge(k)}
                           </div>
                           <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded mt-1 inline-block">
                             {k.key_prefix}--------
@@ -174,6 +201,12 @@ export default function ApiKeysPage() {
                             <span className="text-xs text-muted-foreground">
                               {k.last_used_at ? `Last used ${relativeTime(k.last_used_at)}` : 'Never used'}
                             </span>
+                            {k.expires_at && (
+                              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                <Clock size={11} />
+                                Expires {formatDate(k.expires_at)}
+                              </span>
+                            )}
                           </div>
                           <p className="text-xs text-muted-foreground mt-1.5">
                             {k.key_type === 'secret'
@@ -196,6 +229,45 @@ export default function ApiKeysPage() {
               )
             })}
           </div>
+
+          {/* Expired keys */}
+          {expiredKeys.length > 0 && (
+            <div className="mt-6">
+              <button onClick={() => setShowExpired(!showExpired)}
+                className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                <ChevronDown size={14} className={cn('transition-transform', showExpired && 'rotate-180')} />
+                {expiredKeys.length} expired key{expiredKeys.length !== 1 ? 's' : ''}
+              </button>
+              {showExpired && (
+                <div className="mt-3 space-y-2">
+                  {expiredKeys.map(k => (
+                    <Card key={k.id} className="opacity-60">
+                      <CardContent className="px-6 py-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <p className="text-sm text-muted-foreground">{k.name}</p>
+                            <code className="text-xs font-mono text-muted-foreground">{k.key_prefix}----</code>
+                            <Badge variant="destructive">expired</Badge>
+                            <span className="text-xs text-muted-foreground">
+                              Expired {k.expires_at ? relativeTime(k.expires_at) : ''}
+                            </span>
+                          </div>
+                          <Button variant="outline" size="sm"
+                            className="shrink-0 text-destructive hover:text-destructive"
+                            onClick={() => {
+                              setIsRevokingSelf(false)
+                              setRevokeTarget(k)
+                            }}>
+                            Revoke
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Revoked keys */}
           {revokedKeys.length > 0 && (
@@ -304,10 +376,20 @@ export default function ApiKeysPage() {
   )
 }
 
-/* ─── Create Key Dialog ─── */
+/* --- Create Key Dialog --- */
+
+type ExpiryPreset = 'never' | '30d' | '90d' | '1y' | 'custom'
+
+function addDays(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  return d.toISOString()
+}
 
 function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (rawKey: string) => void }) {
   const [keyType, setKeyType] = useState('secret')
+  const [expiryPreset, setExpiryPreset] = useState<ExpiryPreset>('never')
+  const [customDate, setCustomDate] = useState('')
   const [error, setError] = useState('')
 
   const form = useForm<CreateApiKeyData>({
@@ -315,15 +397,45 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
     defaultValues: { name: '' },
   })
 
+  function getExpiresAt(): string | undefined {
+    switch (expiryPreset) {
+      case '30d': return addDays(30)
+      case '90d': return addDays(90)
+      case '1y': return addDays(365)
+      case 'custom': return customDate ? new Date(customDate + 'T23:59:59').toISOString() : undefined
+      default: return undefined
+    }
+  }
+
   const onSubmit = form.handleSubmit(async (data) => {
     setError('')
+    if (expiryPreset === 'custom' && !customDate) {
+      setError('Please select an expiration date')
+      return
+    }
     try {
-      const res = await api.createApiKey({ name: data.name, key_type: keyType })
+      const res = await api.createApiKey({
+        name: data.name,
+        key_type: keyType,
+        expires_at: getExpiresAt(),
+      })
       onCreated(res.raw_key)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create API key')
     }
   })
+
+  const presets: { value: ExpiryPreset; label: string }[] = [
+    { value: 'never', label: 'No expiration' },
+    { value: '30d', label: '30 days' },
+    { value: '90d', label: '90 days' },
+    { value: '1y', label: '1 year' },
+    { value: 'custom', label: 'Custom' },
+  ]
+
+  // Min date for custom picker = tomorrow
+  const tomorrow = new Date()
+  tomorrow.setDate(tomorrow.getDate() + 1)
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
@@ -377,6 +489,43 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
               </div>
             </div>
 
+            <div>
+              <Label className="mb-2 block">Expiration</Label>
+              <div className="flex flex-wrap gap-2">
+                {presets.map(p => (
+                  <button
+                    key={p.value}
+                    type="button"
+                    onClick={() => setExpiryPreset(p.value)}
+                    className={cn(
+                      'px-3 py-1.5 rounded-lg text-sm border transition-colors',
+                      expiryPreset === p.value
+                        ? 'border-primary bg-primary/5 text-primary font-medium'
+                        : 'border-border text-muted-foreground hover:text-foreground hover:border-border/80'
+                    )}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              {expiryPreset === 'custom' && (
+                <div className="mt-3">
+                  <DatePicker
+                    value={customDate}
+                    onChange={setCustomDate}
+                    placeholder="Select expiration date"
+                    className="w-56"
+                    minDate={tomorrow}
+                  />
+                </div>
+              )}
+              {expiryPreset !== 'never' && expiryPreset !== 'custom' && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Key will expire on {new Date(getExpiresAt()!).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                </p>
+              )}
+            </div>
+
             {error && (
               <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
                 <p className="text-destructive text-sm">{error}</p>
@@ -399,4 +548,3 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
     </Dialog>
   )
 }
-
