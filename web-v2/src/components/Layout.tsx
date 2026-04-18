@@ -14,6 +14,7 @@ import { Separator } from '@/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 import { CommandPalette } from '@/components/CommandPalette'
+import { VeloxLogo } from '@/components/VeloxLogo'
 import { KeyboardHelp } from '@/components/KeyboardHelp'
 
 const billingNav = [
@@ -127,11 +128,8 @@ export function Layout({ children }: { children: ReactNode }) {
   const sidebarContent = (
     <>
       {/* Header */}
-      <div className="p-5 border-b border-border flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground">Velox</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Billing Dashboard</p>
-        </div>
+      <div className="p-4 border-b border-border flex items-center justify-between">
+        <VeloxLogo size="sm" />
         <button
           onClick={closeSidebar}
           aria-label="Close menu"
@@ -247,7 +245,7 @@ export function Layout({ children }: { children: ReactNode }) {
           >
             <Menu size={22} />
           </button>
-          <h1 className="text-lg font-bold tracking-tight text-foreground">Velox</h1>
+          <VeloxLogo size="sm" />
         </div>
         <div className="max-w-7xl mx-auto p-4 md:p-8">
           {children}

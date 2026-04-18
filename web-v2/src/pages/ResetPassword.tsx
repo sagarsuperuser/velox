@@ -1,16 +1,18 @@
 import { useState } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { Zap, Loader2 } from 'lucide-react'
+import { Loader2, ArrowLeft, Eye, EyeOff } from 'lucide-react'
+import { VeloxLogo } from '@/components/VeloxLogo'
 
 export default function ResetPasswordPage() {
   const [searchParams] = useSearchParams()
   const token = searchParams.get('token') || ''
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
@@ -60,106 +62,85 @@ export default function ResetPasswordPage() {
 
   if (!token) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 via-white to-[#F7F7FF] dark:from-gray-950 dark:via-gray-900 dark:to-[#1A1523] relative overflow-hidden">
-        <div className="absolute inset-0 opacity-[0.03]" style={{
-          backgroundImage: 'radial-gradient(circle at 1px 1px, currentColor 1px, transparent 0)',
-          backgroundSize: '32px 32px',
-        }} />
-
-        <div className="w-full max-w-sm relative z-10">
-          <Card className="shadow-lg">
-            <CardContent className="pt-6">
-              <div className="text-center space-y-4">
-                <p className="text-sm text-muted-foreground">
-                  Invalid or missing reset token. Please request a new password reset link.
-                </p>
-                <Link to="/forgot-password">
-                  <Button className="w-full">Request New Link</Button>
-                </Link>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+      <div className="min-h-screen flex flex-col items-center justify-center px-4 bg-background">
+        <Card className="w-full max-w-[360px]">
+          <CardContent className="p-6 text-center space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Invalid or missing reset token.
+            </p>
+            <Link to="/forgot-password">
+              <Button className="w-full">Request New Link</Button>
+            </Link>
+          </CardContent>
+        </Card>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 via-white to-[#F7F7FF] dark:from-gray-950 dark:via-gray-900 dark:to-[#1A1523] relative overflow-hidden">
-      <div className="absolute inset-0 opacity-[0.03]" style={{
-        backgroundImage: 'radial-gradient(circle at 1px 1px, currentColor 1px, transparent 0)',
-        backgroundSize: '32px 32px',
-      }} />
+    <div className="min-h-screen flex flex-col items-center justify-center px-4 bg-background">
+      <div className="flex flex-col items-center mb-8">
+        <VeloxLogo size="lg" />
+        <p className="text-sm text-muted-foreground mt-2">Choose a new password</p>
+      </div>
 
-      <div className="w-full max-w-sm relative z-10">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary shadow-lg mb-4">
-            <Zap size={28} className="text-white" />
-          </div>
-          <h1 className="text-3xl font-bold text-foreground">Velox</h1>
-          <p className="text-muted-foreground mt-1">Set a new password</p>
-        </div>
-
-        <Card className="shadow-lg">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-base">Reset password</CardTitle>
-            <CardDescription>Choose a new password for your account</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit} noValidate className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="password">New password</Label>
+      <Card className="w-full max-w-[360px]">
+        <CardContent className="p-6">
+          <form onSubmit={handleSubmit} noValidate className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="password">Password</Label>
+              <div className="relative">
                 <Input
                   id="password"
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={e => setPassword(e.target.value)}
                   placeholder="Minimum 8 characters"
                   autoFocus
                   autoComplete="new-password"
+                  className="pr-10"
                 />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
               </div>
+            </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="confirm-password">Confirm password</Label>
-                <Input
-                  id="confirm-password"
-                  type="password"
-                  value={confirmPassword}
-                  onChange={e => setConfirmPassword(e.target.value)}
-                  placeholder="Re-enter your password"
-                  autoComplete="new-password"
-                />
+            <div className="space-y-1.5">
+              <Label htmlFor="confirm-password">Confirm password</Label>
+              <Input
+                id="confirm-password"
+                type={showPassword ? 'text' : 'password'}
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                placeholder="Re-enter password"
+                autoComplete="new-password"
+              />
+            </div>
+
+            {error && (
+              <div className="px-3 py-2.5 rounded-lg bg-destructive/10 border border-destructive/20">
+                <p className="text-destructive text-sm">{error}</p>
               </div>
+            )}
 
-              {error && (
-                <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-                  <p className="text-destructive text-xs font-medium">{error}</p>
-                </div>
-              )}
+            <Button type="submit" disabled={loading} className="w-full">
+              {loading ? <Loader2 size={16} className="animate-spin mr-2" /> : null}
+              {loading ? 'Resetting...' : 'Reset Password'}
+            </Button>
 
-              <Button type="submit" disabled={loading} className="w-full">
-                {loading ? (
-                  <>
-                    <Loader2 size={16} className="animate-spin mr-2" />
-                    Resetting...
-                  </>
-                ) : (
-                  'Reset Password'
-                )}
-              </Button>
-
-              <Link to="/login" className="block text-center text-xs text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2">
-                Back to sign in
-              </Link>
-            </form>
-          </CardContent>
-        </Card>
-
-        <p className="text-center text-xs text-muted-foreground/50 mt-6">
-          Powered by Velox
-        </p>
-      </div>
+            <Link to="/login" className="flex items-center justify-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+              <ArrowLeft size={14} />
+              Back to sign in
+            </Link>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   )
 }
