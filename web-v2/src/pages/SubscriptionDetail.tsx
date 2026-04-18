@@ -614,11 +614,16 @@ function ChangePlanDialog({ subscriptionId, currentPlanId, currentPlanName, plan
             <Label>New Plan</Label>
             <Select value={selectedPlan} onValueChange={setSelectedPlan}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select a plan..." />
+                <SelectValue placeholder="Select a plan...">
+                  {(value: string) => {
+                    const plan = availablePlans.find(p => p.id === value)
+                    return plan ? `${plan.name} — ${formatCents(plan.base_amount_cents)}/${plan.billing_interval}` : value
+                  }}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {availablePlans.map(p => (
-                  <SelectItem key={p.id} value={p.id} label={`${p.name} — ${formatCents(p.base_amount_cents)}/${p.billing_interval}`}>
+                  <SelectItem key={p.id} value={p.id}>
                     {p.name} -- {formatCents(p.base_amount_cents)}/{p.billing_interval}
                   </SelectItem>
                 ))}

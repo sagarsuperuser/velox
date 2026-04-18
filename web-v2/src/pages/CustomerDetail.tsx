@@ -830,11 +830,16 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
             <Label>Plan</Label>
             <Select value={planId} onValueChange={setPlanId}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select plan..." />
+                <SelectValue placeholder="Select plan...">
+                  {(value: string) => {
+                    const plan = plans.find(p => p.id === value)
+                    return plan ? `${plan.name} (${plan.code})` : value
+                  }}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {plans.map(p => (
-                  <SelectItem key={p.id} value={p.id} label={`${p.name} (${p.code})`}>{p.name} ({p.code})</SelectItem>
+                  <SelectItem key={p.id} value={p.id}>{p.name} ({p.code})</SelectItem>
                 ))}
               </SelectContent>
             </Select>

@@ -575,11 +575,16 @@ function CreateMeterDialog({ onClose, onCreated, rules }: { onClose: () => void;
               <Label>Rating Rule</Label>
               <Select value={form.rating_rule_version_id} onValueChange={v => setForm(f => ({ ...f, rating_rule_version_id: v }))}>
                 <SelectTrigger className="w-full mt-1">
-                  <SelectValue placeholder="None (assign later)" />
+                  <SelectValue placeholder="None (assign later)">
+                    {(value: string) => {
+                      const rule = rules.find(r => r.id === value)
+                      return rule ? `${rule.name} (${rule.mode})` : value
+                    }}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {rules.map(r => (
-                    <SelectItem key={r.id} value={r.id} label={`${r.name} (${r.mode})`}>{r.name} ({r.mode})</SelectItem>
+                    <SelectItem key={r.id} value={r.id}>{r.name} ({r.mode})</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
