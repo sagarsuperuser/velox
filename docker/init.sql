@@ -10,8 +10,9 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO velox_app;
 -- so they must NOT share the dev database.
 CREATE DATABASE velox_test OWNER velox;
 \connect velox_test
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE ROLE velox_test_app WITH LOGIN PASSWORD 'velox_test_app';
 GRANT ALL PRIVILEGES ON DATABASE velox_test TO velox_test_app;
 GRANT ALL ON SCHEMA public TO velox_test_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO velox_test_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO velox_test_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE velox IN SCHEMA public GRANT ALL ON TABLES TO velox_test_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE velox IN SCHEMA public GRANT ALL ON SEQUENCES TO velox_test_app;
