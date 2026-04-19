@@ -53,40 +53,20 @@ func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) 
 	})
 }
 
-// ApplyToInvoice deducts credits from a customer's balance and returns the
-// amount deducted. If balance is less than invoiceAmount, uses what's available.
+// ApplyToInvoice deducts credits from a customer's balance AND reduces the
+// invoice's amount_due_cents in a single atomic transaction. Either both
+// happen or neither does — there is no window where the ledger is debited
+// but the invoice still shows the pre-credit amount due (which would cause
+// double-billing when the PaymentIntent charges for the full original total).
+//
+// Returns the amount deducted. If balance is 0 or invoice amount is 0,
+// returns 0 without any writes.
 func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, invoiceAmountCents int64, invoiceNumber ...string) (int64, error) {
-	bal, err := s.store.GetBalance(ctx, tenantID, customerID)
-	if err != nil {
-		return 0, err
+	desc := fmt.Sprintf("Applied to invoice %s", invoiceID)
+	if len(invoiceNumber) > 0 && invoiceNumber[0] != "" {
+		desc = fmt.Sprintf("Applied to invoice %s", invoiceNumber[0])
 	}
-
-	if bal.BalanceCents <= 0 {
-		return 0, nil // No credits to apply
-	}
-
-	deduct := bal.BalanceCents
-	if deduct > invoiceAmountCents {
-		deduct = invoiceAmountCents
-	}
-
-	_, err = s.store.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
-		CustomerID:  customerID,
-		EntryType:   domain.CreditUsage,
-		AmountCents: -deduct, // Negative = deduction
-		Description: func() string {
-			if len(invoiceNumber) > 0 && invoiceNumber[0] != "" {
-				return fmt.Sprintf("Applied to invoice %s", invoiceNumber[0])
-			}
-			return fmt.Sprintf("Applied to invoice %s", invoiceID)
-		}(),
-		InvoiceID: invoiceID,
-	})
-	if err != nil {
-		return 0, err
-	}
-
-	return deduct, nil
+	return s.store.ApplyToInvoiceAtomic(ctx, tenantID, customerID, invoiceID, desc, invoiceAmountCents)
 }
 
 func (s *Service) ReverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error) {

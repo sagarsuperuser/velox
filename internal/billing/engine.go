@@ -2,12 +2,13 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/telemetry"
 	"github.com/sagarsuperuser/velox/internal/tax"
@@ -259,11 +260,9 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		periodDays := int(periodEnd.Sub(periodStart).Hours() / 24)
 		fullCycleDays := int(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart).Hours() / 24)
 		if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
-			// Prorate: baseFee * (periodDays / fullCycleDays), rounded to nearest cent
-			baseFee = (plan.BaseAmountCents * int64(periodDays)) / int64(fullCycleDays)
-			if (plan.BaseAmountCents*int64(periodDays))%int64(fullCycleDays) >= int64(fullCycleDays)/2 {
-				baseFee++
-			}
+			// Prorate baseFee * (periodDays / fullCycleDays) with banker's rounding
+			// so mid-cycle changes don't accumulate a rounding bias across tenants.
+			baseFee = roundHalfToEven(plan.BaseAmountCents*int64(periodDays), int64(fullCycleDays))
 			description = fmt.Sprintf("%s - base fee (prorated %d/%d days)", plan.Name, periodDays, fullCycleDays)
 		}
 
@@ -423,18 +422,13 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			}
 		}
 	} else if taxRateBP > 0 && subtotal > 0 {
-		// Inline manual tax math (legacy path when no calculator is wired)
-		taxAmountCents = subtotal * int64(taxRateBP) / 10000
-		if (subtotal*int64(taxRateBP))%10000 >= 5000 {
-			taxAmountCents++
-		}
+		// Inline manual tax math (legacy path when no calculator is wired).
+		// Banker's rounding on the total and each line item for zero-bias accounting.
+		taxAmountCents = roundHalfToEven(subtotal*int64(taxRateBP), 10000)
 
 		var lineTaxSum int64
 		for i := range lineItems {
-			lineTax := lineItems[i].AmountCents * int64(taxRateBP) / 10000
-			if (lineItems[i].AmountCents*int64(taxRateBP))%10000 >= 5000 {
-				lineTax++
-			}
+			lineTax := roundHalfToEven(lineItems[i].AmountCents*int64(taxRateBP), 10000)
 			lineItems[i].TaxRateBP = taxRateBP
 			lineItems[i].TaxAmountCents = lineTax
 			lineItems[i].TotalAmountCents = lineItems[i].AmountCents + lineTax
@@ -477,8 +471,12 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		NetPaymentTermDays: netDays,
 	}, lineItems)
 	if err != nil {
-		// Idempotency: if this invoice already exists, skip silently
-		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "duplicate") {
+		// Idempotency: if this invoice already exists (UNIQUE violation on the
+		// per-subscription+period constraint), the store returns errs.ErrAlreadyExists.
+		// Match on the sentinel, not err.Error() substrings — translated messages,
+		// wrapped errors, or DB driver changes would silently break substring matches
+		// and cause duplicate charges in multi-worker retries.
+		if errors.Is(err, errs.ErrAlreadyExists) {
 			slog.Info("invoice already exists for billing period (idempotent skip)",
 				"subscription_id", sub.ID,
 				"period_start", periodStart,
@@ -493,20 +491,20 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		return false, fmt.Errorf("create invoice: %w", err)
 	}
 
-	// Apply customer credits before charging (reduces amount_due)
+	// Apply customer credits before charging. ApplyToInvoice is atomic:
+	// it both debits the credit ledger AND reduces the invoice's amount_due_cents
+	// in a single transaction. A failure leaves both unchanged — no dual-write
+	// hole where credits are consumed but the invoice still shows the pre-credit
+	// amount due (which would double-bill the customer via Stripe).
 	if e.credits != nil && totalWithTax > 0 {
 		credited, err := e.credits.ApplyToInvoice(ctx, sub.TenantID, sub.CustomerID, inv.ID, totalWithTax, inv.InvoiceNumber)
 		if err != nil {
 			slog.Warn("failed to apply credits", "invoice_id", inv.ID, "error", err)
 		} else if credited > 0 {
-			if _, err := e.invoices.ApplyCreditAmount(ctx, sub.TenantID, inv.ID, credited); err != nil {
-				slog.Warn("failed to reduce invoice amount_due", "invoice_id", inv.ID, "error", err)
-			} else {
-				slog.Info("credits applied to invoice",
-					"invoice_id", inv.ID,
-					"credited_cents", credited,
-				)
-			}
+			slog.Info("credits applied to invoice",
+				"invoice_id", inv.ID,
+				"credited_cents", credited,
+			)
 		}
 	}
 
@@ -617,5 +615,34 @@ func advanceBillingPeriod(from time.Time, interval domain.BillingInterval) time.
 		return from.AddDate(1, 0, 0)
 	default:
 		return from.AddDate(0, 1, 0)
+	}
+}
+
+// roundHalfToEven computes num/denom rounded to the nearest integer using
+// banker's rounding (round half to even). On exact ties (remainder = denom/2),
+// rounds toward the nearest even integer instead of always rounding up.
+//
+// Why not half-up? Half-up introduces a systematic positive bias when rounding
+// large batches of monetary amounts — over millions of invoices, this becomes
+// a measurable accounting drift that auditors will flag. Half-to-even averages
+// out to zero bias. IEEE 754 default, Python 3's round(), .NET decimal, and
+// most financial/GAAP-adjacent systems use this rule.
+//
+// Requires num >= 0 and denom > 0; billing amounts are always non-negative.
+func roundHalfToEven(num, denom int64) int64 {
+	quotient := num / denom
+	remainder := num % denom
+	doubled := remainder * 2
+	switch {
+	case doubled < denom:
+		return quotient
+	case doubled > denom:
+		return quotient + 1
+	default:
+		// Exact half: round to nearest even.
+		if quotient%2 == 0 {
+			return quotient
+		}
+		return quotient + 1
 	}
 }

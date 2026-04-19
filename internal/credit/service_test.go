@@ -97,6 +97,30 @@ func (m *memStore) ListExpiredGrants(_ context.Context) ([]domain.CreditLedgerEn
 	return result, nil
 }
 
+func (m *memStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerID, invoiceID, invoiceDesc string, invoiceAmountCents int64) (int64, error) {
+	if invoiceAmountCents <= 0 {
+		return 0, nil
+	}
+	bal, err := m.GetBalance(ctx, tenantID, customerID)
+	if err != nil {
+		return 0, err
+	}
+	if bal.BalanceCents <= 0 {
+		return 0, nil
+	}
+	deduct := min(bal.BalanceCents, invoiceAmountCents)
+	if _, err := m.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
+		CustomerID:  customerID,
+		EntryType:   domain.CreditUsage,
+		AmountCents: -deduct,
+		Description: invoiceDesc,
+		InvoiceID:   invoiceID,
+	}); err != nil {
+		return 0, err
+	}
+	return deduct, nil
+}
+
 func (m *memStore) ListEntries(_ context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error) {
 	var result []domain.CreditLedgerEntry
 	for _, e := range m.entries {

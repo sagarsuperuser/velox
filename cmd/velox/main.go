@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -156,8 +157,21 @@ func serve() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go scheduler.Start(ctx)
-	go server.WebhookOutSvc.StartRetryWorker(ctx, 30*time.Second)
+	// Track background workers so shutdown can wait for them to finish their
+	// current tick before the process exits. Without this, a SIGTERM during a
+	// billing run could leave partial work — half-generated invoices, ledger
+	// entries without matching invoice updates, in-flight webhook deliveries.
+	var workers sync.WaitGroup
+
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		scheduler.Start(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		server.WebhookOutSvc.StartRetryWorker(ctx, 30*time.Second)
+	}()
 
 	go func() {
 		slog.Info("listening", "addr", srv.Addr)
@@ -168,12 +182,29 @@ func serve() {
 	}()
 
 	<-ctx.Done()
-	slog.Info("shutting down")
+	slog.Info("shutting down — draining workers and in-flight requests")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Stop accepting new HTTP requests first, then drain in-flight ones.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("shutdown error", "error", err)
+		slog.Error("http shutdown error", "error", err)
+	}
+
+	// Wait for scheduler + webhook worker to return. Both exit cleanly when
+	// their context (ctx above, now cancelled) is done, but a mid-tick run
+	// might still be completing. Bound the wait so a hung worker doesn't
+	// prevent exit indefinitely.
+	done := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		slog.Info("workers drained cleanly")
+	case <-time.After(30 * time.Second):
+		slog.Warn("workers did not drain within timeout — forcing exit")
 	}
 }
 

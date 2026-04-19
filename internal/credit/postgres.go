@@ -76,6 +76,84 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 	return entry, nil
 }
 
+// ApplyToInvoiceAtomic debits the customer's credit balance and reduces the
+// invoice's amount_due_cents in a SINGLE transaction. Either both writes
+// succeed or both are rolled back. This closes the dual-write hole where a
+// credit ledger entry could be created but the invoice's denormalized
+// amount_due fail to update, leaving the customer double-billed.
+//
+// Returns the amount deducted (0 if balance is zero or invoice is free).
+// Writes across two tables (customer_credit_ledger + invoices) inside one
+// tenant-scoped tx — intentional: the invoice's credit fields are a cache of
+// the ledger's source of truth, and they must stay in lockstep.
+func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerID, invoiceID, invoiceDesc string, invoiceAmountCents int64) (int64, error) {
+	if invoiceAmountCents <= 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Lock the customer's ledger rows to serialize concurrent applications —
+	// without this, two simultaneous billing runs on the same customer could
+	// each see the full balance and over-deduct.
+	if _, err := tx.ExecContext(ctx,
+		`SELECT 1 FROM customer_credit_ledger WHERE customer_id = $1 FOR UPDATE`,
+		customerID,
+	); err != nil {
+		return 0, fmt.Errorf("lock credit ledger: %w", err)
+	}
+
+	var currentBalance int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(amount_cents), 0) FROM customer_credit_ledger WHERE customer_id = $1`,
+		customerID,
+	).Scan(&currentBalance); err != nil {
+		return 0, fmt.Errorf("read credit balance: %w", err)
+	}
+
+	if currentBalance <= 0 {
+		return 0, nil // No credits to apply — no need to write anything.
+	}
+
+	deduct := min(currentBalance, invoiceAmountCents)
+
+	entryID := postgres.NewID("vlx_ccl")
+	balanceAfter := currentBalance - deduct
+	now := time.Now().UTC()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO customer_credit_ledger (id, tenant_id, customer_id, entry_type,
+			amount_cents, balance_after, description, invoice_id, metadata, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+	`, entryID, tenantID, customerID, domain.CreditUsage,
+		-deduct, balanceAfter, invoiceDesc, invoiceID, []byte("{}"), now,
+	); err != nil {
+		if postgres.IsForeignKeyViolation(err) {
+			return 0, fmt.Errorf("customer %q not found", customerID)
+		}
+		return 0, fmt.Errorf("insert credit usage: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE invoices
+		SET amount_due_cents = GREATEST(amount_due_cents - $1, 0),
+		    credits_applied_cents = credits_applied_cents + $1,
+		    updated_at = $2
+		WHERE id = $3 AND tenant_id = $4
+	`, deduct, now, invoiceID, tenantID); err != nil {
+		return 0, fmt.Errorf("update invoice amount_due: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit credit application: %w", err)
+	}
+	return deduct, nil
+}
+
 func (s *PostgresStore) GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
