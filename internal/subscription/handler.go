@@ -63,12 +63,19 @@ type ProrationCouponApplier interface {
 // ProrationTaxResult is what ApplyTaxToLineItems returns: invoice-level tax
 // totals plus per-line mutations to the supplied line-item slice. Duplicates
 // billing.TaxApplication so subscription package doesn't import billing.
+//
+// SubtotalCents and DiscountCents are the net values the caller must write
+// onto the invoice. In exclusive-pricing mode these pass through the inputs
+// unchanged; in inclusive-pricing mode the engine back-carves tax out of the
+// gross sticker price, so Subtotal/Discount shift to the net view.
 type ProrationTaxResult struct {
 	TaxAmountCents int64
 	TaxRateBP      int
 	TaxName        string
 	TaxCountry     string
 	TaxID          string
+	SubtotalCents  int64
+	DiscountCents  int64
 }
 
 // ProrationTaxApplier resolves and applies tax against a proration invoice's
@@ -411,8 +418,6 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 				discountCents = d
 			}
 		}
-		discountedSubtotal := proratedCents - discountCents
-
 		memo := fmt.Sprintf("Plan upgrade proration: %s -> %s", oldPlan.Name, newPlan.Name)
 		lineItem := domain.InvoiceLineItem{
 			LineType:         domain.LineTypeBaseFee,
@@ -427,8 +432,13 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 
 		// Apply tax after discount so the customer is taxed on what they
 		// actually pay. When no applier is wired the invoice is tax-free, which
-		// matches the legacy behaviour and leaves totals unchanged.
-		var taxResult ProrationTaxResult
+		// matches the legacy behaviour and leaves totals unchanged. Default the
+		// Subtotal/Discount fields to the pre-tax inputs so the no-applier and
+		// tax-apply-failed branches produce a valid exclusive-mode invoice.
+		taxResult := ProrationTaxResult{
+			SubtotalCents: proratedCents,
+			DiscountCents: discountCents,
+		}
 		if h.tax != nil {
 			r, err := h.tax.ApplyTaxToLineItems(ctx, tenantID, result.Subscription.CustomerID, newPlan.Currency, proratedCents, discountCents, lineItems)
 			if err != nil {
@@ -438,7 +448,7 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 				taxResult = r
 			}
 		}
-		netProrated := discountedSubtotal + taxResult.TaxAmountCents
+		netProrated := taxResult.SubtotalCents - taxResult.DiscountCents + taxResult.TaxAmountCents
 
 		invoice := domain.Invoice{
 			CustomerID:          result.Subscription.CustomerID,
@@ -446,8 +456,8 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 			Status:              domain.InvoiceFinalized,
 			PaymentStatus:       domain.PaymentPending,
 			Currency:            newPlan.Currency,
-			SubtotalCents:       proratedCents,
-			DiscountCents:       discountCents,
+			SubtotalCents:       taxResult.SubtotalCents,
+			DiscountCents:       taxResult.DiscountCents,
 			TaxRateBP:           taxResult.TaxRateBP,
 			TaxName:             taxResult.TaxName,
 			TaxCountry:          taxResult.TaxCountry,

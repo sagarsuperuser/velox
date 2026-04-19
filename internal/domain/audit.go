@@ -40,6 +40,7 @@ type TenantSettings struct {
 	NetPaymentTerms int       `json:"net_payment_terms"`
 	TaxRateBP       int       `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
 	TaxName         string    `json:"tax_name,omitempty"`
+	TaxInclusive    bool      `json:"tax_inclusive"`
 	CompanyName     string    `json:"company_name,omitempty"`
 	CompanyAddress  string    `json:"company_address,omitempty"`
 	CompanyEmail    string    `json:"company_email,omitempty"`

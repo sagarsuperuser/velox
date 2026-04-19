@@ -31,6 +31,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
+import { Switch } from '@/components/ui/switch'
 
 import { Building2, FileText, Receipt, Globe, Check, AlertCircle, Loader2, Zap, Wrench } from 'lucide-react'
 
@@ -44,6 +45,7 @@ const settingsSchema = z.object({
   net_payment_terms: z.number().min(0).max(365),
   tax_rate_bp: z.number().min(0).max(10000),
   tax_name: z.string(),
+  tax_inclusive: z.boolean(),
   default_currency: z.string(),
   timezone: z.string(),
 })
@@ -82,7 +84,7 @@ export default function SettingsPage() {
     defaultValues: {
       company_name: '', company_email: '', company_phone: '', company_address: '',
       logo_url: '',
-      invoice_prefix: '', net_payment_terms: 0, tax_rate_bp: 0, tax_name: '',
+      invoice_prefix: '', net_payment_terms: 0, tax_rate_bp: 0, tax_name: '', tax_inclusive: false,
       default_currency: '', timezone: '',
     },
   })
@@ -106,7 +108,7 @@ export default function SettingsPage() {
         company_phone: s.company_phone || '', company_address: s.company_address || '',
         logo_url: s.logo_url || '',
         invoice_prefix: s.invoice_prefix || '', net_payment_terms: s.net_payment_terms || 0,
-        tax_rate_bp: s.tax_rate_bp || 0, tax_name: s.tax_name || '',
+        tax_rate_bp: s.tax_rate_bp || 0, tax_name: s.tax_name || '', tax_inclusive: s.tax_inclusive || false,
         default_currency: s.default_currency || '', timezone: s.timezone || '',
       }
       reset(f)
@@ -125,7 +127,7 @@ export default function SettingsPage() {
         company_phone: updated.company_phone || '', company_address: updated.company_address || '',
         logo_url: updated.logo_url || '',
         invoice_prefix: updated.invoice_prefix || '', net_payment_terms: updated.net_payment_terms || 0,
-        tax_rate_bp: updated.tax_rate_bp || 0, tax_name: updated.tax_name || '',
+        tax_rate_bp: updated.tax_rate_bp || 0, tax_name: updated.tax_name || '', tax_inclusive: updated.tax_inclusive || false,
         default_currency: updated.default_currency || '', timezone: updated.timezone || '',
       }
       reset(f)
@@ -328,15 +330,37 @@ export default function SettingsPage() {
                   <p className="text-xs text-muted-foreground mt-1">Set to 0 to disable tax</p>
                 </div>
               </div>
+              <div className="mt-5 flex items-start justify-between gap-4 p-4 rounded-lg border border-border bg-muted/30">
+                <div>
+                  <Label className="font-medium text-foreground">Tax-inclusive pricing</Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    When on, plan and usage prices already include tax. Velox carves tax out of the sticker price.
+                    When off (default), tax is added on top of the subtotal.
+                  </p>
+                </div>
+                <Switch
+                  checked={form.tax_inclusive ?? false}
+                  onCheckedChange={(checked) => setValue('tax_inclusive', !!checked, { shouldDirty: true })}
+                  className="shrink-0 mt-0.5"
+                />
+              </div>
               {form.tax_rate_bp > 0 && (
                 <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 rounded-lg">
                   <p className="text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
                     <AlertCircle size={14} className="shrink-0 mt-0.5" />
-                    <span>
-                      Example: {symbol}100.00 subtotal {form.tax_name ? `+ ${form.tax_name} ` : '+ tax '}
-                      {(form.tax_rate_bp / 100).toFixed(2)}% = <strong>{formatCents(10000 + Math.round(10000 * form.tax_rate_bp / 10000), form.default_currency || 'USD')}</strong> total.
-                      For automatic jurisdiction-based tax, enable Stripe Tax in Feature Flags.
-                    </span>
+                    {form.tax_inclusive ? (
+                      <span>
+                        Example: {symbol}100.00 sticker price includes {form.tax_name || 'tax'} at {(form.tax_rate_bp / 100).toFixed(2)}%.
+                        Net subtotal = <strong>{formatCents(Math.round(10000 * 10000 / (10000 + form.tax_rate_bp)), form.default_currency || 'USD')}</strong>.
+                        Customer pays <strong>{formatCents(10000, form.default_currency || 'USD')}</strong>.
+                      </span>
+                    ) : (
+                      <span>
+                        Example: {symbol}100.00 subtotal {form.tax_name ? `+ ${form.tax_name} ` : '+ tax '}
+                        {(form.tax_rate_bp / 100).toFixed(2)}% = <strong>{formatCents(10000 + Math.round(10000 * form.tax_rate_bp / 10000), form.default_currency || 'USD')}</strong> total.
+                        For automatic jurisdiction-based tax, enable Stripe Tax in Feature Flags.
+                      </span>
+                    )}
                   </p>
                 </div>
               )}

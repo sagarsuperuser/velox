@@ -61,12 +61,14 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 	var ts domain.TenantSettings
 	err = tx.QueryRowContext(ctx, `
 		SELECT tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
-			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), COALESCE(company_name,''), COALESCE(company_address,''),
+			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
+			COALESCE(company_name,''), COALESCE(company_address,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1
 	`, tenantID).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
-		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.CompanyName, &ts.CompanyAddress,
+		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
+		&ts.CompanyName, &ts.CompanyAddress,
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL, &ts.CreatedAt, &ts.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -91,26 +93,31 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 	now := time.Now().UTC()
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO tenant_settings (tenant_id, default_currency, timezone, invoice_prefix,
-			net_payment_terms, tax_rate_bp, tax_name, company_name, company_address, company_email, company_phone,
+			net_payment_terms, tax_rate_bp, tax_name, tax_inclusive,
+			company_name, company_address, company_email, company_phone,
 			logo_url, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			default_currency = EXCLUDED.default_currency, timezone = EXCLUDED.timezone,
 			invoice_prefix = EXCLUDED.invoice_prefix, net_payment_terms = EXCLUDED.net_payment_terms,
 			tax_rate_bp = EXCLUDED.tax_rate_bp, tax_name = EXCLUDED.tax_name,
+			tax_inclusive = EXCLUDED.tax_inclusive,
 			company_name = EXCLUDED.company_name, company_address = EXCLUDED.company_address,
 			company_email = EXCLUDED.company_email, company_phone = EXCLUDED.company_phone,
 			logo_url = EXCLUDED.logo_url, updated_at = EXCLUDED.updated_at
 		RETURNING tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
-			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), COALESCE(company_name,''), COALESCE(company_address,''),
+			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
+			COALESCE(company_name,''), COALESCE(company_address,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			created_at, updated_at
 	`, ts.TenantID, ts.DefaultCurrency, ts.Timezone, ts.InvoicePrefix,
-		ts.NetPaymentTerms, ts.TaxRateBP, ts.TaxName, postgres.NullableString(ts.CompanyName),
+		ts.NetPaymentTerms, ts.TaxRateBP, ts.TaxName, ts.TaxInclusive,
+		postgres.NullableString(ts.CompanyName),
 		postgres.NullableString(ts.CompanyAddress), postgres.NullableString(ts.CompanyEmail),
 		postgres.NullableString(ts.CompanyPhone), postgres.NullableString(ts.LogoURL), now,
 	).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
-		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.CompanyName, &ts.CompanyAddress,
+		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
+		&ts.CompanyName, &ts.CompanyAddress,
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL, &ts.CreatedAt, &ts.UpdatedAt)
 	if err != nil {
 		return domain.TenantSettings{}, err

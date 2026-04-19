@@ -456,6 +456,7 @@ export interface TenantSettings {
   net_payment_terms: number
   tax_rate_bp: number
   tax_name: string
+  tax_inclusive: boolean
   company_name: string
   company_address: string
   company_email: string

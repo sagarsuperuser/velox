@@ -210,5 +210,7 @@ func (a *prorationTaxApplierAdapter) ApplyTaxToLineItems(ctx context.Context, te
 		TaxName:        r.TaxName,
 		TaxCountry:     r.TaxCountry,
 		TaxID:          r.TaxID,
+		SubtotalCents:  r.SubtotalCents,
+		DiscountCents:  r.DiscountCents,
 	}, nil
 }
