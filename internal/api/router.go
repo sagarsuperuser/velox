@@ -231,6 +231,11 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	// Coupon discount applier: billing engine consults redemptions at finalize time.
 	engine.SetCouponApplier(couponSvc)
 
+	// Proration invoices now share the billing engine's tax resolution path so
+	// plan upgrades aren't silently tax-free. The adapter translates between
+	// billing.TaxApplication and subscription.ProrationTaxResult.
+	subH.SetProrationTaxApplier(&prorationTaxApplierAdapter{engine: engine})
+
 	billingH := billing.NewHandler(engine, subStore)
 	analyticsH := analytics.NewHandler(db)
 

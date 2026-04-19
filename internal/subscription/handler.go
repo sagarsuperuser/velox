@@ -60,6 +60,28 @@ type ProrationCouponApplier interface {
 	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (int64, error)
 }
 
+// ProrationTaxResult is what ApplyTaxToLineItems returns: invoice-level tax
+// totals plus per-line mutations to the supplied line-item slice. Duplicates
+// billing.TaxApplication so subscription package doesn't import billing.
+type ProrationTaxResult struct {
+	TaxAmountCents int64
+	TaxRateBP      int
+	TaxName        string
+	TaxCountry     string
+	TaxID          string
+}
+
+// ProrationTaxApplier resolves and applies tax against a proration invoice's
+// single line item. Optional — when nil, proration invoices are tax-free
+// (previous, incorrect behaviour).
+//
+// Shape matches billing.Engine.ApplyTaxToLineItems so the engine satisfies this
+// interface directly; the adapter in router.go just translates the result
+// struct to stay within package boundaries.
+type ProrationTaxApplier interface {
+	ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, currency string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (ProrationTaxResult, error)
+}
+
 // ProrationGrantInput carries the downgrade credit payload plus the
 // provenance fields required for dedup.
 type ProrationGrantInput struct {
@@ -76,6 +98,7 @@ type Handler struct {
 	invoices    ProrationInvoiceCreator
 	credits     ProrationCreditGranter
 	coupons     ProrationCouponApplier
+	tax         ProrationTaxApplier
 	auditLogger *audit.Logger
 }
 
@@ -97,6 +120,14 @@ func (h *Handler) SetProrationDeps(plans PlanReader, invoices ProrationInvoiceCr
 // Optional — nil leaves proration invoices undiscounted.
 func (h *Handler) SetProrationCouponApplier(c ProrationCouponApplier) {
 	h.coupons = c
+}
+
+// SetProrationTaxApplier configures tax resolution on proration invoices.
+// Optional — nil leaves proration invoices tax-free (previous, incorrect
+// behaviour). Wire the billing engine as the implementation so proration shares
+// the same tenant/customer tax-config code path as regular billing.
+func (h *Handler) SetProrationTaxApplier(a ProrationTaxApplier) {
+	h.tax = a
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -367,9 +398,8 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 			periodEnd = planChangedAt
 		}
 
-		// Apply coupon discount before recording totals — same Stripe-style
-		// order (subtotal → discount → total) the main billing path uses.
-		// Proration is tax-free today; COR-2 will fold tax into this block.
+		// Apply coupon discount before tax — Stripe-style order
+		// (subtotal → discount → tax → total) matches the main billing path.
 		var discountCents int64
 		if h.coupons != nil {
 			d, err := h.coupons.ApplyToInvoice(ctx, tenantID, result.Subscription.ID, result.Subscription.PlanID, proratedCents)
@@ -380,9 +410,35 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 				discountCents = d
 			}
 		}
-		netProrated := proratedCents - discountCents
+		discountedSubtotal := proratedCents - discountCents
 
 		memo := fmt.Sprintf("Plan upgrade proration: %s -> %s", oldPlan.Name, newPlan.Name)
+		lineItem := domain.InvoiceLineItem{
+			LineType:         domain.LineTypeBaseFee,
+			Description:      memo,
+			Quantity:         1,
+			UnitAmountCents:  proratedCents,
+			AmountCents:      proratedCents,
+			TotalAmountCents: proratedCents,
+			Currency:         newPlan.Currency,
+		}
+		lineItems := []domain.InvoiceLineItem{lineItem}
+
+		// Apply tax after discount so the customer is taxed on what they
+		// actually pay. When no applier is wired the invoice is tax-free, which
+		// matches the legacy behaviour and leaves totals unchanged.
+		var taxResult ProrationTaxResult
+		if h.tax != nil {
+			r, err := h.tax.ApplyTaxToLineItems(ctx, tenantID, result.Subscription.CustomerID, newPlan.Currency, proratedCents, discountCents, lineItems)
+			if err != nil {
+				slog.Warn("tax apply failed on proration, proceeding with zero tax",
+					"error", err, "subscription_id", result.Subscription.ID)
+			} else {
+				taxResult = r
+			}
+		}
+		netProrated := discountedSubtotal + taxResult.TaxAmountCents
+
 		invoice := domain.Invoice{
 			CustomerID:          result.Subscription.CustomerID,
 			SubscriptionID:      result.Subscription.ID,
@@ -391,6 +447,11 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 			Currency:            newPlan.Currency,
 			SubtotalCents:       proratedCents,
 			DiscountCents:       discountCents,
+			TaxRateBP:           taxResult.TaxRateBP,
+			TaxName:             taxResult.TaxName,
+			TaxCountry:          taxResult.TaxCountry,
+			TaxID:               taxResult.TaxID,
+			TaxAmountCents:      taxResult.TaxAmountCents,
 			TotalAmountCents:    netProrated,
 			AmountDueCents:      netProrated,
 			BillingPeriodStart:  periodStart,
@@ -400,15 +461,6 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 			NetPaymentTermDays:  30,
 			Memo:                memo,
 			SourcePlanChangedAt: &planChangedAt,
-		}
-		lineItem := domain.InvoiceLineItem{
-			LineType:         domain.LineTypeBaseFee,
-			Description:      memo,
-			Quantity:         1,
-			UnitAmountCents:  proratedCents,
-			AmountCents:      proratedCents,
-			TotalAmountCents: proratedCents,
-			Currency:         newPlan.Currency,
 		}
 
 		// Allocate the invoice number lazily — only if we're actually going to
@@ -420,7 +472,7 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 		}
 		invoice.InvoiceNumber = invoiceNumber
 
-		inv, err := h.invoices.CreateInvoiceWithLineItems(ctx, tenantID, invoice, []domain.InvoiceLineItem{lineItem})
+		inv, err := h.invoices.CreateInvoiceWithLineItems(ctx, tenantID, invoice, lineItems)
 		if errors.Is(err, errs.ErrAlreadyExists) {
 			existing, lookupErr := h.invoices.GetByProrationSource(ctx, tenantID, result.Subscription.ID, planChangedAt)
 			if lookupErr != nil {

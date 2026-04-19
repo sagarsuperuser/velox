@@ -349,3 +349,111 @@ func TestChangePlan_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
 			resp.Proration.AmountCents, existingEntry.AmountCents)
 	}
 }
+
+// prorationTaxApplierMock records calls and returns a canned result. Used to
+// verify the proration handler threads tax fields onto the invoice when an
+// applier is wired.
+type prorationTaxApplierMock struct {
+	calls  int
+	result ProrationTaxResult
+	err    error
+}
+
+func (m *prorationTaxApplierMock) ApplyTaxToLineItems(_ context.Context, _, _, _ string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (ProrationTaxResult, error) {
+	m.calls++
+	if m.err != nil {
+		return ProrationTaxResult{}, m.err
+	}
+	// Mutate line items like the real engine: split invoice tax into first line.
+	if len(lineItems) > 0 && m.result.TaxAmountCents > 0 {
+		lineItems[0].TaxRateBP = m.result.TaxRateBP
+		lineItems[0].TaxAmountCents = m.result.TaxAmountCents
+		lineItems[0].TotalAmountCents = lineItems[0].AmountCents + m.result.TaxAmountCents
+	}
+	return m.result, nil
+}
+
+// TestChangePlan_ProrationAppliesTax locks in COR-2: proration invoices must
+// carry tax. Prior behaviour was tax-free proration even when the customer
+// had a configured rate.
+func TestChangePlan_ProrationAppliesTax(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	now := time.Now().UTC()
+	periodStart := now.Add(-15 * 24 * time.Hour)
+	periodEnd := now.Add(15 * 24 * time.Hour)
+	store := &memStore{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: tenantID, CustomerID: "cus_1",
+				PlanID: "plan_old", Status: domain.SubscriptionActive,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+			},
+		},
+	}
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+	}}
+
+	invoices := &invoicesMock{}
+	credits := &creditsMock{}
+	taxMock := &prorationTaxApplierMock{
+		result: ProrationTaxResult{
+			TaxAmountCents: 185,
+			TaxRateBP:      1850,
+			TaxName:        "VAT",
+			TaxCountry:     "GB",
+		},
+	}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+	h.SetProrationTaxApplier(taxMock)
+
+	body, _ := json.Marshal(ChangePlanInput{NewPlanID: "plan_new", Immediate: true})
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub_1/change-plan", bytes.NewReader(body))
+
+	reqCtx := context.WithValue(ctx, auth.TestTenantIDKey(), tenantID)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "sub_1")
+	reqCtx = context.WithValue(reqCtx, chi.RouteCtxKey, rctx)
+	req = req.WithContext(reqCtx)
+
+	rr := httptest.NewRecorder()
+	h.changePlan(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+	if taxMock.calls != 1 {
+		t.Errorf("tax applier called %d times, want 1", taxMock.calls)
+	}
+	if len(invoices.createdInvoices) != 1 {
+		t.Fatalf("got %d invoices, want 1", len(invoices.createdInvoices))
+	}
+
+	inv := invoices.createdInvoices[0]
+	if inv.TaxAmountCents != 185 {
+		t.Errorf("invoice TaxAmountCents = %d, want 185", inv.TaxAmountCents)
+	}
+	if inv.TaxRateBP != 1850 {
+		t.Errorf("invoice TaxRateBP = %d, want 1850", inv.TaxRateBP)
+	}
+	if inv.TaxName != "VAT" {
+		t.Errorf("invoice TaxName = %q, want VAT", inv.TaxName)
+	}
+	// SubtotalCents should remain the pre-discount proration amount; TotalAmountCents
+	// should add tax on top of discounted subtotal (no discount here → subtotal + tax).
+	wantTotal := inv.SubtotalCents - inv.DiscountCents + inv.TaxAmountCents
+	if inv.TotalAmountCents != wantTotal {
+		t.Errorf("invoice total = %d, want %d (subtotal - discount + tax)", inv.TotalAmountCents, wantTotal)
+	}
+	if inv.AmountDueCents != wantTotal {
+		t.Errorf("invoice amount_due = %d, want %d", inv.AmountDueCents, wantTotal)
+	}
+}
