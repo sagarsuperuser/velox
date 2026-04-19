@@ -183,22 +183,5 @@ func (s *Service) Adjust(ctx context.Context, tenantID string, input AdjustInput
 		return domain.CreditLedgerEntry{}, fmt.Errorf("description is required for adjustments")
 	}
 
-	// Prevent negative balance on deductions
-	if input.AmountCents < 0 {
-		bal, err := s.store.GetBalance(ctx, tenantID, input.CustomerID)
-		if err != nil {
-			return domain.CreditLedgerEntry{}, fmt.Errorf("get balance: %w", err)
-		}
-		if bal.BalanceCents+input.AmountCents < 0 {
-			return domain.CreditLedgerEntry{}, fmt.Errorf("insufficient balance: available %.2f, deduction %.2f",
-				float64(bal.BalanceCents)/100, float64(-input.AmountCents)/100)
-		}
-	}
-
-	return s.store.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
-		CustomerID:  input.CustomerID,
-		EntryType:   domain.CreditAdjustment,
-		AmountCents: input.AmountCents,
-		Description: desc,
-	})
+	return s.store.AdjustAtomic(ctx, tenantID, input.CustomerID, desc, input.AmountCents)
 }

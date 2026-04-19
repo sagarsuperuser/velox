@@ -120,6 +120,23 @@ func (m *memStore) ListExpiredGrants(_ context.Context) ([]domain.CreditLedgerEn
 	return result, nil
 }
 
+func (m *memStore) AdjustAtomic(ctx context.Context, tenantID, customerID, description string, amountCents int64) (domain.CreditLedgerEntry, error) {
+	bal, err := m.GetBalance(ctx, tenantID, customerID)
+	if err != nil {
+		return domain.CreditLedgerEntry{}, err
+	}
+	if amountCents < 0 && bal.BalanceCents+amountCents < 0 {
+		return domain.CreditLedgerEntry{}, fmt.Errorf("insufficient balance: available %.2f, deduction %.2f",
+			float64(bal.BalanceCents)/100, float64(-amountCents)/100)
+	}
+	return m.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
+		CustomerID:  customerID,
+		EntryType:   domain.CreditAdjustment,
+		AmountCents: amountCents,
+		Description: description,
+	})
+}
+
 func (m *memStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerID, invoiceID, invoiceDesc string, invoiceAmountCents int64) (int64, error) {
 	if invoiceAmountCents <= 0 {
 		return 0, nil
