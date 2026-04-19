@@ -46,6 +46,11 @@ type TenantSettings struct {
 	CompanyEmail    string    `json:"company_email,omitempty"`
 	CompanyPhone    string    `json:"company_phone,omitempty"`
 	LogoURL         string    `json:"logo_url,omitempty"`
+	// AuditFailClosed makes audit log write failures hard-fail the request
+	// with 503 audit_error instead of logging and returning the handler's
+	// response. SOC-2-bound tenants opt in so a recorded action is a
+	// precondition for a 2xx response.
+	AuditFailClosed bool      `json:"audit_fail_closed"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
