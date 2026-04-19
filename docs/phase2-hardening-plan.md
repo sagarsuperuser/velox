@@ -4,7 +4,7 @@ Organized by risk × impact across 5 waves. Each item has effort size, rollout n
 
 ## Legend
 - **S** = 1-2 hours · **M** = half-day to 1 day · **L** = multi-day
-- `[SEC]` security · `[COR]` correctness · `[RES]` reliability · `[FEAT]` feature · `[HYG]` hygiene
+- `[SEC]` security · `[COR]` correctness · `[RES]` reliability · `[FEAT]` feature · `[HYG]` hygiene · `[UI]` dashboard ui/ux
 - `→X` = blocks X · `X→` = blocked by X
 
 ---
@@ -250,6 +250,90 @@ New key namespace `sk_test_*` / `pk_test_*`. Stripe calls replaced with stub in 
 
 ---
 
+## Wave 5 — Dashboard UI/UX (design-partner bar)
+
+Audit of `web-v2/` against Stripe/Linear/Vercel produced 38 items across 6 themes; only the 6 P0s (blocks a design-partner demo) are planned for Phase 2. P1 polish and P2 nice-to-haves are deferred to Phase 3.
+
+**Governing principles (from CLAUDE.md + prior feedback):**
+- All actions visible from first render — no hover-to-reveal.
+- No low-contrast text on money, status, or IDs.
+- Destructive actions require explicit confirmation (AlertDialog is already consistent — keep it that way).
+- Match existing dark-mode quality (oklch palette in `web-v2/src/index.css:101-148`) — the UI bar already set by Dashboard/Analytics skeletons + CMD+K palette.
+
+### [UI-1] Skeleton table rows across list pages — S
+
+**Problem:** List pages (`Customers.tsx:114-120`, `Invoices.tsx:79-82`, `Subscriptions.tsx`, `ApiKeys.tsx:104-107`, `Coupons.tsx`, `Credits.tsx`, `CreditNotes.tsx`, `Pricing.tsx`, `Dunning.tsx`, `Webhooks.tsx`, `AuditLog.tsx`) render a centered `<Loader2 animate-spin />` while the initial fetch is pending. Dashboard + Analytics already use `CardSkeleton.tsx`. Inconsistent loading UX + layout shift when rows arrive.
+
+**Target:**
+- New component `web-v2/src/components/ui/TableSkeleton.tsx` — N ghost rows with column-shaped pulse bars, parameterized by column count.
+- Replace spinner in every list page with `<TableSkeleton columns={...} rows={10} />` during the initial load.
+- Keep spinner for explicit action states (form submit, CSV export) — not for initial data.
+
+**Tests:** visual regression via Playwright screenshot on each list page's loading state (deferred — add to test strategy when Playwright lands).
+
+### [UI-2] Empty-state screens with primary CTA — M
+
+**Problem:** Zero list pages render a "no results" screen. If the tenant has no invoices, `Invoices.tsx:114` just shows an empty `<TableBody>`. Worse: `ApiKeys.tsx:135-140` *hides* the "Create API Key" button when the list is empty — exactly the inverse of what the user needs. `Coupons.tsx:92`, `Subscriptions.tsx:139`, `Customers.tsx:150` have the same no-content-no-guidance issue.
+
+**Target:**
+- New component `web-v2/src/components/EmptyState.tsx` — icon + heading + sub-copy + primary CTA. Model on the styled empty card in `UpdatePayment.tsx:70-77`.
+- Render on every list page when `items.length === 0 && !loading`. Each page supplies its own heading/copy/CTA.
+- **Fix `ApiKeys.tsx:135`**: always show the "Create API Key" button. Empty state becomes "No keys yet — create your first one" + CTA.
+- Apply consistently: Customers, Invoices, Subscriptions, Coupons, Credits, CreditNotes, Plans, Meters, Webhooks (Endpoints tab), UsageEvents.
+
+**Tests:** snapshot test per list page with empty and non-empty data sets.
+
+### [UI-3] Persist filter/sort/page to URL query params — M
+
+**Problem:** `Customers.tsx:106-112`, `Invoices.tsx:71-77`, `Subscriptions.tsx:116-122`, `UsageEvents.tsx`, `AuditLog.tsx` all build query params for their fetch calls but never push them into `location.search`. Refresh loses everything; URLs aren't shareable; back button doesn't restore table state. Stripe / Linear all persist.
+
+**Target:**
+- New hook `web-v2/src/hooks/useQueryState.ts` — typed wrapper over `useSearchParams()` that round-trips `{ page, sort, order, status, q, dateRange }` to the URL and back into state.
+- Convert every list page to the hook. Page state becomes `const [q, setQ] = useQueryState({ defaults })`.
+- URL shape: `/invoices?status=paid&sort=created_at&order=desc&page=2&q=acme`.
+- Debounce the search-box write (300ms) to avoid URL thrashing on every keystroke.
+
+**Tests:** e2e: apply filter → reload → filter still applied; share URL between two tabs → same results.
+
+### [UI-4] Inject API errors into form fields — M
+
+**Problem:** On create/edit, API errors (e.g., `409 Conflict: plan code already exists`, `422: coupon percent must be <= 100`) are surfaced only as `toast.error()`. The user sees a red toast but no hint *which* field is wrong. `Pricing.tsx` plan/meter/rule forms are worst offenders; `Customers.tsx`, `Subscriptions.tsx`, `Coupons.tsx` also affected.
+
+**Target:**
+- New util `web-v2/src/lib/formErrors.ts` — parses a Velox API error envelope (`{ error: { code, message, field? } }`) and returns a map `{ [fieldName]: message }`.
+- New hook or util `applyApiErrors(form, error)` that calls `form.setError(field, { message })` for each field the API flagged.
+- Every form's `onSubmit` handler: on error, call `applyApiErrors` first; only fall through to `toast.error()` for errors without a `field`.
+- **Server side, if missing**: audit Velox API responses to ensure conflict/validation errors include the `field` pointer. Add where absent. (This is an API contract cleanup — may spawn a small backend commit.)
+
+**Tests:** submit Pricing form with duplicate code → error appears under the code input, not a toast; submit Coupon with percent=120 → error appears under percent input.
+
+### [UI-5] Extend expiry-urgency badge pattern — S
+
+**Problem:** `ApiKeys.tsx:82-88` has a well-crafted "expires in N days" urgency badge that turns amber at ≤7 days. The same pattern is absent on:
+- Invoices past due / approaching due (`InvoiceDetail.tsx`)
+- Subscriptions with trial ending soon (`SubscriptionDetail.tsx`, Subscriptions list)
+- Coupons near expiry (`Coupons.tsx` list)
+
+**Target:**
+- Extract `ApiKeys.tsx:82-88` into `web-v2/src/components/ExpiryBadge.tsx` — takes `expiresAt: Date | null` and an optional `warningDays` threshold (default 7).
+- Apply to: invoice due dates (`Invoices.tsx` row, `InvoiceDetail.tsx` header), subscription trial end, coupon expiry in list + detail views.
+- Consistent color scale: grey = no expiry, green = >30d, amber = ≤7d, red = expired.
+
+**Tests:** component test for each threshold boundary (31d, 30d, 8d, 7d, 1d, 0d, -1d).
+
+### [UI-6] Extract shared UI primitives — S — (UI-1, UI-2 →)
+
+**Problem:** Three pages reimplement copy-to-clipboard inline (`CustomerDetail.tsx:35-45`, `InvoiceDetail.tsx:35-45`, `ApiKeys.tsx:337-340`). Breadcrumb back-links are hand-rolled on every detail page. `CustomerDetail.tsx:275-300` has five same-weight buttons with no visible primary.
+
+**Target:**
+- `web-v2/src/components/ui/CopyButton.tsx` — icon + toast feedback + timeout-reset check icon. Replace all three inline implementations.
+- `web-v2/src/components/ui/BackLink.tsx` — arrow + label + href. Use on all detail pages (`CustomerDetail`, `InvoiceDetail`, `SubscriptionDetail`, `PlanDetail`, `MeterDetail`).
+- `CustomerDetail.tsx:275-300`: reduce to one primary button (`Create Subscription`), demote the other four to secondary/ghost variants for clear visual hierarchy.
+
+**Tests:** component tests for CopyButton (clipboard mock) and BackLink (href rendering).
+
+---
+
 ## Non-goals (explicit)
 - Tax engine integration (Avalara/TaxJar) — after COR-2 lands
 - Revenue recognition / ASC 606 — Phase 3+
@@ -279,6 +363,9 @@ RES-4 (inbound dedup) independent
 FEAT-1 ← COR-1/2 (amounts finalized)
 FEAT-6 ← COR-1
 FEAT-5 is Phase 3
+
+UI-1..5 independent of backend; can run in parallel with Wave 2/3
+UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 ```
 
 ---
@@ -286,27 +373,35 @@ FEAT-5 is Phase 3
 ## Recommended commit order
 
 1. **SEC-1 + HYG bundle** — security wave, one migration
-2. **COR-4** — three concurrency fixes (3 commits, quick wins)
+2. **COR-4** — three concurrency fixes (3 commits, quick wins) ✓ done
 3. **COR-5** — rounding (trivial)
 4. **COR-6** — idempotency 4xx/5xx caching
-5. **COR-1** — coupons → invoice discount
-6. **COR-2** — tax at finalize + proration
-7. **COR-3** — real at-period-end plan change
-8. **FEAT-1** — credit note → amount_due
-9. **SEC-2 Phase A** — webhook secret dual-write
-10. **RES-4** — inbound dedup tightened
-11. **RES-3** — ChargeInvoice unknown-state
-12. **RES-5** — audit fail-closed opt-in
-13. **RES-7** — dunning breaker
-14. **RES-8** — PII scrubbing
-15. **HYG-6** — scheduled cleanup
-16. **RES-1** — transactional outbox (L)
-17. **RES-2** — scheduler advisory lock
-18. **RES-6** — email outbox
-19. **SEC-2 Phase B/C** — cutover + drop plaintext
-20. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
-21. **FEAT-6** — coupon stacking
-22. **FEAT-5** — multi-item subs (Phase 3)
+5. **UI-1** — skeleton table rows (fast win, visible)
+6. **UI-2** — empty states with CTAs (fixes ApiKeys inversion)
+7. **COR-1** — coupons → invoice discount
+8. **COR-2** — tax at finalize + proration
+9. **UI-3** — URL state persistence
+10. **COR-3** — real at-period-end plan change
+11. **UI-4** — form API error injection (+ any backend error-envelope cleanup)
+12. **FEAT-1** — credit note → amount_due
+13. **UI-5** — expiry-urgency badge extended
+14. **UI-6** — shared primitives (CopyButton, BackLink, CustomerDetail hierarchy)
+15. **SEC-2 Phase A** — webhook secret dual-write
+16. **RES-4** — inbound dedup tightened
+17. **RES-3** — ChargeInvoice unknown-state
+18. **RES-5** — audit fail-closed opt-in
+19. **RES-7** — dunning breaker
+20. **RES-8** — PII scrubbing
+21. **HYG-6** — scheduled cleanup
+22. **RES-1** — transactional outbox (L)
+23. **RES-2** — scheduler advisory lock
+24. **RES-6** — email outbox
+25. **SEC-2 Phase B/C** — cutover + drop plaintext
+26. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
+27. **FEAT-6** — coupon stacking
+28. **FEAT-5** — multi-item subs (Phase 3)
+
+**UI parallelization note:** UI-1..5 are independent of backend correctness work. A frontend-focused contributor can ship UI-1 → UI-2 → UI-3 → UI-5 → UI-6 in a single thread while backend commits land. UI-4 has a soft dependency on the backend error-envelope audit (small item) — slot it after COR-2 so any API fixes can be bundled.
 
 ---
 
@@ -316,6 +411,7 @@ FEAT-5 is Phase 3
 - **Wave 2**: invariant tests (`invoice.total = subtotal + tax - discount` always); race tests (goroutines); plan-change scheduled integration; rounding boundary tables
 - **Wave 3**: failure-injection (crash after commit, Stripe 500/timeout), webhook replay, lock contention, breaker state transitions
 - **Wave 4**: feature e2e per endpoint
+- **Wave 5**: component tests for new primitives (TableSkeleton, EmptyState, CopyButton, BackLink, ExpiryBadge); hook test for `useQueryState` (round-trip URL ↔ state); visual-regression snapshots per list page (loading + empty + populated); form-error injection test across representative forms (Customers, Pricing plan, Coupon). Playwright e2e added here if not already present.
 
 ## Rollback discipline
 
@@ -334,5 +430,23 @@ FEAT-5 is Phase 3
 | 3 | 5-7d | 8 resilience items, incl. L outbox |
 | 4 excl. FEAT-5 | 3d | 7 features |
 | 4 FEAT-5 | 3d | Multi-item subs (Phase 3) |
+| 5 | 4-5d | 6 UI/UX P0s (design-partner bar) |
 
-**Total (Phase 2 = Waves 0-4 excl. FEAT-5): ~2.5 weeks of focused work.**
+**Total (Phase 2 = Waves 0-5 excl. FEAT-5): ~3 weeks of focused work.** UI wave can run in parallel with Waves 2/3 by a second contributor — elapsed-time closer to 2 weeks with two threads.
+
+## Deferred UI items (Phase 3)
+
+Audit produced 38 items total; 6 P0s are in Wave 5 above. The remaining **22 P1** and **10 P2** items form the Phase 3 polish pass. Highlights of what's deferred:
+
+- **Accessibility pass** — ARIA labels on icon buttons (Coupons.tsx:556, table row actions), skip-to-content link, focus-ring audit, modal Esc-key verification, color-blind simulator check on status badges.
+- **Mobile responsiveness** — list pages' tables on <640px (stacked row view vs. side-scroll), modal viewport tests, hamburger keyboard nav. `UpdatePayment.tsx` is already mobile-polished; other pages are not.
+- **Keyboard shortcut expansion** — J/K next/prev row, E export, F filter. CMD+K palette exists (`CommandPalette.tsx:50-150`) but has hardcoded 10-result limits and no "search all".
+- **Bulk actions on table rows** — Invoices bulk-void/email, Credits bulk-grant. Requires selection state + action bar.
+- **Per-page detail 404s** — `main.tsx:14-50` has an app-level ErrorBoundary but detail pages crash on invalid IDs rather than showing a "not found" card.
+- **CustomerDetail action hierarchy** (`CustomerDetail.tsx:275-300`) — partial fix in UI-6; full visual overhaul deferred.
+- **Archive flow consistency** (`CustomerDetail.tsx:250-264` uses a Card banner for archive; should be an AlertDialog like other destructive actions).
+- **Tooltip-everywhere pass** — icon-only buttons without labels (Coupons toggle, table-row icons).
+- **Advanced command-palette syntax** — `status:failed`, `customer:acme`.
+- **Status legend / glossary page** — help new users understand "finalized" vs. "paid" vs. "processing".
+
+See the web-v2 audit in conversation for full file/line references.
