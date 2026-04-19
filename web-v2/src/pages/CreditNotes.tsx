@@ -60,6 +60,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 
@@ -300,10 +301,8 @@ export default function CreditNotesPage() {
               </Button>
             </div>
           ) : loading ? (
-            <div className="p-8 flex justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : notes.length === 0 ? (
+            <TableSkeleton columns={7} />
+          ) :notes.length === 0 ? (
             <div className="p-12 text-center">
               {filterStatus ? (
                 <>

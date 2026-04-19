@@ -41,6 +41,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { CardListSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Plus, Key, Shield, Eye, ChevronDown, Loader2, Clock } from 'lucide-react'
 
@@ -148,11 +149,9 @@ export default function ApiKeysPage() {
           </CardContent>
         </Card>
       ) : loading ? (
-        <Card className="mt-6">
-          <CardContent className="p-8 flex justify-center">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </CardContent>
-        </Card>
+        <div className="mt-6">
+          <CardListSkeleton rows={3} />
+        </div>
       ) : keys.length === 0 ? (
         <Card className="mt-6">
           <CardContent className="p-12 text-center">

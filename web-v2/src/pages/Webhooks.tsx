@@ -50,6 +50,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Loader2 } from 'lucide-react'
 
@@ -145,9 +146,7 @@ function EndpointsTab() {
               <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
             </div>
           ) : loading ? (
-            <div className="p-8 flex justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
+            <TableSkeleton columns={7} />
           ) : endpoints.length === 0 ? (
             <div className="p-12 text-center">
               <p className="text-sm font-medium text-foreground">No webhook endpoints</p>
@@ -552,9 +551,7 @@ function EventsTab() {
             <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
           </div>
         ) : loading ? (
-          <div className="p-8 flex justify-center">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
+          <TableSkeleton columns={4} />
         ) : events.length === 0 ? (
           <div className="p-12 text-center">
             <p className="text-sm font-medium text-foreground">No webhook events</p>

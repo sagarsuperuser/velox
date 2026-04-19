@@ -58,6 +58,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Plus, Trash2, Loader2 } from 'lucide-react'
 
@@ -141,9 +142,7 @@ export default function PricingPage() {
                 </Button>
               </div>
             ) : loading ? (
-              <div className="p-8 flex justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-              </div>
+              <TableSkeleton columns={6} />
             ) : (
               <>
                 <TabsContent value="plans">
