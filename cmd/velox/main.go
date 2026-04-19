@@ -20,6 +20,7 @@ import (
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/config"
+	"github.com/sagarsuperuser/velox/internal/email"
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/platform/telemetry"
@@ -210,6 +211,19 @@ func serve() {
 			defer workers.Done()
 			dispatcher := webhook.NewDispatcher(server.OutboxStore, server.WebhookOutSvc, webhook.DispatcherConfig{})
 			dispatcher.SetLocker(server.OutboxStore)
+			dispatcher.Start(ctx)
+		}()
+	}
+
+	// Email dispatcher: drains email_outbox → *email.Sender. Mirrors the
+	// webhook outbox worker. Only runs when the email outbox producer path
+	// is enabled (VELOX_EMAIL_OUTBOX_ENABLED is unset or "true").
+	if server.EmailOutboxEnabled {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			dispatcher := email.NewDispatcher(server.EmailOutboxStore, server.EmailSender, email.DispatcherConfig{})
+			dispatcher.SetLocker(server.EmailOutboxStore)
 			dispatcher.Start(ctx)
 		}()
 	}

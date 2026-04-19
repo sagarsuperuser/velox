@@ -15,6 +15,7 @@ const (
 	LockKeyBillingScheduler int64 = 76540001
 	LockKeyDunningScheduler int64 = 76540002
 	LockKeyOutboxDispatcher int64 = 76540003
+	LockKeyEmailDispatcher  int64 = 76540004
 )
 
 // AdvisoryLock is a held Postgres session-scoped advisory lock. Release MUST

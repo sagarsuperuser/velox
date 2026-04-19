@@ -34,8 +34,10 @@ func (s *Sender) IsConfigured() bool {
 	return s.host != ""
 }
 
-// SendInvoice sends an invoice email with PDF attachment.
-func (s *Sender) SendInvoice(to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte) error {
+// SendInvoice sends an invoice email with PDF attachment. tenantID is accepted
+// to keep parity with the outbox-based sender and for observability logging —
+// the SMTP send itself doesn't depend on it.
+func (s *Sender) SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte) error {
 	subject := fmt.Sprintf("Invoice %s — %s", invoiceNumber, formatAmount(totalCents, currency))
 	body := fmt.Sprintf(`Dear %s,
 
@@ -49,11 +51,11 @@ Thank you for your business.
 — Velox Billing
 `, customerName, invoiceNumber, invoiceNumber, formatAmount(totalCents, currency), currency)
 
-	return s.send(to, subject, body, invoiceNumber+".pdf", pdfBytes)
+	return s.send(tenantID, to, subject, body, invoiceNumber+".pdf", pdfBytes)
 }
 
 // SendPaymentReceipt sends a payment receipt after successful payment.
-func (s *Sender) SendPaymentReceipt(to, customerName, invoiceNumber string, amountCents int64, currency string) error {
+func (s *Sender) SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency string) error {
 	subject := fmt.Sprintf("Payment received for invoice %s", invoiceNumber)
 	body := fmt.Sprintf(`Dear %s,
 
@@ -64,11 +66,11 @@ Thank you for your prompt payment.
 — Velox Billing
 `, customerName, formatAmount(amountCents, currency), invoiceNumber)
 
-	return s.send(to, subject, body, "", nil)
+	return s.send(tenantID, to, subject, body, "", nil)
 }
 
 // SendDunningWarning notifies a customer about a failed payment retry.
-func (s *Sender) SendDunningWarning(to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate string) error {
+func (s *Sender) SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate string) error {
 	subject := fmt.Sprintf("Action required — payment retry failed for invoice %s", invoiceNumber)
 	body := fmt.Sprintf(`Dear %s,
 
@@ -79,11 +81,11 @@ We will retry your payment on %s. Please update your payment method to avoid fur
 — Velox Billing
 `, customerName, attemptNumber, maxAttempts, invoiceNumber, nextRetryDate)
 
-	return s.send(to, subject, body, "", nil)
+	return s.send(tenantID, to, subject, body, "", nil)
 }
 
 // SendDunningEscalation notifies a customer that all payment retries have been exhausted.
-func (s *Sender) SendDunningEscalation(to, customerName, invoiceNumber string, action string) error {
+func (s *Sender) SendDunningEscalation(tenantID, to, customerName, invoiceNumber string, action string) error {
 	subject := fmt.Sprintf("Payment retries exhausted for invoice %s", invoiceNumber)
 	body := fmt.Sprintf(`Dear %s,
 
@@ -96,11 +98,11 @@ Please contact us to resolve this matter.
 — Velox Billing
 `, customerName, invoiceNumber, action)
 
-	return s.send(to, subject, body, "", nil)
+	return s.send(tenantID, to, subject, body, "", nil)
 }
 
 // SendPaymentFailed notifies a customer about a failed payment.
-func (s *Sender) SendPaymentFailed(to, customerName, invoiceNumber, reason string) error {
+func (s *Sender) SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason string) error {
 	subject := fmt.Sprintf("Payment failed for invoice %s", invoiceNumber)
 	body := fmt.Sprintf(`Dear %s,
 
@@ -113,11 +115,11 @@ Please update your payment method to avoid service interruption.
 — Velox Billing
 `, customerName, invoiceNumber, reason)
 
-	return s.send(to, subject, body, "", nil)
+	return s.send(tenantID, to, subject, body, "", nil)
 }
 
 // SendPaymentUpdateRequest sends an email requesting the customer to update their payment method.
-func (s *Sender) SendPaymentUpdateRequest(to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
+func (s *Sender) SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
 	subject := fmt.Sprintf("Action required — update payment method for invoice %s", invoiceNumber)
 	body := fmt.Sprintf(`Dear %s,
 
@@ -132,12 +134,13 @@ This link will expire in 24 hours.
 — Velox Billing
 `, customerName, invoiceNumber, formatAmount(amountDueCents, currency), updateURL)
 
-	return s.send(to, subject, body, "", nil)
+	return s.send(tenantID, to, subject, body, "", nil)
 }
 
-func (s *Sender) send(to, subject, body, attachName string, attachData []byte) error {
+func (s *Sender) send(tenantID, to, subject, body, attachName string, attachData []byte) error {
 	if !s.IsConfigured() {
 		slog.Info("email (not sent — SMTP not configured)",
+			"tenant_id", tenantID,
 			"to", to,
 			"subject", subject,
 			"body_length", len(body),

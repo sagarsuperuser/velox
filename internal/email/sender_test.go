@@ -9,7 +9,7 @@ func TestSender_NotConfigured(t *testing.T) {
 	}
 
 	// Should not error — just logs
-	err := s.SendInvoice("test@example.com", "Test Customer", "VLX-000001", 19900, "USD", []byte("%PDF"))
+	err := s.SendInvoice("t1", "test@example.com", "Test Customer", "VLX-000001", 19900, "USD", []byte("%PDF"))
 	if err != nil {
 		t.Errorf("unconfigured sender should not error: %v", err)
 	}

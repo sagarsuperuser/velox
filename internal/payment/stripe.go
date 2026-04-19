@@ -41,7 +41,7 @@ type CardFetcher interface {
 
 // EmailReceipt sends payment receipt emails.
 type EmailReceipt interface {
-	SendPaymentReceipt(to, customerName, invoiceNumber string, amountCents int64, currency string) error
+	SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency string) error
 }
 
 // CustomerEmailResolver resolves customer contact info for email notifications.
@@ -51,7 +51,7 @@ type CustomerEmailResolver interface {
 
 // EmailPaymentUpdate sends payment update request emails.
 type EmailPaymentUpdate interface {
-	SendPaymentUpdateRequest(to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
+	SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
 }
 
 type Stripe struct {
@@ -358,7 +358,7 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
 				return
 			}
-			if err := s.emailReceipt.SendPaymentReceipt(email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency); err != nil {
+			if err := s.emailReceipt.SendPaymentReceipt(tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency); err != nil {
 				slog.Error("failed to send payment receipt email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
@@ -444,7 +444,7 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 				updateURL = fmt.Sprintf("%s?invoice_id=%s&customer_id=%s", s.paymentUpdateURL, inv.ID, inv.CustomerID)
 			}
 
-			if err := s.emailPaymentUpdate.SendPaymentUpdateRequest(email, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
+			if err := s.emailPaymentUpdate.SendPaymentUpdateRequest(tenantID, email, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
 				slog.Error("failed to send payment update email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
