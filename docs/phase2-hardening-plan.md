@@ -174,7 +174,7 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 **Tests:** Stripe 500 → status=unknown, reconciler resolves; 402 card_declined → failed with code; network timeout w/ PI created → reconciler finds it.
 
-### [RES-4] Inbound Stripe webhook dedup tightened — S
+### [RES-4] Inbound Stripe webhook dedup tightened — S — ✅ DONE
 
 **Problem:** `payment/stripe.go:212-219`: reads dedup then acts; concurrent delivery can race the first handler's in-flight processing.
 
@@ -182,7 +182,7 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 - `INSERT INTO stripe_webhook_events (...) ON CONFLICT (tenant_id, stripe_event_id) DO NOTHING RETURNING id` → row returned means "we own it"; no row means "duplicate, return 200 with no-op".
 - Process handler after dedup commits (or inside same tx — both safe).
 
-**Tests:** concurrent delivery → exactly one handler run; handler crash after dedup INSERT → replay safe via downstream idempotency.
+**Resolution:** `payment/webhook_store.go:23-76` already implements the atomic insert — ON CONFLICT DO NOTHING RETURNING id inside TxTenant, `sql.ErrNoRows` → `isNew=false`. `stripe.go:210-219` acts only on `isNew=true`. UNIQUE (tenant_id, stripe_event_id) exists at `migrate/sql/0001_schema.up.sql:597`. Added concurrent-delivery integration test (`webhook_store_integration_test.go`) — 16 racers, exactly one insert wins, N-1 see `isNew=false`, no errors, one row persisted. Stable under `-race`.
 
 ### [RES-5] Audit log fail-closed opt-in — S
 
@@ -214,9 +214,11 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 ## Wave 4 — Feature completeness
 
-### [FEAT-1] Credit notes reduce `invoice.amount_due` — S
+### [FEAT-1] Credit notes reduce `invoice.amount_due` — S — ✅ DONE
 
 On `Issue`, call `invoice.ApplyCreditNote` (method exists). Clamp at invoice total.
+
+**Resolution:** `creditnote/service.go:274` calls `invoices.ApplyCreditNote(ctx, tenantID, cn.InvoiceID, cn.TotalCents)` during Issue for unpaid invoices. `invoice/postgres.go:275-303` clamps via `GREATEST(amount_due_cents - $1, 0)`. Test assertion added in `creditnote/service_test.go` to verify amount_due drops after Issue.
 
 ### [FEAT-2] Direct refund endpoint — M
 
