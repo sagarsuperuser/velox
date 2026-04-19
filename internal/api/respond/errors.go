@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -33,25 +34,31 @@ func FromError(w http.ResponseWriter, r *http.Request, err error, resource strin
 	case errors.Is(err, errs.ErrDuplicateKey):
 		Conflict(w, r, err.Error())
 
-	case errors.Is(err, errs.ErrInvalidState):
+	case errors.Is(err, errs.ErrInvalidState), errors.Is(err, errs.ErrValidation):
 		Validation(w, r, err.Error())
 
 	default:
-		// Check for DomainError with a code
-		code := errs.Code(err)
-		if code != "" {
+		// DomainError with an explicit code — treat as validation (these are
+		// business-rule rejections like billing_setup_incomplete).
+		if errs.Code(err) != "" {
 			Validation(w, r, err.Error())
 			return
 		}
 
-		// Check if it's a validation-style error (contains common validation words)
-		msg := err.Error()
-		if isValidationError(msg) {
-			Validation(w, r, msg)
+		// Legacy fallback: services that still return fmt.Errorf("... is
+		// required") without wrapping errs.ErrValidation. This heuristic is
+		// intentionally conservative (anchored prefixes, not substring) so
+		// DB errors containing "invalid" don't get mis-mapped to 422 with
+		// their raw message leaked to the client.
+		//
+		// TODO: migrate all service-layer validation sites to wrap
+		// errs.ErrValidation, then delete this fallback. See
+		// internal/errs/domain.go for the pattern.
+		if looksLikeValidationError(err.Error()) {
+			Validation(w, r, err.Error())
 			return
 		}
 
-		// Unknown error — log and return 500
 		slog.Error("unhandled error",
 			"error", err,
 			"resource", resource,
@@ -61,42 +68,33 @@ func FromError(w http.ResponseWriter, r *http.Request, err error, resource strin
 	}
 }
 
-func isValidationError(msg string) bool {
-	// Errors that contain these words are validation errors, not internal errors.
-	// This catches fmt.Errorf("customer_id is required") style errors from services.
-	patterns := []string{
-		"is required",
-		"must be",
-		"cannot",
-		"can only",
-		"invalid",
-		"already",
-		"same as",
-		"at least",
-		"maximum",
+// looksLikeValidationError uses anchored prefixes (not substrings) to classify
+// service-layer validation messages. The old substring match would catch DB
+// errors like `pq: invalid input syntax for type uuid` and leak them as 422
+// bodies. Prefix-anchoring keeps false positives to services that start their
+// error message with these phrases — a narrow, intentional pattern.
+func looksLikeValidationError(msg string) bool {
+	prefixes := []string{
+		"invalid ",
+		"missing ",
+		"cannot ",
+		"can only ",
 	}
-	for _, p := range patterns {
-		if containsCI(msg, p) {
+	msgLower := strings.ToLower(msg)
+	for _, p := range prefixes {
+		if strings.HasPrefix(msgLower, p) {
 			return true
 		}
 	}
-	return false
-}
-
-func containsCI(s, substr string) bool {
-	if len(substr) > len(s) {
-		return false
+	// Common "<field> is required" / "<field> must be ..." shape from Go services.
+	substrings := []string{
+		" is required",
+		" must be ",
+		" can only ",
+		" at least ",
 	}
-	for i := 0; i <= len(s)-len(substr); i++ {
-		match := true
-		for j := 0; j < len(substr); j++ {
-			a, b := s[i+j], substr[j]
-			if a != b && a != b+32 && a != b-32 {
-				match = false
-				break
-			}
-		}
-		if match {
+	for _, s := range substrings {
+		if strings.Contains(msgLower, s) {
 			return true
 		}
 	}

@@ -286,19 +286,28 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 
 	h.fireEvent(r.Context(), tenantID, domain.EventInvoiceFinalized, inv)
 
-	// Send invoice email with PDF asynchronously
+	// Send invoice email with PDF asynchronously.
+	//
+	// Bounded context (60s): if PDF render, DB reads, or SMTP send hangs,
+	// the goroutine gives up and logs rather than leaking forever. The
+	// invoice is already finalized — customers can still download the PDF
+	// from the portal if email fails.
+	//
+	// context.WithoutCancel detaches from the request context so the email
+	// job survives the HTTP handler returning.
 	if h.emailSender != nil && h.customers != nil {
+		emailCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 60*time.Second)
 		go func() {
-			cust, err := h.customers.Get(context.Background(), tenantID, inv.CustomerID)
+			defer cancel()
+			cust, err := h.customers.Get(emailCtx, tenantID, inv.CustomerID)
 			if err != nil || cust.Email == "" {
 				slog.Warn("skip invoice email — cannot resolve customer email",
 					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
 				return
 			}
-			// Try billing profile email first
 			email := cust.Email
 			name := cust.DisplayName
-			if bp, err := h.customers.GetBillingProfile(context.Background(), tenantID, inv.CustomerID); err == nil {
+			if bp, err := h.customers.GetBillingProfile(emailCtx, tenantID, inv.CustomerID); err == nil {
 				if bp.Email != "" {
 					email = bp.Email
 				}
@@ -306,10 +315,17 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 					name = bp.LegalName
 				}
 			}
-			// Generate PDF
-			_, items, err := h.svc.GetWithLineItems(context.Background(), tenantID, inv.ID)
+			_, items, err := h.svc.GetWithLineItems(emailCtx, tenantID, inv.ID)
 			if err != nil {
 				slog.Warn("skip invoice email — cannot fetch line items",
+					"invoice_id", inv.ID, "error", err)
+				return
+			}
+			// RenderPDF is CPU-bound and not ctx-aware. Check ctx before+after
+			// so we don't waste a render when the deadline already passed, and
+			// so we don't send a stale email if it did.
+			if err := emailCtx.Err(); err != nil {
+				slog.Warn("skip invoice email — deadline reached before PDF render",
 					"invoice_id", inv.ID, "error", err)
 				return
 			}
@@ -317,6 +333,11 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 			pdfBytes, err := RenderPDF(inv, items, bt, nil, CompanyInfo{})
 			if err != nil {
 				slog.Warn("skip invoice email — PDF render failed",
+					"invoice_id", inv.ID, "error", err)
+				return
+			}
+			if err := emailCtx.Err(); err != nil {
+				slog.Warn("skip invoice email — deadline reached after PDF render",
 					"invoice_id", inv.ID, "error", err)
 				return
 			}

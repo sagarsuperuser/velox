@@ -28,14 +28,19 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 	// Lock existing rows for this customer to serialize concurrent writes.
 	// This prevents two concurrent grants from computing the same balance_after.
 	// We lock first, then aggregate — FOR UPDATE can't be used directly with aggregates in all cases.
+	//
+	// tenant_id is included in every predicate as defense-in-depth: RLS (TxTenant)
+	// already restricts rows to this tenant, but if RLS were ever misconfigured or
+	// a future refactor opened a tx without tenant scope, these filters prevent
+	// cross-tenant balance leakage.
 	_, _ = tx.ExecContext(ctx,
-		`SELECT 1 FROM customer_credit_ledger WHERE customer_id = $1 FOR UPDATE`,
-		entry.CustomerID,
+		`SELECT 1 FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2 FOR UPDATE`,
+		tenantID, entry.CustomerID,
 	)
 	var currentBalance int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(amount_cents), 0) FROM customer_credit_ledger WHERE customer_id = $1`,
-		entry.CustomerID,
+		`SELECT COALESCE(SUM(amount_cents), 0) FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2`,
+		tenantID, entry.CustomerID,
 	).Scan(&currentBalance)
 	if err != nil {
 		return domain.CreditLedgerEntry{}, err
@@ -100,17 +105,19 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 	// Lock the customer's ledger rows to serialize concurrent applications —
 	// without this, two simultaneous billing runs on the same customer could
 	// each see the full balance and over-deduct.
+	//
+	// tenant_id included in predicate as defense-in-depth (see AppendEntry).
 	if _, err := tx.ExecContext(ctx,
-		`SELECT 1 FROM customer_credit_ledger WHERE customer_id = $1 FOR UPDATE`,
-		customerID,
+		`SELECT 1 FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2 FOR UPDATE`,
+		tenantID, customerID,
 	); err != nil {
 		return 0, fmt.Errorf("lock credit ledger: %w", err)
 	}
 
 	var currentBalance int64
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(amount_cents), 0) FROM customer_credit_ledger WHERE customer_id = $1`,
-		customerID,
+		`SELECT COALESCE(SUM(amount_cents), 0) FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2`,
+		tenantID, customerID,
 	).Scan(&currentBalance); err != nil {
 		return 0, fmt.Errorf("read credit balance: %w", err)
 	}
@@ -170,8 +177,8 @@ func (s *PostgresStore) GetBalance(ctx context.Context, tenantID, customerID str
 			COALESCE(SUM(CASE WHEN amount_cents > 0 THEN amount_cents ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN amount_cents < 0 THEN ABS(amount_cents) ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN entry_type = 'expiry' THEN ABS(amount_cents) ELSE 0 END), 0)
-		FROM customer_credit_ledger WHERE customer_id = $1
-	`, customerID).Scan(&b.BalanceCents, &b.TotalGranted, &b.TotalUsed, &b.TotalExpired)
+		FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2
+	`, tenantID, customerID).Scan(&b.BalanceCents, &b.TotalGranted, &b.TotalUsed, &b.TotalExpired)
 
 	return b, err
 }
@@ -191,9 +198,10 @@ func (s *PostgresStore) ListBalances(ctx context.Context, tenantID string) ([]do
 			COALESCE(SUM(CASE WHEN amount_cents < 0 THEN ABS(amount_cents) ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN entry_type = 'expiry' THEN ABS(amount_cents) ELSE 0 END), 0)
 		FROM customer_credit_ledger
+		WHERE tenant_id = $1
 		GROUP BY customer_id
 		ORDER BY SUM(amount_cents) DESC
-	`)
+	`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -260,9 +268,9 @@ func (s *PostgresStore) ListEntries(ctx context.Context, filter ListFilter) ([]d
 
 	query := `SELECT id, tenant_id, customer_id, entry_type, amount_cents, balance_after,
 		description, COALESCE(invoice_id,''), expires_at, metadata, created_at
-		FROM customer_credit_ledger WHERE customer_id = $1`
-	args := []any{filter.CustomerID}
-	idx := 2
+		FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2`
+	args := []any{filter.TenantID, filter.CustomerID}
+	idx := 3
 
 	if filter.InvoiceID != "" {
 		query += fmt.Sprintf(" AND invoice_id = $%d", idx)
