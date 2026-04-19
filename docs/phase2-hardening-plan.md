@@ -19,8 +19,10 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 | HYG-2 | Partial UNIQUE on active subscriptions | `UNIQUE(tenant_id, customer_id, plan_id) WHERE status IN ('active','trialing','past_due')` |
 | HYG-3 | `tax_rate NUMERIC(6,2)` → `tax_rate_bp BIGINT` | Dual-write → cutover → drop (2 migrations) |
 | HYG-4 | FK ON DELETE policies explicit | Customers→invoices RESTRICT; tenants→customers RESTRICT; audit refs PRESERVE |
-| HYG-5 | `audit_log` append-only | BEFORE UPDATE/DELETE trigger raising exception |
+| HYG-5 | `audit_log` append-only | BEFORE UPDATE/DELETE trigger raising exception — ✅ DONE |
 | HYG-6 | Schedule idempotency + payment-token cleanup | Hourly task in scheduler — ✅ DONE |
+
+**HYG-5 resolution:** Migration `0011_audit_append_only` adds a `BEFORE UPDATE OR DELETE … FOR EACH ROW` trigger on `audit_log` backed by a `plpgsql` function that unconditionally `RAISE EXCEPTION 'audit_log is append-only; % is not permitted'` with a `HINT` pointing operators at the retention-purge procedure (drop trigger → delete → recreate). The trigger fires regardless of RLS bypass, so a compromised application path or stray admin tool can't silently rewrite or erase evidence — RLS is the first line of defence, this trigger is the belt to the braces, and the RES-5 fail-closed writer ensures rows reach the table in the first place. Deliberately no session-variable escape hatch: retention cleanup is a DB-admin DDL event, and that DDL is already captured by Postgres' statement log, preserving the audit chain above the row level. Integration test `TestAuditLog_AppendOnly` verifies both operations are blocked and the underlying row survives unchanged.
 
 **HYG-6 resolution:** `middleware.CleanExpired` now returns `(int, error)` and is exposed via a thin `middleware.IdempotencyCleaner` adapter matching the scheduler's `Cleanup(ctx) (int, error)` interface shape. The billing scheduler gains a sixth step in `runOnce` that deletes idempotency keys past their `expires_at`, mirroring the existing token-cleanup step. A `velox_scheduled_cleanup_rows_total{table}` counter (labeled per table) replaces ad-hoc logging-only cleanup visibility so operators can alert on surges per table. Wired in `cmd/velox/main.go` alongside the existing `TokenCleaner`.
 
@@ -412,13 +414,14 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 19. **RES-7** — dunning breaker
 20. **RES-8** — PII scrubbing
 21. **HYG-6** — scheduled cleanup
-22. **RES-1** — transactional outbox (L)
-23. **RES-2** — scheduler advisory lock
-24. **RES-6** — email outbox
-25. **SEC-2 Phase B/C** — cutover + drop plaintext
-26. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
-27. **FEAT-6** — coupon stacking
-28. **FEAT-5** — multi-item subs (Phase 3)
+22. **HYG-5** — audit_log append-only trigger
+23. **RES-1** — transactional outbox (L)
+24. **RES-2** — scheduler advisory lock
+25. **RES-6** — email outbox
+26. **SEC-2 Phase B/C** — cutover + drop plaintext
+27. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
+28. **FEAT-6** — coupon stacking
+29. **FEAT-5** — multi-item subs (Phase 3)
 
 **UI parallelization note:** UI-1..5 are independent of backend correctness work. A frontend-focused contributor can ship UI-1 → UI-2 → UI-3 → UI-5 → UI-6 in a single thread while backend commits land. UI-4 has a soft dependency on the backend error-envelope audit (small item) — slot it after COR-2 so any API fixes can be bundled.
 
