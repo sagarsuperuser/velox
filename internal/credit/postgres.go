@@ -2,11 +2,13 @@ package credit
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -56,19 +58,31 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO customer_credit_ledger (id, tenant_id, customer_id, entry_type,
-			amount_cents, balance_after, description, invoice_id, expires_at, metadata, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			amount_cents, balance_after, description, invoice_id, expires_at, metadata, created_at,
+			source_subscription_id, source_plan_changed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		RETURNING id, tenant_id, customer_id, entry_type, amount_cents, balance_after,
-			description, COALESCE(invoice_id,''), expires_at, metadata, created_at
+			description, COALESCE(invoice_id,''), expires_at, metadata, created_at,
+			COALESCE(source_subscription_id,''), source_plan_changed_at
 	`, entry.ID, tenantID, entry.CustomerID, entry.EntryType,
 		entry.AmountCents, entry.BalanceAfter, entry.Description,
 		postgres.NullableString(entry.InvoiceID), postgres.NullableTime(entry.ExpiresAt),
 		metaJSON, time.Now().UTC(),
+		postgres.NullableString(entry.SourceSubscriptionID),
+		postgres.NullableTime(entry.SourcePlanChangedAt),
 	).Scan(&entry.ID, &entry.TenantID, &entry.CustomerID, &entry.EntryType,
 		&entry.AmountCents, &entry.BalanceAfter, &entry.Description,
-		&entry.InvoiceID, &entry.ExpiresAt, &metaJSON, &entry.CreatedAt)
+		&entry.InvoiceID, &entry.ExpiresAt, &metaJSON, &entry.CreatedAt,
+		&entry.SourceSubscriptionID, &entry.SourcePlanChangedAt)
 
 	if err != nil {
+		if postgres.IsUniqueViolation(err) {
+			// Proration dedup index fired — the caller is retrying a grant
+			// that already succeeded for this (subscription, plan_changed_at).
+			// Return ErrAlreadyExists so the handler can re-fetch and return
+			// the original entry rather than double-crediting.
+			return domain.CreditLedgerEntry{}, errs.ErrAlreadyExists
+		}
 		if postgres.IsForeignKeyViolation(err) {
 			return domain.CreditLedgerEntry{}, fmt.Errorf("customer %q not found", entry.CustomerID)
 		}
@@ -159,6 +173,40 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 		return 0, fmt.Errorf("commit credit application: %w", err)
 	}
 	return deduct, nil
+}
+
+// GetByProrationSource returns the credit ledger entry previously written
+// for a specific (subscription, plan_changed_at) event, if any. Callers use
+// this after AppendEntry returns ErrAlreadyExists to complete an idempotent
+// retry — the proration dedup partial index ensures uniqueness.
+func (s *PostgresStore) GetByProrationSource(ctx context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.CreditLedgerEntry{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var e domain.CreditLedgerEntry
+	var metaJSON []byte
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, customer_id, entry_type, amount_cents, balance_after,
+			description, COALESCE(invoice_id,''), expires_at, metadata, created_at,
+			COALESCE(source_subscription_id,''), source_plan_changed_at
+		FROM customer_credit_ledger
+		WHERE tenant_id = $1 AND source_subscription_id = $2 AND source_plan_changed_at = $3
+	`, tenantID, subscriptionID, planChangedAt,
+	).Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.EntryType,
+		&e.AmountCents, &e.BalanceAfter, &e.Description, &e.InvoiceID,
+		&e.ExpiresAt, &metaJSON, &e.CreatedAt,
+		&e.SourceSubscriptionID, &e.SourcePlanChangedAt)
+	if err == sql.ErrNoRows {
+		return domain.CreditLedgerEntry{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.CreditLedgerEntry{}, err
+	}
+	_ = json.Unmarshal(metaJSON, &e.Metadata)
+	return e, nil
 }
 
 func (s *PostgresStore) GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error) {

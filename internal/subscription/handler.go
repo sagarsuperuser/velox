@@ -25,19 +25,42 @@ type PlanReader interface {
 	GetPlan(ctx context.Context, tenantID, id string) (domain.Plan, error)
 }
 
-// ProrationInvoiceCreator creates finalized proration invoices.
+// ProrationInvoiceCreator creates finalized proration invoices and supports
+// idempotent retry via a source-of-truth lookup.
+//
+// CreateInvoiceWithLineItems atomically creates the invoice + its line items
+// in one transaction — prevents orphaned invoices on partial failure. If the
+// (subscription_id, source_plan_changed_at) dedup index fires, it returns
+// errs.ErrAlreadyExists so the caller can look up the existing row via
+// GetByProrationSource.
+//
 // NextInvoiceNumber must atomically allocate a unique, collision-free number
 // per tenant — a proration invoice shares the same sequence as regular
 // invoices (Stripe's model: one monotonic sequence, memo distinguishes kind).
 type ProrationInvoiceCreator interface {
-	CreateInvoice(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error)
-	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
+	CreateInvoiceWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
+	GetByProrationSource(ctx context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.Invoice, error)
 	NextInvoiceNumber(ctx context.Context, tenantID string) (string, error)
 }
 
 // ProrationCreditGranter grants credits for downgrade proration.
+// The source fields let the store enforce per-event idempotency — retries of
+// the same (subscription, plan_changed_at) return errs.ErrAlreadyExists rather
+// than double-crediting the customer; the handler then re-fetches via
+// GetByProrationSource.
 type ProrationCreditGranter interface {
-	Grant(ctx context.Context, tenantID, customerID string, amountCents int64, description string) error
+	GrantProration(ctx context.Context, tenantID string, input ProrationGrantInput) error
+	GetByProrationSource(ctx context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error)
+}
+
+// ProrationGrantInput carries the downgrade credit payload plus the
+// provenance fields required for dedup.
+type ProrationGrantInput struct {
+	CustomerID           string
+	AmountCents          int64
+	Description          string
+	SourceSubscriptionID string
+	SourcePlanChangedAt  time.Time
 }
 
 type Handler struct {
@@ -276,7 +299,11 @@ func (h *Handler) changePlan(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusOK, result)
 }
 
-// handleProration creates a proration invoice (upgrade) or grants credit (downgrade).
+// handleProration creates a proration invoice (upgrade) or grants credit
+// (downgrade). Idempotency is enforced at the store layer via the
+// (subscription_id, plan_changed_at) natural key — if this function is
+// retried after a partial failure, the existing artifact is returned instead
+// of a duplicate being written.
 func (h *Handler) handleProration(ctx context.Context, tenantID string, result ChangePlanResult, oldPlanID string) (*ProrationDetail, error) {
 	oldPlan, err := h.plans.GetPlan(ctx, tenantID, oldPlanID)
 	if err != nil {
@@ -294,6 +321,13 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 		return nil, nil
 	}
 
+	// PlanChangedAt is the natural key for proration dedup. ChangePlan always
+	// sets this, but guard defensively — without it, we cannot safely retry.
+	if result.Subscription.PlanChangedAt == nil {
+		return nil, fmt.Errorf("subscription missing plan_changed_at; cannot generate proration safely")
+	}
+	planChangedAt := *result.Subscription.PlanChangedAt
+
 	detail := &ProrationDetail{
 		OldPlanID:       oldPlanID,
 		NewPlanID:       newPlan.ID,
@@ -302,45 +336,77 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 	}
 
 	if proratedCents > 0 {
-		// Upgrade: create a finalized proration invoice
+		// Upgrade: create a finalized proration invoice with its line item in
+		// one transaction.
 		now := time.Now().UTC()
 		dueAt := now.AddDate(0, 0, 30)
-		invoiceNumber, err := h.invoices.NextInvoiceNumber(ctx, tenantID)
-		if err != nil {
-			return nil, fmt.Errorf("allocate proration invoice number: %w", err)
+
+		// BillingPeriodStart = plan change moment, BillingPeriodEnd = remaining
+		// cycle end. Matches Stripe's proration semantics and gives the
+		// existing billing-period idempotency index a meaningful tuple to work
+		// with (vs the zero-value period used previously).
+		periodStart := planChangedAt
+		var periodEnd time.Time
+		if result.Subscription.CurrentBillingPeriodEnd != nil {
+			periodEnd = *result.Subscription.CurrentBillingPeriodEnd
+		} else {
+			periodEnd = planChangedAt
 		}
 
-		inv, err := h.invoices.CreateInvoice(ctx, tenantID, domain.Invoice{
-			CustomerID:         result.Subscription.CustomerID,
-			SubscriptionID:     result.Subscription.ID,
-			InvoiceNumber:      invoiceNumber,
-			Status:             domain.InvoiceFinalized,
-			PaymentStatus:      domain.PaymentPending,
-			Currency:           newPlan.Currency,
-			SubtotalCents:      proratedCents,
-			TotalAmountCents:   proratedCents,
-			AmountDueCents:     proratedCents,
-			IssuedAt:           &now,
-			DueAt:              &dueAt,
-			NetPaymentTermDays: 30,
-			Memo:               fmt.Sprintf("Plan upgrade proration: %s -> %s", oldPlan.Name, newPlan.Name),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create proration invoice: %w", err)
+		memo := fmt.Sprintf("Plan upgrade proration: %s -> %s", oldPlan.Name, newPlan.Name)
+		invoice := domain.Invoice{
+			CustomerID:          result.Subscription.CustomerID,
+			SubscriptionID:      result.Subscription.ID,
+			Status:              domain.InvoiceFinalized,
+			PaymentStatus:       domain.PaymentPending,
+			Currency:            newPlan.Currency,
+			SubtotalCents:       proratedCents,
+			TotalAmountCents:    proratedCents,
+			AmountDueCents:      proratedCents,
+			BillingPeriodStart:  periodStart,
+			BillingPeriodEnd:    periodEnd,
+			IssuedAt:            &now,
+			DueAt:               &dueAt,
+			NetPaymentTermDays:  30,
+			Memo:                memo,
+			SourcePlanChangedAt: &planChangedAt,
 		}
-
-		_, err = h.invoices.CreateLineItem(ctx, tenantID, domain.InvoiceLineItem{
-			InvoiceID:        inv.ID,
+		lineItem := domain.InvoiceLineItem{
 			LineType:         domain.LineTypeBaseFee,
-			Description:      fmt.Sprintf("Plan upgrade proration: %s -> %s", oldPlan.Name, newPlan.Name),
+			Description:      memo,
 			Quantity:         1,
 			UnitAmountCents:  proratedCents,
 			AmountCents:      proratedCents,
 			TotalAmountCents: proratedCents,
 			Currency:         newPlan.Currency,
-		})
+		}
+
+		// Allocate the invoice number lazily — only if we're actually going to
+		// insert. On dedup hit, the existing invoice already has its number
+		// and we skip this allocation entirely.
+		invoiceNumber, err := h.invoices.NextInvoiceNumber(ctx, tenantID)
 		if err != nil {
-			return nil, fmt.Errorf("create proration line item: %w", err)
+			return nil, fmt.Errorf("allocate proration invoice number: %w", err)
+		}
+		invoice.InvoiceNumber = invoiceNumber
+
+		inv, err := h.invoices.CreateInvoiceWithLineItems(ctx, tenantID, invoice, []domain.InvoiceLineItem{lineItem})
+		if errors.Is(err, errs.ErrAlreadyExists) {
+			existing, lookupErr := h.invoices.GetByProrationSource(ctx, tenantID, result.Subscription.ID, planChangedAt)
+			if lookupErr != nil {
+				return nil, fmt.Errorf("proration dedup lookup: %w", lookupErr)
+			}
+			slog.Info("proration invoice already exists; retry dedup",
+				"invoice_id", existing.ID,
+				"subscription_id", result.Subscription.ID,
+				"plan_changed_at", planChangedAt,
+			)
+			detail.InvoiceID = existing.ID
+			detail.Type = "invoice"
+			return detail, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("create proration invoice: %w", err)
 		}
 
 		detail.InvoiceID = inv.ID
@@ -358,7 +424,28 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 		creditAmount := -proratedCents // Make positive
 		if h.credits != nil {
 			desc := fmt.Sprintf("Plan downgrade proration: %s -> %s", oldPlan.Name, newPlan.Name)
-			if err := h.credits.Grant(ctx, tenantID, result.Subscription.CustomerID, creditAmount, desc); err != nil {
+			err := h.credits.GrantProration(ctx, tenantID, ProrationGrantInput{
+				CustomerID:           result.Subscription.CustomerID,
+				AmountCents:          creditAmount,
+				Description:          desc,
+				SourceSubscriptionID: result.Subscription.ID,
+				SourcePlanChangedAt:  planChangedAt,
+			})
+			if errors.Is(err, errs.ErrAlreadyExists) {
+				existing, lookupErr := h.credits.GetByProrationSource(ctx, tenantID, result.Subscription.ID, planChangedAt)
+				if lookupErr != nil {
+					return nil, fmt.Errorf("proration credit dedup lookup: %w", lookupErr)
+				}
+				slog.Info("proration credit already granted; retry dedup",
+					"entry_id", existing.ID,
+					"subscription_id", result.Subscription.ID,
+					"plan_changed_at", planChangedAt,
+				)
+				detail.AmountCents = existing.AmountCents
+				detail.Type = "credit"
+				return detail, nil
+			}
+			if err != nil {
 				return nil, fmt.Errorf("grant proration credit: %w", err)
 			}
 
