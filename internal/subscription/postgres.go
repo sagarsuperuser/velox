@@ -56,10 +56,17 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 	).Scan(scanSubDest(&sub)...)
 
 	if err != nil {
-		if postgres.IsUniqueViolation(err) {
-			return domain.Subscription{}, errs.AlreadyExists("code", fmt.Sprintf("subscription code %q already exists", sub.Code))
+		switch postgres.UniqueViolationConstraint(err) {
+		case "subscriptions_one_live_per_customer_plan":
+			return domain.Subscription{}, errs.AlreadyExists("plan_id",
+				fmt.Sprintf("customer already has an active or paused subscription on plan %q", sub.PlanID))
+		case "":
+			return domain.Subscription{}, err
+		default:
+			// Other 23505 (e.g. tenant_id, code) — map to code-conflict message.
+			return domain.Subscription{}, errs.AlreadyExists("code",
+				fmt.Sprintf("subscription code %q already exists", sub.Code))
 		}
-		return domain.Subscription{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err

@@ -95,6 +95,22 @@ func IsUniqueViolation(err error) bool {
 	return false
 }
 
+// UniqueViolationConstraint returns the constraint name if err is a Postgres
+// unique-violation (SQLSTATE 23505), otherwise "". Use this to disambiguate
+// multiple unique constraints on the same table — e.g. subscriptions has
+// both (tenant_id, code) and a partial-unique (tenant_id, customer_id, plan_id)
+// for live statuses, and the callers need to surface distinct errors.
+func UniqueViolationConstraint(err error) string {
+	if err == nil {
+		return ""
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return pgErr.ConstraintName
+	}
+	return ""
+}
+
 func IsForeignKeyViolation(err error) bool {
 	if err == nil {
 		return false
