@@ -56,20 +56,18 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 **Resolution (pre-existing, verified 2026-04-19):** Migration `0006_close_rls_bypass.up.sql` enables RLS + FORCE + standard `tenant_id = current_setting('app.tenant_id', true)` policy on all three tables. Callers routed through `db.BeginTx(ctx, postgres.TxTenant, tenantID)`: `tenant/settings.go:62,83,115,174,201`; `middleware/idempotency.go:152,180`; `payment/token.go:48,109`. `dunning.ListTenantIDs` intentionally remains on `TxBypass` with an explanatory comment.
 
-### [SEC-2] Hash webhook endpoint secrets — L
+### [SEC-2] Encrypt webhook endpoint secrets at rest — L — ✅ DONE
 
 **Problem:** `webhook_endpoints.secret TEXT` stored plaintext (schema:542). DB dump → attacker forges HMAC signatures against customer receivers.
 
-**Target (two-phase rollout):**
-- **Phase A:** migration adds `secret_hash, secret_salt, secret_last4`; dual-write on Create/Rotate; read still from plaintext.
-- **Phase B:** read from hash; plaintext column still present.
-- **Phase C:** drop plaintext column.
-- Create/Rotate returns raw secret once; subsequent GET shows only `last4`.
-- Constant-time verification in webhook signer.
+**Target (single-commit cutover):**
+- Encrypt at rest (AES-256-GCM), not hash — the secret is used for outbound HMAC signing on every dispatch, so we need to recover plaintext. Hashing would break signing.
+- Drop `secret`, add `secret_encrypted TEXT NOT NULL` + `secret_last4 TEXT NOT NULL`.
+- Create/Rotate returns raw secret once; GET responses show only `last4`.
+- Reuse `internal/platform/crypto.Encryptor` (already used for customer PII) with `VELOX_ENCRYPTION_KEY`.
+- Pre-prod local — no external receivers registered yet, so existing rows are wiped in the migration.
 
-**Tests:** rotate returns raw; GET returns only last4; incorrect secret fails verify; migration dual-write preserves existing signatures.
-
-**Rollout:** 3 commits over 1-2 weeks to allow revert window.
+**Resolution (2026-04-20):** Migration `0019_webhook_secret_encrypt` drops `secret`, adds `secret_encrypted TEXT NOT NULL` + `secret_last4 TEXT NOT NULL`, and clears webhook_deliveries/events/outbox/endpoints (no plaintext to forward-migrate). `webhook.PostgresStore.SetEncryptor` encrypts on `CreateEndpoint`/`UpdateEndpointSecret` and decrypts on `GetEndpoint`/`ListEndpoints` — which also fixes a pre-existing bug where Dispatch signed with empty secrets because ListEndpoints never SELECTed the column. `domain.WebhookEndpoint.SecretLast4` is json-exposed for UI, `Secret` stays `json:"-"` and is only ever returned once via `CreateEndpointResult.Secret` / `RotateSecret`. Wired in `router.go` via shared `VELOX_ENCRYPTION_KEY` encryptor alongside customer PII; without a key, falls back to plaintext (dev) but `config.go` already requires it in production.
 
 ---
 
@@ -492,7 +490,7 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 12. **FEAT-1** — credit note → amount_due ✅
 13. **UI-5** — expiry-urgency badge extended ✅
 14. **UI-6** — shared primitives (CopyButton, BackLink, CustomerDetail hierarchy) ✅
-15. **SEC-2 Phase A** — webhook secret dual-write
+15. **SEC-2** — webhook secret encryption at rest ✅
 16. **RES-4** — inbound dedup tightened ✅
 17. **RES-3** — ChargeInvoice unknown-state ✅
 18. **RES-5** — audit fail-closed opt-in ✅
@@ -507,7 +505,7 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 27. **RES-1** — transactional outbox (L) ✅
 28. **RES-2** — scheduler advisory lock ✅
 29. **RES-6** — email outbox ✅
-30. **SEC-2 Phase B/C** — cutover + drop plaintext
+30. ~~**SEC-2 Phase B/C**~~ — collapsed into single cutover (see item 15)
 31. **FEAT-2 ✅, FEAT-3, FEAT-4 ✅, FEAT-7 ✅, FEAT-8** — feature completeness
 32. **FEAT-6** — coupon stacking
 33. **FEAT-5** — multi-item subs (Phase 3)

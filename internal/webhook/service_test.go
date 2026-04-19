@@ -36,6 +36,7 @@ func (m *memStore) CreateEndpoint(_ context.Context, tenantID string, ep domain.
 	ep.TenantID = tenantID
 	ep.CreatedAt = time.Now().UTC()
 	ep.UpdatedAt = ep.CreatedAt
+	ep.SecretLast4 = lastFour(ep.Secret)
 	m.endpoints[ep.ID] = ep
 	return ep, nil
 }
@@ -73,6 +74,7 @@ func (m *memStore) UpdateEndpointSecret(_ context.Context, tenantID, id, newSecr
 		return domain.WebhookEndpoint{}, errs.ErrNotFound
 	}
 	ep.Secret = newSecret
+	ep.SecretLast4 = lastFour(newSecret)
 	ep.UpdatedAt = time.Now().UTC()
 	m.endpoints[id] = ep
 	return ep, nil
@@ -207,6 +209,10 @@ func TestCreateEndpoint(t *testing.T) {
 		}
 		if len(result.Endpoint.Events) != 2 {
 			t.Errorf("events: got %d, want 2", len(result.Endpoint.Events))
+		}
+		if result.Endpoint.SecretLast4 != result.Secret[len(result.Secret)-4:] {
+			t.Errorf("secret_last4: got %q, want %q (last 4 of %q)",
+				result.Endpoint.SecretLast4, result.Secret[len(result.Secret)-4:], result.Secret)
 		}
 	})
 

@@ -107,17 +107,23 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	payment.InitStripe(stripeKey)
 	customerStore := customer.NewPostgresStore(db)
 
-	// PII encryption at rest — encrypt customer fields in the DB
+	// PII + webhook-secret encryption at rest — AES-256-GCM via VELOX_ENCRYPTION_KEY.
+	// Customer PII (email, names, phone, tax IDs) and webhook signing secrets
+	// live in separate stores; we set the same encryptor on both so a key
+	// rotation or swap flows through uniformly. Without a key, both fall back
+	// to plaintext — config.go already requires the key in production.
+	var sharedEnc *crypto.Encryptor
 	if encKey := strings.TrimSpace(os.Getenv("VELOX_ENCRYPTION_KEY")); encKey != "" {
 		enc, err := crypto.NewEncryptor(encKey)
 		if err != nil {
-			slog.Error("invalid VELOX_ENCRYPTION_KEY, PII encryption disabled", "error", err)
+			slog.Error("invalid VELOX_ENCRYPTION_KEY, encryption at rest disabled", "error", err)
 		} else {
+			sharedEnc = enc
 			customerStore.SetEncryptor(enc)
-			slog.Info("PII encryption enabled for customer data")
+			slog.Info("encryption at rest enabled for customer PII and webhook secrets")
 		}
 	} else {
-		slog.Warn("VELOX_ENCRYPTION_KEY not set — customer PII stored in plaintext")
+		slog.Warn("VELOX_ENCRYPTION_KEY not set — customer PII and webhook secrets stored in plaintext")
 	}
 
 	pricingSvc := pricing.NewService(pricingStore)
@@ -146,7 +152,11 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	creditNoteSvc := creditnote.NewService(creditNoteStore, invoiceStore, stripeRefunder, &creditGrantAdapter{svc: creditSvc})
 	creditNoteSvc.SetNumberGenerator(settingsStore)
 	creditNoteH := creditnote.NewHandler(creditNoteSvc)
-	webhookOutSvc := webhook.NewService(webhook.NewPostgresStore(db), nil)
+	webhookOutStore := webhook.NewPostgresStore(db)
+	if sharedEnc != nil {
+		webhookOutStore.SetEncryptor(sharedEnc)
+	}
+	webhookOutSvc := webhook.NewService(webhookOutStore, nil)
 	webhookOutH := webhook.NewHandler(webhookOutSvc)
 
 	// Transactional outbox for outbound events (RES-1). When enabled, producers

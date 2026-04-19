@@ -4,19 +4,47 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 type PostgresStore struct {
-	db *postgres.DB
+	db  *postgres.DB
+	enc *crypto.Encryptor
 }
 
 func NewPostgresStore(db *postgres.DB) *PostgresStore {
-	return &PostgresStore{db: db}
+	return &PostgresStore{db: db, enc: crypto.NewNoop()}
+}
+
+// SetEncryptor configures AES-256-GCM encryption for webhook signing secrets
+// at rest. When set (non-noop), Create/UpdateEndpointSecret encrypt the raw
+// whsec_ secret before INSERT; Get/ListEndpoints decrypt it after SELECT so
+// the Dispatch path can sign with the plaintext key. Without this, the raw
+// signing key is stored in plaintext — a DB dump yields webhook-forging
+// capability against every tenant's receivers.
+func (s *PostgresStore) SetEncryptor(enc *crypto.Encryptor) {
+	if enc == nil {
+		enc = crypto.NewNoop()
+	}
+	s.enc = enc
+}
+
+// lastFour returns the last 4 characters of the raw signing secret (e.g.
+// "whsec_abc...xyz9" → "xyz9") for display in the UI. We compute it on
+// write and persist alongside the ciphertext because the ciphertext is
+// non-deterministic — we can't recompute last4 from storage without
+// decrypting first.
+func lastFour(secret string) string {
+	if len(secret) <= 4 {
+		return secret
+	}
+	return secret[len(secret)-4:]
 }
 
 func (s *PostgresStore) CreateEndpoint(ctx context.Context, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error) {
@@ -30,16 +58,25 @@ func (s *PostgresStore) CreateEndpoint(ctx context.Context, tenantID string, ep 
 	now := time.Now().UTC()
 	eventsJSON, _ := json.Marshal(ep.Events)
 
+	plaintextSecret := ep.Secret
+	secretEncrypted, err := s.enc.Encrypt(plaintextSecret)
+	if err != nil {
+		return domain.WebhookEndpoint{}, fmt.Errorf("encrypt webhook secret: %w", err)
+	}
+	secretLast4 := lastFour(plaintextSecret)
+
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO webhook_endpoints (id, tenant_id, url, description, secret, events, active, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
+		INSERT INTO webhook_endpoints (id, tenant_id, url, description, secret_encrypted, secret_last4, events, active, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
 		RETURNING id, tenant_id, url, COALESCE(description,''), events, active, created_at, updated_at
-	`, id, tenantID, ep.URL, postgres.NullableString(ep.Description), ep.Secret, eventsJSON, ep.Active, now,
+	`, id, tenantID, ep.URL, postgres.NullableString(ep.Description), secretEncrypted, secretLast4, eventsJSON, ep.Active, now,
 	).Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
 	if err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
 	_ = json.Unmarshal(eventsJSON, &ep.Events)
+	ep.Secret = plaintextSecret // Callers need it once to show to the user.
+	ep.SecretLast4 = secretLast4
 	if err := tx.Commit(); err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
@@ -55,15 +92,19 @@ func (s *PostgresStore) GetEndpoint(ctx context.Context, tenantID, id string) (d
 
 	var ep domain.WebhookEndpoint
 	var eventsJSON []byte
+	var secretEncrypted string
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, url, COALESCE(description,''), events, active, created_at, updated_at
+		SELECT id, tenant_id, url, COALESCE(description,''), secret_encrypted, secret_last4, events, active, created_at, updated_at
 		FROM webhook_endpoints WHERE id = $1
-	`, id).Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
+	`, id).Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &secretEncrypted, &ep.SecretLast4, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return domain.WebhookEndpoint{}, errs.ErrNotFound
 	}
 	if err != nil {
 		return domain.WebhookEndpoint{}, err
+	}
+	if ep.Secret, err = s.enc.Decrypt(secretEncrypted); err != nil {
+		return domain.WebhookEndpoint{}, fmt.Errorf("decrypt webhook secret: %w", err)
 	}
 	_ = json.Unmarshal(eventsJSON, &ep.Events)
 	return ep, nil
@@ -77,7 +118,7 @@ func (s *PostgresStore) ListEndpoints(ctx context.Context, tenantID string) ([]d
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, url, COALESCE(description,''), events, active, created_at, updated_at
+		SELECT id, tenant_id, url, COALESCE(description,''), secret_encrypted, secret_last4, events, active, created_at, updated_at
 		FROM webhook_endpoints WHERE active = true ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -89,8 +130,12 @@ func (s *PostgresStore) ListEndpoints(ctx context.Context, tenantID string) ([]d
 	for rows.Next() {
 		var ep domain.WebhookEndpoint
 		var eventsJSON []byte
-		if err := rows.Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
+		var secretEncrypted string
+		if err := rows.Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &secretEncrypted, &ep.SecretLast4, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if ep.Secret, err = s.enc.Decrypt(secretEncrypted); err != nil {
+			return nil, fmt.Errorf("decrypt webhook secret: %w", err)
 		}
 		_ = json.Unmarshal(eventsJSON, &ep.Events)
 		endpoints = append(endpoints, ep)
@@ -123,13 +168,19 @@ func (s *PostgresStore) UpdateEndpointSecret(ctx context.Context, tenantID, id, 
 	}
 	defer postgres.Rollback(tx)
 
+	secretEncrypted, err := s.enc.Encrypt(newSecret)
+	if err != nil {
+		return domain.WebhookEndpoint{}, fmt.Errorf("encrypt webhook secret: %w", err)
+	}
+	secretLast4 := lastFour(newSecret)
+
 	var ep domain.WebhookEndpoint
 	var eventsJSON []byte
 	err = tx.QueryRowContext(ctx, `
-		UPDATE webhook_endpoints SET secret = $1, updated_at = NOW()
-		WHERE id = $2
+		UPDATE webhook_endpoints SET secret_encrypted = $1, secret_last4 = $2, updated_at = NOW()
+		WHERE id = $3
 		RETURNING id, tenant_id, url, COALESCE(description,''), events, active, created_at, updated_at
-	`, newSecret, id).Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
+	`, secretEncrypted, secretLast4, id).Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return domain.WebhookEndpoint{}, errs.ErrNotFound
 	}
@@ -137,6 +188,8 @@ func (s *PostgresStore) UpdateEndpointSecret(ctx context.Context, tenantID, id, 
 		return domain.WebhookEndpoint{}, err
 	}
 	_ = json.Unmarshal(eventsJSON, &ep.Events)
+	ep.Secret = newSecret
+	ep.SecretLast4 = secretLast4
 	if err := tx.Commit(); err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
