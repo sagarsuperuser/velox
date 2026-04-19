@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -42,7 +43,7 @@ func (h *Handler) Routes() chi.Router {
 func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
+		respond.BadRequest(w, r, "failed to read body")
 		return
 	}
 
@@ -51,7 +52,7 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	if h.webhookSecret != "" {
 		if err := verifyStripeSignature(body, sigHeader, h.webhookSecret); err != nil {
 			slog.Warn("stripe webhook signature verification failed", "error", err)
-			writeError(w, http.StatusBadRequest, "invalid signature")
+			respond.BadRequest(w, r, "invalid signature")
 			return
 		}
 	}
@@ -66,7 +67,7 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+		respond.BadRequest(w, r, "invalid JSON")
 		return
 	}
 
@@ -89,8 +90,7 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	tenantID := obj.Metadata["velox_tenant_id"]
 	if tenantID == "" {
 		// Not a Velox-originated payment intent — acknowledge but skip
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "reason": "no velox metadata"})
+		respond.JSON(w, r, http.StatusOK, map[string]string{"status": "skipped", "reason": "no velox metadata"})
 		return
 	}
 
@@ -126,14 +126,13 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			"error", err,
 		)
 		// Return 200 anyway — Stripe will retry on 5xx and we don't want infinite retries
-		// for events we can't process (e.g., missing invoice). Log the error for investigation.
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error_logged", "error": err.Error()})
+		// for events we can't process (e.g., missing invoice). Log the error server-side;
+		// don't echo raw error text to the caller (may leak internal details).
+		respond.JSON(w, r, http.StatusOK, map[string]string{"status": "error_logged"})
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "processed"})
+	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "processed"})
 }
 
 // verifyStripeSignature verifies the Stripe-Signature header using HMAC-SHA256.
@@ -194,8 +193,3 @@ func abs(n int64) int64 {
 	return n
 }
 
-func writeError(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
-}
