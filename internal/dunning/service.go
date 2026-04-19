@@ -91,13 +91,20 @@ func (s *Service) SetEventDispatcher(events domain.EventDispatcher) {
 	s.events = events
 }
 
+// fireEvent dispatches a webhook event. Synchronous: with the outbox (RES-1)
+// Dispatch is a short DB insert that must persist-before-return so a
+// process crash can't silently drop the event.
 func (s *Service) fireEvent(ctx context.Context, tenantID, eventType string, payload map[string]any) {
 	if s.events == nil {
 		return
 	}
-	go func() {
-		_ = s.events.Dispatch(ctx, tenantID, eventType, payload)
-	}()
+	if err := s.events.Dispatch(ctx, tenantID, eventType, payload); err != nil {
+		slog.Error("dispatch dunning event",
+			"event_type", eventType,
+			"tenant_id", tenantID,
+			"error", err,
+		)
+	}
 }
 
 // StartDunning initiates a dunning run for a failed invoice payment.

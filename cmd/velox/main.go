@@ -23,6 +23,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/platform/telemetry"
+	"github.com/sagarsuperuser/velox/internal/webhook"
 )
 
 func main() {
@@ -194,6 +195,18 @@ func serve() {
 		defer workers.Done()
 		server.WebhookOutSvc.StartRetryWorker(ctx, 30*time.Second)
 	}()
+
+	// Outbox dispatcher: drains webhook_outbox → Service.Dispatch. Only runs
+	// when the outbox producer path is enabled (VELOX_WEBHOOK_OUTBOX_ENABLED
+	// is unset or "true"); when legacy direct-dispatch is selected, rows are
+	// never enqueued so the worker would poll against an empty table forever.
+	if server.OutboxEnabled {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			webhook.NewDispatcher(server.OutboxStore, server.WebhookOutSvc, webhook.DispatcherConfig{}).Start(ctx)
+		}()
+	}
 
 	go func() {
 		slog.Info("listening", "addr", srv.Addr)
