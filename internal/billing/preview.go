@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 )
 
 // PreviewLine represents one line in an invoice preview.
@@ -102,7 +103,7 @@ func (e *Engine) Preview(ctx context.Context, sub domain.Subscription) (PreviewR
 
 		unitAmount := int64(0)
 		if quantity > 0 {
-			unitAmount = amount / quantity
+			unitAmount = money.RoundHalfToEven(amount, quantity)
 		}
 
 		result.Lines = append(result.Lines, PreviewLine{
