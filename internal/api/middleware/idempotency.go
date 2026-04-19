@@ -102,11 +102,22 @@ func Idempotency(db *postgres.DB) func(http.Handler) http.Handler {
 			}
 			next.ServeHTTP(recorder, r)
 
-			// Cache 2xx only. Stripe also caches 4xx (so clients can't retry a
-			// validation failure with a fixed body under the same key) — we can
-			// expand later. Starting conservative: a replayed 4xx under a
-			// now-valid body would be confusing for the client.
-			if recorder.statusCode >= 200 && recorder.statusCode < 300 {
+			// Cache 2xx/3xx/4xx/5xx except 409 and 422. The core value of
+			// idempotency is that a transient 500 retry must not re-run side
+			// effects — the first call may have already committed writes the
+			// client can't observe (e.g., Stripe charge succeeded but our
+			// response timed out). Without caching the 500, a retry under the
+			// same key would double-charge.
+			//
+			// 409 Conflict and 422 Unprocessable Entity are excluded because
+			// they signal "this isn't the real first response": 409 from
+			// concurrent contention on shared state (a retry after the
+			// contention clears may legitimately succeed), 422 typically
+			// from input validation (the client usually fixes the body, and
+			// our fingerprint check will flag that as a key-reuse error).
+			// Pinning either would trap the caller.
+			if recorder.statusCode != http.StatusConflict &&
+				recorder.statusCode != http.StatusUnprocessableEntity {
 				storeCachedResponse(context.Background(), db, tenantID, key,
 					r.Method, r.URL.Path, fingerprint,
 					recorder.statusCode, recorder.body.Bytes())
