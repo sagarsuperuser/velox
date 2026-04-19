@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, type WebhookEndpoint, type WebhookEvent } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 
@@ -351,7 +352,7 @@ const ALL_EVENT_TYPES = EVENT_GROUPS.flatMap(g => g.events.map(e => e.type))
 function CreateEndpointDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (secret: string) => void }) {
   const [listenMode, setListenMode] = useState<'all' | 'specific'>('all')
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set())
-  const [error, setError] = useState('')
+  const [eventsError, setEventsError] = useState('')
 
   const form = useForm<CreateEndpointData>({
     resolver: zodResolver(createEndpointSchema),
@@ -378,11 +379,11 @@ function CreateEndpointDialog({ onClose, onCreated }: { onClose: () => void; onC
   }
 
   const onSubmit = form.handleSubmit(async (data) => {
-    setError('')
+    setEventsError('')
     try {
       const eventList = listenMode === 'all' ? undefined : Array.from(selectedEvents)
       if (listenMode === 'specific' && (!eventList || eventList.length === 0)) {
-        setError('Select at least one event')
+        setEventsError('Select at least one event')
         return
       }
       const res = await api.createWebhookEndpoint({
@@ -392,7 +393,9 @@ function CreateEndpointDialog({ onClose, onCreated }: { onClose: () => void; onC
       })
       onCreated(res.secret)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create endpoint')
+      applyApiError(form, err, ['url', 'description'], {
+        toastTitle: 'Failed to create endpoint',
+      })
     }
   })
 
@@ -504,13 +507,8 @@ function CreateEndpointDialog({ onClose, onCreated }: { onClose: () => void; onC
                 })}
               </div>
             )}
+            {eventsError && <p className="text-destructive text-sm mt-2">{eventsError}</p>}
           </div>
-
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
-            </div>
-          )}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>

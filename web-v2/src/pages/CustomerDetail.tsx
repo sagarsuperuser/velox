@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary, type Meter, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
@@ -720,21 +721,19 @@ export default function CustomerDetailPage() {
 function EditCustomerDialog({ customer, onClose, onSaved }: {
   customer: Customer; onClose: () => void; onSaved: () => void
 }) {
-  const [error, setError] = useState('')
-
-  const { register, handleSubmit, formState: { errors, isSubmitting, isDirty } } = useForm<EditCustomerData>({
+  const form = useForm<EditCustomerData>({
     resolver: zodResolver(editCustomerSchema),
     defaultValues: { display_name: customer.display_name, email: customer.email || '' },
   })
+  const { register, handleSubmit, formState: { errors, isSubmitting, isDirty } } = form
 
   const onSubmit = handleSubmit(async (data) => {
     if (!isDirty) return
-    setError('')
     try {
       await api.updateCustomer(customer.id, data)
       onSaved()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update customer')
+      applyApiError(form, err, ['display_name', 'email'], { toastTitle: 'Failed to update customer' })
     }
   })
 
@@ -755,11 +754,6 @@ function EditCustomerDialog({ customer, onClose, onSaved }: {
             <Input id="email" type="email" maxLength={254} {...register('email')} />
             {errors.email && <p className="text-xs text-destructive">{errors.email.message}</p>}
           </div>
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
-            </div>
-          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={isSubmitting || !isDirty}>
@@ -777,21 +771,22 @@ function EditCustomerDialog({ customer, onClose, onSaved }: {
 function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
   customerId: string; plans: Plan[]; onClose: () => void; onCreated: (sub: Subscription) => void
 }) {
-  const [error, setError] = useState('')
   const [startNow, setStartNow] = useState(true)
   const [planId, setPlanId] = useState('')
+  const [planError, setPlanError] = useState('')
 
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<{ display_name: string; code: string }>({
+  const form = useForm<{ display_name: string; code: string }>({
     resolver: zodResolver(z.object({
       display_name: z.string().min(1, 'Display name is required'),
       code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
     })),
     defaultValues: { code: '', display_name: '' },
   })
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = form
 
   const onSubmit = handleSubmit(async (data) => {
-    if (!planId) { setError('Plan is required'); return }
-    setError('')
+    if (!planId) { setPlanError('Plan is required'); return }
+    setPlanError('')
     try {
       const sub = await api.createSubscription({
         ...data,
@@ -801,7 +796,7 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
       })
       onCreated(sub)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create subscription')
+      applyApiError(form, err, ['display_name', 'code'], { toastTitle: 'Failed to create subscription' })
     }
   })
 
@@ -824,7 +819,7 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
           </div>
           <div className="space-y-2">
             <Label>Plan</Label>
-            <Select value={planId} onValueChange={setPlanId}>
+            <Select value={planId} onValueChange={(v) => { setPlanId(v); setPlanError('') }}>
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Select plan...">
                   {(value: string) => {
@@ -839,16 +834,12 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
                 ))}
               </SelectContent>
             </Select>
+            {planError && <p className="text-xs text-destructive">{planError}</p>}
           </div>
           <label className="flex items-center gap-2 text-sm cursor-pointer">
             <Checkbox checked={startNow} onCheckedChange={(checked) => setStartNow(checked === true)} />
             Start immediately (activate + set billing period)
           </label>
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
-            </div>
-          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={isSubmitting}>
@@ -906,8 +897,6 @@ const CURRENCIES = [
 function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
   customerId: string; profile: BillingProfile | null; onClose: () => void; onSaved: () => void
 }) {
-  const [error, setError] = useState('')
-
   const defaultValues: BillingProfileData = {
     legal_name: profile?.legal_name || '',
     email: profile?.email || '',
@@ -925,16 +914,16 @@ function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
     tax_override_rate_bp: profile?.tax_override_rate_bp != null ? String(profile.tax_override_rate_bp) : '',
   }
 
-  const { register, handleSubmit, watch, setValue, control, formState: { errors: formErrors, isSubmitting, isDirty } } = useForm<BillingProfileData>({
+  const formMethods = useForm<BillingProfileData>({
     resolver: zodResolver(billingProfileSchema),
     defaultValues,
   })
+  const { register, handleSubmit, watch, setValue, control, formState: { errors: formErrors, isSubmitting, isDirty } } = formMethods
 
   const form = watch()
 
   const onSubmit = handleSubmit(async (data) => {
     if (!isDirty) return
-    setError('')
     try {
       const payload = {
         ...data,
@@ -943,7 +932,11 @@ function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
       await api.upsertBillingProfile(customerId, payload)
       onSaved()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save billing profile')
+      applyApiError(formMethods, err, [
+        'legal_name', 'email', 'phone',
+        'address_line1', 'address_line2', 'city', 'state', 'postal_code', 'country',
+        'currency', 'tax_exempt', 'tax_id', 'tax_id_type', 'tax_override_rate_bp',
+      ], { toastTitle: 'Failed to save billing profile' })
     }
   })
 
@@ -1097,12 +1090,6 @@ function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
             </div>
           </div>
 
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
-            </div>
-          )}
-
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={isSubmitting || !isDirty}>
@@ -1127,11 +1114,10 @@ function DunningOverrideDialog({ customerId, override, onClose, onSaved, onDelet
   })
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const [error, setError] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    setSaving(true); setError('')
+    setSaving(true)
     try {
       const payload: Partial<CustomerDunningOverride> = {}
       if (form.max_retry_attempts !== '') payload.max_retry_attempts = parseInt(form.max_retry_attempts, 10)
@@ -1140,19 +1126,19 @@ function DunningOverrideDialog({ customerId, override, onClose, onSaved, onDelet
       await api.upsertCustomerDunningOverride(customerId, payload)
       onSaved()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save')
+      toast.error(err instanceof Error ? err.message : 'Failed to save')
     } finally {
       setSaving(false)
     }
   }
 
   const handleDelete = async () => {
-    setDeleting(true); setError('')
+    setDeleting(true)
     try {
       await api.deleteCustomerDunningOverride(customerId)
       onDeleted()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete')
+      toast.error(err instanceof Error ? err.message : 'Failed to delete')
     } finally {
       setDeleting(false)
     }
@@ -1191,11 +1177,6 @@ function DunningOverrideDialog({ customerId, override, onClose, onSaved, onDelet
               </SelectContent>
             </Select>
           </div>
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
-            </div>
-          )}
           <div className="flex justify-between pt-2">
             {override ? (
               <Button type="button" variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={handleDelete} disabled={deleting}>

@@ -1,9 +1,6 @@
 import { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useForm, Controller } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Subscription, type Customer, type Plan, type Invoice, type InvoicePreview } from '@/lib/api'
 import { Layout } from '@/components/Layout'
@@ -584,12 +581,6 @@ export default function SubscriptionDetailPage() {
   )
 }
 
-const changePlanSchema = z.object({
-  plan_id: z.string().min(1, 'Plan is required'),
-  immediate: z.boolean(),
-})
-type ChangePlanData = z.infer<typeof changePlanSchema>
-
 function ChangePlanDialog({ subscriptionId, currentPlanId, currentPlanName, plans, onClose, onChanged }: {
   subscriptionId: string
   currentPlanId: string
@@ -598,7 +589,6 @@ function ChangePlanDialog({ subscriptionId, currentPlanId, currentPlanName, plan
   onClose: () => void
   onChanged: (proration?: { type: string; amount_cents: number; invoice_id?: string }) => void
 }) {
-  const [error, setError] = useState('')
   const [selectedPlan, setSelectedPlan] = useState('')
   const [immediate, setImmediate] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -608,13 +598,12 @@ function ChangePlanDialog({ subscriptionId, currentPlanId, currentPlanName, plan
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!selectedPlan) return
-    setError('')
     setSubmitting(true)
     try {
       const res = await api.changePlan(subscriptionId, { new_plan_id: selectedPlan, immediate })
       onChanged(res.proration)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to change plan')
+      toast.error(err instanceof Error ? err.message : 'Failed to change plan')
     } finally {
       setSubmitting(false)
     }
@@ -668,12 +657,6 @@ function ChangePlanDialog({ subscriptionId, currentPlanId, currentPlanName, plan
               )}
             </div>
           </label>
-
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
-            </div>
-          )}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>

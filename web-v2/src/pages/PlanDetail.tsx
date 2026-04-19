@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Plan, type Meter, type Subscription, type RatingRule, type Customer } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
@@ -467,12 +468,12 @@ function EditPlanDialog({ plan, onClose, onSaved }: {
 }) {
   const [basePrice, setBasePrice] = useState((plan.base_amount_cents / 100).toFixed(2))
   const [status, setStatus] = useState(plan.status)
-  const [error, setError] = useState('')
 
-  const { register, handleSubmit, watch, formState: { errors, isSubmitting } } = useForm<EditPlanData>({
+  const form = useForm<EditPlanData>({
     resolver: zodResolver(editPlanSchema),
     defaultValues: { name: plan.name },
   })
+  const { register, handleSubmit, watch, formState: { errors, isSubmitting } } = form
 
   const name = watch('name')
   const hasChanges = name !== plan.name ||
@@ -480,7 +481,6 @@ function EditPlanDialog({ plan, onClose, onSaved }: {
     status !== plan.status
 
   const onSubmit = handleSubmit(async (data) => {
-    setError('')
     try {
       await api.updatePlan(plan.id, {
         name: data.name,
@@ -489,7 +489,7 @@ function EditPlanDialog({ plan, onClose, onSaved }: {
       })
       onSaved()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update plan')
+      applyApiError(form, err, ['name'], { toastTitle: 'Failed to update plan' })
     }
   })
 
@@ -544,12 +544,6 @@ function EditPlanDialog({ plan, onClose, onSaved }: {
               </SelectContent>
             </Select>
           </div>
-
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
-            </div>
-          )}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>

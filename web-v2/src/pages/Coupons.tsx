@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate } from '@/lib/api'
 import type { Coupon, CouponRedemption } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -97,7 +98,6 @@ export default function CouponsPage() {
   const [redemptionsCoupon, setRedemptionsCoupon] = useState<Coupon | null>(null)
   const [filterStatus, setFilterStatus] = useState('')
   const [search, setSearch] = useState('')
-  const [error, setError] = useState('')
   const queryClient = useQueryClient()
 
   const { data: couponsData, isLoading: loading, error: loadErrorObj, refetch } = useQuery({
@@ -316,7 +316,7 @@ export default function CouponsPage() {
       {/* Create Coupon Dialog */}
       <CreateCouponDialog
         open={showCreate}
-        onOpenChange={(open) => { setShowCreate(open); if (!open) setError('') }}
+        onOpenChange={setShowCreate}
         onCreated={() => {
           setShowCreate(false)
           queryClient.invalidateQueries({ queryKey: ['coupons'] })
@@ -363,7 +363,6 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
   open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void
 }) {
   const [plans, setPlans] = useState<{ id: string; name: string; code: string }[]>([])
-  const [error, setError] = useState('')
 
   const form = useForm<CreateCouponData>({
     resolver: zodResolver(createCouponSchema),
@@ -399,19 +398,28 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
       onCreated()
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to create coupon')
+      applyApiError(form, err, {
+        code: 'code',
+        name: 'name',
+        type: 'type',
+        percent_off: 'discountValue',
+        amount_off: 'discountValue',
+        currency: 'currency',
+        max_redemptions: 'maxRedemptions',
+        expires_at: 'expiresAt',
+        plan_ids: 'planIds',
+      })
     },
   })
 
   const onSubmit = form.handleSubmit((data) => {
-    setError('')
     createMutation.mutate(data)
   })
 
   return (
     <Dialog open={open} onOpenChange={(o) => {
       onOpenChange(o)
-      if (!o) { form.reset(); setError('') }
+      if (!o) { form.reset() }
     }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
@@ -569,12 +577,6 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">Leave all unchecked for no restriction</p>
-              </div>
-            )}
-
-            {error && (
-              <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-                <p className="text-destructive text-sm">{error}</p>
               </div>
             )}
 

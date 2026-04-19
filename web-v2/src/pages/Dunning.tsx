@@ -806,7 +806,6 @@ function ResolveDialog({ run, invoiceMap, onClose, onResolved }: {
 }) {
   const [resolution, setResolution] = useState('payment_recovered')
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
 
   const inv = invoiceMap[run.invoice_id]
 
@@ -819,12 +818,11 @@ function ResolveDialog({ run, invoiceMap, onClose, onResolved }: {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
-    setError('')
     try {
       await api.resolveDunningRun(run.id, resolution)
       onResolved()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to resolve dunning run')
+      toast.error(err instanceof Error ? err.message : 'Failed to resolve dunning run')
     } finally {
       setSaving(false)
     }
@@ -881,12 +879,6 @@ function ResolveDialog({ run, invoiceMap, onClose, onResolved }: {
               <p className="text-xs font-medium text-destructive">
                 This action will void the invoice, reverse any credits applied, and cancel the Stripe payment intent. This cannot be undone.
               </p>
-            </div>
-          )}
-
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
             </div>
           )}
 
