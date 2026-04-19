@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate } from '@/lib/api'
 import type { Customer } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
@@ -92,7 +93,6 @@ function SortableHead({
 
 export default function CustomersPage() {
   const [showCreate, setShowCreate] = useState(false)
-  const [error, setError] = useState('')
   const [urlState, setUrlState] = useUrlState({
     search: '',
     status: '',
@@ -138,7 +138,7 @@ export default function CustomersPage() {
       form.reset()
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to create customer')
+      applyApiError(form, err, ['external_id', 'display_name', 'email'])
     },
   })
 
@@ -165,7 +165,6 @@ export default function CustomersPage() {
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   const onSubmit = form.handleSubmit((data: CreateCustomerData) => {
-    setError('')
     createMutation.mutate(data)
   })
 
@@ -389,7 +388,7 @@ export default function CustomersPage() {
       {/* Create Customer Dialog */}
       <Dialog open={showCreate} onOpenChange={(open) => {
         setShowCreate(open)
-        if (!open) { form.reset(); setError('') }
+        if (!open) { form.reset() }
       }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -442,12 +441,6 @@ export default function CustomersPage() {
                   </FormItem>
                 )}
               />
-
-              {error && (
-                <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-                  <p className="text-destructive text-sm">{error}</p>
-                </div>
-              )}
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setShowCreate(false)}>

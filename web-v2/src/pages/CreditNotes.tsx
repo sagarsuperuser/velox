@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol } from '@/lib/api'
 import type { CreditNote, Invoice, Customer } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
@@ -529,7 +530,6 @@ function CreateCreditNoteDialog({ open, onOpenChange, customerMap, onCreated }: 
   onCreated: () => void
 }) {
   const [invoices, setInvoices] = useState<Invoice[]>([])
-  const [error, setError] = useState('')
   const [loadingInvoices, setLoadingInvoices] = useState(true)
 
   const form = useForm<CreditNoteFormData>({
@@ -577,19 +577,24 @@ function CreateCreditNoteDialog({ open, onOpenChange, customerMap, onCreated }: 
       onCreated()
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to create credit note')
+      applyApiError(form, err, {
+        invoice_id: 'invoice_id',
+        reason: 'reason',
+        lines: 'amount',
+        unit_amount_cents: 'amount',
+        quantity: 'amount',
+      })
     },
   })
 
   const onSubmit = form.handleSubmit((data) => {
-    setError('')
     createMutation.mutate(data)
   })
 
   return (
     <Dialog open={open} onOpenChange={(o) => {
       onOpenChange(o)
-      if (!o) { form.reset(); setError('') }
+      if (!o) form.reset()
     }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
@@ -751,12 +756,6 @@ function CreateCreditNoteDialog({ open, onOpenChange, customerMap, onCreated }: 
                         : `Invoice amount due will be reduced by ${getCurrencySymbol()}${parseFloat(amount || '0').toFixed(2)}`
                     }
                   </p>
-                </div>
-              )}
-
-              {error && (
-                <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-                  <p className="text-destructive text-sm">{error}</p>
                 </div>
               )}
 

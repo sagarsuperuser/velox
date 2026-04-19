@@ -5,6 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, formatRelativeTime, type ApiKeyInfo } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 
@@ -391,7 +392,7 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
   const [keyType, setKeyType] = useState('secret')
   const [expiryPreset, setExpiryPreset] = useState<ExpiryPreset>('never')
   const [customDate, setCustomDate] = useState('')
-  const [error, setError] = useState('')
+  const [customDateError, setCustomDateError] = useState('')
 
   const form = useForm<CreateApiKeyData>({
     resolver: zodResolver(createApiKeySchema),
@@ -409,9 +410,9 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
   }
 
   const onSubmit = form.handleSubmit(async (data) => {
-    setError('')
+    setCustomDateError('')
     if (expiryPreset === 'custom' && !customDate) {
-      setError('Please select an expiration date')
+      setCustomDateError('Please select an expiration date')
       return
     }
     try {
@@ -422,7 +423,9 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
       })
       onCreated(res.raw_key)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create API key')
+      applyApiError(form, err, ['name', 'key_type', 'expires_at'], {
+        toastTitle: 'Failed to create API key',
+      })
     }
   })
 
@@ -513,7 +516,7 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
                 <div className="mt-3">
                   <DatePicker
                     value={customDate}
-                    onChange={setCustomDate}
+                    onChange={(d) => { setCustomDate(d); setCustomDateError('') }}
                     placeholder="Select expiration date"
                     className="w-56"
                     minDate={tomorrow}
@@ -525,13 +528,8 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
                   Key will expire on {new Date(getExpiresAt()!).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
                 </p>
               )}
+              {customDateError && <p className="text-destructive text-sm mt-2">{customDateError}</p>}
             </div>
-
-            {error && (
-              <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-                <p className="text-destructive text-sm">{error}</p>
-              </div>
-            )}
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>

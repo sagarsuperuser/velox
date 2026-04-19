@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, formatDateTime } from '@/lib/api'
 import type { Customer, Subscription } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
@@ -100,7 +101,6 @@ function SortableHead({
 
 export default function SubscriptionsPage() {
   const [showCreate, setShowCreate] = useState(false)
-  const [error, setError] = useState('')
   const [urlState, setUrlState] = useUrlState({
     search: '',
     status: '',
@@ -176,7 +176,7 @@ export default function SubscriptionsPage() {
       form.reset()
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to create subscription')
+      applyApiError(form, err, ['code', 'display_name', 'customer_id', 'plan_id', 'billing_time', 'trial_days', 'usage_cap_units', 'overage_action'])
     },
   })
 
@@ -199,7 +199,6 @@ export default function SubscriptionsPage() {
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   const onSubmit = form.handleSubmit((data: CreateSubData) => {
-    setError('')
     createMutation.mutate(data)
   })
 
@@ -438,7 +437,7 @@ export default function SubscriptionsPage() {
       {/* Create Subscription Dialog */}
       <Dialog open={showCreate} onOpenChange={(open) => {
         setShowCreate(open)
-        if (!open) { form.reset(); setError('') }
+        if (!open) { form.reset() }
       }}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -617,12 +616,6 @@ export default function SubscriptionsPage() {
                   )}
                 />
               </div>
-
-              {error && (
-                <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-                  <p className="text-destructive text-sm">{error}</p>
-                </div>
-              )}
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setShowCreate(false)}>

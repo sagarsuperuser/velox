@@ -4,6 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, setActiveCurrency, formatCents } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -79,7 +80,7 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
-  const { register, handleSubmit, watch, reset, setValue, formState: { errors: formErrors, isDirty } } = useForm<SettingsFormData>({
+  const formMethods = useForm<SettingsFormData>({
     resolver: zodResolver(settingsSchema),
     defaultValues: {
       company_name: '', company_email: '', company_phone: '', company_address: '',
@@ -88,6 +89,7 @@ export default function SettingsPage() {
       default_currency: '', timezone: '',
     },
   })
+  const { register, handleSubmit, watch, reset, setValue, formState: { errors: formErrors, isDirty } } = formMethods
 
   const form = watch()
   const hasChanges = isDirty
@@ -134,7 +136,11 @@ export default function SettingsPage() {
       if (updated.default_currency) setActiveCurrency(updated.default_currency)
       toast.success('Settings saved')
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save settings')
+      applyApiError(formMethods, err, [
+        'company_name', 'company_email', 'company_phone', 'company_address', 'logo_url',
+        'invoice_prefix', 'net_payment_terms', 'tax_rate_bp', 'tax_name', 'tax_inclusive',
+        'default_currency', 'timezone',
+      ], { toastTitle: 'Failed to save settings' })
     } finally { setSaving(false) }
   })
 

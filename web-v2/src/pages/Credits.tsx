@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol } from '@/lib/api'
 import type { Customer, CreditBalance, CreditLedgerEntry } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
@@ -511,7 +512,7 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
   onDone: () => void
 }) {
   const [selectedCustomer, setSelectedCustomer] = useState(customerId)
-  const [error, setError] = useState('')
+  const [customerError, setCustomerError] = useState('')
   const [showConfirm, setShowConfirm] = useState(false)
 
   const isDeduct = mode === 'deduct'
@@ -549,18 +550,22 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
       onDone()
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to update credits')
+      applyApiError(form, err, {
+        amount_cents: 'amount',
+        description: 'description',
+        expires_at: 'expiresAt',
+      })
     },
   })
 
   const onFormSubmit = form.handleSubmit(() => {
-    if (!effectiveCustomerId) { setError('Select a customer'); return }
+    if (!effectiveCustomerId) { setCustomerError('Select a customer'); return }
+    setCustomerError('')
     setShowConfirm(true)
   })
 
   const handleConfirm = () => {
     setShowConfirm(false)
-    setError('')
     saveMutation.mutate()
   }
 
@@ -570,7 +575,7 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
     <>
       <Dialog open={open} onOpenChange={(o) => {
         onOpenChange(o)
-        if (!o) { form.reset(); setError('') }
+        if (!o) { form.reset(); setCustomerError('') }
       }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -583,7 +588,7 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
                   <Label className="text-sm font-medium">Customer</Label>
                   <select
                     value={selectedCustomer}
-                    onChange={(e) => setSelectedCustomer(e.target.value)}
+                    onChange={(e) => { setSelectedCustomer(e.target.value); setCustomerError('') }}
                     className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring mt-2"
                   >
                     <option value="">Select customer...</option>
@@ -591,6 +596,7 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
                       <option key={c.id} value={c.id}>{c.display_name} ({c.external_id})</option>
                     ))}
                   </select>
+                  {customerError && <p className="text-destructive text-sm mt-1">{customerError}</p>}
                 </div>
               )}
               {customerId && (
@@ -651,12 +657,6 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
                     </FormItem>
                   )}
                 />
-              )}
-
-              {error && (
-                <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-                  <p className="text-destructive text-sm">{error}</p>
-                </div>
               )}
 
               <DialogFooter>

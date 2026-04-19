@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type Customer, type Subscription, type CreditNote, type TimelineEvent, type TenantSettings } from '@/lib/api'
+import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
@@ -695,13 +696,16 @@ function AddLineItemDialog({ invoiceId, onClose, onAdded }: {
   const [quantity, setQuantity] = useState('1')
   const [unitAmount, setUnitAmount] = useState('')
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const [descriptionError, setDescriptionError] = useState('')
+  const [amountError, setAmountError] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!description.trim()) { setError('Description is required'); return }
-    if (!unitAmount || parseFloat(unitAmount) <= 0) { setError('Unit amount must be greater than 0'); return }
-    setSaving(true); setError('')
+    setDescriptionError('')
+    setAmountError('')
+    if (!description.trim()) { setDescriptionError('Description is required'); return }
+    if (!unitAmount || parseFloat(unitAmount) <= 0) { setAmountError('Unit amount must be greater than 0'); return }
+    setSaving(true)
     try {
       await api.addInvoiceLineItem(invoiceId, {
         description: description.trim(),
@@ -711,7 +715,7 @@ function AddLineItemDialog({ invoiceId, onClose, onAdded }: {
       })
       onAdded()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add line item')
+      toast.error(err instanceof Error ? err.message : 'Failed to add line item')
     } finally {
       setSaving(false)
     }
@@ -726,7 +730,8 @@ function AddLineItemDialog({ invoiceId, onClose, onAdded }: {
         <form onSubmit={handleSubmit} noValidate className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="description">Description</Label>
-            <Input id="description" value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. Setup fee, Consulting hours" maxLength={500} />
+            <Input id="description" value={description} onChange={e => { setDescription(e.target.value); setDescriptionError('') }} placeholder="e.g. Setup fee, Consulting hours" maxLength={500} />
+            {descriptionError && <p className="text-xs text-destructive">{descriptionError}</p>}
           </div>
           <div className="space-y-2">
             <Label>Type</Label>
@@ -749,18 +754,14 @@ function AddLineItemDialog({ invoiceId, onClose, onAdded }: {
             </div>
             <div className="space-y-2">
               <Label htmlFor="unitAmount">Unit Price ({getCurrencySymbol()})</Label>
-              <Input id="unitAmount" type="number" step="0.01" min={0.01} value={unitAmount} onChange={e => setUnitAmount(e.target.value)} placeholder="10.00" />
+              <Input id="unitAmount" type="number" step="0.01" min={0.01} value={unitAmount} onChange={e => { setUnitAmount(e.target.value); setAmountError('') }} placeholder="10.00" />
+              {amountError && <p className="text-xs text-destructive">{amountError}</p>}
             </div>
           </div>
           {unitAmount && quantity && (
             <p className="text-sm text-muted-foreground">
               Total: {getCurrencySymbol()}{((parseInt(quantity) || 1) * parseFloat(unitAmount || '0')).toFixed(2)}
             </p>
-          )}
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
-            </div>
           )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
@@ -777,17 +778,18 @@ function AddLineItemDialog({ invoiceId, onClose, onAdded }: {
 function EmailInvoiceDialog({ invoiceId, defaultEmail, onClose, onSent }: {
   invoiceId: string; defaultEmail: string; onClose: () => void; onSent: () => void
 }) {
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<EmailFormData>({
+  const form = useForm<EmailFormData>({
     resolver: zodResolver(emailSchema),
     defaultValues: { email: defaultEmail },
   })
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = form
 
   const onSubmit = handleSubmit(async (data) => {
     try {
       await api.sendInvoiceEmail(invoiceId, data.email)
       onSent()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to send email')
+      applyApiError(form, err, ['email'], { toastTitle: 'Failed to send email' })
     }
   })
 
@@ -820,10 +822,11 @@ function IssueCreditDialog({ invoice, onClose, onCreated }: {
 }) {
   const [type, setType] = useState<string>('credit')
 
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<CreditModalData>({
+  const form = useForm<CreditModalData>({
     resolver: zodResolver(creditModalSchema),
     defaultValues: { reason: '', amount: '' },
   })
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = form
 
   const onSubmit = handleSubmit(async (data) => {
     try {
@@ -837,7 +840,11 @@ function IssueCreditDialog({ invoice, onClose, onCreated }: {
       })
       onCreated()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create credit note')
+      applyApiError(form, err, {
+        reason: 'reason',
+        lines: 'amount',
+        unit_amount_cents: 'amount',
+      }, { toastTitle: 'Failed to create credit note' })
     }
   })
 

@@ -1,9 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useForm } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { z } from 'zod'
 import { toast } from 'sonner'
 import {
   api,
@@ -346,7 +343,7 @@ function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   const [packageAmount, setPackageAmount] = useState('10.00')
   const [name, setName] = useState('')
   const [ruleKey, setRuleKey] = useState('')
-  const [error, setError] = useState('')
+  const [tierError, setTierError] = useState('')
   const [saving, setSaving] = useState(false)
 
   const modeDescriptions: Record<string, string> = {
@@ -358,7 +355,7 @@ function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
-    setError('')
+    setTierError('')
     try {
       const payload: Record<string, unknown> = { rule_key: ruleKey, name, mode, currency: getActiveCurrency() }
       if (mode === 'flat') {
@@ -368,8 +365,8 @@ function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreat
         for (let i = 0; i < tiers.length - 1; i++) {
           const current = parseInt(tiers[i].upTo) || 0
           const next = tiers[i + 1].upTo === '' ? Infinity : (parseInt(tiers[i + 1].upTo) || 0)
-          if (current <= 0) { setError(`Tier ${i + 1}: "Up to" must be greater than 0`); setSaving(false); return }
-          if (next !== Infinity && next <= current) { setError(`Tier ${i + 2}: "Up to" must be greater than ${current}`); setSaving(false); return }
+          if (current <= 0) { setTierError(`Tier ${i + 1}: "Up to" must be greater than 0`); setSaving(false); return }
+          if (next !== Infinity && next <= current) { setTierError(`Tier ${i + 2}: "Up to" must be greater than ${current}`); setSaving(false); return }
         }
         payload.graduated_tiers = tiers.map(t => ({
           up_to: t.upTo === '' ? 0 : parseInt(t.upTo) || 0,
@@ -383,7 +380,7 @@ function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreat
       await api.createRatingRule(payload as Parameters<typeof api.createRatingRule>[0])
       onCreated()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create rating rule')
+      toast.error(err instanceof Error ? err.message : 'Failed to create rating rule')
     } finally {
       setSaving(false)
     }
@@ -490,9 +487,9 @@ function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreat
             </div>
           )}
 
-          {error && (
+          {tierError && (
             <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
+              <p className="text-destructive text-sm">{tierError}</p>
             </div>
           )}
 
@@ -512,7 +509,6 @@ function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreat
 
 function CreateMeterDialog({ onClose, onCreated, rules }: { onClose: () => void; onCreated: () => void; rules: RatingRule[] }) {
   const [form, setForm] = useState({ key: '', name: '', unit: 'unit', aggregation: 'sum', rating_rule_version_id: '' })
-  const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
   const aggregationDescriptions: Record<string, string> = {
@@ -525,12 +521,11 @@ function CreateMeterDialog({ onClose, onCreated, rules }: { onClose: () => void;
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
-    setError('')
     try {
       await api.createMeter(form)
       onCreated()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create meter')
+      toast.error(err instanceof Error ? err.message : 'Failed to create meter')
     } finally {
       setSaving(false)
     }
@@ -601,12 +596,6 @@ function CreateMeterDialog({ onClose, onCreated, rules }: { onClose: () => void;
             </div>
           )}
 
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
-            </div>
-          )}
-
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={saving}>
@@ -627,13 +616,11 @@ function CreatePlanDialog({ onClose, onCreated, meters }: { onClose: () => void;
   const [interval, setInterval] = useState('monthly')
   const [basePrice, setBasePrice] = useState('')
   const [meterIds, setMeterIds] = useState<string[]>([])
-  const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
-    setError('')
     try {
       await api.createPlan({
         name,
@@ -645,7 +632,7 @@ function CreatePlanDialog({ onClose, onCreated, meters }: { onClose: () => void;
       })
       onCreated()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create plan')
+      toast.error(err instanceof Error ? err.message : 'Failed to create plan')
     } finally {
       setSaving(false)
     }
@@ -711,12 +698,6 @@ function CreatePlanDialog({ onClose, onCreated, meters }: { onClose: () => void;
                   </label>
                 ))}
               </div>
-            </div>
-          )}
-
-          {error && (
-            <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-destructive text-sm">{error}</p>
             </div>
           )}
 
