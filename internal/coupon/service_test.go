@@ -157,12 +157,13 @@ func TestCalculateDiscount_Percentage(t *testing.T) {
 			wantDisc: 0,
 		},
 		{
-			name:     "0.5% of 100 cents — rounding",
+			name:     "0.5% of 100 cents — banker's tie to even",
 			pct:      0.5,
 			subtotal: 100,
-			// 100 * 0.5 / 100 = 0.5, math.Round(0.5) = 0 in Go (banker's rounding to even)
-			// Actually math.Round(0.5) = 1 in Go (rounds half away from zero)
-			wantDisc: 1,
+			// 100 * 0.5 / 100 = 0.5 exactly. Banker's rounds to nearest even → 0.
+			// Half-up would give 1. Divergence is intentional (see money.RoundHalfToEven
+			// docstring for the zero-bias rationale).
+			wantDisc: 0,
 		},
 		{
 			name:     "0.5% of 99 cents — rounds to 0",
@@ -179,11 +180,11 @@ func TestCalculateDiscount_Percentage(t *testing.T) {
 			wantDisc: 10000,
 		},
 		{
-			name:     "50% of 1 cent",
+			name:     "50% of 1 cent — banker's tie to even",
 			pct:      50,
 			subtotal: 1,
-			// 1 * 50 / 100 = 0.5, math.Round(0.5) = 1
-			wantDisc: 1,
+			// 1 * 50 / 100 = 0.5 exactly. Banker's rounds to nearest even → 0.
+			wantDisc: 0,
 		},
 		{
 			name:     "33.33% of 300 cents",
@@ -207,8 +208,8 @@ func TestCalculateDiscount_Percentage(t *testing.T) {
 			got := CalculateDiscount(c, tt.subtotal)
 			if got != tt.wantDisc {
 				raw := float64(tt.subtotal) * tt.pct / 100
-				t.Errorf("CalculateDiscount(pct=%.2f, subtotal=%d) = %d, want %d (raw float: %f, math.Round: %d)",
-					tt.pct, tt.subtotal, got, tt.wantDisc, raw, int64(math.Round(raw)))
+				t.Errorf("CalculateDiscount(pct=%.2f, subtotal=%d) = %d, want %d (raw float: %f, RoundToEven: %d)",
+					tt.pct, tt.subtotal, got, tt.wantDisc, raw, int64(math.RoundToEven(raw)))
 			}
 		})
 	}
