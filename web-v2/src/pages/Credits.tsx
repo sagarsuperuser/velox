@@ -62,6 +62,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Plus, Minus, Download, ChevronRight, ArrowLeft, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 
@@ -265,9 +266,7 @@ export default function CreditsPage() {
           </CardHeader>
           <CardContent className="p-0">
             {ledgerLoading ? (
-              <div className="p-8 flex justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-              </div>
+              <TableSkeleton columns={7} />
             ) : filteredLedger.length === 0 ? (
               <div className="px-6 py-12 text-center">
                 <p className="text-sm font-medium text-foreground">No transactions{entryTypeFilter !== 'All' ? ` of type "${entryTypeFilter}"` : ''}</p>
@@ -420,9 +419,7 @@ export default function CreditsPage() {
               </Button>
             </div>
           ) : loading ? (
-            <div className="p-8 flex justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
+            <TableSkeleton columns={3} widths={['60%', '30%', '20%']} />
           ) : customersWithCredits.length === 0 ? (
             <div className="p-12 text-center">
               <p className="text-sm font-medium text-foreground">No credit activity</p>

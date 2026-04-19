@@ -53,6 +53,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Separator } from '@/components/ui/separator'
+import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 
@@ -278,9 +279,7 @@ export default function SubscriptionsPage() {
               </Button>
             </div>
           ) : loading ? (
-            <div className="p-8 flex justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
+            <TableSkeleton columns={6} />
           ) : total === 0 ? (
             <div className="p-12 text-center">
               {filterStatus ? (

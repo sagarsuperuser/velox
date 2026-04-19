@@ -32,8 +32,9 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from '@/components/ui/pagination'
+import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { Search, Download, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 
 const PAGE_SIZE = 25
 
@@ -215,9 +216,7 @@ export default function InvoicesPage() {
               </Button>
             </div>
           ) : loading ? (
-            <div className="p-8 flex justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
+            <TableSkeleton columns={7} />
           ) : total === 0 ? (
             <div className="p-12 text-center">
               {statusFilter ? (

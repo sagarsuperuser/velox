@@ -52,6 +52,7 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from '@/components/ui/pagination'
+import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Loader2, X } from 'lucide-react'
 
@@ -560,9 +561,7 @@ function RunsTab() {
               <Button variant="outline" size="sm" onClick={() => loadRuns()}>Retry</Button>
             </div>
           ) : loading ? (
-            <div className="p-8 flex justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
+            <TableSkeleton columns={8} />
           ) : runs.length === 0 ? (
             <div className="p-12 text-center">
               <p className="text-sm font-medium text-foreground">No dunning runs</p>

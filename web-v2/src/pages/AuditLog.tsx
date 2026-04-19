@@ -19,8 +19,9 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from '@/components/ui/pagination'
+import { FeedSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Download, ChevronRight, Loader2 } from 'lucide-react'
+import { Download, ChevronRight } from 'lucide-react'
 
 const PAGE_SIZE = 50
 
@@ -282,9 +283,7 @@ export default function AuditLogPage() {
               </Button>
             </div>
           ) : loading ? (
-            <div className="p-8 flex justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
+            <FeedSkeleton rows={10} />
           ) : entries.length === 0 ? (
             <div className="p-12 text-center">
               <p className="text-sm font-medium text-foreground">No audit entries</p>

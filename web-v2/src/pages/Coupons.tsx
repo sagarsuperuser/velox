@@ -51,6 +51,7 @@ import {
 } from '@/components/ui/form'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
+import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Plus, Power, Eye, Copy, Search, Loader2 } from 'lucide-react'
 
@@ -206,9 +207,7 @@ export default function CouponsPage() {
               </Button>
             </div>
           ) : loading ? (
-            <div className="p-8 flex justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
+            <TableSkeleton columns={8} />
           ) : coupons.length === 0 ? (
             <div className="p-12 text-center">
               {filterStatus ? (
