@@ -3,10 +3,12 @@ package billing
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -54,27 +56,20 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.subs.Get(r.Context(), tenantID, subID)
 	if errors.Is(err, errs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "subscription not found")
+		respond.NotFound(w, r, "subscription")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get subscription")
+		slog.Error("billing preview: get subscription", "error", err, "subscription_id", subID)
+		respond.InternalError(w, r)
 		return
 	}
 
 	preview, err := h.engine.Preview(r.Context(), sub)
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "preview_error", err.Error())
+		respond.FromError(w, r, err, "subscription")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(preview)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
+	respond.JSON(w, r, http.StatusOK, preview)
 }

@@ -1,13 +1,13 @@
 package audit
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
@@ -43,17 +43,13 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		Offset:       offset,
 	})
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
 		slog.Error("list audit log", "error", err)
+		respond.InternalError(w, r)
 		return
 	}
 	if entries == nil {
 		entries = []domain.AuditEntry{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{"data": entries, "total": total})
+	respond.List(w, r, entries, total)
 }
