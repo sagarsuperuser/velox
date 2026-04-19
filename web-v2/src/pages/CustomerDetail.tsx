@@ -31,19 +31,9 @@ import {
 } from '@/components/ui/alert-dialog'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { ArrowLeft, Copy, Check, Loader2, Pencil, CreditCard, Archive } from 'lucide-react'
-
-function CopyId({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
-      className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
-    >
-      {copied ? <Check size={12} /> : <Copy size={12} />}
-    </button>
-  )
-}
+import { Loader2, Pencil, CreditCard, Archive } from 'lucide-react'
+import { CopyButton } from '@/components/CopyButton'
+import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
 const statusVariant = statusBadgeVariant
 
@@ -236,15 +226,7 @@ export default function CustomerDetailPage() {
 
   return (
     <Layout>
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
-        <Link to="/customers" className="hover:text-foreground transition-colors flex items-center gap-1">
-          <ArrowLeft size={14} />
-          Customers
-        </Link>
-        <span>/</span>
-        <span className="text-foreground">{customer.display_name}</span>
-      </div>
+      <DetailBreadcrumb to="/customers" parentLabel="Customers" currentLabel={customer.display_name} />
 
       {/* Archived Banner */}
       {isArchived && (
@@ -270,7 +252,7 @@ export default function CustomerDetailPage() {
           <h1 className="text-2xl font-semibold text-foreground">{customer.display_name}</h1>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="text-xs text-muted-foreground font-mono">{customer.id}</span>
-            <CopyId text={customer.id} />
+            <CopyButton text={customer.id} />
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -367,7 +349,7 @@ export default function CustomerDetailPage() {
               <span className="text-sm text-muted-foreground">ID</span>
               <div className="flex items-center gap-1.5">
                 <span className="text-sm text-foreground font-mono">{customer.id}</span>
-                <CopyId text={customer.id} />
+                <CopyButton text={customer.id} />
               </div>
             </div>
           </div>
@@ -605,7 +587,7 @@ export default function CustomerDetailPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">Subscriptions ({allSubs?.length ?? 0})</CardTitle>
-              {!isArchived && <Button size="sm" onClick={() => setShowCreateSub(true)}>+ Add</Button>}
+              {!isArchived && <Button size="sm" onClick={() => setShowCreateSub(true)}>Create Subscription</Button>}
             </div>
           </CardHeader>
           <CardContent className="p-0">
