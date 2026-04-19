@@ -38,7 +38,7 @@ func SetupTestDB(t *testing.T) *postgres.DB {
 	// Admin connection: migrations + cleanup
 	adminPool := openPool(t, adminURL)
 
-	if err := migrate.Up(adminPool); err != nil {
+	if err := runMigrations(adminPool); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
 
@@ -79,30 +79,29 @@ func openPool(t *testing.T, url string) *sql.DB {
 func cleanDB(t *testing.T, pool *sql.DB) {
 	t.Helper()
 
-	tables := []string{
-		"invoice_dunning_events",
-		"invoice_dunning_runs",
-		"dunning_policies",
-		"invoice_line_items",
-		"invoices",
-		"billed_entries",
-		"usage_events",
-		"subscriptions",
-		"plans",
-		"meters",
-		"rating_rule_versions",
-		"customer_payment_setups",
-		"customer_billing_profiles",
-		"customers",
-		"stripe_webhook_events",
-		"api_keys",
-		"users",
-		"billing_provider_connections",
-		"tenants",
-	}
-
-	query := fmt.Sprintf("TRUNCATE %s CASCADE", strings.Join(tables, ", "))
-	if _, err := pool.ExecContext(context.Background(), query); err != nil {
+	// Truncate all data tables. Uses DO block to skip tables that don't exist
+	// yet (e.g., on first run before migrations). This is safe because
+	// TRUNCATE CASCADE handles FK ordering.
+	_, err := pool.ExecContext(context.Background(), `
+		DO $$ BEGIN
+			TRUNCATE
+				invoice_dunning_events, invoice_dunning_runs, dunning_policies,
+				invoice_line_items, invoices, billed_entries, usage_events,
+				subscriptions, plans, meters, rating_rule_versions,
+				customer_payment_setups, customer_billing_profiles, customers,
+				stripe_webhook_events, api_keys, billing_provider_connections,
+				credit_note_line_items, credit_notes, customer_credit_ledger,
+				coupon_redemptions, coupons, customer_dunning_overrides,
+				customer_price_overrides, webhook_deliveries, webhook_events,
+				webhook_endpoints, idempotency_keys, audit_log, tenant_settings,
+				tenants
+			CASCADE;
+		EXCEPTION WHEN undefined_table THEN
+			-- Tables don't exist yet (fresh DB before first migration)
+			NULL;
+		END $$;
+	`)
+	if err != nil {
 		t.Fatalf("clean db: %v", err)
 	}
 }
@@ -130,4 +129,26 @@ func envOr(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// runMigrations applies pending migrations. If a previous test left the DB
+// in a dirty state (partial migration), it force-resets before retrying.
+func runMigrations(pool *sql.DB) error {
+	err := migrate.Up(pool)
+	if err == nil {
+		return nil
+	}
+	if !strings.Contains(err.Error(), "Dirty") {
+		return err
+	}
+	// Force-reset dirty state and retry
+	m, mErr := migrate.New(pool)
+	if mErr != nil {
+		return fmt.Errorf("dirty db and cannot create migrator: %w", mErr)
+	}
+	v, _, _ := m.Version()
+	if fErr := m.Force(int(v)); fErr != nil {
+		return fmt.Errorf("dirty db and cannot force version: %w", fErr)
+	}
+	return migrate.Up(pool)
 }
