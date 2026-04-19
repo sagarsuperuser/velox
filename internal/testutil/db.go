@@ -3,7 +3,6 @@ package testutil
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -133,22 +132,26 @@ func envOr(key, fallback string) string {
 
 // runMigrations applies pending migrations. If a previous test left the DB
 // in a dirty state (partial migration), it force-resets before retrying.
+// On failure, drops schema_migrations and all tables for a completely clean retry.
 func runMigrations(pool *sql.DB) error {
 	err := migrate.Up(pool)
 	if err == nil {
 		return nil
 	}
-	if !strings.Contains(err.Error(), "Dirty") {
-		return err
-	}
-	// Force-reset dirty state and retry
-	m, mErr := migrate.New(pool)
-	if mErr != nil {
-		return fmt.Errorf("dirty db and cannot create migrator: %w", mErr)
-	}
-	v, _, _ := m.Version()
-	if fErr := m.Force(int(v)); fErr != nil {
-		return fmt.Errorf("dirty db and cannot force version: %w", fErr)
-	}
+
+	// If dirty or failed, nuke schema_migrations and retry from scratch.
+	// This is safe because we're in a test database that gets truncated anyway.
+	_, _ = pool.ExecContext(context.Background(), "DROP TABLE IF EXISTS schema_migrations CASCADE")
+
+	// Also drop all tables so migration can recreate them cleanly
+	_, _ = pool.ExecContext(context.Background(), `
+		DO $$ DECLARE r RECORD;
+		BEGIN
+			FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
+				EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE';
+			END LOOP;
+		END $$;
+	`)
+
 	return migrate.Up(pool)
 }
