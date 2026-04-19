@@ -11,6 +11,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
 )
 
@@ -250,7 +251,7 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		// handlePaymentFailed(). Starting dunning here would duplicate.
 		var pe *PaymentError
 		if !errors.As(err, &pe) {
-			pe = &PaymentError{Message: err.Error(), Unknown: true}
+			pe = &PaymentError{Message: errs.Scrub(err.Error()), Unknown: true}
 		}
 
 		status := domain.PaymentFailed

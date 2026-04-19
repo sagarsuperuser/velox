@@ -9,18 +9,24 @@ import (
 	stripecustomer "github.com/stripe/stripe-go/v82/customer"
 	"github.com/stripe/stripe-go/v82/paymentintent"
 	"github.com/stripe/stripe-go/v82/paymentmethod"
+
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
-// stripeErrorMessage extracts a clean human-readable message from Stripe SDK errors.
+// stripeErrorMessage extracts a clean human-readable message from Stripe SDK
+// errors. All output is run through errs.Scrub so card last4, raw PANs, and
+// emails can't leak into the invoice.last_payment_error column or slog
+// fields downstream. Scrubbing at this single ingress point means every
+// caller (persistence, logging, HTTP responses) is automatically safe.
 func stripeErrorMessage(err error) string {
 	var stripeErr *stripe.Error
 	if errors.As(err, &stripeErr) {
 		if stripeErr.Msg != "" {
-			return stripeErr.Msg
+			return errs.Scrub(stripeErr.Msg)
 		}
 		return string(stripeErr.Code)
 	}
-	return err.Error()
+	return errs.Scrub(err.Error())
 }
 
 // PaymentError categorises a failed PaymentIntent attempt. Unknown=true means
@@ -53,7 +59,7 @@ func classifyStripeError(err error) *PaymentError {
 	}
 	var stripeErr *stripe.Error
 	if !errors.As(err, &stripeErr) {
-		return &PaymentError{Message: err.Error(), Unknown: true}
+		return &PaymentError{Message: errs.Scrub(err.Error()), Unknown: true}
 	}
 
 	pe := &PaymentError{
