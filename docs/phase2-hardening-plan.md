@@ -161,7 +161,7 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 **Tests:** two scheduler instances → only one runs per tick; leader crash → lock auto-released, other picks up.
 
-### [RES-3] Safe handling of unknown Stripe results — M
+### [RES-3] Safe handling of unknown Stripe results — M — ✅ DONE
 
 **Problem:** `payment/stripe.go:179-207` marks `PaymentFailed` on any error — including 500/timeout where Stripe may have succeeded server-side.
 
@@ -172,7 +172,14 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 - Reconciler worker: for `PaymentUnknown` rows older than 60s, query Stripe by idempotency key or PI ID → resolve to succeeded/failed.
 - Idempotency key on Stripe call: `inv_{invoice_id}_{attempt_number}` — Stripe returns same result on retry.
 
-**Tests:** Stripe 500 → status=unknown, reconciler resolves; 402 card_declined → failed with code; network timeout w/ PI created → reconciler finds it.
+**Resolution:**
+- `domain.PaymentUnknown` + migration 0009 widened CHECK constraint.
+- Typed `*payment.PaymentError` returned by `LiveStripeClient.CreatePaymentIntent`; `classifyStripeError` maps stripe-go `ErrorType` to `Unknown` bool. Card / invalid-request / idempotency errors → definite failure; API (5xx) errors and any untyped error (context cancel, DNS, etc.) → Unknown. PI ID preserved from `stripe.Error.PaymentIntent`.
+- `ChargeInvoice` branches: Unknown → `PaymentUnknown` + stash PI ID; definite → `PaymentFailed` (unchanged).
+- `payment.Reconciler` runs from scheduler step 0a (before auto-charge retries). Calls `paymentintent.Get` per unresolved unknown older than 60s; maps `succeeded`→MarkPaid, `canceled`/`requires_payment_method`→PaymentFailed, `processing`/`requires_action`/etc.→leave for next tick. Cool-off lets webhooks resolve first (cheaper path).
+- No idempotency-key-based recovery path yet. Invoices without a PI ID are marked failed (we can't query Stripe). This is acceptable because our current idempotency key is deterministic (`velox_inv_{invoice_id}_{pm_id}`) — a subsequent manual retry with same key returns the same server-side result.
+
+**Tests:** 3 ChargeInvoice branches (definite/unknown/untyped-fail-safe); 5 reconciler scenarios (succeeded, canceled, still-in-flight, no-PI, stripe-5xx-during-reconcile).
 
 ### [RES-4] Inbound Stripe webhook dedup tightened — S — ✅ DONE
 
