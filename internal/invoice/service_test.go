@@ -177,8 +177,22 @@ func (m *memStore) ListAutoChargePending(_ context.Context, _ int) ([]domain.Inv
 	return result, nil
 }
 
+// memNumberer is a deterministic in-memory InvoiceNumberer for tests.
+// Hands out VLX-000001, VLX-000002, ... so assertions on invoice numbers
+// don't depend on clock or DB state.
+type memNumberer struct {
+	next int
+}
+
+func newMemNumberer() *memNumberer { return &memNumberer{} }
+
+func (m *memNumberer) NextInvoiceNumber(_ context.Context, _ string) (string, error) {
+	m.next++
+	return fmt.Sprintf("VLX-%06d", m.next), nil
+}
+
 func TestCreate(t *testing.T) {
-	svc := NewService(newMemStore(), nil)
+	svc := NewService(newMemStore(), nil, newMemNumberer())
 	ctx := context.Background()
 
 	t.Run("valid", func(t *testing.T) {
@@ -230,7 +244,7 @@ func TestCreate(t *testing.T) {
 }
 
 func TestFinalizeAndVoid(t *testing.T) {
-	svc := NewService(newMemStore(), nil)
+	svc := NewService(newMemStore(), nil, newMemNumberer())
 	ctx := context.Background()
 
 	inv, _ := svc.Create(ctx, "t1", CreateInput{
@@ -267,7 +281,7 @@ func TestFinalizeAndVoid(t *testing.T) {
 }
 
 func TestRecordPayment(t *testing.T) {
-	svc := NewService(newMemStore(), nil)
+	svc := NewService(newMemStore(), nil, newMemNumberer())
 	ctx := context.Background()
 
 	inv, _ := svc.Create(ctx, "t1", CreateInput{

@@ -94,29 +94,44 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 	return ts, err
 }
 
-// NextInvoiceNumber atomically increments the sequence and returns the next invoice number.
+// NextInvoiceNumber atomically allocates the next invoice number for a tenant.
+//
+// The UPSERT form lazily initializes tenant_settings on first call so a freshly
+// bootstrapped tenant — which has a tenants row but no tenant_settings row —
+// gets VLX-000001, VLX-000002, ... without operators needing to touch the
+// settings endpoint first. Concurrent callers serialize on the row lock, so
+// no number is handed out twice.
+//
+// The INSERT uses invoice_next_seq = 2 so that RETURNING (seq - 1) yields 1
+// for the first invoice and (seq - 1) yields the pre-increment value on
+// every subsequent UPDATE call — keeping the sequence monotonic and gap-free
+// across both code paths.
 func (s *SettingsStore) NextInvoiceNumber(ctx context.Context, tenantID string) (string, error) {
 	var prefix string
 	var seq int
 	err := s.db.Pool.QueryRowContext(ctx, `
-		UPDATE tenant_settings SET invoice_next_seq = invoice_next_seq + 1
-		WHERE tenant_id = $1
+		INSERT INTO tenant_settings (tenant_id, invoice_next_seq)
+		VALUES ($1, 2)
+		ON CONFLICT (tenant_id) DO UPDATE
+			SET invoice_next_seq = tenant_settings.invoice_next_seq + 1
 		RETURNING invoice_prefix, invoice_next_seq - 1
 	`, tenantID).Scan(&prefix, &seq)
 	if err != nil {
-		// No settings → use default
 		return "", err
 	}
 	return strings.ToUpper(prefix) + "-" + padSeq(seq), nil
 }
 
-// NextCreditNoteNumber atomically increments the sequence and returns the next credit note number.
+// NextCreditNoteNumber atomically allocates the next credit note number.
+// Same upsert semantics as NextInvoiceNumber.
 func (s *SettingsStore) NextCreditNoteNumber(ctx context.Context, tenantID string) (string, error) {
 	var prefix string
 	var seq int
 	err := s.db.Pool.QueryRowContext(ctx, `
-		UPDATE tenant_settings SET credit_note_next_seq = credit_note_next_seq + 1
-		WHERE tenant_id = $1
+		INSERT INTO tenant_settings (tenant_id, credit_note_next_seq)
+		VALUES ($1, 2)
+		ON CONFLICT (tenant_id) DO UPDATE
+			SET credit_note_next_seq = tenant_settings.credit_note_next_seq + 1
 		RETURNING credit_note_prefix, credit_note_next_seq - 1
 	`, tenantID).Scan(&prefix, &seq)
 	if err != nil {
