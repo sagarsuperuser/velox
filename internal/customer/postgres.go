@@ -318,7 +318,7 @@ func (s *PostgresStore) UpsertBillingProfile(ctx context.Context, tenantID strin
 		&bp.ProfileStatus, &bp.CreatedAt, &bp.UpdatedAt,
 	)
 	if overrideBP.Valid {
-		v := int(overrideBP.Int64)
+		v := overrideBP.Int64
 		bp.TaxOverrideRateBP = &v
 	}
 	if err != nil {
@@ -360,7 +360,7 @@ func (s *PostgresStore) GetBillingProfile(ctx context.Context, tenantID, custome
 		&bp.ProfileStatus, &bp.CreatedAt, &bp.UpdatedAt,
 	)
 	if overrideBP.Valid {
-		v := int(overrideBP.Int64)
+		v := overrideBP.Int64
 		bp.TaxOverrideRateBP = &v
 	}
 	if err == sql.ErrNoRows {

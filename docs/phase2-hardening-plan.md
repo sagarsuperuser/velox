@@ -17,10 +17,12 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 |---|---|---|
 | HYG-1 | `customers.email NOT NULL` | Check for NULL emails first; backfill `'unknown-{id}@placeholder.invalid'` before NOT NULL — ✅ DONE (backfilled `''` instead of placeholder, see resolution) |
 | HYG-2 | Partial UNIQUE on active subscriptions | `UNIQUE(tenant_id, customer_id, plan_id) WHERE status IN ('active','trialing','past_due')` — ✅ DONE (scoped to real Velox status set, see resolution) |
-| HYG-3 | `tax_rate NUMERIC(6,2)` → `tax_rate_bp BIGINT` | Dual-write → cutover → drop (2 migrations) |
+| HYG-3 | `tax_rate NUMERIC(6,2)` → `tax_rate_bp BIGINT` | Dual-write → cutover → drop (2 migrations) — ✅ DONE (functional swap shipped in migration 0003; BIGINT widening in 0014) |
 | HYG-4 | FK ON DELETE policies explicit | Customers→invoices RESTRICT; tenants→customers RESTRICT; audit refs PRESERVE |
 | HYG-5 | `audit_log` append-only | BEFORE UPDATE/DELETE trigger raising exception — ✅ DONE |
 | HYG-6 | Schedule idempotency + payment-token cleanup | Hourly task in scheduler — ✅ DONE |
+
+**HYG-3 resolution:** The functional half of this item was already shipped: migration `0003_tax_cleanup` dropped the legacy `NUMERIC(6,2)` / `NUMERIC(5,4)` `tax_rate` columns on `tenant_settings`, `invoices`, and `invoice_line_items`, so all tax arithmetic runs through `tax_rate_bp` (integer basis points) end-to-end — no floats anywhere in the money path. That left a cosmetic gap: `tax_rate_bp` was `INT`, while every peer money column (`tax_amount_cents`, `subtotal_cents`, `total_amount_cents`, …) is `BIGINT`. INT4's ~21-million-percent ceiling is not a real overflow risk, but the schema inconsistency is the kind of "why is this one column different?" trap the HYG- items exist to remove. Migration `0014_tax_rate_bp_bigint` widens the three columns in-place (metadata-only ALTER on Postgres 12+, so safe at any table size) and Go-side `TaxRateBP` / `taxRateBP` fields + the `TaxOverrideRateBP *int` pointer flip to `int64` / `*int64` to match. No dual-write phase was needed because there was no legacy column left to co-exist with.
 
 **HYG-2 resolution:** Migration `0013_subscriptions_active_unique` adds a partial UNIQUE index `subscriptions_one_live_per_customer_plan ON subscriptions(tenant_id, customer_id, plan_id) WHERE status IN ('active','paused')`. The plan doc referenced Stripe's `('active','trialing','past_due')` vocabulary, but Velox's actual status set is `{draft, active, paused, canceled, archived}` (see `internal/domain/subscription.go`) — `trialing` is derived in analytics from `active + trial_end_at > now()`, never stored. Scoped the partial predicate to Velox's real live statuses: `active` (obvious), `paused` (still owned by the customer-plan pair, mustn't be orphaned by a parallel active row). Excluded `draft` because multi-draft UI editing must remain legal, and terminal `{canceled, archived}` because re-subscribing after cancellation is a first-class flow. Added `postgres.UniqueViolationConstraint(err)` helper so the subscription store can disambiguate the new constraint from the pre-existing `(tenant_id, code)` one and surface a distinct `AlreadyExists("plan_id", ...)` message. Integration test exercises the seed-active → duplicate-active rejection, the paused-blocks-new path, and the cancel-frees-slot recovery path.
 
@@ -421,13 +423,14 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 22. **HYG-5** — audit_log append-only trigger
 23. **HYG-1** — customers.email NOT NULL
 24. **HYG-2** — partial UNIQUE on live subscriptions
-25. **RES-1** — transactional outbox (L)
-26. **RES-2** — scheduler advisory lock
-27. **RES-6** — email outbox
-28. **SEC-2 Phase B/C** — cutover + drop plaintext
-29. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
-30. **FEAT-6** — coupon stacking
-31. **FEAT-5** — multi-item subs (Phase 3)
+25. **HYG-3** — tax_rate_bp widened to BIGINT
+26. **RES-1** — transactional outbox (L)
+27. **RES-2** — scheduler advisory lock
+28. **RES-6** — email outbox
+29. **SEC-2 Phase B/C** — cutover + drop plaintext
+30. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
+31. **FEAT-6** — coupon stacking
+32. **FEAT-5** — multi-item subs (Phase 3)
 
 **UI parallelization note:** UI-1..5 are independent of backend correctness work. A frontend-focused contributor can ship UI-1 → UI-2 → UI-3 → UI-5 → UI-6 in a single thread while backend commits land. UI-4 has a soft dependency on the backend error-envelope audit (small item) — slot it after COR-2 so any API fixes can be bundled.
 

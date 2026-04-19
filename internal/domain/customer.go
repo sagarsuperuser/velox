@@ -44,7 +44,7 @@ type CustomerBillingProfile struct {
 	TaxExempt         bool                 `json:"tax_exempt"`
 	TaxID             string               `json:"tax_id"`
 	TaxIDType         string               `json:"tax_id_type"`
-	TaxOverrideRateBP *int                 `json:"tax_override_rate_bp,omitempty"` // Basis points
+	TaxOverrideRateBP *int64               `json:"tax_override_rate_bp,omitempty"` // Basis points
 	ProfileStatus     BillingProfileStatus `json:"profile_status"`
 	CreatedAt         time.Time            `json:"created_at"`
 	UpdatedAt         time.Time            `json:"updated_at"`

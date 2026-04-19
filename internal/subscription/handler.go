@@ -70,7 +70,7 @@ type ProrationCouponApplier interface {
 // gross sticker price, so Subtotal/Discount shift to the net view.
 type ProrationTaxResult struct {
 	TaxAmountCents int64
-	TaxRateBP      int
+	TaxRateBP      int64
 	TaxName        string
 	TaxCountry     string
 	TaxID          string

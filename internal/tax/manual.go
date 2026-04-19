@@ -6,13 +6,13 @@ import "context"
 // This preserves the original billing engine behavior where tenants configure
 // a global tax rate in their settings.
 type ManualCalculator struct {
-	taxRateBP int    // e.g. 1850 = 18.50%
+	taxRateBP int64  // e.g. 1850 = 18.50%
 	taxName   string // e.g. "Sales Tax", "VAT"
 }
 
 // NewManualCalculator creates a calculator that applies the given basis-point
 // rate uniformly across all line items.
-func NewManualCalculator(taxRateBP int, taxName string) *ManualCalculator {
+func NewManualCalculator(taxRateBP int64, taxName string) *ManualCalculator {
 	return &ManualCalculator{taxRateBP: taxRateBP, taxName: taxName}
 }
 
@@ -32,8 +32,8 @@ func (m *ManualCalculator) CalculateTax(_ context.Context, _ string, _ CustomerA
 	}
 
 	// Total tax: subtotal * bp / 10000, with remainder-based rounding
-	totalTax := subtotal * int64(m.taxRateBP) / 10000
-	if (subtotal*int64(m.taxRateBP))%10000 >= 5000 {
+	totalTax := subtotal * m.taxRateBP / 10000
+	if (subtotal*m.taxRateBP)%10000 >= 5000 {
 		totalTax++
 	}
 
@@ -42,8 +42,8 @@ func (m *ManualCalculator) CalculateTax(_ context.Context, _ string, _ CustomerA
 	var lineTaxSum int64
 
 	for i, li := range lineItems {
-		lineTax := li.AmountCents * int64(m.taxRateBP) / 10000
-		if (li.AmountCents*int64(m.taxRateBP))%10000 >= 5000 {
+		lineTax := li.AmountCents * m.taxRateBP / 10000
+		if (li.AmountCents*m.taxRateBP)%10000 >= 5000 {
 			lineTax++
 		}
 		taxes[i] = LineItemTax{

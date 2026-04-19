@@ -14,7 +14,7 @@ import (
 // NextInvoiceNumber() is unused by ApplyTaxToLineItems so it errors to catch
 // any accidental call.
 type taxSettings struct {
-	rateBP    int
+	rateBP    int64
 	name      string
 	inclusive bool
 }
@@ -52,7 +52,7 @@ func (c *stubCalculator) CalculateTax(_ context.Context, _ string, _ tax.Custome
 	return c.result, c.err
 }
 
-func newTaxTestEngine(rateBP int, name string, profiles map[string]domain.CustomerBillingProfile) *Engine {
+func newTaxTestEngine(rateBP int64, name string, profiles map[string]domain.CustomerBillingProfile) *Engine {
 	e := &Engine{
 		settings: &taxSettings{rateBP: rateBP, name: name},
 	}
@@ -62,7 +62,7 @@ func newTaxTestEngine(rateBP int, name string, profiles map[string]domain.Custom
 	return e
 }
 
-func newInclusiveTaxTestEngine(rateBP int, name string) *Engine {
+func newInclusiveTaxTestEngine(rateBP int64, name string) *Engine {
 	return &Engine{settings: &taxSettings{rateBP: rateBP, name: name, inclusive: true}}
 }
 
@@ -89,7 +89,7 @@ func TestApplyTaxToLineItems_TenantRate(t *testing.T) {
 }
 
 func TestApplyTaxToLineItems_CustomerOverrideWins(t *testing.T) {
-	override := 2500 // 25%
+	override := int64(2500) // 25%
 	profiles := map[string]domain.CustomerBillingProfile{
 		"cus_1": {
 			CustomerID:        "cus_1",

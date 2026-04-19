@@ -147,7 +147,7 @@ func (e *Engine) SetCouponApplier(c CouponApplier) {
 // SubtotalCents - DiscountCents + TaxAmountCents = customer total.
 type TaxApplication struct {
 	TaxAmountCents int64
-	TaxRateBP      int
+	TaxRateBP      int64
 	TaxName        string
 	TaxCountry     string
 	TaxID          string

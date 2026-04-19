@@ -5,7 +5,7 @@ import "context"
 // TaxResult holds the output of a tax calculation for an entire invoice.
 type TaxResult struct {
 	TotalTaxAmountCents int64         // Sum of all line-item taxes
-	TaxRateBP           int           // Effective rate in basis points (1850 = 18.50%)
+	TaxRateBP           int64         // Effective rate in basis points (1850 = 18.50%)
 	TaxName             string        // e.g. "CA Sales Tax", "VAT"
 	TaxCountry          string        // ISO 3166-1 alpha-2
 	LineItemTaxes       []LineItemTax // Per-line-item breakdown
@@ -15,7 +15,7 @@ type TaxResult struct {
 type LineItemTax struct {
 	Index          int // Position in the input slice
 	TaxAmountCents int64
-	TaxRateBP      int
+	TaxRateBP      int64
 	TaxName        string
 }
 

@@ -20,15 +20,15 @@ import (
 
 // computeTaxBP mirrors the billing engine's tax calculation logic exactly.
 // Uses banker's rounding (half-to-even) to match the engine's zero-bias math.
-func computeTaxBP(subtotalCents int64, taxRateBP int) int64 {
+func computeTaxBP(subtotalCents int64, taxRateBP int64) int64 {
 	if taxRateBP <= 0 || subtotalCents <= 0 {
 		return 0
 	}
-	return money.RoundHalfToEven(subtotalCents*int64(taxRateBP), 10000)
+	return money.RoundHalfToEven(subtotalCents*taxRateBP, 10000)
 }
 
 // computeLineTaxBP mirrors per-line-item tax in the engine.
-func computeLineTaxBP(amountCents int64, taxRateBP int) int64 {
+func computeLineTaxBP(amountCents int64, taxRateBP int64) int64 {
 	if taxRateBP <= 0 || amountCents <= 0 {
 		return 0
 	}
@@ -39,7 +39,7 @@ func TestTaxBP_BasicCases(t *testing.T) {
 	tests := []struct {
 		name     string
 		subtotal int64
-		rateBP   int
+		rateBP   int64
 		wantTax  int64
 	}{
 		{
@@ -142,7 +142,7 @@ func TestTaxBP_RoundingEdgeCases(t *testing.T) {
 	tests := []struct {
 		name     string
 		subtotal int64
-		rateBP   int
+		rateBP   int64
 		wantTax  int64
 	}{
 		{
@@ -205,7 +205,7 @@ func TestTaxBP_LineItemSumEqualsInvoiceTax(t *testing.T) {
 	tests := []struct {
 		name     string
 		lineAmts []int64 // per-line amounts in cents
-		rateBP   int
+		rateBP   int64
 	}{
 		{
 			name:     "two equal lines at 18.5%",
@@ -298,7 +298,7 @@ func TestTaxBP_LineItemSumEqualsInvoiceTax(t *testing.T) {
 func TestTaxBP_AdjustmentNeverExceedsOneCent(t *testing.T) {
 	testCases := []struct {
 		lineAmts []int64
-		rateBP   int
+		rateBP   int64
 	}{
 		{[]int64{1, 1}, 9999},
 		{[]int64{9999, 1}, 9999},
@@ -333,7 +333,7 @@ func TestTaxBP_AdjustmentNeverExceedsOneCent(t *testing.T) {
 
 func TestTaxBP_AlwaysNonNegative(t *testing.T) {
 	subtotals := []int64{0, 1, 100, 999, 10000, 999999999}
-	rates := []int{0, 1, 500, 1000, 1850, 5000, 10000}
+	rates := []int64{0, 1, 500, 1000, 1850, 5000, 10000}
 
 	for _, sub := range subtotals {
 		for _, rate := range rates {
