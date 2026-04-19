@@ -35,6 +35,11 @@ type TokenCleaner interface {
 	Cleanup(ctx context.Context) (int, error)
 }
 
+// IdempotencyCleaner cleans up expired idempotency keys.
+type IdempotencyCleaner interface {
+	Cleanup(ctx context.Context) (int, error)
+}
+
 // PaymentReconciler resolves invoices in the PaymentUnknown state by querying
 // Stripe for the authoritative PaymentIntent outcome. See payment.Reconciler.
 type PaymentReconciler interface {
@@ -49,6 +54,7 @@ type Scheduler struct {
 	credits           CreditExpirer
 	reminders         InvoiceReminder
 	tokenCleaner      TokenCleaner
+	idempotencyClean  IdempotencyCleaner
 	paymentReconciler PaymentReconciler
 	interval          time.Duration
 	batch             int
@@ -84,6 +90,14 @@ func (s *Scheduler) SetReminders(reminders InvoiceReminder) {
 // SetTokenCleaner sets the token cleanup dependency for expired payment update tokens.
 func (s *Scheduler) SetTokenCleaner(cleaner TokenCleaner) {
 	s.tokenCleaner = cleaner
+}
+
+// SetIdempotencyCleaner wires the idempotency-key cleanup task. Without a
+// periodic purge the idempotency_keys table grows unbounded (one row per
+// mutating API call per tenant), and every cache lookup walks a larger
+// B-tree — a slow leak that only shows up in p99 latency weeks later.
+func (s *Scheduler) SetIdempotencyCleaner(cleaner IdempotencyCleaner) {
+	s.idempotencyClean = cleaner
 }
 
 // SetPaymentReconciler wires a resolver for PaymentUnknown invoices. Runs
@@ -229,6 +243,20 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			slog.Error("token cleanup error", "error", err)
 		} else if cleaned > 0 {
 			slog.Info("expired payment tokens cleaned up", "count", cleaned)
+			mw.RecordScheduledCleanup("payment_tokens", cleaned)
+		}
+	}
+
+	// 6. Idempotency key cleanup (expires_at < now, default 24h retention).
+	// Prevents unbounded growth of idempotency_keys, which would slow every
+	// cache lookup as the B-tree deepens.
+	if s.idempotencyClean != nil {
+		cleaned, err := s.idempotencyClean.Cleanup(ctx)
+		if err != nil {
+			slog.Error("idempotency cleanup error", "error", err)
+		} else if cleaned > 0 {
+			slog.Info("expired idempotency keys cleaned up", "count", cleaned)
+			mw.RecordScheduledCleanup("idempotency_keys", cleaned)
 		}
 	}
 

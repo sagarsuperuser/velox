@@ -20,7 +20,9 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 | HYG-3 | `tax_rate NUMERIC(6,2)` → `tax_rate_bp BIGINT` | Dual-write → cutover → drop (2 migrations) |
 | HYG-4 | FK ON DELETE policies explicit | Customers→invoices RESTRICT; tenants→customers RESTRICT; audit refs PRESERVE |
 | HYG-5 | `audit_log` append-only | BEFORE UPDATE/DELETE trigger raising exception |
-| HYG-6 | Schedule idempotency + payment-token cleanup | Hourly task in scheduler |
+| HYG-6 | Schedule idempotency + payment-token cleanup | Hourly task in scheduler — ✅ DONE |
+
+**HYG-6 resolution:** `middleware.CleanExpired` now returns `(int, error)` and is exposed via a thin `middleware.IdempotencyCleaner` adapter matching the scheduler's `Cleanup(ctx) (int, error)` interface shape. The billing scheduler gains a sixth step in `runOnce` that deletes idempotency keys past their `expires_at`, mirroring the existing token-cleanup step. A `velox_scheduled_cleanup_rows_total{table}` counter (labeled per table) replaces ad-hoc logging-only cleanup visibility so operators can alert on surges per table. Wired in `cmd/velox/main.go` alongside the existing `TokenCleaner`.
 
 ---
 
