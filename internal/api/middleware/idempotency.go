@@ -138,8 +138,14 @@ func getCachedResponse(ctx context.Context, db *postgres.DB, tenantID, key strin
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
+	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return cachedResponse{}, false, err
+	}
+	defer postgres.Rollback(tx)
+
 	var c cachedResponse
-	err := db.Pool.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT status_code, response_body, request_fingerprint FROM idempotency_keys
 		WHERE tenant_id = $1 AND key = $2 AND expires_at > now()`,
 		tenantID, key,
@@ -150,6 +156,9 @@ func getCachedResponse(ctx context.Context, db *postgres.DB, tenantID, key strin
 	if err != nil {
 		return c, false, err
 	}
+	if err := tx.Commit(); err != nil {
+		return c, false, err
+	}
 	return c, true, nil
 }
 
@@ -157,12 +166,21 @@ func storeCachedResponse(ctx context.Context, db *postgres.DB, tenantID, key, me
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	_, _ = db.Pool.ExecContext(ctx,
+	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO idempotency_keys (key, tenant_id, http_method, http_path, request_fingerprint, status_code, response_body)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (tenant_id, key) DO NOTHING`,
 		key, tenantID, method, path, fingerprint, statusCode, body,
-	)
+	); err != nil {
+		return
+	}
+	_ = tx.Commit()
 }
 
 // responseRecorder captures the response for caching while writing to the client.
@@ -182,10 +200,20 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
-// CleanExpired removes expired idempotency keys. Call periodically.
+// CleanExpired removes expired idempotency keys across all tenants. Runs
+// cross-tenant by design (a background scheduler, not a per-request path),
+// so it uses TxBypass to sidestep the tenant_isolation policy.
 func CleanExpired(ctx context.Context, db *postgres.DB) error {
-	_, err := db.Pool.ExecContext(ctx, `DELETE FROM idempotency_keys WHERE expires_at < now()`)
-	return err
+	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM idempotency_keys WHERE expires_at < now()`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ErrorJSON is a helper that returns a Stripe-style error response for

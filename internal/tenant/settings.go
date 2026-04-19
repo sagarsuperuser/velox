@@ -30,6 +30,10 @@ func NewSettingsStore(db *postgres.DB) *SettingsStore {
 	return &SettingsStore{db: db}
 }
 
+// ListTenantIDs enumerates every tenant. Used by background schedulers
+// (dunning sweep, approaching-due reminders) that must iterate all tenants
+// and cannot carry a per-tenant context. The tenants table itself has no
+// RLS, so this query runs on the bare pool without a transaction.
 func (s *SettingsStore) ListTenantIDs(ctx context.Context) ([]string, error) {
 	rows, err := s.db.Pool.QueryContext(ctx, `SELECT id FROM tenants`)
 	if err != nil {
@@ -48,8 +52,14 @@ func (s *SettingsStore) ListTenantIDs(ctx context.Context) ([]string, error) {
 }
 
 func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.TenantSettings, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.TenantSettings{}, err
+	}
+	defer postgres.Rollback(tx)
+
 	var ts domain.TenantSettings
-	err := s.db.Pool.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		SELECT tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
 			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), COALESCE(company_name,''), COALESCE(company_address,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
@@ -62,12 +72,24 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 	if err == sql.ErrNoRows {
 		return domain.TenantSettings{}, errs.ErrNotFound
 	}
-	return ts, err
+	if err != nil {
+		return domain.TenantSettings{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.TenantSettings{}, err
+	}
+	return ts, nil
 }
 
 func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (domain.TenantSettings, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, ts.TenantID)
+	if err != nil {
+		return domain.TenantSettings{}, err
+	}
+	defer postgres.Rollback(tx)
+
 	now := time.Now().UTC()
-	err := s.db.Pool.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO tenant_settings (tenant_id, default_currency, timezone, invoice_prefix,
 			net_payment_terms, tax_rate_bp, tax_name, company_name, company_address, company_email, company_phone,
 			logo_url, created_at, updated_at)
@@ -90,8 +112,13 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 	).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
 		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.CompanyName, &ts.CompanyAddress,
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL, &ts.CreatedAt, &ts.UpdatedAt)
-
-	return ts, err
+	if err != nil {
+		return domain.TenantSettings{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.TenantSettings{}, err
+	}
+	return ts, nil
 }
 
 // NextInvoiceNumber atomically allocates the next invoice number for a tenant.
@@ -107,9 +134,15 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 // every subsequent UPDATE call — keeping the sequence monotonic and gap-free
 // across both code paths.
 func (s *SettingsStore) NextInvoiceNumber(ctx context.Context, tenantID string) (string, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return "", err
+	}
+	defer postgres.Rollback(tx)
+
 	var prefix string
 	var seq int
-	err := s.db.Pool.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO tenant_settings (tenant_id, invoice_next_seq)
 		VALUES ($1, 2)
 		ON CONFLICT (tenant_id) DO UPDATE
@@ -119,15 +152,24 @@ func (s *SettingsStore) NextInvoiceNumber(ctx context.Context, tenantID string) 
 	if err != nil {
 		return "", err
 	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
 	return strings.ToUpper(prefix) + "-" + padSeq(seq), nil
 }
 
 // NextCreditNoteNumber atomically allocates the next credit note number.
 // Same upsert semantics as NextInvoiceNumber.
 func (s *SettingsStore) NextCreditNoteNumber(ctx context.Context, tenantID string) (string, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return "", err
+	}
+	defer postgres.Rollback(tx)
+
 	var prefix string
 	var seq int
-	err := s.db.Pool.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO tenant_settings (tenant_id, credit_note_next_seq)
 		VALUES ($1, 2)
 		ON CONFLICT (tenant_id) DO UPDATE
@@ -135,6 +177,9 @@ func (s *SettingsStore) NextCreditNoteNumber(ctx context.Context, tenantID strin
 		RETURNING credit_note_prefix, credit_note_next_seq - 1
 	`, tenantID).Scan(&prefix, &seq)
 	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
 		return "", err
 	}
 	return strings.ToUpper(prefix) + "-" + padSeq(seq), nil

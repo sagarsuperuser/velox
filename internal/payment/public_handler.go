@@ -154,7 +154,7 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	}
 
 	// Mark token as used (single use)
-	if err := h.tokens.MarkUsed(r.Context(), rawToken); err != nil {
+	if err := h.tokens.MarkUsed(r.Context(), token.TenantID, rawToken); err != nil {
 		slog.Error("public payment: failed to mark token used", "error", err)
 		// Non-fatal: session was already created
 	}
