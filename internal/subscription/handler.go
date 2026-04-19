@@ -53,6 +53,13 @@ type ProrationCreditGranter interface {
 	GetByProrationSource(ctx context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error)
 }
 
+// ProrationCouponApplier computes a coupon discount against a proration
+// invoice's subtotal. Optional — when nil, proration invoices carry a zero
+// discount (previous behaviour).
+type ProrationCouponApplier interface {
+	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (int64, error)
+}
+
 // ProrationGrantInput carries the downgrade credit payload plus the
 // provenance fields required for dedup.
 type ProrationGrantInput struct {
@@ -68,6 +75,7 @@ type Handler struct {
 	plans       PlanReader
 	invoices    ProrationInvoiceCreator
 	credits     ProrationCreditGranter
+	coupons     ProrationCouponApplier
 	auditLogger *audit.Logger
 }
 
@@ -83,6 +91,12 @@ func (h *Handler) SetProrationDeps(plans PlanReader, invoices ProrationInvoiceCr
 	h.plans = plans
 	h.invoices = invoices
 	h.credits = credits
+}
+
+// SetProrationCouponApplier configures coupon resolution on proration invoices.
+// Optional — nil leaves proration invoices undiscounted.
+func (h *Handler) SetProrationCouponApplier(c ProrationCouponApplier) {
+	h.coupons = c
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -353,6 +367,21 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 			periodEnd = planChangedAt
 		}
 
+		// Apply coupon discount before recording totals — same Stripe-style
+		// order (subtotal → discount → total) the main billing path uses.
+		// Proration is tax-free today; COR-2 will fold tax into this block.
+		var discountCents int64
+		if h.coupons != nil {
+			d, err := h.coupons.ApplyToInvoice(ctx, tenantID, result.Subscription.ID, result.Subscription.PlanID, proratedCents)
+			if err != nil {
+				slog.Warn("coupon apply failed on proration, proceeding without discount",
+					"error", err, "subscription_id", result.Subscription.ID)
+			} else {
+				discountCents = d
+			}
+		}
+		netProrated := proratedCents - discountCents
+
 		memo := fmt.Sprintf("Plan upgrade proration: %s -> %s", oldPlan.Name, newPlan.Name)
 		invoice := domain.Invoice{
 			CustomerID:          result.Subscription.CustomerID,
@@ -361,8 +390,9 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 			PaymentStatus:       domain.PaymentPending,
 			Currency:            newPlan.Currency,
 			SubtotalCents:       proratedCents,
-			TotalAmountCents:    proratedCents,
-			AmountDueCents:      proratedCents,
+			DiscountCents:       discountCents,
+			TotalAmountCents:    netProrated,
+			AmountDueCents:      netProrated,
 			BillingPeriodStart:  periodStart,
 			BillingPeriodEnd:    periodEnd,
 			IssuedAt:            &now,

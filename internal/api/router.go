@@ -131,6 +131,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 
 	// Wire proration dependencies for plan change invoicing
 	subH.SetProrationDeps(pricingSvc, &prorationInvoiceCreatorAdapter{store: invoiceStore, numberer: settingsStore}, &prorationCreditGranterAdapter{svc: creditSvc})
+	subH.SetProrationCouponApplier(couponSvc)
 
 	// Payment / webhook / checkout / refund handlers
 	stripeRefunder := payment.NewStripeRefunder(stripeKey)
@@ -226,6 +227,9 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		// which resolves rates from settings + billing profiles per subscription.
 		slog.Info("using manual tax calculation (inline)")
 	}
+
+	// Coupon discount applier: billing engine consults redemptions at finalize time.
+	engine.SetCouponApplier(couponSvc)
 
 	billingH := billing.NewHandler(engine, subStore)
 	analyticsH := analytics.NewHandler(db)

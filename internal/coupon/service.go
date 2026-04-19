@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -177,6 +178,67 @@ func (s *Service) Redeem(ctx context.Context, tenantID string, input RedeemInput
 
 func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string) ([]domain.CouponRedemption, error) {
 	return s.store.ListRedemptions(ctx, tenantID, couponID)
+}
+
+// ApplyToInvoice computes the total coupon discount (in cents) to apply against
+// an invoice for the given subscription. It consults existing redemptions for
+// the subscription, recomputes each coupon's discount against the supplied
+// subtotal, and returns the best single match — Stripe's one-coupon-per-invoice
+// model. Callers pass the *gross* subtotal (sum of line items, pre-discount
+// pre-tax); the returned discount is clamped to the subtotal so the result can
+// be safely subtracted without producing a negative running total.
+//
+// Side-effect-free: the function never writes to the store. The redemption
+// record itself is what "attaches" a coupon to a subscription; applying it to
+// an invoice does not consume the attachment.
+//
+// Inputs considered:
+//   - redemptions with matching subscription_id (or customer_id when subscription_id is unset)
+//   - coupon must still be Active and not past ExpiresAt at evaluation time
+//   - if the coupon has PlanIDs set, planID must be in the list (otherwise ignored)
+//
+// Returns 0 with no error when no eligible redemption is found, so callers can
+// call this unconditionally without a pre-check.
+func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (int64, error) {
+	if subscriptionID == "" || subtotalCents <= 0 {
+		return 0, nil
+	}
+
+	redemptions, err := s.store.ListRedemptionsBySubscription(ctx, tenantID, subscriptionID)
+	if err != nil {
+		return 0, fmt.Errorf("list redemptions: %w", err)
+	}
+	if len(redemptions) == 0 {
+		return 0, nil
+	}
+
+	now := time.Now()
+	var best int64
+	for _, r := range redemptions {
+		cpn, err := s.store.Get(ctx, tenantID, r.CouponID)
+		if err != nil {
+			// Skip redemptions whose coupon can no longer be loaded — a stale
+			// redemption row must not block billing. We log nothing here
+			// because billing tick runs on a schedule and the caller can
+			// surface a warning if it matters.
+			continue
+		}
+		if !cpn.Active {
+			continue
+		}
+		if cpn.ExpiresAt != nil && cpn.ExpiresAt.Before(now) {
+			continue
+		}
+		if len(cpn.PlanIDs) > 0 && planID != "" && !slices.Contains(cpn.PlanIDs, planID) {
+			continue
+		}
+
+		d := CalculateDiscount(cpn, subtotalCents)
+		if d > best {
+			best = d
+		}
+	}
+	return best, nil
 }
 
 // CalculateDiscount computes the discount amount in cents for a given coupon and subtotal.

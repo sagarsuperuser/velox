@@ -40,12 +40,22 @@ type Engine struct {
 	charger       InvoiceCharger
 	profiles      BillingProfileReader
 	taxCalc       tax.Calculator
+	coupons       CouponApplier
 	clock         clock.Clock
 }
 
 // CreditApplier applies customer credits to an invoice before charging.
 type CreditApplier interface {
 	ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64, invoiceNumber ...string) (int64, error)
+}
+
+// CouponApplier computes the coupon discount (in cents) to apply to an
+// invoice's gross subtotal for a given subscription. Implementations are
+// side-effect-free: the coupon discount is captured on the invoice itself;
+// attachment-consumption semantics (once vs forever) are owned by the coupon
+// domain and are not tracked per-invoice here.
+type CouponApplier interface {
+	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (int64, error)
 }
 
 // BillingProfileReader reads customer billing profiles for tax exemption checks.
@@ -112,6 +122,12 @@ func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingRe
 // When nil, the engine falls back to inline manual tax logic for backward compatibility.
 func (e *Engine) SetTaxCalculator(c tax.Calculator) {
 	e.taxCalc = c
+}
+
+// SetCouponApplier sets the coupon service used during billing. When nil, the
+// engine skips coupon resolution entirely and invoice discount_cents remains 0.
+func (e *Engine) SetCouponApplier(c CouponApplier) {
+	e.coupons = c
 }
 
 // RunCycle finds all subscriptions due for billing and generates invoices.
@@ -397,13 +413,41 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		}
 	}
 
-	// Calculate tax — delegate to the tax calculator if set, otherwise use inline math
+	// Apply coupon discount — Stripe-style order: subtotal → discount → tax →
+	// total. Tax is computed against the post-discount amount so customers
+	// aren't taxed on money they didn't actually pay. A zero result here is
+	// the happy no-coupon path; a non-zero result is clamped to subtotal by
+	// the coupon service before reaching us, so no negative-total risk.
+	var discountCents int64
+	if e.coupons != nil && subtotal > 0 && sub.ID != "" {
+		d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, sub.PlanID, subtotal)
+		if err != nil {
+			slog.Warn("coupon apply failed, proceeding without discount",
+				"error", err, "subscription_id", sub.ID)
+		} else {
+			discountCents = d
+		}
+	}
+	discountedSubtotal := subtotal - discountCents
+
+	// Calculate tax — delegate to the tax calculator if set, otherwise use inline math.
+	// Tax base is `discountedSubtotal` (post-coupon) so we tax what the customer
+	// actually pays. Individual line-item tax amounts scale proportionally to
+	// their share of the discount so tax row sums still reconcile to the
+	// invoice-level total.
 	var taxAmountCents int64
-	if e.taxCalc != nil && subtotal > 0 {
+	if e.taxCalc != nil && discountedSubtotal > 0 {
 		taxInputs := make([]tax.LineItemInput, len(lineItems))
 		for i, li := range lineItems {
+			// Distribute the invoice-level discount proportionally across line
+			// items so each line's tax base reflects the discount. When
+			// subtotal is 0 we skip (no discount to distribute).
+			taxable := li.AmountCents
+			if subtotal > 0 && discountCents > 0 {
+				taxable = max(li.AmountCents-money.RoundHalfToEven(li.AmountCents*discountCents, subtotal), 0)
+			}
 			taxInputs[i] = tax.LineItemInput{
-				AmountCents: li.AmountCents,
+				AmountCents: taxable,
 				Description: li.Description,
 				Quantity:    li.Quantity,
 			}
@@ -431,14 +475,19 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 				}
 			}
 		}
-	} else if taxRateBP > 0 && subtotal > 0 {
+	} else if taxRateBP > 0 && discountedSubtotal > 0 {
 		// Inline manual tax math (legacy path when no calculator is wired).
 		// Banker's rounding on the total and each line item for zero-bias accounting.
-		taxAmountCents = money.RoundHalfToEven(subtotal*int64(taxRateBP), 10000)
+		taxAmountCents = money.RoundHalfToEven(discountedSubtotal*int64(taxRateBP), 10000)
 
 		var lineTaxSum int64
 		for i := range lineItems {
-			lineTax := money.RoundHalfToEven(lineItems[i].AmountCents*int64(taxRateBP), 10000)
+			// Compute each line's share of the discount, then tax the net.
+			taxable := lineItems[i].AmountCents
+			if subtotal > 0 && discountCents > 0 {
+				taxable = max(lineItems[i].AmountCents-money.RoundHalfToEven(lineItems[i].AmountCents*discountCents, subtotal), 0)
+			}
+			lineTax := money.RoundHalfToEven(taxable*int64(taxRateBP), 10000)
 			lineItems[i].TaxRateBP = taxRateBP
 			lineItems[i].TaxAmountCents = lineTax
 			lineItems[i].TotalAmountCents = lineItems[i].AmountCents + lineTax
@@ -452,7 +501,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		}
 	}
 
-	totalWithTax := subtotal + taxAmountCents
+	totalWithTax := discountedSubtotal + taxAmountCents
 	dueAt := now.AddDate(0, 0, netDays)
 
 	// ATOMIC: Create invoice + all line items in a single transaction.
@@ -467,6 +516,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		PaymentStatus:      domain.PaymentPending,
 		Currency:           invoiceCurrency,
 		SubtotalCents:      subtotal,
+		DiscountCents:      discountCents,
 		TaxRateBP:          taxRateBP,
 		TaxName:            taxName,
 		TaxCountry:         taxCountry,

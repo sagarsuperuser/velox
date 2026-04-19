@@ -16,4 +16,5 @@ type Store interface {
 	IncrementRedemptions(ctx context.Context, tenantID, id string) error
 	CreateRedemption(ctx context.Context, tenantID string, redemption domain.CouponRedemption) (domain.CouponRedemption, error)
 	ListRedemptions(ctx context.Context, tenantID, couponID string) ([]domain.CouponRedemption, error)
+	ListRedemptionsBySubscription(ctx context.Context, tenantID, subscriptionID string) ([]domain.CouponRedemption, error)
 }

@@ -105,6 +105,16 @@ func (m *mockStore) ListRedemptions(_ context.Context, _, _ string) ([]domain.Co
 	return m.redemptions, nil
 }
 
+func (m *mockStore) ListRedemptionsBySubscription(_ context.Context, _, subscriptionID string) ([]domain.CouponRedemption, error) {
+	var out []domain.CouponRedemption
+	for _, r := range m.redemptions {
+		if r.SubscriptionID == subscriptionID {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
 // seedCoupon inserts a coupon directly into the mock store for Redeem tests.
 func (m *mockStore) seedCoupon(c domain.Coupon) {
 	if c.ID == "" {
@@ -711,4 +721,254 @@ func searchString(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// ApplyToInvoice — consult active redemptions, recompute against current subtotal
+// ---------------------------------------------------------------------------
+
+func TestApplyToInvoice_PercentageCoupon(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID:         "cpn_pct",
+		Code:       "SAVE10",
+		Name:       "10% off",
+		Type:       domain.CouponTypePercentage,
+		PercentOff: 10,
+		Active:     true,
+	})
+	store.redemptions = append(store.redemptions, domain.CouponRedemption{
+		CouponID:       "cpn_pct",
+		CustomerID:     "cust_1",
+		SubscriptionID: "sub_1",
+		DiscountCents:  1000,
+	})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "plan_1", 12345)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 10% of 12345 = 1234.5 → banker's rounding to 1234.
+	if got != 1234 {
+		t.Errorf("expected discount 1234, got %d", got)
+	}
+}
+
+func TestApplyToInvoice_FixedAmountCoupon(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID:        "cpn_fix",
+		Code:      "FLAT5",
+		Name:      "$5 off",
+		Type:      domain.CouponTypeFixedAmount,
+		AmountOff: 500,
+		Currency:  "USD",
+		Active:    true,
+	})
+	store.redemptions = append(store.redemptions, domain.CouponRedemption{
+		CouponID:       "cpn_fix",
+		CustomerID:     "cust_1",
+		SubscriptionID: "sub_1",
+		DiscountCents:  500,
+	})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 500 {
+		t.Errorf("expected discount 500, got %d", got)
+	}
+}
+
+func TestApplyToInvoice_ClampsToSubtotal(t *testing.T) {
+	// A $50 fixed coupon applied to a $20 invoice must clamp to $20, not
+	// produce a negative total. Critical: otherwise a coupon larger than the
+	// invoice would net the customer a credit, which we don't issue this way.
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID:        "cpn_big",
+		Code:      "BIG50",
+		Name:      "$50 off",
+		Type:      domain.CouponTypeFixedAmount,
+		AmountOff: 5000,
+		Currency:  "USD",
+		Active:    true,
+	})
+	store.redemptions = append(store.redemptions, domain.CouponRedemption{
+		CouponID:       "cpn_big",
+		SubscriptionID: "sub_1",
+		DiscountCents:  5000,
+	})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "plan_1", 2000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 2000 {
+		t.Errorf("expected clamp to 2000, got %d", got)
+	}
+}
+
+func TestApplyToInvoice_ExpiredCouponIgnored(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	past := time.Now().Add(-1 * time.Hour)
+	store.seedCoupon(domain.Coupon{
+		ID:         "cpn_old",
+		Code:       "OLDCODE",
+		Name:       "10% off",
+		Type:       domain.CouponTypePercentage,
+		PercentOff: 10,
+		Active:     true,
+		ExpiresAt:  &past,
+	})
+	store.redemptions = append(store.redemptions, domain.CouponRedemption{
+		CouponID:       "cpn_old",
+		SubscriptionID: "sub_1",
+		DiscountCents:  1000,
+	})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("expected 0 discount for expired coupon, got %d", got)
+	}
+}
+
+func TestApplyToInvoice_InactiveCouponIgnored(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID:         "cpn_off",
+		Code:       "OFFCODE",
+		Name:       "10% off",
+		Type:       domain.CouponTypePercentage,
+		PercentOff: 10,
+		Active:     false,
+	})
+	store.redemptions = append(store.redemptions, domain.CouponRedemption{
+		CouponID:       "cpn_off",
+		SubscriptionID: "sub_1",
+		DiscountCents:  1000,
+	})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("expected 0 discount for inactive coupon, got %d", got)
+	}
+}
+
+func TestApplyToInvoice_PlanRestriction(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID:         "cpn_planA",
+		Code:       "PLANA10",
+		Name:       "10% off plan A",
+		Type:       domain.CouponTypePercentage,
+		PercentOff: 10,
+		PlanIDs:    []string{"plan_A"},
+		Active:     true,
+	})
+	store.redemptions = append(store.redemptions, domain.CouponRedemption{
+		CouponID:       "cpn_planA",
+		SubscriptionID: "sub_1",
+		DiscountCents:  1000,
+	})
+
+	// Subscription is on plan_B — restriction blocks.
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "plan_B", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("plan_B should not match restricted coupon, got %d", got)
+	}
+
+	// Subscription is on plan_A — restriction passes.
+	got, err = svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "plan_A", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 1000 {
+		t.Errorf("plan_A should match restricted coupon, got %d", got)
+	}
+}
+
+func TestApplyToInvoice_NoRedemptions(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("expected 0 with no redemptions, got %d", got)
+	}
+}
+
+func TestApplyToInvoice_EmptySubscriptionID(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("expected 0 with empty subscription ID, got %d", got)
+	}
+}
+
+func TestApplyToInvoice_MultipleCouponsTakesLargest(t *testing.T) {
+	// Only one coupon wins per invoice (Stripe's model). We pick the largest
+	// discount so the customer gets the best available price — inverting this
+	// would punish users who stacked multiple promos.
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID:         "cpn_small",
+		Code:       "SMALL5",
+		Name:       "5% off",
+		Type:       domain.CouponTypePercentage,
+		PercentOff: 5,
+		Active:     true,
+	})
+	store.seedCoupon(domain.Coupon{
+		ID:         "cpn_big",
+		Code:       "BIG20",
+		Name:       "20% off",
+		Type:       domain.CouponTypePercentage,
+		PercentOff: 20,
+		Active:     true,
+	})
+	store.redemptions = append(store.redemptions,
+		domain.CouponRedemption{CouponID: "cpn_small", SubscriptionID: "sub_1"},
+		domain.CouponRedemption{CouponID: "cpn_big", SubscriptionID: "sub_1"},
+	)
+
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 2000 {
+		t.Errorf("expected largest discount 2000, got %d", got)
+	}
 }
