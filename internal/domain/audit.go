@@ -29,6 +29,7 @@ const (
 	AuditActionVoid     = "void"
 	AuditActionRevoke   = "revoke"
 	AuditActionGrant    = "grant"
+	AuditActionRefund   = "refund"
 )
 
 type TenantSettings struct {
