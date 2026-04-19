@@ -18,9 +18,11 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 | HYG-1 | `customers.email NOT NULL` | Check for NULL emails first; backfill `'unknown-{id}@placeholder.invalid'` before NOT NULL — ✅ DONE (backfilled `''` instead of placeholder, see resolution) |
 | HYG-2 | Partial UNIQUE on active subscriptions | `UNIQUE(tenant_id, customer_id, plan_id) WHERE status IN ('active','trialing','past_due')` — ✅ DONE (scoped to real Velox status set, see resolution) |
 | HYG-3 | `tax_rate NUMERIC(6,2)` → `tax_rate_bp BIGINT` | Dual-write → cutover → drop (2 migrations) — ✅ DONE (functional swap shipped in migration 0003; BIGINT widening in 0014) |
-| HYG-4 | FK ON DELETE policies explicit | Customers→invoices RESTRICT; tenants→customers RESTRICT; audit refs PRESERVE |
+| HYG-4 | FK ON DELETE policies explicit | Customers→invoices RESTRICT; tenants→customers RESTRICT; audit refs PRESERVE — ✅ DONE (comprehensive sweep of all 60 NO ACTION FKs, see resolution) |
 | HYG-5 | `audit_log` append-only | BEFORE UPDATE/DELETE trigger raising exception — ✅ DONE |
 | HYG-6 | Schedule idempotency + payment-token cleanup | Hourly task in scheduler — ✅ DONE |
+
+**HYG-4 resolution:** Migration `0015_fk_explicit_restrict` drops and re-adds all 60 foreign keys that previously defaulted to `NO ACTION` with explicit `ON DELETE RESTRICT`. The one intentional cascade — `feature_flag_overrides.flag_key → feature_flags.key` — is left untouched. `NO ACTION` and `RESTRICT` are semantically equivalent for non-deferrable FKs (which all of ours are — verified via `pg_constraint.condeferrable`), so the migration carries zero runtime behavior change; the value is documentation-as-code. Scoped beyond the plan's three named pairs (customers→invoices, tenants→customers, audit refs) to every FK because the risk `HYG-4` protects against — a future PR silently adding `ON DELETE CASCADE` to a money-path table and orphaning or auto-deleting billing rows — applies uniformly across the schema, and a partial fix would leave the schema lint inconsistent. Each `ALTER TABLE` combines the DROP + ADD in a single statement so no table is left without its FK during the transition. `pg_constraint` surfaced one FK my initial `information_schema` enumeration missed — `subscriptions_pending_plan_id_fkey` added in migration 0007 — a good argument for always cross-checking against `pg_constraint` when sweeping constraints. Integration test `TestFK_RestrictOnDelete` exercises three representative parent→child paths (customer→subscription, plan→subscription, tenant→customer), asserts each raises `23503 foreign_key_violation` with the expected "violates foreign key constraint" message, and verifies the cleanup path still works when children are removed first — proving RESTRICT blocks orphaning without over-blocking legitimate deletes.
 
 **HYG-3 resolution:** The functional half of this item was already shipped: migration `0003_tax_cleanup` dropped the legacy `NUMERIC(6,2)` / `NUMERIC(5,4)` `tax_rate` columns on `tenant_settings`, `invoices`, and `invoice_line_items`, so all tax arithmetic runs through `tax_rate_bp` (integer basis points) end-to-end — no floats anywhere in the money path. That left a cosmetic gap: `tax_rate_bp` was `INT`, while every peer money column (`tax_amount_cents`, `subtotal_cents`, `total_amount_cents`, …) is `BIGINT`. INT4's ~21-million-percent ceiling is not a real overflow risk, but the schema inconsistency is the kind of "why is this one column different?" trap the HYG- items exist to remove. Migration `0014_tax_rate_bp_bigint` widens the three columns in-place (metadata-only ALTER on Postgres 12+, so safe at any table size) and Go-side `TaxRateBP` / `taxRateBP` fields + the `TaxOverrideRateBP *int` pointer flip to `int64` / `*int64` to match. No dual-write phase was needed because there was no legacy column left to co-exist with.
 
@@ -424,13 +426,14 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 23. **HYG-1** — customers.email NOT NULL
 24. **HYG-2** — partial UNIQUE on live subscriptions
 25. **HYG-3** — tax_rate_bp widened to BIGINT
-26. **RES-1** — transactional outbox (L)
-27. **RES-2** — scheduler advisory lock
-28. **RES-6** — email outbox
-29. **SEC-2 Phase B/C** — cutover + drop plaintext
-30. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
-31. **FEAT-6** — coupon stacking
-32. **FEAT-5** — multi-item subs (Phase 3)
+26. **HYG-4** — explicit FK ON DELETE RESTRICT across schema
+27. **RES-1** — transactional outbox (L)
+28. **RES-2** — scheduler advisory lock
+29. **RES-6** — email outbox
+30. **SEC-2 Phase B/C** — cutover + drop plaintext
+31. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
+32. **FEAT-6** — coupon stacking
+33. **FEAT-5** — multi-item subs (Phase 3)
 
 **UI parallelization note:** UI-1..5 are independent of backend correctness work. A frontend-focused contributor can ship UI-1 → UI-2 → UI-3 → UI-5 → UI-6 in a single thread while backend commits land. UI-4 has a soft dependency on the backend error-envelope audit (small item) — slot it after COR-2 so any API fixes can be bundled.
 
