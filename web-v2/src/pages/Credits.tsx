@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+import { useMutation } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -9,7 +9,8 @@ import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol } from 
 import type { Customer, CreditBalance, CreditLedgerEntry } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
-import { useSortable } from '@/hooks/useSortable'
+import { useSortable, type SortDir } from '@/hooks/useSortable'
+import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -22,7 +23,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -116,11 +116,8 @@ export default function CreditsPage() {
   const [error, setError] = useState<string | null>(null)
 
   // Detail view state
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null)
   const [ledger, setLedger] = useState<CreditLedgerEntry[]>([])
   const [ledgerLoading, setLedgerLoading] = useState(false)
-  const [entryTypeFilter, setEntryTypeFilter] = useState<string>('All')
-  const [ledgerPage, setLedgerPage] = useState(1)
   const ledgerPageSize = 25
 
   // Modals
@@ -128,7 +125,16 @@ export default function CreditsPage() {
   const [showDeduct, setShowDeduct] = useState(false)
   const [modalCustomerId, setModalCustomerId] = useState('')
 
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [urlState, setUrlState] = useUrlState({
+    customer: '',
+    entryType: 'All',
+    page: '1',
+    sort: 'created_at',
+    dir: 'desc',
+  })
+  const selectedCustomerId = urlState.customer || null
+  const entryTypeFilter = urlState.entryType
+  const ledgerPage = Math.max(1, parseInt(urlState.page) || 1)
 
   const customerMap = useMemo(() => {
     const m: Record<string, Customer> = {}
@@ -154,10 +160,10 @@ export default function CreditsPage() {
 
   useEffect(() => {
     loadData()
-    const customerParam = searchParams.get('customer')
-    if (customerParam) {
-      openCustomerDetail(customerParam)
+    if (urlState.customer) {
+      loadLedger(urlState.customer)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const loadLedger = (customerId: string) => {
@@ -172,17 +178,13 @@ export default function CreditsPage() {
   }
 
   const openCustomerDetail = (customerId: string) => {
-    setSelectedCustomerId(customerId)
-    setEntryTypeFilter('All')
-    setLedgerPage(1)
-    setSearchParams({ customer: customerId })
+    setUrlState({ customer: customerId, entryType: 'All', page: '1' })
     loadLedger(customerId)
   }
 
   const closeDetail = () => {
-    setSelectedCustomerId(null)
+    setUrlState({ customer: '' })
     setLedger([])
-    setSearchParams({})
     loadData()
   }
 
@@ -194,7 +196,14 @@ export default function CreditsPage() {
     ? ledger
     : ledger.filter(e => e.entry_type === entryTypeFilter), [ledger, entryTypeFilter])
 
-  const { sorted: sortedLedger, sortKey: ledgerSortKey, sortDir: ledgerSortDir, onSort: onLedgerSort } = useSortable(filteredLedger, 'created_at', 'desc')
+  const ledgerSortKey = urlState.sort
+  const ledgerSortDir = urlState.dir as SortDir
+  const { sorted: sortedLedger, onSort: onLedgerSort } = useSortable(
+    filteredLedger,
+    ledgerSortKey,
+    ledgerSortDir,
+    (key, dir) => setUrlState({ sort: key, dir }),
+  )
 
   const ledgerTotalPages = Math.ceil(sortedLedger.length / ledgerPageSize)
   const ledgerCurrentPage = Math.min(ledgerPage, ledgerTotalPages || 1)
@@ -240,7 +249,7 @@ export default function CreditsPage() {
             <div className="flex items-center gap-2">
               <select
                 value={entryTypeFilter}
-                onChange={e => { setEntryTypeFilter(e.target.value); setLedgerPage(1) }}
+                onChange={e => setUrlState({ entryType: e.target.value, page: '1' })}
                 className="flex h-8 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 {ENTRY_TYPES.map(t => (
@@ -326,7 +335,7 @@ export default function CreditsPage() {
                       <PaginationContent>
                         <PaginationItem>
                           <PaginationPrevious
-                            onClick={() => setLedgerPage(p => Math.max(1, p - 1))}
+                            onClick={() => setUrlState({ page: String(Math.max(1, ledgerCurrentPage - 1)) })}
                             className={cn(ledgerCurrentPage <= 1 && 'pointer-events-none opacity-50')}
                           />
                         </PaginationItem>
@@ -344,7 +353,7 @@ export default function CreditsPage() {
                           return (
                             <PaginationItem key={pageNum}>
                               <PaginationLink
-                                onClick={() => setLedgerPage(pageNum)}
+                                onClick={() => setUrlState({ page: String(pageNum) })}
                                 isActive={ledgerCurrentPage === pageNum}
                               >
                                 {pageNum}
@@ -354,7 +363,7 @@ export default function CreditsPage() {
                         })}
                         <PaginationItem>
                           <PaginationNext
-                            onClick={() => setLedgerPage(p => Math.min(ledgerTotalPages, p + 1))}
+                            onClick={() => setUrlState({ page: String(Math.min(ledgerTotalPages, ledgerCurrentPage + 1)) })}
                             className={cn(ledgerCurrentPage >= ledgerTotalPages && 'pointer-events-none opacity-50')}
                           />
                         </PaginationItem>
