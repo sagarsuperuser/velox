@@ -111,23 +111,23 @@ var (
 		[]string{"result"},
 	)
 
-	auditFailures prometheus.Counter
+	auditWriteErrors *prometheus.CounterVec
 )
 
 func init() {
-	c := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "velox_audit_failures_total",
-		Help: "Total failed audit log writes.",
-	})
+	c := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "velox_audit_write_errors_total",
+		Help: "Total failed audit log writes, labeled by tenant.",
+	}, []string{"tenant_id"})
 	if err := prometheus.DefaultRegisterer.Register(c); err != nil {
 		// Already registered by another package — reuse the existing collector.
 		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
-			auditFailures = are.ExistingCollector.(prometheus.Counter)
+			auditWriteErrors = are.ExistingCollector.(*prometheus.CounterVec)
 		} else {
 			panic(err)
 		}
 	} else {
-		auditFailures = c
+		auditWriteErrors = c
 	}
 }
 
@@ -208,9 +208,11 @@ func RecordAutoChargeRetry(result string) {
 	autoChargeRetries.WithLabelValues(result).Inc()
 }
 
-// RecordAuditFailure increments the audit logging failure counter.
-func RecordAuditFailure() {
-	auditFailures.Inc()
+// RecordAuditWriteError increments the per-tenant audit write error counter.
+// SOC-2 operators alert on sum(audit_write_errors_total) and drill into the
+// tenant_id label to find which tenants are affected.
+func RecordAuditWriteError(tenantID string) {
+	auditWriteErrors.WithLabelValues(tenantID).Inc()
 }
 
 // sanitizePath normalizes paths to prevent high-cardinality metric labels.

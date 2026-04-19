@@ -5,39 +5,98 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
-
-	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
-// responseCapture wraps ResponseWriter to capture the response body.
-type responseCapture struct {
-	http.ResponseWriter
-	body *bytes.Buffer
+// AuditSettingsLookup returns whether a tenant has opted into fail-closed
+// audit logging. Kept as a narrow interface so the middleware can be tested
+// without a real SettingsStore.
+type AuditSettingsLookup interface {
+	IsAuditFailClosed(ctx context.Context, tenantID string) (bool, error)
 }
 
-func (rc *responseCapture) Write(b []byte) (int, error) {
-	rc.body.Write(b)
-	return rc.ResponseWriter.Write(b)
+// auditWriter persists a single audit entry. Introduced as an injection
+// point so the middleware logic (buffering, fail-closed branch) can be unit
+// tested without a live database. Production uses the postgres-backed
+// implementation below.
+type auditWriter interface {
+	Write(ctx context.Context, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) error
 }
 
-// AuditLog returns middleware that automatically logs all mutating requests
-// (POST, PUT, PATCH, DELETE) to the audit_log table.
-func AuditLog(db *postgres.DB) func(http.Handler) http.Handler {
+type postgresAuditWriter struct{ db *postgres.DB }
+
+func (p *postgresAuditWriter) Write(ctx context.Context, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) error {
+	return writeAudit(ctx, p.db, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path)
+}
+
+// bufferedResponse captures status, headers, and body so the middleware can
+// decide whether to flush the handler's response or replace it with 503
+// after the audit write attempt. Handlers see a normal ResponseWriter and
+// have no awareness the response is held back.
+type bufferedResponse struct {
+	header      http.Header
+	status      int
+	body        bytes.Buffer
+	wroteHeader bool
+}
+
+func newBufferedResponse() *bufferedResponse {
+	return &bufferedResponse{header: make(http.Header), status: http.StatusOK}
+}
+
+func (b *bufferedResponse) Header() http.Header { return b.header }
+
+func (b *bufferedResponse) WriteHeader(status int) {
+	if b.wroteHeader {
+		return
+	}
+	b.status = status
+	b.wroteHeader = true
+}
+
+func (b *bufferedResponse) Write(p []byte) (int, error) {
+	if !b.wroteHeader {
+		b.WriteHeader(http.StatusOK)
+	}
+	return b.body.Write(p)
+}
+
+func (b *bufferedResponse) flushTo(w http.ResponseWriter) {
+	maps.Copy(w.Header(), b.header)
+	w.WriteHeader(b.status)
+	_, _ = w.Write(b.body.Bytes())
+}
+
+// AuditLog returns middleware that records every successful mutating request
+// (POST/PUT/PATCH/DELETE outside system endpoints) to audit_log. The write
+// is synchronous because the entry is compliance evidence, not best-effort.
+//
+// On audit write failure the tenant's audit_fail_closed setting decides:
+//   - fail-open (default): log + increment metric; flush the handler response.
+//     Preserves availability at the cost of an accepted compliance gap that
+//     operators must notice via the metric.
+//   - fail-closed: log + increment metric; return 503 audit_error instead of
+//     the handler's response. Paired with API idempotency keys so client
+//     retries don't double-mutate when the business tx already committed.
+func AuditLog(db *postgres.DB, settings AuditSettingsLookup) func(http.Handler) http.Handler {
+	return auditLogWith(&postgresAuditWriter{db: db}, settings)
+}
+
+func auditLogWith(writer auditWriter, settings AuditSettingsLookup) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Only audit mutating methods
 			if r.Method != "POST" && r.Method != "PUT" && r.Method != "PATCH" && r.Method != "DELETE" {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// Skip system endpoints (not operator actions)
+			// System endpoints are not operator actions — skip audit entirely.
 			if strings.HasPrefix(r.URL.Path, "/v1/bootstrap") ||
 				strings.HasPrefix(r.URL.Path, "/v1/webhooks/stripe") ||
 				strings.HasPrefix(r.URL.Path, "/health") ||
@@ -46,36 +105,73 @@ func AuditLog(db *postgres.DB) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Capture response
-			ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
-			capture := &responseCapture{ResponseWriter: ww, body: &bytes.Buffer{}}
-			next.ServeHTTP(capture, r)
+			buf := newBufferedResponse()
+			next.ServeHTTP(buf, r)
 
-			// Only log successful mutations (2xx)
-			if ww.Status() < 200 || ww.Status() >= 300 {
+			// Non-2xx: business mutation didn't succeed, nothing to audit.
+			// Flush whatever the handler produced (error body, headers) and return.
+			if buf.status < 200 || buf.status >= 300 {
+				buf.flushTo(w)
 				return
 			}
 
 			tenantID := auth.TenantID(r.Context())
 			if tenantID == "" {
+				buf.flushTo(w)
 				return
 			}
 
 			action, resourceType, resourceID := parseAuditPath(r.Method, r.URL.Path)
-			resourceLabel := extractLabel(capture.body.Bytes(), resourceType)
+			resourceLabel := extractLabel(buf.body.Bytes())
 
-			// Synchronous: audit is compliance evidence, not best-effort. Fire-and-forget
-			// goroutines can die with the request context or lose errors silently, leaving
-			// gaps in the audit trail. We accept the added ~5-20ms DB insert latency in
-			// exchange for guaranteed writes. Failures are logged but do not fail the
-			// request — the business mutation has already succeeded by this point.
-			writeAudit(r.Context(), db, tenantID, auth.KeyID(r.Context()), action, resourceType, resourceID, resourceLabel, r.URL.Path)
+			if err := writer.Write(r.Context(), tenantID, auth.KeyID(r.Context()),
+				action, resourceType, resourceID, resourceLabel, r.URL.Path); err != nil {
+				RecordAuditWriteError(tenantID)
+
+				failClosed := false
+				if settings != nil {
+					fc, lookupErr := settings.IsAuditFailClosed(r.Context(), tenantID)
+					if lookupErr != nil {
+						// Can't determine policy — fail-safe to closed so a
+						// broken settings lookup doesn't silently downgrade a
+						// SOC-2 tenant to fail-open.
+						slog.Error("audit fail-closed lookup failed",
+							"error", lookupErr, "tenant_id", tenantID)
+						failClosed = true
+					} else {
+						failClosed = fc
+					}
+				}
+
+				if failClosed {
+					slog.Error("audit write failed — returning 503 (fail-closed)",
+						"error", err, "tenant_id", tenantID,
+						"action", action, "resource_type", resourceType, "resource_id", resourceID)
+					writeAuditError(w)
+					return
+				}
+
+				slog.Error("audit write failed — request served anyway (fail-open)",
+					"error", err, "tenant_id", tenantID,
+					"action", action, "resource_type", resourceType, "resource_id", resourceID)
+			}
+
+			buf.flushTo(w)
 		})
 	}
 }
 
+// writeAuditError emits the 503 body returned to fail-closed tenants when
+// the audit write fails. Matches the shape of respond.JSON error envelopes
+// so clients can treat it like any other API error.
+func writeAuditError(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`{"error":{"code":"audit_error","message":"audit log unavailable; request not completed from an auditing standpoint — retry"}}`))
+}
+
 // extractLabel pulls a human-readable label from the response JSON.
-func extractLabel(body []byte, resourceType string) string {
+func extractLabel(body []byte) string {
 	if len(body) == 0 {
 		return ""
 	}
@@ -192,7 +288,9 @@ func parseAuditPath(method, path string) (action, resourceType, resourceID strin
 	return
 }
 
-func writeAudit(parentCtx context.Context, db *postgres.DB, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) {
+// writeAudit persists an audit entry synchronously. Returns nil on success
+// or the first DB error — the caller decides whether to fail the request.
+func writeAudit(parentCtx context.Context, db *postgres.DB, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) error {
 	// Use a detached timeout context so a client disconnect on the parent request
 	// does not abort the audit write mid-flight. 3s is generous for a single INSERT.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), 3*time.Second)
@@ -200,10 +298,7 @@ func writeAudit(parentCtx context.Context, db *postgres.DB, tenantID, actorID, a
 
 	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
-		slog.Error("audit write: begin tx failed",
-			"error", err, "tenant_id", tenantID, "action", action,
-			"resource_type", resourceType, "resource_id", resourceID)
-		return
+		return err
 	}
 	defer postgres.Rollback(tx)
 
@@ -216,21 +311,13 @@ func writeAudit(parentCtx context.Context, db *postgres.DB, tenantID, actorID, a
 		actorID = "system"
 	}
 
-	_, err = tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO audit_log (id, tenant_id, actor_type, actor_id, action,
 			resource_type, resource_id, resource_label, metadata, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, resourceLabel, metaJSON, time.Now().UTC())
+	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, resourceLabel, metaJSON, time.Now().UTC()); err != nil {
+		return err
+	}
 
-	if err != nil {
-		slog.Error("audit write: insert failed",
-			"error", err, "tenant_id", tenantID, "action", action,
-			"resource_type", resourceType, "resource_id", resourceID)
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		slog.Error("audit write: commit failed",
-			"error", err, "tenant_id", tenantID, "action", action,
-			"resource_type", resourceType, "resource_id", resourceID)
-	}
+	return tx.Commit()
 }

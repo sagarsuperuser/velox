@@ -13,21 +13,21 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
-var auditFailures prometheus.Counter
+var auditWriteErrors *prometheus.CounterVec
 
 func init() {
-	c := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "velox_audit_failures_total",
-		Help: "Total failed audit log writes.",
-	})
+	c := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "velox_audit_write_errors_total",
+		Help: "Total failed audit log writes, labeled by tenant.",
+	}, []string{"tenant_id"})
 	if err := prometheus.DefaultRegisterer.Register(c); err != nil {
 		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
-			auditFailures = are.ExistingCollector.(prometheus.Counter)
+			auditWriteErrors = are.ExistingCollector.(*prometheus.CounterVec)
 		} else {
 			panic(err)
 		}
 	} else {
-		auditFailures = c
+		auditWriteErrors = c
 	}
 }
 
@@ -54,7 +54,7 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 
 	tx, err := l.db.BeginTx(writeCtx, postgres.TxTenant, tenantID)
 	if err != nil {
-		auditFailures.Inc()
+		auditWriteErrors.WithLabelValues(tenantID).Inc()
 		slog.Error("audit: failed to begin transaction",
 			"tenant_id", tenantID, "action", action,
 			"resource_type", resourceType, "resource_id", resourceID,
@@ -81,7 +81,7 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, label, metaJSON, time.Now().UTC())
 	if err != nil {
-		auditFailures.Inc()
+		auditWriteErrors.WithLabelValues(tenantID).Inc()
 		slog.Error("audit: failed to insert entry",
 			"tenant_id", tenantID, "action", action,
 			"resource_type", resourceType, "resource_id", resourceID,
@@ -90,7 +90,7 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	}
 
 	if err := tx.Commit(); err != nil {
-		auditFailures.Inc()
+		auditWriteErrors.WithLabelValues(tenantID).Inc()
 		slog.Error("audit: failed to commit entry",
 			"tenant_id", tenantID, "action", action,
 			"resource_type", resourceType, "resource_id", resourceID,
