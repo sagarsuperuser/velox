@@ -15,12 +15,14 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 | ID | Item | Notes |
 |---|---|---|
-| HYG-1 | `customers.email NOT NULL` | Check for NULL emails first; backfill `'unknown-{id}@placeholder.invalid'` before NOT NULL |
+| HYG-1 | `customers.email NOT NULL` | Check for NULL emails first; backfill `'unknown-{id}@placeholder.invalid'` before NOT NULL — ✅ DONE (backfilled `''` instead of placeholder, see resolution) |
 | HYG-2 | Partial UNIQUE on active subscriptions | `UNIQUE(tenant_id, customer_id, plan_id) WHERE status IN ('active','trialing','past_due')` |
 | HYG-3 | `tax_rate NUMERIC(6,2)` → `tax_rate_bp BIGINT` | Dual-write → cutover → drop (2 migrations) |
 | HYG-4 | FK ON DELETE policies explicit | Customers→invoices RESTRICT; tenants→customers RESTRICT; audit refs PRESERVE |
 | HYG-5 | `audit_log` append-only | BEFORE UPDATE/DELETE trigger raising exception — ✅ DONE |
 | HYG-6 | Schedule idempotency + payment-token cleanup | Hourly task in scheduler — ✅ DONE |
+
+**HYG-1 resolution:** Migration `0012_customers_email_not_null` backfills NULL → `''`, sets `DEFAULT ''`, then adds `NOT NULL`. Writes in `internal/customer/postgres.go` stop passing `email` through `postgres.NullableString` so an empty string now inserts as `''` rather than NULL. Deviated from the plan's stated `'unknown-{id}@placeholder.invalid'` backfill: email is intentionally optional at the API layer (`service.go` guards with `if input.Email != ""`), and `COALESCE(email,'')` on every SELECT already erases the NULL/empty distinction on the read path — empty string is the existing semantic for "missing email", so collapsing the two on-disk representations to just `''` is the cleaner long-term fix. Fake placeholder addresses would risk leaking into outbound email, Stripe customer metadata, and operator reports. Integration test `TestCustomersEmail_NotNull` covers both the empty-string round-trip and the raw-SQL NULL rejection path.
 
 **HYG-5 resolution:** Migration `0011_audit_append_only` adds a `BEFORE UPDATE OR DELETE … FOR EACH ROW` trigger on `audit_log` backed by a `plpgsql` function that unconditionally `RAISE EXCEPTION 'audit_log is append-only; % is not permitted'` with a `HINT` pointing operators at the retention-purge procedure (drop trigger → delete → recreate). The trigger fires regardless of RLS bypass, so a compromised application path or stray admin tool can't silently rewrite or erase evidence — RLS is the first line of defence, this trigger is the belt to the braces, and the RES-5 fail-closed writer ensures rows reach the table in the first place. Deliberately no session-variable escape hatch: retention cleanup is a DB-admin DDL event, and that DDL is already captured by Postgres' statement log, preserving the audit chain above the row level. Integration test `TestAuditLog_AppendOnly` verifies both operations are blocked and the underlying row survives unchanged.
 
@@ -415,13 +417,14 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 20. **RES-8** — PII scrubbing
 21. **HYG-6** — scheduled cleanup
 22. **HYG-5** — audit_log append-only trigger
-23. **RES-1** — transactional outbox (L)
-24. **RES-2** — scheduler advisory lock
-25. **RES-6** — email outbox
-26. **SEC-2 Phase B/C** — cutover + drop plaintext
-27. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
-28. **FEAT-6** — coupon stacking
-29. **FEAT-5** — multi-item subs (Phase 3)
+23. **HYG-1** — customers.email NOT NULL
+24. **RES-1** — transactional outbox (L)
+25. **RES-2** — scheduler advisory lock
+26. **RES-6** — email outbox
+27. **SEC-2 Phase B/C** — cutover + drop plaintext
+28. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
+29. **FEAT-6** — coupon stacking
+30. **FEAT-5** — multi-item subs (Phase 3)
 
 **UI parallelization note:** UI-1..5 are independent of backend correctness work. A frontend-focused contributor can ship UI-1 → UI-2 → UI-3 → UI-5 → UI-6 in a single thread while backend commits land. UI-4 has a soft dependency on the backend error-envelope audit (small item) — slot it after COR-2 so any API fixes can be bundled.
 

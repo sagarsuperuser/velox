@@ -119,8 +119,8 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Cu
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO customers (id, tenant_id, external_id, display_name, email, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-		RETURNING id, tenant_id, external_id, display_name, COALESCE(email,''), status, created_at, updated_at
-	`, id, tenantID, c.ExternalID, enc.DisplayName, postgres.NullableString(enc.Email),
+		RETURNING id, tenant_id, external_id, display_name, email, status, created_at, updated_at
+	`, id, tenantID, c.ExternalID, enc.DisplayName, enc.Email,
 		domain.CustomerStatusActive, now,
 	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.CreatedAt, &c.UpdatedAt)
 
@@ -247,8 +247,8 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Cu
 	err = tx.QueryRowContext(ctx, `
 		UPDATE customers SET display_name = $1, email = $2, status = $3, updated_at = $4
 		WHERE id = $5
-		RETURNING id, tenant_id, external_id, display_name, COALESCE(email, ''), status, created_at, updated_at
-	`, enc.DisplayName, postgres.NullableString(enc.Email), c.Status, now, c.ID,
+		RETURNING id, tenant_id, external_id, display_name, email, status, created_at, updated_at
+	`, enc.DisplayName, enc.Email, c.Status, now, c.ID,
 	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
