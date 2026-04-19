@@ -95,6 +95,72 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 	return entry, nil
 }
 
+// AdjustAtomic inserts a manual adjustment entry while holding a row lock on
+// the customer's ledger, so the balance check and the insert observe the same
+// snapshot. Without the lock, two concurrent deductions can each read the
+// full balance, each pass "balance + amount >= 0", and both commit — driving
+// the ledger negative.
+func (s *PostgresStore) AdjustAtomic(
+	ctx context.Context, tenantID, customerID, description string, amountCents int64,
+) (domain.CreditLedgerEntry, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.CreditLedgerEntry{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Lock customer's ledger rows (defense-in-depth: tenant_id predicate in
+	// addition to RLS — see AppendEntry).
+	if _, err := tx.ExecContext(ctx,
+		`SELECT 1 FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2 FOR UPDATE`,
+		tenantID, customerID,
+	); err != nil {
+		return domain.CreditLedgerEntry{}, fmt.Errorf("lock credit ledger: %w", err)
+	}
+
+	var currentBalance int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(amount_cents), 0) FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2`,
+		tenantID, customerID,
+	).Scan(&currentBalance); err != nil {
+		return domain.CreditLedgerEntry{}, fmt.Errorf("read credit balance: %w", err)
+	}
+
+	if amountCents < 0 && currentBalance+amountCents < 0 {
+		return domain.CreditLedgerEntry{}, fmt.Errorf("insufficient balance: available %.2f, deduction %.2f",
+			float64(currentBalance)/100, float64(-amountCents)/100)
+	}
+
+	entry := domain.CreditLedgerEntry{
+		ID:           postgres.NewID("vlx_ccl"),
+		TenantID:     tenantID,
+		CustomerID:   customerID,
+		EntryType:    domain.CreditAdjustment,
+		AmountCents:  amountCents,
+		BalanceAfter: currentBalance + amountCents,
+		Description:  description,
+		CreatedAt:    time.Now().UTC(),
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO customer_credit_ledger (id, tenant_id, customer_id, entry_type,
+			amount_cents, balance_after, description, metadata, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	`, entry.ID, entry.TenantID, entry.CustomerID, entry.EntryType,
+		entry.AmountCents, entry.BalanceAfter, entry.Description, []byte("{}"), entry.CreatedAt,
+	); err != nil {
+		if postgres.IsForeignKeyViolation(err) {
+			return domain.CreditLedgerEntry{}, fmt.Errorf("customer %q not found", customerID)
+		}
+		return domain.CreditLedgerEntry{}, fmt.Errorf("insert adjustment: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.CreditLedgerEntry{}, err
+	}
+	return entry, nil
+}
+
 // ApplyToInvoiceAtomic debits the customer's credit balance and reduces the
 // invoice's amount_due_cents in a SINGLE transaction. Either both writes
 // succeed or both are rolled back. This closes the dual-write hole where a
