@@ -136,11 +136,12 @@ jobs:
           image: ghcr.io/${{ github.repository }}:${{ github.sha }}
           artifact-name: velox-sbom.spdx.json
           format: spdx-json
+          output-file: velox-sbom.spdx.json
 
       - name: Scan SBOM (Grype)
         uses: anchore/scan-action@v7
         with:
-          sbom: velox-sbom.spdx.json
+          path: velox-sbom.spdx.json
           fail-build: true
           severity-cutoff: high
 
