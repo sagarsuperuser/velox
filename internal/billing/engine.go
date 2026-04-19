@@ -138,12 +138,21 @@ func (e *Engine) SetCouponApplier(c CouponApplier) {
 // ApplyTaxToLineItems. The line items passed in are mutated in place with
 // per-line TaxRateBP, TaxAmountCents, and TotalAmountCents so caller-side sums
 // reconcile to TaxAmountCents.
+//
+// SubtotalCents and DiscountCents are the net (ex-tax) values the caller
+// should persist to invoice.SubtotalCents / invoice.DiscountCents. In
+// tax-exclusive mode they equal the caller's input. In tax-inclusive mode
+// (tenant_settings.tax_inclusive=true) the caller passes gross values and
+// the engine back-calculates net here; downstream invoice arithmetic remains
+// SubtotalCents - DiscountCents + TaxAmountCents = customer total.
 type TaxApplication struct {
 	TaxAmountCents int64
 	TaxRateBP      int
 	TaxName        string
 	TaxCountry     string
 	TaxID          string
+	SubtotalCents  int64
+	DiscountCents  int64
 }
 
 // ApplyTaxToLineItems resolves the tenant + customer tax configuration and
@@ -166,11 +175,17 @@ type TaxApplication struct {
 // items untouched.
 func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, currency string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (TaxApplication, error) {
 	var app TaxApplication
+	// Default: caller's inputs flow through unchanged. The inclusive branch
+	// below overwrites these with net (back-calculated) values.
+	app.SubtotalCents = subtotal
+	app.DiscountCents = discount
 
+	var inclusive bool
 	if e.settings != nil {
 		if ts, err := e.settings.Get(ctx, tenantID); err == nil {
 			app.TaxRateBP = ts.TaxRateBP
 			app.TaxName = ts.TaxName
+			inclusive = ts.TaxInclusive
 		}
 	}
 
@@ -244,6 +259,52 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 	if app.TaxRateBP <= 0 {
 		return app, nil
 	}
+
+	if inclusive {
+		// Tax-inclusive: caller's subtotal / discount / line.AmountCents are
+		// gross (tax-included sticker prices). Back-calculate the net
+		// equivalents so the stored invoice is { SubtotalCents (net) -
+		// DiscountCents (net) + TaxAmountCents } == customer payment (gross).
+		denom := int64(10000 + app.TaxRateBP)
+		netDiscounted := money.RoundHalfToEven(discountedSubtotal*10000, denom)
+		app.TaxAmountCents = discountedSubtotal - netDiscounted
+
+		var lineTaxSum int64
+		var lineNetUndiscSum int64
+		for i := range lineItems {
+			lineGross := lineItems[i].AmountCents
+			lineGrossDisc := lineGross
+			if subtotal > 0 && discount > 0 {
+				d := money.RoundHalfToEven(lineGross*discount, subtotal)
+				lineGrossDisc = max(lineGross-d, 0)
+			}
+			lineNetUndisc := money.RoundHalfToEven(lineGross*10000, denom)
+			lineNetDisc := money.RoundHalfToEven(lineGrossDisc*10000, denom)
+			lineTax := lineGrossDisc - lineNetDisc
+
+			lineItems[i].AmountCents = lineNetUndisc
+			lineItems[i].TaxRateBP = app.TaxRateBP
+			lineItems[i].TaxAmountCents = lineTax
+			lineItems[i].TotalAmountCents = lineNetUndisc + lineTax
+			lineTaxSum += lineTax
+			lineNetUndiscSum += lineNetUndisc
+		}
+		// Same ±1¢ reconciliation pattern as the exclusive path: last line
+		// absorbs any per-line rounding drift so line-level sums match
+		// invoice-level totals exactly.
+		if len(lineItems) > 0 && lineTaxSum != app.TaxAmountCents {
+			diff := app.TaxAmountCents - lineTaxSum
+			last := &lineItems[len(lineItems)-1]
+			last.TaxAmountCents += diff
+			last.TotalAmountCents += diff
+		}
+		// Subtotal/discount in net units so the caller's invariant
+		// Subtotal - Discount + Tax = customer paid (= discountedSubtotal gross).
+		app.SubtotalCents = lineNetUndiscSum
+		app.DiscountCents = lineNetUndiscSum + app.TaxAmountCents - discountedSubtotal
+		return app, nil
+	}
+
 	app.TaxAmountCents = money.RoundHalfToEven(discountedSubtotal*int64(app.TaxRateBP), 10000)
 
 	var lineTaxSum int64
@@ -550,16 +611,17 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			discountCents = d
 		}
 	}
-	discountedSubtotal := subtotal - discountCents
-
 	taxApp, _ := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, lineItems)
+	// In tax-inclusive mode the engine back-calculates net subtotal/discount
+	// from the gross inputs; in exclusive mode these pass through unchanged,
+	// so the caller always reads the authoritative values off the result.
 	taxAmountCents := taxApp.TaxAmountCents
 	taxRateBP := taxApp.TaxRateBP
 	taxName := taxApp.TaxName
 	taxCountry := taxApp.TaxCountry
 	taxID := taxApp.TaxID
 
-	totalWithTax := discountedSubtotal + taxAmountCents
+	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxAmountCents
 	dueAt := now.AddDate(0, 0, netDays)
 
 	// ATOMIC: Create invoice + all line items in a single transaction.
@@ -573,8 +635,8 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		Status:             domain.InvoiceFinalized,
 		PaymentStatus:      domain.PaymentPending,
 		Currency:           invoiceCurrency,
-		SubtotalCents:      subtotal,
-		DiscountCents:      discountCents,
+		SubtotalCents:      taxApp.SubtotalCents,
+		DiscountCents:      taxApp.DiscountCents,
 		TaxRateBP:          taxRateBP,
 		TaxName:            taxName,
 		TaxCountry:         taxCountry,
