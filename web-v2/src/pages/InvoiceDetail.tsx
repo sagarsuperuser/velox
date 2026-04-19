@@ -32,19 +32,9 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { ArrowLeft, Copy, Check, Loader2, Mail, CreditCard } from 'lucide-react'
-
-function CopyId({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
-      className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
-    >
-      {copied ? <Check size={12} /> : <Copy size={12} />}
-    </button>
-  )
-}
+import { Loader2, Mail, CreditCard } from 'lucide-react'
+import { CopyButton } from '@/components/CopyButton'
+import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
 const statusVariant = statusBadgeVariant
 
@@ -193,15 +183,7 @@ export default function InvoiceDetailPage() {
 
   return (
     <Layout>
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
-        <Link to="/invoices" className="hover:text-foreground transition-colors flex items-center gap-1">
-          <ArrowLeft size={14} />
-          Invoices
-        </Link>
-        <span>/</span>
-        <span className="text-foreground">{invoice.invoice_number}</span>
-      </div>
+      <DetailBreadcrumb to="/invoices" parentLabel="Invoices" currentLabel={invoice.invoice_number} />
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -209,7 +191,7 @@ export default function InvoiceDetailPage() {
           <h1 className="text-2xl font-semibold text-foreground">{invoice.invoice_number}</h1>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="text-xs font-mono text-muted-foreground">{invoice.id}</span>
-            <CopyId text={invoice.id} />
+            <CopyButton text={invoice.id} />
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -522,7 +504,7 @@ export default function InvoiceDetailPage() {
           <div className="mt-8 pt-4 border-t border-dashed border-border flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <span className="font-mono">{invoice.id}</span>
-              <CopyId text={invoice.id} />
+              <CopyButton text={invoice.id} />
             </div>
             <span className="text-xs text-muted-foreground uppercase">{invoice.currency}</span>
           </div>

@@ -13,20 +13,9 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 
-import { ArrowLeft, Copy, Check, Loader2 } from 'lucide-react'
-import { useState } from 'react'
-
-function CopyId({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
-      className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
-    >
-      {copied ? <Check size={12} /> : <Copy size={12} />}
-    </button>
-  )
-}
+import { Loader2 } from 'lucide-react'
+import { CopyButton } from '@/components/CopyButton'
+import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
 const statusVariant = statusBadgeVariant
 
@@ -118,15 +107,7 @@ export default function MeterDetailPage() {
 
   return (
     <Layout>
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
-        <Link to="/pricing" className="hover:text-foreground transition-colors flex items-center gap-1">
-          <ArrowLeft size={14} />
-          Pricing
-        </Link>
-        <span>/</span>
-        <span className="text-foreground">{meter.name}</span>
-      </div>
+      <DetailBreadcrumb to="/pricing" parentLabel="Pricing" currentLabel={meter.name} />
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -134,7 +115,7 @@ export default function MeterDetailPage() {
           <h1 className="text-2xl font-semibold text-foreground">{meter.name}</h1>
           <div className="flex items-center gap-2 mt-1">
             <span className="text-xs text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded">{meter.id}</span>
-            <CopyId text={meter.id} />
+            <CopyButton text={meter.id} />
           </div>
         </div>
         <Badge variant="secondary">{meter.aggregation}</Badge>
@@ -167,7 +148,7 @@ export default function MeterDetailPage() {
               <span className="text-sm text-muted-foreground">ID</span>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-foreground font-mono truncate max-w-xs" title={meter.id}>{meter.id}</span>
-                <CopyId text={meter.id} />
+                <CopyButton text={meter.id} />
               </div>
             </div>
           </div>

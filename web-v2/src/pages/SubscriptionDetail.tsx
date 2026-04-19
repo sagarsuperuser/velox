@@ -28,19 +28,9 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { ArrowLeft, Copy, Check, Loader2 } from 'lucide-react'
-
-function CopyId({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
-      className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
-    >
-      {copied ? <Check size={12} /> : <Copy size={12} />}
-    </button>
-  )
-}
+import { Loader2 } from 'lucide-react'
+import { CopyButton } from '@/components/CopyButton'
+import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
 const statusVariant = statusBadgeVariant
 
@@ -157,15 +147,7 @@ export default function SubscriptionDetailPage() {
 
   return (
     <Layout>
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
-        <Link to="/subscriptions" className="hover:text-foreground transition-colors flex items-center gap-1">
-          <ArrowLeft size={14} />
-          Subscriptions
-        </Link>
-        <span>/</span>
-        <span className="text-foreground">{sub.display_name}</span>
-      </div>
+      <DetailBreadcrumb to="/subscriptions" parentLabel="Subscriptions" currentLabel={sub.display_name} />
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -173,7 +155,7 @@ export default function SubscriptionDetailPage() {
           <h1 className="text-2xl font-semibold text-foreground">{sub.display_name}</h1>
           <div className="flex items-center gap-2 mt-1">
             <span className="text-xs text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded">{sub.id}</span>
-            <CopyId text={sub.id} />
+            <CopyButton text={sub.id} />
             <span className="text-xs text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded">{sub.code}</span>
           </div>
         </div>
@@ -419,7 +401,7 @@ export default function SubscriptionDetailPage() {
               <span className="text-sm text-muted-foreground w-40 shrink-0">ID</span>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-foreground font-mono">{sub.id}</span>
-                <CopyId text={sub.id} />
+                <CopyButton text={sub.id} />
               </div>
             </div>
           </div>
