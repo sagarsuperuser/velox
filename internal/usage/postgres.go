@@ -28,18 +28,24 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 
 	id := postgres.NewID("vlx_evt")
 
+	origin := string(event.Origin)
+	if origin == "" {
+		origin = string(domain.UsageOriginAPI)
+	}
+
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO usage_events (id, tenant_id, customer_id, meter_id, subscription_id,
-			quantity, properties, idempotency_key, timestamp)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			quantity, properties, idempotency_key, timestamp, origin)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		RETURNING id, tenant_id, customer_id, meter_id, COALESCE(subscription_id,''),
-			quantity, COALESCE(idempotency_key,''), timestamp
+			quantity, COALESCE(idempotency_key,''), timestamp, origin
 	`, id, tenantID, event.CustomerID, event.MeterID,
 		postgres.NullableString(event.SubscriptionID), event.Quantity,
 		propertiesJSON(event.Properties), postgres.NullableString(event.IdempotencyKey),
-		event.Timestamp,
+		event.Timestamp, origin,
 	).Scan(&event.ID, &event.TenantID, &event.CustomerID, &event.MeterID,
-		&event.SubscriptionID, &event.Quantity, &event.IdempotencyKey, &event.Timestamp)
+		&event.SubscriptionID, &event.Quantity, &event.IdempotencyKey, &event.Timestamp,
+		&event.Origin)
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {

@@ -113,4 +113,78 @@ func TestIngest(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("default origin is api", func(t *testing.T) {
+		e, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_origin_api", MeterID: "mtr_1", Quantity: 1,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.Origin != domain.UsageOriginAPI {
+			t.Errorf("got origin %q, want %q", e.Origin, domain.UsageOriginAPI)
+		}
+	})
+}
+
+// TestBackfill exercises the audit-path contract: past timestamp required,
+// future / missing timestamp rejected, origin tagged 'backfill' on the row.
+func TestBackfill(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	t.Run("past timestamp is accepted and tagged backfill", func(t *testing.T) {
+		past := time.Now().Add(-24 * time.Hour)
+		e, err := svc.Backfill(ctx, "t1", IngestInput{
+			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: 7, Timestamp: &past,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.Origin != domain.UsageOriginBackfill {
+			t.Errorf("origin: got %q, want %q", e.Origin, domain.UsageOriginBackfill)
+		}
+		if !e.Timestamp.Equal(past.UTC()) {
+			t.Errorf("timestamp: got %v, want %v", e.Timestamp, past.UTC())
+		}
+	})
+
+	t.Run("missing timestamp rejected", func(t *testing.T) {
+		_, err := svc.Backfill(ctx, "t1", IngestInput{
+			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: 1,
+		})
+		if err == nil {
+			t.Fatal("expected timestamp-required error")
+		}
+	})
+
+	t.Run("future timestamp rejected", func(t *testing.T) {
+		future := time.Now().Add(1 * time.Hour)
+		_, err := svc.Backfill(ctx, "t1", IngestInput{
+			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: 1, Timestamp: &future,
+		})
+		if err == nil {
+			t.Fatal("expected future-timestamp error")
+		}
+	})
+
+	t.Run("one-second-ago accepted", func(t *testing.T) {
+		ts := time.Now().Add(-1 * time.Second)
+		_, err := svc.Backfill(ctx, "t1", IngestInput{
+			CustomerID: "cus_boundary", MeterID: "mtr_1", Quantity: 1, Timestamp: &ts,
+		})
+		if err != nil {
+			t.Fatalf("one-second-ago backfill should be accepted: %v", err)
+		}
+	})
+
+	t.Run("missing customer_id still caught", func(t *testing.T) {
+		past := time.Now().Add(-1 * time.Hour)
+		_, err := svc.Backfill(ctx, "t1", IngestInput{
+			MeterID: "mtr_1", Quantity: 1, Timestamp: &past,
+		})
+		if err == nil {
+			t.Fatal("expected missing customer_id error")
+		}
+	})
 }
