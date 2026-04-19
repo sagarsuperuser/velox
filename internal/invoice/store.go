@@ -27,6 +27,15 @@ type Store interface {
 
 	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
 	ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error)
+
+	// AddLineItemAtomic inserts a line item and recomputes the invoice totals
+	// in one transaction. It locks the invoice row FOR UPDATE, verifies draft
+	// status, inserts the line item (filling InvoiceID, TenantID, and Currency
+	// from the locked invoice), recomputes the subtotal from all line items,
+	// and rewrites subtotal/total/amount_due. The lock prevents lost updates
+	// when two clients append lines concurrently. Returns the inserted line
+	// item and the updated invoice.
+	AddLineItemAtomic(ctx context.Context, tenantID, invoiceID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, domain.Invoice, error)
 }
 
 type ListFilter struct {

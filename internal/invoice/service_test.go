@@ -148,6 +148,39 @@ func (m *memStore) ListLineItems(_ context.Context, _, invoiceID string) ([]doma
 	return m.lineItems[invoiceID], nil
 }
 
+func (m *memStore) AddLineItemAtomic(_ context.Context, tenantID, invoiceID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, domain.Invoice, error) {
+	inv, ok := m.invoices[invoiceID]
+	if !ok || inv.TenantID != tenantID {
+		return domain.InvoiceLineItem{}, domain.Invoice{}, errs.ErrNotFound
+	}
+	if inv.Status != domain.InvoiceDraft {
+		return domain.InvoiceLineItem{}, domain.Invoice{},
+			fmt.Errorf("can only add line items to draft invoices, current status: %s", inv.Status)
+	}
+
+	item.InvoiceID = invoiceID
+	item.TenantID = tenantID
+	item.Currency = inv.Currency
+	item.ID = fmt.Sprintf("vlx_ili_%d", len(m.lineItems[invoiceID])+1)
+	m.lineItems[invoiceID] = append(m.lineItems[invoiceID], item)
+
+	var subtotal int64
+	for _, li := range m.lineItems[invoiceID] {
+		subtotal += li.AmountCents
+	}
+	total := subtotal + inv.TaxAmountCents - inv.DiscountCents
+	amountDue := total - inv.AmountPaidCents - inv.CreditsAppliedCents
+	if amountDue < 0 {
+		amountDue = 0
+	}
+	inv.SubtotalCents = subtotal
+	inv.TotalAmountCents = total
+	inv.AmountDueCents = amountDue
+	inv.UpdatedAt = time.Now().UTC()
+	m.invoices[invoiceID] = inv
+	return item, inv, nil
+}
+
 func (m *memStore) ListApproachingDue(_ context.Context, _ int) ([]domain.Invoice, error) {
 	return nil, nil
 }

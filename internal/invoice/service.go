@@ -143,14 +143,6 @@ type AddLineItemInput struct {
 }
 
 func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, input AddLineItemInput) (domain.InvoiceLineItem, error) {
-	inv, err := s.store.Get(ctx, tenantID, invoiceID)
-	if err != nil {
-		return domain.InvoiceLineItem{}, err
-	}
-	if inv.Status != domain.InvoiceDraft {
-		return domain.InvoiceLineItem{}, fmt.Errorf("can only add line items to draft invoices, current status: %s", inv.Status)
-	}
-
 	desc := strings.TrimSpace(input.Description)
 	if desc == "" {
 		return domain.InvoiceLineItem{}, fmt.Errorf("description is required")
@@ -169,39 +161,15 @@ func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, i
 
 	amountCents := input.Quantity * input.UnitAmountCents
 
-	item, err := s.store.CreateLineItem(ctx, tenantID, domain.InvoiceLineItem{
-		InvoiceID:        invoiceID,
+	item, _, err := s.store.AddLineItemAtomic(ctx, tenantID, invoiceID, domain.InvoiceLineItem{
 		LineType:         domain.InvoiceLineItemType(lineType),
 		Description:      desc,
 		Quantity:         input.Quantity,
 		UnitAmountCents:  input.UnitAmountCents,
 		AmountCents:      amountCents,
 		TotalAmountCents: amountCents,
-		Currency:         inv.Currency,
 	})
-	if err != nil {
-		return domain.InvoiceLineItem{}, err
-	}
-
-	// Recalculate invoice totals from all line items
-	items, err := s.store.ListLineItems(ctx, tenantID, invoiceID)
-	if err != nil {
-		return item, nil // Line item created but totals not updated — non-fatal
-	}
-
-	var subtotal int64
-	for _, li := range items {
-		subtotal += li.AmountCents
-	}
-	total := subtotal + inv.TaxAmountCents - inv.DiscountCents
-	amountDue := total - inv.AmountPaidCents - inv.CreditsAppliedCents
-	if amountDue < 0 {
-		amountDue = 0
-	}
-
-	_, _ = s.store.UpdateTotals(ctx, tenantID, invoiceID, subtotal, total, amountDue)
-
-	return item, nil
+	return item, err
 }
 
 func (s *Service) ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error) {
