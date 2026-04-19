@@ -247,45 +247,16 @@ func (s *Service) ChangePlan(ctx context.Context, tenantID, id string, input Cha
 
 // Pause pauses an active subscription. Can be resumed later.
 func (s *Service) Pause(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	sub, err := s.store.Get(ctx, tenantID, id)
-	if err != nil {
-		return domain.Subscription{}, err
-	}
-	if sub.Status != domain.SubscriptionActive {
-		return domain.Subscription{}, fmt.Errorf("can only pause active subscriptions, current status: %s", sub.Status)
-	}
-
-	sub.Status = domain.SubscriptionPaused
-	return s.store.Update(ctx, tenantID, sub)
+	return s.store.PauseAtomic(ctx, tenantID, id)
 }
 
 // Resume resumes a paused subscription.
 func (s *Service) Resume(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	sub, err := s.store.Get(ctx, tenantID, id)
-	if err != nil {
-		return domain.Subscription{}, err
-	}
-	if sub.Status != domain.SubscriptionPaused {
-		return domain.Subscription{}, fmt.Errorf("can only resume paused subscriptions, current status: %s", sub.Status)
-	}
-
-	sub.Status = domain.SubscriptionActive
-	return s.store.Update(ctx, tenantID, sub)
+	return s.store.ResumeAtomic(ctx, tenantID, id)
 }
 
 func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	sub, err := s.store.Get(ctx, tenantID, id)
-	if err != nil {
-		return domain.Subscription{}, err
-	}
-	if sub.Status != domain.SubscriptionActive && sub.Status != domain.SubscriptionPaused {
-		return domain.Subscription{}, fmt.Errorf("can only cancel active or paused subscriptions, current status: %s", sub.Status)
-	}
-
-	now := s.clock.Now()
-	sub.Status = domain.SubscriptionCanceled
-	sub.CanceledAt = &now
-	return s.store.Update(ctx, tenantID, sub)
+	return s.store.CancelAtomic(ctx, tenantID, id)
 }
 
 func beginningOfMonth(t time.Time) time.Time {

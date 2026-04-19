@@ -72,6 +72,50 @@ func (m *memStore) UpdateBillingCycle(_ context.Context, _, _ string, _, _, _ ti
 	return nil
 }
 
+func (m *memStore) PauseAtomic(_ context.Context, tenantID, id string) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status != domain.SubscriptionActive {
+		return domain.Subscription{}, fmt.Errorf("can only pause active subscriptions, current status: %s", s.Status)
+	}
+	s.Status = domain.SubscriptionPaused
+	s.UpdatedAt = time.Now().UTC()
+	m.subs[id] = s
+	return s, nil
+}
+
+func (m *memStore) ResumeAtomic(_ context.Context, tenantID, id string) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status != domain.SubscriptionPaused {
+		return domain.Subscription{}, fmt.Errorf("can only resume paused subscriptions, current status: %s", s.Status)
+	}
+	s.Status = domain.SubscriptionActive
+	s.UpdatedAt = time.Now().UTC()
+	m.subs[id] = s
+	return s, nil
+}
+
+func (m *memStore) CancelAtomic(_ context.Context, tenantID, id string) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status != domain.SubscriptionActive && s.Status != domain.SubscriptionPaused {
+		return domain.Subscription{}, fmt.Errorf("can only cancel active or paused subscriptions, current status: %s", s.Status)
+	}
+	now := time.Now().UTC()
+	s.Status = domain.SubscriptionCanceled
+	s.CanceledAt = &now
+	s.UpdatedAt = now
+	m.subs[id] = s
+	return s, nil
+}
+
 func TestCreate(t *testing.T) {
 	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
