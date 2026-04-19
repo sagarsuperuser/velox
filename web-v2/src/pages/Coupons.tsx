@@ -8,6 +8,7 @@ import { api, formatCents, formatDate } from '@/lib/api'
 import type { Coupon, CouponRedemption } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
+import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { cn } from '@/lib/utils'
 import { DatePicker } from '@/components/ui/date-picker'
 
@@ -276,7 +277,14 @@ export default function CouponsPage() {
                         {c.times_redeemed}{c.max_redemptions !== null ? ` / ${c.max_redemptions}` : ''}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {c.expires_at ? formatDate(c.expires_at) : 'Never'}
+                        {c.expires_at ? (
+                          <div className="flex items-center gap-2">
+                            <span>{formatDate(c.expires_at)}</span>
+                            <ExpiryBadge expiresAt={c.expires_at} warningDays={7} />
+                          </div>
+                        ) : (
+                          'Never'
+                        )}
                       </TableCell>
                       <TableCell>
                         <Badge variant={couponStatusVariant(status)}>{status}</Badge>

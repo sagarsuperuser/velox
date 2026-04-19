@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Subscription, type Customer, type Plan, type Invoice, type InvoicePreview } from '@/lib/api'
 import { Layout } from '@/components/Layout'
+import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
@@ -206,6 +207,9 @@ export default function SubscriptionDetailPage() {
             </>
           )}
           <Badge variant={statusVariant(sub.status)}>{sub.status}</Badge>
+          {sub.status === 'trialing' && sub.trial_end_at && (
+            <ExpiryBadge expiresAt={sub.trial_end_at} label="Trial ends" warningDays={3} />
+          )}
         </div>
       </div>
 

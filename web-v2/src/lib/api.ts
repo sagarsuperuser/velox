@@ -291,6 +291,8 @@ export interface Subscription {
   current_billing_period_start?: string
   current_billing_period_end?: string
   next_billing_at?: string
+  trial_start_at?: string
+  trial_end_at?: string
   usage_cap_units?: number | null
   overage_action?: string
   created_at: string

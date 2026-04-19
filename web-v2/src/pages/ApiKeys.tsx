@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, formatRelativeTime, type ApiKeyInfo } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
+import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 
@@ -70,25 +71,6 @@ function keyTypeVariant(type: string): 'default' | 'secondary' | 'outline' {
 
 function isExpired(key: ApiKeyInfo): boolean {
   return !!key.expires_at && new Date(key.expires_at) < new Date()
-}
-
-function daysUntilExpiry(expiresAt: string): number {
-  return Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86400000)
-}
-
-function expiryBadge(key: ApiKeyInfo) {
-  if (!key.expires_at) return null
-  if (isExpired(key)) {
-    return <Badge variant="destructive">Expired</Badge>
-  }
-  const days = daysUntilExpiry(key.expires_at)
-  if (days <= 7) {
-    return <Badge variant="warning">Expires in {days}d</Badge>
-  }
-  if (days <= 30) {
-    return <Badge variant="outline" className="text-muted-foreground">Expires in {days}d</Badge>
-  }
-  return null
 }
 
 export default function ApiKeysPage() {
@@ -192,7 +174,7 @@ export default function ApiKeysPage() {
                             {isCurrent && (
                               <Badge variant="info" className="text-[10px]">Current session</Badge>
                             )}
-                            {expiryBadge(k)}
+                            <ExpiryBadge expiresAt={k.expires_at} />
                           </div>
                           <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded mt-1 inline-block">
                             {k.key_prefix}--------

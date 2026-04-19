@@ -11,6 +11,7 @@ import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
+import { ExpiryBadge } from '@/components/ExpiryBadge'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -309,7 +310,12 @@ export default function InvoicesPage() {
                         <Badge variant={statusBadgeVariant(inv.status)}>{inv.status}</Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={statusBadgeVariant(inv.payment_status)}>{inv.payment_status}</Badge>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={statusBadgeVariant(inv.payment_status)}>{inv.payment_status}</Badge>
+                          {inv.due_at && inv.payment_status !== 'paid' && (
+                            <ExpiryBadge expiresAt={inv.due_at} label="Due" warningDays={3} />
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {formatDate(inv.billing_period_start)} {'\u2014'} {formatDate(inv.billing_period_end)}
