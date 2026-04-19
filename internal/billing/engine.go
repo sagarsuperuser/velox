@@ -319,9 +319,14 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			return false, fmt.Errorf("compute amount for meter %s: %w", meterID, err)
 		}
 
+		// For graduated/tiered pricing the "unit amount" shown on the invoice is
+		// a blended display value — amount/quantity rarely divides cleanly. Use
+		// banker's rounding (money.RoundHalfToEven) so the displayed unit price
+		// is the nearest cent rather than systematically truncating downward,
+		// which would introduce a negative bias over large batches.
 		unitAmount := int64(0)
 		if quantity > 0 {
-			unitAmount = amount / quantity
+			unitAmount = money.RoundHalfToEven(amount, quantity)
 		}
 
 		lineItems = append(lineItems, domain.InvoiceLineItem{

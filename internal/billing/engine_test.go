@@ -506,3 +506,84 @@ func TestAdvanceBillingPeriod(t *testing.T) {
 		t.Errorf("yearly: got %v, want 2027-03-01", yearly)
 	}
 }
+
+// TestRunCycle_UnitAmountRoundsBankers is the COR-5 regression: the rating
+// path previously used `amount / quantity` (truncating int division) to
+// derive the per-unit display amount. For graduated/tiered rules the total
+// rarely divides cleanly by the quantity, and truncation biased every
+// displayed unit price downward — systematic over large batches, which
+// accountants catch. Switching to money.RoundHalfToEven produces the
+// nearest-cent unit while preserving the true AmountCents total.
+//
+// Setup: graduated rule with tier 1 (up to 1 unit) at 100 cents and tier 2
+// at 50 cents per unit. Usage = 3 → amount = 1*100 + 2*50 = 200 cents.
+// Truncation: 200/3 = 66. Banker's: 66.67 → 67.
+func TestRunCycle_UnitAmountRoundsBankers(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", PlanID: "pln_1",
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt: &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	usage := &mockUsage{totals: map[string]int64{"mtr_api": 3}}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {
+				ID: "pln_1", Name: "Round Plan", Currency: "USD",
+				BillingInterval: domain.BillingMonthly,
+				BaseAmountCents: 0, MeterIDs: []string{"mtr_api"},
+			},
+		},
+		meters: map[string]domain.Meter{
+			"mtr_api": {ID: "mtr_api", Name: "API Calls", Unit: "calls", RatingRuleVersionID: "rrv_api"},
+		},
+		rules: map[string]domain.RatingRuleVersion{
+			"rrv_api": {
+				ID: "rrv_api", RuleKey: "api_calls", Version: 1, Mode: domain.PricingGraduated,
+				GraduatedTiers: []domain.RatingTier{
+					{UpTo: 1, UnitAmountCents: 100},
+					{UpTo: 0, UnitAmountCents: 50},
+				},
+			},
+		},
+	}
+	invoices := &mockInvoices{}
+	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("got %d invoices, want 1", len(invoices.invoices))
+	}
+
+	var usageLine *domain.InvoiceLineItem
+	for i := range invoices.lineItems {
+		if invoices.lineItems[i].MeterID == "mtr_api" {
+			usageLine = &invoices.lineItems[i]
+			break
+		}
+	}
+	if usageLine == nil {
+		t.Fatal("api usage line not found in invoice")
+	}
+
+	if usageLine.AmountCents != 200 {
+		t.Errorf("amount_cents: got %d, want 200 (1*100 + 2*50)", usageLine.AmountCents)
+	}
+	if usageLine.Quantity != 3 {
+		t.Errorf("quantity: got %d, want 3", usageLine.Quantity)
+	}
+	// Truncation would give 66; banker's rounding of 200/3 = 66.67 gives 67.
+	if usageLine.UnitAmountCents != 67 {
+		t.Errorf("unit_amount_cents: got %d, want 67 (banker's round of 200/3)",
+			usageLine.UnitAmountCents)
+	}
+}
