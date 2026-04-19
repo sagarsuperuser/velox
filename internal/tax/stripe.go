@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/tax/calculation"
 )
@@ -93,9 +94,12 @@ func (s *StripeCalculator) mapResult(calc *stripe.TaxCalculation, inputItems []L
 	for _, li := range inputItems {
 		subtotal += li.AmountCents
 	}
+	// Round rather than truncate so the effective rate presented back to
+	// callers is the nearest basis point. Truncation systematically biases
+	// the displayed rate downward (e.g. 8.499% → 849 bp instead of 850).
 	effectiveRateBP := 0
 	if subtotal > 0 {
-		effectiveRateBP = int(totalTax * 10000 / subtotal)
+		effectiveRateBP = int(money.RoundHalfToEven(totalTax*10000, subtotal))
 	}
 
 	// Extract tax name and country from the first tax breakdown
