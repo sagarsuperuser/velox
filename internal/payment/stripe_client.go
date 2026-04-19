@@ -23,6 +23,56 @@ func stripeErrorMessage(err error) string {
 	return err.Error()
 }
 
+// PaymentError categorises a failed PaymentIntent attempt. Unknown=true means
+// the request's outcome could not be determined from the response (5xx, network
+// drop, timeout) — callers must NOT treat this as a decline, because Stripe
+// may have processed the charge server-side. A reconciler resolves these by
+// querying Stripe after a cool-off window.
+type PaymentError struct {
+	Message         string
+	DeclineCode     string // non-empty for card declines (card_declined, insufficient_funds, etc.)
+	PaymentIntentID string // set when Stripe returned a PI object alongside the error
+	Unknown         bool
+}
+
+func (e *PaymentError) Error() string { return e.Message }
+
+// classifyStripeError maps a stripe-go SDK error to a PaymentError. Non-Stripe
+// errors (context cancel, DNS failure wrapped by our code, etc.) are treated
+// as unknown, because we cannot prove the request never reached Stripe.
+func classifyStripeError(err error) *PaymentError {
+	if err == nil {
+		return nil
+	}
+	var stripeErr *stripe.Error
+	if !errors.As(err, &stripeErr) {
+		return &PaymentError{Message: err.Error(), Unknown: true}
+	}
+
+	pe := &PaymentError{
+		Message:     stripeErrorMessage(err),
+		DeclineCode: string(stripeErr.DeclineCode),
+	}
+	if stripeErr.PaymentIntent != nil {
+		pe.PaymentIntentID = stripeErr.PaymentIntent.ID
+	}
+
+	switch stripeErr.Type {
+	case stripe.ErrorTypeCard,
+		stripe.ErrorTypeInvalidRequest,
+		stripe.ErrorTypeIdempotency:
+		// Stripe explicitly rejected the request; no charge occurred.
+		pe.Unknown = false
+	case stripe.ErrorTypeAPI:
+		// 5xx from Stripe — request may or may not have been processed.
+		pe.Unknown = true
+	default:
+		// Unknown error type — fail safe, treat as ambiguous.
+		pe.Unknown = true
+	}
+	return pe
+}
+
 // LiveStripeClient wraps the Stripe SDK for real PaymentIntent operations.
 // Implements the StripeClient interface used by the payment adapter.
 type LiveStripeClient struct {
@@ -68,7 +118,8 @@ func (c *LiveStripeClient) CreatePaymentIntent(_ context.Context, params Payment
 		}
 	}
 	if defaultPM == "" {
-		return PaymentIntentResult{}, fmt.Errorf("customer has no payment method on file")
+		// Definitive failure — no card on file, no charge could have occurred.
+		return PaymentIntentResult{}, &PaymentError{Message: "customer has no payment method on file"}
 	}
 
 	pi, err := paymentintent.New(&stripe.PaymentIntentParams{
@@ -85,7 +136,7 @@ func (c *LiveStripeClient) CreatePaymentIntent(_ context.Context, params Payment
 		Description: stripe.String(params.Description),
 	})
 	if err != nil {
-		return PaymentIntentResult{}, fmt.Errorf("%s", stripeErrorMessage(err))
+		return PaymentIntentResult{}, classifyStripeError(err)
 	}
 
 	return PaymentIntentResult{

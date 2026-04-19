@@ -3,6 +3,7 @@ package payment
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -185,13 +186,33 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		Metadata:       metadata,
 	})
 	if err != nil {
-		// Record the failure — the invoice stays finalized.
+		// Categorise the error so ambiguous (5xx/timeout/network) outcomes are
+		// recorded as PaymentUnknown, not PaymentFailed. Retrying a failed-
+		// but-actually-succeeded charge would double-bill the customer; the
+		// reconciler resolves unknowns by querying Stripe later.
+		//
 		// Dunning is NOT started here. With Confirm:true + OffSession:true,
-		// Stripe creates the PI even on decline and sends a payment_intent.payment_failed
-		// webhook, which triggers dunning via handlePaymentFailed().
-		// Starting dunning here would cause duplicate runs.
-		_, _ = s.invoices.UpdatePayment(ctx, tenantID, inv.ID, domain.PaymentFailed, "", err.Error(), nil)
-		return domain.Invoice{}, fmt.Errorf("payment failed: %s", err.Error())
+		// Stripe creates the PI even on decline and sends
+		// payment_intent.payment_failed, which triggers dunning via
+		// handlePaymentFailed(). Starting dunning here would duplicate.
+		var pe *PaymentError
+		if !errors.As(err, &pe) {
+			pe = &PaymentError{Message: err.Error(), Unknown: true}
+		}
+
+		status := domain.PaymentFailed
+		verb := "payment failed"
+		if pe.Unknown {
+			status = domain.PaymentUnknown
+			verb = "payment state unknown"
+			slog.Warn("payment intent outcome unknown — reconciler will resolve",
+				"invoice_id", inv.ID,
+				"stripe_payment_intent_id", pe.PaymentIntentID,
+				"error", pe.Message,
+			)
+		}
+		_, _ = s.invoices.UpdatePayment(ctx, tenantID, inv.ID, status, pe.PaymentIntentID, pe.Message, nil)
+		return domain.Invoice{}, fmt.Errorf("%s: %s", verb, pe.Message)
 	}
 
 	slog.Info("payment intent created",

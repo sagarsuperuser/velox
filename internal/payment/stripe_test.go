@@ -17,13 +17,17 @@ import (
 type mockStripeClient struct {
 	lastParams PaymentIntentParams
 	shouldFail bool
+	failErr    error // when set, overrides the default card_declined failure
 	piID       string
 }
 
 func (m *mockStripeClient) CreatePaymentIntent(_ context.Context, params PaymentIntentParams) (PaymentIntentResult, error) {
 	m.lastParams = params
 	if m.shouldFail {
-		return PaymentIntentResult{}, fmt.Errorf("card_declined")
+		if m.failErr != nil {
+			return PaymentIntentResult{}, m.failErr
+		}
+		return PaymentIntentResult{}, &PaymentError{Message: "card_declined", DeclineCode: "card_declined"}
 	}
 	return PaymentIntentResult{
 		ID:           m.piID,
@@ -217,10 +221,66 @@ func TestChargeInvoice_StripeFailure(t *testing.T) {
 		t.Fatal("expected error when Stripe fails")
 	}
 
-	// Invoice should be marked as failed
+	// Definitive failure (card decline) → PaymentFailed.
 	updated := invoices.invoices["inv_1"]
 	if updated.PaymentStatus != domain.PaymentFailed {
 		t.Errorf("payment_status: got %q, want failed", updated.PaymentStatus)
+	}
+}
+
+func TestChargeInvoice_UnknownOutcome(t *testing.T) {
+	// Simulates a 5xx / timeout / network drop: the charge may or may not
+	// have been processed by Stripe. Marking the invoice failed and retrying
+	// here would double-bill the customer.
+	client := &mockStripeClient{
+		shouldFail: true,
+		failErr: &PaymentError{
+			Message:         "stripe 500: upstream timeout",
+			PaymentIntentID: "pi_partial_999",
+			Unknown:         true,
+		},
+	}
+	invoices := newMockInvoiceUpdater()
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized,
+		AmountDueCents: 5000, Currency: "USD",
+	}
+
+	stripe := NewStripe(client, invoices, newMockWebhookStore(), nil)
+	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe")
+	if err == nil {
+		t.Fatal("expected error on ambiguous Stripe outcome")
+	}
+
+	updated := invoices.invoices["inv_1"]
+	if updated.PaymentStatus != domain.PaymentUnknown {
+		t.Errorf("payment_status: got %q, want unknown", updated.PaymentStatus)
+	}
+	if updated.StripePaymentIntentID != "pi_partial_999" {
+		t.Errorf("stripe_pi: got %q, want pi_partial_999 (preserved from ambiguous error so reconciler can query Stripe)", updated.StripePaymentIntentID)
+	}
+	if updated.LastPaymentError == "" {
+		t.Error("last_payment_error should be recorded for operator visibility")
+	}
+}
+
+func TestChargeInvoice_PlainErrorTreatedAsUnknown(t *testing.T) {
+	// Any error that isn't a typed *PaymentError must fail safe to Unknown —
+	// we cannot prove the request never reached Stripe.
+	client := &mockStripeClient{shouldFail: true, failErr: fmt.Errorf("context deadline exceeded")}
+	invoices := newMockInvoiceUpdater()
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized,
+		AmountDueCents: 5000, Currency: "USD",
+	}
+
+	stripe := NewStripe(client, invoices, newMockWebhookStore(), nil)
+	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := invoices.invoices["inv_1"].PaymentStatus; got != domain.PaymentUnknown {
+		t.Errorf("payment_status: got %q, want unknown (untyped errors must fail safe)", got)
 	}
 }
 
