@@ -104,10 +104,78 @@ func TestFromError_Nil(t *testing.T) {
 	}
 }
 
+func TestFromError_RequiredCarriesField(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", nil)
+
+	FromError(rec, req, errs.Required("external_id"), "customer")
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status: got %d, want 422", rec.Code)
+	}
+	body := decodeError(t, rec)
+	if body.Param != "external_id" {
+		t.Errorf("param: got %q, want external_id", body.Param)
+	}
+	if body.Message != "external_id is required" {
+		t.Errorf("message: got %q", body.Message)
+	}
+}
+
+func TestFromError_InvalidCarriesField(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", nil)
+
+	FromError(rec, req, errs.Invalid("company_email", "must contain @ and a domain"), "settings")
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status: got %d, want 422", rec.Code)
+	}
+	body := decodeError(t, rec)
+	if body.Param != "company_email" {
+		t.Errorf("param: got %q, want company_email", body.Param)
+	}
+	if body.Message != "must contain @ and a domain" {
+		t.Errorf("message: got %q", body.Message)
+	}
+}
+
+func TestFromError_AlreadyExistsCarriesField(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", nil)
+
+	FromError(rec, req, errs.AlreadyExists("code", "plan code \"acme-pro\" already exists"), "plan")
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status: got %d, want 409", rec.Code)
+	}
+	body := decodeError(t, rec)
+	if body.Param != "code" {
+		t.Errorf("param: got %q, want code", body.Param)
+	}
+}
+
+func TestFromError_WrappedFieldErrorPreservesField(t *testing.T) {
+	// Handlers sometimes wrap service errors with context (fmt.Errorf("%w: ...")).
+	// Field extraction walks the chain via errors.As, so the field survives.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", nil)
+
+	inner := errs.Required("currency")
+	wrapped := fmt.Errorf("create customer: %w", inner)
+	FromError(rec, req, wrapped, "customer")
+
+	body := decodeError(t, rec)
+	if body.Param != "currency" {
+		t.Errorf("param: got %q, want currency (field should survive wrapping)", body.Param)
+	}
+}
+
 type errorResponse struct {
 	Type    string `json:"type"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Param   string `json:"param,omitempty"`
 }
 
 func decodeError(t *testing.T, rec *httptest.ResponseRecorder) errorResponse {

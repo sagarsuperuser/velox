@@ -62,6 +62,69 @@ func TestCode(t *testing.T) {
 	})
 }
 
+func TestRequired(t *testing.T) {
+	err := Required("external_id")
+	if err.Field != "external_id" {
+		t.Errorf("field: got %q", err.Field)
+	}
+	if err.Error() != "external_id is required" {
+		t.Errorf("message: got %q", err.Error())
+	}
+	if !errors.Is(err, ErrValidation) {
+		t.Error("Required should be an ErrValidation")
+	}
+}
+
+func TestInvalid(t *testing.T) {
+	err := Invalid("email", "must contain @")
+	if err.Field != "email" {
+		t.Errorf("field: got %q", err.Field)
+	}
+	if err.Error() != "must contain @" {
+		t.Errorf("message: got %q", err.Error())
+	}
+	if !errors.Is(err, ErrValidation) {
+		t.Error("Invalid should be an ErrValidation")
+	}
+}
+
+func TestAlreadyExists(t *testing.T) {
+	err := AlreadyExists("code", "plan code \"acme-pro\" already exists")
+	if err.Field != "code" {
+		t.Errorf("field: got %q", err.Field)
+	}
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Error("AlreadyExists should be an ErrAlreadyExists")
+	}
+}
+
+func TestField(t *testing.T) {
+	t.Run("extracts field from DomainError", func(t *testing.T) {
+		if Field(Required("foo")) != "foo" {
+			t.Errorf("got %q, want foo", Field(Required("foo")))
+		}
+	})
+
+	t.Run("extracts field from wrapped DomainError", func(t *testing.T) {
+		err := fmt.Errorf("outer: %w", Required("bar"))
+		if Field(err) != "bar" {
+			t.Errorf("got %q, want bar", Field(err))
+		}
+	})
+
+	t.Run("returns empty for plain error", func(t *testing.T) {
+		if Field(fmt.Errorf("plain")) != "" {
+			t.Error("plain error should have no field")
+		}
+	})
+
+	t.Run("returns empty for nil", func(t *testing.T) {
+		if Field(nil) != "" {
+			t.Error("nil should have no field")
+		}
+	})
+}
+
 func TestSentinelErrors(t *testing.T) {
 	tests := []struct {
 		name     string
