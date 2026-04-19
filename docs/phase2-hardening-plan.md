@@ -38,7 +38,7 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 ## Wave 1 — Security
 
-### [SEC-1] Close RLS bypass on 3 tables — M → unblocks W2
+### [SEC-1] Close RLS bypass on 3 tables — M → unblocks W2 — ✅ DONE
 
 **Problem:** `tenant_settings`, `idempotency_keys`, `payment_update_tokens` have no RLS; code queries via `db.Pool` directly. Cross-tenant leakage if pool role widens.
 
@@ -53,6 +53,8 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 **Tests:** unit test that TxTenant(A) can't read tenant B's rows; integration test end-to-end.
 
 **Rollout:** single commit; migration takes <1s (just ALTER + CREATE POLICY).
+
+**Resolution (pre-existing, verified 2026-04-19):** Migration `0006_close_rls_bypass.up.sql` enables RLS + FORCE + standard `tenant_id = current_setting('app.tenant_id', true)` policy on all three tables. Callers routed through `db.BeginTx(ctx, postgres.TxTenant, tenantID)`: `tenant/settings.go:62,83,115,174,201`; `middleware/idempotency.go:152,180`; `payment/token.go:48,109`. `dunning.ListTenantIDs` intentionally remains on `TxBypass` with an explanatory comment.
 
 ### [SEC-2] Hash webhook endpoint secrets — L
 
@@ -73,7 +75,7 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 ## Wave 2 — Correctness (silent money bugs)
 
-### [COR-1] Wire coupons → `invoice.discount_cents` — M → COR-2
+### [COR-1] Wire coupons → `invoice.discount_cents` — M → COR-2 — ✅ DONE
 
 **Problem:** Coupon redemptions written; `invoice.discount_cents` never populated.
 
@@ -87,7 +89,9 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 **Tests:** percentage coupon on simple invoice; fixed-amount coupon; coupon exceeds subtotal (clamp to subtotal); expired coupon ignored; proration invoice with coupon.
 
-### [COR-2] Wire tax at finalize & proration — M — COR-1→
+**Resolution (pre-existing, verified 2026-04-19):** `coupon.Service.ApplyToInvoice(ctx, tenantID, subscriptionID, planID, subtotalCents)` at `coupon/service.go:194`. Billing engine calls it at `engine.go:606` before computing totals, clamping the discount to the subtotal. Percentage + fixed-amount + clamp-at-subtotal + expiry + inactive-coupon paths are all covered.
+
+### [COR-2] Wire tax at finalize & proration — M — COR-1→ — ✅ DONE
 
 **Problem:** `tax.Calculator` exists; never called. `invoice.tax_amount_cents` always 0.
 
@@ -99,7 +103,9 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 **Tests:** exclusive pricing; inclusive pricing; 0% jurisdiction; proration with VAT; VAT reverse-charge path (future).
 
-### [COR-3] Plan change "at period end" becomes real — M
+**Resolution (pre-existing, verified 2026-04-19):** `tax.Calculator` wired in `engine.go:42` and called via `ApplyTaxToLineItems` at `engine.go:614`, after coupon discount and before total. Migration `0008` added `tenant_settings.tax_inclusive`; tax-inclusive mode back-calculates net subtotal/discount from gross inputs (see `engine.go:615-619`). `customer_billing_profiles.tax_id` exists in schema. VAT reverse-charge path is the "future" bullet and remains deferred.
+
+### [COR-3] Plan change "at period end" becomes real — M — ✅ DONE
 
 **Problem:** `subscription/service.go:226-238`: `EffectiveAt` set to period end but `sub.PlanID = NewPlanID` is written immediately — API lies.
 
@@ -111,6 +117,8 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 - Idempotent: changing pending plan twice just overwrites.
 
 **Tests:** scheduled downgrade applies on next cycle; cancel-pending restores state; immediate change still works; mid-period cancel clears pending.
+
+**Resolution (pre-existing, verified 2026-04-19):** Migration `0007` adds `subscriptions.pending_plan_id` + `pending_plan_effective_at`. `subscription/service.go:228` writes pending fields when `immediate=false` without touching `PlanID`. Cycle-boundary apply is `engine.ApplyPendingPlanAtomic` at `engine.go:407`. Cancel endpoint `DELETE /subscriptions/{id}/pending-change` wired at `subscription/handler.go:149`. Idempotent.
 
 ### [COR-4] Three concurrency races (3 commits × S each)
 
@@ -126,7 +134,7 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 **Tests (each):** two concurrent goroutines → exactly one state transition, one event.
 
-### [COR-5] Fix truncating division in unit-amount + Stripe tax rate — S
+### [COR-5] Fix truncating division in unit-amount + Stripe tax rate — S — ✅ DONE
 
 **Problem:** `billing/engine.go:322-324` and `tax/stripe.go:98` use int division — cents lost.
 
@@ -134,13 +142,17 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 **Tests:** 3 × $0.33 = $0.99 not $1.01; boundary cases.
 
-### [COR-6] Idempotency middleware caches 4xx & 5xx — S
+**Resolution (2026-04-19):** `billing/engine.go:316` (tax per-line) and `engine.go:561` (unit-amount blended display) were already on `money.RoundHalfToEven`; `tax/stripe.go:102` (effective-rate derivation) too. The residual truncation was in the preview path — `billing/preview.go:105` still used `amount / quantity` for display. Fixed to `money.RoundHalfToEven(amount, quantity)` matching the finalize-side math, so the preview never under-displays the blended unit price for graduated/tiered plans (a systematic downward bias that would otherwise diverge from the actual invoice).
+
+### [COR-6] Idempotency middleware caches 4xx & 5xx — S — ✅ DONE
 
 **Problem:** `middleware/idempotency.go:109` only stores 2xx; transient 500 retry re-runs side effects.
 
 **Target:** cache all responses except 409/422 (those signal "this isn't the real first response"). 24h TTL already in `expires_at`. Matches Stripe semantics.
 
 **Tests:** retry after 500 replays 500; body fingerprint mismatch returns 422.
+
+**Resolution (pre-existing, verified 2026-04-19):** `api/middleware/idempotency.go:119-124` caches every response except `409 Conflict` and `422 Unprocessable Entity` (the two codes that signal "this isn't the real first response"). 24h TTL enforced via `expires_at`. Plan doc line reference (109) was from an earlier revision.
 
 ---
 
@@ -267,9 +279,11 @@ On `Issue`, call `invoice.ApplyCreditNote` (method exists). Clamp at invoice tot
 
 `/v1/me/payment-methods` via portal session. Stripe SetupIntent for 3DS. Endpoints: list, set default, remove. Wire to `web-v2`.
 
-### [FEAT-4] Price overrides consumed at rating — S
+### [FEAT-4] Price overrides consumed at rating — S — ✅ DONE
 
 `billing.engine` rating helper: look up `customer_price_overrides` first, fall back to plan default. Unit test with override + without.
+
+**Resolution (pre-existing, verified 2026-04-19):** `e.pricing.GetOverride(ctx, tenantID, customerID, ratingRuleVersionID)` is called at `billing/engine.go:544` (finalize path) and `engine.go:94` (preview path) before `ComputeAmountCents`. When an active override is found, `override.ToRatingRule()` replaces the default rule; otherwise the default is used. `Pricing` interface defined at `engine.go:99` requires the `GetOverride` method.
 
 ### [FEAT-5] Multi-item subscriptions — L (Phase 3)
 
@@ -413,37 +427,37 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 
 ## Recommended commit order
 
-1. **SEC-1 + HYG bundle** — security wave, one migration
-2. **COR-4** — three concurrency fixes (3 commits, quick wins) ✓ done
-3. **COR-5** — rounding (trivial)
-4. **COR-6** — idempotency 4xx/5xx caching
+1. **SEC-1 + HYG bundle** — security wave, one migration ✅
+2. **COR-4** — three concurrency fixes (3 commits, quick wins) ✅
+3. **COR-5** — rounding (trivial) ✅
+4. **COR-6** — idempotency 4xx/5xx caching ✅
 5. **UI-1** — skeleton table rows (fast win, visible)
 6. **UI-2** — empty states with CTAs (fixes ApiKeys inversion)
-7. **COR-1** — coupons → invoice discount
-8. **COR-2** — tax at finalize + proration
+7. **COR-1** — coupons → invoice discount ✅
+8. **COR-2** — tax at finalize + proration ✅
 9. **UI-3** — URL state persistence
-10. **COR-3** — real at-period-end plan change
+10. **COR-3** — real at-period-end plan change ✅
 11. **UI-4** — form API error injection (+ any backend error-envelope cleanup)
-12. **FEAT-1** — credit note → amount_due
+12. **FEAT-1** — credit note → amount_due ✅
 13. **UI-5** — expiry-urgency badge extended
 14. **UI-6** — shared primitives (CopyButton, BackLink, CustomerDetail hierarchy)
 15. **SEC-2 Phase A** — webhook secret dual-write
-16. **RES-4** — inbound dedup tightened
-17. **RES-3** — ChargeInvoice unknown-state
-18. **RES-5** — audit fail-closed opt-in
-19. **RES-7** — dunning breaker
-20. **RES-8** — PII scrubbing
-21. **HYG-6** — scheduled cleanup
-22. **HYG-5** — audit_log append-only trigger
-23. **HYG-1** — customers.email NOT NULL
-24. **HYG-2** — partial UNIQUE on live subscriptions
-25. **HYG-3** — tax_rate_bp widened to BIGINT
-26. **HYG-4** — explicit FK ON DELETE RESTRICT across schema
+16. **RES-4** — inbound dedup tightened ✅
+17. **RES-3** — ChargeInvoice unknown-state ✅
+18. **RES-5** — audit fail-closed opt-in ✅
+19. **RES-7** — dunning breaker ✅
+20. **RES-8** — PII scrubbing ✅
+21. **HYG-6** — scheduled cleanup ✅
+22. **HYG-5** — audit_log append-only trigger ✅
+23. **HYG-1** — customers.email NOT NULL ✅
+24. **HYG-2** — partial UNIQUE on live subscriptions ✅
+25. **HYG-3** — tax_rate_bp widened to BIGINT ✅
+26. **HYG-4** — explicit FK ON DELETE RESTRICT across schema ✅
 27. **RES-1** — transactional outbox (L) ✅
 28. **RES-2** — scheduler advisory lock
 29. **RES-6** — email outbox
 30. **SEC-2 Phase B/C** — cutover + drop plaintext
-31. **FEAT-2, FEAT-3, FEAT-4, FEAT-7, FEAT-8** — feature completeness
+31. **FEAT-2, FEAT-3, FEAT-4 ✅, FEAT-7, FEAT-8** — feature completeness
 32. **FEAT-6** — coupon stacking
 33. **FEAT-5** — multi-item subs (Phase 3)
 
