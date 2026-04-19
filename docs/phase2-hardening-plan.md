@@ -191,7 +191,7 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 **Resolution:** `payment/webhook_store.go:23-76` already implements the atomic insert — ON CONFLICT DO NOTHING RETURNING id inside TxTenant, `sql.ErrNoRows` → `isNew=false`. `stripe.go:210-219` acts only on `isNew=true`. UNIQUE (tenant_id, stripe_event_id) exists at `migrate/sql/0001_schema.up.sql:597`. Added concurrent-delivery integration test (`webhook_store_integration_test.go`) — 16 racers, exactly one insert wins, N-1 see `isNew=false`, no errors, one row persisted. Stable under `-race`.
 
-### [RES-5] Audit log fail-closed opt-in — S
+### [RES-5] Audit log fail-closed opt-in — S — ✅ DONE
 
 **Problem:** `middleware/audit.go:195-236`: all failures log-and-swallow.
 
@@ -202,6 +202,10 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 - SOC-2-bound tenants opt in.
 
 **Tests:** fail-open default → request succeeds, metric incremented; fail-closed → 503.
+
+**Resolution:** Migration 0010 adds `tenant_settings.audit_fail_closed` (default FALSE). `domain.TenantSettings.AuditFailClosed` wired through `SettingsStore.Get`/`Upsert`. New `SettingsStore.IsAuditFailClosed` hot-path lookup used by the audit middleware. Middleware rewritten to buffer the handler response (new `bufferedResponse`); on audit write failure it emits `velox_audit_write_errors_total{tenant_id}` (replaces the unlabeled `velox_audit_failures_total`) and branches on `IsAuditFailClosed`:
+- fail-open: logs + flushes handler response (availability preserved).
+- fail-closed: returns `503 {"error":{"code":"audit_error"...}}`; handler headers/body dropped. A settings-lookup error fails **safe to closed** so a broken lookup can't silently downgrade a SOC-2 tenant. Write path refactored behind a narrow `auditWriter` interface for unit-testability; `postgresAuditWriter` is the production impl. Also consolidated the duplicate counter in `internal/audit/audit.go` onto the same labeled metric. Tests (`audit_test.go`) cover success, fail-open + metric, fail-closed → 503, settings-lookup-error fails-safe-closed, non-2xx skip, GET bypass. Full unit suite green.
 
 ### [RES-6] Email delivery outbox + DLQ — M — RES-1→
 
