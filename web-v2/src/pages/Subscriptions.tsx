@@ -59,6 +59,7 @@ import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Repeat } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
+import { ExpiryBadge } from '@/components/ExpiryBadge'
 
 const createSubSchema = z.object({
   code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
@@ -371,7 +372,10 @@ export default function SubscriptionsPage() {
                         {sub.code}
                       </TableCell>
                       <TableCell>
-                        <Badge variant={statusBadgeVariant(sub.status)}>{sub.status}</Badge>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={statusBadgeVariant(sub.status)}>{sub.status}</Badge>
+                          <ExpiryBadge expiresAt={sub.trial_end_at} label="Trial ends" warningDays={3} />
+                        </div>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {sub.next_billing_at ? formatDate(sub.next_billing_at) : '\u2014'}

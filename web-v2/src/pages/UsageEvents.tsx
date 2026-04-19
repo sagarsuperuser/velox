@@ -7,7 +7,6 @@ import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -27,17 +26,23 @@ import {
   PaginationPrevious,
 } from '@/components/ui/pagination'
 
-import { Download, Loader2, Activity, Hash, Gauge, Users } from 'lucide-react'
+import { Download, Activity, Hash, Gauge, Users } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
+import { TableSkeleton } from '@/components/ui/TableSkeleton'
+import { useUrlState } from '@/hooks/useUrlState'
 
 const PAGE_SIZE = 25
 
 export default function UsageEventsPage() {
-  const [filterCustomer, setFilterCustomer] = useState('')
-  const [filterMeter, setFilterMeter] = useState('')
-  const [filterFrom, setFilterFrom] = useState('')
-  const [filterTo, setFilterTo] = useState('')
-  const [page, setPage] = useState(1)
+  const [urlState, setUrlState] = useUrlState({
+    customer: '',
+    meter: '',
+    from: '',
+    to: '',
+    page: '1',
+  })
+  const { customer: filterCustomer, meter: filterMeter, from: filterFrom, to: filterTo } = urlState
+  const page = Math.max(1, parseInt(urlState.page) || 1)
   const [events, setEvents] = useState<UsageEvent[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -161,7 +166,7 @@ export default function UsageEventsPage() {
       <div className="flex items-center gap-3 mt-6">
         <select
           value={filterCustomer}
-          onChange={(e) => { setFilterCustomer(e.target.value); setPage(1) }}
+          onChange={(e) => setUrlState({ customer: e.target.value, page: '1' })}
           className="flex h-9 w-52 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <option value="">All customers</option>
@@ -171,7 +176,7 @@ export default function UsageEventsPage() {
         </select>
         <select
           value={filterMeter}
-          onChange={(e) => { setFilterMeter(e.target.value); setPage(1) }}
+          onChange={(e) => setUrlState({ meter: e.target.value, page: '1' })}
           className="flex h-9 w-52 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <option value="">All meters</option>
@@ -181,13 +186,13 @@ export default function UsageEventsPage() {
         </select>
         <DatePicker
           value={filterFrom}
-          onChange={v => { setFilterFrom(v); setPage(1) }}
+          onChange={v => setUrlState({ from: v, page: '1' })}
           placeholder="From date"
           className="w-44"
         />
         <DatePicker
           value={filterTo}
-          onChange={v => { setFilterTo(v); setPage(1) }}
+          onChange={v => setUrlState({ to: v, page: '1' })}
           placeholder="To date"
           className="w-44"
         />
@@ -204,8 +209,8 @@ export default function UsageEventsPage() {
         </Card>
       ) : loading ? (
         <Card className="mt-6">
-          <CardContent className="p-8 flex justify-center">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          <CardContent className="p-0">
+            <TableSkeleton columns={4} />
           </CardContent>
         </Card>
       ) : events.length === 0 ? (
@@ -304,7 +309,7 @@ export default function UsageEventsPage() {
                     <PaginationContent>
                       <PaginationItem>
                         <PaginationPrevious
-                          onClick={() => setPage(p => Math.max(1, p - 1))}
+                          onClick={() => setUrlState({ page: String(Math.max(1, page - 1)) })}
                           className={cn(page <= 1 && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>
@@ -322,7 +327,7 @@ export default function UsageEventsPage() {
                         return (
                           <PaginationItem key={pageNum}>
                             <PaginationLink
-                              onClick={() => setPage(pageNum)}
+                              onClick={() => setUrlState({ page: String(pageNum) })}
                               isActive={page === pageNum}
                             >
                               {pageNum}
@@ -332,7 +337,7 @@ export default function UsageEventsPage() {
                       })}
                       <PaginationItem>
                         <PaginationNext
-                          onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                          onClick={() => setUrlState({ page: String(Math.min(totalPages, page + 1)) })}
                           className={cn(page >= totalPages && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>

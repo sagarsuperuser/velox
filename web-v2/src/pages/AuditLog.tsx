@@ -4,6 +4,8 @@ import { api, formatDateTime } from '@/lib/api'
 import type { AuditEntry } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
+import { EmptyState } from '@/components/EmptyState'
+import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
@@ -21,7 +23,7 @@ import {
 } from '@/components/ui/pagination'
 import { FeedSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Download, ChevronRight } from 'lucide-react'
+import { Download, ChevronRight, History } from 'lucide-react'
 
 const PAGE_SIZE = 50
 
@@ -120,14 +122,25 @@ export default function AuditLogPage() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [resourceType, setResourceType] = useState('')
-  const [action, setAction] = useState('')
-  const [actorFilter, setActorFilter] = useState('')
-  const [resourceIdFilter, setResourceIdFilter] = useState('')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [page, setPage] = useState(1)
+  const [urlState, setUrlState] = useUrlState({
+    resource_type: '',
+    action: '',
+    actor: '',
+    resource_id: '',
+    date_from: '',
+    date_to: '',
+    page: '1',
+  })
+  const {
+    resource_type: resourceType,
+    action,
+    actor: actorFilter,
+    resource_id: resourceIdFilter,
+    date_from: dateFrom,
+    date_to: dateTo,
+  } = urlState
+  const page = Math.max(1, parseInt(urlState.page) || 1)
 
   const loadEntries = useCallback(() => {
     setLoading(true)
@@ -197,7 +210,7 @@ export default function AuditLogPage() {
       <div className="flex flex-wrap items-center gap-3 mt-6">
         <select
           value={resourceType}
-          onChange={e => { setResourceType(e.target.value); setPage(1) }}
+          onChange={e => setUrlState({ resource_type: e.target.value, page: '1' })}
           className={cn(selectClass, 'w-44')}
         >
           <option value="">All resources</option>
@@ -214,7 +227,7 @@ export default function AuditLogPage() {
         </select>
         <select
           value={action}
-          onChange={e => { setAction(e.target.value); setPage(1) }}
+          onChange={e => setUrlState({ action: e.target.value, page: '1' })}
           className={cn(selectClass, 'w-44')}
         >
           <option value="">All actions</option>
@@ -237,25 +250,25 @@ export default function AuditLogPage() {
         </select>
         <Input
           value={actorFilter}
-          onChange={e => { setActorFilter(e.target.value); setPage(1) }}
+          onChange={e => setUrlState({ actor: e.target.value, page: '1' })}
           placeholder="Filter by actor..."
           className="w-40"
         />
         <Input
           value={resourceIdFilter}
-          onChange={e => { setResourceIdFilter(e.target.value); setPage(1) }}
+          onChange={e => setUrlState({ resource_id: e.target.value, page: '1' })}
           placeholder="Filter by resource ID..."
           className="w-44"
         />
         <DatePicker
           value={dateFrom}
-          onChange={v => { setDateFrom(v); setPage(1) }}
+          onChange={v => setUrlState({ date_from: v, page: '1' })}
           placeholder="From date"
           className="w-44"
         />
         <DatePicker
           value={dateTo}
-          onChange={v => { setDateTo(v); setPage(1) }}
+          onChange={v => setUrlState({ date_to: v, page: '1' })}
           placeholder="To date"
           className="w-44"
         />
@@ -263,9 +276,10 @@ export default function AuditLogPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              setResourceType(''); setAction(''); setActorFilter(''); setResourceIdFilter(''); setDateFrom(''); setDateTo(''); setPage(1)
-            }}
+            onClick={() => setUrlState({
+              resource_type: '', action: '', actor: '', resource_id: '',
+              date_from: '', date_to: '', page: '1',
+            })}
           >
             Clear all
           </Button>
@@ -285,10 +299,11 @@ export default function AuditLogPage() {
           ) : loading ? (
             <FeedSkeleton rows={10} />
           ) : entries.length === 0 ? (
-            <div className="p-12 text-center">
-              <p className="text-sm font-medium text-foreground">No audit entries</p>
-              <p className="text-sm text-muted-foreground mt-1">Actions will be recorded here automatically as you use the platform</p>
-            </div>
+            <EmptyState
+              icon={History}
+              title="No audit entries"
+              description="Actions will be recorded here automatically as you use the platform"
+            />
           ) : (
             <>
               <div>
@@ -395,7 +410,7 @@ export default function AuditLogPage() {
                     <PaginationContent>
                       <PaginationItem>
                         <PaginationPrevious
-                          onClick={() => setPage(p => Math.max(1, p - 1))}
+                          onClick={() => setUrlState({ page: String(Math.max(1, page - 1)) })}
                           className={cn(page <= 1 && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>
@@ -413,7 +428,7 @@ export default function AuditLogPage() {
                         return (
                           <PaginationItem key={pageNum}>
                             <PaginationLink
-                              onClick={() => setPage(pageNum)}
+                              onClick={() => setUrlState({ page: String(pageNum) })}
                               isActive={page === pageNum}
                             >
                               {pageNum}
@@ -423,7 +438,7 @@ export default function AuditLogPage() {
                       })}
                       <PaginationItem>
                         <PaginationNext
-                          onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                          onClick={() => setUrlState({ page: String(Math.min(totalPages, page + 1)) })}
                           className={cn(page >= totalPages && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>
