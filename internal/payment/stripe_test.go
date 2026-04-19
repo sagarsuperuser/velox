@@ -17,8 +17,9 @@ import (
 type mockStripeClient struct {
 	lastParams PaymentIntentParams
 	shouldFail bool
-	failErr    error // when set, overrides the default card_declined failure
+	failErr    error                          // when set, overrides the default card_declined failure
 	piID       string
+	piStates   map[string]PaymentIntentResult // reconciler lookups by PI ID
 }
 
 func (m *mockStripeClient) CreatePaymentIntent(_ context.Context, params PaymentIntentParams) (PaymentIntentResult, error) {
@@ -38,6 +39,15 @@ func (m *mockStripeClient) CreatePaymentIntent(_ context.Context, params Payment
 
 func (m *mockStripeClient) CancelPaymentIntent(_ context.Context, _ string) error {
 	return nil
+}
+
+func (m *mockStripeClient) GetPaymentIntent(_ context.Context, piID string) (PaymentIntentResult, error) {
+	if m.piStates != nil {
+		if res, ok := m.piStates[piID]; ok {
+			return res, nil
+		}
+	}
+	return PaymentIntentResult{ID: piID, Status: "requires_payment_method"}, nil
 }
 
 type mockInvoiceUpdater struct {

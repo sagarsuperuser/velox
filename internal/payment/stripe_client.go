@@ -186,3 +186,18 @@ func (c *LiveStripeClient) CancelPaymentIntent(_ context.Context, paymentIntentI
 	}
 	return nil
 }
+
+// GetPaymentIntent fetches the current state of a PaymentIntent. Used by the
+// reconciler to resolve PaymentUnknown invoices — Stripe is the source of
+// truth for whether a charge actually succeeded.
+func (c *LiveStripeClient) GetPaymentIntent(_ context.Context, paymentIntentID string) (PaymentIntentResult, error) {
+	pi, err := paymentintent.Get(paymentIntentID, nil)
+	if err != nil {
+		return PaymentIntentResult{}, classifyStripeError(err)
+	}
+	return PaymentIntentResult{
+		ID:           pi.ID,
+		Status:       string(pi.Status),
+		ClientSecret: pi.ClientSecret,
+	}, nil
+}

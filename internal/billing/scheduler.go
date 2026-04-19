@@ -35,18 +35,25 @@ type TokenCleaner interface {
 	Cleanup(ctx context.Context) (int, error)
 }
 
+// PaymentReconciler resolves invoices in the PaymentUnknown state by querying
+// Stripe for the authoritative PaymentIntent outcome. See payment.Reconciler.
+type PaymentReconciler interface {
+	Run(ctx context.Context, limit int) (int, []error)
+}
+
 // Scheduler runs the billing cycle engine and dunning processor on a periodic interval.
 type Scheduler struct {
-	engine       *Engine
-	dunning      DunningProcessor
-	tenants      TenantLister
-	credits      CreditExpirer
-	reminders    InvoiceReminder
-	tokenCleaner TokenCleaner
-	interval     time.Duration
-	batch        int
-	onRun        func() // called after each complete scheduler tick (for health tracking)
-	clock        clock.Clock
+	engine            *Engine
+	dunning           DunningProcessor
+	tenants           TenantLister
+	credits           CreditExpirer
+	reminders         InvoiceReminder
+	tokenCleaner      TokenCleaner
+	paymentReconciler PaymentReconciler
+	interval          time.Duration
+	batch             int
+	onRun             func() // called after each complete scheduler tick (for health tracking)
+	clock             clock.Clock
 }
 
 // Interval returns the configured scheduler interval.
@@ -77,6 +84,14 @@ func (s *Scheduler) SetReminders(reminders InvoiceReminder) {
 // SetTokenCleaner sets the token cleanup dependency for expired payment update tokens.
 func (s *Scheduler) SetTokenCleaner(cleaner TokenCleaner) {
 	s.tokenCleaner = cleaner
+}
+
+// SetPaymentReconciler wires a resolver for PaymentUnknown invoices. Runs
+// each tick after auto-charge retries, before the billing cycle generates
+// new invoices, so a charge stuck in the unknown state can clear before
+// we risk issuing a duplicate.
+func (s *Scheduler) SetPaymentReconciler(r PaymentReconciler) {
+	s.paymentReconciler = r
 }
 
 // SetOnRun registers a callback invoked after each complete scheduler tick.
@@ -110,6 +125,19 @@ func (s *Scheduler) Start(ctx context.Context) {
 
 func (s *Scheduler) runOnce(ctx context.Context) {
 	start := time.Now()
+
+	// 0a. Reconcile PaymentUnknown invoices against Stripe. Runs before
+	// auto-charge retry so any stuck-unknown charge that actually succeeded
+	// is marked paid before the retry path considers re-charging.
+	if s.paymentReconciler != nil {
+		resolved, rErrs := s.paymentReconciler.Run(ctx, s.batch)
+		if resolved > 0 {
+			slog.Info("payment reconciler resolved unknowns", "count", resolved)
+		}
+		for _, e := range rErrs {
+			slog.Error("payment reconciler error", "error", e)
+		}
+	}
 
 	// 0. Retry pending auto-charges from previous cycles
 	if chargeRetried, chargeErrs := s.engine.RetryPendingCharges(ctx, s.batch); chargeRetried > 0 || len(chargeErrs) > 0 {
