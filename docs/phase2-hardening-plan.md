@@ -348,7 +348,7 @@ Audit of `web-v2/` against Stripe/Linear/Vercel produced 38 items across 6 theme
 - Destructive actions require explicit confirmation (AlertDialog is already consistent — keep it that way).
 - Match existing dark-mode quality (oklch palette in `web-v2/src/index.css:101-148`) — the UI bar already set by Dashboard/Analytics skeletons + CMD+K palette.
 
-### [UI-1] Skeleton table rows across list pages — S
+### [UI-1] Skeleton table rows across list pages — S — ✅ DONE
 
 **Problem:** List pages (`Customers.tsx:114-120`, `Invoices.tsx:79-82`, `Subscriptions.tsx`, `ApiKeys.tsx:104-107`, `Coupons.tsx`, `Credits.tsx`, `CreditNotes.tsx`, `Pricing.tsx`, `Dunning.tsx`, `Webhooks.tsx`, `AuditLog.tsx`) render a centered `<Loader2 animate-spin />` while the initial fetch is pending. Dashboard + Analytics already use `CardSkeleton.tsx`. Inconsistent loading UX + layout shift when rows arrive.
 
@@ -359,7 +359,9 @@ Audit of `web-v2/` against Stripe/Linear/Vercel produced 38 items across 6 theme
 
 **Tests:** visual regression via Playwright screenshot on each list page's loading state (deferred — add to test strategy when Playwright lands).
 
-### [UI-2] Empty-state screens with primary CTA — M
+**✅ Resolution (commit ea8855a + earlier):** `TableSkeleton`, `FeedSkeleton`, and `CardListSkeleton` primitives live in `web-v2/src/components/ui/TableSkeleton.tsx`. Every list page now uses one for initial load — final gap was `UsageEvents.tsx` which still rendered a spinner; swapped to `TableSkeleton columns={4}` this wave. Spinner is reserved for explicit action states (form submit, CSV export).
+
+### [UI-2] Empty-state screens with primary CTA — M — ✅ DONE
 
 **Problem:** Zero list pages render a "no results" screen. If the tenant has no invoices, `Invoices.tsx:114` just shows an empty `<TableBody>`. Worse: `ApiKeys.tsx:135-140` *hides* the "Create API Key" button when the list is empty — exactly the inverse of what the user needs. `Coupons.tsx:92`, `Subscriptions.tsx:139`, `Customers.tsx:150` have the same no-content-no-guidance issue.
 
@@ -371,7 +373,9 @@ Audit of `web-v2/` against Stripe/Linear/Vercel produced 38 items across 6 theme
 
 **Tests:** snapshot test per list page with empty and non-empty data sets.
 
-### [UI-3] Persist filter/sort/page to URL query params — M
+**✅ Resolution (commit ea8855a + earlier):** Shared `web-v2/src/components/EmptyState.tsx` (icon + title + description + action + secondaryAction) wired into every list page. `ApiKeys.tsx` inversion fixed — "Create API Key" button is always visible, and the empty state owns the primary CTA. Last gap was the hand-rolled empty div on `AuditLog.tsx`; swapped to `<EmptyState icon={History} />` this wave.
+
+### [UI-3] Persist filter/sort/page to URL query params — M — ✅ DONE
 
 **Problem:** `Customers.tsx:106-112`, `Invoices.tsx:71-77`, `Subscriptions.tsx:116-122`, `UsageEvents.tsx`, `AuditLog.tsx` all build query params for their fetch calls but never push them into `location.search`. Refresh loses everything; URLs aren't shareable; back button doesn't restore table state. Stripe / Linear all persist.
 
@@ -383,7 +387,9 @@ Audit of `web-v2/` against Stripe/Linear/Vercel produced 38 items across 6 theme
 
 **Tests:** e2e: apply filter → reload → filter still applied; share URL between two tabs → same results.
 
-### [UI-4] Inject API errors into form fields — M
+**✅ Resolution (commit ea8855a + earlier):** `useUrlState<T>(defaults)` hook at `web-v2/src/hooks/useUrlState.ts` — typed wrapper over `useSearchParams()` that strips default/empty values from the URL and uses `replace:true` so rapid keystrokes don't pollute the back stack. Adopted on Customers, Invoices, Subscriptions, Plans, Meters, Coupons, Credits, CreditNotes, ApiKeys. Final gaps — `UsageEvents.tsx` and `AuditLog.tsx` — converted this wave (customer/meter/from/to/page and resource_type/action/actor/resource_id/date_from/date_to/page respectively). Setters reset `page='1'` on any filter change to avoid empty-result-page surprise.
+
+### [UI-4] Inject API errors into form fields — M — ✅ DONE
 
 **Problem:** On create/edit, API errors (e.g., `409 Conflict: plan code already exists`, `422: coupon percent must be <= 100`) are surfaced only as `toast.error()`. The user sees a red toast but no hint *which* field is wrong. `Pricing.tsx` plan/meter/rule forms are worst offenders; `Customers.tsx`, `Subscriptions.tsx`, `Coupons.tsx` also affected.
 
@@ -395,7 +401,15 @@ Audit of `web-v2/` against Stripe/Linear/Vercel produced 38 items across 6 theme
 
 **Tests:** submit Pricing form with duplicate code → error appears under the code input, not a toast; submit Coupon with percent=120 → error appears under percent input.
 
-### [UI-5] Extend expiry-urgency badge pattern — S
+**✅ Resolution (commit 38a8617 + earlier):** Frontend `applyApiError` and `formErrors.ts` already consume `{error: {type, code, message, param, request_id}}` and call `form.setError(param, ...)` for field-scoped errors. Backend side, this wave closed the three handlers that were still hand-rolling divergent shapes:
+
+- `internal/billing/handler.go` — custom `writeError` returning `{error: code, message: ...}` replaced with `respond.NotFound` / `respond.InternalError` / `respond.FromError("subscription")`. `FromError` extracts `Field()` off `DomainError` so preview-time validation (e.g., `billing_setup_incomplete`) now highlights the right input.
+- `internal/payment/handler.go` — webhook `writeError` returning `{error: string}` replaced with `respond.BadRequest`. Also stopped echoing the raw `err.Error()` in the webhook's error-logged branch (was leaking internal failure text on webhook replays).
+- `internal/audit/handler.go` — hand-rolled `{error: "internal_error"}` replaced with `respond.InternalError` + `respond.List` for success.
+
+Every handler in `internal/*/handler.go` now emits the canonical envelope. Metrics auth middleware (`security.go`) intentionally keeps plain-text `http.Error` — Prometheus scrape targets don't parse JSON.
+
+### [UI-5] Extend expiry-urgency badge pattern — S — ✅ DONE
 
 **Problem:** `ApiKeys.tsx:82-88` has a well-crafted "expires in N days" urgency badge that turns amber at ≤7 days. The same pattern is absent on:
 - Invoices past due / approaching due (`InvoiceDetail.tsx`)
@@ -409,7 +423,9 @@ Audit of `web-v2/` against Stripe/Linear/Vercel produced 38 items across 6 theme
 
 **Tests:** component test for each threshold boundary (31d, 30d, 8d, 7d, 1d, 0d, -1d).
 
-### [UI-6] Extract shared UI primitives — S — (UI-1, UI-2 →)
+**✅ Resolution (commit ea8855a + earlier):** `web-v2/src/components/ExpiryBadge.tsx` implements the 4-tier color scale (expired=red, ≤warningDays=amber, ≤30d=outline, >30d=success). Applied to: InvoiceDetail due dates, SubscriptionDetail trial, Coupons list + detail, ApiKeys (original source). Last gap was the Subscriptions *list* — added inline next to the status badge with `label="Trial ends" warningDays={3}` this wave.
+
+### [UI-6] Extract shared UI primitives — S — (UI-1, UI-2 →) — ✅ DONE
 
 **Problem:** Three pages reimplement copy-to-clipboard inline (`CustomerDetail.tsx:35-45`, `InvoiceDetail.tsx:35-45`, `ApiKeys.tsx:337-340`). Breadcrumb back-links are hand-rolled on every detail page. `CustomerDetail.tsx:275-300` has five same-weight buttons with no visible primary.
 
@@ -419,6 +435,8 @@ Audit of `web-v2/` against Stripe/Linear/Vercel produced 38 items across 6 theme
 - `CustomerDetail.tsx:275-300`: reduce to one primary button (`Create Subscription`), demote the other four to secondary/ghost variants for clear visual hierarchy.
 
 **Tests:** component tests for CopyButton (clipboard mock) and BackLink (href rendering).
+
+**✅ Resolution (earlier waves):** `CopyButton.tsx` + `DetailBreadcrumb.tsx` primitives shipped and adopted on all detail pages. `CustomerDetail.tsx` action hierarchy reduced to primary Edit + destructive Archive (down from 5 same-weight buttons).
 
 ---
 
@@ -464,16 +482,16 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 2. **COR-4** — three concurrency fixes (3 commits, quick wins) ✅
 3. **COR-5** — rounding (trivial) ✅
 4. **COR-6** — idempotency 4xx/5xx caching ✅
-5. **UI-1** — skeleton table rows (fast win, visible)
-6. **UI-2** — empty states with CTAs (fixes ApiKeys inversion)
+5. **UI-1** — skeleton table rows (fast win, visible) ✅
+6. **UI-2** — empty states with CTAs (fixes ApiKeys inversion) ✅
 7. **COR-1** — coupons → invoice discount ✅
 8. **COR-2** — tax at finalize + proration ✅
-9. **UI-3** — URL state persistence
+9. **UI-3** — URL state persistence ✅
 10. **COR-3** — real at-period-end plan change ✅
-11. **UI-4** — form API error injection (+ any backend error-envelope cleanup)
+11. **UI-4** — form API error injection (+ any backend error-envelope cleanup) ✅
 12. **FEAT-1** — credit note → amount_due ✅
-13. **UI-5** — expiry-urgency badge extended
-14. **UI-6** — shared primitives (CopyButton, BackLink, CustomerDetail hierarchy)
+13. **UI-5** — expiry-urgency badge extended ✅
+14. **UI-6** — shared primitives (CopyButton, BackLink, CustomerDetail hierarchy) ✅
 15. **SEC-2 Phase A** — webhook secret dual-write
 16. **RES-4** — inbound dedup tightened ✅
 17. **RES-3** — ChargeInvoice unknown-state ✅
