@@ -15,6 +15,7 @@ cp .env.example .env
 # Edit .env — fill in:
 #   STRIPE_SECRET_KEY=sk_test_...
 #   STRIPE_WEBHOOK_SECRET=whsec_...  (from `stripe listen` output below)
+#   VELOX_BOOTSTRAP_TOKEN=...        (generate with: openssl rand -hex 32)
 ```
 
 ### Start everything (4 terminals)
@@ -23,7 +24,8 @@ cp .env.example .env
 make up                             # Starts Postgres + Redis
 
 # Terminal 2 — Backend API
-make dev                            # Runs migrations (2 total), starts server on :8080
+make dev                            # Runs migrations (3 total), starts server on :8080
+                                    # Log should show "using app database connection (RLS enforced)"
 
 # Terminal 3 — Frontend (web-v2 with shadcn/ui)
 cd web-v2 && npm install            # First time only
@@ -140,7 +142,7 @@ make dev
 ```bash
 make migrate-status
 ```
-- [ ] Verify: shows `version: 2, dirty: false` (2 consolidated migrations)
+- [ ] Verify: shows `version: 3, dirty: false` (3 migrations: schema, seed, tax cleanup)
 
 ### 3.2 Rollback (Staging Only — careful!)
 ```bash
@@ -149,7 +151,7 @@ DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
   go run ./cmd/velox migrate rollback
 make migrate-status                                     # Verify: version 1
 make migrate                                            # Re-apply
-make migrate-status                                     # Verify: version 2 again
+make migrate-status                                     # Verify: version 3 again
 ```
 - [ ] Verify: rollback reverts one migration
 - [ ] Verify: re-running `make migrate` re-applies cleanly
@@ -158,7 +160,7 @@ make migrate-status                                     # Verify: version 2 agai
 ```bash
 docker compose down -v && make up
 make dev                                                # Migrations run on boot
-make migrate-status                                     # Verify: version 2
+make migrate-status                                     # Verify: version 3
 ```
 - [ ] Verify: clean start with all tables created
 
@@ -178,13 +180,22 @@ make migrate-status                                     # Verify: version 2
 
 ---
 
-## FLOW 5: Expired API Key Rejection
+## FLOW 5: API Key Expiration
 
+### 5.1 UI Expiration Support
+- [ ] API Keys page > Create API Key > verify expiration presets: No expiration, 30 days, 90 days, 1 year, Custom
+- [ ] Select "Custom" > verify calendar date picker appears (same branded calendar as rest of app)
+- [ ] Create key with 30-day expiry > verify expiry date shown on key card
+- [ ] Verify: keys expiring within 7 days show yellow "Expires in Xd" badge
+- [ ] Verify: expired keys grouped in collapsed "expired keys" section (like revoked)
+
+### 5.2 Expired Key Rejection
 - [ ] Create an API key with `expires_at` set to 1 minute from now
 - [ ] Use the key immediately > verify 200 OK
 - [ ] Wait for expiry (or manually update DB: `UPDATE api_keys SET expires_at = NOW() - INTERVAL '1 hour' WHERE ...`)
 - [ ] Use the expired key > verify 401 Unauthorized
 - [ ] Verify error message says "api key expired"
+- [ ] Try logging in with expired key on Login page > verify: "This API key has expired" error
 
 ---
 
@@ -203,32 +214,48 @@ make migrate-status                                     # Verify: version 2
 
 ## FLOW 7: Bootstrap Lockdown
 
-- [ ] After initial bootstrap, POST /v1/bootstrap again
-- [ ] Verify: 403 Forbidden (bootstrap only works when no tenants exist)
-- [ ] Verify: error message "bootstrap not available: tenants already exist" or similar
+`VELOX_BOOTSTRAP_TOKEN` is required in ALL environments. Without it, the endpoint is disabled.
+
+### 7.1 No Token Configured
+- [ ] Start server without `VELOX_BOOTSTRAP_TOKEN`
+- [ ] `POST /v1/bootstrap` > verify: 403 `"bootstrap disabled — set VELOX_BOOTSTRAP_TOKEN env var to enable"`
+
+### 7.2 Wrong Token
+- [ ] Start server with `VELOX_BOOTSTRAP_TOKEN=my-secret`
+- [ ] `POST /v1/bootstrap` with `{"token":"wrong"}` > verify: 403 `"invalid bootstrap token"`
+
+### 7.3 Already Bootstrapped
+- [ ] `POST /v1/bootstrap` with correct token after tenants exist > verify: 409 `"bootstrap already completed — tenants exist"`
+
+Note: `make bootstrap` (CLI) always works and creates additional tenants — it's for local dev. The HTTP endpoint is the one that locks down.
 
 ---
 
 ## FLOW 8: Rate Limiting (Redis)
 
+> **Architecture:** Rate limiter runs AFTER auth middleware (per-tenant buckets, not per-IP). 100 req/min per tenant via Redis GCRA. Unauthenticated requests and public endpoints (`/health`, `/metrics`, `/v1/bootstrap`) are NOT rate limited.
+
 ### 8.1 Basic Rate Limit
-- [ ] Send 100+ requests in rapid succession (use `for i in {1..110}; do curl -s ...; done`)
+- [ ] Send 100+ concurrent requests (use Go test or parallel curl — sequential curl is too slow to exhaust GCRA)
 - [ ] Verify: first 100 return 200, remaining return 429
 - [ ] Verify: response headers present: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
 - [ ] Verify: `Retry-After` header on 429 responses
+- [ ] Wait ~10 seconds > send 20 more > verify: ~16 allowed (GCRA smooth refill at 1.67/sec)
 
 ### 8.2 Per-Tenant Isolation
-- [ ] Exhaust rate limit for Tenant A
-- [ ] Verify: Tenant B requests still succeed (separate buckets)
+- [ ] Exhaust rate limit for Tenant A (100 requests)
+- [ ] Confirm Tenant A blocked (429)
+- [ ] Verify: Tenant B requests still succeed (separate Redis buckets keyed by tenant_id)
 
 ### 8.3 Fail-Open
 - [ ] Stop Redis (`docker compose stop redis`)
-- [ ] Verify: API requests still succeed (no 429s, rate limiting disabled)
-- [ ] Check logs for "rate_limiter: redis error, failing open"
-- [ ] Restart Redis > verify: rate limiting resumes
+- [ ] Verify: API requests still succeed (no 429s, all pass through)
+- [ ] Check logs for `"rate_limiter: redis error, failing open"`
+- [ ] Restart Redis (`docker compose start redis`) > verify: rate limiting resumes
 
 ### 8.4 Health/Metrics Bypass
-- [ ] Verify: `/health`, `/health/ready`, `/metrics` are never rate-limited
+- [ ] Exhaust rate limit for a tenant
+- [ ] Verify: `/health`, `/health/ready`, `/metrics` still return 200 (outside rate-limited route group)
 
 ---
 
@@ -266,9 +293,9 @@ SELECT display_name, email FROM customers ORDER BY created_at DESC LIMIT 1;
 ### 10.3 Billing Profile Encryption
 - [ ] Create billing profile with legal_name, email, phone, tax_id
 ```sql
-SELECT legal_name, email, phone, tax_identifier FROM customer_billing_profiles ORDER BY created_at DESC LIMIT 1;
+SELECT legal_name, email, phone, tax_id FROM customer_billing_profiles ORDER BY created_at DESC LIMIT 1;
 ```
-- [ ] Verify: all PII fields start with `enc:` prefix in DB
+- [ ] Verify: PII fields (legal_name, email, phone, tax_id) start with `enc:` prefix in DB
 - [ ] Verify: API returns decrypted values
 
 ### 10.4 Backward Compatibility
@@ -293,38 +320,47 @@ SELECT legal_name, email, phone, tax_identifier FROM customer_billing_profiles O
 ## FLOW 12: Complete Happy Path
 
 ### 12.1 Setup
-- [ ] Settings: company "Demo Corp", prefix "DEMO", net terms 15, USD, tax rate 10% GST
+- [ ] Settings: company "Demo Corp", prefix "DEMO", net terms 15, USD, tax rate 10% (enter 10.00 in UI, stored as 1000 basis points)
 - [ ] Create rating rule: key `api_calls`, flat, $0.01/call
 - [ ] Create meter: key `api_calls`, aggregation sum, link rule
 - [ ] Create plan: code `starter`, $29/mo, attach api_calls meter
 - [ ] Create customer: "Alpha Inc", external_id `alpha_inc`, email
-- [ ] Set up billing profile with address
+- [ ] Set up billing profile with address, tax_id, tax_id_type
 - [ ] Set up payment method (4242 card)
 - [ ] Create subscription: calendar billing, start immediately
+- [ ] Verify: first period = today → 1st of next month (prorated partial month)
 
 ### 12.2 Usage + Billing
-- [ ] Ingest 10,000 API calls
-- [ ] Click "Run Billing"
+> **Note:** Billing is arrears — the engine bills AFTER the period closes. For testing, wait until the period ends or use the billing API trigger.
+
+- [ ] Ingest 10,000 API calls (within the billing period)
+- [ ] Click "Run Billing" (or wait for scheduler)
 - [ ] Verify: invoice auto-finalized, auto-charged via Stripe webhook
-- [ ] Verify: subtotal = $29 + $100 = $129, tax = $12.90, total = $141.90
+- [ ] Verify: base fee is prorated if first partial period (e.g., 13/30 × $29 = $12.57)
+- [ ] Verify: usage = 10,000 × $0.01 = $100
+- [ ] Verify: tax = 10% of subtotal (basis points: 1000bp)
 - [ ] Verify: PDF correct (FROM/BILL TO/amounts/tax)
 - [ ] Verify: invoice number uses "DEMO" prefix
 - [ ] Verify: due date = issued + 15 days
 - [ ] Verify: sidebar badge updates (Invoices count changes)
 
 ### 12.3 Billing Cycle
-- [ ] Subscription detail: billing period advanced to next month
+- [ ] Subscription detail: billing period advanced to next full month (e.g., May 1 → Jun 1)
+- [ ] Subscription timeline shows checkmarks for completed milestones
 - [ ] Dashboard: MRR shows $29, revenue chart updated, 1 paid invoice
 
 ---
 
 ## FLOW 13: Basis-Point Tax Precision
 
+> **Architecture:** All tax rates are stored as basis points (integers). UI displays as percentage, backend uses `tax_rate_bp`. No float fields exist — removed in migration 0003.
+
 ### 13.1 Fractional Tax Rate
-- [ ] Settings: set tax rate to 7.25% (725 basis points)
+- [ ] Settings: enter tax rate 7.25% in the UI (stored as `tax_rate_bp = 725`)
 - [ ] Run billing for a $100 subtotal
 - [ ] Verify: tax = $7.25 exactly (725 cents)
-- [ ] Verify: `tax_rate_bp = 725` in the invoice record
+- [ ] Verify: `tax_rate_bp = 725` in the invoice record (no `tax_rate` float column exists)
+- [ ] Verify: invoice detail page shows "Tax (7.25%)"
 
 ### 13.2 Per-Line Rounding
 - [ ] Run billing with 3 line items: $33.33, $33.33, $33.34
@@ -394,10 +430,13 @@ SELECT id, auto_charge_pending, payment_status FROM invoices ORDER BY created_at
 
 ## FLOW 17: Subscription Lifecycle
 
+> **Billing model:** Arrears — invoices are generated at the END of the billing period, not the start. Calendar billing aligns to the 1st of the month; the first partial period is prorated.
+
 ### 17.1 Trial
 - [ ] Create subscription with trial_days = 7
 - [ ] Verify: status active, trial end date shown
-- [ ] Run billing > verify: no invoice (trial active)
+- [ ] Verify: billing period starts AFTER trial ends (aligned to 1st of next month for calendar billing)
+- [ ] Run billing during trial > verify: no invoice (trial active)
 
 ### 17.2 Pause with Confirmation
 - [ ] Pause active subscription
