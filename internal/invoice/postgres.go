@@ -481,6 +481,106 @@ func (s *PostgresStore) ListApproachingDue(ctx context.Context, daysBeforeDue in
 	return invoices, rows.Err()
 }
 
+// AddLineItemAtomic inserts a line item and recomputes invoice totals in a
+// single transaction, locking the invoice row FOR UPDATE so concurrent
+// AddLineItem calls serialize on that row and subtotal reflects every
+// committed line item. Fails if the invoice isn't in draft status.
+func (s *PostgresStore) AddLineItemAtomic(
+	ctx context.Context, tenantID, invoiceID string, item domain.InvoiceLineItem,
+) (domain.InvoiceLineItem, domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.InvoiceLineItem{}, domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var (
+		status   domain.InvoiceStatus
+		currency string
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT status, currency FROM invoices WHERE id = $1 FOR UPDATE`,
+		invoiceID,
+	).Scan(&status, &currency)
+	if err == sql.ErrNoRows {
+		return domain.InvoiceLineItem{}, domain.Invoice{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.InvoiceLineItem{}, domain.Invoice{}, err
+	}
+	if status != domain.InvoiceDraft {
+		return domain.InvoiceLineItem{}, domain.Invoice{},
+			fmt.Errorf("can only add line items to draft invoices, current status: %s", status)
+	}
+
+	item.InvoiceID = invoiceID
+	item.TenantID = tenantID
+	item.Currency = currency
+
+	itemID := postgres.NewID("vlx_ili")
+	now := time.Now().UTC()
+	metaJSON, _ := json.Marshal(item.Metadata)
+	if item.Metadata == nil {
+		metaJSON = []byte("{}")
+	}
+
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO invoice_line_items (id, invoice_id, tenant_id, line_type, meter_id,
+			description, quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
+			total_amount_cents, currency, pricing_mode, rating_rule_version_id,
+			billing_period_start, billing_period_end, metadata, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		RETURNING id, invoice_id, tenant_id, line_type, COALESCE(meter_id,''), description,
+			quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
+			total_amount_cents, currency, COALESCE(pricing_mode,''),
+			COALESCE(rating_rule_version_id,''), billing_period_start, billing_period_end,
+			metadata, created_at
+	`, itemID, invoiceID, tenantID, item.LineType, postgres.NullableString(item.MeterID),
+		item.Description, item.Quantity, item.UnitAmountCents, item.AmountCents,
+		item.TaxRateBP, item.TaxAmountCents, item.TotalAmountCents, currency,
+		postgres.NullableString(item.PricingMode), postgres.NullableString(item.RatingRuleVersionID),
+		postgres.NullableTime(item.BillingPeriodStart), postgres.NullableTime(item.BillingPeriodEnd),
+		metaJSON, now,
+	).Scan(&item.ID, &item.InvoiceID, &item.TenantID, &item.LineType, &item.MeterID,
+		&item.Description, &item.Quantity, &item.UnitAmountCents, &item.AmountCents,
+		&item.TaxRateBP, &item.TaxAmountCents, &item.TotalAmountCents, &item.Currency,
+		&item.PricingMode, &item.RatingRuleVersionID,
+		&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt)
+	if err != nil {
+		return domain.InvoiceLineItem{}, domain.Invoice{}, err
+	}
+	_ = json.Unmarshal(metaJSON, &item.Metadata)
+
+	// Recompute subtotal from ALL line items now in the tx (including the one
+	// just inserted), then rewrite derived totals. Using a correlated subquery
+	// in one UPDATE so the read and write stay in the same snapshot.
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `
+		UPDATE invoices i SET
+			subtotal_cents = sub.subtotal,
+			total_amount_cents = sub.subtotal + i.tax_amount_cents - i.discount_cents,
+			amount_due_cents = GREATEST(
+				sub.subtotal + i.tax_amount_cents - i.discount_cents
+					- i.amount_paid_cents - i.credits_applied_cents, 0),
+			updated_at = $2
+		FROM (
+			SELECT COALESCE(SUM(amount_cents), 0)::BIGINT AS subtotal
+			FROM invoice_line_items WHERE invoice_id = $1
+		) sub
+		WHERE i.id = $1
+		RETURNING `+invCols,
+		invoiceID, now,
+	).Scan(scanInvDest(&inv)...)
+	if err != nil {
+		return domain.InvoiceLineItem{}, domain.Invoice{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.InvoiceLineItem{}, domain.Invoice{}, err
+	}
+	return item, inv, nil
+}
+
 // CreateWithLineItems creates an invoice and all its line items in a single
 // atomic transaction. This prevents orphaned invoices with missing line items.
 // The unique index on (tenant_id, subscription_id, billing_period_start, billing_period_end)
