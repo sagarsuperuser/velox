@@ -39,12 +39,22 @@ func Code(err error) string {
 	return ""
 }
 
-// Sentinel errors for store layer.
+// Sentinel errors for store and service layers.
 var (
 	ErrNotFound      = errors.New("not found")
 	ErrAlreadyExists = errors.New("already exists")
 	ErrDuplicateKey  = errors.New("duplicate key")
 	ErrInvalidState  = errors.New("invalid state")
+	// ErrValidation marks an error caused by bad caller input (missing field,
+	// malformed value). Wrap it into a service-level error so respond.FromError
+	// maps the result to 422 and surfaces the wrapped message to the client:
+	//
+	//   return fmt.Errorf("%w: customer_id is required", errs.ErrValidation)
+	//
+	// Without this marker, respond.FromError cannot distinguish bad-input
+	// errors from internal/DB errors and must default to a generic 500 —
+	// safer, but worse UX. New validation sites should use this wrapper.
+	ErrValidation = errors.New("validation error")
 )
 
 // Error code constants.

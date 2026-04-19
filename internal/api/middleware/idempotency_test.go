@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,40 @@ func TestIdempotency_NoCaching_WithoutKey(t *testing.T) {
 
 	if callCount != 1 {
 		t.Errorf("expected 1 call, got %d", callCount)
+	}
+}
+
+func TestFingerprintRequest(t *testing.T) {
+	base := fingerprintRequest("POST", "/v1/invoices", []byte(`{"amount":100}`))
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   []byte
+	}{
+		{"same inputs", "POST", "/v1/invoices", []byte(`{"amount":100}`)},
+		{"different method", "PUT", "/v1/invoices", []byte(`{"amount":100}`)},
+		{"different path", "POST", "/v1/customers", []byte(`{"amount":100}`)},
+		{"different body", "POST", "/v1/invoices", []byte(`{"amount":200}`)},
+	}
+
+	if !bytes.Equal(base, fingerprintRequest(cases[0].method, cases[0].path, cases[0].body)) {
+		t.Error("same inputs must produce same fingerprint")
+	}
+	for _, c := range cases[1:] {
+		if bytes.Equal(base, fingerprintRequest(c.method, c.path, c.body)) {
+			t.Errorf("%s: fingerprint should differ from base", c.name)
+		}
+	}
+
+	// Field-boundary safety: "A" + "BC" must not hash the same as "AB" + "C".
+	// The null-byte separator prevents this classic concat-collision.
+	if bytes.Equal(
+		fingerprintRequest("POST", "/v1/a", []byte("bc")),
+		fingerprintRequest("POST", "/v1/ab", []byte("c")),
+	) {
+		t.Error("null separator should prevent field-boundary collisions")
 	}
 }
 

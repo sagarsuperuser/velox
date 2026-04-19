@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	chimw "github.com/go-chi/chi/v5/middleware"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
 
@@ -162,18 +164,25 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 	}
 
 	// Idempotency: use invoice ID as the key so retries don't create duplicate PIs
+	metadata := map[string]string{
+		"velox_invoice_id":     inv.ID,
+		"velox_invoice_number": inv.InvoiceNumber,
+		"velox_tenant_id":      tenantID,
+		"velox_customer_id":    inv.CustomerID,
+	}
+	// Propagate the Velox request ID so operators can correlate Velox logs to
+	// Stripe dashboard events via metadata search. Absent from scheduler-driven
+	// charges (no HTTP request → empty ID), which is fine.
+	if reqID := chimw.GetReqID(ctx); reqID != "" {
+		metadata["velox_request_id"] = reqID
+	}
 	result, err := s.client.CreatePaymentIntent(ctx, PaymentIntentParams{
 		AmountCents:    inv.AmountDueCents,
 		Currency:       inv.Currency,
 		CustomerID:     stripeCustomerID,
 		Description:    fmt.Sprintf("Invoice %s", inv.InvoiceNumber),
 		IdempotencyKey: fmt.Sprintf("velox_inv_%s", inv.ID),
-		Metadata: map[string]string{
-			"velox_invoice_id":     inv.ID,
-			"velox_invoice_number": inv.InvoiceNumber,
-			"velox_tenant_id":      tenantID,
-			"velox_customer_id":    inv.CustomerID,
-		},
+		Metadata:       metadata,
 	})
 	if err != nil {
 		// Record the failure — the invoice stays finalized.
@@ -189,6 +198,7 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		"invoice_id", inv.ID,
 		"payment_intent_id", result.ID,
 		"amount_cents", inv.AmountDueCents,
+		"request_id", chimw.GetReqID(ctx),
 	)
 
 	// Update invoice with PI reference and set to processing
