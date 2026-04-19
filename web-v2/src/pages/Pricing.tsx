@@ -60,7 +60,8 @@ import {
 } from '@/components/ui/form'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Trash2, Loader2 } from 'lucide-react'
+import { Plus, Trash2, Loader2, Package, Gauge, Calculator } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 function badgeVariant(val: string): 'success' | 'info' | 'secondary' | 'outline' {
   switch (val) {
@@ -147,7 +148,16 @@ export default function PricingPage() {
               <>
                 <TabsContent value="plans">
                   {plans.length === 0 ? (
-                    <Empty label="plans" onAdd={() => setCreateFor('plans')} />
+                    <EmptyState
+                      icon={Package}
+                      title="No plans yet"
+                      description="Create a plan to define pricing and intervals for your product."
+                      action={{
+                        label: 'Add Plan',
+                        icon: Plus,
+                        onClick: () => setCreateFor('plans'),
+                      }}
+                    />
                   ) : (
                     <Table>
                       <TableHeader>
@@ -190,7 +200,16 @@ export default function PricingPage() {
 
                 <TabsContent value="meters">
                   {meters.length === 0 ? (
-                    <Empty label="meters" onAdd={() => setCreateFor('meters')} />
+                    <EmptyState
+                      icon={Gauge}
+                      title="No meters yet"
+                      description="Meters track consumption of billable units like API calls, messages, or compute time."
+                      action={{
+                        label: 'Add Meter',
+                        icon: Plus,
+                        onClick: () => setCreateFor('meters'),
+                      }}
+                    />
                   ) : (
                     <Table>
                       <TableHeader>
@@ -231,7 +250,16 @@ export default function PricingPage() {
 
                 <TabsContent value="rules">
                   {rules.length === 0 ? (
-                    <Empty label="rating rules" onAdd={() => setCreateFor('rules')} />
+                    <EmptyState
+                      icon={Calculator}
+                      title="No rating rules yet"
+                      description="Rating rules turn metered usage into billable amounts using tiers, volumes, or flat prices."
+                      action={{
+                        label: 'Add Rule',
+                        icon: Plus,
+                        onClick: () => setCreateFor('rules'),
+                      }}
+                    />
                   ) : (
                     <Table>
                       <TableHeader>
@@ -302,23 +330,6 @@ export default function PricingPage() {
         />
       )}
     </Layout>
-  )
-}
-
-function Empty({ label, onAdd }: { label: string; onAdd?: () => void }) {
-  return (
-    <div className="p-12 text-center">
-      <p className="text-sm font-medium text-foreground">No {label} yet</p>
-      <p className="text-sm text-muted-foreground mt-1">
-        Get started by creating your first {label.replace(/s$/, '')}
-      </p>
-      {onAdd && (
-        <Button size="sm" className="mt-4" onClick={onAdd}>
-          <Plus size={16} className="mr-2" />
-          Add {label.replace(/s$/, '').replace(/^./, c => c.toUpperCase())}
-        </Button>
-      )}
-    </div>
   )
 }
 

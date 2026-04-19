@@ -28,6 +28,7 @@ import {
 } from '@/components/ui/pagination'
 
 import { Download, Loader2, Activity, Hash, Gauge, Users } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 const PAGE_SIZE = 25
 
@@ -209,9 +210,12 @@ export default function UsageEventsPage() {
         </Card>
       ) : events.length === 0 ? (
         <Card className="mt-6">
-          <CardContent className="p-12 text-center">
-            <p className="text-sm font-medium text-foreground">No usage events yet</p>
-            <p className="text-sm text-muted-foreground mt-1">Ingest events via the API to start tracking usage</p>
+          <CardContent className="p-0">
+            <EmptyState
+              icon={Activity}
+              title="No usage events yet"
+              description="Ingest events via the API to start tracking usage against your meters."
+            />
           </CardContent>
         </Card>
       ) : (

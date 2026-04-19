@@ -34,7 +34,8 @@ import {
 } from '@/components/ui/pagination'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Search, Download, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { Search, Download, ArrowUpDown, ArrowUp, ArrowDown, Receipt } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 const PAGE_SIZE = 25
 
@@ -218,22 +219,28 @@ export default function InvoicesPage() {
           ) : loading ? (
             <TableSkeleton columns={7} />
           ) : total === 0 ? (
-            <div className="p-12 text-center">
-              {statusFilter ? (
-                <>
-                  <p className="text-sm font-medium text-foreground">No {statusFilter} invoices</p>
-                  <p className="text-sm text-muted-foreground mt-1">Try a different filter</p>
-                  <Button variant="outline" size="sm" className="mt-4" onClick={() => { setStatusFilter(''); setPage(1) }}>
-                    Clear filter
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm font-medium text-foreground">No invoices yet</p>
-                  <p className="text-sm text-muted-foreground mt-1">Trigger a billing cycle to generate invoices</p>
-                </>
-              )}
-            </div>
+            statusFilter ? (
+              <EmptyState
+                title={`No ${statusFilter} invoices`}
+                description="Try a different filter to see more results."
+                action={{
+                  label: 'Clear filter',
+                  variant: 'outline',
+                  onClick: () => { setStatusFilter(''); setPage(1) },
+                }}
+              />
+            ) : (
+              <EmptyState
+                icon={Receipt}
+                title="No invoices yet"
+                description="Invoices are generated when a billing cycle runs for an active subscription."
+                action={{
+                  label: 'View Subscriptions',
+                  to: '/subscriptions',
+                  variant: 'outline',
+                }}
+              />
+            )
           ) : sorted.length === 0 ? (
             <p className="px-6 py-8 text-sm text-muted-foreground text-center">
               No invoices match filters on this page

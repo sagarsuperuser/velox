@@ -64,7 +64,8 @@ import {
 } from '@/components/ui/form'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Minus, Download, ChevronRight, ArrowLeft, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { Plus, Minus, Download, ChevronRight, ArrowLeft, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Coins } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 const creditSchema = z.object({
   amount: z.string().min(1, 'Amount is required').refine(v => parseFloat(v) >= 0.01, 'Must be at least 0.01'),
@@ -421,13 +422,16 @@ export default function CreditsPage() {
           ) : loading ? (
             <TableSkeleton columns={3} widths={['60%', '30%', '20%']} />
           ) : customersWithCredits.length === 0 ? (
-            <div className="p-12 text-center">
-              <p className="text-sm font-medium text-foreground">No credit activity</p>
-              <p className="text-sm text-muted-foreground mt-1">Grant credits to a customer to get started</p>
-              <Button size="sm" className="mt-4" onClick={() => { setModalCustomerId(''); setShowGrant(true) }}>
-                <Plus size={16} className="mr-2" /> Grant Credits
-              </Button>
-            </div>
+            <EmptyState
+              icon={Coins}
+              title="No credit activity"
+              description="Grant credits to a customer to get started."
+              action={{
+                label: 'Grant Credits',
+                icon: Plus,
+                onClick: () => { setModalCustomerId(''); setShowGrant(true) },
+              }}
+            />
           ) : (
             <Table>
               <TableHeader>

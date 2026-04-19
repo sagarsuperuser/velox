@@ -55,7 +55,8 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Repeat } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 const createSubSchema = z.object({
   code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
@@ -244,12 +245,10 @@ export default function SubscriptionsPage() {
               ))}
             </div>
           )}
-          {total > 0 && (
-            <Button size="sm" onClick={() => setShowCreate(true)}>
-              <Plus size={16} className="mr-2" />
-              Add Subscription
-            </Button>
-          )}
+          <Button size="sm" onClick={() => setShowCreate(true)}>
+            <Plus size={16} className="mr-2" />
+            Add Subscription
+          </Button>
         </div>
       </div>
 
@@ -281,26 +280,28 @@ export default function SubscriptionsPage() {
           ) : loading ? (
             <TableSkeleton columns={6} />
           ) : total === 0 ? (
-            <div className="p-12 text-center">
-              {filterStatus ? (
-                <>
-                  <p className="text-sm font-medium text-foreground">No {filterStatus} subscriptions</p>
-                  <p className="text-sm text-muted-foreground mt-1">Try a different filter</p>
-                  <Button variant="outline" size="sm" className="mt-4" onClick={() => { setFilterStatus(''); setPage(1) }}>
-                    Clear filter
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm font-medium text-foreground">No subscriptions yet</p>
-                  <p className="text-sm text-muted-foreground mt-1">Create a subscription to start billing a customer</p>
-                  <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>
-                    <Plus size={16} className="mr-2" />
-                    Add Subscription
-                  </Button>
-                </>
-              )}
-            </div>
+            filterStatus ? (
+              <EmptyState
+                title={`No ${filterStatus} subscriptions`}
+                description="Try a different filter to see more results."
+                action={{
+                  label: 'Clear filter',
+                  variant: 'outline',
+                  onClick: () => { setFilterStatus(''); setPage(1) },
+                }}
+              />
+            ) : (
+              <EmptyState
+                icon={Repeat}
+                title="No subscriptions yet"
+                description="Create a subscription to start billing a customer."
+                action={{
+                  label: 'Add Subscription',
+                  icon: Plus,
+                  onClick: () => setShowCreate(true),
+                }}
+              />
+            )
           ) : sorted.length === 0 ? (
             <p className="px-6 py-8 text-sm text-muted-foreground text-center">
               No subscriptions match search on this page

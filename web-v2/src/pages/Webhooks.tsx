@@ -52,7 +52,8 @@ import {
 } from '@/components/ui/form'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Loader2 } from 'lucide-react'
+import { Loader2, Plus, Webhook, Activity } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 const createEndpointSchema = z.object({
   url: z.string().min(1, 'URL is required').refine(v => {
@@ -132,11 +133,12 @@ function EndpointsTab() {
 
   return (
     <>
-      {endpoints.length > 0 && (
-        <div className="flex justify-end mt-4">
-          <Button size="sm" onClick={() => setShowCreate(true)}>Add Endpoint</Button>
-        </div>
-      )}
+      <div className="flex justify-end mt-4">
+        <Button size="sm" onClick={() => setShowCreate(true)}>
+          <Plus size={16} className="mr-2" />
+          Add Endpoint
+        </Button>
+      </div>
 
       <Card className="mt-4">
         <CardContent className="p-0">
@@ -148,11 +150,16 @@ function EndpointsTab() {
           ) : loading ? (
             <TableSkeleton columns={7} />
           ) : endpoints.length === 0 ? (
-            <div className="p-12 text-center">
-              <p className="text-sm font-medium text-foreground">No webhook endpoints</p>
-              <p className="text-sm text-muted-foreground mt-1">Add an endpoint to receive event notifications</p>
-              <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>Add Endpoint</Button>
-            </div>
+            <EmptyState
+              icon={Webhook}
+              title="No webhook endpoints"
+              description="Add an endpoint to receive real-time event notifications for your account."
+              action={{
+                label: 'Add Endpoint',
+                icon: Plus,
+                onClick: () => setShowCreate(true),
+              }}
+            />
           ) : (
             <Table>
               <TableHeader>
@@ -553,10 +560,11 @@ function EventsTab() {
         ) : loading ? (
           <TableSkeleton columns={4} />
         ) : events.length === 0 ? (
-          <div className="p-12 text-center">
-            <p className="text-sm font-medium text-foreground">No webhook events</p>
-            <p className="text-sm text-muted-foreground mt-1">Events will appear here as they are sent to your endpoints</p>
-          </div>
+          <EmptyState
+            icon={Activity}
+            title="No webhook events"
+            description="Events will appear here as they are dispatched to your endpoints."
+          />
         ) : (
           <Table>
             <TableHeader>
