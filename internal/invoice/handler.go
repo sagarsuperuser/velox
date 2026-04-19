@@ -79,7 +79,7 @@ type DunningTimelineFetcher interface {
 
 // EmailSender sends invoice-related emails.
 type EmailSender interface {
-	SendInvoice(to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte) error
+	SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte) error
 }
 
 type Handler struct {
@@ -348,7 +348,7 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 					"invoice_id", inv.ID, "error", err)
 				return
 			}
-			if err := h.emailSender.SendInvoice(email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes); err != nil {
+			if err := h.emailSender.SendInvoice(tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes); err != nil {
 				slog.Error("failed to send invoice email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
@@ -481,7 +481,7 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.emailSender.SendInvoice(body.Email, bt.Name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes); err != nil {
+	if err := h.emailSender.SendInvoice(tenantID, body.Email, bt.Name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes); err != nil {
 		respond.Validation(w, r, fmt.Sprintf("failed to send email: %s", err.Error()))
 		return
 	}

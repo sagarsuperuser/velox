@@ -70,16 +70,19 @@ type Server struct {
 	router chi.Router
 
 	// Exported for main.go to wire the billing scheduler + dunning
-	BillingEngine     *billing.Engine
-	DunningSvc        *dunning.Service
-	SettingsStore     *tenant.SettingsStore
-	WebhookOutSvc     *webhook.Service
-	OutboxStore       *webhook.OutboxStore
-	OutboxEnabled     bool
-	CreditSvc         *credit.Service
-	InvoiceSvc        *invoice.Service
-	TokenSvc          *payment.TokenService
-	PaymentReconciler *payment.Reconciler
+	BillingEngine      *billing.Engine
+	DunningSvc         *dunning.Service
+	SettingsStore      *tenant.SettingsStore
+	WebhookOutSvc      *webhook.Service
+	OutboxStore        *webhook.OutboxStore
+	OutboxEnabled      bool
+	EmailOutboxStore   *email.OutboxStore
+	EmailOutboxEnabled bool
+	EmailSender        *email.Sender
+	CreditSvc          *credit.Service
+	InvoiceSvc         *invoice.Service
+	TokenSvc           *payment.TokenService
+	PaymentReconciler  *payment.Reconciler
 }
 
 func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Server {
@@ -235,16 +238,41 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeKey,
 		strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_RETURN_URL")))
 
-	// Email sender
+	// Email sender. When the email outbox is enabled (default), producers
+	// enqueue into email_outbox via OutboxSender instead of calling SMTP
+	// directly; a background Dispatcher drains the queue. This makes email
+	// delivery durable across crashes and transient SMTP failures, and gives
+	// operators a DLQ to inspect. Set VELOX_EMAIL_OUTBOX_ENABLED=false to
+	// fall back to the direct-SMTP path for emergency rollback.
 	emailSender := email.NewSender()
-	invoiceH.SetEmailSender(emailSender)
+	emailOutboxStore := email.NewOutboxStore(db)
+	emailOutboxEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_EMAIL_OUTBOX_ENABLED"))) != "false"
+
+	// Any one of the four domain email interfaces; all four are satisfied by
+	// both *email.Sender and *email.OutboxSender, so we pick once and wire
+	// the same value everywhere.
+	var (
+		invoiceEmail  invoice.EmailSender
+		dunningEmail  dunning.EmailNotifier
+		receiptEmail  payment.EmailReceipt
+		paymentUpdate payment.EmailPaymentUpdate
+	)
+	if emailOutboxEnabled {
+		outboxSender := email.NewOutboxSender(emailOutboxStore)
+		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate = outboxSender, outboxSender, outboxSender, outboxSender
+		slog.Info("email outbox enabled — producers will enqueue emails via email_outbox")
+	} else {
+		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate = emailSender, emailSender, emailSender, emailSender
+		slog.Warn("email outbox DISABLED — using direct-SMTP path (set VELOX_EMAIL_OUTBOX_ENABLED=true to re-enable)")
+	}
+	invoiceH.SetEmailSender(invoiceEmail)
 	customerEmailAdapter := &customerEmailFetcherAdapter{store: customerStore}
-	dunningSvc.SetEmailNotifier(emailSender)
+	dunningSvc.SetEmailNotifier(dunningEmail)
 	dunningSvc.SetCustomerEmailFetcher(customerEmailAdapter)
-	stripeAdapter.SetEmailReceipt(emailSender, customerEmailAdapter)
+	stripeAdapter.SetEmailReceipt(receiptEmail, customerEmailAdapter)
 	paymentUpdateURL := strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_URL"))
 	if paymentUpdateURL != "" {
-		stripeAdapter.SetEmailPaymentUpdate(emailSender, customerEmailAdapter, paymentUpdateURL)
+		stripeAdapter.SetEmailPaymentUpdate(paymentUpdate, customerEmailAdapter, paymentUpdateURL)
 	}
 
 	// Audit logging for financial operations
@@ -290,16 +318,19 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
 
 	s := &Server{
-		BillingEngine:     engine,
-		DunningSvc:        dunningSvc,
-		SettingsStore:     settingsStore,
-		WebhookOutSvc:     webhookOutSvc,
-		OutboxStore:       outboxStore,
-		OutboxEnabled:     outboxEnabled,
-		CreditSvc:         creditSvc,
-		InvoiceSvc:        invoiceSvc,
-		TokenSvc:          tokenSvc,
-		PaymentReconciler: paymentReconciler,
+		BillingEngine:      engine,
+		DunningSvc:         dunningSvc,
+		SettingsStore:      settingsStore,
+		WebhookOutSvc:      webhookOutSvc,
+		OutboxStore:        outboxStore,
+		OutboxEnabled:      outboxEnabled,
+		EmailOutboxStore:   emailOutboxStore,
+		EmailOutboxEnabled: emailOutboxEnabled,
+		EmailSender:        emailSender,
+		CreditSvc:          creditSvc,
+		InvoiceSvc:         invoiceSvc,
+		TokenSvc:           tokenSvc,
+		PaymentReconciler:  paymentReconciler,
 	}
 
 	// Redis for distributed rate limiting (fail-open if not configured)

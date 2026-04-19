@@ -43,9 +43,9 @@ type CustomerEmailFetcher interface {
 
 // EmailNotifier sends dunning-related emails.
 type EmailNotifier interface {
-	SendPaymentFailed(to, customerName, invoiceNumber, reason string) error
-	SendDunningWarning(to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate string) error
-	SendDunningEscalation(to, customerName, invoiceNumber string, action string) error
+	SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason string) error
+	SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate string) error
+	SendDunningEscalation(tenantID, to, customerName, invoiceNumber string, action string) error
 }
 
 type Service struct {
@@ -296,7 +296,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 				if run.NextActionAt != nil {
 					nextRetry = run.NextActionAt.Format("January 2, 2006")
 				}
-				if err := s.emailNotifier.SendDunningWarning(email, name, invoiceNumber, run.AttemptCount, policy.MaxRetryAttempts, nextRetry); err != nil {
+				if err := s.emailNotifier.SendDunningWarning(tenantID, email, name, invoiceNumber, run.AttemptCount, policy.MaxRetryAttempts, nextRetry); err != nil {
 					slog.Error("failed to send dunning warning email",
 						"run_id", run.ID, "email", email, "error", err)
 				}
@@ -435,7 +435,7 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 					invoiceNumber = inv.InvoiceNumber
 				}
 			}
-			if err := s.emailNotifier.SendDunningEscalation(email, name, invoiceNumber, string(policy.FinalAction)); err != nil {
+			if err := s.emailNotifier.SendDunningEscalation(tenantID, email, name, invoiceNumber, string(policy.FinalAction)); err != nil {
 				slog.Error("failed to send dunning escalation email",
 					"run_id", run.ID, "email", email, "error", err)
 			}

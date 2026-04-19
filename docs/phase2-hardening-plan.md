@@ -254,9 +254,11 @@ Shipped infrastructure + full producer cutover, gated by `VELOX_WEBHOOK_OUTBOX_E
 - fail-open: logs + flushes handler response (availability preserved).
 - fail-closed: returns `503 {"error":{"code":"audit_error"...}}`; handler headers/body dropped. A settings-lookup error fails **safe to closed** so a broken lookup can't silently downgrade a SOC-2 tenant. Write path refactored behind a narrow `auditWriter` interface for unit-testability; `postgresAuditWriter` is the production impl. Also consolidated the duplicate counter in `internal/audit/audit.go` onto the same labeled metric. Tests (`audit_test.go`) cover success, fail-open + metric, fail-closed → 503, settings-lookup-error fails-safe-closed, non-2xx skip, GET bypass. Full unit suite green.
 
-### [RES-6] Email delivery outbox + DLQ — M — RES-1→
+### [RES-6] Email delivery outbox + DLQ — M — ✅ DONE
 
 **Target:** reuse outbox pattern with `email_outbox` table. Backoff, DLQ, metrics.
+
+**Resolution:** Mirrors RES-1 end-to-end for transactional email. Migration `0018_email_outbox.up.sql` creates `email_outbox(id, tenant_id, email_type, payload jsonb, status, attempts, next_attempt_at, last_error, created_at, dispatched_at)` with a partial index on `(next_attempt_at) WHERE status='pending'` and RLS `tenant_isolation` (bypassed by the dispatcher's `TxBypass` scan). `internal/email/outbox.go` defines `OutboxStore` with `Enqueue` (tx-coupled), `EnqueueStandalone` (opens its own tenant tx), `ProcessBatch` (FOR UPDATE SKIP LOCKED, same 15-attempt / ~72h backoff ramp as webhook_outbox: 1s → 5s → 30s → 2m → 5m → 15m → 30m → 1h → 2h → 4h → 8h → 12h×4), `PendingCount`, and `FailedCount`. `internal/email/outbox_sender.go` introduces `OutboxSender` — a drop-in adapter that satisfies all four domain email interfaces (`invoice.EmailSender`, `dunning.EmailNotifier`, `payment.EmailReceipt`, `payment.EmailPaymentUpdate`) by marshaling each `Send*` call into an `outboxMessage` JSON payload and calling `EnqueueStandalone`. The four interfaces + `*email.Sender`'s six `Send*` methods + all six call sites were updated to take `tenantID` as their first parameter so the outbox row carries correct RLS context. `internal/email/dispatcher.go` runs a tick loop gated by `postgres.LockKeyEmailDispatcher` (session-scoped advisory lock, key `76540004`); each tick claims up to 10 due rows, decodes the payload into `outboxMessage`, and dispatches to the matching `EmailDeliverer.Send*`. Payload-decode errors are non-retryable per-row but still ride the backoff ramp to DLQ for operator review rather than crashing the worker. Router wires `OutboxSender` by default and falls back to direct SMTP when `VELOX_EMAIL_OUTBOX_ENABLED=false` — same env-flag cutover pattern as RES-1. `cmd/velox/main.go` starts the email dispatcher as a bounded `workers.WaitGroup` goroutine alongside the webhook dispatcher, with graceful drain on SIGTERM. Tests: 7 integration tests in `outbox_integration_test.go` covering enqueue persistence, tx atomicity (rollback + commit), ProcessBatch success, retry-with-backoff non-re-claim, DLQ after 15 attempts, terminal-status respect, OutboxSender → dispatcher round-trip, and count accuracy; unit test in `outbox_sender_test.go` compile-asserts OutboxSender satisfies all four interfaces and checks empty-tenant guard. `LockKeyEmailDispatcher` added to `platform/postgres/advisory_lock.go` alongside existing billing/dunning/webhook-outbox keys.
 
 ### [RES-7] Dunning circuit breaker + payment-retry timeout — S — ✅ DONE
 
@@ -475,7 +477,7 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 26. **HYG-4** — explicit FK ON DELETE RESTRICT across schema ✅
 27. **RES-1** — transactional outbox (L) ✅
 28. **RES-2** — scheduler advisory lock ✅
-29. **RES-6** — email outbox
+29. **RES-6** — email outbox ✅
 30. **SEC-2 Phase B/C** — cutover + drop plaintext
 31. **FEAT-2, FEAT-3, FEAT-4 ✅, FEAT-7 ✅, FEAT-8** — feature completeness
 32. **FEAT-6** — coupon stacking
