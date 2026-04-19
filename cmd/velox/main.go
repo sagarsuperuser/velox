@@ -88,6 +88,13 @@ func serve() {
 	defer func() { _ = pool.Close() }()
 
 	if cfg.Migrate {
+		if cfg.Env == "production" {
+			// Warn, don't refuse — operator may have intentionally opted in. But
+			// the recommended production pattern is a dedicated migration step
+			// (Kubernetes Job, CI step, deploy hook) so rolling replicas don't
+			// race on DDL and startup probes aren't blocked by long migrations.
+			slog.Warn("RUN_MIGRATIONS_ON_BOOT=true in production environment — prefer a dedicated migration Job ahead of the app rollout; in-process migrations complicate rolling deploys and startup probes")
+		}
 		// Migrations need DDL privileges — use DATABASE_URL (superuser) if
 		// APP_DATABASE_URL is set (meaning DATABASE_URL is the admin connection).
 		migrationPool := pool
@@ -99,7 +106,17 @@ func serve() {
 			slog.Error("run migrations", "error", err)
 			os.Exit(1)
 		}
-		slog.Info("migrations applied")
+	}
+
+	// Defense-in-depth: refuse to start if the schema doesn't match what this
+	// binary expects. Catches "migration Job didn't run", "deploy rolled the
+	// app before migrations finished", "dirty migration from a prior failed
+	// attempt". Runs whether or not we just applied migrations ourselves — a
+	// successful boot here is our guarantee that every subsequent query has
+	// the schema it was compiled against.
+	if err := migrate.CheckSchemaReady(pool); err != nil {
+		slog.Error("schema check failed", "error", err)
+		os.Exit(1)
 	}
 
 	// Use a non-superuser connection for the app so RLS policies are enforced.
