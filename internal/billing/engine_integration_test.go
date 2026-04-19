@@ -12,6 +12,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/subscription"
+	"github.com/sagarsuperuser/velox/internal/tenant"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 	"github.com/sagarsuperuser/velox/internal/usage"
 )
@@ -236,13 +237,15 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 	}
 	// Total storage: 50 GB
 
-	// 8. Run billing engine
+	// 8. Run billing engine with a real settings store (exercises the
+	// UPSERT path in NextInvoiceNumber for a tenant with no prior settings row).
+	settingsStore := tenant.NewSettingsStore(db)
 	engine := billing.NewEngine(
 		&subStoreAdapter{subStore},
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, nil, nil, nil, nil,
+		nil, settingsStore, nil, nil, nil,
 	)
 
 	count, errs := engine.RunCycle(ctx, 50)

@@ -9,6 +9,20 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
 
+// mockSettings is a minimal SettingsReader for engine tests. Hands out
+// VLX-000001, VLX-000002, ... deterministically; Get returns a zero-value
+// TenantSettings so net_payment_terms defaults to the engine's fallback.
+type mockSettings struct{ next int }
+
+func (m *mockSettings) NextInvoiceNumber(_ context.Context, _ string) (string, error) {
+	m.next++
+	return fmt.Sprintf("VLX-%06d", m.next), nil
+}
+
+func (m *mockSettings) Get(_ context.Context, _ string) (domain.TenantSettings, error) {
+	return domain.TenantSettings{}, nil
+}
+
 // ---------------------------------------------------------------------------
 // In-memory implementations of the billing engine's interfaces
 // ---------------------------------------------------------------------------
@@ -283,7 +297,7 @@ func setupEngine() (*Engine, *mockSubs, *mockUsage, *mockPricing, *mockInvoices)
 
 	invoices := &mockInvoices{}
 
-	engine := NewEngine(subs, usage, pricing, invoices, nil, nil, nil, nil, nil)
+	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
 	return engine, subs, usage, pricing, invoices
 }
 

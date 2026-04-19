@@ -166,9 +166,10 @@ func (a *prorationCreditGranterAdapter) Grant(ctx context.Context, tenantID, cus
 	return err
 }
 
-// prorationInvoiceCreatorAdapter bridges invoice.PostgresStore → subscription.ProrationInvoiceCreator.
+// prorationInvoiceCreatorAdapter bridges invoice.PostgresStore + tenant.SettingsStore → subscription.ProrationInvoiceCreator.
 type prorationInvoiceCreatorAdapter struct {
-	store *invoice.PostgresStore
+	store    *invoice.PostgresStore
+	numberer invoice.InvoiceNumberer
 }
 
 func (a *prorationInvoiceCreatorAdapter) CreateInvoice(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
@@ -177,4 +178,8 @@ func (a *prorationInvoiceCreatorAdapter) CreateInvoice(ctx context.Context, tena
 
 func (a *prorationInvoiceCreatorAdapter) CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error) {
 	return a.store.CreateLineItem(ctx, tenantID, item)
+}
+
+func (a *prorationInvoiceCreatorAdapter) NextInvoiceNumber(ctx context.Context, tenantID string) (string, error) {
+	return a.numberer.NextInvoiceNumber(ctx, tenantID)
 }

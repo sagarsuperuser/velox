@@ -341,26 +341,30 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		subtotal += amount
 	}
 
-	// Create invoice — pull settings for invoice number + payment terms
+	// Create invoice — pull settings for payment terms + tax, then allocate the
+	// invoice number as a strictly monotonic per-tenant sequence. No fallback:
+	// a collision-prone number is worse than a failed billing tick since the
+	// tick will retry, while a duplicate invoice number corrupts accounting.
 	now := e.clock.Now()
 	netDays := 30
-	invoiceNumber := fmt.Sprintf("VLX-%s-%04d", now.Format("200601"), now.UnixMilli()%10000)
 
 	var taxRateBP int // basis points: 1850 = 18.50%
 	var taxName string
 	var taxCountry string
 	var taxID string
-	if e.settings != nil {
-		if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil {
-			if ts.NetPaymentTerms > 0 {
-				netDays = ts.NetPaymentTerms
-			}
-			taxRateBP = ts.TaxRateBP
-			taxName = ts.TaxName
+	if e.settings == nil {
+		return false, fmt.Errorf("billing engine: settings reader is required for invoice numbering")
+	}
+	if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil {
+		if ts.NetPaymentTerms > 0 {
+			netDays = ts.NetPaymentTerms
 		}
-		if num, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID); err == nil && num != "" {
-			invoiceNumber = num
-		}
+		taxRateBP = ts.TaxRateBP
+		taxName = ts.TaxName
+	}
+	invoiceNumber, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID)
+	if err != nil {
+		return false, fmt.Errorf("allocate invoice number: %w", err)
 	}
 
 	// Resolve per-customer billing profile for tax overrides and address

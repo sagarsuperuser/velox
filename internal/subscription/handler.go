@@ -26,9 +26,13 @@ type PlanReader interface {
 }
 
 // ProrationInvoiceCreator creates finalized proration invoices.
+// NextInvoiceNumber must atomically allocate a unique, collision-free number
+// per tenant — a proration invoice shares the same sequence as regular
+// invoices (Stripe's model: one monotonic sequence, memo distinguishes kind).
 type ProrationInvoiceCreator interface {
 	CreateInvoice(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error)
 	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
+	NextInvoiceNumber(ctx context.Context, tenantID string) (string, error)
 }
 
 // ProrationCreditGranter grants credits for downgrade proration.
@@ -268,7 +272,10 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 		// Upgrade: create a finalized proration invoice
 		now := time.Now().UTC()
 		dueAt := now.AddDate(0, 0, 30)
-		invoiceNumber := fmt.Sprintf("VLX-PRO-%s-%04d", now.Format("200601"), now.UnixMilli()%10000)
+		invoiceNumber, err := h.invoices.NextInvoiceNumber(ctx, tenantID)
+		if err != nil {
+			return nil, fmt.Errorf("allocate proration invoice number: %w", err)
+		}
 
 		inv, err := h.invoices.CreateInvoice(ctx, tenantID, domain.Invoice{
 			CustomerID:         result.Subscription.CustomerID,

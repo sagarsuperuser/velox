@@ -10,16 +10,23 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
-type Service struct {
-	store Store
-	clock clock.Clock
+// InvoiceNumberer allocates the next invoice number for a tenant.
+// Atomicity and uniqueness are the numberer's responsibility.
+type InvoiceNumberer interface {
+	NextInvoiceNumber(ctx context.Context, tenantID string) (string, error)
 }
 
-func NewService(store Store, clk clock.Clock) *Service {
+type Service struct {
+	store    Store
+	clock    clock.Clock
+	numberer InvoiceNumberer
+}
+
+func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service {
 	if clk == nil {
 		clk = clock.Real()
 	}
-	return &Service{store: store, clock: clk}
+	return &Service{store: store, clock: clk, numberer: numberer}
 }
 
 type CreateInput struct {
@@ -51,7 +58,10 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	}
 
 	now := s.clock.Now()
-	invoiceNumber := generateInvoiceNumber(now)
+	invoiceNumber, err := s.numberer.NextInvoiceNumber(ctx, tenantID)
+	if err != nil {
+		return domain.Invoice{}, fmt.Errorf("allocate invoice number: %w", err)
+	}
 	issuedAt := now
 	dueAt := now.AddDate(0, 0, netDays)
 
@@ -196,8 +206,4 @@ func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, i
 
 func (s *Service) ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error) {
 	return s.store.ListApproachingDue(ctx, daysBeforeDue)
-}
-
-func generateInvoiceNumber(t time.Time) string {
-	return fmt.Sprintf("VLX-%s-%04d", t.Format("200601"), t.UnixMilli()%10000)
 }

@@ -130,7 +130,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	creditNoteStore := creditnote.NewPostgresStore(db)
 
 	// Wire proration dependencies for plan change invoicing
-	subH.SetProrationDeps(pricingSvc, &prorationInvoiceCreatorAdapter{store: invoiceStore}, &prorationCreditGranterAdapter{svc: creditSvc})
+	subH.SetProrationDeps(pricingSvc, &prorationInvoiceCreatorAdapter{store: invoiceStore, numberer: settingsStore}, &prorationCreditGranterAdapter{svc: creditSvc})
 
 	// Payment / webhook / checkout / refund handlers
 	stripeRefunder := payment.NewStripeRefunder(stripeKey)
@@ -164,7 +164,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	dunningSvc.SetEventDispatcher(webhookOutSvc)
 	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
 
-	invoiceSvc := invoice.NewService(invoiceStore, clk)
+	invoiceSvc := invoice.NewService(invoiceStore, clk, settingsStore)
 	invoiceH := invoice.NewHandler(invoiceSvc, customerStore, settingsStore, invoice.HandlerDeps{
 		CreditNotes:     &creditNoteListerAdapter{svc: creditNoteSvc},
 		Charger:         stripeAdapter,
