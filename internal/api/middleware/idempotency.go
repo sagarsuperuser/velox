@@ -211,20 +211,42 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
-// CleanExpired removes expired idempotency keys across all tenants. Runs
-// cross-tenant by design (a background scheduler, not a per-request path),
-// so it uses TxBypass to sidestep the tenant_isolation policy.
-func CleanExpired(ctx context.Context, db *postgres.DB) error {
+// CleanExpired removes expired idempotency keys across all tenants and
+// returns the number of rows deleted. Runs cross-tenant by design (a
+// background scheduler, not a per-request path), so it uses TxBypass to
+// sidestep the tenant_isolation policy.
+func CleanExpired(ctx context.Context, db *postgres.DB) (int, error) {
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer postgres.Rollback(tx)
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM idempotency_keys WHERE expires_at < now()`); err != nil {
-		return err
+	res, err := tx.ExecContext(ctx, `DELETE FROM idempotency_keys WHERE expires_at < now()`)
+	if err != nil {
+		return 0, err
 	}
-	return tx.Commit()
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+// IdempotencyCleaner adapts CleanExpired to the scheduler's cleaner
+// interface (Cleanup(ctx) (int, error)), matching the shape used by
+// payment.TokenService. Keeps scheduler wiring identical across cleanup
+// tasks, and avoids the scheduler package importing anything from middleware.
+type IdempotencyCleaner struct {
+	db *postgres.DB
+}
+
+func NewIdempotencyCleaner(db *postgres.DB) *IdempotencyCleaner {
+	return &IdempotencyCleaner{db: db}
+}
+
+func (c *IdempotencyCleaner) Cleanup(ctx context.Context) (int, error) {
+	return CleanExpired(ctx, c.db)
 }
 
 // ErrorJSON is a helper that returns a Stripe-style error response for

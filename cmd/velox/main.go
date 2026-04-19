@@ -17,6 +17,7 @@ import (
 	neturl "net/url"
 
 	"github.com/sagarsuperuser/velox/internal/api"
+	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/config"
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
@@ -157,6 +158,7 @@ func serve() {
 	if server.TokenSvc != nil {
 		scheduler.SetTokenCleaner(server.TokenSvc)
 	}
+	scheduler.SetIdempotencyCleaner(mw.NewIdempotencyCleaner(db))
 	if server.PaymentReconciler != nil {
 		scheduler.SetPaymentReconciler(server.PaymentReconciler)
 	}

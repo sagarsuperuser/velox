@@ -120,6 +120,14 @@ var (
 		},
 		[]string{"tenant_id"},
 	)
+
+	scheduledCleanupRows = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "velox_scheduled_cleanup_rows_total",
+			Help: "Rows purged by scheduled cleanup tasks, labeled by target table.",
+		},
+		[]string{"table"},
+	)
 )
 
 // RecordStripeBreakerState updates the tenant's breaker state gauge. Called
@@ -228,6 +236,16 @@ func RecordCreditOperation(opType string) {
 // RecordAutoChargeRetry records an auto-charge retry result ("succeeded" or "failed").
 func RecordAutoChargeRetry(result string) {
 	autoChargeRetries.WithLabelValues(result).Inc()
+}
+
+// RecordScheduledCleanup records rows purged by a scheduled cleanup task.
+// Label values match the target table (e.g. "idempotency_keys",
+// "payment_tokens") so operators can alert per-table on sudden surges.
+func RecordScheduledCleanup(table string, rows int) {
+	if rows <= 0 {
+		return
+	}
+	scheduledCleanupRows.WithLabelValues(table).Add(float64(rows))
 }
 
 // RecordAuditWriteError increments the per-tenant audit write error counter.
