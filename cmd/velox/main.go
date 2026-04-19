@@ -163,6 +163,10 @@ func serve() {
 	if server.PaymentReconciler != nil {
 		scheduler.SetPaymentReconciler(server.PaymentReconciler)
 	}
+	// Leader gating: each replica tries the billing / dunning advisory locks
+	// per tick; the winner runs the work, the losers skip. On crash the TCP
+	// session drops and Postgres auto-releases — no zombie locks.
+	scheduler.SetLocker(billing.NewPostgresLocker(db), postgres.LockKeyBillingScheduler, postgres.LockKeyDunningScheduler)
 
 	// Wire scheduler health tracking so /health/ready can detect stalled schedulers
 	api.SetSchedulerInterval(billingInterval)
@@ -204,7 +208,9 @@ func serve() {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			webhook.NewDispatcher(server.OutboxStore, server.WebhookOutSvc, webhook.DispatcherConfig{}).Start(ctx)
+			dispatcher := webhook.NewDispatcher(server.OutboxStore, server.WebhookOutSvc, webhook.DispatcherConfig{})
+			dispatcher.SetLocker(server.OutboxStore)
+			dispatcher.Start(ctx)
 		}()
 	}
 

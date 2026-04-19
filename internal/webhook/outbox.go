@@ -245,6 +245,18 @@ func (s *OutboxStore) ProcessBatch(ctx context.Context, limit int, handler Outbo
 	return len(batch), nil
 }
 
+// TryDispatcherLock tries to acquire the cluster-wide advisory lock that
+// gates the outbox dispatcher tick. Returns (lock, true, nil) on success;
+// caller defers lock.Release. Returns (nil, false, nil) if another replica
+// holds it. Implements webhook.DispatchLocker.
+func (s *OutboxStore) TryDispatcherLock(ctx context.Context) (DispatchLock, bool, error) {
+	lock, ok, err := s.db.TryAdvisoryLock(ctx, postgres.LockKeyOutboxDispatcher)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return lock, true, nil
+}
+
 // PendingCount returns the current number of rows awaiting dispatch. Intended
 // for metrics (operator gauge) — not on the hot path.
 func (s *OutboxStore) PendingCount(ctx context.Context) (int64, error) {
