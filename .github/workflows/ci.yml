@@ -61,6 +61,12 @@ jobs:
             ALTER DEFAULT PRIVILEGES FOR ROLE velox IN SCHEMA public GRANT ALL ON SEQUENCES TO velox_test_app;
           "
 
+      - name: Verify test DB
+        run: |
+          PGPASSWORD=velox psql -h localhost -U velox -d velox_test -c "SELECT extname FROM pg_extension WHERE extname = 'pgcrypto'"
+          PGPASSWORD=velox psql -h localhost -U velox -d velox_test -c "SELECT current_user, current_database()"
+          PGPASSWORD=velox psql -h localhost -U velox -d velox_test -c "CREATE TABLE _test_probe (id int); DROP TABLE _test_probe;"
+
       - name: Integration Tests
         run: go test -p 1 ./... -count=1 -short=false
         env:
