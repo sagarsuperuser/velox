@@ -337,7 +337,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		r.Use(auth.Middleware(authSvc))
 		r.Use(rateLimiter.Middleware()) // After auth so tenant ID is available for bucket key
 		r.Use(mw.Idempotency(db))
-		r.Use(mw.AuditLog(db))
+		r.Use(mw.AuditLog(db, settingsStore))
 
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/api-keys", authH.Routes())
 		r.With(auth.Require(auth.PermCustomerRead)).Mount("/customers", customerH.Routes())
