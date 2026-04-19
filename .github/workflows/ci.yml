@@ -141,7 +141,7 @@ jobs:
       - name: Scan SBOM (Grype)
         uses: anchore/scan-action@v7
         with:
-          path: velox-sbom.spdx.json
+          sbom: velox-sbom.spdx.json
           fail-build: true
           severity-cutoff: high
 
