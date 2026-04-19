@@ -96,6 +96,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	// Domain handlers
 	tenantH := tenant.NewHandler(tenant.NewService(tenant.NewPostgresStore(db)))
 	stripeKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
+	payment.InitStripe(stripeKey)
 	customerStore := customer.NewPostgresStore(db)
 
 	// PII encryption at rest — encrypt customer fields in the DB
@@ -261,6 +262,11 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		slog.Info("REDIS_URL not set, rate limiting will fail open")
 	}
 	rateLimiter := mw.NewRateLimiter(rdb, 100, time.Minute)
+	// In production, refuse requests when Redis is unreachable rather than
+	// silently disabling rate limiting (DDoS vector).
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
+		rateLimiter.SetFailClosed(true)
+	}
 
 	r := chi.NewRouter()
 	r.Use(mw.Tracing())

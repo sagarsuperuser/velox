@@ -140,6 +140,21 @@ func TestRateLimiter_NilDB_FailsOpen(t *testing.T) {
 	}
 }
 
+func TestRateLimiter_NilDB_FailsClosed_WhenConfigured(t *testing.T) {
+	rl := NewRateLimiter(nil, 1, time.Minute)
+	rl.SetFailClosed(true)
+	handler := rl.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/v1/customers", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("fail-closed should return 429 when Redis missing, got %d", rec.Code)
+	}
+}
+
 func TestRateLimiter_HealthSkipped(t *testing.T) {
 	rl := NewRateLimiter(nil, 1, time.Minute)
 	handler := rl.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

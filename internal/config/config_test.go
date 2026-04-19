@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -193,6 +194,37 @@ func TestValidate_DBPoolSanity(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected warning about idle > open conns")
+	}
+}
+
+func TestLoad_ProductionRequiresEncryptionKey(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("VELOX_ENCRYPTION_KEY", "")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when VELOX_ENCRYPTION_KEY is missing in production")
+	}
+	if !strings.Contains(err.Error(), "VELOX_ENCRYPTION_KEY") {
+		t.Errorf("error should mention encryption key, got: %v", err)
+	}
+}
+
+func TestLoad_InvalidEncryptionKeyFormat(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	t.Setenv("APP_ENV", "local")
+	t.Setenv("VELOX_ENCRYPTION_KEY", "tooshort")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for invalid encryption key length")
+	}
+
+	t.Setenv("VELOX_ENCRYPTION_KEY", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+	_, err = Load()
+	if err == nil {
+		t.Fatal("expected error for invalid hex in encryption key")
 	}
 }
 

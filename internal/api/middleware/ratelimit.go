@@ -21,9 +21,18 @@ import (
 // Powered by go-redis/redis_rate — the official rate limiting companion for
 // go-redis, used across the go-redis ecosystem.
 type RateLimiter struct {
-	limiter *redis_rate.Limiter
-	limit   redis_rate.Limit
-	rdb     *goredis.Client
+	limiter    *redis_rate.Limiter
+	limit      redis_rate.Limit
+	rdb        *goredis.Client
+	failClosed bool
+}
+
+// SetFailClosed controls what happens when Redis is unreachable or unconfigured.
+// Default (false) — fail open: allow all requests. Appropriate for local/dev.
+// true — fail closed: return 429 for every non-infra request. Use in production,
+// where availability without rate limiting is a DDoS vector.
+func (rl *RateLimiter) SetFailClosed(v bool) {
+	rl.failClosed = v
 }
 
 // NewRateLimiter creates a Redis-backed GCRA rate limiter.
@@ -89,18 +98,28 @@ func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 }
 
 // allow checks the rate limit for the given key.
-// Returns (remaining, resetAt, allowed). Fails open on any error.
+// Returns (remaining, resetAt, allowed). On Redis absence or error, behavior
+// depends on failClosed — see SetFailClosed.
 func (rl *RateLimiter) allow(r *http.Request, key string) (int, time.Time, bool) {
 	now := time.Now().UTC()
 
-	// No Redis configured — fail open
 	if rl.limiter == nil {
+		if rl.failClosed {
+			slog.Error("rate_limiter: no redis configured, failing closed", "key", key)
+			return 0, now.Add(rl.limit.Period), false
+		}
 		return rl.limit.Rate - 1, now.Add(rl.limit.Period), true
 	}
 
 	res, err := rl.limiter.Allow(r.Context(), "rl:"+key, rl.limit)
 	if err != nil {
-		// Fail open: availability > perfect rate enforcement
+		if rl.failClosed {
+			slog.Error("rate_limiter: redis error, failing closed",
+				"error", err,
+				"key", key,
+			)
+			return 0, now.Add(rl.limit.Period), false
+		}
 		slog.Warn("rate_limiter: redis error, failing open",
 			"error", err,
 			"key", key,
