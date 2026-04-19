@@ -219,18 +219,8 @@ func (h *Handler) changePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate proration invoice or credit for immediate plan changes
-	if input.Immediate && result.ProrationFactor > 0 && h.plans != nil && h.invoices != nil {
-		if prorationResult, err := h.handleProration(r.Context(), tenantID, result, oldPlanID); err != nil {
-			slog.Error("proration failed (plan change succeeded)",
-				"subscription_id", id,
-				"error", err,
-			)
-		} else if prorationResult != nil {
-			result.Proration = prorationResult
-		}
-	}
-
+	// Audit the plan change first — it is committed regardless of what happens
+	// to the proration step below, so the audit trail must reflect that truth.
 	if h.auditLogger != nil {
 		_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.plan_changed", "subscription", result.Subscription.ID, map[string]any{
 			"customer_id": result.Subscription.CustomerID,
@@ -238,6 +228,49 @@ func (h *Handler) changePlan(w http.ResponseWriter, r *http.Request) {
 			"new_plan_id": input.NewPlanID,
 			"immediate":   input.Immediate,
 		})
+	}
+
+	// Generate proration invoice or credit for immediate plan changes.
+	//
+	// NOTE on non-atomicity: the plan change has already committed above. If
+	// the proration step below fails, the subscription is on the new plan but
+	// no invoice/credit exists yet. Previously this error was swallowed and
+	// the client got 200 OK — customers ended up with free upgrades (no
+	// proration invoice) or missing credits (no downgrade credit).
+	//
+	// We now return 500 with a distinct error code so clients and operators
+	// can distinguish this partial-success case from a total failure. Proper
+	// atomicity (cross-domain tx or outbox) is tracked as a follow-up; the
+	// plan change is durable, and operators can reconcile via logs until then.
+	if input.Immediate && result.ProrationFactor > 0 && h.plans != nil && h.invoices != nil {
+		prorationResult, prorationErr := h.handleProration(r.Context(), tenantID, result, oldPlanID)
+		if prorationErr != nil {
+			slog.Error("proration failed after plan change committed",
+				"subscription_id", id,
+				"tenant_id", tenantID,
+				"customer_id", result.Subscription.CustomerID,
+				"old_plan_id", oldPlanID,
+				"new_plan_id", input.NewPlanID,
+				"proration_factor", result.ProrationFactor,
+				"plan_changed_at", result.Subscription.PlanChangedAt,
+				"error", prorationErr,
+			)
+			if h.auditLogger != nil {
+				_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.proration_failed", "subscription", result.Subscription.ID, map[string]any{
+					"customer_id":      result.Subscription.CustomerID,
+					"old_plan_id":      oldPlanID,
+					"new_plan_id":      input.NewPlanID,
+					"proration_factor": result.ProrationFactor,
+					"error":            prorationErr.Error(),
+				})
+			}
+			respond.Error(w, r, http.StatusInternalServerError, "api_error", "proration_failed",
+				"plan change succeeded but proration generation failed — subscription is on the new plan; retry or contact support to reconcile")
+			return
+		}
+		if prorationResult != nil {
+			result.Proration = prorationResult
+		}
 	}
 
 	respond.JSON(w, r, http.StatusOK, result)
