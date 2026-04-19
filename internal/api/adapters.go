@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
@@ -189,4 +190,25 @@ func (a *prorationInvoiceCreatorAdapter) GetByProrationSource(ctx context.Contex
 
 func (a *prorationInvoiceCreatorAdapter) NextInvoiceNumber(ctx context.Context, tenantID string) (string, error) {
 	return a.numberer.NextInvoiceNumber(ctx, tenantID)
+}
+
+// prorationTaxApplierAdapter bridges billing.Engine → subscription.ProrationTaxApplier.
+// Narrow translation: same signature, different named return type so the
+// subscription package doesn't import billing.
+type prorationTaxApplierAdapter struct {
+	engine *billing.Engine
+}
+
+func (a *prorationTaxApplierAdapter) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, currency string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (subscription.ProrationTaxResult, error) {
+	r, err := a.engine.ApplyTaxToLineItems(ctx, tenantID, customerID, currency, subtotal, discount, lineItems)
+	if err != nil {
+		return subscription.ProrationTaxResult{}, err
+	}
+	return subscription.ProrationTaxResult{
+		TaxAmountCents: r.TaxAmountCents,
+		TaxRateBP:      r.TaxRateBP,
+		TaxName:        r.TaxName,
+		TaxCountry:     r.TaxCountry,
+		TaxID:          r.TaxID,
+	}, nil
 }

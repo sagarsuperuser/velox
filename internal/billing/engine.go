@@ -130,6 +130,139 @@ func (e *Engine) SetCouponApplier(c CouponApplier) {
 	e.coupons = c
 }
 
+// TaxApplication is the invoice-level tax summary returned by
+// ApplyTaxToLineItems. The line items passed in are mutated in place with
+// per-line TaxRateBP, TaxAmountCents, and TotalAmountCents so caller-side sums
+// reconcile to TaxAmountCents.
+type TaxApplication struct {
+	TaxAmountCents int64
+	TaxRateBP      int
+	TaxName        string
+	TaxCountry     string
+	TaxID          string
+}
+
+// ApplyTaxToLineItems resolves the tenant + customer tax configuration and
+// computes tax against the post-discount subtotal. Shared by the main billing
+// path (RunCycle) and subscription proration so both invoice shapes carry the
+// same tax fields — previously proration invoices were silently tax-free.
+//
+// Behaviour:
+//   - Tenant-level rate/name come from tenant_settings; customer billing profile
+//     overrides rate (bp.TaxOverrideRateBP) and zeroes it for tax_exempt customers.
+//   - If a tax.Calculator is wired it's consulted with per-line inputs whose
+//     AmountCents already reflects each line's proportional share of the
+//     invoice-level discount; calculator errors produce a warning and fall
+//     through to zero tax (same behaviour as the original inline path).
+//   - Otherwise, the inline math uses banker's rounding and corrects the last
+//     line for any ±1¢ rounding drift so line-level tax sums match the
+//     invoice-level total.
+//
+// Safe to call with subtotal-discount <= 0 — returns zero tax and leaves line
+// items untouched.
+func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, currency string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (TaxApplication, error) {
+	var app TaxApplication
+
+	if e.settings != nil {
+		if ts, err := e.settings.Get(ctx, tenantID); err == nil {
+			app.TaxRateBP = ts.TaxRateBP
+			app.TaxName = ts.TaxName
+		}
+	}
+
+	var customerAddr tax.CustomerAddress
+	if e.profiles != nil && customerID != "" {
+		if bp, err := e.profiles.GetBillingProfile(ctx, tenantID, customerID); err == nil {
+			customerAddr = tax.CustomerAddress{
+				Line1:      bp.AddressLine1,
+				City:       bp.City,
+				State:      bp.State,
+				PostalCode: bp.PostalCode,
+				Country:    bp.Country,
+			}
+			if bp.TaxExempt {
+				app.TaxRateBP = 0
+				app.TaxName = ""
+			} else {
+				if bp.TaxOverrideRateBP != nil {
+					app.TaxRateBP = *bp.TaxOverrideRateBP
+				}
+				app.TaxCountry = bp.Country
+				app.TaxID = bp.TaxID
+			}
+		}
+	}
+
+	discountedSubtotal := subtotal - discount
+	if discountedSubtotal <= 0 {
+		return app, nil
+	}
+
+	if e.taxCalc != nil {
+		taxInputs := make([]tax.LineItemInput, len(lineItems))
+		for i, li := range lineItems {
+			taxable := li.AmountCents
+			if subtotal > 0 && discount > 0 {
+				taxable = max(li.AmountCents-money.RoundHalfToEven(li.AmountCents*discount, subtotal), 0)
+			}
+			taxInputs[i] = tax.LineItemInput{
+				AmountCents: taxable,
+				Description: li.Description,
+				Quantity:    li.Quantity,
+			}
+		}
+		taxResult, taxErr := e.taxCalc.CalculateTax(ctx, currency, customerAddr, taxInputs)
+		if taxErr != nil {
+			slog.Warn("tax calculation failed, proceeding with zero tax",
+				"error", taxErr, "tenant_id", tenantID, "customer_id", customerID)
+			return app, nil
+		}
+		if taxResult != nil && taxResult.TotalTaxAmountCents > 0 {
+			app.TaxAmountCents = taxResult.TotalTaxAmountCents
+			app.TaxRateBP = taxResult.TaxRateBP
+			if taxResult.TaxName != "" {
+				app.TaxName = taxResult.TaxName
+			}
+			if taxResult.TaxCountry != "" {
+				app.TaxCountry = taxResult.TaxCountry
+			}
+			for _, lt := range taxResult.LineItemTaxes {
+				if lt.Index >= 0 && lt.Index < len(lineItems) {
+					lineItems[lt.Index].TaxRateBP = lt.TaxRateBP
+					lineItems[lt.Index].TaxAmountCents = lt.TaxAmountCents
+					lineItems[lt.Index].TotalAmountCents = lineItems[lt.Index].AmountCents + lt.TaxAmountCents
+				}
+			}
+		}
+		return app, nil
+	}
+
+	if app.TaxRateBP <= 0 {
+		return app, nil
+	}
+	app.TaxAmountCents = money.RoundHalfToEven(discountedSubtotal*int64(app.TaxRateBP), 10000)
+
+	var lineTaxSum int64
+	for i := range lineItems {
+		taxable := lineItems[i].AmountCents
+		if subtotal > 0 && discount > 0 {
+			taxable = max(lineItems[i].AmountCents-money.RoundHalfToEven(lineItems[i].AmountCents*discount, subtotal), 0)
+		}
+		lineTax := money.RoundHalfToEven(taxable*int64(app.TaxRateBP), 10000)
+		lineItems[i].TaxRateBP = app.TaxRateBP
+		lineItems[i].TaxAmountCents = lineTax
+		lineItems[i].TotalAmountCents = lineItems[i].AmountCents + lineTax
+		lineTaxSum += lineTax
+	}
+	if len(lineItems) > 0 && lineTaxSum != app.TaxAmountCents {
+		diff := app.TaxAmountCents - lineTaxSum
+		last := &lineItems[len(lineItems)-1]
+		last.TaxAmountCents += diff
+		last.TotalAmountCents += diff
+	}
+	return app, nil
+}
+
 // RunCycle finds all subscriptions due for billing and generates invoices.
 // Returns the number of invoices generated and any errors encountered.
 func (e *Engine) RunCycle(ctx context.Context, batchSize int) (int, []error) {
@@ -369,48 +502,15 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	now := e.clock.Now()
 	netDays := 30
 
-	var taxRateBP int // basis points: 1850 = 18.50%
-	var taxName string
-	var taxCountry string
-	var taxID string
 	if e.settings == nil {
 		return false, fmt.Errorf("billing engine: settings reader is required for invoice numbering")
 	}
-	if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil {
-		if ts.NetPaymentTerms > 0 {
-			netDays = ts.NetPaymentTerms
-		}
-		taxRateBP = ts.TaxRateBP
-		taxName = ts.TaxName
+	if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil && ts.NetPaymentTerms > 0 {
+		netDays = ts.NetPaymentTerms
 	}
 	invoiceNumber, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID)
 	if err != nil {
 		return false, fmt.Errorf("allocate invoice number: %w", err)
-	}
-
-	// Resolve per-customer billing profile for tax overrides and address
-	var customerAddr tax.CustomerAddress
-	if e.profiles != nil {
-		if bp, err := e.profiles.GetBillingProfile(ctx, sub.TenantID, sub.CustomerID); err == nil {
-			customerAddr = tax.CustomerAddress{
-				Line1:      bp.AddressLine1,
-				City:       bp.City,
-				State:      bp.State,
-				PostalCode: bp.PostalCode,
-				Country:    bp.Country,
-			}
-			if bp.TaxExempt {
-				taxRateBP = 0
-				taxName = ""
-			} else {
-				// Per-customer rate override takes precedence over tenant default
-				if bp.TaxOverrideRateBP != nil {
-					taxRateBP = *bp.TaxOverrideRateBP
-				}
-				taxCountry = bp.Country
-				taxID = bp.TaxID
-			}
-		}
 	}
 
 	// Apply coupon discount — Stripe-style order: subtotal → discount → tax →
@@ -430,76 +530,12 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	}
 	discountedSubtotal := subtotal - discountCents
 
-	// Calculate tax — delegate to the tax calculator if set, otherwise use inline math.
-	// Tax base is `discountedSubtotal` (post-coupon) so we tax what the customer
-	// actually pays. Individual line-item tax amounts scale proportionally to
-	// their share of the discount so tax row sums still reconcile to the
-	// invoice-level total.
-	var taxAmountCents int64
-	if e.taxCalc != nil && discountedSubtotal > 0 {
-		taxInputs := make([]tax.LineItemInput, len(lineItems))
-		for i, li := range lineItems {
-			// Distribute the invoice-level discount proportionally across line
-			// items so each line's tax base reflects the discount. When
-			// subtotal is 0 we skip (no discount to distribute).
-			taxable := li.AmountCents
-			if subtotal > 0 && discountCents > 0 {
-				taxable = max(li.AmountCents-money.RoundHalfToEven(li.AmountCents*discountCents, subtotal), 0)
-			}
-			taxInputs[i] = tax.LineItemInput{
-				AmountCents: taxable,
-				Description: li.Description,
-				Quantity:    li.Quantity,
-			}
-		}
-
-		taxResult, taxErr := e.taxCalc.CalculateTax(ctx, invoiceCurrency, customerAddr, taxInputs)
-		if taxErr != nil {
-			slog.Warn("tax calculation failed, proceeding with zero tax",
-				"error", taxErr, "subscription_id", sub.ID)
-		} else if taxResult != nil && taxResult.TotalTaxAmountCents > 0 {
-			taxAmountCents = taxResult.TotalTaxAmountCents
-			taxRateBP = taxResult.TaxRateBP
-			if taxResult.TaxName != "" {
-				taxName = taxResult.TaxName
-			}
-			if taxResult.TaxCountry != "" {
-				taxCountry = taxResult.TaxCountry
-			}
-			// Apply per-line-item taxes
-			for _, lt := range taxResult.LineItemTaxes {
-				if lt.Index >= 0 && lt.Index < len(lineItems) {
-					lineItems[lt.Index].TaxRateBP = lt.TaxRateBP
-					lineItems[lt.Index].TaxAmountCents = lt.TaxAmountCents
-					lineItems[lt.Index].TotalAmountCents = lineItems[lt.Index].AmountCents + lt.TaxAmountCents
-				}
-			}
-		}
-	} else if taxRateBP > 0 && discountedSubtotal > 0 {
-		// Inline manual tax math (legacy path when no calculator is wired).
-		// Banker's rounding on the total and each line item for zero-bias accounting.
-		taxAmountCents = money.RoundHalfToEven(discountedSubtotal*int64(taxRateBP), 10000)
-
-		var lineTaxSum int64
-		for i := range lineItems {
-			// Compute each line's share of the discount, then tax the net.
-			taxable := lineItems[i].AmountCents
-			if subtotal > 0 && discountCents > 0 {
-				taxable = max(lineItems[i].AmountCents-money.RoundHalfToEven(lineItems[i].AmountCents*discountCents, subtotal), 0)
-			}
-			lineTax := money.RoundHalfToEven(taxable*int64(taxRateBP), 10000)
-			lineItems[i].TaxRateBP = taxRateBP
-			lineItems[i].TaxAmountCents = lineTax
-			lineItems[i].TotalAmountCents = lineItems[i].AmountCents + lineTax
-			lineTaxSum += lineTax
-		}
-		if len(lineItems) > 0 && lineTaxSum != taxAmountCents {
-			diff := taxAmountCents - lineTaxSum
-			last := &lineItems[len(lineItems)-1]
-			last.TaxAmountCents += diff
-			last.TotalAmountCents += diff
-		}
-	}
+	taxApp, _ := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, lineItems)
+	taxAmountCents := taxApp.TaxAmountCents
+	taxRateBP := taxApp.TaxRateBP
+	taxName := taxApp.TaxName
+	taxCountry := taxApp.TaxCountry
+	taxID := taxApp.TaxID
 
 	totalWithTax := discountedSubtotal + taxAmountCents
 	dueAt := now.AddDate(0, 0, netDays)
