@@ -53,7 +53,8 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Power, Eye, Copy, Search, Loader2 } from 'lucide-react'
+import { Plus, Power, Eye, Copy, Search, Loader2, Ticket } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 const createCouponSchema = z.object({
   code: z.string().min(1, 'Code is required'),
@@ -151,12 +152,10 @@ export default function CouponsPage() {
             Create and manage discount codes{coupons.length > 0 ? ` · ${stats.active} active of ${coupons.length} total` : ''}
           </p>
         </div>
-        {coupons.length > 0 && (
-          <Button size="sm" onClick={() => setShowCreate(true)}>
-            <Plus size={16} className="mr-2" />
-            Create Coupon
-          </Button>
-        )}
+        <Button size="sm" onClick={() => setShowCreate(true)}>
+          <Plus size={16} className="mr-2" />
+          Create Coupon
+        </Button>
       </div>
 
       {/* Tab filters + search */}
@@ -209,26 +208,28 @@ export default function CouponsPage() {
           ) : loading ? (
             <TableSkeleton columns={8} />
           ) : coupons.length === 0 ? (
-            <div className="p-12 text-center">
-              {filterStatus ? (
-                <>
-                  <p className="text-sm font-medium text-foreground">No {filterStatus} coupons</p>
-                  <p className="text-sm text-muted-foreground mt-1">Try a different filter</p>
-                  <Button variant="outline" size="sm" className="mt-4" onClick={() => setFilterStatus('')}>
-                    Clear filter
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm font-medium text-foreground">No coupons</p>
-                  <p className="text-sm text-muted-foreground mt-1">Create your first coupon to offer discounts</p>
-                  <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>
-                    <Plus size={16} className="mr-2" />
-                    Create Coupon
-                  </Button>
-                </>
-              )}
-            </div>
+            filterStatus ? (
+              <EmptyState
+                title={`No ${filterStatus} coupons`}
+                description="Try a different filter to see more results."
+                action={{
+                  label: 'Clear filter',
+                  variant: 'outline',
+                  onClick: () => setFilterStatus(''),
+                }}
+              />
+            ) : (
+              <EmptyState
+                icon={Ticket}
+                title="No coupons yet"
+                description="Create your first coupon to offer discounts to customers."
+                action={{
+                  label: 'Create Coupon',
+                  icon: Plus,
+                  onClick: () => setShowCreate(true),
+                }}
+              />
+            )
           ) : filteredCoupons.length === 0 ? (
             <p className="px-6 py-8 text-sm text-muted-foreground text-center">
               No coupons match your filters

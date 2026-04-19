@@ -44,6 +44,7 @@ import {
 import { CardListSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Plus, Key, Shield, Eye, ChevronDown, Loader2, Clock } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 const createApiKeySchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -133,12 +134,10 @@ export default function ApiKeysPage() {
           <h1 className="text-2xl font-semibold text-foreground">API Keys</h1>
           <p className="text-sm text-muted-foreground mt-1">Manage API authentication keys{activeKeys.length > 0 ? ` · ${activeKeys.length} active` : ''}</p>
         </div>
-        {keys.length > 0 && (
-          <Button size="sm" onClick={() => setShowCreate(true)}>
-            <Plus size={16} className="mr-2" />
-            Create API Key
-          </Button>
-        )}
+        <Button size="sm" onClick={() => setShowCreate(true)}>
+          <Plus size={16} className="mr-2" />
+          Create API Key
+        </Button>
       </div>
 
       {errorMsg ? (
@@ -154,14 +153,17 @@ export default function ApiKeysPage() {
         </div>
       ) : keys.length === 0 ? (
         <Card className="mt-6">
-          <CardContent className="p-12 text-center">
-            <Key size={32} className="text-muted-foreground/40 mx-auto mb-3" />
-            <p className="text-sm font-medium text-foreground">No API keys</p>
-            <p className="text-sm text-muted-foreground mt-1">Create an API key to start using the Velox API</p>
-            <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>
-              <Plus size={16} className="mr-2" />
-              Create API Key
-            </Button>
+          <CardContent className="p-0">
+            <EmptyState
+              icon={Key}
+              title="No API keys yet"
+              description="Create an API key to start using the Velox API from your backend or CLI."
+              action={{
+                label: 'Create API Key',
+                icon: Plus,
+                onClick: () => setShowCreate(true),
+              }}
+            />
           </CardContent>
         </Card>
       ) : (

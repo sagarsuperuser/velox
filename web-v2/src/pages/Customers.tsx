@@ -54,7 +54,8 @@ import {
 } from '@/components/ui/form'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Users } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 const createCustomerSchema = z.object({
   external_id: z.string().min(1, 'External ID is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores allowed'),
@@ -184,12 +185,10 @@ export default function CustomersPage() {
               Export CSV
             </Button>
           )}
-          {total > 0 && (
-            <Button size="sm" onClick={() => setShowCreate(true)}>
-              <Plus size={16} className="mr-2" />
-              Add Customer
-            </Button>
-          )}
+          <Button size="sm" onClick={() => setShowCreate(true)}>
+            <Plus size={16} className="mr-2" />
+            Add Customer
+          </Button>
         </div>
       </div>
 
@@ -241,26 +240,28 @@ export default function CustomersPage() {
           ) : loading ? (
             <TableSkeleton columns={5} />
           ) : total === 0 ? (
-            <div className="p-12 text-center">
-              {filterStatus ? (
-                <>
-                  <p className="text-sm font-medium text-foreground">No {filterStatus} customers</p>
-                  <p className="text-sm text-muted-foreground mt-1">Try a different filter</p>
-                  <Button variant="outline" size="sm" className="mt-4" onClick={() => { setFilterStatus(''); setPage(1) }}>
-                    Clear filter
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm font-medium text-foreground">No customers yet</p>
-                  <p className="text-sm text-muted-foreground mt-1">Add your first customer to start billing</p>
-                  <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>
-                    <Plus size={16} className="mr-2" />
-                    Add Customer
-                  </Button>
-                </>
-              )}
-            </div>
+            filterStatus ? (
+              <EmptyState
+                title={`No ${filterStatus} customers`}
+                description="Try a different filter to see more results."
+                action={{
+                  label: 'Clear filter',
+                  variant: 'outline',
+                  onClick: () => { setFilterStatus(''); setPage(1) },
+                }}
+              />
+            ) : (
+              <EmptyState
+                icon={Users}
+                title="No customers yet"
+                description="Add your first customer to start billing."
+                action={{
+                  label: 'Add Customer',
+                  icon: Plus,
+                  onClick: () => setShowCreate(true),
+                }}
+              />
+            )
           ) : sorted.length === 0 ? (
             <p className="px-6 py-8 text-sm text-muted-foreground text-center">
               No customers match filters on this page

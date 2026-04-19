@@ -62,7 +62,8 @@ import {
 } from '@/components/ui/form'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, FileMinus } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 const creditNoteSchema = z.object({
   invoice_id: z.string().min(1, 'Invoice is required'),
@@ -214,11 +215,9 @@ export default function CreditNotesPage() {
               <Download size={16} className="mr-2" /> Export
             </Button>
           )}
-          {notes.length > 0 && (
-            <Button size="sm" onClick={() => setShowCreate(true)}>
-              <Plus size={16} className="mr-2" /> Issue Credit Note
-            </Button>
-          )}
+          <Button size="sm" onClick={() => setShowCreate(true)}>
+            <Plus size={16} className="mr-2" /> Issue Credit Note
+          </Button>
         </div>
       </div>
 
@@ -302,26 +301,29 @@ export default function CreditNotesPage() {
             </div>
           ) : loading ? (
             <TableSkeleton columns={7} />
-          ) :notes.length === 0 ? (
-            <div className="p-12 text-center">
-              {filterStatus ? (
-                <>
-                  <p className="text-sm font-medium text-foreground">No {filterStatus} credit notes</p>
-                  <p className="text-sm text-muted-foreground mt-1">Try a different filter</p>
-                  <Button variant="outline" size="sm" className="mt-4" onClick={() => { setFilterStatus(''); setPage(1) }}>
-                    Clear filter
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm font-medium text-foreground">No credit notes yet</p>
-                  <p className="text-sm text-muted-foreground mt-1">Issue a credit note to apply credits or refunds against invoices</p>
-                  <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>
-                    <Plus size={16} className="mr-2" /> Issue Credit Note
-                  </Button>
-                </>
-              )}
-            </div>
+          ) : notes.length === 0 ? (
+            filterStatus ? (
+              <EmptyState
+                title={`No ${filterStatus} credit notes`}
+                description="Try a different filter to see more results."
+                action={{
+                  label: 'Clear filter',
+                  variant: 'outline',
+                  onClick: () => { setFilterStatus(''); setPage(1) },
+                }}
+              />
+            ) : (
+              <EmptyState
+                icon={FileMinus}
+                title="No credit notes yet"
+                description="Issue a credit note to apply credits or refunds against invoices."
+                action={{
+                  label: 'Issue Credit Note',
+                  icon: Plus,
+                  onClick: () => setShowCreate(true),
+                }}
+              />
+            )
           ) : filtered.length === 0 ? (
             <p className="px-6 py-8 text-sm text-muted-foreground text-center">
               No credit notes match your search
