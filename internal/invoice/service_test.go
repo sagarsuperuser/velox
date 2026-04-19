@@ -40,6 +40,16 @@ func (m *memStore) Get(_ context.Context, tenantID, id string) (domain.Invoice, 
 	return inv, nil
 }
 
+func (m *memStore) GetByProrationSource(_ context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.Invoice, error) {
+	for _, inv := range m.invoices {
+		if inv.TenantID == tenantID && inv.SubscriptionID == subscriptionID &&
+			inv.SourcePlanChangedAt != nil && inv.SourcePlanChangedAt.Equal(planChangedAt) {
+			return inv, nil
+		}
+	}
+	return domain.Invoice{}, errs.ErrNotFound
+}
+
 func (m *memStore) GetByNumber(_ context.Context, tenantID, number string) (domain.Invoice, error) {
 	for _, inv := range m.invoices {
 		if inv.TenantID == tenantID && inv.InvoiceNumber == number {
@@ -143,6 +153,18 @@ func (m *memStore) ListApproachingDue(_ context.Context, _ int) ([]domain.Invoic
 }
 
 func (m *memStore) CreateWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	// Emulate the proration dedup partial unique index. Without this, tests
+	// that exercise retry-after-partial-failure paths silently double-insert
+	// rows the real DB would have rejected.
+	if inv.SourcePlanChangedAt != nil {
+		for _, existing := range m.invoices {
+			if existing.TenantID == tenantID && existing.SubscriptionID == inv.SubscriptionID &&
+				existing.SourcePlanChangedAt != nil && existing.SourcePlanChangedAt.Equal(*inv.SourcePlanChangedAt) {
+				return domain.Invoice{}, errs.ErrAlreadyExists
+			}
+		}
+	}
+
 	inv.ID = fmt.Sprintf("vlx_inv_%d", len(m.invoices)+1)
 	inv.TenantID = tenantID
 	now := time.Now().UTC()

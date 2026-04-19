@@ -23,6 +23,13 @@ type GrantInput struct {
 	Description string     `json:"description"`
 	InvoiceID   string     `json:"invoice_id,omitempty"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+
+	// SourceSubscriptionID + SourcePlanChangedAt, when both set, mark this
+	// grant as a downgrade proration credit. The store enforces
+	// (tenant, source_subscription_id, source_plan_changed_at) uniqueness so
+	// retries return ErrAlreadyExists instead of duplicating the credit.
+	SourceSubscriptionID string     `json:"source_subscription_id,omitempty"`
+	SourcePlanChangedAt  *time.Time `json:"source_plan_changed_at,omitempty"`
 }
 
 func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) (domain.CreditLedgerEntry, error) {
@@ -44,13 +51,22 @@ func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) 
 	}
 
 	return s.store.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
-		CustomerID:  input.CustomerID,
-		EntryType:   domain.CreditGrant,
-		AmountCents: input.AmountCents,
-		Description: desc,
-		InvoiceID:   input.InvoiceID,
-		ExpiresAt:   input.ExpiresAt,
+		CustomerID:           input.CustomerID,
+		EntryType:            domain.CreditGrant,
+		AmountCents:          input.AmountCents,
+		Description:          desc,
+		InvoiceID:            input.InvoiceID,
+		ExpiresAt:            input.ExpiresAt,
+		SourceSubscriptionID: input.SourceSubscriptionID,
+		SourcePlanChangedAt:  input.SourcePlanChangedAt,
 	})
+}
+
+// GetByProrationSource exposes the store-level source lookup. Used by the
+// subscription proration path to complete an idempotent retry after
+// AppendEntry returns ErrAlreadyExists.
+func (s *Service) GetByProrationSource(ctx context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error) {
+	return s.store.GetByProrationSource(ctx, tenantID, subscriptionID, planChangedAt)
 }
 
 // ApplyToInvoice deducts credits from a customer's balance AND reduces the

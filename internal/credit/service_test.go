@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 type memStore struct {
@@ -18,6 +19,18 @@ func newMemStore() *memStore {
 }
 
 func (m *memStore) AppendEntry(_ context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
+	// Emulate the proration dedup partial unique index. Without this, tests
+	// exercising retry-after-partial-failure paths silently double-insert
+	// rows the real DB would have rejected.
+	if entry.SourceSubscriptionID != "" && entry.SourcePlanChangedAt != nil {
+		for _, e := range m.entries {
+			if e.TenantID == tenantID && e.SourceSubscriptionID == entry.SourceSubscriptionID &&
+				e.SourcePlanChangedAt != nil && e.SourcePlanChangedAt.Equal(*entry.SourcePlanChangedAt) {
+				return domain.CreditLedgerEntry{}, errs.ErrAlreadyExists
+			}
+		}
+	}
+
 	// Compute balance
 	var balance int64
 	for _, e := range m.entries {
@@ -31,6 +44,16 @@ func (m *memStore) AppendEntry(_ context.Context, tenantID string, entry domain.
 	entry.CreatedAt = time.Now().UTC()
 	m.entries = append(m.entries, entry)
 	return entry, nil
+}
+
+func (m *memStore) GetByProrationSource(_ context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error) {
+	for _, e := range m.entries {
+		if e.TenantID == tenantID && e.SourceSubscriptionID == subscriptionID &&
+			e.SourcePlanChangedAt != nil && e.SourcePlanChangedAt.Equal(planChangedAt) {
+			return e, nil
+		}
+	}
+	return domain.CreditLedgerEntry{}, errs.ErrNotFound
 }
 
 func (m *memStore) GetBalance(_ context.Context, _, customerID string) (domain.CreditBalance, error) {

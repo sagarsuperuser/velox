@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 // ---------------------------------------------------------------------------
@@ -32,25 +34,33 @@ func (m *plansMock) GetPlan(_ context.Context, _, id string) (domain.Plan, error
 }
 
 type invoicesMock struct {
-	createInvoiceErr error
-	nextNumberErr    error
-	nextNumberCalls  int
-	createdInvoices  []domain.Invoice
+	createInvoiceErr    error
+	nextNumberErr       error
+	nextNumberCalls     int
+	createdInvoices     []domain.Invoice
+	createdLineItems    [][]domain.InvoiceLineItem
+	lookupInvoice       domain.Invoice
+	lookupInvoiceErr    error
+	existingCreateCalls int
 }
 
-func (m *invoicesMock) CreateInvoice(_ context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
+func (m *invoicesMock) CreateInvoiceWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
 	if m.createInvoiceErr != nil {
 		return domain.Invoice{}, m.createInvoiceErr
 	}
-	inv.ID = "vlx_inv_test"
+	inv.ID = fmt.Sprintf("vlx_inv_test_%d", len(m.createdInvoices)+1)
 	inv.TenantID = tenantID
 	m.createdInvoices = append(m.createdInvoices, inv)
+	m.createdLineItems = append(m.createdLineItems, items)
 	return inv, nil
 }
 
-func (m *invoicesMock) CreateLineItem(_ context.Context, _ string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error) {
-	item.ID = "vlx_ili_test"
-	return item, nil
+func (m *invoicesMock) GetByProrationSource(_ context.Context, _, _ string, _ time.Time) (domain.Invoice, error) {
+	m.existingCreateCalls++
+	if m.lookupInvoiceErr != nil {
+		return domain.Invoice{}, m.lookupInvoiceErr
+	}
+	return m.lookupInvoice, nil
 }
 
 func (m *invoicesMock) NextInvoiceNumber(_ context.Context, _ string) (string, error) {
@@ -61,10 +71,23 @@ func (m *invoicesMock) NextInvoiceNumber(_ context.Context, _ string) (string, e
 	return "VLX-000042", nil
 }
 
-type creditsMock struct{ grantErr error }
+type creditsMock struct {
+	grantErr       error
+	grantCalls     []ProrationGrantInput
+	lookupEntry    domain.CreditLedgerEntry
+	lookupEntryErr error
+}
 
-func (m *creditsMock) Grant(_ context.Context, _, _ string, _ int64, _ string) error {
+func (m *creditsMock) GrantProration(_ context.Context, _ string, input ProrationGrantInput) error {
+	m.grantCalls = append(m.grantCalls, input)
 	return m.grantErr
+}
+
+func (m *creditsMock) GetByProrationSource(_ context.Context, _, _ string, _ time.Time) (domain.CreditLedgerEntry, error) {
+	if m.lookupEntryErr != nil {
+		return domain.CreditLedgerEntry{}, m.lookupEntryErr
+	}
+	return m.lookupEntry, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -147,5 +170,182 @@ func TestChangePlan_ProrationFailureSurfacesAs500(t *testing.T) {
 	if stored.PlanID != "plan_new" {
 		t.Errorf("subscription plan_id: got %q, want %q (plan change should commit even when proration fails)",
 			stored.PlanID, "plan_new")
+	}
+}
+
+// TestChangePlan_ProrationDedup_UpgradeReturnsExisting exercises the
+// idempotent-retry path introduced in migration 0005: if a proration invoice
+// for the same (subscription, plan_changed_at) already exists, the store
+// returns errs.ErrAlreadyExists and the handler re-fetches the existing
+// invoice rather than creating a duplicate.
+//
+// Without this, an operator-triggered retry (or any worker that recomputes
+// proration from subscription state) would silently double-bill on the
+// upgrade side, or grant double credits on the downgrade side.
+func TestChangePlan_ProrationDedup_UpgradeReturnsExisting(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	now := time.Now().UTC()
+	periodStart := now.Add(-15 * 24 * time.Hour)
+	periodEnd := now.Add(15 * 24 * time.Hour)
+	store := &memStore{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: tenantID, CustomerID: "cus_1",
+				PlanID: "plan_old", Status: domain.SubscriptionActive,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+			},
+		},
+	}
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+	}}
+
+	existingAt := now.Add(-time.Minute)
+	existingInvoice := domain.Invoice{
+		ID:                  "vlx_inv_prior",
+		TenantID:            tenantID,
+		SubscriptionID:      "sub_1",
+		InvoiceNumber:       "VLX-000001",
+		Status:              domain.InvoiceFinalized,
+		SourcePlanChangedAt: &existingAt,
+	}
+	// CreateInvoiceWithLineItems returns ErrAlreadyExists to emulate the
+	// unique partial index firing. The handler must then call
+	// GetByProrationSource and surface that result instead of bubbling up the
+	// error.
+	invoices := &invoicesMock{
+		createInvoiceErr: errs.ErrAlreadyExists,
+		lookupInvoice:    existingInvoice,
+	}
+	credits := &creditsMock{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+
+	body, _ := json.Marshal(ChangePlanInput{NewPlanID: "plan_new", Immediate: true})
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub_1/change-plan", bytes.NewReader(body))
+
+	reqCtx := context.WithValue(ctx, auth.TestTenantIDKey(), tenantID)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "sub_1")
+	reqCtx = context.WithValue(reqCtx, chi.RouteCtxKey, rctx)
+	req = req.WithContext(reqCtx)
+
+	rr := httptest.NewRecorder()
+	h.changePlan(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (dedup should succeed as idempotent retry), body=%s",
+			rr.Code, rr.Body.String())
+	}
+	if invoices.existingCreateCalls != 1 {
+		t.Errorf("GetByProrationSource call count: got %d, want 1 (must be called on ErrAlreadyExists)",
+			invoices.existingCreateCalls)
+	}
+	if len(invoices.createdInvoices) != 0 {
+		t.Errorf("createdInvoices: got %d, want 0 (dedup must not create a new invoice)", len(invoices.createdInvoices))
+	}
+
+	var resp ChangePlanResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Proration == nil {
+		t.Fatal("response missing proration detail")
+	}
+	if resp.Proration.InvoiceID != existingInvoice.ID {
+		t.Errorf("proration.invoice_id: got %q, want %q (existing id)",
+			resp.Proration.InvoiceID, existingInvoice.ID)
+	}
+	if resp.Proration.Type != "invoice" {
+		t.Errorf("proration.type: got %q, want %q", resp.Proration.Type, "invoice")
+	}
+}
+
+// TestChangePlan_ProrationDedup_DowngradeReturnsExisting exercises the
+// credit-ledger side of proration dedup. Same failure mode as the upgrade
+// variant: a retry with the same (subscription, plan_changed_at) must return
+// the prior credit entry, never double-grant.
+func TestChangePlan_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	now := time.Now().UTC()
+	periodStart := now.Add(-15 * 24 * time.Hour)
+	periodEnd := now.Add(15 * 24 * time.Hour)
+	store := &memStore{
+		subs: map[string]domain.Subscription{
+			"sub_2": {
+				ID: "sub_2", TenantID: tenantID, CustomerID: "cus_2",
+				PlanID: "plan_pro", Status: domain.SubscriptionActive,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+			},
+		},
+	}
+	svc := NewService(store, nil)
+
+	// Downgrade: Pro (3000) → Basic (1000).
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_pro":   {ID: "plan_pro", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+		"plan_basic": {ID: "plan_basic", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
+	}}
+
+	existingEntry := domain.CreditLedgerEntry{
+		ID:                   "vlx_ccl_prior",
+		TenantID:             tenantID,
+		CustomerID:           "cus_2",
+		EntryType:            domain.CreditGrant,
+		AmountCents:          987, // arbitrary — handler must surface this, not recompute.
+		SourceSubscriptionID: "sub_2",
+	}
+
+	invoices := &invoicesMock{}
+	credits := &creditsMock{
+		grantErr:    errs.ErrAlreadyExists,
+		lookupEntry: existingEntry,
+	}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+
+	body, _ := json.Marshal(ChangePlanInput{NewPlanID: "plan_basic", Immediate: true})
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub_2/change-plan", bytes.NewReader(body))
+
+	reqCtx := context.WithValue(ctx, auth.TestTenantIDKey(), tenantID)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "sub_2")
+	reqCtx = context.WithValue(reqCtx, chi.RouteCtxKey, rctx)
+	req = req.WithContext(reqCtx)
+
+	rr := httptest.NewRecorder()
+	h.changePlan(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+	if len(credits.grantCalls) != 1 {
+		t.Errorf("GrantProration call count: got %d, want 1", len(credits.grantCalls))
+	}
+
+	var resp ChangePlanResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Proration == nil {
+		t.Fatal("response missing proration detail")
+	}
+	if resp.Proration.Type != "credit" {
+		t.Errorf("proration.type: got %q, want %q", resp.Proration.Type, "credit")
+	}
+	if resp.Proration.AmountCents != existingEntry.AmountCents {
+		t.Errorf("proration.amount_cents: got %d, want %d (must surface existing entry's amount, not recomputed)",
+			resp.Proration.AmountCents, existingEntry.AmountCents)
 	}
 }

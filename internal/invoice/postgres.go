@@ -28,7 +28,7 @@ const invCols = `id, tenant_id, customer_id, subscription_id, invoice_number, st
 	billing_period_start, billing_period_end, issued_at, due_at, paid_at, voided_at,
 	COALESCE(stripe_payment_intent_id,''), COALESCE(last_payment_error,''),
 	payment_overdue, auto_charge_pending, net_payment_term_days, COALESCE(memo,''), COALESCE(footer,''),
-	metadata, created_at, updated_at`
+	metadata, created_at, updated_at, source_plan_changed_at`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -50,8 +50,9 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 			tax_country, tax_id,
 			total_amount_cents, amount_due_cents, amount_paid_cents, credits_applied_cents,
 			billing_period_start, billing_period_end, issued_at, due_at,
-			net_payment_term_days, memo, footer, metadata, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27)
+			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
+			source_plan_changed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, inv.SubscriptionID, inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -62,6 +63,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 		postgres.NullableTime(inv.IssuedAt), postgres.NullableTime(inv.DueAt),
 		inv.NetPaymentTermDays, postgres.NullableString(inv.Memo),
 		postgres.NullableString(inv.Footer), metaJSON, now,
+		postgres.NullableTime(inv.SourcePlanChangedAt),
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
@@ -86,6 +88,29 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.In
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `SELECT `+invCols+` FROM invoices WHERE id = $1`, id).
 		Scan(scanInvDest(&inv)...)
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	return inv, err
+}
+
+// GetByProrationSource returns the invoice previously generated for a
+// specific (subscription, plan_changed_at) event, if any. Callers use this
+// after CreateWithLineItems returns ErrAlreadyExists to complete an
+// idempotent retry — the proration dedup index ensures uniqueness.
+func (s *PostgresStore) GetByProrationSource(ctx context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `SELECT `+invCols+`
+		FROM invoices
+		WHERE tenant_id = $1 AND subscription_id = $2 AND source_plan_changed_at = $3`,
+		tenantID, subscriptionID, planChangedAt,
+	).Scan(scanInvDest(&inv)...)
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
 	}
@@ -480,8 +505,9 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 			tax_rate_bp, tax_name, tax_country, tax_id,
 			total_amount_cents, amount_due_cents, amount_paid_cents, credits_applied_cents,
 			billing_period_start, billing_period_end, issued_at, due_at,
-			net_payment_term_days, memo, footer, metadata, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28)
+			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
+			source_plan_changed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, inv.SubscriptionID, inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -493,6 +519,7 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 		postgres.NullableTime(inv.IssuedAt), postgres.NullableTime(inv.DueAt),
 		inv.NetPaymentTermDays, postgres.NullableString(inv.Memo),
 		postgres.NullableString(inv.Footer), metaJSON, now,
+		postgres.NullableTime(inv.SourcePlanChangedAt),
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
@@ -606,7 +633,7 @@ func scanInvDest(inv *domain.Invoice) []any {
 		&inv.IssuedAt, &inv.DueAt, &inv.PaidAt, &inv.VoidedAt,
 		&inv.StripePaymentIntentID, &inv.LastPaymentError,
 		&inv.PaymentOverdue, &inv.AutoChargePending, &inv.NetPaymentTermDays, &inv.Memo, &inv.Footer,
-		&metaJSON, &inv.CreatedAt, &inv.UpdatedAt,
+		&metaJSON, &inv.CreatedAt, &inv.UpdatedAt, &inv.SourcePlanChangedAt,
 	}
 }
 
