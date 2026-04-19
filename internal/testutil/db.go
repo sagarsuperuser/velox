@@ -3,8 +3,6 @@ package testutil
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"log"
 	"os"
 	"strings"
 	"testing"
@@ -142,15 +140,8 @@ func runMigrations(pool *sql.DB) error {
 		return nil
 	}
 
-	// Log the first failure for debugging
-	log.Printf("testutil: first migration attempt failed: %v", err)
-
-	// Try running the schema SQL directly to get the actual Postgres error
-	if debugErr := debugMigration(pool); debugErr != nil {
-		log.Printf("testutil: direct SQL execution failed: %v", debugErr)
-	}
-
-	// Nuke everything and retry from scratch
+	// Drop everything and retry. This handles dirty state from previous
+	// failed runs without manual intervention.
 	_, _ = pool.ExecContext(context.Background(), "DROP TABLE IF EXISTS schema_migrations CASCADE")
 	_, _ = pool.ExecContext(context.Background(), `
 		DO $$ DECLARE r RECORD;
@@ -161,34 +152,5 @@ func runMigrations(pool *sql.DB) error {
 		END $$;
 	`)
 
-	retryErr := migrate.Up(pool)
-	if retryErr != nil {
-		log.Printf("testutil: retry migration also failed: %v", retryErr)
-	}
-	return retryErr
-}
-
-// debugMigration runs the first few statements of the schema SQL directly
-// to capture the actual Postgres error (golang-migrate swallows it).
-func debugMigration(pool *sql.DB) error {
-	ctx := context.Background()
-
-	// Test basic connectivity
-	var one int
-	if err := pool.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
-		return fmt.Errorf("connectivity check failed: %w", err)
-	}
-
-	// Test extension
-	if _, err := pool.ExecContext(ctx, "CREATE EXTENSION IF NOT EXISTS pgcrypto"); err != nil {
-		return fmt.Errorf("pgcrypto creation failed: %w", err)
-	}
-
-	// Test table creation
-	if _, err := pool.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS _debug_test (id TEXT DEFAULT encode(gen_random_bytes(12), 'hex'))`); err != nil {
-		return fmt.Errorf("table creation with gen_random_bytes failed: %w", err)
-	}
-	_, _ = pool.ExecContext(ctx, "DROP TABLE IF EXISTS _debug_test")
-
-	return nil
+	return migrate.Up(pool)
 }

@@ -1,4 +1,4 @@
--- Velox Billing Engine — Consolidated Schema
+-- Velox Billing Engine -- Consolidated Schema
 -- Source of truth: pg_dump of production schema (21 migrations merged)
 
 -- Extensions
@@ -761,7 +761,7 @@ BEGIN
 END $$;
 
 -- ===========================================================================
--- Grants — velox_app role (non-superuser, RLS enforced)
+-- Grants -- velox_app role (non-superuser, RLS enforced)
 -- ===========================================================================
 DO $$
 DECLARE
