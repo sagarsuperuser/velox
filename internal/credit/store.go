@@ -8,6 +8,7 @@ import (
 
 type Store interface {
 	AppendEntry(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error)
+	ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerID, invoiceID, invoiceDesc string, invoiceAmountCents int64) (int64, error)
 	GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error)
 	ListBalances(ctx context.Context, tenantID string) ([]domain.CreditBalance, error)
 	ListEntries(ctx context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error)

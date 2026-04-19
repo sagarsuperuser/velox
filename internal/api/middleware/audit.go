@@ -64,7 +64,12 @@ func AuditLog(db *postgres.DB) func(http.Handler) http.Handler {
 			action, resourceType, resourceID := parseAuditPath(r.Method, r.URL.Path)
 			resourceLabel := extractLabel(capture.body.Bytes(), resourceType)
 
-			go writeAudit(db, tenantID, auth.KeyID(r.Context()), action, resourceType, resourceID, resourceLabel, r.URL.Path)
+			// Synchronous: audit is compliance evidence, not best-effort. Fire-and-forget
+			// goroutines can die with the request context or lose errors silently, leaving
+			// gaps in the audit trail. We accept the added ~5-20ms DB insert latency in
+			// exchange for guaranteed writes. Failures are logged but do not fail the
+			// request — the business mutation has already succeeded by this point.
+			writeAudit(r.Context(), db, tenantID, auth.KeyID(r.Context()), action, resourceType, resourceID, resourceLabel, r.URL.Path)
 		})
 	}
 }
@@ -187,12 +192,17 @@ func parseAuditPath(method, path string) (action, resourceType, resourceID strin
 	return
 }
 
-func writeAudit(db *postgres.DB, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+func writeAudit(parentCtx context.Context, db *postgres.DB, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) {
+	// Use a detached timeout context so a client disconnect on the parent request
+	// does not abort the audit write mid-flight. 3s is generous for a single INSERT.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), 3*time.Second)
 	defer cancel()
 
 	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
+		slog.Error("audit write: begin tx failed",
+			"error", err, "tenant_id", tenantID, "action", action,
+			"resource_type", resourceType, "resource_id", resourceID)
 		return
 	}
 	defer postgres.Rollback(tx)
@@ -213,8 +223,14 @@ func writeAudit(db *postgres.DB, tenantID, actorID, action, resourceType, resour
 	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, resourceLabel, metaJSON, time.Now().UTC())
 
 	if err != nil {
-		slog.Debug("audit write failed", "error", err)
+		slog.Error("audit write: insert failed",
+			"error", err, "tenant_id", tenantID, "action", action,
+			"resource_type", resourceType, "resource_id", resourceID)
 		return
 	}
-	_ = tx.Commit()
+	if err := tx.Commit(); err != nil {
+		slog.Error("audit write: commit failed",
+			"error", err, "tenant_id", tenantID, "action", action,
+			"resource_type", resourceType, "resource_id", resourceID)
+	}
 }
