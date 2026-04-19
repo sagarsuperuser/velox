@@ -104,6 +104,19 @@ func AlreadyExists(field, message string) *DomainError {
 	}
 }
 
+// InvalidState rejects an operation because the target resource is in a state
+// that disallows it (e.g. "can only activate draft subscriptions"). Maps to
+// HTTP 422. These errors are not about a specific form field — the user
+// usually needs a toast or inline banner, not a field highlight.
+//
+//	return errs.InvalidState("can only activate draft subscriptions")
+func InvalidState(message string) *DomainError {
+	return &DomainError{
+		Kind:    ErrInvalidState,
+		Message: message,
+	}
+}
+
 // Sentinel errors for store and service layers.
 var (
 	ErrNotFound      = errors.New("not found")

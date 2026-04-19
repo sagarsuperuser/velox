@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
@@ -41,10 +42,10 @@ type CreateInput struct {
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Invoice, error) {
 	if input.CustomerID == "" {
-		return domain.Invoice{}, fmt.Errorf("customer_id is required")
+		return domain.Invoice{}, errs.Required("customer_id")
 	}
 	if input.SubscriptionID == "" {
-		return domain.Invoice{}, fmt.Errorf("subscription_id is required")
+		return domain.Invoice{}, errs.Required("subscription_id")
 	}
 
 	currency := strings.ToUpper(strings.TrimSpace(input.Currency))
@@ -95,7 +96,7 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 		return domain.Invoice{}, err
 	}
 	if inv.Status != domain.InvoiceDraft {
-		return domain.Invoice{}, fmt.Errorf("can only finalize draft invoices, current status: %s", inv.Status)
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf("can only finalize draft invoices, current status: %s", inv.Status))
 	}
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceFinalized)
 }
@@ -106,10 +107,10 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 		return domain.Invoice{}, err
 	}
 	if inv.Status == domain.InvoicePaid {
-		return domain.Invoice{}, fmt.Errorf("cannot void a paid invoice — issue a credit note instead")
+		return domain.Invoice{}, errs.InvalidState("cannot void a paid invoice — issue a credit note instead")
 	}
 	if inv.Status == domain.InvoiceVoided {
-		return domain.Invoice{}, fmt.Errorf("invoice is already voided")
+		return domain.Invoice{}, errs.InvalidState("invoice is already voided")
 	}
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceVoided)
 }
@@ -145,13 +146,13 @@ type AddLineItemInput struct {
 func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, input AddLineItemInput) (domain.InvoiceLineItem, error) {
 	desc := strings.TrimSpace(input.Description)
 	if desc == "" {
-		return domain.InvoiceLineItem{}, fmt.Errorf("description is required")
+		return domain.InvoiceLineItem{}, errs.Required("description")
 	}
 	if input.Quantity <= 0 {
-		return domain.InvoiceLineItem{}, fmt.Errorf("quantity must be greater than 0")
+		return domain.InvoiceLineItem{}, errs.Invalid("quantity", "must be greater than 0")
 	}
 	if input.UnitAmountCents <= 0 {
-		return domain.InvoiceLineItem{}, fmt.Errorf("unit_amount_cents must be greater than 0")
+		return domain.InvoiceLineItem{}, errs.Invalid("unit_amount_cents", "must be greater than 0")
 	}
 
 	lineType := strings.TrimSpace(input.LineType)

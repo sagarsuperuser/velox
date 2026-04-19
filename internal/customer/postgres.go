@@ -126,7 +126,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Cu
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			return domain.Customer{}, fmt.Errorf("%w: customer with external_id %q already exists", errs.ErrAlreadyExists, c.ExternalID)
+			return domain.Customer{}, errs.AlreadyExists("external_id", fmt.Sprintf("customer with external_id %q already exists", c.ExternalID))
 		}
 		return domain.Customer{}, err
 	}

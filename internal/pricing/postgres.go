@@ -56,7 +56,7 @@ func (s *PostgresStore) CreateRatingRule(ctx context.Context, tenantID string, r
 	)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			return domain.RatingRuleVersion{}, fmt.Errorf("%w: rule_key %q version %d", errs.ErrAlreadyExists, rule.RuleKey, rule.Version)
+			return domain.RatingRuleVersion{}, errs.AlreadyExists("rule_key", fmt.Sprintf("rule_key %q version %d already exists", rule.RuleKey, rule.Version))
 		}
 		return domain.RatingRuleVersion{}, err
 	}
@@ -163,7 +163,7 @@ func (s *PostgresStore) CreateMeter(ctx context.Context, tenantID string, m doma
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			return domain.Meter{}, fmt.Errorf("%w: meter key %q", errs.ErrAlreadyExists, m.Key)
+			return domain.Meter{}, errs.AlreadyExists("key", fmt.Sprintf("meter key %q already exists", m.Key))
 		}
 		return domain.Meter{}, err
 	}
@@ -296,7 +296,7 @@ func (s *PostgresStore) CreatePlan(ctx context.Context, tenantID string, p domai
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			return domain.Plan{}, fmt.Errorf("%w: plan code %q", errs.ErrAlreadyExists, p.Code)
+			return domain.Plan{}, errs.AlreadyExists("code", fmt.Sprintf("plan code %q already exists", p.Code))
 		}
 		return domain.Plan{}, err
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 // ---------------------------------------------------------------------------
@@ -700,13 +701,21 @@ func TestRedeem_CodeIsCaseInsensitive(t *testing.T) {
 // helpers
 // ---------------------------------------------------------------------------
 
+// assertErrContains checks the error message for a substring. For DomainError
+// the effective text is "<field> <message>" — the field now lives in metadata
+// rather than being prefixed into the message, but legacy assertions still
+// read naturally (e.g. "code must be").
 func assertErrContains(t *testing.T, err error, substr string) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("expected error containing %q, got nil", substr)
 	}
-	if !contains(err.Error(), substr) {
-		t.Errorf("expected error containing %q, got %q", substr, err.Error())
+	msg := err.Error()
+	if field := errs.Field(err); field != "" {
+		msg = field + " " + msg
+	}
+	if !contains(msg, substr) {
+		t.Errorf("expected error containing %q, got %q", substr, msg)
 	}
 }
 

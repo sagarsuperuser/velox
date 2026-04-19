@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
@@ -71,7 +72,7 @@ func (s *Service) CreateRatingRule(ctx context.Context, tenantID string, input C
 
 	// Validate the pricing config by computing a test amount
 	if _, err := domain.ComputeAmountCents(rule, 1); err != nil {
-		return domain.RatingRuleVersion{}, fmt.Errorf("invalid pricing configuration: %w", err)
+		return domain.RatingRuleVersion{}, errs.Invalid("pricing", fmt.Sprintf("invalid pricing configuration: %v", err))
 	}
 
 	return s.store.CreateRatingRule(ctx, tenantID, rule)
@@ -103,16 +104,16 @@ func (s *Service) ListRatingRules(ctx context.Context, filter RatingRuleFilter) 
 
 func validateRatingRuleInput(input CreateRatingRuleInput) error {
 	if strings.TrimSpace(input.RuleKey) == "" {
-		return fmt.Errorf("key is required")
+		return errs.Required("rule_key")
 	}
 	if err := domain.MaxLen("rule_key", input.RuleKey, 100); err != nil {
 		return err
 	}
 	if !slugPattern.MatchString(input.RuleKey) {
-		return fmt.Errorf("rule_key must contain only alphanumeric characters, hyphens, and underscores")
+		return errs.Invalid("rule_key", "must contain only alphanumeric characters, hyphens, and underscores")
 	}
 	if strings.TrimSpace(input.Name) == "" {
-		return fmt.Errorf("name is required")
+		return errs.Required("name")
 	}
 	if err := domain.MaxLen("name", input.Name, 255); err != nil {
 		return err
@@ -124,26 +125,26 @@ func validateRatingRuleInput(input CreateRatingRuleInput) error {
 	switch input.Mode {
 	case domain.PricingFlat:
 		if input.FlatAmountCents <= 0 {
-			return fmt.Errorf("unit price must be greater than 0")
+			return errs.Invalid("flat_amount_cents", "unit price must be greater than 0")
 		}
 	case domain.PricingGraduated:
 		if len(input.GraduatedTiers) == 0 {
-			return fmt.Errorf("at least one pricing tier is required")
+			return errs.Invalid("graduated_tiers", "at least one pricing tier is required")
 		}
 		for i, tier := range input.GraduatedTiers {
 			if tier.UnitAmountCents <= 0 {
-				return fmt.Errorf("tier %d: unit price must be greater than 0", i+1)
+				return errs.Invalid("graduated_tiers", fmt.Sprintf("tier %d: unit price must be greater than 0", i+1))
 			}
 		}
 	case domain.PricingPackage:
 		if input.PackageSize <= 0 {
-			return fmt.Errorf("package size must be greater than 0")
+			return errs.Invalid("package_size", "package size must be greater than 0")
 		}
 		if input.PackageAmountCents <= 0 {
-			return fmt.Errorf("package price must be greater than 0")
+			return errs.Invalid("package_amount_cents", "package price must be greater than 0")
 		}
 	default:
-		return fmt.Errorf("mode must be one of: flat, graduated, package")
+		return errs.Invalid("mode", "must be one of: flat, graduated, package")
 	}
 
 	return nil
@@ -165,16 +166,16 @@ func (s *Service) CreateMeter(ctx context.Context, tenantID string, input Create
 	key := strings.TrimSpace(input.Key)
 	name := strings.TrimSpace(input.Name)
 	if key == "" {
-		return domain.Meter{}, fmt.Errorf("key is required")
+		return domain.Meter{}, errs.Required("key")
 	}
 	if err := domain.MaxLen("key", key, 100); err != nil {
 		return domain.Meter{}, err
 	}
 	if !slugPattern.MatchString(key) {
-		return domain.Meter{}, fmt.Errorf("key must contain only alphanumeric characters, hyphens, and underscores")
+		return domain.Meter{}, errs.Invalid("key", "must contain only alphanumeric characters, hyphens, and underscores")
 	}
 	if name == "" {
-		return domain.Meter{}, fmt.Errorf("name is required")
+		return domain.Meter{}, errs.Required("name")
 	}
 	if err := domain.MaxLen("name", name, 255); err != nil {
 		return domain.Meter{}, err
@@ -189,7 +190,7 @@ func (s *Service) CreateMeter(ctx context.Context, tenantID string, input Create
 		agg = "sum"
 	}
 	if agg != "sum" && agg != "count" && agg != "max" && agg != "last" {
-		return domain.Meter{}, fmt.Errorf("aggregation must be one of: sum, count, max, last")
+		return domain.Meter{}, errs.Invalid("aggregation", "must be one of: sum, count, max, last")
 	}
 
 	return s.store.CreateMeter(ctx, tenantID, domain.Meter{
@@ -234,16 +235,16 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 	currency := strings.ToUpper(strings.TrimSpace(input.Currency))
 
 	if code == "" {
-		return domain.Plan{}, fmt.Errorf("code is required")
+		return domain.Plan{}, errs.Required("code")
 	}
 	if err := domain.MaxLen("code", code, 100); err != nil {
 		return domain.Plan{}, err
 	}
 	if !slugPattern.MatchString(code) {
-		return domain.Plan{}, fmt.Errorf("code must contain only alphanumeric characters, hyphens, and underscores")
+		return domain.Plan{}, errs.Invalid("code", "must contain only alphanumeric characters, hyphens, and underscores")
 	}
 	if name == "" {
-		return domain.Plan{}, fmt.Errorf("name is required")
+		return domain.Plan{}, errs.Required("name")
 	}
 	if err := domain.MaxLen("name", name, 255); err != nil {
 		return domain.Plan{}, err
@@ -252,10 +253,10 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 		return domain.Plan{}, err
 	}
 	if input.BillingInterval != domain.BillingMonthly && input.BillingInterval != domain.BillingYearly {
-		return domain.Plan{}, fmt.Errorf("billing_interval must be monthly or yearly")
+		return domain.Plan{}, errs.Invalid("billing_interval", "must be monthly or yearly")
 	}
 	if input.BaseAmountCents < 0 {
-		return domain.Plan{}, fmt.Errorf("base fee must be 0 or more")
+		return domain.Plan{}, errs.Invalid("base_amount_cents", "base fee must be 0 or more")
 	}
 
 	if input.MeterIDs == nil {

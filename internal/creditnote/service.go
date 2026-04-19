@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 // InvoiceReader reads invoice data for credit note validation.
@@ -77,21 +78,21 @@ type CreditLineInput struct {
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.CreditNote, error) {
 	if input.InvoiceID == "" {
-		return domain.CreditNote{}, fmt.Errorf("invoice_id is required")
+		return domain.CreditNote{}, errs.Required("invoice_id")
 	}
 	if strings.TrimSpace(input.Reason) == "" {
-		return domain.CreditNote{}, fmt.Errorf("reason is required")
+		return domain.CreditNote{}, errs.Required("reason")
 	}
 	if len(input.Lines) == 0 {
-		return domain.CreditNote{}, fmt.Errorf("at least one line item is required")
+		return domain.CreditNote{}, errs.Invalid("lines", "at least one line item is required")
 	}
 
 	for i, line := range input.Lines {
 		if line.Quantity <= 0 {
-			return domain.CreditNote{}, fmt.Errorf("line %d: quantity must be positive", i+1)
+			return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("line %d: quantity must be positive", i+1))
 		}
 		if line.UnitAmountCents <= 0 {
-			return domain.CreditNote{}, fmt.Errorf("line %d: amount must be greater than 0", i+1)
+			return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("line %d: amount must be greater than 0", i+1))
 		}
 	}
 
@@ -101,10 +102,10 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		return domain.CreditNote{}, fmt.Errorf("invoice not found: %w", err)
 	}
 	if inv.Status == domain.InvoiceVoided {
-		return domain.CreditNote{}, fmt.Errorf("cannot create credit notes for voided invoices")
+		return domain.CreditNote{}, errs.InvalidState("cannot create credit notes for voided invoices")
 	}
 	if inv.Status != domain.InvoiceFinalized && inv.Status != domain.InvoicePaid {
-		return domain.CreditNote{}, fmt.Errorf("can only create credit notes for finalized or paid invoices")
+		return domain.CreditNote{}, errs.InvalidState("can only create credit notes for finalized or paid invoices")
 	}
 
 	// Calculate totals
@@ -128,13 +129,13 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	if existingTotal+subtotal > inv.TotalAmountCents {
 		remaining := inv.TotalAmountCents - existingTotal
 		if remaining <= 0 {
-			return domain.CreditNote{}, fmt.Errorf("invoice has already been fully credited")
+			return domain.CreditNote{}, errs.InvalidState("invoice has already been fully credited")
 		}
-		return domain.CreditNote{}, fmt.Errorf("credit note amount exceeds remaining creditable amount (%.2f)", float64(remaining)/100)
+		return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount exceeds remaining creditable amount (%.2f)", float64(remaining)/100))
 	}
 	// For unpaid invoices, credit note cannot exceed current amount_due
 	if inv.Status == domain.InvoiceFinalized && subtotal > inv.AmountDueCents {
-		return domain.CreditNote{}, fmt.Errorf("credit note amount (%.2f) exceeds amount due (%.2f)", float64(subtotal)/100, float64(inv.AmountDueCents)/100)
+		return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount (%.2f) exceeds amount due (%.2f)", float64(subtotal)/100, float64(inv.AmountDueCents)/100))
 	}
 
 	// For refund-type CNs on paid invoices, cannot refund more than was actually paid via Stripe
@@ -148,10 +149,10 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		}
 		maxRefundable := inv.AmountPaidCents - existingRefunds
 		if maxRefundable <= 0 {
-			return domain.CreditNote{}, fmt.Errorf("invoice has already been fully refunded")
+			return domain.CreditNote{}, errs.InvalidState("invoice has already been fully refunded")
 		}
 		if subtotal > maxRefundable {
-			return domain.CreditNote{}, fmt.Errorf("refund amount (%.2f) exceeds refundable amount (%.2f)", float64(subtotal)/100, float64(maxRefundable)/100)
+			return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("refund amount (%.2f) exceeds refundable amount (%.2f)", float64(subtotal)/100, float64(maxRefundable)/100))
 		}
 	}
 
@@ -229,7 +230,7 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		return domain.CreditNote{}, err
 	}
 	if cn.Status != domain.CreditNoteDraft {
-		return domain.CreditNote{}, fmt.Errorf("can only issue draft credit notes")
+		return domain.CreditNote{}, errs.InvalidState("can only issue draft credit notes")
 	}
 
 	inv, err := s.invoices.Get(ctx, tenantID, cn.InvoiceID)
@@ -291,14 +292,14 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.CreditN
 		return domain.CreditNote{}, err
 	}
 	if cn.Status == domain.CreditNoteVoided {
-		return domain.CreditNote{}, fmt.Errorf("credit note is already voided")
+		return domain.CreditNote{}, errs.InvalidState("credit note is already voided")
 	}
 	// Industry standard: only draft credit notes can be voided.
 	// Once issued, a credit note is a financial document — side effects
 	// (invoice reduction, credit grants, Stripe refunds) have already occurred.
 	// To correct a mistake on an issued CN, create a new invoice or adjustment.
 	if cn.Status == domain.CreditNoteIssued {
-		return domain.CreditNote{}, fmt.Errorf("cannot void an issued credit note — issued credit notes are final financial documents")
+		return domain.CreditNote{}, errs.InvalidState("cannot void an issued credit note — issued credit notes are final financial documents")
 	}
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.CreditNoteVoided)
 }

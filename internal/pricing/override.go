@@ -143,10 +143,10 @@ type CreateOverrideInput struct {
 
 func (s *Service) CreateOverride(ctx context.Context, tenantID string, input CreateOverrideInput) (domain.CustomerPriceOverride, error) {
 	if strings.TrimSpace(input.CustomerID) == "" {
-		return domain.CustomerPriceOverride{}, fmt.Errorf("customer_id is required")
+		return domain.CustomerPriceOverride{}, errs.Required("customer_id")
 	}
 	if strings.TrimSpace(input.RatingRuleVersionID) == "" {
-		return domain.CustomerPriceOverride{}, fmt.Errorf("rating_rule_version_id is required")
+		return domain.CustomerPriceOverride{}, errs.Required("rating_rule_version_id")
 	}
 
 	// Validate pricing config
@@ -159,7 +159,7 @@ func (s *Service) CreateOverride(ctx context.Context, tenantID string, input Cre
 		OverageUnitAmountCents: input.OverageUnitAmountCents,
 	}
 	if _, err := domain.ComputeAmountCents(testRule, 1); err != nil {
-		return domain.CustomerPriceOverride{}, fmt.Errorf("invalid pricing configuration: %w", err)
+		return domain.CustomerPriceOverride{}, errs.Invalid("pricing", fmt.Sprintf("invalid pricing configuration: %v", err))
 	}
 
 	return s.store.CreateOverride(ctx, tenantID, domain.CustomerPriceOverride{

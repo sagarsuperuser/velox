@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -42,7 +43,7 @@ type CreateKeyInput struct {
 func (s *Service) CreateKey(ctx context.Context, tenantID string, input CreateKeyInput) (CreateKeyResult, error) {
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
-		return CreateKeyResult{}, fmt.Errorf("name is required")
+		return CreateKeyResult{}, errs.Required("name")
 	}
 
 	keyType := input.KeyType
@@ -50,7 +51,7 @@ func (s *Service) CreateKey(ctx context.Context, tenantID string, input CreateKe
 		keyType = KeyTypeSecret
 	}
 	if keyType != KeyTypePlatform && keyType != KeyTypeSecret && keyType != KeyTypePublishable {
-		return CreateKeyResult{}, fmt.Errorf("key_type must be one of: platform, secret, publishable")
+		return CreateKeyResult{}, errs.Invalid("key_type", "must be one of: platform, secret, publishable")
 	}
 
 	// Generate raw key: prefix + random hex
