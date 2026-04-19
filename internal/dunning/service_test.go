@@ -150,7 +150,7 @@ func (f *failingRetrier) RetryPayment(_ context.Context, _, _, _ string) error {
 
 func TestStartDunning(t *testing.T) {
 	store := newMemStore()
-	svc := NewService(store, &noopRetrier{})
+	svc := NewService(store, &noopRetrier{}, nil)
 	ctx := context.Background()
 
 	t.Run("creates run", func(t *testing.T) {
@@ -202,7 +202,7 @@ func TestStartDunning(t *testing.T) {
 func TestStartDunning_DisabledPolicy(t *testing.T) {
 	store := newMemStore()
 	store.policy.Enabled = false
-	svc := NewService(store, &noopRetrier{})
+	svc := NewService(store, &noopRetrier{}, nil)
 
 	_, err := svc.StartDunning(context.Background(), "t1", "inv_2", "cus_1")
 	if err == nil {
@@ -212,7 +212,7 @@ func TestStartDunning_DisabledPolicy(t *testing.T) {
 
 func TestProcessDueRuns(t *testing.T) {
 	store := newMemStore()
-	svc := NewService(store, &failingRetrier{}) // Use failing retrier
+	svc := NewService(store, &failingRetrier{}, nil) // Use failing retrier
 	ctx := context.Background()
 
 	// Start a run, then make it due
@@ -241,7 +241,7 @@ func TestProcessDueRuns(t *testing.T) {
 
 func TestProcessDueRuns_MaxRetriesExhausted(t *testing.T) {
 	store := newMemStore()
-	svc := NewService(store, &noopRetrier{})
+	svc := NewService(store, &noopRetrier{}, nil)
 	ctx := context.Background()
 
 	run, _ := svc.StartDunning(ctx, "t1", "inv_1", "cus_1")
@@ -268,7 +268,7 @@ func TestProcessDueRuns_MaxRetriesExhausted(t *testing.T) {
 
 func TestResolveRun(t *testing.T) {
 	store := newMemStore()
-	svc := NewService(store, &noopRetrier{})
+	svc := NewService(store, &noopRetrier{}, nil)
 	ctx := context.Background()
 
 	run, _ := svc.StartDunning(ctx, "t1", "inv_1", "cus_1")
@@ -290,7 +290,7 @@ func TestResolveRun(t *testing.T) {
 
 func TestUpsertPolicy(t *testing.T) {
 	store := newMemStore()
-	svc := NewService(store, &noopRetrier{})
+	svc := NewService(store, &noopRetrier{}, nil)
 	ctx := context.Background()
 
 	policy, err := svc.UpsertPolicy(ctx, "t1", domain.DunningPolicy{

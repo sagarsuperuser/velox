@@ -242,7 +242,7 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, nil, nil, nil,
+		nil, nil, nil, nil, nil,
 	)
 
 	count, errs := engine.RunCycle(ctx, 50)

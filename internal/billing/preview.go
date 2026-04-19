@@ -58,7 +58,7 @@ func (e *Engine) Preview(ctx context.Context, sub domain.Subscription) (PreviewR
 		Currency:           plan.Currency,
 		BillingPeriodStart: periodStart,
 		BillingPeriodEnd:   periodEnd,
-		GeneratedAt:        time.Now().UTC(),
+		GeneratedAt:        e.clock.Now(),
 	}
 
 	// Base fee

@@ -8,16 +8,21 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
 type Service struct {
 	store Store
+	clock clock.Clock
 }
 
-func NewService(store Store) *Service {
-	return &Service{store: store}
+func NewService(store Store, clk clock.Clock) *Service {
+	if clk == nil {
+		clk = clock.Real()
+	}
+	return &Service{store: store, clock: clk}
 }
 
 type CreateInput struct {
@@ -61,7 +66,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	}
 
 	status := domain.SubscriptionDraft
-	now := time.Now().UTC()
+	now := s.clock.Now()
 
 	var trialStart, trialEnd *time.Time
 	var startedAt *time.Time
@@ -149,7 +154,7 @@ func (s *Service) Activate(ctx context.Context, tenantID, id string) (domain.Sub
 		return domain.Subscription{}, fmt.Errorf("can only activate draft subscriptions, current status: %s", sub.Status)
 	}
 
-	now := time.Now().UTC()
+	now := s.clock.Now()
 	sub.Status = domain.SubscriptionActive
 	sub.ActivatedAt = &now
 	sub.StartedAt = &now
@@ -205,7 +210,7 @@ func (s *Service) ChangePlan(ctx context.Context, tenantID, id string, input Cha
 		return ChangePlanResult{}, fmt.Errorf("new plan is the same as current plan")
 	}
 
-	now := time.Now().UTC()
+	now := s.clock.Now()
 	result := ChangePlanResult{}
 
 	if input.Immediate {
@@ -277,7 +282,7 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 		return domain.Subscription{}, fmt.Errorf("can only cancel active or paused subscriptions, current status: %s", sub.Status)
 	}
 
-	now := time.Now().UTC()
+	now := s.clock.Now()
 	sub.Status = domain.SubscriptionCanceled
 	sub.CanceledAt = &now
 	return s.store.Update(ctx, tenantID, sub)

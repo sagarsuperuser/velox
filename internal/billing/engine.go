@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/telemetry"
 	"github.com/sagarsuperuser/velox/internal/tax"
 	"go.opentelemetry.io/otel/attribute"
@@ -37,6 +38,7 @@ type Engine struct {
 	charger       InvoiceCharger
 	profiles      BillingProfileReader
 	taxCalc       tax.Calculator
+	clock         clock.Clock
 }
 
 // CreditApplier applies customer credits to an invoice before charging.
@@ -93,8 +95,11 @@ type InvoiceWriter interface {
 	ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error)
 }
 
-func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader, paymentSetups PaymentSetupReader, charger InvoiceCharger, profiles ...BillingProfileReader) *Engine {
-	e := &Engine{subs: subs, usage: usage, pricing: pricing, invoices: invoices, credits: credits, settings: settings, paymentSetups: paymentSetups, charger: charger}
+func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader, paymentSetups PaymentSetupReader, charger InvoiceCharger, clk clock.Clock, profiles ...BillingProfileReader) *Engine {
+	if clk == nil {
+		clk = clock.Real()
+	}
+	e := &Engine{subs: subs, usage: usage, pricing: pricing, invoices: invoices, credits: credits, settings: settings, paymentSetups: paymentSetups, charger: charger, clock: clk}
 	if len(profiles) > 0 {
 		e.profiles = profiles[0]
 	}
@@ -119,7 +124,7 @@ func (e *Engine) RunCycle(ctx context.Context, batchSize int) (int, []error) {
 	)
 	defer span.End()
 
-	due, err := e.subs.GetDueBilling(ctx, time.Now().UTC(), batchSize)
+	due, err := e.subs.GetDueBilling(ctx, e.clock.Now(), batchSize)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "fetch due subscriptions")
@@ -182,7 +187,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	periodEnd := *sub.CurrentBillingPeriodEnd
 
 	// Skip if in trial — advance cycle but don't generate invoice
-	if sub.TrialEndAt != nil && time.Now().UTC().Before(*sub.TrialEndAt) {
+	if sub.TrialEndAt != nil && e.clock.Now().Before(*sub.TrialEndAt) {
 		nextBilling := advanceBillingPeriod(periodEnd, domain.BillingMonthly)
 		slog.Info("skipping billing (trial active)", "subscription_id", sub.ID)
 		return false, e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, periodEnd, nextBilling, nextBilling)
@@ -337,7 +342,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	}
 
 	// Create invoice — pull settings for invoice number + payment terms
-	now := time.Now().UTC()
+	now := e.clock.Now()
 	netDays := 30
 	invoiceNumber := fmt.Sprintf("VLX-%s-%04d", now.Format("200601"), now.UnixMilli()%10000)
 
@@ -509,7 +514,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	if totalWithTax > 0 {
 		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
 		if err == nil && updatedInv.AmountDueCents <= 0 {
-			paidNow := time.Now().UTC()
+			paidNow := e.clock.Now()
 			if _, err := e.invoices.MarkPaid(ctx, sub.TenantID, inv.ID, "", paidNow); err != nil {
 				slog.Warn("failed to mark fully-credited invoice as paid", "invoice_id", inv.ID, "error", err)
 			} else {

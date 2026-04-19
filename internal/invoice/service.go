@@ -7,14 +7,19 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 type Service struct {
 	store Store
+	clock clock.Clock
 }
 
-func NewService(store Store) *Service {
-	return &Service{store: store}
+func NewService(store Store, clk clock.Clock) *Service {
+	if clk == nil {
+		clk = clock.Real()
+	}
+	return &Service{store: store, clock: clk}
 }
 
 type CreateInput struct {
@@ -45,7 +50,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		netDays = 30
 	}
 
-	now := time.Now().UTC()
+	now := s.clock.Now()
 	invoiceNumber := generateInvoiceNumber(now)
 	issuedAt := now
 	dueAt := now.AddDate(0, 0, netDays)
@@ -100,7 +105,7 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 }
 
 func (s *Service) RecordPayment(ctx context.Context, tenantID, id string, stripePaymentIntentID string) (domain.Invoice, error) {
-	now := time.Now().UTC()
+	now := s.clock.Now()
 	return s.store.UpdatePayment(ctx, tenantID, id, domain.PaymentSucceeded, stripePaymentIntentID, "", &now)
 }
 

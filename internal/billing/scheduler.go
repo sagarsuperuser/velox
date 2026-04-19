@@ -7,6 +7,7 @@ import (
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // DunningProcessor processes due dunning runs.
@@ -45,19 +46,23 @@ type Scheduler struct {
 	interval     time.Duration
 	batch        int
 	onRun        func() // called after each complete scheduler tick (for health tracking)
+	clock        clock.Clock
 }
 
 // Interval returns the configured scheduler interval.
 func (s *Scheduler) Interval() time.Duration { return s.interval }
 
-func NewScheduler(engine *Engine, interval time.Duration, batch int, dunning DunningProcessor, tenants TenantLister, credits ...CreditExpirer) *Scheduler {
+func NewScheduler(engine *Engine, interval time.Duration, batch int, dunning DunningProcessor, tenants TenantLister, clk clock.Clock, credits ...CreditExpirer) *Scheduler {
 	if interval <= 0 {
 		interval = 1 * time.Hour
 	}
 	if batch <= 0 {
 		batch = 50
 	}
-	s := &Scheduler{engine: engine, dunning: dunning, tenants: tenants, interval: interval, batch: batch}
+	if clk == nil {
+		clk = clock.Real()
+	}
+	s := &Scheduler{engine: engine, dunning: dunning, tenants: tenants, interval: interval, batch: batch, clock: clk}
 	if len(credits) > 0 {
 		s.credits = credits[0]
 	}
