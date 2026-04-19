@@ -36,8 +36,6 @@ func (s *StripeCalculator) CalculateTax(ctx context.Context, currency string, ad
 		return s.fallback.CalculateTax(ctx, currency, addr, lineItems)
 	}
 
-	stripe.Key = s.apiKey
-
 	// Build Stripe Tax Calculation request
 	stripeLineItems := make([]*stripe.TaxCalculationLineItemParams, len(lineItems))
 	for i, li := range lineItems {

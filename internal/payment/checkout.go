@@ -76,8 +76,6 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	stripe.Key = h.apiKey
-
 	// Check if customer already has a Stripe customer ID
 	var stripeCustomerID string
 	if existing, err := h.store.GetPaymentSetup(r.Context(), tenantID, req.CustomerID); err == nil && existing.StripeCustomerID != "" {

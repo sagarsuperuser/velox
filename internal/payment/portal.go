@@ -63,8 +63,6 @@ func (h *PortalHandler) createUpdateSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	stripe.Key = h.apiKey
-
 	// Build return URL
 	returnURL := req.ReturnURL
 	if returnURL == "" {

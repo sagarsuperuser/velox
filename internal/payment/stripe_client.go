@@ -39,8 +39,6 @@ func NewLiveStripeClient(apiKey string) *LiveStripeClient {
 }
 
 func (c *LiveStripeClient) CreatePaymentIntent(_ context.Context, params PaymentIntentParams) (PaymentIntentResult, error) {
-	stripe.Key = c.apiKey
-
 	metadata := make(map[string]string)
 	for k, v := range params.Metadata {
 		metadata[k] = v
@@ -98,8 +96,6 @@ func (c *LiveStripeClient) CreatePaymentIntent(_ context.Context, params Payment
 }
 
 func (c *LiveStripeClient) FetchCardDetails(_ context.Context, stripeCustomerID string) (CardDetails, error) {
-	stripe.Key = c.apiKey
-
 	// Get the most recently created card
 	var latest *stripe.PaymentMethod
 	pmIter := paymentmethod.List(&stripe.PaymentMethodListParams{
@@ -133,8 +129,6 @@ func (c *LiveStripeClient) FetchCardDetails(_ context.Context, stripeCustomerID 
 }
 
 func (c *LiveStripeClient) CancelPaymentIntent(_ context.Context, paymentIntentID string) error {
-	stripe.Key = c.apiKey
-
 	_, err := paymentintent.Cancel(paymentIntentID, nil)
 	if err != nil {
 		return fmt.Errorf("stripe cancel: %s", stripeErrorMessage(err))

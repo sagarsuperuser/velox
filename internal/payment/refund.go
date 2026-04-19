@@ -21,8 +21,6 @@ func NewStripeRefunder(apiKey string) *StripeRefunder {
 }
 
 func (r *StripeRefunder) CreateRefund(_ context.Context, paymentIntentID string, amountCents int64) (string, error) {
-	stripe.Key = r.apiKey
-
 	ref, err := refund.New(&stripe.RefundParams{
 		PaymentIntent: stripe.String(paymentIntentID),
 		Amount:        stripe.Int64(amountCents),

@@ -129,8 +129,6 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 		returnURL = fmt.Sprintf("http://localhost:5173/customers/%s?payment=updated", token.CustomerID)
 	}
 
-	stripe.Key = h.apiKey
-
 	// Create a Checkout Session in setup mode for new payment method
 	sess, err := session.New(&stripe.CheckoutSessionParams{
 		Customer:           stripe.String(stripeCustomerID),

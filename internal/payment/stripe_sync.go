@@ -20,7 +20,6 @@ func NewStripeBillingSync(apiKey string) *StripeBillingSync {
 }
 
 func (s *StripeBillingSync) SyncBillingProfile(_ context.Context, stripeCustomerID string, bp domain.CustomerBillingProfile) error {
-	stripe.Key = s.apiKey
 	params := &stripe.CustomerParams{}
 
 	// Name: prefer legal name, fall back to email

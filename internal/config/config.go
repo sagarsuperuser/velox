@@ -76,7 +76,34 @@ func Load() (Config, error) {
 		}
 	}
 
+	if err := cfg.validateFatal(); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// validateFatal returns an error for misconfigurations that must not be
+// tolerated at startup. These are a strict subset of Validate's warnings:
+// conditions where continuing would risk silent data loss, compliance
+// violation, or secret exposure.
+func (c Config) validateFatal() error {
+	encKey := strings.TrimSpace(os.Getenv("VELOX_ENCRYPTION_KEY"))
+
+	if c.Env == "production" && encKey == "" {
+		return fmt.Errorf("VELOX_ENCRYPTION_KEY is required in production — refusing to start with plaintext PII storage")
+	}
+
+	if encKey != "" {
+		if len(encKey) != 64 {
+			return fmt.Errorf("VELOX_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes), got %d", len(encKey))
+		}
+		if _, err := hex.DecodeString(encKey); err != nil {
+			return fmt.Errorf("VELOX_ENCRYPTION_KEY is not valid hex: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // Validate checks the config for common misconfigurations.

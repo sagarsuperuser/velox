@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -131,7 +132,7 @@ func (s *Service) ValidateKey(ctx context.Context, rawKey string) (domain.APIKey
 	}
 	hash := sha256.Sum256(append(salt, []byte(rawKey)...))
 	hashHex := hex.EncodeToString(hash[:])
-	if hashHex != key.KeyHash {
+	if subtle.ConstantTimeCompare([]byte(hashHex), []byte(key.KeyHash)) != 1 {
 		return domain.APIKey{}, fmt.Errorf("invalid api key")
 	}
 
