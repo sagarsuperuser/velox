@@ -82,6 +82,32 @@ type EmailSender interface {
 	SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte) error
 }
 
+// RefundIssuer issues a direct refund on a paid invoice. Concretely this
+// creates + issues a refund credit note atomically; the handler doesn't need
+// to know about credit notes as a data model. Backed by creditnote.Service.
+type RefundIssuer interface {
+	IssueRefund(ctx context.Context, tenantID string, input RefundInput) (domain.CreditNote, error)
+}
+
+// RefundInput is the handler-facing refund request. AmountCents=0 means
+// "refund the full remaining refundable amount".
+type RefundInput struct {
+	InvoiceID   string
+	AmountCents int64
+	Reason      string
+	Description string
+}
+
+// validRefundReasons matches Stripe's refund reason enum plus "other" as the
+// catch-all. Constrained at the edge so the UI can render a dropdown and the
+// audit log has a stable vocabulary.
+var validRefundReasons = map[string]bool{
+	"duplicate":             true,
+	"fraudulent":            true,
+	"requested_by_customer": true,
+	"other":                 true,
+}
+
 type Handler struct {
 	svc             *Service
 	customers       CustomerGetter
@@ -96,6 +122,7 @@ type Handler struct {
 	dunningTimeline DunningTimelineFetcher
 	events          domain.EventDispatcher
 	emailSender     EmailSender
+	refundIssuer    RefundIssuer
 	auditLogger     *audit.Logger
 }
 
@@ -109,6 +136,7 @@ type HandlerDeps struct {
 	WebhookEvents   WebhookEventLister
 	DunningTimeline DunningTimelineFetcher
 	Events          domain.EventDispatcher
+	RefundIssuer    RefundIssuer
 }
 
 func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter, deps ...HandlerDeps) *Handler {
@@ -123,6 +151,7 @@ func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter,
 		h.webhookEvents = deps[0].WebhookEvents
 		h.dunningTimeline = deps[0].DunningTimeline
 		h.events = deps[0].Events
+		h.refundIssuer = deps[0].RefundIssuer
 	}
 	return h
 }
@@ -172,6 +201,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/{id}/line-items", h.addLineItem)
 	r.Post("/{id}/send", h.sendEmail)
 	r.Post("/{id}/collect", h.collectPayment)
+	r.Post("/{id}/refund", h.refund)
 	r.Get("/{id}/payment-timeline", h.paymentTimeline)
 	return r
 }
@@ -541,6 +571,74 @@ func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, charged)
+}
+
+// refund issues a direct refund on a paid invoice. Convenience wrapper around
+// creditnote.Service.CreateRefund — the caller passes a reason + optional
+// amount and gets back the issued credit note (which carries the Stripe
+// refund ID and status). For partial refunds, amount_cents < amount_paid;
+// default (amount_cents=0) refunds the full remaining refundable balance.
+func (h *Handler) refund(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	if h.refundIssuer == nil {
+		respond.Validation(w, r, "refund provider not configured")
+		return
+	}
+
+	var body struct {
+		AmountCents int64  `json:"amount_cents"`
+		Reason      string `json:"reason"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	if body.AmountCents < 0 {
+		respond.Validation(w, r, "amount_cents must be non-negative")
+		return
+	}
+	if body.Reason == "" {
+		respond.Validation(w, r, "reason is required")
+		return
+	}
+	if !validRefundReasons[body.Reason] {
+		respond.Validation(w, r, "reason must be one of: duplicate, fraudulent, requested_by_customer, other")
+		return
+	}
+
+	cn, err := h.refundIssuer.IssueRefund(r.Context(), tenantID, RefundInput{
+		InvoiceID:   id,
+		AmountCents: body.AmountCents,
+		Reason:      body.Reason,
+		Description: body.Description,
+	})
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "invoice")
+		return
+	}
+	if err != nil {
+		respond.FromError(w, r, err, "invoice")
+		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRefund, "invoice", id, map[string]any{
+			"invoice_id":          id,
+			"credit_note_id":      cn.ID,
+			"credit_note_number":  cn.CreditNoteNumber,
+			"refund_amount_cents": cn.RefundAmountCents,
+			"stripe_refund_id":    cn.StripeRefundID,
+			"refund_status":       string(cn.RefundStatus),
+			"reason":              cn.Reason,
+			"currency":            cn.Currency,
+		})
+	}
+
+	respond.JSON(w, r, http.StatusOK, cn)
 }
 
 type timelineEvent struct {

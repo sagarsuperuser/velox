@@ -216,6 +216,99 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	return cn, nil
 }
 
+// RefundInput describes a direct refund against a paid invoice. It bypasses
+// the usual line-item ceremony by synthesizing a single-line credit note from
+// the caller's amount + reason. Used by the invoice /refund endpoint (FEAT-2).
+type RefundInput struct {
+	InvoiceID   string
+	AmountCents int64 // 0 = refund the full remaining refundable amount
+	Reason      string
+	Description string // optional line-item description; defaults based on reason
+}
+
+// CreateRefund creates and issues a refund credit note for a paid invoice in
+// one call. This is the "direct refund" entry point exposed at
+// POST /invoices/{id}/refund — operators who just want to issue a refund don't
+// need to know about credit notes as a data model.
+//
+// Delegates all validation (invoice must be paid, refund must not exceed paid
+// amount, must not exceed invoice total) to Service.Create by shaping a
+// synthetic CreateInput. On Issue failure, voids the draft credit note so the
+// caller sees a clean rollback rather than an orphan draft.
+func (s *Service) CreateRefund(ctx context.Context, tenantID string, input RefundInput) (domain.CreditNote, error) {
+	if input.InvoiceID == "" {
+		return domain.CreditNote{}, errs.Required("invoice_id")
+	}
+	if strings.TrimSpace(input.Reason) == "" {
+		return domain.CreditNote{}, errs.Required("reason")
+	}
+
+	inv, err := s.invoices.Get(ctx, tenantID, input.InvoiceID)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("invoice not found: %w", err)
+	}
+	if inv.Status != domain.InvoicePaid {
+		return domain.CreditNote{}, errs.InvalidState("can only refund paid invoices")
+	}
+	if inv.StripePaymentIntentID == "" {
+		return domain.CreditNote{}, errs.InvalidState("invoice has no associated payment to refund")
+	}
+
+	// Default amount to the remaining refundable balance. Mirrors the
+	// Service.Create cap so the caller gets the same error if they ask for
+	// more than is left, but lets them omit amount_cents entirely for the
+	// common "refund everything" case.
+	amount := input.AmountCents
+	if amount == 0 {
+		existing, err := s.store.List(ctx, ListFilter{TenantID: tenantID, InvoiceID: input.InvoiceID})
+		if err != nil {
+			return domain.CreditNote{}, fmt.Errorf("list existing credit notes: %w", err)
+		}
+		var existingRefunds int64
+		for _, cn := range existing {
+			if cn.Status != domain.CreditNoteVoided && cn.RefundAmountCents > 0 {
+				existingRefunds += cn.RefundAmountCents
+			}
+		}
+		amount = inv.AmountPaidCents - existingRefunds
+		if amount <= 0 {
+			return domain.CreditNote{}, errs.InvalidState("invoice has already been fully refunded")
+		}
+	}
+	if amount <= 0 {
+		return domain.CreditNote{}, errs.Invalid("amount_cents", "must be greater than 0")
+	}
+
+	description := strings.TrimSpace(input.Description)
+	if description == "" {
+		description = "Refund: " + strings.TrimSpace(input.Reason)
+	}
+
+	cn, err := s.Create(ctx, tenantID, CreateInput{
+		InvoiceID:  input.InvoiceID,
+		Reason:     input.Reason,
+		RefundType: "refund",
+		Lines: []CreditLineInput{{
+			Description:     description,
+			Quantity:        1,
+			UnitAmountCents: amount,
+		}},
+	})
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+
+	issued, err := s.Issue(ctx, tenantID, cn.ID)
+	if err != nil {
+		// Issue failed after Create succeeded — void the draft so we don't
+		// leave an unusable record. Best-effort: if void itself fails,
+		// surface the original issue error (it's the actionable one).
+		_, _ = s.Void(ctx, tenantID, cn.ID)
+		return domain.CreditNote{}, err
+	}
+	return issued, nil
+}
+
 func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.CreditNote, error) {
 	return s.store.Get(ctx, tenantID, id)
 }

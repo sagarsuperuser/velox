@@ -218,6 +218,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		WebhookEvents:   webhookStore,
 		DunningTimeline: &dunningTimelineAdapter{store: dunningStore},
 		Events:          eventDispatcher,
+		RefundIssuer:    &refundIssuerAdapter{svc: creditNoteSvc},
 	})
 	checkoutH := payment.NewCheckoutHandler(stripeKey,
 		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")),

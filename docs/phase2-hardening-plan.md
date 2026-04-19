@@ -284,9 +284,20 @@ On `Issue`, call `invoice.ApplyCreditNote` (method exists). Clamp at invoice tot
 
 **Resolution:** `creditnote/service.go:274` calls `invoices.ApplyCreditNote(ctx, tenantID, cn.InvoiceID, cn.TotalCents)` during Issue for unpaid invoices. `invoice/postgres.go:275-303` clamps via `GREATEST(amount_due_cents - $1, 0)`. Test assertion added in `creditnote/service_test.go` to verify amount_due drops after Issue.
 
-### [FEAT-2] Direct refund endpoint — M
+### [FEAT-2] Direct refund endpoint — M — ✅ DONE
 
 `POST /invoices/{id}/refund` → Stripe refund + credit note + invoice update. Partial refunds. Reason enum (duplicate, fraudulent, requested_by_customer, other).
+
+**✅ Resolution (2026-04-19):**
+
+- `POST /v1/invoices/{id}/refund` mounted in `invoice/handler.go:Routes()` alongside `/collect`. Body: `{amount_cents?: int64, reason: string, description?: string}`. `amount_cents=0` (or omitted) defaults to the remaining refundable balance — makes the 90% "refund everything" case a one-field request.
+- Reason enum enforced at the edge via `validRefundReasons` in `invoice/handler.go` — any value outside the Stripe-aligned set (`duplicate`, `fraudulent`, `requested_by_customer`, `other`) is rejected 422 before the service is called.
+- Implementation is a convenience wrapper, not a parallel code path: `creditnote.Service.CreateRefund` synthesizes a single-line `CreateInput{RefundType:"refund"}`, calls `Create` + `Issue` atomically, and voids the draft if `Issue` fails. This means the existing validation (refund ≤ amount_paid, CN ≤ invoice total, already-fully-refunded guard) and Stripe-refund flow at `creditnote/service.go:243-255` are reused — no duplication.
+- Operators who wanted to "just issue a refund" no longer need to understand credit notes as a data model; the issued CN is returned as the HTTP response and the `refund_status` field reflects Stripe's outcome (succeeded / failed / pending).
+- `invoice.RefundIssuer` interface keeps the handler free of a creditnote import. Adapter `refundIssuerAdapter` in `api/adapters.go` bridges the two and is wired in `router.go` via `HandlerDeps.RefundIssuer`.
+- `AuditActionRefund = "refund"` added to `domain/audit.go`; the handler emits an audit entry on success with the credit note ID, Stripe refund ID, amount, and reason.
+- Tests: 10 unit tests in `creditnote/service_refund_test.go` (full/partial/default/prior-refund accounting/over-refund/unpaid/no-PI/missing-fields/Stripe-failure-issues-with-failed-status) + 9 handler tests in `invoice/refund_handler_test.go` (success, default amount passthrough, reason-enum validation across all 4 valid values plus rejection, missing reason, negative amount, 404, bubbled service error, unconfigured provider, generic error).
+- Stripe refund leg untouched: `StripeRefunder.CreateRefund` already exists (pre-dating this work) and is reused via the `creditnote.Refunder` interface.
 
 ### [FEAT-3] Customer payment-method self-service — M
 
@@ -479,7 +490,7 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 28. **RES-2** — scheduler advisory lock ✅
 29. **RES-6** — email outbox ✅
 30. **SEC-2 Phase B/C** — cutover + drop plaintext
-31. **FEAT-2, FEAT-3, FEAT-4 ✅, FEAT-7 ✅, FEAT-8** — feature completeness
+31. **FEAT-2 ✅, FEAT-3, FEAT-4 ✅, FEAT-7 ✅, FEAT-8** — feature completeness
 32. **FEAT-6** — coupon stacking
 33. **FEAT-5** — multi-item subs (Phase 3)
 

@@ -81,6 +81,23 @@ func (a *creditNoteListerAdapter) List(ctx context.Context, tenantID, invoiceID 
 	})
 }
 
+// refundIssuerAdapter bridges creditnote.Service → invoice.RefundIssuer.
+// Translates the handler-facing invoice.RefundInput to the creditnote form;
+// both types are near-identical by design so the handler doesn't have to
+// import creditnote just to issue a refund.
+type refundIssuerAdapter struct {
+	svc *creditnote.Service
+}
+
+func (a *refundIssuerAdapter) IssueRefund(ctx context.Context, tenantID string, input invoice.RefundInput) (domain.CreditNote, error) {
+	return a.svc.CreateRefund(ctx, tenantID, creditnote.RefundInput{
+		InvoiceID:   input.InvoiceID,
+		AmountCents: input.AmountCents,
+		Reason:      input.Reason,
+		Description: input.Description,
+	})
+}
+
 // paymentRetrierAdapter bridges Stripe + invoice/customer stores → dunning.PaymentRetrier.
 type paymentRetrierAdapter struct {
 	charger       *payment.Stripe
