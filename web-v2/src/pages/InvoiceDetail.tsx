@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type Customer, type Subscription, type CreditNote, type TimelineEvent, type TenantSettings } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
+import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
@@ -359,7 +360,12 @@ export default function InvoiceDetailPage() {
             </div>
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Due</p>
-              <p className="text-sm text-foreground">{invoice.due_at ? formatDate(invoice.due_at) : '\u2014'}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm text-foreground">{invoice.due_at ? formatDate(invoice.due_at) : '\u2014'}</p>
+                {invoice.due_at && invoice.payment_status !== 'paid' && (
+                  <ExpiryBadge expiresAt={invoice.due_at} label="Due" warningDays={3} />
+                )}
+              </div>
             </div>
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Period</p>
