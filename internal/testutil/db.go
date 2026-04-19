@@ -34,13 +34,13 @@ func SetupTestDB(t *testing.T) *postgres.DB {
 	adminURL := envOr("TEST_ADMIN_DATABASE_URL", defaultAdminDBURL)
 	appURL := envOr("TEST_DATABASE_URL", defaultAppDBURL)
 
-	// Admin connection: migrations + cleanup
+	// migrate.Up takes ownership of its *sql.DB and closes it on return
+	// (golang-migrate's postgres driver closes the db in Close()). So
+	// migrations run on a throwaway pool, and cleanup uses a fresh admin
+	// pool that lives for the test's lifetime.
+	runMigrations(t, adminURL)
+
 	adminPool := openPool(t, adminURL)
-
-	if err := runMigrations(adminPool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
 	cleanDB(t, adminPool)
 
 	// App connection: actual queries (RLS enforced)
@@ -134,16 +134,39 @@ func envOr(key, fallback string) string {
 
 // runMigrations applies pending migrations. On failure, drops everything
 // and retries from scratch (safe because this is a test-only database).
-func runMigrations(pool *sql.DB) error {
-	err := migrate.Up(pool)
-	if err == nil {
-		return nil
+//
+// Each migrate.Up call runs on its own fresh pool because golang-migrate's
+// postgres driver closes the supplied *sql.DB in its Close(), and migrate.Up
+// defers that close. Reusing a pool across calls would hit "sql: database
+// is closed" on the second invocation.
+func runMigrations(t *testing.T, adminURL string) {
+	t.Helper()
+
+	pool1 := openPool(t, adminURL)
+	if err := migrate.Up(pool1); err == nil {
+		return
 	}
 
-	// Drop everything and retry. This handles dirty state from previous
-	// failed runs without manual intervention.
-	_, _ = pool.ExecContext(context.Background(), "DROP TABLE IF EXISTS schema_migrations CASCADE")
-	_, _ = pool.ExecContext(context.Background(), `
+	// Dirty or incompatible state (e.g., schema_migrations records a version
+	// that no longer exists in the embedded FS — common after switching
+	// branches). Drop everything and retry on a fresh pool.
+	nukePool := openPool(t, adminURL)
+	dropAllTables(t, nukePool)
+	_ = nukePool.Close()
+
+	pool2 := openPool(t, adminURL)
+	if err := migrate.Up(pool2); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+}
+
+func dropAllTables(t *testing.T, pool *sql.DB) {
+	t.Helper()
+	if _, err := pool.ExecContext(context.Background(),
+		"DROP TABLE IF EXISTS schema_migrations CASCADE"); err != nil {
+		t.Fatalf("drop schema_migrations: %v", err)
+	}
+	_, err := pool.ExecContext(context.Background(), `
 		DO $$ DECLARE r RECORD;
 		BEGIN
 			FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
@@ -151,6 +174,7 @@ func runMigrations(pool *sql.DB) error {
 			END LOOP;
 		END $$;
 	`)
-
-	return migrate.Up(pool)
+	if err != nil {
+		t.Fatalf("drop public tables: %v", err)
+	}
 }
