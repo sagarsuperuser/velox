@@ -72,6 +72,7 @@ type Stripe struct {
 type StripeClient interface {
 	CreatePaymentIntent(ctx context.Context, params PaymentIntentParams) (PaymentIntentResult, error)
 	CancelPaymentIntent(ctx context.Context, paymentIntentID string) error
+	GetPaymentIntent(ctx context.Context, paymentIntentID string) (PaymentIntentResult, error)
 }
 
 type PaymentIntentParams struct {

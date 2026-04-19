@@ -68,13 +68,14 @@ type Server struct {
 	router chi.Router
 
 	// Exported for main.go to wire the billing scheduler + dunning
-	BillingEngine *billing.Engine
-	DunningSvc    *dunning.Service
-	SettingsStore *tenant.SettingsStore
-	WebhookOutSvc *webhook.Service
-	CreditSvc     *credit.Service
-	InvoiceSvc    *invoice.Service
-	TokenSvc      *payment.TokenService
+	BillingEngine     *billing.Engine
+	DunningSvc        *dunning.Service
+	SettingsStore     *tenant.SettingsStore
+	WebhookOutSvc     *webhook.Service
+	CreditSvc         *credit.Service
+	InvoiceSvc        *invoice.Service
+	TokenSvc          *payment.TokenService
+	PaymentReconciler *payment.Reconciler
 }
 
 func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Server {
@@ -186,6 +187,11 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	// Token service for public payment update links
 	tokenSvc := payment.NewTokenService(db)
 	stripeAdapter.SetTokenService(tokenSvc)
+
+	// Reconciler for PaymentUnknown invoices (ambiguous Stripe outcomes).
+	// 60s cool-off lets webhooks resolve the state naturally before we
+	// spend an extra API call.
+	paymentReconciler := payment.NewReconciler(stripeClient, invoiceStore, 60*time.Second)
 	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeKey,
 		strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_RETURN_URL")))
 
@@ -244,13 +250,14 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
 
 	s := &Server{
-		BillingEngine: engine,
-		DunningSvc:    dunningSvc,
-		SettingsStore: settingsStore,
-		WebhookOutSvc: webhookOutSvc,
-		CreditSvc:     creditSvc,
-		InvoiceSvc:    invoiceSvc,
-		TokenSvc:      tokenSvc,
+		BillingEngine:     engine,
+		DunningSvc:        dunningSvc,
+		SettingsStore:     settingsStore,
+		WebhookOutSvc:     webhookOutSvc,
+		CreditSvc:         creditSvc,
+		InvoiceSvc:        invoiceSvc,
+		TokenSvc:          tokenSvc,
+		PaymentReconciler: paymentReconciler,
 	}
 
 	// Redis for distributed rate limiting (fail-open if not configured)

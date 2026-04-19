@@ -721,6 +721,43 @@ func (s *PostgresStore) MarkPaidBatch(ctx context.Context, tenantID, id string, 
 	return s.MarkPaid(ctx, tenantID, id, stripePaymentIntentID, paidAt)
 }
 
+// ListUnknownPayments returns invoices whose payment_status is 'unknown' and
+// whose last update is older than `olderThan` — the reconciler's cooling
+// window before querying Stripe for the authoritative outcome.
+func (s *PostgresStore) ListUnknownPayments(ctx context.Context, olderThan time.Time, limit int) ([]domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+invCols+` FROM invoices
+		WHERE payment_status = 'unknown'
+		  AND updated_at < $1
+		ORDER BY updated_at ASC
+		LIMIT $2
+	`, olderThan, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var invoices []domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+			return nil, err
+		}
+		invoices = append(invoices, inv)
+	}
+	return invoices, rows.Err()
+}
+
 func scanInvDest(inv *domain.Invoice) []any {
 	var metaJSON []byte
 	return []any{

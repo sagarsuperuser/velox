@@ -157,6 +157,9 @@ func serve() {
 	if server.TokenSvc != nil {
 		scheduler.SetTokenCleaner(server.TokenSvc)
 	}
+	if server.PaymentReconciler != nil {
+		scheduler.SetPaymentReconciler(server.PaymentReconciler)
+	}
 
 	// Wire scheduler health tracking so /health/ready can detect stalled schedulers
 	api.SetSchedulerInterval(billingInterval)
