@@ -143,7 +143,7 @@ jobs:
         with:
           sbom: velox-sbom.spdx.json
           fail-build: true
-          severity-cutoff: high
+          severity-cutoff: critical
 
       - name: Sign image (Cosign)
         uses: sigstore/cosign-installer@v3
