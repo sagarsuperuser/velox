@@ -97,9 +97,9 @@ func (s *StripeCalculator) mapResult(calc *stripe.TaxCalculation, inputItems []L
 	// Round rather than truncate so the effective rate presented back to
 	// callers is the nearest basis point. Truncation systematically biases
 	// the displayed rate downward (e.g. 8.499% → 849 bp instead of 850).
-	effectiveRateBP := 0
+	effectiveRateBP := int64(0)
 	if subtotal > 0 {
-		effectiveRateBP = int(money.RoundHalfToEven(totalTax*10000, subtotal))
+		effectiveRateBP = money.RoundHalfToEven(totalTax*10000, subtotal)
 	}
 
 	// Extract tax name and country from the first tax breakdown
@@ -136,7 +136,7 @@ func (s *StripeCalculator) mapResult(calc *stripe.TaxCalculation, inputItems []L
 					pctStr := sli.TaxBreakdown[0].TaxRateDetails.PercentageDecimal
 					if pctStr != "" {
 						if pct, err := strconv.ParseFloat(pctStr, 64); err == nil {
-							taxes[idx].TaxRateBP = int(pct * 100)
+							taxes[idx].TaxRateBP = int64(pct * 100)
 						}
 					}
 					if sli.TaxBreakdown[0].TaxRateDetails.DisplayName != "" {
