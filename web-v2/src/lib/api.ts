@@ -243,10 +243,14 @@ export const api = {
   addInvoiceLineItem: (invoiceId: string, data: { description: string; line_type: string; quantity: number; unit_amount_cents: number }) =>
     request<LineItem>('POST', `/invoices/${invoiceId}/line-items`, data),
 
-  getAnalyticsOverview: () =>
-    request<AnalyticsOverview>('GET', '/analytics/overview'),
+  getAnalyticsOverview: (period?: string) =>
+    request<AnalyticsOverview>('GET', `/analytics/overview${period ? `?period=${period}` : ''}`),
   getRevenueChart: (period: string) =>
-    request<{ data: RevenueDataPoint[] }>('GET', `/analytics/revenue-chart?period=${period}`),
+    request<{ period: string; data: RevenueDataPoint[] }>('GET', `/analytics/revenue-chart?period=${period}`),
+  getMRRMovement: (period: string) =>
+    request<MRRMovementResponse>('GET', `/analytics/mrr-movement?period=${period}`),
+  getUsageAnalytics: (period: string) =>
+    request<UsageAnalyticsResponse>('GET', `/analytics/usage?period=${period}`),
 
   // API Keys
   listApiKeys: () => request<{ data: ApiKeyInfo[] }>('GET', '/api-keys'),
@@ -597,24 +601,83 @@ export interface ApiKeyInfo {
   last_used_at?: string
 }
 
+// Matches OverviewResponse in internal/analytics/overview.go. All money is
+// in cents; rates are in [0, 1].
 export interface AnalyticsOverview {
+  period: string
   mrr: number
-  active_customers: number
-  active_subscriptions: number
-  total_revenue: number
+  mrr_prev: number
+  arr: number
+  arr_prev: number
+  revenue: number
+  revenue_prev: number
   outstanding_ar: number
   avg_invoice_value: number
-  paid_invoices_30d: number
-  failed_payments_30d: number
+  credit_balance_total: number
+  active_customers: number
+  new_customers: number
+  active_subscriptions: number
+  trialing_subscriptions: number
+  paid_invoices: number
+  failed_payments: number
   open_invoices: number
   dunning_active: number
-  credit_balance_total: number
+  usage_events: number
+  logo_churn_rate: number
+  revenue_churn_rate: number
+  nrr: number
+  dunning_recovery_rate: number
+  mrr_movement: MRRMovementTotals
+}
+
+export interface MRRMovementTotals {
+  new: number
+  expansion: number
+  contraction: number
+  churned: number
+  net: number
+}
+
+export interface MRRMovementPoint {
+  date: string
+  new: number
+  expansion: number
+  contraction: number
+  churned: number
+  net: number
+}
+
+export interface MRRMovementResponse {
+  period: string
+  data: MRRMovementPoint[]
+  totals: MRRMovementTotals
 }
 
 export interface RevenueDataPoint {
   date: string
   revenue_cents: number
   invoice_count: number
+}
+
+export interface UsagePoint {
+  date: string
+  events: number
+  quantity: number
+}
+
+export interface TopMeterUsage {
+  meter_id: string
+  meter_name: string
+  key: string
+  events: number
+  quantity: number
+}
+
+export interface UsageAnalyticsResponse {
+  period: string
+  data: UsagePoint[]
+  top_meters: TopMeterUsage[]
+  totals: { events: number; quantity: number }
 }
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {

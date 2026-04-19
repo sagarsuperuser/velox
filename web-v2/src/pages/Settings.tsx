@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, setActiveCurrency, formatCents } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { toast } from 'sonner'
@@ -19,8 +20,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 
-import { Building2, FileText, Receipt, Globe, Check, AlertCircle, Loader2 } from 'lucide-react'
+import { Building2, FileText, Receipt, Globe, Check, AlertCircle, Loader2, Zap, Wrench } from 'lucide-react'
 
 const settingsSchema = z.object({
   company_name: z.string(),
@@ -359,6 +371,8 @@ export default function SettingsPage() {
           </Card>
         </section>
 
+        {/* ─── Operations ────────────────────────────────────────────────── */}
+        <OperationsSection />
       </div>
 
       {/* Sticky save bar */}
@@ -381,5 +395,89 @@ export default function SettingsPage() {
         </div>
       )}
     </Layout>
+  )
+}
+
+function OperationsSection() {
+  const queryClient = useQueryClient()
+  const [result, setResult] = useState<{ generated: number; errors: number; at: string } | null>(null)
+
+  const trigger = useMutation({
+    mutationFn: () => api.triggerBilling(),
+    onSuccess: (res) => {
+      const generated = res.invoices_generated
+      const errors = res.errors?.length ?? 0
+      setResult({ generated, errors, at: new Date().toISOString() })
+      if (errors > 0) {
+        toast.error(`${errors} ${errors === 1 ? 'error' : 'errors'} during billing run — check audit log.`)
+      } else {
+        toast.success(`${generated} ${generated === 1 ? 'invoice' : 'invoices'} generated.`)
+      }
+      queryClient.invalidateQueries({ queryKey: ['dashboard-overview'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-chart'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-recent-invoices'] })
+      queryClient.invalidateQueries({ queryKey: ['analytics-overview'] })
+      queryClient.invalidateQueries({ queryKey: ['analytics-chart'] })
+    },
+    onError: (err) => {
+      toast.error(`Billing run failed: ${err instanceof Error ? err.message : 'unknown error'}`)
+    },
+  })
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-center gap-3 pb-2 border-b border-border">
+        <div className="p-2 rounded-lg bg-primary/10">
+          <Wrench size={16} className="text-primary" />
+        </div>
+        <div>
+          <h2 className="text-sm font-semibold text-foreground">Operations</h2>
+          <p className="text-xs text-muted-foreground">Manual billing controls — use with care.</p>
+        </div>
+      </div>
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+            <div className="max-w-lg">
+              <p className="text-sm font-medium text-foreground">Run billing cycle</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Finalizes invoices for any subscriptions whose billing period has elapsed and attempts to collect
+                payment. The scheduler runs this automatically; trigger manually only for testing or after reconciling
+                a paused run.
+              </p>
+              {result && (
+                <p className="text-xs text-muted-foreground mt-3">
+                  Last run: {new Date(result.at).toLocaleString()} — {result.generated} invoice(s) generated
+                  {result.errors > 0 && `, ${result.errors} error(s)`}.
+                </p>
+              )}
+            </div>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" disabled={trigger.isPending}>
+                  {trigger.isPending
+                    ? <><Loader2 size={14} className="animate-spin mr-2" /> Running...</>
+                    : <><Zap size={14} className="mr-2" /> Trigger Billing Run</>
+                  }
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Run billing cycle now?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will finalize invoices for all subscriptions whose billing period has ended and attempt to
+                    collect payment from the linked payment methods. Charges are real in production environments.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={() => trigger.mutate()}>Run billing</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
+        </CardContent>
+      </Card>
+    </section>
   )
 }
