@@ -145,7 +145,7 @@ jobs:
           severity-cutoff: high
 
       - name: Sign image (Cosign)
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v3
       - run: cosign sign --yes ghcr.io/${{ github.repository }}:${{ github.sha }}
         env:
           COSIGN_EXPERIMENTAL: "1"
