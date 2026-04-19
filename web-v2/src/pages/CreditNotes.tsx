@@ -9,7 +9,8 @@ import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol } from 
 import type { CreditNote, Invoice, Customer } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
-import { useSortable } from '@/hooks/useSortable'
+import { useSortable, type SortDir } from '@/hooks/useSortable'
+import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 
@@ -103,9 +104,16 @@ export default function CreditNotesPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [confirmIssue, setConfirmIssue] = useState<string | null>(null)
   const [confirmVoid, setConfirmVoid] = useState<string | null>(null)
-  const [filterStatus, setFilterStatus] = useState('')
-  const [search, setSearch] = useState('')
-  const [page, setPage] = useState(1)
+  const [urlState, setUrlState] = useUrlState({
+    search: '',
+    status: '',
+    page: '1',
+    sort: 'created_at',
+    dir: 'desc',
+  })
+  const { search, status: filterStatus, sort: sortKey } = urlState
+  const sortDir = urlState.dir as SortDir
+  const page = Math.max(1, parseInt(urlState.page) || 1)
   const queryClient = useQueryClient()
 
   // Load all data
@@ -181,7 +189,12 @@ export default function CreditNotesPage() {
     return true
   }), [notes, filterStatus, search, customerMap, invoiceMap])
 
-  const { sorted, sortKey, sortDir, onSort } = useSortable(filtered, 'created_at', 'desc')
+  const { sorted, onSort } = useSortable(
+    filtered,
+    sortKey,
+    sortDir,
+    (key, dir) => setUrlState({ sort: key, dir }),
+  )
 
   const totalPages = Math.ceil(sorted.length / PAGE_SIZE)
   const currentPage = Math.min(page, totalPages || 1)
@@ -264,7 +277,7 @@ export default function CreditNotesPage() {
             ].map(f => (
               <button
                 key={f.value}
-                onClick={() => { setFilterStatus(f.value); setPage(1) }}
+                onClick={() => setUrlState({ status: f.value, page: '1' })}
                 className={cn(
                   'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
                   filterStatus === f.value
@@ -281,7 +294,7 @@ export default function CreditNotesPage() {
             <Search size={16} className="absolute left-3 top-2.5 text-muted-foreground" />
             <Input
               value={search}
-              onChange={e => { setSearch(e.target.value); setPage(1) }}
+              onChange={e => setUrlState({ search: e.target.value, page: '1' })}
               placeholder="Search by number, customer, invoice, or reason..."
               className="pl-9"
             />
@@ -309,7 +322,7 @@ export default function CreditNotesPage() {
                 action={{
                   label: 'Clear filter',
                   variant: 'outline',
-                  onClick: () => { setFilterStatus(''); setPage(1) },
+                  onClick: () => setUrlState({ status: '', page: '1' }),
                 }}
               />
             ) : (
@@ -412,7 +425,7 @@ export default function CreditNotesPage() {
                     <PaginationContent>
                       <PaginationItem>
                         <PaginationPrevious
-                          onClick={() => setPage(p => Math.max(1, p - 1))}
+                          onClick={() => setUrlState({ page: String(Math.max(1, currentPage - 1)) })}
                           className={cn(currentPage <= 1 && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>
@@ -430,7 +443,7 @@ export default function CreditNotesPage() {
                         return (
                           <PaginationItem key={pageNum}>
                             <PaginationLink
-                              onClick={() => setPage(pageNum)}
+                              onClick={() => setUrlState({ page: String(pageNum) })}
                               isActive={currentPage === pageNum}
                             >
                               {pageNum}
@@ -440,7 +453,7 @@ export default function CreditNotesPage() {
                       })}
                       <PaginationItem>
                         <PaginationNext
-                          onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                          onClick={() => setUrlState({ page: String(Math.min(totalPages, currentPage + 1)) })}
                           className={cn(currentPage >= totalPages && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>

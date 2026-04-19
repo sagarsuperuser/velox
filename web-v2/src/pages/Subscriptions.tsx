@@ -6,10 +6,11 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, formatDateTime } from '@/lib/api'
-import type { Customer, Plan, Subscription } from '@/lib/api'
+import type { Customer, Subscription } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
-import { useSortable } from '@/hooks/useSortable'
+import { useSortable, type SortDir } from '@/hooks/useSortable'
+import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
@@ -100,9 +101,16 @@ function SortableHead({
 export default function SubscriptionsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [error, setError] = useState('')
-  const [search, setSearch] = useState('')
-  const [filterStatus, setFilterStatus] = useState('')
-  const [page, setPage] = useState(1)
+  const [urlState, setUrlState] = useUrlState({
+    search: '',
+    status: '',
+    page: '1',
+    sort: 'created_at',
+    dir: 'desc',
+  })
+  const { search, status: filterStatus, sort: sortKey } = urlState
+  const sortDir = urlState.dir as SortDir
+  const page = Math.max(1, parseInt(urlState.page) || 1)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -181,7 +189,12 @@ export default function SubscriptionsPage() {
     })
   }, [subs, search])
 
-  const { sorted, sortKey, sortDir, onSort } = useSortable(filtered, 'created_at', 'desc')
+  const { sorted, onSort } = useSortable(
+    filtered,
+    sortKey,
+    sortDir,
+    (key, dir) => setUrlState({ sort: key, dir }),
+  )
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -232,7 +245,7 @@ export default function SubscriptionsPage() {
               ].map(f => (
                 <button
                   key={f.value}
-                  onClick={() => { setFilterStatus(f.value); setPage(1) }}
+                  onClick={() => setUrlState({ status: f.value, page: '1' })}
                   className={cn(
                     'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
                     filterStatus === f.value
@@ -259,7 +272,7 @@ export default function SubscriptionsPage() {
             <Search size={16} className="absolute left-3 top-2.5 text-muted-foreground" />
             <Input
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={e => setUrlState({ search: e.target.value })}
               placeholder="Search within page..."
               className="pl-9"
             />
@@ -287,7 +300,7 @@ export default function SubscriptionsPage() {
                 action={{
                   label: 'Clear filter',
                   variant: 'outline',
-                  onClick: () => { setFilterStatus(''); setPage(1) },
+                  onClick: () => setUrlState({ status: '', page: '1' }),
                 }}
               />
             ) : (
@@ -381,7 +394,7 @@ export default function SubscriptionsPage() {
                     <PaginationContent>
                       <PaginationItem>
                         <PaginationPrevious
-                          onClick={() => setPage(p => Math.max(1, p - 1))}
+                          onClick={() => setUrlState({ page: String(Math.max(1, page - 1)) })}
                           className={cn(page <= 1 && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>
@@ -399,7 +412,7 @@ export default function SubscriptionsPage() {
                         return (
                           <PaginationItem key={pageNum}>
                             <PaginationLink
-                              onClick={() => setPage(pageNum)}
+                              onClick={() => setUrlState({ page: String(pageNum) })}
                               isActive={page === pageNum}
                             >
                               {pageNum}
@@ -409,7 +422,7 @@ export default function SubscriptionsPage() {
                       })}
                       <PaginationItem>
                         <PaginationNext
-                          onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                          onClick={() => setUrlState({ page: String(Math.min(totalPages, page + 1)) })}
                           className={cn(page >= totalPages && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>

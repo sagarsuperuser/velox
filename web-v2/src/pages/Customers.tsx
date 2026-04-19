@@ -9,14 +9,14 @@ import { api, formatDate } from '@/lib/api'
 import type { Customer } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
-import { useSortable } from '@/hooks/useSortable'
+import { useSortable, type SortDir } from '@/hooks/useSortable'
+import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import {
@@ -91,11 +91,18 @@ function SortableHead({
 }
 
 export default function CustomersPage() {
-  const [search, setSearch] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [error, setError] = useState('')
-  const [filterStatus, setFilterStatus] = useState('')
-  const [page, setPage] = useState(1)
+  const [urlState, setUrlState] = useUrlState({
+    search: '',
+    status: '',
+    page: '1',
+    sort: 'created_at',
+    dir: 'desc',
+  })
+  const { search, status: filterStatus, sort: sortKey } = urlState
+  const sortDir = urlState.dir as SortDir
+  const page = Math.max(1, parseInt(urlState.page) || 1)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -148,7 +155,12 @@ export default function CustomersPage() {
     })
   }, [customers, search])
 
-  const { sorted, sortKey, sortDir, onSort } = useSortable(filtered, 'created_at', 'desc')
+  const { sorted, onSort } = useSortable(
+    filtered,
+    sortKey,
+    sortDir,
+    (key, dir) => setUrlState({ sort: key, dir }),
+  )
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -203,7 +215,7 @@ export default function CustomersPage() {
             ].map(f => (
               <button
                 key={f.value}
-                onClick={() => { setFilterStatus(f.value); setPage(1) }}
+                onClick={() => setUrlState({ status: f.value, page: '1' })}
                 className={cn(
                   'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
                   filterStatus === f.value
@@ -219,7 +231,7 @@ export default function CustomersPage() {
             <Search size={16} className="absolute left-3 top-2.5 text-muted-foreground" />
             <Input
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={e => setUrlState({ search: e.target.value })}
               placeholder="Search within page..."
               className="pl-9"
             />
@@ -247,7 +259,7 @@ export default function CustomersPage() {
                 action={{
                   label: 'Clear filter',
                   variant: 'outline',
-                  onClick: () => { setFilterStatus(''); setPage(1) },
+                  onClick: () => setUrlState({ status: '', page: '1' }),
                 }}
               />
             ) : (
@@ -333,7 +345,7 @@ export default function CustomersPage() {
                     <PaginationContent>
                       <PaginationItem>
                         <PaginationPrevious
-                          onClick={() => setPage(p => Math.max(1, p - 1))}
+                          onClick={() => setUrlState({ page: String(Math.max(1, page - 1)) })}
                           className={cn(page <= 1 && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>
@@ -351,7 +363,7 @@ export default function CustomersPage() {
                         return (
                           <PaginationItem key={pageNum}>
                             <PaginationLink
-                              onClick={() => setPage(pageNum)}
+                              onClick={() => setUrlState({ page: String(pageNum) })}
                               isActive={page === pageNum}
                             >
                               {pageNum}
@@ -361,7 +373,7 @@ export default function CustomersPage() {
                       })}
                       <PaginationItem>
                         <PaginationNext
-                          onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                          onClick={() => setUrlState({ page: String(Math.min(totalPages, page + 1)) })}
                           className={cn(page >= totalPages && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>

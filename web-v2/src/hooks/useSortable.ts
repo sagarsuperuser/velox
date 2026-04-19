@@ -1,17 +1,23 @@
-import { useState, useMemo } from 'react'
+import { useMemo } from 'react'
 
-type SortDir = 'asc' | 'desc'
+export type SortDir = 'asc' | 'desc'
 
-export function useSortable<T>(data: T[], defaultSort: string, defaultDir: SortDir = 'desc') {
-  const [sortKey, setSortKey] = useState(defaultSort)
-  const [sortDir, setSortDir] = useState<SortDir>(defaultDir)
-
+// Controlled client-side sort. State (sortKey, sortDir) lives outside so
+// callers can back it with URL params via useUrlState. onChange handles the
+// "flip direction on same key, reset to desc on new key" convention; callers
+// only need to pass it to column headers.
+export function useSortable<T>(
+  data: T[],
+  sortKey: string,
+  sortDir: SortDir,
+  onChange: (key: string, dir: SortDir) => void,
+  defaultDir: SortDir = 'desc',
+) {
   const onSort = (key: string) => {
     if (key === sortKey) {
-      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
+      onChange(key, sortDir === 'asc' ? 'desc' : 'asc')
     } else {
-      setSortKey(key)
-      setSortDir(defaultDir)
+      onChange(key, defaultDir)
     }
   }
 
@@ -37,5 +43,5 @@ export function useSortable<T>(data: T[], defaultSort: string, defaultDir: SortD
     return copy
   }, [data, sortKey, sortDir])
 
-  return { sorted, sortKey, sortDir, onSort }
+  return { sorted, onSort }
 }

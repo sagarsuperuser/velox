@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -6,7 +6,8 @@ import { api, downloadPDF, formatCents, formatDate, formatDateTime } from '@/lib
 import type { Customer, Invoice } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
-import { useSortable } from '@/hooks/useSortable'
+import { useSortable, type SortDir } from '@/hooks/useSortable'
+import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
@@ -63,11 +64,18 @@ function SortableHead({
 }
 
 export default function InvoicesPage() {
-  const [statusFilter, setStatusFilter] = useState<string>('')
-  const [search, setSearch] = useState('')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
-  const [page, setPage] = useState(1)
+  const [urlState, setUrlState] = useUrlState({
+    search: '',
+    status: '',
+    dateFrom: '',
+    dateTo: '',
+    page: '1',
+    sort: 'created_at',
+    dir: 'desc',
+  })
+  const { search, status: statusFilter, dateFrom, dateTo, sort: sortKey } = urlState
+  const sortDir = urlState.dir as SortDir
+  const page = Math.max(1, parseInt(urlState.page) || 1)
   const navigate = useNavigate()
 
   const queryParams = useMemo(() => {
@@ -113,7 +121,12 @@ export default function InvoicesPage() {
     return true
   }), [invoices, search, dateFrom, dateTo])
 
-  const { sorted, sortKey, sortDir, onSort } = useSortable(filtered, 'created_at', 'desc')
+  const { sorted, onSort } = useSortable(
+    filtered,
+    sortKey,
+    sortDir,
+    (key, dir) => setUrlState({ sort: key, dir }),
+  )
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -161,7 +174,7 @@ export default function InvoicesPage() {
             ].map(f => (
               <button
                 key={f.value}
-                onClick={() => { setStatusFilter(f.value); setPage(1) }}
+                onClick={() => setUrlState({ status: f.value, page: '1' })}
                 className={cn(
                   'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
                   statusFilter === f.value
@@ -183,20 +196,20 @@ export default function InvoicesPage() {
             <Search size={16} className="absolute left-3 top-2.5 text-muted-foreground" />
             <Input
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={e => setUrlState({ search: e.target.value })}
               placeholder="Search within page..."
               className="pl-9"
             />
           </div>
           <DatePicker
             value={dateFrom}
-            onChange={setDateFrom}
+            onChange={(v) => setUrlState({ dateFrom: v })}
             placeholder="From date"
             className="w-44"
           />
           <DatePicker
             value={dateTo}
-            onChange={setDateTo}
+            onChange={(v) => setUrlState({ dateTo: v })}
             placeholder="To date"
             className="w-44"
           />
@@ -226,7 +239,7 @@ export default function InvoicesPage() {
                 action={{
                   label: 'Clear filter',
                   variant: 'outline',
-                  onClick: () => { setStatusFilter(''); setPage(1) },
+                  onClick: () => setUrlState({ status: '', page: '1' }),
                 }}
               />
             ) : (
@@ -337,7 +350,7 @@ export default function InvoicesPage() {
                     <PaginationContent>
                       <PaginationItem>
                         <PaginationPrevious
-                          onClick={() => setPage(p => Math.max(1, p - 1))}
+                          onClick={() => setUrlState({ page: String(Math.max(1, page - 1)) })}
                           className={cn(page <= 1 && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>
@@ -355,7 +368,7 @@ export default function InvoicesPage() {
                         return (
                           <PaginationItem key={pageNum}>
                             <PaginationLink
-                              onClick={() => setPage(pageNum)}
+                              onClick={() => setUrlState({ page: String(pageNum) })}
                               isActive={page === pageNum}
                             >
                               {pageNum}
@@ -365,7 +378,7 @@ export default function InvoicesPage() {
                       })}
                       <PaginationItem>
                         <PaginationNext
-                          onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                          onClick={() => setUrlState({ page: String(Math.min(totalPages, page + 1)) })}
                           className={cn(page >= totalPages && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>
