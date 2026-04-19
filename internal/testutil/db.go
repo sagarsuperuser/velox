@@ -17,9 +17,10 @@ import (
 
 const (
 	// Superuser URL — used for migrations and cleanup (bypasses RLS).
-	defaultAdminDBURL = "postgres://velox:velox@localhost:5432/velox?sslmode=disable"
+	// Points to velox_test database so tests never touch dev data.
+	defaultAdminDBURL = "postgres://velox:velox@localhost:5432/velox_test?sslmode=disable"
 	// App user URL — used for queries (RLS enforced).
-	defaultAppDBURL = "postgres://velox_app:velox_app@localhost:5432/velox?sslmode=disable"
+	defaultAppDBURL = "postgres://velox_test_app:velox_test_app@localhost:5432/velox_test?sslmode=disable"
 )
 
 // SetupTestDB runs migrations as superuser, cleans data, and returns an

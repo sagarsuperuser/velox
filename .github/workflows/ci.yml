@@ -47,21 +47,24 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
         continue-on-error: true
 
-      - name: Create app user
+      - name: Create test database and app user
         run: |
           PGPASSWORD=velox psql -h localhost -U velox -d velox -c "
-            CREATE ROLE velox_app WITH LOGIN PASSWORD 'velox_app';
-            GRANT ALL PRIVILEGES ON DATABASE velox TO velox_app;
-            GRANT ALL ON SCHEMA public TO velox_app;
-            ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO velox_app;
-            ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO velox_app;
+            CREATE DATABASE velox_test OWNER velox;
+          "
+          PGPASSWORD=velox psql -h localhost -U velox -d velox_test -c "
+            CREATE ROLE velox_test_app WITH LOGIN PASSWORD 'velox_test_app';
+            GRANT ALL PRIVILEGES ON DATABASE velox_test TO velox_test_app;
+            GRANT ALL ON SCHEMA public TO velox_test_app;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO velox_test_app;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO velox_test_app;
           "
 
       - name: Integration Tests
         run: go test -p 1 ./... -count=1 -short=false
         env:
-          TEST_ADMIN_DATABASE_URL: postgres://velox:velox@localhost:5432/velox?sslmode=disable
-          TEST_DATABASE_URL: postgres://velox_app:velox_app@localhost:5432/velox?sslmode=disable
+          TEST_ADMIN_DATABASE_URL: postgres://velox:velox@localhost:5432/velox_test?sslmode=disable
+          TEST_DATABASE_URL: postgres://velox_test_app:velox_test_app@localhost:5432/velox_test?sslmode=disable
 
       - name: Upload Coverage
         uses: codecov/codecov-action@v6
