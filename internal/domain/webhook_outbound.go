@@ -10,7 +10,8 @@ type WebhookEndpoint struct {
 	TenantID    string    `json:"tenant_id,omitempty"`
 	URL         string    `json:"url"`
 	Description string    `json:"description,omitempty"`
-	Secret      string    `json:"-"`
+	Secret      string    `json:"-"` // Plaintext signing key. Only populated after create/rotate or after store decrypts it for dispatch.
+	SecretLast4 string    `json:"secret_last4"`
 	Events      []string  `json:"events"`
 	Active      bool      `json:"active"`
 	CreatedAt   time.Time `json:"created_at"`
