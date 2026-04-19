@@ -24,24 +24,44 @@ func FromError(w http.ResponseWriter, r *http.Request, err error, resource strin
 		return
 	}
 
+	// Pull the offending field (if any) off a DomainError in the chain. Empty
+	// when the error came from a legacy fmt.Errorf site or a sentinel wrap.
+	field := errs.Field(err)
+
 	switch {
 	case errors.Is(err, errs.ErrNotFound):
 		NotFound(w, r, resource)
 
 	case errors.Is(err, errs.ErrAlreadyExists):
-		Conflict(w, r, err.Error())
+		if field != "" {
+			ConflictField(w, r, field, err.Error())
+		} else {
+			Conflict(w, r, err.Error())
+		}
 
 	case errors.Is(err, errs.ErrDuplicateKey):
-		Conflict(w, r, err.Error())
+		if field != "" {
+			ConflictField(w, r, field, err.Error())
+		} else {
+			Conflict(w, r, err.Error())
+		}
 
 	case errors.Is(err, errs.ErrInvalidState), errors.Is(err, errs.ErrValidation):
-		Validation(w, r, err.Error())
+		if field != "" {
+			ValidationField(w, r, field, err.Error())
+		} else {
+			Validation(w, r, err.Error())
+		}
 
 	default:
 		// DomainError with an explicit code — treat as validation (these are
 		// business-rule rejections like billing_setup_incomplete).
 		if errs.Code(err) != "" {
-			Validation(w, r, err.Error())
+			if field != "" {
+				ValidationField(w, r, field, err.Error())
+			} else {
+				Validation(w, r, err.Error())
+			}
 			return
 		}
 

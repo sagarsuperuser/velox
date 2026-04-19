@@ -27,6 +27,12 @@ func List(w http.ResponseWriter, r *http.Request, data any, total int) {
 // Error writes a Stripe-style error response.
 // Format: {"error": {"type": "...", "message": "...", "code": "...", "param": "..."}}
 func Error(w http.ResponseWriter, r *http.Request, status int, errType, code, message string) {
+	errorField(w, r, status, errType, code, "", message)
+}
+
+// errorField is the underlying writer that includes the optional field name in
+// the envelope's Param slot. All shortcut helpers funnel through here.
+func errorField(w http.ResponseWriter, r *http.Request, status int, errType, code, field, message string) {
 	setHeaders(w, r)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(ErrorBody{
@@ -34,6 +40,7 @@ func Error(w http.ResponseWriter, r *http.Request, status int, errType, code, me
 			Type:      errType,
 			Code:      code,
 			Message:   message,
+			Param:     field,
 			RequestID: requestID(r),
 		},
 	})
@@ -50,11 +57,27 @@ func NotFound(w http.ResponseWriter, r *http.Request, resource string) {
 }
 
 func Conflict(w http.ResponseWriter, r *http.Request, message string) {
-	Error(w, r, http.StatusConflict, "invalid_request_error", "already_exists", message)
+	errorField(w, r, http.StatusConflict, "invalid_request_error", "already_exists", "", message)
+}
+
+// ConflictField writes a 409 response with the offending field name in the
+// envelope's Param slot so the frontend can attach the message to the right
+// input. Use when a create/update fails because a user-supplied value
+// collides with an existing record (plan.code, coupon.code, etc.).
+func ConflictField(w http.ResponseWriter, r *http.Request, field, message string) {
+	errorField(w, r, http.StatusConflict, "invalid_request_error", "already_exists", field, message)
 }
 
 func Validation(w http.ResponseWriter, r *http.Request, message string) {
-	Error(w, r, http.StatusUnprocessableEntity, "invalid_request_error", "validation_error", message)
+	errorField(w, r, http.StatusUnprocessableEntity, "invalid_request_error", "validation_error", "", message)
+}
+
+// ValidationField writes a 422 response with the offending field name in the
+// envelope's Param slot. Use for inline handler validation where the field is
+// known at the call site (service-layer validation is routed via FromError,
+// which pulls the field off DomainError automatically).
+func ValidationField(w http.ResponseWriter, r *http.Request, field, message string) {
+	errorField(w, r, http.StatusUnprocessableEntity, "invalid_request_error", "validation_error", field, message)
 }
 
 func InternalError(w http.ResponseWriter, r *http.Request) {

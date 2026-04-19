@@ -5,11 +5,16 @@ import (
 	"fmt"
 )
 
-// DomainError is a structured error with a machine-readable code and a
-// human-readable message. The API layer translates these into HTTP responses
-// by matching on Code rather than string content.
+// DomainError is a structured error carrying both machine-readable metadata
+// (Kind for HTTP status routing, Code for business-rule codes, Field for the
+// offending form input) and a human-readable Message. The API layer translates
+// these into HTTP responses by matching on Kind first, then pulling Field onto
+// the response envelope so the frontend can route the message to the right
+// input. Cause is optional and used only for internal/log context.
 type DomainError struct {
+	Kind    error
 	Code    string
+	Field   string
 	Message string
 	Cause   error
 }
@@ -22,6 +27,16 @@ func (e *DomainError) Error() string {
 }
 
 func (e *DomainError) Unwrap() error { return e.Cause }
+
+// Is lets errors.Is match against this error's Kind sentinel. This is how
+// respond.FromError routes DomainError{Kind: ErrValidation} to a 422 response
+// without the caller needing to wrap manually.
+func (e *DomainError) Is(target error) bool {
+	if e.Kind == nil {
+		return false
+	}
+	return e.Kind == target
+}
 
 func New(code, message string) *DomainError {
 	return &DomainError{Code: code, Message: message}
@@ -39,6 +54,56 @@ func Code(err error) string {
 	return ""
 }
 
+// Field extracts the offending field name from a DomainError anywhere in the
+// error chain, or returns "". Used by respond.FromError to populate
+// ErrorDetail.Param on the response envelope.
+func Field(err error) string {
+	var de *DomainError
+	if errors.As(err, &de) {
+		return de.Field
+	}
+	return ""
+}
+
+// Required returns a validation error indicating a required field is missing.
+// Maps to HTTP 422 with Param=field so the client can highlight the input.
+//
+//	return errs.Required("external_id")
+func Required(field string) *DomainError {
+	return &DomainError{
+		Kind:    ErrValidation,
+		Field:   field,
+		Message: field + " is required",
+	}
+}
+
+// Invalid returns a validation error for a field that was provided but failed
+// a semantic check (bad format, out of range, etc.). The reason is shown to
+// the user verbatim — phrase it as a complete sentence fragment that reads
+// naturally under the field, e.g. "must be a valid email address".
+//
+//	return errs.Invalid("company_email", "must contain @ and a domain")
+func Invalid(field, reason string) *DomainError {
+	return &DomainError{
+		Kind:    ErrValidation,
+		Field:   field,
+		Message: reason,
+	}
+}
+
+// AlreadyExists marks a duplicate resource, optionally naming the offending
+// field. Maps to HTTP 409. Use when a user-submitted value collides with an
+// existing record (customer.external_id, plan.code, coupon.code, etc.).
+//
+//	return errs.AlreadyExists("code", fmt.Sprintf("plan code %q already exists", code))
+func AlreadyExists(field, message string) *DomainError {
+	return &DomainError{
+		Kind:    ErrAlreadyExists,
+		Field:   field,
+		Message: message,
+	}
+}
+
 // Sentinel errors for store and service layers.
 var (
 	ErrNotFound      = errors.New("not found")
@@ -46,14 +111,13 @@ var (
 	ErrDuplicateKey  = errors.New("duplicate key")
 	ErrInvalidState  = errors.New("invalid state")
 	// ErrValidation marks an error caused by bad caller input (missing field,
-	// malformed value). Wrap it into a service-level error so respond.FromError
-	// maps the result to 422 and surfaces the wrapped message to the client:
+	// malformed value). New code should prefer errs.Required / errs.Invalid /
+	// errs.AlreadyExists which set Field metadata for the UI. The legacy
+	// wrapper form still works:
 	//
 	//   return fmt.Errorf("%w: customer_id is required", errs.ErrValidation)
 	//
-	// Without this marker, respond.FromError cannot distinguish bad-input
-	// errors from internal/DB errors and must default to a generic 500 —
-	// safer, but worse UX. New validation sites should use this wrapper.
+	// but leaves the frontend with only a toast — no field highlight.
 	ErrValidation = errors.New("validation error")
 )
 
