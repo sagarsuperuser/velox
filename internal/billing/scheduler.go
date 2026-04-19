@@ -46,6 +46,19 @@ type PaymentReconciler interface {
 	Run(ctx context.Context, limit int) (int, []error)
 }
 
+// Lock represents a held cluster-wide lock that the holder must release.
+type Lock interface {
+	Release()
+}
+
+// Locker acquires cluster-wide singleton locks by key — typically backed by
+// Postgres advisory locks. Returned (nil, false, nil) means another leader
+// holds the lock; caller should skip the tick. Nil Locker disables leader
+// gating (single-replica mode).
+type Locker interface {
+	TryAdvisoryLock(ctx context.Context, key int64) (Lock, bool, error)
+}
+
 // Scheduler runs the billing cycle engine and dunning processor on a periodic interval.
 type Scheduler struct {
 	engine            *Engine
@@ -56,6 +69,9 @@ type Scheduler struct {
 	tokenCleaner      TokenCleaner
 	idempotencyClean  IdempotencyCleaner
 	paymentReconciler PaymentReconciler
+	locker            Locker
+	billingLockKey    int64
+	dunningLockKey    int64
 	interval          time.Duration
 	batch             int
 	onRun             func() // called after each complete scheduler tick (for health tracking)
@@ -108,6 +124,17 @@ func (s *Scheduler) SetPaymentReconciler(r PaymentReconciler) {
 	s.paymentReconciler = r
 }
 
+// SetLocker enables leader gating. When set, the scheduler only runs the
+// billing and dunning halves of its tick if it wins the relevant advisory
+// lock — preventing two app replicas from both generating invoices or both
+// advancing the same dunning run. Pass nil (default) for single-replica or
+// test-mode operation where gating is unwanted.
+func (s *Scheduler) SetLocker(locker Locker, billingKey, dunningKey int64) {
+	s.locker = locker
+	s.billingLockKey = billingKey
+	s.dunningLockKey = dunningKey
+}
+
 // SetOnRun registers a callback invoked after each complete scheduler tick.
 // Used by the API health check to track scheduler liveness.
 func (s *Scheduler) SetOnRun(fn func()) {
@@ -138,7 +165,36 @@ func (s *Scheduler) Start(ctx context.Context) {
 }
 
 func (s *Scheduler) runOnce(ctx context.Context) {
+	s.runBillingHalf(ctx)
+	s.runDunningHalf(ctx)
+
+	// Notify health check that a scheduler tick completed. Fires even when
+	// both halves were skipped (lock contention) so the health probe still
+	// sees the scheduler as alive on follower replicas.
+	if s.onRun != nil {
+		s.onRun()
+	}
+}
+
+// runBillingHalf runs the leader-gated half that generates money — invoice
+// issuance, payment reconciliation, auto-charge retries, cleanup sweeps, and
+// reminders. Splitting from dunning lets two replicas divvy up roles instead
+// of one replica monopolising every periodic job.
+func (s *Scheduler) runBillingHalf(ctx context.Context) {
 	start := time.Now()
+
+	if s.locker != nil {
+		lock, acquired, err := s.locker.TryAdvisoryLock(ctx, s.billingLockKey)
+		if err != nil {
+			slog.Error("billing scheduler: lock acquire failed", "error", err)
+			return
+		}
+		if !acquired {
+			slog.Debug("billing scheduler: another leader holds the lock; skipping tick")
+			return
+		}
+		defer lock.Release()
+	}
 
 	// 0a. Reconcile PaymentUnknown invoices against Stripe. Runs before
 	// auto-charge retry so any stuck-unknown charge that actually succeeded
@@ -185,29 +241,6 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			"generated", generated,
 			"duration_ms", duration.Milliseconds(),
 		)
-	}
-
-	// 2. Dunning — process due retry runs
-	if s.dunning != nil && s.tenants != nil {
-		tenantIDs, err := s.tenants.ListTenantIDs(ctx)
-		if err != nil {
-			slog.Error("dunning: failed to list tenants", "error", err)
-			return
-		}
-		for _, tid := range tenantIDs {
-			processed, dErrs := s.dunning.ProcessDueRuns(ctx, tid, 20)
-			if len(dErrs) > 0 {
-				for _, e := range dErrs {
-					slog.Error("dunning error", "tenant_id", tid, "error", e)
-				}
-			}
-			for i := 0; i < processed; i++ {
-				mw.RecordDunningRun()
-			}
-			if processed > 0 {
-				slog.Info("dunning runs processed", "tenant_id", tid, "processed", processed)
-			}
-		}
 	}
 
 	// 3. Credit expiry sweep
@@ -259,9 +292,46 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 			mw.RecordScheduledCleanup("idempotency_keys", cleaned)
 		}
 	}
+}
 
-	// Notify health check that a scheduler tick completed
-	if s.onRun != nil {
-		s.onRun()
+// runDunningHalf runs the leader-gated half that advances dunning state.
+// Held behind a separate lock key so a replica can win dunning even if
+// another replica is currently running the (longer-lived) billing half.
+func (s *Scheduler) runDunningHalf(ctx context.Context) {
+	if s.dunning == nil || s.tenants == nil {
+		return
+	}
+
+	if s.locker != nil {
+		lock, acquired, err := s.locker.TryAdvisoryLock(ctx, s.dunningLockKey)
+		if err != nil {
+			slog.Error("dunning scheduler: lock acquire failed", "error", err)
+			return
+		}
+		if !acquired {
+			slog.Debug("dunning scheduler: another leader holds the lock; skipping tick")
+			return
+		}
+		defer lock.Release()
+	}
+
+	tenantIDs, err := s.tenants.ListTenantIDs(ctx)
+	if err != nil {
+		slog.Error("dunning: failed to list tenants", "error", err)
+		return
+	}
+	for _, tid := range tenantIDs {
+		processed, dErrs := s.dunning.ProcessDueRuns(ctx, tid, 20)
+		if len(dErrs) > 0 {
+			for _, e := range dErrs {
+				slog.Error("dunning error", "tenant_id", tid, "error", e)
+			}
+		}
+		for i := 0; i < processed; i++ {
+			mw.RecordDunningRun()
+		}
+		if processed > 0 {
+			slog.Info("dunning runs processed", "tenant_id", tid, "processed", processed)
+		}
 	}
 }

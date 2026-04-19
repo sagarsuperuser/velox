@@ -185,7 +185,7 @@ Shipped infrastructure + full producer cutover, gated by `VELOX_WEBHOOK_OUTBOX_E
 
 **Scope carried forward (not blocking RES-2):** The current pilot uses `EnqueueStandalone` from each `fireEvent` site — the insert is synchronous, but it is not tx-coupled to the business-op state change. True atomic enqueue (plan step 2) requires each business-op store method (`invoices.MarkPaid`, `dunning.StartDunning`, etc.) to accept an optional `*sql.Tx` the outbox insert can ride on. That refactor is per-producer and can land incrementally without touching the outbox contract. Shadow-mode comparison in the rollout plan is skipped: the interface-swap approach makes the cutover reversible via env var without shipping duplicate code paths.
 
-### [RES-2] Scheduler advisory lock — M — RES-1→
+### [RES-2] Scheduler advisory lock — M — ✅ DONE
 
 **Problem:** Two app replicas both run `engine.RunCycle`.
 
@@ -196,6 +196,17 @@ Shipped infrastructure + full producer cutover, gated by `VELOX_WEBHOOK_OUTBOX_E
 - Matches the pattern already in `platform/migrate/migrate.go`.
 
 **Tests:** two scheduler instances → only one runs per tick; leader crash → lock auto-released, other picks up.
+
+**✅ Resolution (2026-04-19):**
+
+- `internal/platform/postgres/advisory_lock.go` — `DB.TryAdvisoryLock(ctx, key)` pins a `sql.Conn`, runs `pg_try_advisory_lock($1)`, and returns an `*AdvisoryLock` whose `Release()` calls `pg_advisory_unlock($1)` and closes the conn. Release uses `context.Background()` so shutdown-triggered ctx cancellation cannot strand a held lock.
+- Session-scoped (not `pg_try_advisory_xact_lock`) because scheduler ticks span many independent txns — a tx-scoped lock would drop the moment the first query committed. Crash safety comes from TCP session death: Postgres auto-releases when the connection dies.
+- Three key constants (`LockKeyBillingScheduler`, `LockKeyDunningScheduler`, `LockKeyOutboxDispatcher`) namespaced ≥ 76_540_000 to avoid colliding with the hash-derived keys golang-migrate picks.
+- `internal/billing/scheduler.go` split into `runBillingHalf` (reconcile + auto-charge retry + RunCycle + credit expiry + reminders + token/idempotency cleanup) and `runDunningHalf`. Each half optionally gated by its own key via `Scheduler.SetLocker(locker, billingKey, dunningKey)`. Splitting lets two replicas divide roles — one takes billing, the other dunning.
+- `internal/billing/lock_adapter.go` — `postgresLocker` implementing `billing.Locker` over `*postgres.DB`; keeps scheduler tests decoupled from the real DB via a fake locker.
+- `internal/webhook/dispatcher.go` — optional `DispatchLocker`. `OutboxStore.TryDispatcherLock(ctx)` implements it. Row-level `FOR UPDATE SKIP LOCKED` still governs correctness; the lock just prevents two dispatchers from both polling every 2s when one suffices.
+- `cmd/velox/main.go` wires `billing.NewPostgresLocker(db)` into the scheduler and `server.OutboxStore` into the dispatcher.
+- Tests: `internal/platform/postgres/advisory_lock_test.go` (integration — exclusive acquire, distinct keys independent, idempotent Release) + `internal/billing/scheduler_lock_test.go` (unit — leader gate blocks follower's billing half, dunning half runs when free, skips when held, propagates infra errors, nil locker preserves single-replica mode). All pass.
 
 ### [RES-3] Safe handling of unknown Stripe results — M — ✅ DONE
 
@@ -454,7 +465,7 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 25. **HYG-3** — tax_rate_bp widened to BIGINT ✅
 26. **HYG-4** — explicit FK ON DELETE RESTRICT across schema ✅
 27. **RES-1** — transactional outbox (L) ✅
-28. **RES-2** — scheduler advisory lock
+28. **RES-2** — scheduler advisory lock ✅
 29. **RES-6** — email outbox
 30. **SEC-2 Phase B/C** — cutover + drop plaintext
 31. **FEAT-2, FEAT-3, FEAT-4 ✅, FEAT-7, FEAT-8** — feature completeness
