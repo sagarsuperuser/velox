@@ -245,6 +245,36 @@ func (s *PostgresStore) ListRedemptions(ctx context.Context, tenantID, couponID 
 	return redemptions, rows.Err()
 }
 
+func (s *PostgresStore) ListRedemptionsBySubscription(ctx context.Context, tenantID, subscriptionID string) ([]domain.CouponRedemption, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, tenant_id, coupon_id, customer_id,
+			COALESCE(subscription_id,''), COALESCE(invoice_id,''), discount_cents, created_at
+		FROM coupon_redemptions WHERE subscription_id = $1
+		ORDER BY created_at ASC
+	`, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var redemptions []domain.CouponRedemption
+	for rows.Next() {
+		var r domain.CouponRedemption
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.CouponID, &r.CustomerID,
+			&r.SubscriptionID, &r.InvoiceID, &r.DiscountCents, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		redemptions = append(redemptions, r)
+	}
+	return redemptions, rows.Err()
+}
+
 // scanCoupon scans a single coupon from a *sql.Row.
 func scanCoupon(row *sql.Row) (domain.Coupon, error) {
 	var c domain.Coupon
