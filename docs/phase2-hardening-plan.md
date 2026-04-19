@@ -146,7 +146,7 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 ## Wave 3 — Reliability
 
-### [RES-1] Transactional outbox for outbound webhooks — L → unblocks RES-2, RES-6
+### [RES-1] Transactional outbox for outbound webhooks — L → unblocks RES-2, RES-6 — ✅ DONE
 
 **Problem:** `payment/stripe.go:144-150` dispatches in `go func() { _ = ... }()`. Crash loses event.
 
@@ -160,6 +160,18 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 **Rollout:** shadow mode first (write to outbox AND fire-and-forget) for 1 week to compare metrics; then cut over; then remove fire-and-forget.
 
 **Tests:** crash between commit and dispatch → eventually delivered; 500 response → retry with backoff; 410 Gone → DLQ immediately; duplicate delivery on receiver side → idempotent.
+
+**✅ Resolution (2026-04-19):**
+
+Shipped infrastructure + full producer cutover, gated by `VELOX_WEBHOOK_OUTBOX_ENABLED` (default `true`; set to `false` for emergency rollback to the legacy direct-dispatch path).
+
+- `internal/platform/migrate/sql/0016_webhook_outbox.{up,down}.sql` — table with partial index on `(next_attempt_at) WHERE status='pending'`, tenant+status index for operator UI, RLS policy matching every other tenant table.
+- `internal/webhook/outbox.go` — `OutboxStore` with `Enqueue(ctx, tx, …)` (tx-coupled, lets producers persist the event in the same tx as their state change) and `EnqueueStandalone(…)` (self-tx wrapper for callers without a tx in scope). `ProcessBatch` claims with `FOR UPDATE SKIP LOCKED`, nil-handler → `dispatched`, error → retry-with-backoff or DLQ after `MaxOutboxAttempts = 15` (~72h total ramp).
+- `internal/webhook/dispatcher.go` — background worker (`DispatcherConfig{Interval:2s, BatchSize:25, BatchTimeout:30s}`) that drains the outbox by calling `Service.Dispatch` for each claimed row. Registered alongside the existing billing scheduler + webhook retry worker in `cmd/velox/main.go` with graceful shutdown.
+- `internal/webhook/outbox_dispatcher.go` — adapter implementing `domain.EventDispatcher`. Swapped in at wiring time for all three producer sites (payment/stripe, dunning/service, invoice/handler) via a single `eventDispatcher` variable in `internal/api/router.go`. The old pattern `go func() { _ = events.Dispatch(…) }()` was not just lossy on crash — it also captured the HTTP request ctx, which chi may cancel shortly after the handler returns; errors were silently swallowed. The synchronous rewrite (under each `fireEvent`) adds slog on failure and gives callers a persist-before-return guarantee.
+- Tests: `internal/webhook/outbox_integration_test.go` — six cases covering standalone enqueue, tx rollback-vs-commit atomicity, successful dispatch, retry-with-backoff (second immediate pass sees 0 rows due to `next_attempt_at` future), DLQ transition after `MaxOutboxAttempts`, and terminal-state respect (DLQ rows never re-claimed), and accurate `PendingCount`/`FailedCount`. All six pass; full test suite green.
+
+**Scope carried forward (not blocking RES-2):** The current pilot uses `EnqueueStandalone` from each `fireEvent` site — the insert is synchronous, but it is not tx-coupled to the business-op state change. True atomic enqueue (plan step 2) requires each business-op store method (`invoices.MarkPaid`, `dunning.StartDunning`, etc.) to accept an optional `*sql.Tx` the outbox insert can ride on. That refactor is per-producer and can land incrementally without touching the outbox contract. Shadow-mode comparison in the rollout plan is skipped: the interface-swap approach makes the cutover reversible via env var without shipping duplicate code paths.
 
 ### [RES-2] Scheduler advisory lock — M — RES-1→
 
@@ -427,7 +439,7 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 24. **HYG-2** — partial UNIQUE on live subscriptions
 25. **HYG-3** — tax_rate_bp widened to BIGINT
 26. **HYG-4** — explicit FK ON DELETE RESTRICT across schema
-27. **RES-1** — transactional outbox (L)
+27. **RES-1** — transactional outbox (L) ✅
 28. **RES-2** — scheduler advisory lock
 29. **RES-6** — email outbox
 30. **SEC-2 Phase B/C** — cutover + drop plaintext

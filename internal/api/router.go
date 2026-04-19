@@ -24,6 +24,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
+	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
 	"github.com/sagarsuperuser/velox/internal/feature"
@@ -73,6 +74,8 @@ type Server struct {
 	DunningSvc        *dunning.Service
 	SettingsStore     *tenant.SettingsStore
 	WebhookOutSvc     *webhook.Service
+	OutboxStore       *webhook.OutboxStore
+	OutboxEnabled     bool
 	CreditSvc         *credit.Service
 	InvoiceSvc        *invoice.Service
 	TokenSvc          *payment.TokenService
@@ -142,6 +145,22 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	creditNoteH := creditnote.NewHandler(creditNoteSvc)
 	webhookOutSvc := webhook.NewService(webhook.NewPostgresStore(db), nil)
 	webhookOutH := webhook.NewHandler(webhookOutSvc)
+
+	// Transactional outbox for outbound events (RES-1). When enabled, producers
+	// persist an event intent to webhook_outbox before returning; a background
+	// Dispatcher drains the queue and calls Service.Dispatch for each row.
+	// Crashes between business-op commit and event emission can no longer
+	// silently lose events. Disable via VELOX_WEBHOOK_OUTBOX_ENABLED=false for
+	// emergency rollback to the legacy direct-dispatch path.
+	outboxStore := webhook.NewOutboxStore(db)
+	outboxEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_WEBHOOK_OUTBOX_ENABLED"))) != "false"
+	var eventDispatcher domain.EventDispatcher = webhookOutSvc
+	if outboxEnabled {
+		eventDispatcher = webhook.NewOutboxDispatcher(outboxStore)
+		slog.Info("webhook outbox enabled — producers will enqueue events via webhook_outbox")
+	} else {
+		slog.Warn("webhook outbox DISABLED — using legacy direct-dispatch path (set VELOX_WEBHOOK_OUTBOX_ENABLED=true to re-enable)")
+	}
 	auditLogger := audit.NewLogger(db)
 	auditH := audit.NewHandler(auditLogger)
 	settingsH := tenant.NewSettingsHandler(settingsStore)
@@ -172,7 +191,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 
 	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, customerStore, dunningSvc)
 	stripeAdapter.SetCardFetcher(stripeClient)
-	stripeAdapter.SetEventDispatcher(webhookOutSvc)
+	stripeAdapter.SetEventDispatcher(eventDispatcher)
 	stripeAdapter.SetBreaker(stripeBreaker)
 
 	// Wire payment retrier now that stripeAdapter exists
@@ -182,7 +201,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		paymentSetups: customerStore,
 	})
 	dunningSvc.SetSubscriptionPauser(&subscriptionPauserAdapter{svc: subSvc}, invoiceStore)
-	dunningSvc.SetEventDispatcher(webhookOutSvc)
+	dunningSvc.SetEventDispatcher(eventDispatcher)
 	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
 
 	invoiceSvc := invoice.NewService(invoiceStore, clk, settingsStore)
@@ -195,7 +214,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		Dunning:         dunningSvc,
 		WebhookEvents:   webhookStore,
 		DunningTimeline: &dunningTimelineAdapter{store: dunningStore},
-		Events:          webhookOutSvc,
+		Events:          eventDispatcher,
 	})
 	checkoutH := payment.NewCheckoutHandler(stripeKey,
 		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")),
@@ -275,6 +294,8 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		DunningSvc:        dunningSvc,
 		SettingsStore:     settingsStore,
 		WebhookOutSvc:     webhookOutSvc,
+		OutboxStore:       outboxStore,
+		OutboxEnabled:     outboxEnabled,
 		CreditSvc:         creditSvc,
 		InvoiceSvc:        invoiceSvc,
 		TokenSvc:          tokenSvc,

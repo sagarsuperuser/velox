@@ -135,23 +135,30 @@ func (h *Handler) SetEmailSender(sender EmailSender) {
 // SetAuditLogger configures audit logging for financial operations.
 func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
 
-// fireEvent dispatches a webhook event. Non-blocking, non-fatal.
+// fireEvent dispatches a webhook event. Synchronous: with the outbox
+// (RES-1) Dispatch is a short DB insert that must persist-before-return,
+// and logging any failure is preferred to silently losing the event.
 func (h *Handler) fireEvent(ctx context.Context, tenantID, eventType string, inv domain.Invoice) {
 	if h.events == nil {
 		return
 	}
-	go func() {
-		_ = h.events.Dispatch(ctx, tenantID, eventType, map[string]any{
-			"invoice_id":         inv.ID,
-			"invoice_number":     inv.InvoiceNumber,
-			"customer_id":        inv.CustomerID,
-			"status":             string(inv.Status),
-			"payment_status":     string(inv.PaymentStatus),
-			"total_amount_cents": inv.TotalAmountCents,
-			"amount_due_cents":   inv.AmountDueCents,
-			"currency":           inv.Currency,
-		})
-	}()
+	if err := h.events.Dispatch(ctx, tenantID, eventType, map[string]any{
+		"invoice_id":         inv.ID,
+		"invoice_number":     inv.InvoiceNumber,
+		"customer_id":        inv.CustomerID,
+		"status":             string(inv.Status),
+		"payment_status":     string(inv.PaymentStatus),
+		"total_amount_cents": inv.TotalAmountCents,
+		"amount_due_cents":   inv.AmountDueCents,
+		"currency":           inv.Currency,
+	}); err != nil {
+		slog.Error("dispatch invoice event",
+			"event_type", eventType,
+			"invoice_id", inv.ID,
+			"tenant_id", tenantID,
+			"error", err,
+		)
+	}
 }
 
 func (h *Handler) Routes() chi.Router {

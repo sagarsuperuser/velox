@@ -174,13 +174,23 @@ func IsUnknownPaymentFailure(err error) bool {
 	return true
 }
 
+// fireEvent dispatches an outbound webhook event. Synchronous by design: when
+// the outbox path is enabled (RES-1, the default), Dispatch is a short DB
+// insert, and persisting-before-return is what the outbox exists to
+// guarantee. Errors are logged but not surfaced — the business op has
+// already committed, and we prefer that a missed event shows up in logs
+// over failing the end-user request for a webhook side-effect.
 func (s *Stripe) fireEvent(ctx context.Context, tenantID, eventType string, payload map[string]any) {
 	if s.events == nil {
 		return
 	}
-	go func() {
-		_ = s.events.Dispatch(ctx, tenantID, eventType, payload)
-	}()
+	if err := s.events.Dispatch(ctx, tenantID, eventType, payload); err != nil {
+		slog.Error("dispatch event",
+			"event_type", eventType,
+			"tenant_id", tenantID,
+			"error", err,
+		)
+	}
 }
 
 // ChargeInvoice creates a Stripe PaymentIntent for a finalized invoice.
