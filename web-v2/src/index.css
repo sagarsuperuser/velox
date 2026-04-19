@@ -72,6 +72,18 @@
     --chart-3: oklch(0.45 0.22 285);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
+    /* Semantic analytics palette (light) */
+    --chart-primary: oklch(0.55 0.28 285);
+    --chart-success: oklch(0.68 0.15 155);
+    --chart-danger: oklch(0.60 0.22 27);
+    --chart-warning: oklch(0.78 0.15 75);
+    --chart-info: oklch(0.62 0.16 245);
+    --chart-neutral: oklch(0.70 0 0);
+    --chart-grid: oklch(0 0 0 / 6%);
+    --chart-tick: oklch(0.45 0 0);
+    --chart-tooltip-bg: oklch(1 0 0);
+    --chart-tooltip-border: oklch(0.90 0 0);
+    --chart-tooltip-text: oklch(0.15 0 0);
     --radius: 0.625rem;
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
@@ -110,6 +122,18 @@
     --chart-3: oklch(0.45 0.22 285);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
+    /* Semantic analytics palette (dark) */
+    --chart-primary: oklch(0.62 0.25 285);
+    --chart-success: oklch(0.72 0.15 155);
+    --chart-danger: oklch(0.70 0.19 22);
+    --chart-warning: oklch(0.80 0.16 75);
+    --chart-info: oklch(0.68 0.17 245);
+    --chart-neutral: oklch(0.62 0 0);
+    --chart-grid: oklch(1 0 0 / 6%);
+    --chart-tick: oklch(0.70 0 0);
+    --chart-tooltip-bg: oklch(0.22 0 0);
+    --chart-tooltip-border: oklch(0.32 0 0);
+    --chart-tooltip-text: oklch(0.98 0 0);
     --sidebar: oklch(0.205 0 0);
     --sidebar-foreground: oklch(0.985 0 0);
     --sidebar-primary: oklch(0.55 0.28 285);
@@ -150,6 +174,11 @@ summary, label[for], select, [data-clickable], tr[onclick], tr[data-clickable] {
 
 a, button, [role="button"] {
   transition: color 0.15s, background-color 0.15s, transform 0.15s;
+}
+
+/* Skeleton shimmer */
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
 }
 
 /* Ensure placeholder text is visible in dark mode */
