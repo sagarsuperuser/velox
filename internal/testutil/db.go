@@ -3,6 +3,8 @@ package testutil
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"log"
 	"os"
 	"strings"
 	"testing"
@@ -132,20 +134,24 @@ func envOr(key, fallback string) string {
 	return v
 }
 
-// runMigrations applies pending migrations. If a previous test left the DB
-// in a dirty state (partial migration), it force-resets before retrying.
-// On failure, drops schema_migrations and all tables for a completely clean retry.
+// runMigrations applies pending migrations. On failure, drops everything
+// and retries from scratch (safe because this is a test-only database).
 func runMigrations(pool *sql.DB) error {
 	err := migrate.Up(pool)
 	if err == nil {
 		return nil
 	}
 
-	// If dirty or failed, nuke schema_migrations and retry from scratch.
-	// This is safe because we're in a test database that gets truncated anyway.
-	_, _ = pool.ExecContext(context.Background(), "DROP TABLE IF EXISTS schema_migrations CASCADE")
+	// Log the first failure for debugging
+	log.Printf("testutil: first migration attempt failed: %v", err)
 
-	// Also drop all tables so migration can recreate them cleanly
+	// Try running the schema SQL directly to get the actual Postgres error
+	if debugErr := debugMigration(pool); debugErr != nil {
+		log.Printf("testutil: direct SQL execution failed: %v", debugErr)
+	}
+
+	// Nuke everything and retry from scratch
+	_, _ = pool.ExecContext(context.Background(), "DROP TABLE IF EXISTS schema_migrations CASCADE")
 	_, _ = pool.ExecContext(context.Background(), `
 		DO $$ DECLARE r RECORD;
 		BEGIN
@@ -155,5 +161,34 @@ func runMigrations(pool *sql.DB) error {
 		END $$;
 	`)
 
-	return migrate.Up(pool)
+	retryErr := migrate.Up(pool)
+	if retryErr != nil {
+		log.Printf("testutil: retry migration also failed: %v", retryErr)
+	}
+	return retryErr
+}
+
+// debugMigration runs the first few statements of the schema SQL directly
+// to capture the actual Postgres error (golang-migrate swallows it).
+func debugMigration(pool *sql.DB) error {
+	ctx := context.Background()
+
+	// Test basic connectivity
+	var one int
+	if err := pool.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+		return fmt.Errorf("connectivity check failed: %w", err)
+	}
+
+	// Test extension
+	if _, err := pool.ExecContext(ctx, "CREATE EXTENSION IF NOT EXISTS pgcrypto"); err != nil {
+		return fmt.Errorf("pgcrypto creation failed: %w", err)
+	}
+
+	// Test table creation
+	if _, err := pool.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS _debug_test (id TEXT DEFAULT encode(gen_random_bytes(12), 'hex'))`); err != nil {
+		return fmt.Errorf("table creation with gen_random_bytes failed: %w", err)
+	}
+	_, _ = pool.ExecContext(ctx, "DROP TABLE IF EXISTS _debug_test")
+
+	return nil
 }
