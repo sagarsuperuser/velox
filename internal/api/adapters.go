@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -101,7 +102,20 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 		return fmt.Errorf("no payment method for customer")
 	}
 
-	_, err = a.charger.ChargeInvoice(ctx, tenantID, inv, ps.StripeCustomerID)
+	// 15s bound on the Stripe leg. Scheduler ticks run tens of retries
+	// back-to-back; without this, one tenant with a network-partitioned
+	// Stripe call could hold the goroutine for the full request deadline
+	// (minutes), starving every other tenant's retry this tick.
+	chargeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	_, err = a.charger.ChargeInvoice(chargeCtx, tenantID, inv, ps.StripeCustomerID)
+	// Map payment's internal "call never happened" sentinel to dunning's
+	// equivalent. Keeps peer domains from importing each other and gives
+	// dunning a stable signal to skip attempt_count bookkeeping.
+	if errors.Is(err, payment.ErrPaymentTransient) {
+		return dunning.ErrTransientSkip
+	}
 	return err
 }
 

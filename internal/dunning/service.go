@@ -2,6 +2,7 @@ package dunning
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -10,6 +11,15 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
+
+// ErrTransientSkip signals that the PaymentRetrier could not attempt a
+// charge this tick — the Stripe call never happened, so dunning must NOT
+// tick attempt_count or emit a failure event. Typical causes: per-tenant
+// circuit breaker open, context timeout fired before the Stripe API call.
+// The adapter that bridges payment → dunning maps payment's internal
+// sentinel to this dunning-visible one so peer domains don't import each
+// other.
+var ErrTransientSkip = errors.New("dunning retry skipped: upstream transient")
 
 // PaymentRetrier retries a payment for an invoice.
 type PaymentRetrier interface {
@@ -226,6 +236,19 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 	retryErr := fmt.Errorf("payment retrier not configured")
 	if s.retrier != nil {
 		retryErr = s.retrier.RetryPayment(ctx, tenantID, run.InvoiceID, run.CustomerID)
+	}
+
+	// Transient skip: the Stripe call never happened (circuit breaker open or
+	// timeout before the call). Rewind the attempt count, leave state
+	// untouched in DB, and let the next scheduler tick retry. This is NOT a
+	// dunning attempt — do not tick attempt_count, do not log a failure
+	// event, do not reschedule. A five-minute Stripe outage should not burn
+	// a tenant's entire retry budget.
+	if errors.Is(retryErr, ErrTransientSkip) {
+		run.AttemptCount--
+		slog.Info("dunning retry skipped — upstream transient (breaker/timeout)",
+			"run_id", run.ID, "invoice_id", run.InvoiceID)
+		return nil
 	}
 
 	if retryErr != nil {

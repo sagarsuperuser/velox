@@ -37,6 +37,13 @@ type PaymentError struct {
 
 func (e *PaymentError) Error() string { return e.Message }
 
+// ErrPaymentTransient signals that the payment attempt was short-circuited
+// upstream of Stripe (circuit breaker open, timeout fired before the call)
+// — the Stripe API was not invoked, so the invoice state is unchanged. The
+// scheduler/dunning path should treat this as "skip this tick" and not
+// tick the dunning attempt count, unlike a real payment failure.
+var ErrPaymentTransient = errors.New("payment attempt skipped; upstream breaker open or timeout before Stripe")
+
 // classifyStripeError maps a stripe-go SDK error to a PaymentError. Non-Stripe
 // errors (context cancel, DNS failure wrapped by our code, etc.) are treated
 // as unknown, because we cannot prove the request never reached Stripe.

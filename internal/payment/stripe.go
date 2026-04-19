@@ -11,6 +11,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/payment/breaker"
 )
 
 // Stripe is the payment adapter. It creates PaymentIntents for finalized invoices
@@ -65,6 +66,7 @@ type Stripe struct {
 	emailPaymentUpdate EmailPaymentUpdate
 	paymentUpdateURL   string
 	tokenSvc           *TokenService
+	breaker            *breaker.Breaker // optional; nil = no breaker
 }
 
 // StripeClient is the interface for Stripe API calls.
@@ -143,6 +145,34 @@ func (s *Stripe) SetEventDispatcher(events domain.EventDispatcher) {
 	s.events = events
 }
 
+// SetBreaker wires a per-tenant circuit breaker around Stripe calls. When
+// set, ChargeInvoice short-circuits with breaker.ErrOpen if the tenant's
+// breaker is rejecting — the Stripe call is not made and the invoice
+// state is left untouched so dunning treats it as "try later" without
+// ticking attempt_count.
+func (s *Stripe) SetBreaker(b *breaker.Breaker) {
+	s.breaker = b
+}
+
+// IsUnknownPaymentFailure classifies an error returned from ChargeInvoice
+// as a Stripe-side unknown outcome (5xx, timeout, network) — the failure
+// category that should feed the circuit breaker. Explicit card declines
+// and validation errors return false. Exported so the breaker factory can
+// reuse the exact same classification used at the charge site.
+func IsUnknownPaymentFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pe *PaymentError
+	if errors.As(err, &pe) {
+		return pe.Unknown
+	}
+	// Plain error with no classification — assume unknown to be conservative.
+	// A wrapped non-PaymentError from our own code shouldn't happen; if it
+	// does we'd rather trip the breaker than miss a real incident.
+	return true
+}
+
 func (s *Stripe) fireEvent(ctx context.Context, tenantID, eventType string, payload map[string]any) {
 	if s.events == nil {
 		return
@@ -178,14 +208,36 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 	if reqID := chimw.GetReqID(ctx); reqID != "" {
 		metadata["velox_request_id"] = reqID
 	}
-	result, err := s.client.CreatePaymentIntent(ctx, PaymentIntentParams{
+	params := PaymentIntentParams{
 		AmountCents:    inv.AmountDueCents,
 		Currency:       inv.Currency,
 		CustomerID:     stripeCustomerID,
 		Description:    fmt.Sprintf("Invoice %s", inv.InvoiceNumber),
 		IdempotencyKey: fmt.Sprintf("velox_inv_%s", inv.ID),
 		Metadata:       metadata,
-	})
+	}
+
+	var result PaymentIntentResult
+	var err error
+	if s.breaker != nil {
+		var out any
+		out, err = s.breaker.Execute(ctx, tenantID, func(ctx context.Context) (any, error) {
+			return s.client.CreatePaymentIntent(ctx, params)
+		})
+		if errors.Is(err, breaker.ErrOpen) {
+			// Breaker short-circuit: the call to Stripe was not made. Do NOT
+			// mutate invoice state — leaving payment_status as-is lets the
+			// scheduler try again on the next tick once cooldown elapses.
+			// Returning a distinct sentinel lets dunning treat this as a
+			// transient skip rather than ticking attempt_count.
+			return domain.Invoice{}, ErrPaymentTransient
+		}
+		if out != nil {
+			result = out.(PaymentIntentResult)
+		}
+	} else {
+		result, err = s.client.CreatePaymentIntent(ctx, params)
+	}
 	if err != nil {
 		// Categorise the error so ambiguous (5xx/timeout/network) outcomes are
 		// recorded as PaymentUnknown, not PaymentFailed. Retrying a failed-

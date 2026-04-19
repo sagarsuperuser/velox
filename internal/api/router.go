@@ -29,6 +29,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/feature"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
+	"github.com/sagarsuperuser/velox/internal/payment/breaker"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -152,9 +153,27 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		CreditReverser: creditSvc,
 		PaymentCancel:  payment.NewLiveStripeClient(stripeKey),
 	})
+
+	// Per-tenant circuit breaker around Stripe calls. One tenant's broken
+	// integration — or a Stripe regional incident — must not let retries
+	// from the scheduler burn request budget for every other tenant. The
+	// breaker opens after 5 consecutive Unknown (5xx/timeout/network)
+	// failures, probes after 30s, and emits state transitions to the
+	// velox_stripe_breaker_state gauge so operators can alert on it.
+	stripeBreaker := breaker.New(breaker.Config{
+		FailureThreshold: 5,
+		Cooldown:         30 * time.Second,
+		Interval:         60 * time.Second,
+		Countable:        payment.IsUnknownPaymentFailure,
+		OnStateChange: func(tenantID string, _, to breaker.State) {
+			mw.RecordStripeBreakerState(tenantID, string(to))
+		},
+	})
+
 	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, customerStore, dunningSvc)
 	stripeAdapter.SetCardFetcher(stripeClient)
 	stripeAdapter.SetEventDispatcher(webhookOutSvc)
+	stripeAdapter.SetBreaker(stripeBreaker)
 
 	// Wire payment retrier now that stripeAdapter exists
 	dunningSvc.SetRetrier(&paymentRetrierAdapter{
@@ -192,6 +211,8 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	// 60s cool-off lets webhooks resolve the state naturally before we
 	// spend an extra API call.
 	paymentReconciler := payment.NewReconciler(stripeClient, invoiceStore, 60*time.Second)
+	paymentReconciler.SetBreaker(stripeBreaker)
+	stripeBreakerH := payment.NewBreakerAdminHandler(stripeBreaker)
 	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeKey,
 		strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_RETURN_URL")))
 
@@ -358,6 +379,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/analytics", analyticsH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/feature-flags", featureH.Routes())
+		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/integrations/stripe/breaker", stripeBreakerH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
 		if checkoutH != nil {
 			r.With(auth.Require(auth.PermCustomerWrite)).Mount("/checkout", checkoutH.Routes())

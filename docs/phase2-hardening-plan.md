@@ -211,9 +211,11 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 **Target:** reuse outbox pattern with `email_outbox` table. Backoff, DLQ, metrics.
 
-### [RES-7] Dunning circuit breaker + payment-retry timeout — S
+### [RES-7] Dunning circuit breaker + payment-retry timeout — S — ✅ DONE
 
 **Target:** per-tenant breaker around Stripe calls; opens after N consecutive 5xx in window, rejects for cooldown. 15s timeout on `RetryPayment`. Manual reset endpoint. Metric `stripe_breaker_state{tenant_id}`.
+
+**Resolution:** Thin wrapper in `internal/payment/breaker/` over `sony/gobreaker/v2` keyed per-tenant. `FailureThreshold=5` consecutive Unknown outcomes (5xx / timeout / network) trip; `Cooldown=30s` before half-open probe; `Interval=60s` clears counts in the closed state. Card declines and validation errors are routed through gobreaker's `IsExcluded` so merchant-side problems don't open the breaker. `payment.IsUnknownPaymentFailure` is the shared classifier. `Stripe.ChargeInvoice` and `Reconciler.reconcileOne` both route Stripe calls through `Breaker.Execute`; on `breaker.ErrOpen` they return `payment.ErrPaymentTransient` without mutating invoice state. `paymentRetrierAdapter.RetryPayment` wraps the Stripe call in a 15s `context.WithTimeout` and translates `ErrPaymentTransient` to `dunning.ErrTransientSkip`, which `dunning.processRun` detects to decrement `AttemptCount` and return nil (the tick didn't really happen). `velox_stripe_breaker_state{tenant_id}` gauge is driven by the breaker's `OnStateChange` hook (0=closed, 1=half_open, 2=open). Admin endpoints: `GET /v1/integrations/stripe/breaker` returns current state; `POST /v1/integrations/stripe/breaker/reset` forces-closed for the caller's tenant (scoped by auth context — no cross-tenant reset). 9 unit tests in `breaker_test.go` cover opens-after-N, card-declines-excluded, cooldown → half-open probe, half-open-failure reopens, manual reset, tenant isolation. The preference for battle-tested libs over custom implementations came out of this item and is now a durable user preference.
 
 ### [RES-8] PII scrubbing for logs + error-column storage — S
 

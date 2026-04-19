@@ -112,7 +112,29 @@ var (
 	)
 
 	auditWriteErrors *prometheus.CounterVec
+
+	stripeBreakerState = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "velox_stripe_breaker_state",
+			Help: "Per-tenant circuit breaker state for Stripe calls. 0=closed, 1=half_open, 2=open.",
+		},
+		[]string{"tenant_id"},
+	)
 )
+
+// RecordStripeBreakerState updates the tenant's breaker state gauge. Called
+// from the breaker's OnStateChange hook. Values mirror gobreaker's semantics:
+// 0=closed (normal), 1=half_open (probing), 2=open (rejecting).
+func RecordStripeBreakerState(tenantID, state string) {
+	var v float64
+	switch state {
+	case "half_open":
+		v = 1
+	case "open":
+		v = 2
+	}
+	stripeBreakerState.WithLabelValues(tenantID).Set(v)
+}
 
 func init() {
 	c := prometheus.NewCounterVec(prometheus.CounterOpts{
