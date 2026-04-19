@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 const (
@@ -93,9 +94,13 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Scrub Stripe's free-text failure message before it enters Velox data.
+	// Persisted to stripe_webhook_events.failure_message and echoed into
+	// invoices.last_payment_error via handlePaymentFailed — scrubbing at
+	// ingress keeps PII (card last4, emails) out of both.
 	failureMsg := ""
 	if obj.LastError != nil {
-		failureMsg = obj.LastError.Message
+		failureMsg = errs.Scrub(obj.LastError.Message)
 	}
 
 	amount := obj.Amount
