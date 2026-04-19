@@ -251,7 +251,7 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 	}
 
 	diff := float64(newPlan.BaseAmountCents-oldPlan.BaseAmountCents) * result.ProrationFactor
-	proratedCents := int64(math.Round(diff))
+	proratedCents := int64(math.RoundToEven(diff))
 
 	if proratedCents == 0 {
 		return nil, nil

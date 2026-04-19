@@ -187,7 +187,7 @@ func CalculateDiscount(c domain.Coupon, subtotalCents int64) int64 {
 
 	switch c.Type {
 	case domain.CouponTypePercentage:
-		discount := int64(math.Round(float64(subtotalCents) * c.PercentOff / 100))
+		discount := int64(math.RoundToEven(float64(subtotalCents) * c.PercentOff / 100))
 		if discount > subtotalCents {
 			return subtotalCents
 		}

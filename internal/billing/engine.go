@@ -10,6 +10,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/telemetry"
 	"github.com/sagarsuperuser/velox/internal/tax"
 	"go.opentelemetry.io/otel/attribute"
@@ -262,7 +263,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
 			// Prorate baseFee * (periodDays / fullCycleDays) with banker's rounding
 			// so mid-cycle changes don't accumulate a rounding bias across tenants.
-			baseFee = roundHalfToEven(plan.BaseAmountCents*int64(periodDays), int64(fullCycleDays))
+			baseFee = money.RoundHalfToEven(plan.BaseAmountCents*int64(periodDays), int64(fullCycleDays))
 			description = fmt.Sprintf("%s - base fee (prorated %d/%d days)", plan.Name, periodDays, fullCycleDays)
 		}
 
@@ -424,11 +425,11 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	} else if taxRateBP > 0 && subtotal > 0 {
 		// Inline manual tax math (legacy path when no calculator is wired).
 		// Banker's rounding on the total and each line item for zero-bias accounting.
-		taxAmountCents = roundHalfToEven(subtotal*int64(taxRateBP), 10000)
+		taxAmountCents = money.RoundHalfToEven(subtotal*int64(taxRateBP), 10000)
 
 		var lineTaxSum int64
 		for i := range lineItems {
-			lineTax := roundHalfToEven(lineItems[i].AmountCents*int64(taxRateBP), 10000)
+			lineTax := money.RoundHalfToEven(lineItems[i].AmountCents*int64(taxRateBP), 10000)
 			lineItems[i].TaxRateBP = taxRateBP
 			lineItems[i].TaxAmountCents = lineTax
 			lineItems[i].TotalAmountCents = lineItems[i].AmountCents + lineTax
@@ -618,31 +619,3 @@ func advanceBillingPeriod(from time.Time, interval domain.BillingInterval) time.
 	}
 }
 
-// roundHalfToEven computes num/denom rounded to the nearest integer using
-// banker's rounding (round half to even). On exact ties (remainder = denom/2),
-// rounds toward the nearest even integer instead of always rounding up.
-//
-// Why not half-up? Half-up introduces a systematic positive bias when rounding
-// large batches of monetary amounts — over millions of invoices, this becomes
-// a measurable accounting drift that auditors will flag. Half-to-even averages
-// out to zero bias. IEEE 754 default, Python 3's round(), .NET decimal, and
-// most financial/GAAP-adjacent systems use this rule.
-//
-// Requires num >= 0 and denom > 0; billing amounts are always non-negative.
-func roundHalfToEven(num, denom int64) int64 {
-	quotient := num / denom
-	remainder := num % denom
-	doubled := remainder * 2
-	switch {
-	case doubled < denom:
-		return quotient
-	case doubled > denom:
-		return quotient + 1
-	default:
-		// Exact half: round to nearest even.
-		if quotient%2 == 0 {
-			return quotient
-		}
-		return quotient + 1
-	}
-}

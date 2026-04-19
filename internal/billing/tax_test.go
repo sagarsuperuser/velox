@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 )
 
 // ---------------------------------------------------------------------------
@@ -23,7 +24,7 @@ func computeTaxBP(subtotalCents int64, taxRateBP int) int64 {
 	if taxRateBP <= 0 || subtotalCents <= 0 {
 		return 0
 	}
-	return roundHalfToEven(subtotalCents*int64(taxRateBP), 10000)
+	return money.RoundHalfToEven(subtotalCents*int64(taxRateBP), 10000)
 }
 
 // computeLineTaxBP mirrors per-line-item tax in the engine.
@@ -31,37 +32,7 @@ func computeLineTaxBP(amountCents int64, taxRateBP int) int64 {
 	if taxRateBP <= 0 || amountCents <= 0 {
 		return 0
 	}
-	return roundHalfToEven(amountCents*int64(taxRateBP), 10000)
-}
-
-// TestRoundHalfToEven locks in banker's rounding behavior so a future
-// "simplification" back to half-up is a loud test failure, not a silent
-// accounting drift.
-func TestRoundHalfToEven(t *testing.T) {
-	tests := []struct {
-		name string
-		num  int64
-		den  int64
-		want int64
-	}{
-		{"exact — 0 remainder", 20000, 10000, 2},
-		{"below half", 24000, 10000, 2},           // 0.4 → 2
-		{"above half", 26000, 10000, 3},           // 0.6 → 3
-		{"tie, odd quotient", 15000, 10000, 2},    // 1.5 → 2 (nearest even)
-		{"tie, even quotient", 25000, 10000, 2},   // 2.5 → 2 (nearest even, NOT 3)
-		{"tie, even quotient 4", 45000, 10000, 4}, // 4.5 → 4
-		{"tie, odd quotient 3", 35000, 10000, 4},  // 3.5 → 4
-		{"zero num", 0, 10000, 0},
-		{"small denom", 7, 2, 4},            // 3.5 → 4 (odd → even)
-		{"small denom, even tie", 10, 4, 2}, // 2.5 → 2 (even → stay)
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := roundHalfToEven(tt.num, tt.den); got != tt.want {
-				t.Errorf("roundHalfToEven(%d, %d) = %d, want %d", tt.num, tt.den, got, tt.want)
-			}
-		})
-	}
+	return money.RoundHalfToEven(amountCents*int64(taxRateBP), 10000)
 }
 
 func TestTaxBP_BasicCases(t *testing.T) {
