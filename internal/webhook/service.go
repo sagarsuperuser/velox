@@ -91,10 +91,10 @@ func isPrivateIP(ip net.IP) bool {
 func validateWebhookURL(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Host == "" {
-		return fmt.Errorf("url must be a valid URL")
+		return errs.Invalid("url", "must be a valid URL")
 	}
 	if parsed.Scheme != "https" && (parsed.Scheme != "http" || !strings.HasPrefix(parsed.Host, "localhost")) {
-		return fmt.Errorf("webhook URL must use HTTPS (except localhost)")
+		return errs.Invalid("url", "must use HTTPS (except localhost)")
 	}
 
 	// Skip SSRF check for localhost (local development).
@@ -106,7 +106,7 @@ func validateWebhookURL(rawURL string) error {
 	// Resolve hostname and check all IPs against blocked ranges.
 	ips, err := net.LookupHost(host)
 	if err != nil {
-		return fmt.Errorf("cannot resolve webhook host %q: %w", host, err)
+		return errs.Invalid("url", fmt.Sprintf("cannot resolve host %q", host))
 	}
 	for _, ipStr := range ips {
 		ip := net.ParseIP(ipStr)
@@ -114,7 +114,7 @@ func validateWebhookURL(rawURL string) error {
 			continue
 		}
 		if isPrivateIP(ip) {
-			return fmt.Errorf("webhook URL must not resolve to a private/internal IP address (got %s)", ipStr)
+			return errs.Invalid("url", fmt.Sprintf("must not resolve to a private/internal IP address (got %s)", ipStr))
 		}
 	}
 
@@ -135,7 +135,7 @@ type CreateEndpointResult struct {
 func (s *Service) CreateEndpoint(ctx context.Context, tenantID string, input CreateEndpointInput) (CreateEndpointResult, error) {
 	rawURL := strings.TrimSpace(input.URL)
 	if rawURL == "" {
-		return CreateEndpointResult{}, fmt.Errorf("url is required")
+		return CreateEndpointResult{}, errs.Required("url")
 	}
 	if err := validateWebhookURL(rawURL); err != nil {
 		return CreateEndpointResult{}, err

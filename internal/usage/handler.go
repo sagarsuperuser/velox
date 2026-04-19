@@ -63,20 +63,20 @@ func (h *Handler) resolve(ctx context.Context, tenantID string, evt apiEvent) (I
 	eventName := strings.TrimSpace(evt.EventName)
 
 	if extCust == "" {
-		return IngestInput{}, fmt.Errorf("external_customer_id is required")
+		return IngestInput{}, errs.Required("external_customer_id")
 	}
 	if eventName == "" {
-		return IngestInput{}, fmt.Errorf("event_name is required")
+		return IngestInput{}, errs.Required("event_name")
 	}
 
 	cust, err := h.customers.GetByExternalID(ctx, tenantID, extCust)
 	if err != nil {
-		return IngestInput{}, fmt.Errorf("customer %q not found", extCust)
+		return IngestInput{}, errs.Invalid("external_customer_id", fmt.Sprintf("customer %q not found", extCust))
 	}
 
 	meter, err := h.meters.GetMeterByKey(ctx, tenantID, eventName)
 	if err != nil {
-		return IngestInput{}, fmt.Errorf("meter %q not found", eventName)
+		return IngestInput{}, errs.Invalid("event_name", fmt.Sprintf("meter %q not found", eventName))
 	}
 
 	input := IngestInput{

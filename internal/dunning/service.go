@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
@@ -102,7 +103,7 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 		return domain.InvoiceDunningRun{}, fmt.Errorf("get dunning policy: %w", err)
 	}
 	if !policy.Enabled {
-		return domain.InvoiceDunningRun{}, fmt.Errorf("dunning is disabled for this tenant")
+		return domain.InvoiceDunningRun{}, errs.InvalidState("dunning is disabled for this tenant")
 	}
 
 	// Check for customer-specific dunning override
@@ -173,17 +174,17 @@ func (s *Service) ProcessDueRuns(ctx context.Context, tenantID string, limit int
 	}
 
 	processed := 0
-	var errs []error
+	var runErrs []error
 
 	for _, run := range dueRuns {
 		if err := s.processRun(ctx, tenantID, run); err != nil {
-			errs = append(errs, fmt.Errorf("run %s: %w", run.ID, err))
+			runErrs = append(runErrs, fmt.Errorf("run %s: %w", run.ID, err))
 			continue
 		}
 		processed++
 	}
 
-	return processed, errs
+	return processed, runErrs
 }
 
 func (s *Service) processRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) error {
@@ -484,13 +485,13 @@ func (s *Service) UpsertPolicy(ctx context.Context, tenantID string, policy doma
 		policy.MaxRetryAttempts = 3
 	}
 	if policy.MaxRetryAttempts > 15 {
-		return domain.DunningPolicy{}, fmt.Errorf("max_retry_attempts cannot exceed 15")
+		return domain.DunningPolicy{}, errs.Invalid("max_retry_attempts", "cannot exceed 15")
 	}
 	if policy.GracePeriodDays <= 0 {
 		policy.GracePeriodDays = 3
 	}
 	if policy.GracePeriodDays > 30 {
-		return domain.DunningPolicy{}, fmt.Errorf("grace_period_days cannot exceed 30")
+		return domain.DunningPolicy{}, errs.Invalid("grace_period_days", "cannot exceed 30")
 	}
 	switch policy.FinalAction {
 	case domain.DunningActionManualReview, domain.DunningActionPause, domain.DunningActionWriteOff:
@@ -498,7 +499,7 @@ func (s *Service) UpsertPolicy(ctx context.Context, tenantID string, policy doma
 	case "":
 		policy.FinalAction = domain.DunningActionManualReview
 	default:
-		return domain.DunningPolicy{}, fmt.Errorf("final_action must be one of: manual_review, pause, write_off_later")
+		return domain.DunningPolicy{}, errs.Invalid("final_action", "must be one of: manual_review, pause, write_off_later")
 	}
 	if err := domain.MaxLen("name", policy.Name, 255); err != nil {
 		return domain.DunningPolicy{}, err
@@ -514,20 +515,20 @@ func (s *Service) GetCustomerOverride(ctx context.Context, tenantID, customerID 
 // UpsertCustomerOverride creates or updates a customer-level dunning override.
 func (s *Service) UpsertCustomerOverride(ctx context.Context, tenantID string, override domain.CustomerDunningOverride) (domain.CustomerDunningOverride, error) {
 	if override.CustomerID == "" {
-		return domain.CustomerDunningOverride{}, fmt.Errorf("customer_id is required")
+		return domain.CustomerDunningOverride{}, errs.Required("customer_id")
 	}
 	if override.MaxRetryAttempts != nil && *override.MaxRetryAttempts > 15 {
-		return domain.CustomerDunningOverride{}, fmt.Errorf("max_retry_attempts cannot exceed 15")
+		return domain.CustomerDunningOverride{}, errs.Invalid("max_retry_attempts", "cannot exceed 15")
 	}
 	if override.GracePeriodDays != nil && *override.GracePeriodDays > 30 {
-		return domain.CustomerDunningOverride{}, fmt.Errorf("grace_period_days cannot exceed 30")
+		return domain.CustomerDunningOverride{}, errs.Invalid("grace_period_days", "cannot exceed 30")
 	}
 	if override.FinalAction != "" {
 		switch domain.DunningFinalAction(override.FinalAction) {
 		case domain.DunningActionManualReview, domain.DunningActionPause, domain.DunningActionWriteOff:
 			// valid
 		default:
-			return domain.CustomerDunningOverride{}, fmt.Errorf("final_action must be one of: manual_review, pause, write_off_later")
+			return domain.CustomerDunningOverride{}, errs.Invalid("final_action", "must be one of: manual_review, pause, write_off_later")
 		}
 	}
 	return s.store.UpsertCustomerOverride(ctx, tenantID, override)

@@ -48,7 +48,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Co
 		(*postgres.StringArray)(&c.PlanIDs), &c.Active, &c.CreatedAt)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			return domain.Coupon{}, fmt.Errorf("%w: coupon code %q", errs.ErrAlreadyExists, c.Code)
+			return domain.Coupon{}, errs.AlreadyExists("code", fmt.Sprintf("coupon code %q already exists", c.Code))
 		}
 		return domain.Coupon{}, err
 	}

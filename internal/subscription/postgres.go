@@ -57,7 +57,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			return domain.Subscription{}, fmt.Errorf("%w: subscription code %q", errs.ErrAlreadyExists, sub.Code)
+			return domain.Subscription{}, errs.AlreadyExists("code", fmt.Sprintf("subscription code %q already exists", sub.Code))
 		}
 		return domain.Subscription{}, err
 	}
@@ -242,7 +242,7 @@ func (s *PostgresStore) transitionAtomic(ctx context.Context, tenantID, id strin
 		if err2 != nil {
 			return domain.Subscription{}, err2
 		}
-		return domain.Subscription{}, fmt.Errorf(spec.wrongStateMsg, currentStatus)
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf(spec.wrongStateMsg, currentStatus))
 	}
 	if err != nil {
 		return domain.Subscription{}, err

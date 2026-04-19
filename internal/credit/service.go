@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 type Service struct {
@@ -34,20 +35,20 @@ type GrantInput struct {
 
 func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) (domain.CreditLedgerEntry, error) {
 	if input.CustomerID == "" {
-		return domain.CreditLedgerEntry{}, fmt.Errorf("customer_id is required")
+		return domain.CreditLedgerEntry{}, errs.Required("customer_id")
 	}
 	if input.AmountCents <= 0 {
-		return domain.CreditLedgerEntry{}, fmt.Errorf("amount must be greater than 0")
+		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", "must be greater than 0")
 	}
 	if input.AmountCents > 100_000_000 { // $1M cap
-		return domain.CreditLedgerEntry{}, fmt.Errorf("amount cannot exceed 1,000,000")
+		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", "cannot exceed 1,000,000")
 	}
 	desc := strings.TrimSpace(input.Description)
 	if desc == "" {
-		return domain.CreditLedgerEntry{}, fmt.Errorf("description is required")
+		return domain.CreditLedgerEntry{}, errs.Required("description")
 	}
 	if len(desc) > 500 {
-		return domain.CreditLedgerEntry{}, fmt.Errorf("description must be at most 500 characters")
+		return domain.CreditLedgerEntry{}, errs.Invalid("description", "must be at most 500 characters")
 	}
 
 	return s.store.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
@@ -136,7 +137,7 @@ func (s *Service) ExpireCredits(ctx context.Context) (int, []error) {
 	}
 
 	var expired int
-	var errs []error
+	var expiryErrs []error
 	for _, g := range grants {
 		_, err := s.store.AppendEntry(ctx, g.TenantID, domain.CreditLedgerEntry{
 			CustomerID:  g.CustomerID,
@@ -145,12 +146,12 @@ func (s *Service) ExpireCredits(ctx context.Context) (int, []error) {
 			Description: fmt.Sprintf("Expired grant %s", g.ID),
 		})
 		if err != nil {
-			errs = append(errs, fmt.Errorf("expire grant %s: %w", g.ID, err))
+			expiryErrs = append(expiryErrs, fmt.Errorf("expire grant %s: %w", g.ID, err))
 			continue
 		}
 		expired++
 	}
-	return expired, errs
+	return expired, expiryErrs
 }
 
 func (s *Service) GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error) {
@@ -173,14 +174,14 @@ type AdjustInput struct {
 
 func (s *Service) Adjust(ctx context.Context, tenantID string, input AdjustInput) (domain.CreditLedgerEntry, error) {
 	if input.CustomerID == "" {
-		return domain.CreditLedgerEntry{}, fmt.Errorf("customer_id is required")
+		return domain.CreditLedgerEntry{}, errs.Required("customer_id")
 	}
 	if input.AmountCents == 0 {
-		return domain.CreditLedgerEntry{}, fmt.Errorf("amount_cents cannot be zero")
+		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", "cannot be zero")
 	}
 	desc := strings.TrimSpace(input.Description)
 	if desc == "" {
-		return domain.CreditLedgerEntry{}, fmt.Errorf("description is required for adjustments")
+		return domain.CreditLedgerEntry{}, errs.Required("description")
 	}
 
 	return s.store.AdjustAtomic(ctx, tenantID, input.CustomerID, desc, input.AmountCents)

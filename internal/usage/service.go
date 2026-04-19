@@ -2,11 +2,11 @@ package usage
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 type Service struct {
@@ -31,10 +31,10 @@ type IngestInput struct {
 
 func (s *Service) Ingest(ctx context.Context, tenantID string, input IngestInput) (domain.UsageEvent, error) {
 	if strings.TrimSpace(input.CustomerID) == "" {
-		return domain.UsageEvent{}, fmt.Errorf("customer_id is required")
+		return domain.UsageEvent{}, errs.Required("customer_id")
 	}
 	if strings.TrimSpace(input.MeterID) == "" {
-		return domain.UsageEvent{}, fmt.Errorf("meter_id is required")
+		return domain.UsageEvent{}, errs.Required("meter_id")
 	}
 	if input.Quantity == 0 {
 		// Default quantity to 1 (count-based meters) when not explicitly provided.
@@ -61,19 +61,19 @@ func (s *Service) Ingest(ctx context.Context, tenantID string, input IngestInput
 // BatchIngest ingests multiple usage events. Returns successfully ingested count
 // and any individual errors (partial success is allowed).
 func (s *Service) BatchIngest(ctx context.Context, tenantID string, events []IngestInput) (int, []error) {
-	var errs []error
+	var batchErrs []error
 	ingested := 0
 
 	for _, input := range events {
 		_, err := s.Ingest(ctx, tenantID, input)
 		if err != nil {
-			errs = append(errs, err)
+			batchErrs = append(batchErrs, err)
 			continue
 		}
 		ingested++
 	}
 
-	return ingested, errs
+	return ingested, batchErrs
 }
 
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.UsageEvent, int, error) {

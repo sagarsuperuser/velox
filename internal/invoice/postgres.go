@@ -68,7 +68,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			return domain.Invoice{}, fmt.Errorf("%w: invoice number %q", errs.ErrAlreadyExists, inv.InvoiceNumber)
+			return domain.Invoice{}, errs.AlreadyExists("invoice_number", fmt.Sprintf("invoice number %q already exists", inv.InvoiceNumber))
 		}
 		return domain.Invoice{}, err
 	}
@@ -624,7 +624,7 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			return domain.Invoice{}, fmt.Errorf("%w: invoice already exists for this billing period", errs.ErrAlreadyExists)
+			return domain.Invoice{}, errs.AlreadyExists("billing_period", "invoice already exists for this billing period")
 		}
 		return domain.Invoice{}, err
 	}

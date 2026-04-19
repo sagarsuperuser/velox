@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 var codeRegexp = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9\-]{1,48}[A-Za-z0-9]$`)
@@ -37,47 +38,47 @@ type CreateInput struct {
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Coupon, error) {
 	code := strings.TrimSpace(strings.ToUpper(input.Code))
 	if code == "" {
-		return domain.Coupon{}, fmt.Errorf("code is required")
+		return domain.Coupon{}, errs.Required("code")
 	}
 	if !codeRegexp.MatchString(code) {
-		return domain.Coupon{}, fmt.Errorf("code must be 3-50 alphanumeric characters or dashes")
+		return domain.Coupon{}, errs.Invalid("code", "must be 3-50 alphanumeric characters or dashes")
 	}
 
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
-		return domain.Coupon{}, fmt.Errorf("name is required")
+		return domain.Coupon{}, errs.Required("name")
 	}
 	if len(name) > 200 {
-		return domain.Coupon{}, fmt.Errorf("name must be at most 200 characters")
+		return domain.Coupon{}, errs.Invalid("name", "must be at most 200 characters")
 	}
 
 	switch input.Type {
 	case domain.CouponTypePercentage:
 		if input.PercentOff <= 0 || input.PercentOff > 100 {
-			return domain.Coupon{}, fmt.Errorf("percent_off must be between 0 and 100")
+			return domain.Coupon{}, errs.Invalid("percent_off", "must be between 0 and 100")
 		}
 	case domain.CouponTypeFixedAmount:
 		if input.AmountOff <= 0 {
-			return domain.Coupon{}, fmt.Errorf("amount_off must be greater than 0")
+			return domain.Coupon{}, errs.Invalid("amount_off", "must be greater than 0")
 		}
 		if input.AmountOff > 100_000_000 { // $1M cap
-			return domain.Coupon{}, fmt.Errorf("amount_off cannot exceed 1,000,000.00")
+			return domain.Coupon{}, errs.Invalid("amount_off", "cannot exceed 1,000,000.00")
 		}
 		cur := strings.TrimSpace(strings.ToUpper(input.Currency))
 		if cur == "" {
-			return domain.Coupon{}, fmt.Errorf("currency is required for fixed_amount coupons")
+			return domain.Coupon{}, errs.Required("currency")
 		}
 		input.Currency = cur
 	default:
-		return domain.Coupon{}, fmt.Errorf("type must be 'percentage' or 'fixed_amount'")
+		return domain.Coupon{}, errs.Invalid("type", "must be 'percentage' or 'fixed_amount'")
 	}
 
 	if input.MaxRedemptions != nil && *input.MaxRedemptions < 1 {
-		return domain.Coupon{}, fmt.Errorf("max_redemptions must be at least 1")
+		return domain.Coupon{}, errs.Invalid("max_redemptions", "must be at least 1")
 	}
 
 	if input.ExpiresAt != nil && input.ExpiresAt.Before(time.Now()) {
-		return domain.Coupon{}, fmt.Errorf("expires_at must be in the future")
+		return domain.Coupon{}, errs.Invalid("expires_at", "must be in the future")
 	}
 
 	return s.store.Create(ctx, tenantID, domain.Coupon{
@@ -118,48 +119,39 @@ type RedeemInput struct {
 func (s *Service) Redeem(ctx context.Context, tenantID string, input RedeemInput) (domain.CouponRedemption, error) {
 	code := strings.TrimSpace(strings.ToUpper(input.Code))
 	if code == "" {
-		return domain.CouponRedemption{}, fmt.Errorf("code is required")
+		return domain.CouponRedemption{}, errs.Required("code")
 	}
 	if input.CustomerID == "" {
-		return domain.CouponRedemption{}, fmt.Errorf("customer_id is required")
+		return domain.CouponRedemption{}, errs.Required("customer_id")
 	}
 	if input.SubtotalCents <= 0 {
-		return domain.CouponRedemption{}, fmt.Errorf("subtotal_cents must be greater than 0")
+		return domain.CouponRedemption{}, errs.Invalid("subtotal_cents", "must be greater than 0")
 	}
 
 	cpn, err := s.store.GetByCode(ctx, tenantID, code)
 	if err != nil {
-		return domain.CouponRedemption{}, fmt.Errorf("coupon not found")
+		return domain.CouponRedemption{}, errs.Invalid("code", "coupon not found")
 	}
 
 	if !cpn.Active {
-		return domain.CouponRedemption{}, fmt.Errorf("coupon is not active")
+		return domain.CouponRedemption{}, errs.InvalidState("coupon is not active")
 	}
 
 	if cpn.ExpiresAt != nil && cpn.ExpiresAt.Before(time.Now()) {
-		return domain.CouponRedemption{}, fmt.Errorf("coupon has expired")
+		return domain.CouponRedemption{}, errs.InvalidState("coupon has expired")
 	}
 
 	if cpn.MaxRedemptions != nil && cpn.TimesRedeemed >= *cpn.MaxRedemptions {
-		return domain.CouponRedemption{}, fmt.Errorf("coupon has reached maximum redemptions")
+		return domain.CouponRedemption{}, errs.InvalidState("coupon has reached maximum redemptions")
 	}
 
-	if len(cpn.PlanIDs) > 0 && input.PlanID != "" {
-		allowed := false
-		for _, pid := range cpn.PlanIDs {
-			if pid == input.PlanID {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return domain.CouponRedemption{}, fmt.Errorf("coupon is not valid for this plan")
-		}
+	if len(cpn.PlanIDs) > 0 && input.PlanID != "" && !slices.Contains(cpn.PlanIDs, input.PlanID) {
+		return domain.CouponRedemption{}, errs.Invalid("plan_id", "coupon is not valid for this plan")
 	}
 
 	discount := CalculateDiscount(cpn, input.SubtotalCents)
 	if discount <= 0 {
-		return domain.CouponRedemption{}, fmt.Errorf("discount amount is zero")
+		return domain.CouponRedemption{}, errs.InvalidState("discount amount is zero")
 	}
 
 	// Increment redemption count

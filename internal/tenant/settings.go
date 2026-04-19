@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -229,10 +230,7 @@ func (h *SettingsHandler) get(w http.ResponseWriter, r *http.Request) {
 
 	ts, err := h.store.Get(r.Context(), tenantID)
 	if errors.Is(err, errs.ErrNotFound) {
-		// Return defaults
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(domain.TenantSettings{
+		respond.JSON(w, r, http.StatusOK, domain.TenantSettings{
 			TenantID:        tenantID,
 			DefaultCurrency: "USD",
 			Timezone:        "UTC",
@@ -242,16 +240,12 @@ func (h *SettingsHandler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
 		slog.Error("get settings", "error", err)
+		respond.InternalError(w, r)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(ts)
+	respond.JSON(w, r, http.StatusOK, ts)
 }
 
 func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
@@ -259,36 +253,44 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 
 	var ts domain.TenantSettings
 	if err := json.NewDecoder(r.Body).Decode(&ts); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON"})
+		respond.BadRequest(w, r, "invalid JSON")
 		return
 	}
 	ts.TenantID = tenantID
 
-	// Validate email and phone
+	if err := validateSettings(&ts); err != nil {
+		respond.FromError(w, r, err, "tenant_settings")
+		return
+	}
+
+	result, err := h.store.Upsert(r.Context(), ts)
+	if err != nil {
+		slog.Error("upsert settings", "error", err)
+		respond.InternalError(w, r)
+		return
+	}
+
+	respond.JSON(w, r, http.StatusOK, result)
+}
+
+// validateSettings validates + applies defaults to a settings struct, returning
+// a DomainError keyed to the offending field on failure. Structured as field
+// errors so respond.FromError can route each message to the right input in the
+// UI.
+func validateSettings(ts *domain.TenantSettings) error {
 	if email := strings.TrimSpace(ts.CompanyEmail); email != "" {
 		at := strings.Index(email, "@")
 		if at < 1 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid email: must contain @"})
-			return
+			return errs.Invalid("company_email", "must contain @")
 		}
-		domain := email[at+1:]
-		if !strings.Contains(domain, ".") || strings.HasSuffix(domain, ".") {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid email: domain must contain a dot"})
-			return
+		host := email[at+1:]
+		if !strings.Contains(host, ".") || strings.HasSuffix(host, ".") {
+			return errs.Invalid("company_email", "domain must contain a dot")
 		}
 	}
 	if phone := strings.TrimSpace(ts.CompanyPhone); phone != "" {
 		if !settingsPhonePattern.MatchString(phone) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "phone must be 7-20 characters and contain only digits, spaces, +, -, (, )"})
-			return
+			return errs.Invalid("company_phone", "must be 7-20 characters and contain only digits, spaces, +, -, (, )")
 		}
 	}
 
@@ -305,48 +307,20 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		ts.NetPaymentTerms = 30
 	}
 
-	// Validate limits
 	if err := domain.ValidateCurrency(ts.DefaultCurrency); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
+		return errs.Invalid("default_currency", err.Error())
 	}
 	if len(ts.InvoicePrefix) > 20 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invoice_prefix must be at most 20 characters"})
-		return
+		return errs.Invalid("invoice_prefix", "must be at most 20 characters")
 	}
 	if ts.NetPaymentTerms > 365 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "net_payment_terms cannot exceed 365 days"})
-		return
+		return errs.Invalid("net_payment_terms", "cannot exceed 365 days")
 	}
 	if len(ts.CompanyName) > 255 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "company_name must be at most 255 characters"})
-		return
+		return errs.Invalid("company_name", "must be at most 255 characters")
 	}
 	if ts.TaxRateBP < 0 || ts.TaxRateBP > 10000 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "tax_rate_bp must be between 0 and 10000 (e.g. 1850 for 18.50%)"})
-		return
+		return errs.Invalid("tax_rate_bp", "must be between 0 and 10000 (e.g. 1850 for 18.50%)")
 	}
-
-	result, err := h.store.Upsert(r.Context(), ts)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal_error"})
-		slog.Error("upsert settings", "error", err)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(result)
+	return nil
 }

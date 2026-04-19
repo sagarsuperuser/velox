@@ -2,12 +2,12 @@ package customer
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 var phonePattern = regexp.MustCompile(`^[\+\d\s\-\(\)]{7,20}$`)
@@ -50,19 +50,19 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	input.Email = strings.TrimSpace(input.Email)
 
 	if input.ExternalID == "" {
-		return domain.Customer{}, fmt.Errorf("external_id is required")
+		return domain.Customer{}, errs.Required("external_id")
 	}
 	if err := domain.MaxLen("external_id", input.ExternalID, 255); err != nil {
 		return domain.Customer{}, err
 	}
 	if input.DisplayName == "" {
-		return domain.Customer{}, fmt.Errorf("display_name is required")
+		return domain.Customer{}, errs.Required("display_name")
 	}
 	if err := domain.MaxLen("display_name", input.DisplayName, 255); err != nil {
 		return domain.Customer{}, err
 	}
 	if input.Email != "" {
-		if err := validateEmail(input.Email); err != nil {
+		if err := validateEmail("email", input.Email); err != nil {
 			return domain.Customer{}, err
 		}
 	}
@@ -98,7 +98,7 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateI
 		existing.DisplayName = name
 	}
 	if email := strings.TrimSpace(input.Email); email != "" {
-		if err := validateEmail(email); err != nil {
+		if err := validateEmail("email", email); err != nil {
 			return domain.Customer{}, err
 		}
 		existing.Email = email
@@ -112,16 +112,16 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateI
 
 func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp domain.CustomerBillingProfile) (domain.CustomerBillingProfile, error) {
 	if bp.CustomerID == "" {
-		return domain.CustomerBillingProfile{}, fmt.Errorf("customer_id is required")
+		return domain.CustomerBillingProfile{}, errs.Required("customer_id")
 	}
 	if email := strings.TrimSpace(bp.Email); email != "" {
-		if err := validateEmail(email); err != nil {
+		if err := validateEmail("email", email); err != nil {
 			return domain.CustomerBillingProfile{}, err
 		}
 	}
 	if phone := strings.TrimSpace(bp.Phone); phone != "" {
 		if !phonePattern.MatchString(phone) {
-			return domain.CustomerBillingProfile{}, fmt.Errorf("phone must be 7-20 characters and contain only digits, spaces, +, -, (, )")
+			return domain.CustomerBillingProfile{}, errs.Invalid("phone", "must be 7-20 characters and contain only digits, spaces, +, -, (, )")
 		}
 	}
 	if bp.ProfileStatus == "" {
@@ -151,14 +151,14 @@ func (s *Service) GetBillingProfile(ctx context.Context, tenantID, customerID st
 	return s.store.GetBillingProfile(ctx, tenantID, customerID)
 }
 
-func validateEmail(email string) error {
+func validateEmail(field, email string) error {
 	at := strings.Index(email, "@")
 	if at < 1 {
-		return fmt.Errorf("invalid email: must contain @")
+		return errs.Invalid(field, "invalid email: must contain @")
 	}
 	domainPart := email[at+1:]
 	if !strings.Contains(domainPart, ".") || strings.HasSuffix(domainPart, ".") {
-		return fmt.Errorf("invalid email: domain must contain a dot")
+		return errs.Invalid(field, "invalid email: domain must contain a dot")
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
@@ -42,19 +43,19 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	displayName := strings.TrimSpace(input.DisplayName)
 
 	if code == "" {
-		return domain.Subscription{}, fmt.Errorf("code is required")
+		return domain.Subscription{}, errs.Required("code")
 	}
 	if !slugPattern.MatchString(code) {
-		return domain.Subscription{}, fmt.Errorf("code must contain only alphanumeric characters, hyphens, and underscores")
+		return domain.Subscription{}, errs.Invalid("code", "must contain only alphanumeric characters, hyphens, and underscores")
 	}
 	if displayName == "" {
-		return domain.Subscription{}, fmt.Errorf("display_name is required")
+		return domain.Subscription{}, errs.Required("display_name")
 	}
 	if input.CustomerID == "" {
-		return domain.Subscription{}, fmt.Errorf("customer_id is required")
+		return domain.Subscription{}, errs.Required("customer_id")
 	}
 	if input.PlanID == "" {
-		return domain.Subscription{}, fmt.Errorf("plan_id is required")
+		return domain.Subscription{}, errs.Required("plan_id")
 	}
 
 	billingTime := input.BillingTime
@@ -62,7 +63,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		billingTime = domain.BillingTimeCalendar
 	}
 	if billingTime != domain.BillingTimeCalendar && billingTime != domain.BillingTimeAnniversary {
-		return domain.Subscription{}, fmt.Errorf("billing_time must be calendar or anniversary")
+		return domain.Subscription{}, errs.Invalid("billing_time", "must be calendar or anniversary")
 	}
 
 	status := domain.SubscriptionDraft
@@ -151,7 +152,7 @@ func (s *Service) Activate(ctx context.Context, tenantID, id string) (domain.Sub
 		return domain.Subscription{}, err
 	}
 	if sub.Status != domain.SubscriptionDraft {
-		return domain.Subscription{}, fmt.Errorf("can only activate draft subscriptions, current status: %s", sub.Status)
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("can only activate draft subscriptions, current status: %s", sub.Status))
 	}
 
 	now := s.clock.Now()
@@ -201,13 +202,13 @@ func (s *Service) ChangePlan(ctx context.Context, tenantID, id string, input Cha
 		return ChangePlanResult{}, err
 	}
 	if sub.Status != domain.SubscriptionActive {
-		return ChangePlanResult{}, fmt.Errorf("can only change plan for active subscriptions, current status: %s", sub.Status)
+		return ChangePlanResult{}, errs.InvalidState(fmt.Sprintf("can only change plan for active subscriptions, current status: %s", sub.Status))
 	}
 	if input.NewPlanID == "" {
-		return ChangePlanResult{}, fmt.Errorf("new_plan_id is required")
+		return ChangePlanResult{}, errs.Required("new_plan_id")
 	}
 	if input.NewPlanID == sub.PlanID {
-		return ChangePlanResult{}, fmt.Errorf("new plan is the same as current plan")
+		return ChangePlanResult{}, errs.Invalid("new_plan_id", "new plan is the same as current plan")
 	}
 
 	now := s.clock.Now()
