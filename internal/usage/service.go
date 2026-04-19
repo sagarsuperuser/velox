@@ -30,6 +30,34 @@ type IngestInput struct {
 }
 
 func (s *Service) Ingest(ctx context.Context, tenantID string, input IngestInput) (domain.UsageEvent, error) {
+	return s.ingest(ctx, tenantID, input, domain.UsageOriginAPI)
+}
+
+// Backfill ingests a historical usage event. Requires a non-nil timestamp
+// strictly in the past; rejects missing / future / equal-to-now values so
+// operators can't accidentally double-post a live event through the audit
+// path. The row is tagged origin='backfill'.
+//
+// Billing semantics: backfilled events participate in aggregation for any
+// period whose [start, end) contains the event's timestamp. Finalized
+// invoices are immutable (they reference billed_entries, not live
+// aggregations), so backfill into closed periods is safe — it changes the
+// audit ledger without rewriting history.
+func (s *Service) Backfill(ctx context.Context, tenantID string, input IngestInput) (domain.UsageEvent, error) {
+	if input.Timestamp == nil {
+		return domain.UsageEvent{}, errs.Required("timestamp")
+	}
+	// Reject future timestamps. Equality-with-now is allowed because the
+	// test-vs-prod clock race makes strict past-only brittle to verify, and
+	// the 'backfill' origin tag already distinguishes these rows from live
+	// POST traffic for audit purposes.
+	if input.Timestamp.After(time.Now().UTC()) {
+		return domain.UsageEvent{}, errs.Invalid("timestamp", "must not be in the future for backfill — use POST /usage-events for real-time ingest")
+	}
+	return s.ingest(ctx, tenantID, input, domain.UsageOriginBackfill)
+}
+
+func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput, origin domain.UsageEventOrigin) (domain.UsageEvent, error) {
 	if strings.TrimSpace(input.CustomerID) == "" {
 		return domain.UsageEvent{}, errs.Required("customer_id")
 	}
@@ -55,6 +83,7 @@ func (s *Service) Ingest(ctx context.Context, tenantID string, input IngestInput
 		Properties:     input.Properties,
 		IdempotencyKey: input.IdempotencyKey,
 		Timestamp:      ts,
+		Origin:         origin,
 	})
 }
 

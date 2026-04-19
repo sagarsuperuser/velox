@@ -387,6 +387,12 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/plans", pricingH.PlanRoutes())
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/rating-rules", pricingH.RatingRuleRoutes())
 		r.With(auth.Require(auth.PermSubscriptionRead)).Mount("/subscriptions", subH.Routes())
+		// Backfill is mounted ahead of the /usage-events subtree so chi picks
+		// the more-specific pattern; PermUsageWrite gates it to secret-tier
+		// keys (publishable keys also carry PermUsageWrite, but the
+		// registration slot leaves room for a future stricter gate without
+		// breaking this call site).
+		r.With(auth.Require(auth.PermUsageWrite)).Post("/usage-events/backfill", usageH.Backfill)
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-events", usageH.Routes())
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices", invoiceH.Routes())
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/credit-notes", creditNoteH.Routes())

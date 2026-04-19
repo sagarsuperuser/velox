@@ -306,9 +306,18 @@ Schema: `subscription_items(id, subscription_id, plan_id, quantity, price_overri
 
 Add `coupons.duration` enum (once/repeating/forever), `coupons.duration_periods INT` (for repeating). Stacking rules per coupon. `coupon_redemptions` tracks periods applied.
 
-### [FEAT-7] Usage backfill API — S
+### [FEAT-7] Usage backfill API — S — ✅ DONE
 
 `POST /usage-events/backfill` accepting past timestamps, tagged `origin='backfill'` for audit.
+
+**✅ Resolution (2026-04-19):**
+
+- Migration `0017_usage_events_origin` adds `origin TEXT NOT NULL DEFAULT 'api' CHECK (origin IN ('api','backfill'))` to `usage_events`. No index on origin — aggregation doesn't filter by it, and an index would cost writes without benefit until a future operator UI needs it.
+- `domain.UsageEvent.Origin` + `UsageOriginAPI` / `UsageOriginBackfill` constants; the existing `Ingest` path defaults to `api`, `Service.Backfill` tags `backfill`.
+- `Service.Backfill(ctx, tenantID, input)` requires a non-nil timestamp and rejects future timestamps. Past / now / near-now accepted — strict-past was trialled but made tests brittle against clock drift, and the origin tag already distinguishes rows for audit.
+- `Handler.Backfill` mounted at `POST /v1/usage-events/backfill` behind `PermUsageWrite` (ahead of the `/usage-events` subtree so the more-specific route wins).
+- Billing interaction: backfilled events participate in `AggregateForBillingPeriod` the same as live events. Finalized invoices are immutable (they reference `billed_entries`, not live aggregations), so backfill into a closed period updates the audit ledger without rewriting history.
+- Tests: unit (`TestBackfill` + extended `TestIngest`) cover missing / future timestamps, origin tagging, and default-origin-on-live-ingest; integration (`TestBackfill_PersistsOriginAndAggregates`) confirms the SQL round-trips `origin` correctly and aggregation sums `api` + `backfill` quantities together.
 
 ### [FEAT-8] Test mode / sandbox — M
 
@@ -468,7 +477,7 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 28. **RES-2** — scheduler advisory lock ✅
 29. **RES-6** — email outbox
 30. **SEC-2 Phase B/C** — cutover + drop plaintext
-31. **FEAT-2, FEAT-3, FEAT-4 ✅, FEAT-7, FEAT-8** — feature completeness
+31. **FEAT-2, FEAT-3, FEAT-4 ✅, FEAT-7 ✅, FEAT-8** — feature completeness
 32. **FEAT-6** — coupon stacking
 33. **FEAT-5** — multi-item subs (Phase 3)
 
