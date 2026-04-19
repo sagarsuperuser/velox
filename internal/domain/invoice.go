@@ -18,6 +18,11 @@ const (
 	PaymentProcessing InvoicePaymentStatus = "processing"
 	PaymentSucceeded  InvoicePaymentStatus = "succeeded"
 	PaymentFailed     InvoicePaymentStatus = "failed"
+	// PaymentUnknown marks a Stripe charge attempt that returned an ambiguous
+	// error (5xx, timeout, connection reset) where we cannot tell from the
+	// response whether Stripe actually processed the charge. A reconciler
+	// resolves these by querying Stripe after a cool-off window.
+	PaymentUnknown InvoicePaymentStatus = "unknown"
 )
 
 type Invoice struct {
