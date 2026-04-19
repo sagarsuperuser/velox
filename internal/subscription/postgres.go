@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -146,6 +147,99 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 
 	if err == sql.ErrNoRows {
 		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+func (s *PostgresStore) PauseAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	return s.transitionAtomic(ctx, tenantID, id, transitionSpec{
+		targetStatus: string(domain.SubscriptionPaused),
+		allowedFrom:  []string{string(domain.SubscriptionActive)},
+		wrongStateMsg: "can only pause active subscriptions, current status: %s",
+	})
+}
+
+func (s *PostgresStore) ResumeAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	return s.transitionAtomic(ctx, tenantID, id, transitionSpec{
+		targetStatus: string(domain.SubscriptionActive),
+		allowedFrom:  []string{string(domain.SubscriptionPaused)},
+		wrongStateMsg: "can only resume paused subscriptions, current status: %s",
+	})
+}
+
+func (s *PostgresStore) CancelAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	return s.transitionAtomic(ctx, tenantID, id, transitionSpec{
+		targetStatus: string(domain.SubscriptionCanceled),
+		allowedFrom:  []string{string(domain.SubscriptionActive), string(domain.SubscriptionPaused)},
+		setCanceledAt: true,
+		wrongStateMsg: "can only cancel active or paused subscriptions, current status: %s",
+	})
+}
+
+type transitionSpec struct {
+	targetStatus  string
+	allowedFrom   []string
+	setCanceledAt bool
+	wrongStateMsg string
+}
+
+func (s *PostgresStore) transitionAtomic(ctx context.Context, tenantID, id string, spec transitionSpec) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+
+	// Build the WHERE status IN (...) clause with positional args starting at $3
+	// ($1 = updated_at, $2 = id). canceled_at slots in at $3 when needed.
+	canceledAtArg := "canceled_at"
+	args := []any{now, id}
+	argIdx := 3
+	if spec.setCanceledAt {
+		canceledAtArg = fmt.Sprintf("$%d", argIdx)
+		args = append(args, now)
+		argIdx++
+	}
+	statusPlaceholders := make([]string, len(spec.allowedFrom))
+	for i, st := range spec.allowedFrom {
+		statusPlaceholders[i] = fmt.Sprintf("$%d", argIdx)
+		args = append(args, st)
+		argIdx++
+	}
+
+	query := fmt.Sprintf(`
+		UPDATE subscriptions
+		SET status = '%s', canceled_at = %s, updated_at = $1
+		WHERE id = $2 AND status IN (%s)
+		RETURNING %s`,
+		spec.targetStatus,
+		canceledAtArg,
+		strings.Join(statusPlaceholders, ","),
+		subCols,
+	)
+
+	var sub domain.Subscription
+	err = tx.QueryRowContext(ctx, query, args...).Scan(scanSubDest(&sub)...)
+	if err == sql.ErrNoRows {
+		// Row either doesn't exist or is in a disallowed status. Re-query to
+		// distinguish and build a precise error.
+		var currentStatus string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
+		if err2 == sql.ErrNoRows {
+			return domain.Subscription{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.Subscription{}, err2
+		}
+		return domain.Subscription{}, fmt.Errorf(spec.wrongStateMsg, currentStatus)
 	}
 	if err != nil {
 		return domain.Subscription{}, err
