@@ -23,6 +23,7 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 const subCols = `id, tenant_id, code, display_name, customer_id, plan_id, status, billing_time,
 	trial_start_at, trial_end_at, started_at, activated_at, canceled_at,
 	COALESCE(previous_plan_id,''), plan_changed_at,
+	COALESCE(pending_plan_id,''), pending_plan_effective_at,
 	current_billing_period_start, current_billing_period_end, next_billing_at,
 	usage_cap_units, COALESCE(overage_action,'charge'),
 	created_at, updated_at`
@@ -134,13 +135,15 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 		UPDATE subscriptions SET status = $1, activated_at = $2, canceled_at = $3,
 			trial_start_at = $4, trial_end_at = $5,
 			plan_id = $6, previous_plan_id = $7, plan_changed_at = $8,
-			usage_cap_units = $9, overage_action = COALESCE(NULLIF($10,''),'charge'),
-			updated_at = $11
-		WHERE id = $12
+			pending_plan_id = $9, pending_plan_effective_at = $10,
+			usage_cap_units = $11, overage_action = COALESCE(NULLIF($12,''),'charge'),
+			updated_at = $13
+		WHERE id = $14
 		RETURNING `+subCols,
 		sub.Status, postgres.NullableTime(sub.ActivatedAt), postgres.NullableTime(sub.CanceledAt),
 		postgres.NullableTime(sub.TrialStartAt), postgres.NullableTime(sub.TrialEndAt),
 		sub.PlanID, postgres.NullableString(sub.PreviousPlanID), postgres.NullableTime(sub.PlanChangedAt),
+		postgres.NullableString(sub.PendingPlanID), postgres.NullableTime(sub.PendingPlanEffectiveAt),
 		sub.UsageCapUnits, sub.OverageAction,
 		now, sub.ID,
 	).Scan(scanSubDest(&sub)...)
@@ -250,6 +253,105 @@ func (s *PostgresStore) transitionAtomic(ctx context.Context, tenantID, id strin
 	return sub, nil
 }
 
+func (s *PostgresStore) SetPendingPlan(ctx context.Context, tenantID, id, pendingPlanID string, effectiveAt time.Time) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	var sub domain.Subscription
+	err = tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET pending_plan_id = $1, pending_plan_effective_at = $2, updated_at = $3
+		WHERE id = $4
+		RETURNING `+subCols,
+		pendingPlanID, effectiveAt, now, id,
+	).Scan(scanSubDest(&sub)...)
+
+	if err == sql.ErrNoRows {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+func (s *PostgresStore) ClearPendingPlan(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	var sub domain.Subscription
+	err = tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET pending_plan_id = NULL, pending_plan_effective_at = NULL, updated_at = $1
+		WHERE id = $2
+		RETURNING `+subCols,
+		now, id,
+	).Scan(scanSubDest(&sub)...)
+
+	if err == sql.ErrNoRows {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+func (s *PostgresStore) ApplyPendingPlanAtomic(ctx context.Context, tenantID, id string, now time.Time) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Atomic swap: only succeeds if a due pending change still exists on this row.
+	// previous_plan_id captures the plan being replaced; plan_changed_at marks the
+	// swap instant. Both pending columns are cleared in the same statement so a
+	// second invocation is a no-op (returns sql.ErrNoRows, surfaced as ErrNotFound
+	// — callers must treat that as "already applied or canceled", not a hard error).
+	var sub domain.Subscription
+	err = tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET previous_plan_id = plan_id,
+		    plan_id = pending_plan_id,
+		    plan_changed_at = $1,
+		    pending_plan_id = NULL,
+		    pending_plan_effective_at = NULL,
+		    updated_at = $1
+		WHERE id = $2
+		  AND pending_plan_id IS NOT NULL
+		  AND pending_plan_effective_at IS NOT NULL
+		  AND pending_plan_effective_at <= $1
+		RETURNING `+subCols,
+		now, id,
+	).Scan(scanSubDest(&sub)...)
+
+	if err == sql.ErrNoRows {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
 func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, limit int) ([]domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -311,6 +413,7 @@ func scanSubDest(s *domain.Subscription) []any {
 		&s.ID, &s.TenantID, &s.Code, &s.DisplayName, &s.CustomerID, &s.PlanID,
 		&s.Status, &s.BillingTime, &s.TrialStartAt, &s.TrialEndAt, &s.StartedAt,
 		&s.ActivatedAt, &s.CanceledAt, &s.PreviousPlanID, &s.PlanChangedAt,
+		&s.PendingPlanID, &s.PendingPlanEffectiveAt,
 		&s.CurrentBillingPeriodStart,
 		&s.CurrentBillingPeriodEnd, &s.NextBillingAt,
 		&s.UsageCapUnits, &s.OverageAction,

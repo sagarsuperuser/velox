@@ -213,29 +213,43 @@ func (s *Service) ChangePlan(ctx context.Context, tenantID, id string, input Cha
 	now := s.clock.Now()
 	result := ChangePlanResult{}
 
-	if input.Immediate {
-		// Calculate proration factor: remaining days / total days in period
-		if sub.CurrentBillingPeriodStart != nil && sub.CurrentBillingPeriodEnd != nil {
-			totalDays := sub.CurrentBillingPeriodEnd.Sub(*sub.CurrentBillingPeriodStart).Hours() / 24
-			remainingDays := sub.CurrentBillingPeriodEnd.Sub(now).Hours() / 24
-			if totalDays > 0 && remainingDays > 0 {
-				result.ProrationFactor = remainingDays / totalDays
-			}
-		}
-		result.EffectiveAt = now
-	} else {
-		// Change at next billing cycle
+	if !input.Immediate {
+		// Scheduled change: record the target plan + effective timestamp, but
+		// leave plan_id alone. The billing engine swaps plan_id at the cycle
+		// boundary via ApplyPendingPlanAtomic. Prior behaviour mutated plan_id
+		// here, which made the response's EffectiveAt a lie.
+		var effectiveAt time.Time
 		if sub.CurrentBillingPeriodEnd != nil {
-			result.EffectiveAt = *sub.CurrentBillingPeriodEnd
+			effectiveAt = *sub.CurrentBillingPeriodEnd
 		} else {
-			result.EffectiveAt = now
+			effectiveAt = now
+		}
+		updated, err := s.store.SetPendingPlan(ctx, tenantID, id, input.NewPlanID, effectiveAt)
+		if err != nil {
+			return ChangePlanResult{}, err
+		}
+		result.Subscription = updated
+		result.EffectiveAt = effectiveAt
+		return result, nil
+	}
+
+	// Immediate change with proration.
+	if sub.CurrentBillingPeriodStart != nil && sub.CurrentBillingPeriodEnd != nil {
+		totalDays := sub.CurrentBillingPeriodEnd.Sub(*sub.CurrentBillingPeriodStart).Hours() / 24
+		remainingDays := sub.CurrentBillingPeriodEnd.Sub(now).Hours() / 24
+		if totalDays > 0 && remainingDays > 0 {
+			result.ProrationFactor = remainingDays / totalDays
 		}
 	}
+	result.EffectiveAt = now
 
 	sub.PreviousPlanID = sub.PlanID
 	sub.PlanID = input.NewPlanID
 	planChangedAt := now
 	sub.PlanChangedAt = &planChangedAt
+	// An immediate change supersedes any previously scheduled change.
+	sub.PendingPlanID = ""
+	sub.PendingPlanEffectiveAt = nil
 
 	updated, err := s.store.Update(ctx, tenantID, sub)
 	if err != nil {
@@ -243,6 +257,20 @@ func (s *Service) ChangePlan(ctx context.Context, tenantID, id string, input Cha
 	}
 	result.Subscription = updated
 	return result, nil
+}
+
+// CancelPendingPlanChange clears a previously scheduled plan change without
+// affecting the current plan. No-op if nothing is scheduled — returns the
+// subscription unchanged.
+func (s *Service) CancelPendingPlanChange(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	sub, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if sub.PendingPlanID == "" {
+		return sub, nil
+	}
+	return s.store.ClearPendingPlan(ctx, tenantID, id)
 }
 
 // Pause pauses an active subscription. Can be resumed later.

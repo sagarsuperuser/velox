@@ -34,6 +34,10 @@ func (a *subStoreAdapter) UpdateBillingCycle(ctx context.Context, tenantID, id s
 	return a.store.UpdateBillingCycle(ctx, tenantID, id, start, end, next)
 }
 
+func (a *subStoreAdapter) ApplyPendingPlanAtomic(ctx context.Context, tenantID, id string, now time.Time) (domain.Subscription, error) {
+	return a.store.ApplyPendingPlanAtomic(ctx, tenantID, id, now)
+}
+
 // pricingStoreAdapter wraps pricing.PostgresStore to implement billing.PricingReader
 type pricingStoreAdapter struct {
 	store *pricing.PostgresStore
