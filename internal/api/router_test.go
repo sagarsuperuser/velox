@@ -22,7 +22,7 @@ func newTestServer() *Server {
 	defer func() { _ = os.Setenv("STRIPE_SECRET_KEY", prev) }()
 
 	db := &postgres.DB{}
-	return NewServer(db, "")
+	return NewServer(db, "", nil)
 }
 
 func TestHealthEndpoint(t *testing.T) {

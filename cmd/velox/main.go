@@ -128,13 +128,13 @@ func serve() {
 	db := postgres.NewDB(appPool, cfg.DB.QueryTimeout)
 	webhookSecret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")) // set by injectSecret above
 
-	server := api.NewServer(db, webhookSecret)
+	server := api.NewServer(db, webhookSecret, nil)
 
 	billingInterval := 1 * time.Hour
 	if cfg.Env == "local" {
 		billingInterval = 5 * time.Minute
 	}
-	scheduler := billing.NewScheduler(server.BillingEngine, billingInterval, 50, server.DunningSvc, server.SettingsStore, server.CreditSvc)
+	scheduler := billing.NewScheduler(server.BillingEngine, billingInterval, 50, server.DunningSvc, server.SettingsStore, nil, server.CreditSvc)
 	scheduler.SetReminders(server.InvoiceSvc)
 	if server.TokenSvc != nil {
 		scheduler.SetTokenCleaner(server.TokenSvc)

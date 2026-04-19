@@ -73,7 +73,7 @@ func (m *memStore) UpdateBillingCycle(_ context.Context, _, _ string, _, _, _ ti
 }
 
 func TestCreate(t *testing.T) {
-	svc := NewService(newMemStore())
+	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
 
 	t.Run("draft by default", func(t *testing.T) {
@@ -143,7 +143,7 @@ func TestCreate(t *testing.T) {
 }
 
 func TestActivateAndCancel(t *testing.T) {
-	svc := NewService(newMemStore())
+	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
 
 	sub, _ := svc.Create(ctx, "t1", CreateInput{
@@ -186,7 +186,7 @@ func TestActivateAndCancel(t *testing.T) {
 }
 
 func TestChangePlan(t *testing.T) {
-	svc := NewService(newMemStore())
+	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
 
 	sub, _ := svc.Create(ctx, "t1", CreateInput{
@@ -240,7 +240,7 @@ func TestChangePlan(t *testing.T) {
 }
 
 func TestPauseAndResume(t *testing.T) {
-	svc := NewService(newMemStore())
+	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
 
 	sub, _ := svc.Create(ctx, "t1", CreateInput{

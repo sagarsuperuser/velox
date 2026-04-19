@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
@@ -28,7 +29,13 @@ import (
 //   - Uses the public API contract: external_customer_id + event_name for usage events
 func TestE2E_FullBillingCycle(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	srv := NewServer(db, "")
+
+	// Use a fake clock so we control time without SQL backdating hacks.
+	// Start at March 1 — subscriptions created "now" get a March billing period.
+	march1 := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	clk := clock.NewFake(march1)
+
+	srv := NewServer(db, "", clk)
 
 	tenantID := testutil.CreateTestTenant(t, db, "E2E Test Corp")
 	apiKey := createTestAPIKey(t, db, tenantID)
@@ -38,10 +45,10 @@ func TestE2E_FullBillingCycle(t *testing.T) {
 
 	auth := "Bearer " + apiKey
 
-	// Billing period: a completed 30-day window in the past
-	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	// Usage timestamp mid-period (clock says March so events are within period)
+	usageTimestamp := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+	periodStart := march1
 	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	usageTimestamp := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC) // mid-period
 
 	// 1. Health check
 	t.Run("health", func(t *testing.T) {
@@ -115,8 +122,7 @@ func TestE2E_FullBillingCycle(t *testing.T) {
 		customerID = body["id"].(string)
 	})
 
-	// 6. Create subscription as draft, then set billing period to the past
-	var subID string
+	// 6. Create subscription — clock says March 1, so billing period is March 1 - April 1
 	t.Run("create subscription", func(t *testing.T) {
 		resp := doPost(t, ts, "/v1/subscriptions", auth, map[string]any{
 			"code":         "e2e-sub",
@@ -127,31 +133,11 @@ func TestE2E_FullBillingCycle(t *testing.T) {
 		})
 		assertStatus(t, resp, 201)
 		body := readJSON(t, resp)
-		subID = body["id"].(string)
+		if body["id"] == nil || body["id"].(string) == "" {
+			t.Fatal("subscription id should be set")
+		}
 		if body["status"] != "active" {
 			t.Errorf("status: got %v, want active", body["status"])
-		}
-
-		// Backdate billing period to a completed window in the past.
-		// In production, the scheduler runs after periodEnd (arrears billing).
-		// In tests, we simulate a completed period so the billing engine considers it due.
-		ctx := context.Background()
-		tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
-		if err != nil {
-			t.Fatalf("begin tx: %v", err)
-		}
-		_, err = tx.ExecContext(ctx,
-			`UPDATE subscriptions SET
-				current_billing_period_start = $1,
-				current_billing_period_end = $2,
-				next_billing_at = $2
-			WHERE id = $3`, periodStart, periodEnd, subID)
-		if err != nil {
-			_ = tx.Rollback()
-			t.Fatalf("backdate billing period: %v", err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatalf("commit: %v", err)
 		}
 	})
 
@@ -183,7 +169,10 @@ func TestE2E_FullBillingCycle(t *testing.T) {
 		}
 	})
 
-	// 9. Trigger billing — engine finds the due subscription and generates an invoice
+	// 9. Advance clock to April 1 — period closes, engine sees subscription as due
+	clk.Set(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC))
+
+	// Trigger billing — engine finds the due subscription and generates an invoice
 	t.Run("trigger billing", func(t *testing.T) {
 		resp := doPost(t, ts, "/v1/billing/run", auth, nil)
 		assertStatus(t, resp, 200)

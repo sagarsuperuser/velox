@@ -29,6 +29,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/feature"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/pricing"
@@ -76,7 +77,11 @@ type Server struct {
 	TokenSvc      *payment.TokenService
 }
 
-func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
+func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Server {
+	if clk == nil {
+		clk = clock.Real()
+	}
+
 	// Stores
 	invoiceStore := invoice.NewPostgresStore(db)
 	subStore := subscription.NewPostgresStore(db)
@@ -111,7 +116,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	customerSvc.SetStripeSyncer(payment.NewStripeBillingSync(stripeKey), customerStore)
 	customerH := customer.NewHandler(customerSvc)
 	pricingH := pricing.NewHandler(pricingSvc)
-	subSvc := subscription.NewService(subStore)
+	subSvc := subscription.NewService(subStore, clk)
 	subH := subscription.NewHandler(subSvc)
 	// Proration deps are wired below after creditSvc + invoiceStore are available
 	usageH := usage.NewHandler(usage.NewService(usageStore), customerStore, pricingSvc)
@@ -138,7 +143,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	settingsH := tenant.NewSettingsHandler(settingsStore)
 	stripeClient := payment.NewLiveStripeClient(stripeKey)
 	dunningStore := dunning.NewPostgresStore(db)
-	dunningSvc := dunning.NewService(dunningStore, nil) // retrier set below after stripeAdapter created
+	dunningSvc := dunning.NewService(dunningStore, nil, clk) // retrier set below after stripeAdapter created
 	dunningH := dunning.NewHandler(dunningSvc, dunning.HandlerDeps{
 		Invoices:       invoiceStore,
 		CreditReverser: creditSvc,
@@ -158,7 +163,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 	dunningSvc.SetEventDispatcher(webhookOutSvc)
 	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
 
-	invoiceSvc := invoice.NewService(invoiceStore)
+	invoiceSvc := invoice.NewService(invoiceStore, clk)
 	invoiceH := invoice.NewHandler(invoiceSvc, customerStore, settingsStore, invoice.HandlerDeps{
 		CreditNotes:     &creditNoteListerAdapter{svc: creditNoteSvc},
 		Charger:         stripeAdapter,
@@ -206,7 +211,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string) *Server {
 
 	// Billing engine + manual trigger (with credit auto-application)
 	engine := billing.NewEngine(subStore, usageStore, pricingSvc,
-		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, customerStore, stripeAdapter, customerStore)
+		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, customerStore, stripeAdapter, clk, customerStore)
 
 	// Tax calculator: use Stripe Tax when enabled via feature flag, otherwise manual
 	manualTaxCalc := tax.NewManualCalculator(0, "") // rate resolved per-subscription at billing time

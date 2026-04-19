@@ -283,7 +283,7 @@ func setupEngine() (*Engine, *mockSubs, *mockUsage, *mockPricing, *mockInvoices)
 
 	invoices := &mockInvoices{}
 
-	engine := NewEngine(subs, usage, pricing, invoices, nil, nil, nil, nil)
+	engine := NewEngine(subs, usage, pricing, invoices, nil, nil, nil, nil, nil)
 	return engine, subs, usage, pricing, invoices
 }
 

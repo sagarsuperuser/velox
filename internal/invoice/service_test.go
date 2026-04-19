@@ -178,7 +178,7 @@ func (m *memStore) ListAutoChargePending(_ context.Context, _ int) ([]domain.Inv
 }
 
 func TestCreate(t *testing.T) {
-	svc := NewService(newMemStore())
+	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
 
 	t.Run("valid", func(t *testing.T) {
@@ -230,7 +230,7 @@ func TestCreate(t *testing.T) {
 }
 
 func TestFinalizeAndVoid(t *testing.T) {
-	svc := NewService(newMemStore())
+	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
 
 	inv, _ := svc.Create(ctx, "t1", CreateInput{
@@ -267,7 +267,7 @@ func TestFinalizeAndVoid(t *testing.T) {
 }
 
 func TestRecordPayment(t *testing.T) {
-	svc := NewService(newMemStore())
+	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
 
 	inv, _ := svc.Create(ctx, "t1", CreateInput{

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // PaymentRetrier retries a payment for an invoice.
@@ -44,10 +45,14 @@ type Service struct {
 	events        domain.EventDispatcher
 	emailNotifier EmailNotifier
 	customerEmail CustomerEmailFetcher
+	clock         clock.Clock
 }
 
-func NewService(store Store, retrier PaymentRetrier) *Service {
-	return &Service{store: store, retrier: retrier}
+func NewService(store Store, retrier PaymentRetrier, clk clock.Clock) *Service {
+	if clk == nil {
+		clk = clock.Real()
+	}
+	return &Service{store: store, retrier: retrier, clock: clk}
 }
 
 func (s *Service) SetRetrier(retrier PaymentRetrier) {
@@ -120,7 +125,7 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 		firstRetryDelay = 24 * time.Hour // minimum 1 day before first retry
 	}
 
-	t := time.Now().UTC().Add(firstRetryDelay)
+	t := s.clock.Now().Add(firstRetryDelay)
 	nextActionAt := &t
 
 	run, err := s.store.CreateRun(ctx, tenantID, domain.InvoiceDunningRun{
@@ -162,7 +167,7 @@ func (s *Service) ProcessDueRuns(ctx context.Context, tenantID string, limit int
 		limit = 20
 	}
 
-	dueRuns, err := s.store.ListDueRuns(ctx, tenantID, time.Now().UTC(), limit)
+	dueRuns, err := s.store.ListDueRuns(ctx, tenantID, s.clock.Now(), limit)
 	if err != nil {
 		return 0, []error{fmt.Errorf("list due runs: %w", err)}
 	}
@@ -213,7 +218,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 
 	// Attempt retry
 	run.AttemptCount++
-	now := time.Now().UTC()
+	now := s.clock.Now()
 	run.LastAttemptAt = &now
 
 	// Actually retry the payment
@@ -339,7 +344,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 }
 
 func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, policy domain.DunningPolicy) error {
-	now := time.Now().UTC()
+	now := s.clock.Now()
 	run.State = domain.DunningEscalated
 	run.Resolution = domain.ResolutionRetriesExhausted
 	run.ResolvedAt = &now
@@ -425,7 +430,7 @@ func (s *Service) ResolveRun(ctx context.Context, tenantID, runID string, resolu
 		return domain.InvoiceDunningRun{}, err
 	}
 
-	now := time.Now().UTC()
+	now := s.clock.Now()
 	run.State = domain.DunningResolved
 	run.Resolution = resolution
 	run.ResolvedAt = &now
@@ -450,7 +455,7 @@ func (s *Service) ResolveByInvoice(ctx context.Context, tenantID, invoiceID stri
 		return nil // No active run — nothing to resolve
 	}
 
-	now := time.Now().UTC()
+	now := s.clock.Now()
 	run.State = domain.DunningResolved
 	run.Resolution = resolution
 	run.ResolvedAt = &now
