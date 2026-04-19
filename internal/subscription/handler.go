@@ -139,6 +139,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/{id}/pause", h.pause)
 	r.Post("/{id}/resume", h.resume)
 	r.Post("/{id}/change-plan", h.changePlan)
+	r.Delete("/{id}/pending-change", h.cancelPendingChange)
 	r.Post("/{id}/cancel", h.cancel)
 	return r
 }
@@ -562,6 +563,34 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 
 	if h.auditLogger != nil {
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCancel, "subscription", sub.ID, map[string]any{
+			"customer_id": sub.CustomerID,
+			"plan_id":     sub.PlanID,
+		})
+	}
+
+	respond.JSON(w, r, http.StatusOK, sub)
+}
+
+// cancelPendingChange clears a scheduled plan change. Idempotent — returning
+// 200 on a subscription with nothing scheduled matches how Stripe handles
+// DELETE on already-absent resources (no 404 just because you asked twice).
+func (h *Handler) cancelPendingChange(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := h.svc.CancelPendingPlanChange(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "subscription")
+		return
+	}
+	if err != nil {
+		respond.Validation(w, r, err.Error())
+		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+			"action":      "cancel_pending_plan_change",
 			"customer_id": sub.CustomerID,
 			"plan_id":     sub.PlanID,
 		})

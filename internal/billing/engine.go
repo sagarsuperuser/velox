@@ -78,6 +78,10 @@ type SubscriptionReader interface {
 	GetDueBilling(ctx context.Context, before time.Time, limit int) ([]domain.Subscription, error)
 	Get(ctx context.Context, tenantID, id string) (domain.Subscription, error)
 	UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time) error
+	// ApplyPendingPlanAtomic swaps plan_id ← pending_plan_id when a scheduled
+	// change is due; returns errs.ErrNotFound if no due change is present (the
+	// caller treats that as "nothing to apply", not an error).
+	ApplyPendingPlanAtomic(ctx context.Context, tenantID, id string, now time.Time) (domain.Subscription, error)
 }
 
 // UsageAggregator aggregates usage events for a billing period.
@@ -332,6 +336,24 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 
 	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
 		return false, fmt.Errorf("subscription has no billing period set")
+	}
+
+	// If a scheduled plan change is due, apply it BEFORE reading the plan so
+	// the new cycle bills on the new plan. A concurrent DELETE /pending-change
+	// can race this: whichever statement commits first wins; ApplyPendingPlanAtomic
+	// returns ErrNotFound on the loser, which we treat as "already handled".
+	if sub.PendingPlanID != "" && sub.PendingPlanEffectiveAt != nil && !sub.PendingPlanEffectiveAt.After(e.clock.Now()) {
+		applied, err := e.subs.ApplyPendingPlanAtomic(ctx, sub.TenantID, sub.ID, e.clock.Now())
+		if err == nil {
+			slog.Info("applied scheduled plan change",
+				"subscription_id", sub.ID,
+				"previous_plan_id", applied.PreviousPlanID,
+				"new_plan_id", applied.PlanID,
+			)
+			sub = applied
+		} else if !errors.Is(err, errs.ErrNotFound) {
+			return false, fmt.Errorf("apply pending plan: %w", err)
+		}
 	}
 
 	periodStart := *sub.CurrentBillingPeriodStart

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 // mockSettings is a minimal SettingsReader for engine tests. Hands out
@@ -64,6 +65,23 @@ func (m *mockSubs) UpdateBillingCycle(_ context.Context, _, id string, start, en
 	m.subs[id] = s
 	m.cycleUpdated[id] = true
 	return nil
+}
+
+func (m *mockSubs) ApplyPendingPlanAtomic(_ context.Context, _, id string, now time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.PendingPlanID == "" || s.PendingPlanEffectiveAt == nil || s.PendingPlanEffectiveAt.After(now) {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	s.PreviousPlanID = s.PlanID
+	s.PlanID = s.PendingPlanID
+	s.PlanChangedAt = &now
+	s.PendingPlanID = ""
+	s.PendingPlanEffectiveAt = nil
+	m.subs[id] = s
+	return s, nil
 }
 
 type mockUsage struct {
@@ -585,5 +603,118 @@ func TestRunCycle_UnitAmountRoundsBankers(t *testing.T) {
 	if usageLine.UnitAmountCents != 67 {
 		t.Errorf("unit_amount_cents: got %d, want 67 (banker's round of 200/3)",
 			usageLine.UnitAmountCents)
+	}
+}
+
+// A subscription with a due pending plan change must bill on the new plan
+// after ApplyPendingPlanAtomic runs at the top of billSubscription. Locks in
+// the COR-3 contract: the cycle boundary is the swap point.
+func TestRunCycle_AppliesScheduledPlanChangeAtBoundary(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	// Effective exactly at periodEnd — the partial-index WHERE clause requires
+	// effective_at <= now, and the cycle runs at periodEnd.
+	effectiveAt := periodEnd
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", PlanID: "pln_old",
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt:             &periodEnd,
+				PendingPlanID:             "pln_new",
+				PendingPlanEffectiveAt:    &effectiveAt,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_old": {ID: "pln_old", Name: "Old", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 1000},
+			"pln_new": {ID: "pln_new", Name: "New", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 3000},
+		},
+	}
+
+	invoices := &mockInvoices{}
+	usage := &mockUsage{totals: map[string]int64{}}
+	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+
+	count, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if count != 1 {
+		t.Fatalf("got %d invoices, want 1", count)
+	}
+
+	inv := invoices.invoices[0]
+	if inv.SubtotalCents != 3000 {
+		t.Errorf("billed on wrong plan: subtotal %d cents, want 3000 (new plan)", inv.SubtotalCents)
+	}
+
+	// Sub row must reflect the swap.
+	got := subs.subs["sub_1"]
+	if got.PlanID != "pln_new" {
+		t.Errorf("plan_id: got %q, want pln_new", got.PlanID)
+	}
+	if got.PreviousPlanID != "pln_old" {
+		t.Errorf("previous_plan_id: got %q, want pln_old", got.PreviousPlanID)
+	}
+	if got.PendingPlanID != "" || got.PendingPlanEffectiveAt != nil {
+		t.Errorf("pending fields should be cleared: got pending_id=%q effective_at=%v",
+			got.PendingPlanID, got.PendingPlanEffectiveAt)
+	}
+}
+
+// A pending change dated in the future must NOT apply at the current cycle —
+// the billing engine bills on the existing plan and leaves pending fields intact.
+func TestRunCycle_SkipsPendingChangeNotYetDue(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	futureEffective := periodEnd.AddDate(0, 1, 0) // 2026-05-01, next cycle
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", PlanID: "pln_old",
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt:             &periodEnd,
+				PendingPlanID:             "pln_new",
+				PendingPlanEffectiveAt:    &futureEffective,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_old": {ID: "pln_old", Name: "Old", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 1000},
+			"pln_new": {ID: "pln_new", Name: "New", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 3000},
+		},
+	}
+
+	invoices := &mockInvoices{}
+	usage := &mockUsage{totals: map[string]int64{}}
+	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+
+	_, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	inv := invoices.invoices[0]
+	if inv.SubtotalCents != 1000 {
+		t.Errorf("should have billed on old plan: subtotal %d, want 1000", inv.SubtotalCents)
+	}
+
+	got := subs.subs["sub_1"]
+	if got.PendingPlanID != "pln_new" {
+		t.Errorf("pending change should be preserved: got %q", got.PendingPlanID)
+	}
+	if got.PlanID != "pln_old" {
+		t.Errorf("plan_id should not have swapped: got %q", got.PlanID)
 	}
 }

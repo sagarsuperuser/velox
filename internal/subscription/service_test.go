@@ -116,6 +116,48 @@ func (m *memStore) CancelAtomic(_ context.Context, tenantID, id string) (domain.
 	return s, nil
 }
 
+func (m *memStore) SetPendingPlan(_ context.Context, tenantID, id, pendingPlanID string, effectiveAt time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	s.PendingPlanID = pendingPlanID
+	s.PendingPlanEffectiveAt = &effectiveAt
+	s.UpdatedAt = time.Now().UTC()
+	m.subs[id] = s
+	return s, nil
+}
+
+func (m *memStore) ClearPendingPlan(_ context.Context, tenantID, id string) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	s.PendingPlanID = ""
+	s.PendingPlanEffectiveAt = nil
+	s.UpdatedAt = time.Now().UTC()
+	m.subs[id] = s
+	return s, nil
+}
+
+func (m *memStore) ApplyPendingPlanAtomic(_ context.Context, tenantID, id string, now time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.PendingPlanID == "" || s.PendingPlanEffectiveAt == nil || s.PendingPlanEffectiveAt.After(now) {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	s.PreviousPlanID = s.PlanID
+	s.PlanID = s.PendingPlanID
+	s.PlanChangedAt = &now
+	s.PendingPlanID = ""
+	s.PendingPlanEffectiveAt = nil
+	s.UpdatedAt = now
+	m.subs[id] = s
+	return s, nil
+}
+
 func TestCreate(t *testing.T) {
 	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
@@ -279,6 +321,96 @@ func TestChangePlan(t *testing.T) {
 		_, err := svc.ChangePlan(ctx, "t1", sub.ID, ChangePlanInput{})
 		if err == nil {
 			t.Fatal("expected error for missing plan")
+		}
+	})
+}
+
+// A scheduled plan change (immediate=false) must not mutate plan_id. It
+// records pending fields and reports an effective_at that honours the current
+// cycle boundary. Prior behaviour swapped plan_id immediately, making the
+// response's effective_at a lie — this test locks in the fix.
+func TestChangePlan_Scheduled(t *testing.T) {
+	svc := NewService(newMemStore(), nil)
+	ctx := context.Background()
+
+	sub, _ := svc.Create(ctx, "t1", CreateInput{
+		Code: "sub-sched", DisplayName: "Test", CustomerID: "c", PlanID: "plan_old", StartNow: true,
+	})
+
+	store := svc.store.(*memStore)
+	s := store.subs[sub.ID]
+	start := time.Now().UTC().AddDate(0, 0, -5)
+	end := time.Now().UTC().AddDate(0, 0, 25)
+	s.CurrentBillingPeriodStart = &start
+	s.CurrentBillingPeriodEnd = &end
+	store.subs[sub.ID] = s
+
+	t.Run("records pending, leaves plan_id untouched", func(t *testing.T) {
+		result, err := svc.ChangePlan(ctx, "t1", sub.ID, ChangePlanInput{
+			NewPlanID: "plan_new",
+			Immediate: false,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Subscription.PlanID != "plan_old" {
+			t.Errorf("plan_id must not change on scheduled: got %q, want plan_old", result.Subscription.PlanID)
+		}
+		if result.Subscription.PendingPlanID != "plan_new" {
+			t.Errorf("pending_plan_id: got %q, want plan_new", result.Subscription.PendingPlanID)
+		}
+		if result.Subscription.PendingPlanEffectiveAt == nil {
+			t.Fatal("pending_plan_effective_at must be set")
+		}
+		if !result.Subscription.PendingPlanEffectiveAt.Equal(end) {
+			t.Errorf("pending_plan_effective_at: got %v, want period end %v", *result.Subscription.PendingPlanEffectiveAt, end)
+		}
+		if !result.EffectiveAt.Equal(end) {
+			t.Errorf("response effective_at: got %v, want %v", result.EffectiveAt, end)
+		}
+	})
+
+	t.Run("cancel pending restores state", func(t *testing.T) {
+		updated, err := svc.CancelPendingPlanChange(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if updated.PendingPlanID != "" {
+			t.Errorf("pending_plan_id should be cleared: got %q", updated.PendingPlanID)
+		}
+		if updated.PendingPlanEffectiveAt != nil {
+			t.Errorf("pending_plan_effective_at should be nil: got %v", updated.PendingPlanEffectiveAt)
+		}
+		if updated.PlanID != "plan_old" {
+			t.Errorf("plan_id should remain unchanged: got %q", updated.PlanID)
+		}
+	})
+
+	t.Run("cancel with no pending is no-op", func(t *testing.T) {
+		updated, err := svc.CancelPendingPlanChange(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if updated.PendingPlanID != "" {
+			t.Errorf("expected no pending: got %q", updated.PendingPlanID)
+		}
+	})
+
+	t.Run("immediate supersedes pending", func(t *testing.T) {
+		// Re-schedule a change, then issue an immediate one — pending must be cleared.
+		_, err := svc.ChangePlan(ctx, "t1", sub.ID, ChangePlanInput{NewPlanID: "plan_scheduled", Immediate: false})
+		if err != nil {
+			t.Fatalf("schedule: %v", err)
+		}
+		result, err := svc.ChangePlan(ctx, "t1", sub.ID, ChangePlanInput{NewPlanID: "plan_immediate", Immediate: true})
+		if err != nil {
+			t.Fatalf("immediate: %v", err)
+		}
+		if result.Subscription.PlanID != "plan_immediate" {
+			t.Errorf("plan_id: got %q, want plan_immediate", result.Subscription.PlanID)
+		}
+		if result.Subscription.PendingPlanID != "" {
+			t.Errorf("pending_plan_id should be cleared: got %q", result.Subscription.PendingPlanID)
 		}
 	})
 }
