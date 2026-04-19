@@ -248,6 +248,9 @@ func TestIssueAndVoid_CreditNote(t *testing.T) {
 		if issued.IssuedAt == nil {
 			t.Error("issued_at should be set")
 		}
+		if got := invoices.invoices["inv_1"].AmountDueCents; got != 9000 {
+			t.Errorf("amount_due after issue: got %d, want 9000 (10000 - 1000 CN)", got)
+		}
 	})
 
 	t.Run("cannot issue again", func(t *testing.T) {
