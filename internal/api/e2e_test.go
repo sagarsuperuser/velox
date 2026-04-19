@@ -102,7 +102,6 @@ func TestE2E_FullBillingCycle(t *testing.T) {
 	})
 
 	// 6. Create subscription (start immediately — billing period auto-set)
-	var subID string
 	t.Run("create subscription", func(t *testing.T) {
 		resp := doPost(t, ts, "/v1/subscriptions", auth, map[string]any{
 			"code":         "e2e-sub",
@@ -113,7 +112,7 @@ func TestE2E_FullBillingCycle(t *testing.T) {
 		})
 		assertStatus(t, resp, 201)
 		body := readJSON(t, resp)
-		subID = body["id"].(string)
+		_ = body["id"].(string)
 		if body["status"] != "active" {
 			t.Errorf("status: got %v, want active", body["status"])
 		}
@@ -126,9 +125,8 @@ func TestE2E_FullBillingCycle(t *testing.T) {
 	t.Run("ingest usage", func(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			resp := doPost(t, ts, "/v1/usage-events", auth, map[string]any{
-				"external_customer_id": customerID,
-				"meter_id":             meterID,
-				"subscription_id":      subID,
+				"external_customer_id": "e2e_cust",
+				"event_name":           "api_calls",
 				"quantity":             100,
 			})
 			assertStatus(t, resp, 201)

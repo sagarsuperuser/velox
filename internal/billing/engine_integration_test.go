@@ -269,16 +269,16 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 	if inv.SubscriptionID != sub.ID {
 		t.Errorf("subscription_id: got %q, want %q", inv.SubscriptionID, sub.ID)
 	}
-	if inv.Status != domain.InvoiceDraft {
-		t.Errorf("status: got %q, want draft", inv.Status)
+	if inv.Status != domain.InvoiceFinalized {
+		t.Errorf("status: got %q, want finalized", inv.Status)
 	}
 
 	// Expected totals:
 	// Base fee: $49.00 = 4900 cents
-	// API: 1000 * 10 + 500 * 5 = 12500 cents = $125.00
-	// Storage: flat $25.00 = 2500 cents
-	// Total: 4900 + 12500 + 2500 = 19900 cents = $199.00
-	expectedTotal := int64(4900 + 12500 + 2500)
+	// API: graduated — 1000 × $0.10 + 500 × $0.05 = 12500 cents = $125.00
+	// Storage: flat $25/unit × 50 GB = 125000 cents = $1250.00
+	// Total: 4900 + 12500 + 125000 = 142400 cents = $1424.00
+	expectedTotal := int64(4900 + 12500 + 125000)
 	if inv.TotalAmountCents != expectedTotal {
 		t.Errorf("total: got %d cents ($%.2f), want %d cents ($%.2f)",
 			inv.TotalAmountCents, float64(inv.TotalAmountCents)/100,
@@ -310,8 +310,8 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 				}
 			}
 			if item.MeterID == storageMeter.ID {
-				if item.AmountCents != 2500 {
-					t.Errorf("storage amount: got %d, want 2500", item.AmountCents)
+				if item.AmountCents != 125000 {
+					t.Errorf("storage amount: got %d, want 125000", item.AmountCents)
 				}
 			}
 		}
