@@ -10,6 +10,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
+	"github.com/sagarsuperuser/velox/internal/customerportal"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/invoice"
@@ -244,4 +245,27 @@ func (a *prorationTaxApplierAdapter) ApplyTaxToLineItems(ctx context.Context, te
 		SubtotalCents:  r.SubtotalCents,
 		DiscountCents:  r.DiscountCents,
 	}, nil
+}
+
+// customerLookupAdapter bridges customer.PostgresStore → customerportal.CustomerLookup.
+// The two EmailMatch types are structurally identical; the adapter keeps
+// customerportal from importing customer (dep-graph layering).
+type customerLookupAdapter struct {
+	store *customer.PostgresStore
+}
+
+func (a *customerLookupAdapter) FindByEmailBlindIndex(ctx context.Context, blind string, limit int) ([]customerportal.CustomerMatch, error) {
+	matches, err := a.store.FindByEmailBlindIndex(ctx, blind, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]customerportal.CustomerMatch, len(matches))
+	for i, m := range matches {
+		out[i] = customerportal.CustomerMatch{
+			TenantID:   m.TenantID,
+			CustomerID: m.CustomerID,
+			Livemode:   m.Livemode,
+		}
+	}
+	return out, nil
 }
