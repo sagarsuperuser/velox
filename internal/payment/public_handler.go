@@ -146,7 +146,7 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	}
 
 	// Create a Checkout Session in setup mode for new payment method
-	sess, err := sc.CheckoutSessions.New(&stripe.CheckoutSessionParams{
+	sess, err := sc.V1CheckoutSessions.Create(r.Context(), &stripe.CheckoutSessionCreateParams{
 		Customer:           stripe.String(stripeCustomerID),
 		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),

@@ -30,7 +30,7 @@ func (s *StripeBillingSync) SyncBillingProfile(ctx context.Context, stripeCustom
 		return ErrStripeNotConfigured
 	}
 
-	params := &stripe.CustomerParams{}
+	params := &stripe.CustomerUpdateParams{}
 
 	// Name: prefer legal name, fall back to email
 	if bp.LegalName != "" {
@@ -55,7 +55,7 @@ func (s *StripeBillingSync) SyncBillingProfile(ctx context.Context, stripeCustom
 		}
 	}
 
-	_, err := sc.Customers.Update(stripeCustomerID, params)
+	_, err := sc.V1Customers.Update(ctx, stripeCustomerID, params)
 	if err != nil {
 		return fmt.Errorf("stripe customer update: %w", err)
 	}

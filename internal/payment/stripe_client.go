@@ -118,7 +118,7 @@ func (c *LiveStripeClient) CreatePaymentIntent(ctx context.Context, params Payme
 	}
 
 	// Use the customer's default payment method, fall back to most recent card
-	cus, err := sc.Customers.Get(params.CustomerID, nil)
+	cus, err := sc.V1Customers.Retrieve(ctx, params.CustomerID, nil)
 	var defaultPM string
 	if err == nil && cus.InvoiceSettings != nil && cus.InvoiceSettings.DefaultPaymentMethod != nil {
 		defaultPM = cus.InvoiceSettings.DefaultPaymentMethod.ID
@@ -126,12 +126,13 @@ func (c *LiveStripeClient) CreatePaymentIntent(ctx context.Context, params Payme
 	if defaultPM == "" {
 		// Fall back to most recently created card
 		var latest *stripe.PaymentMethod
-		pmIter := sc.PaymentMethods.List(&stripe.PaymentMethodListParams{
+		for pm, err := range sc.V1PaymentMethods.List(ctx, &stripe.PaymentMethodListParams{
 			Customer: stripe.String(params.CustomerID),
 			Type:     stripe.String("card"),
-		})
-		for pmIter.Next() {
-			pm := pmIter.PaymentMethod()
+		}) {
+			if err != nil {
+				break
+			}
 			if latest == nil || pm.Created > latest.Created {
 				latest = pm
 			}
@@ -145,7 +146,7 @@ func (c *LiveStripeClient) CreatePaymentIntent(ctx context.Context, params Payme
 		return PaymentIntentResult{}, &PaymentError{Message: "customer has no payment method on file"}
 	}
 
-	pi, err := sc.PaymentIntents.New(&stripe.PaymentIntentParams{
+	pi, err := sc.V1PaymentIntents.Create(ctx, &stripe.PaymentIntentCreateParams{
 		Amount:        stripe.Int64(params.AmountCents),
 		Currency:      stripe.String(params.Currency),
 		Customer:      stripe.String(params.CustomerID),
@@ -177,12 +178,13 @@ func (c *LiveStripeClient) FetchCardDetails(ctx context.Context, stripeCustomerI
 
 	// Get the most recently created card
 	var latest *stripe.PaymentMethod
-	pmIter := sc.PaymentMethods.List(&stripe.PaymentMethodListParams{
+	for pm, err := range sc.V1PaymentMethods.List(ctx, &stripe.PaymentMethodListParams{
 		Customer: stripe.String(stripeCustomerID),
 		Type:     stripe.String("card"),
-	})
-	for pmIter.Next() {
-		pm := pmIter.PaymentMethod()
+	}) {
+		if err != nil {
+			break
+		}
 		if latest == nil || pm.Created > latest.Created {
 			latest = pm
 		}
@@ -192,8 +194,8 @@ func (c *LiveStripeClient) FetchCardDetails(ctx context.Context, stripeCustomerI
 	}
 
 	// Set this card as the customer's default payment method
-	_, _ = sc.Customers.Update(stripeCustomerID, &stripe.CustomerParams{
-		InvoiceSettings: &stripe.CustomerInvoiceSettingsParams{
+	_, _ = sc.V1Customers.Update(ctx, stripeCustomerID, &stripe.CustomerUpdateParams{
+		InvoiceSettings: &stripe.CustomerUpdateInvoiceSettingsParams{
 			DefaultPaymentMethod: stripe.String(latest.ID),
 		},
 	})
@@ -212,7 +214,7 @@ func (c *LiveStripeClient) CancelPaymentIntent(ctx context.Context, paymentInten
 	if sc == nil {
 		return ErrStripeNotConfigured
 	}
-	_, err := sc.PaymentIntents.Cancel(paymentIntentID, nil)
+	_, err := sc.V1PaymentIntents.Cancel(ctx, paymentIntentID, nil)
 	if err != nil {
 		return fmt.Errorf("stripe cancel: %s", stripeErrorMessage(err))
 	}
@@ -227,7 +229,7 @@ func (c *LiveStripeClient) GetPaymentIntent(ctx context.Context, paymentIntentID
 	if sc == nil {
 		return PaymentIntentResult{}, ErrStripeNotConfigured
 	}
-	pi, err := sc.PaymentIntents.Get(paymentIntentID, nil)
+	pi, err := sc.V1PaymentIntents.Retrieve(ctx, paymentIntentID, nil)
 	if err != nil {
 		return PaymentIntentResult{}, classifyStripeError(err)
 	}

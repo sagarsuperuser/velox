@@ -89,7 +89,7 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 
 	// Create or update Stripe customer
 	if stripeCustomerID == "" {
-		cusParams := &stripe.CustomerParams{
+		cusParams := &stripe.CustomerCreateParams{
 			Name:  stripe.String(req.CustomerName),
 			Email: stripe.String(req.Email),
 			Params: stripe.Params{
@@ -109,7 +109,7 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 				Country:    stripe.String(req.AddressCountry),
 			}
 		}
-		cus, err := sc.Customers.New(cusParams)
+		cus, err := sc.V1Customers.Create(r.Context(), cusParams)
 		if err != nil {
 			respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
 				fmt.Sprintf("failed to create Stripe customer: %v", err))
@@ -118,7 +118,7 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		stripeCustomerID = cus.ID
 	} else {
 		// Always sync latest customer data to Stripe on re-setup
-		updateParams := &stripe.CustomerParams{
+		updateParams := &stripe.CustomerUpdateParams{
 			Name:  stripe.String(req.CustomerName),
 			Email: stripe.String(req.Email),
 		}
@@ -131,7 +131,7 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 				Country:    stripe.String(req.AddressCountry),
 			}
 		}
-		_, _ = sc.Customers.Update(stripeCustomerID, updateParams)
+		_, _ = sc.V1Customers.Update(r.Context(), stripeCustomerID, updateParams)
 	}
 
 	// Save Stripe customer ID immediately (status: pending until checkout completes)
@@ -154,7 +154,7 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		cancelURL = fmt.Sprintf("http://localhost:5173/customers/%s?payment=cancel", req.CustomerID)
 	}
 
-	sess, err := sc.CheckoutSessions.New(&stripe.CheckoutSessionParams{
+	sess, err := sc.V1CheckoutSessions.Create(r.Context(), &stripe.CheckoutSessionCreateParams{
 		Customer:           stripe.String(stripeCustomerID),
 		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
