@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
@@ -39,14 +40,16 @@ func (s *PostgresWebhookStore) IngestEvent(ctx context.Context, tenantID string,
 		amountCents = event.AmountCents
 	}
 
+	livemode := auth.Livemode(ctx)
+
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO stripe_webhook_events (id, tenant_id, stripe_event_id, event_type, object_type,
+		INSERT INTO stripe_webhook_events (id, tenant_id, livemode, stripe_event_id, event_type, object_type,
 			invoice_id, customer_external_id, payment_intent_id, payment_status,
 			amount_cents, currency, failure_message, payload, received_at, occurred_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-		ON CONFLICT (tenant_id, stripe_event_id) DO NOTHING
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		ON CONFLICT (tenant_id, livemode, stripe_event_id) DO NOTHING
 		RETURNING id
-	`, id, tenantID, event.StripeEventID, event.EventType, event.ObjectType,
+	`, id, tenantID, livemode, event.StripeEventID, event.EventType, event.ObjectType,
 		postgres.NullableString(event.InvoiceID), postgres.NullableString(event.CustomerExternalID),
 		postgres.NullableString(event.PaymentIntentID), postgres.NullableString(event.PaymentStatus),
 		amountCents, postgres.NullableString(event.Currency),

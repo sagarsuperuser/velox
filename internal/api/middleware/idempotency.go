@@ -183,11 +183,13 @@ func storeCachedResponse(ctx context.Context, db *postgres.DB, tenantID, key, me
 	}
 	defer postgres.Rollback(tx)
 
+	livemode := auth.Livemode(ctx)
+
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO idempotency_keys (key, tenant_id, http_method, http_path, request_fingerprint, status_code, response_body)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (tenant_id, key) DO NOTHING`,
-		key, tenantID, method, path, fingerprint, statusCode, body,
+		`INSERT INTO idempotency_keys (key, tenant_id, livemode, http_method, http_path, request_fingerprint, status_code, response_body)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (tenant_id, livemode, key) DO NOTHING`,
+		key, tenantID, livemode, method, path, fingerprint, statusCode, body,
 	); err != nil {
 		return
 	}
