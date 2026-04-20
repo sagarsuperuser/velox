@@ -52,6 +52,21 @@ func (s *PostgresStore) Create(ctx context.Context, key domain.APIKey) (domain.A
 	return k, nil
 }
 
+func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.APIKey, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	k, err := scanKey(tx.QueryRowContext(ctx,
+		`SELECT `+keyCols+` FROM api_keys WHERE id = $1`, id))
+	if err == sql.ErrNoRows {
+		return domain.APIKey{}, errs.ErrNotFound
+	}
+	return k, err
+}
+
 func (s *PostgresStore) GetByPrefix(ctx context.Context, prefix string) (domain.APIKey, error) {
 	// API key lookup bypasses RLS — we need to find the key to determine the tenant.
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
@@ -87,6 +102,32 @@ func (s *PostgresStore) Revoke(ctx context.Context, tenantID, id string) (domain
 		WHERE id = $2 AND revoked_at IS NULL
 		RETURNING `+keyCols, now, id))
 
+	if err == sql.ErrNoRows {
+		return domain.APIKey{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.APIKey{}, err
+	}
+	return k, nil
+}
+
+func (s *PostgresStore) ScheduleExpiry(ctx context.Context, tenantID, id string, expiresAt time.Time) (domain.APIKey, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Only schedule expiry on keys that aren't already revoked — rotating a
+	// revoked key makes no sense, and the predicate guards against racing
+	// revoke+rotate for the same row.
+	k, err := scanKey(tx.QueryRowContext(ctx, `
+		UPDATE api_keys SET expires_at = $1
+		WHERE id = $2 AND revoked_at IS NULL
+		RETURNING `+keyCols, expiresAt, id))
 	if err == sql.ErrNoRows {
 		return domain.APIKey{}, errs.ErrNotFound
 	}

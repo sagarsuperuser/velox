@@ -26,6 +26,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/", h.create)
 	r.Get("/", h.list)
 	r.Delete("/{id}", h.revoke)
+	r.Post("/{id}/rotate", h.rotate)
 	return r
 }
 
@@ -93,4 +94,42 @@ func (h *Handler) revoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, key)
+}
+
+func (h *Handler) rotate(w http.ResponseWriter, r *http.Request) {
+	tenantID := TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	// Self-rotation would drop the caller's authentication on the floor if
+	// grace=0, and is a foot-gun even with a grace window — same reasoning
+	// as the self-revoke guard.
+	if id == KeyID(r.Context()) {
+		respond.Error(w, r, http.StatusUnprocessableEntity, "invalid_request_error", "self_rotate",
+			"cannot rotate the API key you are currently using; authenticate with a different key first")
+		return
+	}
+
+	// Body is optional — POST /rotate with no body defaults to immediate
+	// revocation of the old key. An empty request should not 400.
+	var input RotateKeyInput
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			respond.BadRequest(w, r, "invalid JSON body")
+			return
+		}
+	}
+
+	result, err := h.svc.RotateKey(r.Context(), tenantID, id, input)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "api key")
+		return
+	}
+	if err != nil {
+		// Validation errors (invalid grace, revoked key) come through as
+		// typed errs.ValidationError — Respond.Validation handles them.
+		respond.Validation(w, r, err.Error())
+		return
+	}
+
+	respond.JSON(w, r, http.StatusOK, result)
 }

@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,4 +162,216 @@ func assertInsertDenied(t *testing.T, db *postgres.DB, ctx context.Context,
 		t.Fatalf("RLS LEAK: tenant %s successfully inserted a row tagged with tenant %s",
 			actingTenant, targetTenant)
 	}
+}
+
+// TestRLSIsolation_Livemode asserts that mode-aware rows are partitioned by
+// app.livemode — a row written under test mode is invisible to live-mode
+// reads for the same tenant, and vice versa. This is the last line of defence
+// against test-mode data leaking into production responses (or vice versa)
+// when a caller forgets to propagate WithLivemode through the request ctx.
+//
+// The BEFORE INSERT trigger from migration 0021 is also covered indirectly:
+// we never set NEW.livemode explicitly — the trigger reads app.livemode off
+// the session and stamps the row. If the trigger regressed, both seeded rows
+// would land on the same mode and one of the assertions below would fire.
+func TestRLSIsolation_Livemode(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tenantID := testutil.CreateTestTenant(t, db, "Livemode RLS Test")
+
+	// Seed distinct keys under each mode for the same tenant. We use
+	// idempotency_keys because its primary key is (tenant_id, livemode, key)
+	// post-migration 0020 — the same literal key can coexist across modes.
+	seedIdempotencyKeyForMode(t, db, ctx, tenantID, true, "live-key")
+	seedIdempotencyKeyForMode(t, db, ctx, tenantID, false, "test-key")
+
+	// Live-mode session: sees live-key only.
+	assertLivemodeVisibleKeys(t, db, ctx, tenantID, true,
+		[]string{"live-key"}, []string{"test-key"})
+
+	// Test-mode session: sees test-key only.
+	assertLivemodeVisibleKeys(t, db, ctx, tenantID, false,
+		[]string{"test-key"}, []string{"live-key"})
+
+	// Trigger-level enforcement: an INSERT under test mode cannot smuggle in a
+	// livemode=true row by passing it explicitly. The trigger overwrites
+	// NEW.livemode from the session, so the row lands as test-mode regardless.
+	assertLivemodeTriggerOverridesCaller(t, db, ctx, tenantID)
+}
+
+// TestRLSIsolation_AllModeAwareTablesHaveLivemodePredicate scans pg_policies
+// and asserts that every table listed in migration 0020 as mode-aware has a
+// tenant_isolation policy whose qual references app.livemode. A future
+// migration that ALTERs one of these policies without preserving the livemode
+// clause is the exact regression this test catches.
+func TestRLSIsolation_AllModeAwareTablesHaveLivemodePredicate(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Kept in lockstep with the ARRAY[] block in 0020_test_mode.up.sql. When a
+	// new mode-aware table is added, append it here — the test will otherwise
+	// pass silently without covering the new policy.
+	modeAwareTables := []string{
+		"api_keys", "audit_log", "billed_entries", "billing_provider_connections",
+		"coupon_redemptions", "coupons", "credit_note_line_items", "credit_notes",
+		"customer_billing_profiles", "customer_credit_ledger", "customer_dunning_overrides",
+		"customer_payment_setups", "customer_price_overrides", "customers",
+		"dunning_policies", "email_outbox", "idempotency_keys", "invoice_dunning_events",
+		"invoice_dunning_runs", "invoice_line_items", "invoices", "meters",
+		"payment_update_tokens", "plans", "rating_rule_versions",
+		"stripe_webhook_events", "subscriptions", "subscription_items",
+		"test_clocks", "usage_events",
+		"webhook_deliveries", "webhook_endpoints", "webhook_events", "webhook_outbox",
+		"payment_methods", "customer_portal_sessions", "customer_portal_magic_links",
+	}
+
+	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		t.Fatalf("begin bypass: %v", err)
+	}
+	defer postgres.Rollback(tx)
+
+	for _, table := range modeAwareTables {
+		var qual string
+		err := tx.QueryRowContext(ctx,
+			`SELECT qual FROM pg_policies WHERE tablename = $1 AND policyname = 'tenant_isolation'`,
+			table,
+		).Scan(&qual)
+		if err != nil {
+			t.Errorf("%s: read tenant_isolation policy: %v", table, err)
+			continue
+		}
+		// The policy qual is the expanded form of the USING clause. Postgres
+		// normalises it, so the exact string shape can shift across versions —
+		// we just check for the app.livemode reference that the 0020 block
+		// installs on every mode-aware table.
+		if !containsLivemodePredicate(qual) {
+			t.Errorf("%s: tenant_isolation policy qual does NOT reference app.livemode — mode partitioning is missing. qual was: %s",
+				table, qual)
+		}
+	}
+}
+
+func seedIdempotencyKeyForMode(t *testing.T, db *postgres.DB, ctx context.Context,
+	tenantID string, live bool, key string) {
+	t.Helper()
+
+	modeCtx := postgres.WithLivemode(ctx, live)
+	tx, err := db.BeginTx(modeCtx, postgres.TxTenant, tenantID)
+	if err != nil {
+		t.Fatalf("seed begin (live=%v): %v", live, err)
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(modeCtx,
+		`INSERT INTO idempotency_keys (tenant_id, key, http_method, http_path, status_code, response_body)
+		VALUES ($1, $2, 'POST', '/v1/test', 200, '{}')`,
+		tenantID, key); err != nil {
+		t.Fatalf("seed idempotency_keys (tenant=%s live=%v key=%s): %v",
+			tenantID, live, key, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("seed commit (live=%v): %v", live, err)
+	}
+}
+
+func assertLivemodeVisibleKeys(t *testing.T, db *postgres.DB, ctx context.Context,
+	tenantID string, live bool, expectVisible, expectHidden []string) {
+	t.Helper()
+
+	modeCtx := postgres.WithLivemode(ctx, live)
+	tx, err := db.BeginTx(modeCtx, postgres.TxTenant, tenantID)
+	if err != nil {
+		t.Fatalf("begin tenant tx (live=%v): %v", live, err)
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(modeCtx,
+		`SELECT key FROM idempotency_keys WHERE tenant_id = $1`, tenantID)
+	if err != nil {
+		t.Fatalf("query idempotency_keys (live=%v): %v", live, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	seen := map[string]bool{}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatalf("scan (live=%v): %v", live, err)
+		}
+		seen[k] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err (live=%v): %v", live, err)
+	}
+
+	for _, k := range expectVisible {
+		if !seen[k] {
+			t.Errorf("live=%v: expected key %q visible, got hidden", live, k)
+		}
+	}
+	for _, k := range expectHidden {
+		if seen[k] {
+			t.Errorf("RLS LEAK: live=%v saw key %q that belongs to the other mode", live, k)
+		}
+	}
+}
+
+func assertLivemodeTriggerOverridesCaller(t *testing.T, db *postgres.DB,
+	ctx context.Context, tenantID string) {
+	t.Helper()
+
+	// Open a test-mode tx (app.livemode='off') and INSERT an idempotency key
+	// while explicitly passing livemode=true. The BEFORE INSERT trigger from
+	// migration 0021 must clobber the caller-supplied value with the session
+	// value (false). After commit, a test-mode SELECT should see the row and
+	// a live-mode SELECT should not.
+	testCtx := postgres.WithLivemode(ctx, false)
+	tx, err := db.BeginTx(testCtx, postgres.TxTenant, tenantID)
+	if err != nil {
+		t.Fatalf("begin test-mode tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+
+	// NB: explicit livemode=true in the column list — the trigger should
+	// reject this implicitly by overwriting, not by raising.
+	_, err = tx.ExecContext(testCtx,
+		`INSERT INTO idempotency_keys (tenant_id, key, livemode, http_method, http_path, status_code, response_body)
+		VALUES ($1, 'trigger-override-key', true, 'POST', '/v1/test', 200, '{}')`,
+		tenantID)
+	if err != nil {
+		t.Fatalf("insert with explicit livemode=true under test-mode session failed unexpectedly: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit test-mode insert: %v", err)
+	}
+
+	// A bypass SELECT (policy off) confirms the stored value — ground truth
+	// rather than relying on another RLS-filtered query to prove the point.
+	bypassTx, err := db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		t.Fatalf("begin bypass for verify: %v", err)
+	}
+	defer postgres.Rollback(bypassTx)
+
+	var stored bool
+	err = bypassTx.QueryRowContext(ctx,
+		`SELECT livemode FROM idempotency_keys WHERE tenant_id = $1 AND key = $2`,
+		tenantID, "trigger-override-key",
+	).Scan(&stored)
+	if err != nil {
+		t.Fatalf("bypass read stored livemode: %v", err)
+	}
+	if stored {
+		t.Fatalf("trigger REGRESSION: caller-supplied livemode=true was persisted under a test-mode session; livemode partitioning is compromised")
+	}
+}
+
+func containsLivemodePredicate(qual string) bool {
+	// pg_policies.qual renders session-var reads as current_setting(...). A
+	// missing livemode clause produces a qual that mentions app.tenant_id only.
+	return strings.Contains(qual, "app.livemode")
 }
