@@ -9,7 +9,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/checkout/session"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
@@ -18,17 +17,18 @@ import (
 
 // PortalHandler manages customer self-service payment method updates.
 // It creates Stripe Checkout Sessions in "setup" mode so customers can
-// replace their card without being charged.
+// replace their card without being charged. Mode-aware — routes per
+// caller API key's livemode.
 type PortalHandler struct {
-	apiKey string
-	store  PaymentSetupStore
+	clients *StripeClients
+	store   PaymentSetupStore
 }
 
-func NewPortalHandler(apiKey string, store PaymentSetupStore) *PortalHandler {
-	if apiKey == "" {
+func NewPortalHandler(clients *StripeClients, store PaymentSetupStore) *PortalHandler {
+	if !clients.Has() {
 		return nil
 	}
-	return &PortalHandler{apiKey: apiKey, store: store}
+	return &PortalHandler{clients: clients, store: store}
 }
 
 func (h *PortalHandler) Routes() chi.Router {
@@ -48,6 +48,12 @@ type updatePaymentMethodResponse struct {
 func (h *PortalHandler) createUpdateSession(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	customerID := chi.URLParam(r, "customerID")
+	sc := h.clients.ForCtx(r.Context())
+	if sc == nil {
+		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
+			"stripe not configured for this mode")
+		return
+	}
 
 	// Parse optional return URL from request body (body may be empty)
 	var req updatePaymentMethodRequest
@@ -70,7 +76,7 @@ func (h *PortalHandler) createUpdateSession(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Create a Checkout Session in setup mode to collect a new payment method
-	sess, err := session.New(&stripe.CheckoutSessionParams{
+	sess, err := sc.CheckoutSessions.New(&stripe.CheckoutSessionParams{
 		Customer:           stripe.String(ps.StripeCustomerID),
 		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),

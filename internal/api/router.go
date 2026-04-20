@@ -85,7 +85,7 @@ type Server struct {
 	PaymentReconciler  *payment.Reconciler
 }
 
-func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Server {
+func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest string, clk clock.Clock) *Server {
 	if clk == nil {
 		clk = clock.Real()
 	}
@@ -104,7 +104,8 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	// Domain handlers
 	tenantH := tenant.NewHandler(tenant.NewService(tenant.NewPostgresStore(db)))
 	stripeKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
-	payment.InitStripe(stripeKey)
+	stripeKeyTest := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY_TEST"))
+	stripeClients := payment.NewStripeClients(stripeKey, stripeKeyTest)
 	customerStore := customer.NewPostgresStore(db)
 
 	// PII + webhook-secret encryption at rest — AES-256-GCM via VELOX_ENCRYPTION_KEY.
@@ -128,7 +129,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 
 	pricingSvc := pricing.NewService(pricingStore)
 	customerSvc := customer.NewService(customerStore)
-	customerSvc.SetStripeSyncer(payment.NewStripeBillingSync(stripeKey), customerStore)
+	customerSvc.SetStripeSyncer(payment.NewStripeBillingSync(stripeClients), customerStore)
 	customerH := customer.NewHandler(customerSvc)
 	pricingH := pricing.NewHandler(pricingSvc)
 	subSvc := subscription.NewService(subStore, clk)
@@ -148,7 +149,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	subH.SetProrationCouponApplier(couponSvc)
 
 	// Payment / webhook / checkout / refund handlers
-	stripeRefunder := payment.NewStripeRefunder(stripeKey)
+	stripeRefunder := payment.NewStripeRefunder(stripeClients)
 	creditNoteSvc := creditnote.NewService(creditNoteStore, invoiceStore, stripeRefunder, &creditGrantAdapter{svc: creditSvc})
 	creditNoteSvc.SetNumberGenerator(settingsStore)
 	creditNoteH := creditnote.NewHandler(creditNoteSvc)
@@ -177,13 +178,13 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	auditLogger := audit.NewLogger(db)
 	auditH := audit.NewHandler(auditLogger)
 	settingsH := tenant.NewSettingsHandler(settingsStore)
-	stripeClient := payment.NewLiveStripeClient(stripeKey)
+	stripeClient := payment.NewLiveStripeClient(stripeClients)
 	dunningStore := dunning.NewPostgresStore(db)
 	dunningSvc := dunning.NewService(dunningStore, nil, clk) // retrier set below after stripeAdapter created
 	dunningH := dunning.NewHandler(dunningSvc, dunning.HandlerDeps{
 		Invoices:       invoiceStore,
 		CreditReverser: creditSvc,
-		PaymentCancel:  payment.NewLiveStripeClient(stripeKey),
+		PaymentCancel:  payment.NewLiveStripeClient(stripeClients),
 	})
 
 	// Per-tenant circuit breaker around Stripe calls. One tenant's broken
@@ -215,7 +216,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	})
 	dunningSvc.SetSubscriptionPauser(&subscriptionPauserAdapter{svc: subSvc}, invoiceStore)
 	dunningSvc.SetEventDispatcher(eventDispatcher)
-	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret)
+	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret, stripeWebhookSecretTest)
 
 	invoiceSvc := invoice.NewService(invoiceStore, clk, settingsStore)
 	invoiceH := invoice.NewHandler(invoiceSvc, customerStore, settingsStore, invoice.HandlerDeps{
@@ -230,11 +231,11 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 		Events:          eventDispatcher,
 		RefundIssuer:    &refundIssuerAdapter{svc: creditNoteSvc},
 	})
-	checkoutH := payment.NewCheckoutHandler(stripeKey,
+	checkoutH := payment.NewCheckoutHandler(stripeClients,
 		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")),
 		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")),
 		customerStore)
-	portalH := payment.NewPortalHandler(stripeKey, customerStore)
+	portalH := payment.NewPortalHandler(stripeClients, customerStore)
 
 	// Token service for public payment update links
 	tokenSvc := payment.NewTokenService(db)
@@ -246,7 +247,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 	paymentReconciler := payment.NewReconciler(stripeClient, invoiceStore, 60*time.Second)
 	paymentReconciler.SetBreaker(stripeBreaker)
 	stripeBreakerH := payment.NewBreakerAdminHandler(stripeBreaker)
-	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeKey,
+	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeClients,
 		strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_RETURN_URL")))
 
 	// Email sender. When the email outbox is enabled (default), producers
@@ -302,9 +303,9 @@ func NewServer(db *postgres.DB, stripeWebhookSecret string, clk clock.Clock) *Se
 
 	// Tax calculator: use Stripe Tax when enabled via feature flag, otherwise manual
 	manualTaxCalc := tax.NewManualCalculator(0, "") // rate resolved per-subscription at billing time
-	if stripeKey != "" && featureSvc.IsEnabled(context.Background(), "billing.stripe_tax", "") {
+	if (stripeKey != "" || stripeKeyTest != "") && featureSvc.IsEnabled(context.Background(), "billing.stripe_tax", "") {
 		slog.Info("stripe tax enabled, using Stripe Tax calculator with manual fallback")
-		engine.SetTaxCalculator(tax.NewStripeCalculator(stripeKey, manualTaxCalc))
+		engine.SetTaxCalculator(tax.NewStripeCalculator(stripeKey, stripeKeyTest, manualTaxCalc))
 	} else {
 		// ManualCalculator with rate 0 is a no-op — the engine still reads
 		// tenant/customer tax rates and passes them into the calculator.

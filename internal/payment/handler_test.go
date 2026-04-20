@@ -34,6 +34,64 @@ func TestVerifyStripeSignature_Valid(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhookDualSecret_MatchesLive(t *testing.T) {
+	live := "whsec_live_xxx"
+	test := "whsec_test_xxx"
+	payload := []byte(`{"id":"evt_1","livemode":true}`)
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	mac := hmac.New(sha256.New, []byte(live))
+	mac.Write([]byte(ts + "." + string(payload)))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	header := fmt.Sprintf("t=%s,v1=%s", ts, sig)
+
+	mode, ok := verifyWebhookDualSecret(payload, header, live, test)
+	if !ok {
+		t.Fatal("live-signed payload should verify")
+	}
+	if !mode {
+		t.Errorf("live signature must return livemode=true")
+	}
+}
+
+func TestVerifyWebhookDualSecret_MatchesTest(t *testing.T) {
+	live := "whsec_live_xxx"
+	test := "whsec_test_xxx"
+	payload := []byte(`{"id":"evt_1","livemode":false}`)
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	mac := hmac.New(sha256.New, []byte(test))
+	mac.Write([]byte(ts + "." + string(payload)))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	header := fmt.Sprintf("t=%s,v1=%s", ts, sig)
+
+	mode, ok := verifyWebhookDualSecret(payload, header, live, test)
+	if !ok {
+		t.Fatal("test-signed payload should verify")
+	}
+	if mode {
+		t.Errorf("test signature must return livemode=false")
+	}
+}
+
+func TestVerifyWebhookDualSecret_RejectsWrongSignature(t *testing.T) {
+	payload := []byte(`{"id":"evt_1"}`)
+	header := fmt.Sprintf("t=%d,v1=deadbeef", time.Now().Unix())
+	if _, ok := verifyWebhookDualSecret(payload, header, "whsec_live", "whsec_test"); ok {
+		t.Fatal("unsigned-by-either-secret payload must fail")
+	}
+}
+
+func TestVerifyWebhookDualSecret_NoSecretsAcceptsAll(t *testing.T) {
+	// Dev mode: operator runs without webhook secrets. The handler must
+	// still accept events so local Stripe CLI forwards keep working.
+	mode, ok := verifyWebhookDualSecret([]byte(`{}`), "", "", "")
+	if !ok {
+		t.Fatal("unconfigured secrets should accept event")
+	}
+	if !mode {
+		t.Errorf("unconfigured secrets should default to livemode=true")
+	}
+}
+
 func TestVerifyStripeSignature_Invalid(t *testing.T) {
 	secret := "whsec_test"
 	payload := []byte(`{"id":"evt_123"}`)
@@ -69,12 +127,13 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 	webhooks := newMockWebhookStoreHandler()
 
 	stripeAdapter := NewStripe(nil, invoices, webhooks, nil)
-	handler := NewHandler(stripeAdapter, "") // No signature verification in test
+	handler := NewHandler(stripeAdapter, "", "") // No signature verification in test
 
 	event := map[string]any{
-		"id":      "evt_success_1",
-		"type":    "payment_intent.succeeded",
-		"created": time.Now().Unix(),
+		"id":       "evt_success_1",
+		"type":     "payment_intent.succeeded",
+		"created":  time.Now().Unix(),
+		"livemode": true,
 		"data": map[string]any{
 			"object": map[string]any{
 				"id":       "pi_test_abc",
@@ -116,12 +175,13 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 
 func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
-	handler := NewHandler(stripeAdapter, "")
+	handler := NewHandler(stripeAdapter, "", "")
 
 	event := map[string]any{
-		"id":      "evt_foreign",
-		"type":    "payment_intent.succeeded",
-		"created": time.Now().Unix(),
+		"id":       "evt_foreign",
+		"type":     "payment_intent.succeeded",
+		"created":  time.Now().Unix(),
+		"livemode": true,
 		"data": map[string]any{
 			"object": map[string]any{
 				"id":       "pi_not_ours",
@@ -149,7 +209,7 @@ func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 
 func TestWebhookHandler_SignatureRequired(t *testing.T) {
 	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
-	handler := NewHandler(stripeAdapter, "whsec_real_secret")
+	handler := NewHandler(stripeAdapter, "whsec_real_secret", "")
 
 	req := httptest.NewRequest("POST", "/stripe", strings.NewReader(`{"id":"evt_1"}`))
 	// No Stripe-Signature header

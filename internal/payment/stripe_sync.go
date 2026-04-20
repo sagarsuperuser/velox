@@ -5,21 +5,31 @@ import (
 	"fmt"
 
 	"github.com/stripe/stripe-go/v82"
-	stripecustomer "github.com/stripe/stripe-go/v82/customer"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
 
 // StripeBillingSync syncs billing profile data to Stripe customer objects.
+// Mode-aware: uses the live or test client based on ctx livemode.
 type StripeBillingSync struct {
-	apiKey string
+	clients *StripeClients
 }
 
-func NewStripeBillingSync(apiKey string) *StripeBillingSync {
-	return &StripeBillingSync{apiKey: apiKey}
+// NewStripeBillingSync returns nil if clients has no configured modes. The
+// caller then skips sync entirely rather than silently no-opping each call.
+func NewStripeBillingSync(clients *StripeClients) *StripeBillingSync {
+	if !clients.Has() {
+		return nil
+	}
+	return &StripeBillingSync{clients: clients}
 }
 
-func (s *StripeBillingSync) SyncBillingProfile(_ context.Context, stripeCustomerID string, bp domain.CustomerBillingProfile) error {
+func (s *StripeBillingSync) SyncBillingProfile(ctx context.Context, stripeCustomerID string, bp domain.CustomerBillingProfile) error {
+	sc := s.clients.ForCtx(ctx)
+	if sc == nil {
+		return ErrStripeNotConfigured
+	}
+
 	params := &stripe.CustomerParams{}
 
 	// Name: prefer legal name, fall back to email
@@ -45,7 +55,7 @@ func (s *StripeBillingSync) SyncBillingProfile(_ context.Context, stripeCustomer
 		}
 	}
 
-	_, err := stripecustomer.Update(stripeCustomerID, params)
+	_, err := sc.Customers.Update(stripeCustomerID, params)
 	if err != nil {
 		return fmt.Errorf("stripe customer update: %w", err)
 	}

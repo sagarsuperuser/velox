@@ -5,6 +5,7 @@ import "time"
 type StripeWebhookEvent struct {
 	ID                 string         `json:"id"`
 	TenantID           string         `json:"tenant_id"`
+	Livemode           bool           `json:"livemode"`
 	StripeEventID      string         `json:"stripe_event_id"`
 	EventType          string         `json:"event_type"`
 	ObjectType         string         `json:"object_type"`

@@ -9,8 +9,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/checkout/session"
-	stripecustomer "github.com/stripe/stripe-go/v82/customer"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
@@ -24,18 +22,19 @@ type PaymentSetupStore interface {
 }
 
 // CheckoutHandler manages Stripe Checkout Sessions for payment method setup.
+// Mode-aware: picks the live or test client based on the caller's API key.
 type CheckoutHandler struct {
-	apiKey     string
+	clients    *StripeClients
 	successURL string
 	cancelURL  string
 	store      PaymentSetupStore
 }
 
-func NewCheckoutHandler(apiKey, successURL, cancelURL string, store PaymentSetupStore) *CheckoutHandler {
-	if apiKey == "" {
+func NewCheckoutHandler(clients *StripeClients, successURL, cancelURL string, store PaymentSetupStore) *CheckoutHandler {
+	if !clients.Has() {
 		return nil
 	}
-	return &CheckoutHandler{apiKey: apiKey, successURL: successURL, cancelURL: cancelURL, store: store}
+	return &CheckoutHandler{clients: clients, successURL: successURL, cancelURL: cancelURL, store: store}
 }
 
 func (h *CheckoutHandler) Routes() chi.Router {
@@ -65,6 +64,12 @@ type setupResponse struct {
 
 func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
+	sc := h.clients.ForCtx(r.Context())
+	if sc == nil {
+		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
+			"stripe not configured for this mode")
+		return
+	}
 
 	var req setupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -104,7 +109,7 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 				Country:    stripe.String(req.AddressCountry),
 			}
 		}
-		cus, err := stripecustomer.New(cusParams)
+		cus, err := sc.Customers.New(cusParams)
 		if err != nil {
 			respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
 				fmt.Sprintf("failed to create Stripe customer: %v", err))
@@ -126,7 +131,7 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 				Country:    stripe.String(req.AddressCountry),
 			}
 		}
-		_, _ = stripecustomer.Update(stripeCustomerID, updateParams)
+		_, _ = sc.Customers.Update(stripeCustomerID, updateParams)
 	}
 
 	// Save Stripe customer ID immediately (status: pending until checkout completes)
@@ -149,7 +154,7 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		cancelURL = fmt.Sprintf("http://localhost:5173/customers/%s?payment=cancel", req.CustomerID)
 	}
 
-	sess, err := session.New(&stripe.CheckoutSessionParams{
+	sess, err := sc.CheckoutSessions.New(&stripe.CheckoutSessionParams{
 		Customer:           stripe.String(stripeCustomerID),
 		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
