@@ -157,6 +157,218 @@ func TestTransitionAtomic_NotFoundVsWrongState(t *testing.T) {
 	}
 }
 
+// TestApplyItemPlanImmediately_RaceConverges pins the store-level contract
+// for concurrent immediate plan swaps: N goroutines each swap the same item
+// to the same target plan, Postgres serializes the row-level UPDATEs, and
+// the final row must reflect exactly that target — never a half-applied
+// state, never a revert to the old plan, and never a bubbled serialization
+// error. This is the foundation proration dedup rests on: without a
+// deterministic swap under contention, the dedup key itself is a moving
+// target.
+//
+// The realistic trigger is a user double-clicking "Change plan" or two
+// browser tabs racing the same mutation. The assertion that every caller
+// returned without error matters here — any bubbled 500 would surface as a
+// phantom failure even though the change landed.
+func TestApplyItemPlanImmediately_RaceConverges(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := context.Background()
+
+	store := subscription.NewPostgresStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "Plan Change Race")
+
+	cust, err := customer.NewPostgresStore(db).Create(ctx, tenantID, domain.Customer{
+		ExternalID: "cus_plan_race", DisplayName: "Plan Race",
+	})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+
+	pricingStore := pricing.NewPostgresStore(db)
+	planA, err := pricingStore.CreatePlan(ctx, tenantID, domain.Plan{
+		Code: "plan-a-race", Name: "Plan A", Currency: "USD",
+		BillingInterval: domain.BillingMonthly, Status: domain.PlanActive,
+	})
+	if err != nil {
+		t.Fatalf("create plan A: %v", err)
+	}
+	planB, err := pricingStore.CreatePlan(ctx, tenantID, domain.Plan{
+		Code: "plan-b-race", Name: "Plan B", Currency: "USD",
+		BillingInterval: domain.BillingMonthly, Status: domain.PlanActive,
+	})
+	if err != nil {
+		t.Fatalf("create plan B: %v", err)
+	}
+
+	now := time.Now().UTC()
+	sub, err := store.Create(ctx, tenantID, domain.Subscription{
+		Code: "sub-plan-race", DisplayName: "Plan Race Sub",
+		CustomerID: cust.ID,
+		Status:     domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+		StartedAt: &now,
+		Items:     []domain.SubscriptionItem{{PlanID: planA.ID, Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if len(sub.Items) != 1 {
+		t.Fatalf("expected 1 item hydrated on create, got %d", len(sub.Items))
+	}
+	itemID := sub.Items[0].ID
+
+	const goroutines = 20
+	var (
+		wg       sync.WaitGroup
+		swapErrs = make(chan error, goroutines)
+	)
+
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := store.ApplyItemPlanImmediately(ctx, tenantID, itemID, planB.ID, time.Now().UTC())
+			if err != nil {
+				swapErrs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(swapErrs)
+
+	for err := range swapErrs {
+		t.Errorf("unexpected error from ApplyItemPlanImmediately under contention: %v", err)
+	}
+
+	final, err := store.GetItem(ctx, tenantID, itemID)
+	if err != nil {
+		t.Fatalf("get final item: %v", err)
+	}
+	if final.PlanID != planB.ID {
+		t.Errorf("final plan_id = %q, want %q (race did not converge to target)", final.PlanID, planB.ID)
+	}
+	if final.PendingPlanID != "" {
+		t.Errorf("pending_plan_id not cleared after immediate swap: %q", final.PendingPlanID)
+	}
+	if final.PlanChangedAt == nil {
+		t.Errorf("plan_changed_at not stamped after swap")
+	}
+}
+
+// TestApplyItemPlanImmediately_SupersedesPendingUnderRace covers the
+// immediate-vs-scheduled interleave: one goroutine schedules a future plan
+// change (SetItemPendingPlan), another applies an immediate change. Since
+// the immediate path clears pending_plan_id as part of its UPDATE, the
+// outcome must be that the item is on the immediate's target with no
+// pending remnant — regardless of which commit lands first. If this ever
+// regressed, the billing engine's next-cycle ApplyDuePendingItemPlans run
+// would re-swap the plan back, effectively undoing the user's immediate
+// change.
+func TestApplyItemPlanImmediately_SupersedesPendingUnderRace(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := context.Background()
+
+	store := subscription.NewPostgresStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "Plan Change Supersede")
+
+	cust, err := customer.NewPostgresStore(db).Create(ctx, tenantID, domain.Customer{
+		ExternalID: "cus_supersede", DisplayName: "Supersede",
+	})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	pricingStore := pricing.NewPostgresStore(db)
+	planA, err := pricingStore.CreatePlan(ctx, tenantID, domain.Plan{
+		Code: "plan-sup-a", Name: "A", Currency: "USD",
+		BillingInterval: domain.BillingMonthly, Status: domain.PlanActive,
+	})
+	if err != nil {
+		t.Fatalf("create plan A: %v", err)
+	}
+	planB, err := pricingStore.CreatePlan(ctx, tenantID, domain.Plan{
+		Code: "plan-sup-b", Name: "B", Currency: "USD",
+		BillingInterval: domain.BillingMonthly, Status: domain.PlanActive,
+	})
+	if err != nil {
+		t.Fatalf("create plan B: %v", err)
+	}
+	planC, err := pricingStore.CreatePlan(ctx, tenantID, domain.Plan{
+		Code: "plan-sup-c", Name: "C", Currency: "USD",
+		BillingInterval: domain.BillingMonthly, Status: domain.PlanActive,
+	})
+	if err != nil {
+		t.Fatalf("create plan C: %v", err)
+	}
+
+	now := time.Now().UTC()
+	sub, err := store.Create(ctx, tenantID, domain.Subscription{
+		Code: "sub-supersede", DisplayName: "Supersede Sub",
+		CustomerID: cust.ID,
+		Status:     domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+		StartedAt: &now,
+		Items:     []domain.SubscriptionItem{{PlanID: planA.ID, Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	itemID := sub.Items[0].ID
+	future := now.Add(30 * 24 * time.Hour)
+
+	// Run scheduled + immediate concurrently. Each ordering is valid; only the
+	// end state is constrained.
+	const rounds = 10
+	for round := 0; round < rounds; round++ {
+		// Reset item to pristine state so each round exercises the race from
+		// a known baseline — otherwise a prior round could leave plan=C and
+		// the next round's "expect plan_id == C" assertion would pass
+		// vacuously.
+		if _, err := store.ApplyItemPlanImmediately(ctx, tenantID, itemID, planA.ID, now); err != nil {
+			t.Fatalf("round %d: reset item: %v", round, err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		var scheduleErr, immediateErr atomic.Value
+		go func() {
+			defer wg.Done()
+			if _, err := store.SetItemPendingPlan(ctx, tenantID, itemID, planB.ID, future); err != nil {
+				scheduleErr.Store(err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := store.ApplyItemPlanImmediately(ctx, tenantID, itemID, planC.ID, time.Now().UTC()); err != nil {
+				immediateErr.Store(err)
+			}
+		}()
+		wg.Wait()
+
+		if v := scheduleErr.Load(); v != nil {
+			t.Errorf("round %d: schedule error: %v", round, v)
+		}
+		if v := immediateErr.Load(); v != nil {
+			t.Errorf("round %d: immediate error: %v", round, v)
+		}
+
+		got, err := store.GetItem(ctx, tenantID, itemID)
+		if err != nil {
+			t.Fatalf("round %d: get item: %v", round, err)
+		}
+		// Two valid end states depending on commit order:
+		//   - schedule committed first, immediate committed second → plan=C,
+		//     pending cleared (immediate supersedes).
+		//   - immediate committed first, schedule committed second → plan=C,
+		//     pending=B (the schedule simply layered on after the swap).
+		// Invalid state: plan=A (the swap got lost) — this is the regression
+		// we're guarding against.
+		if got.PlanID == planA.ID {
+			t.Errorf("round %d: immediate swap was lost; plan_id reverted to A", round)
+		}
+		if got.PlanID != planC.ID {
+			t.Errorf("round %d: final plan_id = %q, want %q", round, got.PlanID, planC.ID)
+		}
+	}
+}
+
 // seedActiveSubscription creates the FK chain (customer → plan → subscription)
 // and returns an active subscription's ID ready for state-transition testing.
 func seedActiveSubscription(t *testing.T, db *postgres.DB, tenantID, custExt, planCode, subCode string) string {
