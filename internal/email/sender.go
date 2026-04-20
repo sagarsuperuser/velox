@@ -118,6 +118,29 @@ Please update your payment method to avoid service interruption.
 	return s.send(tenantID, to, subject, body, "", nil)
 }
 
+// SendPortalMagicLink sends a one-time-use customer-portal login link. The
+// URL already embeds the raw magic token; the email body intentionally
+// keeps the lifetime visible ("expires in 15 minutes") so a customer who
+// clicks late sees the reason rather than a generic 401. We deliberately
+// do not include what they were about to do — a leaked preview frame
+// from an email scanner shouldn't reveal "here's the link to your
+// payment methods".
+func (s *Sender) SendPortalMagicLink(tenantID, to, customerName, magicLinkURL string) error {
+	subject := "Your Velox customer portal sign-in link"
+	body := fmt.Sprintf(`Hi %s,
+
+Click the link below to sign in to your customer portal. It expires in 15 minutes and can only be used once:
+
+%s
+
+If you didn't request this, you can safely ignore this email — nobody can sign in without the link.
+
+— Velox
+`, customerName, magicLinkURL)
+
+	return s.send(tenantID, to, subject, body, "", nil)
+}
+
 // SendPaymentUpdateRequest sends an email requesting the customer to update their payment method.
 func (s *Sender) SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
 	subject := fmt.Sprintf("Action required — update payment method for invoice %s", invoiceNumber)

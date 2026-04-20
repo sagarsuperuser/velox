@@ -2,6 +2,7 @@ package customerportal
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -123,8 +124,8 @@ func (s *MagicLinkRequestService) RequestByEmail(ctx context.Context, email stri
 
 // LogMagicLinkDelivery is a stub delivery that writes the token prefix to
 // slog. Used in early wiring and tests before the email outbox is wired
-// in (P5). It never logs the full raw token — even at debug level that
-// would land in log aggregators with a 15-minute window of reusability.
+// in. It never logs the full raw token — even at debug level that would
+// land in log aggregators with a 15-minute window of reusability.
 type LogMagicLinkDelivery struct {
 	logger *slog.Logger
 }
@@ -147,4 +148,82 @@ func (d *LogMagicLinkDelivery) DeliverMagicLink(_ context.Context, tenantID, cus
 		"token_prefix", prefix,
 	)
 	return nil
+}
+
+// MagicLinkEmailSender is the narrow email surface the delivery needs.
+// Satisfied by both *email.Sender (direct SMTP) and *email.OutboxSender
+// (enqueue into email_outbox). Defined here — not imported — so
+// customerportal stays independent of the email package.
+type MagicLinkEmailSender interface {
+	SendPortalMagicLink(tenantID, to, customerName, magicLinkURL string) error
+}
+
+// CustomerEmailResolver looks up a customer's email + display name for
+// the delivery adapter. The production implementation is
+// customer.PostgresStore (via an adapter) and decrypts PII on the way
+// out. Defined here to avoid a customerportal→customer import.
+type CustomerEmailResolver interface {
+	GetCustomerEmail(ctx context.Context, tenantID, customerID string) (email, name string, err error)
+}
+
+// EmailMagicLinkDelivery is the production MagicLinkDelivery — resolves
+// the customer's email, composes the login URL, and hands it to the
+// email sender (which in production is the outbox-backed implementation
+// so an SMTP outage doesn't drop the email).
+type EmailMagicLinkDelivery struct {
+	sender   MagicLinkEmailSender
+	resolver CustomerEmailResolver
+	baseURL  string // e.g. https://portal.velox.dev
+	logger   *slog.Logger
+}
+
+func NewEmailMagicLinkDelivery(sender MagicLinkEmailSender, resolver CustomerEmailResolver, baseURL string, logger *slog.Logger) *EmailMagicLinkDelivery {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &EmailMagicLinkDelivery{
+		sender:   sender,
+		resolver: resolver,
+		baseURL:  baseURL,
+		logger:   logger,
+	}
+}
+
+// DeliverMagicLink resolves the customer's email, builds the magic-link
+// URL, and enqueues the email. A missing email is logged and skipped —
+// it's legitimate (not every customer has an email on file) and the
+// caller must NOT surface it as a failure, or the shape of the /magic-
+// link endpoint's response could leak "is there an email on file?".
+func (d *EmailMagicLinkDelivery) DeliverMagicLink(ctx context.Context, tenantID, customerID, rawToken string) error {
+	email, name, err := d.resolver.GetCustomerEmail(ctx, tenantID, customerID)
+	if err != nil {
+		return fmt.Errorf("resolve customer email: %w", err)
+	}
+	if email == "" {
+		d.logger.Warn("magic-link delivery skipped: customer has no email",
+			"tenant_id", tenantID, "customer_id", customerID)
+		return nil
+	}
+	url := buildMagicLinkURL(d.baseURL, rawToken)
+	return d.sender.SendPortalMagicLink(tenantID, email, name, url)
+}
+
+// buildMagicLinkURL assembles the URL the email points at. The frontend
+// route is /login — it reads ?magic_token=... from the URL, POSTs to
+// /v1/public/customer-portal/magic/consume, then redirects into the
+// portal with the returned session token.
+//
+// magic_token is a distinct query-string key from `token` (used for
+// reusable portal sessions) so the frontend can't conflate the two
+// cookies/storage slots if an operator accidentally routes the wrong
+// URL at the wrong page.
+func buildMagicLinkURL(base, rawToken string) string {
+	if base == "" {
+		// No portal URL configured — return just the token so the email
+		// still has something useful. Ops has to fix CUSTOMER_PORTAL_URL
+		// for this to be a clickable link.
+		return rawToken
+	}
+	base = strings.TrimRight(base, "/")
+	return base + "/login?magic_token=" + rawToken
 }

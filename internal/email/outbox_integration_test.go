@@ -391,6 +391,12 @@ func (f *fakeDeliverer) SendPaymentUpdateRequest(tenantID, to, name, inv string,
 	f.lastAmount, f.lastCurrency, f.lastUpdateURL = amount, cur, url
 	return nil
 }
+func (f *fakeDeliverer) SendPortalMagicLink(tenantID, to, name, url string) error {
+	f.calls++
+	f.lastType, f.lastTenant, f.lastTo, f.lastName = email.TypePortalMagicLink, tenantID, to, name
+	f.lastUpdateURL = url
+	return nil
+}
 
 // callDeliverer mirrors the dispatcher's payload decode + switch. The
 // dispatcher's handle method is unexported; re-implementing the decode here
@@ -413,6 +419,7 @@ func callDeliverer(_ context.Context, d email.EmailDeliverer, row email.OutboxRo
 		Action        string `json:"action"`
 		Reason        string `json:"reason"`
 		UpdateURL     string `json:"update_url"`
+		MagicLinkURL  string `json:"magic_link_url"`
 		PDF           []byte `json:"pdf"`
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -431,6 +438,8 @@ func callDeliverer(_ context.Context, d email.EmailDeliverer, row email.OutboxRo
 		return d.SendPaymentFailed(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Reason)
 	case email.TypePaymentUpdateRequest:
 		return d.SendPaymentUpdateRequest(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.UpdateURL)
+	case email.TypePortalMagicLink:
+		return d.SendPortalMagicLink(row.TenantID, m.To, m.CustomerName, m.MagicLinkURL)
 	default:
 		return fmt.Errorf("unknown email_type %q", row.EmailType)
 	}
