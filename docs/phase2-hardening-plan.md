@@ -330,9 +330,18 @@ Schema: `subscription_items(id, subscription_id, plan_id, quantity, price_overri
 
 **Deferred:** 3-day initiative; not a Phase 2 blocker.
 
-### [FEAT-6] Coupon duration + stacking — M — COR-1→
+### [FEAT-6] Coupon duration + stacking — M — ✅ DONE
 
 Add `coupons.duration` enum (once/repeating/forever), `coupons.duration_periods INT` (for repeating). Stacking rules per coupon. `coupon_redemptions` tracks periods applied.
+
+**✅ Resolution (2026-04-20):**
+
+- **P1** — Migration `0025_coupon_duration_stacking` adds `coupons.duration` (CHECK in `('once','repeating','forever')`, default `'forever'` so existing rows behave unchanged), `coupons.duration_periods INT` gated by `coupons_duration_periods_check` so only `repeating` rows can carry a positive period count and `once`/`forever` must hold NULL (stops a row from disagreeing with its own label), and `coupons.stackable BOOLEAN NOT NULL DEFAULT false`. Also `coupon_redemptions.periods_applied INT NOT NULL DEFAULT 0 CHECK (>= 0)`. Domain types: `CouponDuration` + constants and matching fields on `Coupon`/`CouponRedemption`.
+- **P2** — `coupon.Service.ApplyToInvoice` now returns `domain.CouponDiscountResult{Cents, RedemptionIDs}`. Duration filtering lives in `durationHasPeriodLeft`: `once` exhausts after one application, `repeating` exhausts at `periods_applied ≥ duration_periods`, `forever` never. Stacking: if any eligible coupon is non-stackable, pre-FEAT-6 "best single wins" is preserved (opt-in behaviour change); when every eligible is stackable, percent_offs sum (capped at 100%) and fixed amount_offs sum, each applied to the gross subtotal in parallel — sequential composition is unpredictable ("10% + $5 on $100 = $14.50 or $15?"). Combined discount clamped to subtotal. `MarkPeriodsApplied` advances the counter per redemption with per-row error isolation so one bad row doesn't starve the others. Create-time validation rejects mismatched duration/periods combos; DB CHECK is the backstop.
+- **P3** — `billing.CouponApplier` interface now exposes `ApplyToInvoice` (DiscountResult) + `MarkPeriodsApplied`. Engine captures `appliedRedemptionIDs` across the invoice-create boundary and fires `MarkPeriodsApplied` only after `CreateInvoiceWithLineItems` succeeds — the idempotent `ErrAlreadyExists` branch returns before reaching it, so a retry doesn't double-burn a repeating coupon's period. Same pattern in `subscription.Handler` for the proration path. Per-redemption mark failures are logged and swallowed on the invoice-committed path; the worst case is one extra cycle, which beats refusing to bill over a bookkeeping glitch.
+- **P4** — `TestCoupon_DurationAndStacking_E2E` (`internal/coupon/duration_stacking_integration_test.go`) against real Postgres covers: stackable percent+fixed combination, repeating coupon exhaustion after N cycles (verifying `periods_applied` round-trips through the DB, not just in-memory state), forever+exhausted-repeating leaving only the forever discount in cycle N+1, non-stackable-present → best single wins, and a direct INSERT that should trip the `coupons_duration_periods_check` constraint so we know the DB-level backstop is wired.
+
+**Design note deferred to future:** Currency mismatch between stackable fixed-amount coupons is not enforced at apply time — the operator is responsible for not creating USD + EUR fixed coupons on the same subscription. Will add when multi-currency per customer lands.
 
 ### [FEAT-7] Usage backfill API — S — ✅ DONE
 
@@ -539,9 +548,8 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 28. **RES-2** — scheduler advisory lock ✅
 29. **RES-6** — email outbox ✅
 30. ~~**SEC-2 Phase B/C**~~ — collapsed into single cutover (see item 15)
-31. **FEAT-2 ✅, FEAT-3 ✅, FEAT-4 ✅, FEAT-7 ✅, FEAT-8 ✅** — feature completeness
-32. **FEAT-6** — coupon stacking
-33. **FEAT-5** — multi-item subs (Phase 3)
+31. **FEAT-2 ✅, FEAT-3 ✅, FEAT-4 ✅, FEAT-6 ✅, FEAT-7 ✅, FEAT-8 ✅** — feature completeness
+32. **FEAT-5** — multi-item subs (Phase 3)
 
 **UI parallelization note:** UI-1..5 are independent of backend correctness work. A frontend-focused contributor can ship UI-1 → UI-2 → UI-3 → UI-5 → UI-6 in a single thread while backend commits land. UI-4 has a soft dependency on the backend error-envelope audit (small item) — slot it after COR-2 so any API fixes can be bundled.
 
