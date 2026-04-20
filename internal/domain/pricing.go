@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"math"
 	"time"
 )
 
@@ -87,6 +88,32 @@ type Plan struct {
 
 var ErrInvalidPricingConfig = errors.New("invalid pricing config")
 
+// ErrAmountOverflow is returned when a pricing computation would exceed
+// int64. Callers must treat this as a hard failure — a silent wrap would
+// emit a negative invoice line in production.
+var ErrAmountOverflow = errors.New("amount overflow: exceeds int64 range")
+
+// mulNonNegative multiplies two non-negative int64 values and flags
+// overflow. Callers must validate inputs >= 0 before calling.
+func mulNonNegative(a, b int64) (int64, bool) {
+	if a == 0 || b == 0 {
+		return 0, false
+	}
+	if b > math.MaxInt64/a {
+		return 0, true
+	}
+	return a * b, false
+}
+
+// addNonNegative adds two non-negative int64 values and flags overflow.
+// Callers must validate inputs >= 0 before calling.
+func addNonNegative(a, b int64) (int64, bool) {
+	if a > math.MaxInt64-b {
+		return 0, true
+	}
+	return a + b, false
+}
+
 func ComputeAmountCents(rule RatingRuleVersion, quantity int64) (int64, error) {
 	if quantity < 0 {
 		return 0, ErrInvalidPricingConfig
@@ -100,7 +127,11 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity int64) (int64, error) {
 		if quantity == 0 {
 			return 0, nil
 		}
-		return quantity * rule.FlatAmountCents, nil
+		total, overflow := mulNonNegative(quantity, rule.FlatAmountCents)
+		if overflow {
+			return 0, ErrAmountOverflow
+		}
+		return total, nil
 
 	case PricingGraduated:
 		if len(rule.GraduatedTiers) == 0 {
@@ -117,7 +148,14 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity int64) (int64, error) {
 				break
 			}
 			if tier.UpTo == 0 {
-				amount += remaining * tier.UnitAmountCents
+				tierAmt, overflow := mulNonNegative(remaining, tier.UnitAmountCents)
+				if overflow {
+					return 0, ErrAmountOverflow
+				}
+				amount, overflow = addNonNegative(amount, tierAmt)
+				if overflow {
+					return 0, ErrAmountOverflow
+				}
 				remaining = 0
 				break
 			}
@@ -132,7 +170,14 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity int64) (int64, error) {
 				return 0, ErrInvalidPricingConfig
 			}
 			consumed := min(remaining, tierCapacity)
-			amount += consumed * tier.UnitAmountCents
+			tierAmt, overflow := mulNonNegative(consumed, tier.UnitAmountCents)
+			if overflow {
+				return 0, ErrAmountOverflow
+			}
+			amount, overflow = addNonNegative(amount, tierAmt)
+			if overflow {
+				return 0, ErrAmountOverflow
+			}
 			remaining -= consumed
 			lastUpper = tier.UpTo
 		}
@@ -150,7 +195,19 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity int64) (int64, error) {
 		}
 		fullPackages := quantity / rule.PackageSize
 		remainder := quantity % rule.PackageSize
-		return fullPackages*rule.PackageAmountCents + remainder*rule.OverageUnitAmountCents, nil
+		packagesAmt, overflow := mulNonNegative(fullPackages, rule.PackageAmountCents)
+		if overflow {
+			return 0, ErrAmountOverflow
+		}
+		overageAmt, overflow := mulNonNegative(remainder, rule.OverageUnitAmountCents)
+		if overflow {
+			return 0, ErrAmountOverflow
+		}
+		total, overflow := addNonNegative(packagesAmt, overageAmt)
+		if overflow {
+			return 0, ErrAmountOverflow
+		}
+		return total, nil
 
 	default:
 		return 0, ErrInvalidPricingConfig

@@ -127,6 +127,73 @@ func TestComputeAmountCents_Flat_LargeQuantityOverflowCheck(t *testing.T) {
 	}
 }
 
+func TestComputeAmountCents_Flat_OverflowDetected(t *testing.T) {
+	// Pathological input: qty * unit would wrap int64. Must be rejected,
+	// not silently produce a negative invoice line.
+	rule := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: 2}
+	_, err := ComputeAmountCents(rule, math.MaxInt64)
+	if err != ErrAmountOverflow {
+		t.Fatalf("expected ErrAmountOverflow, got %v", err)
+	}
+}
+
+func TestComputeAmountCents_Graduated_OverflowDetected(t *testing.T) {
+	// Catch-all tier with huge unit price and huge quantity — multiply wraps.
+	rule := RatingRuleVersion{
+		Mode: PricingGraduated,
+		GraduatedTiers: []RatingTier{
+			{UpTo: 0, UnitAmountCents: math.MaxInt64 / 2},
+		},
+	}
+	_, err := ComputeAmountCents(rule, 10)
+	if err != ErrAmountOverflow {
+		t.Fatalf("expected ErrAmountOverflow in catch-all tier, got %v", err)
+	}
+}
+
+func TestComputeAmountCents_Graduated_OverflowOnSum(t *testing.T) {
+	// First tier fills up; second tier addition would overflow the running sum.
+	rule := RatingRuleVersion{
+		Mode: PricingGraduated,
+		GraduatedTiers: []RatingTier{
+			{UpTo: 1, UnitAmountCents: math.MaxInt64 - 5},
+			{UpTo: 0, UnitAmountCents: 10},
+		},
+	}
+	_, err := ComputeAmountCents(rule, 2)
+	if err != ErrAmountOverflow {
+		t.Fatalf("expected ErrAmountOverflow on tier sum, got %v", err)
+	}
+}
+
+func TestComputeAmountCents_Package_OverflowDetected(t *testing.T) {
+	// Package multiply wraps: fullPackages * PackageAmountCents.
+	rule := RatingRuleVersion{
+		Mode:                   PricingPackage,
+		PackageSize:            1,
+		PackageAmountCents:     math.MaxInt64 / 2,
+		OverageUnitAmountCents: 0,
+	}
+	_, err := ComputeAmountCents(rule, 10)
+	if err != ErrAmountOverflow {
+		t.Fatalf("expected ErrAmountOverflow on package multiply, got %v", err)
+	}
+}
+
+func TestComputeAmountCents_Package_OverflowOnSum(t *testing.T) {
+	// Both multiplies fit; their sum overflows.
+	rule := RatingRuleVersion{
+		Mode:                   PricingPackage,
+		PackageSize:            2,
+		PackageAmountCents:     math.MaxInt64 - 5,
+		OverageUnitAmountCents: 10,
+	}
+	_, err := ComputeAmountCents(rule, 3) // 1 full package + 1 overage
+	if err != ErrAmountOverflow {
+		t.Fatalf("expected ErrAmountOverflow on package sum, got %v", err)
+	}
+}
+
 func TestComputeAmountCents_Flat_ZeroUnitPrice(t *testing.T) {
 	// Free tier: 0 cents per unit
 	rule := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: 0}
