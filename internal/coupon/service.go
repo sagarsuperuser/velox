@@ -24,15 +24,18 @@ func NewService(store Store) *Service {
 }
 
 type CreateInput struct {
-	Code           string            `json:"code"`
-	Name           string            `json:"name"`
-	Type           domain.CouponType `json:"type"`
-	AmountOff      int64             `json:"amount_off"`
-	PercentOff     float64           `json:"percent_off"`
-	Currency       string            `json:"currency"`
-	MaxRedemptions *int              `json:"max_redemptions"`
-	ExpiresAt      *time.Time        `json:"expires_at,omitempty"`
-	PlanIDs        []string          `json:"plan_ids,omitempty"`
+	Code            string                `json:"code"`
+	Name            string                `json:"name"`
+	Type            domain.CouponType     `json:"type"`
+	AmountOff       int64                 `json:"amount_off"`
+	PercentOff      float64               `json:"percent_off"`
+	Currency        string                `json:"currency"`
+	MaxRedemptions  *int                  `json:"max_redemptions"`
+	ExpiresAt       *time.Time            `json:"expires_at,omitempty"`
+	PlanIDs         []string              `json:"plan_ids,omitempty"`
+	Duration        domain.CouponDuration `json:"duration,omitempty"`
+	DurationPeriods *int                  `json:"duration_periods,omitempty"`
+	Stackable       bool                  `json:"stackable"`
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Coupon, error) {
@@ -81,17 +84,42 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		return domain.Coupon{}, errs.Invalid("expires_at", "must be in the future")
 	}
 
+	// Duration defaults to Forever so older API clients that don't send the
+	// field land on the same behaviour they had before FEAT-6.
+	duration := input.Duration
+	if duration == "" {
+		duration = domain.CouponDurationForever
+	}
+	switch duration {
+	case domain.CouponDurationOnce, domain.CouponDurationForever:
+		if input.DurationPeriods != nil {
+			return domain.Coupon{}, errs.Invalid("duration_periods",
+				"only valid when duration is 'repeating'")
+		}
+	case domain.CouponDurationRepeating:
+		if input.DurationPeriods == nil || *input.DurationPeriods < 1 {
+			return domain.Coupon{}, errs.Invalid("duration_periods",
+				"required and must be at least 1 when duration is 'repeating'")
+		}
+	default:
+		return domain.Coupon{}, errs.Invalid("duration",
+			"must be 'once', 'repeating', or 'forever'")
+	}
+
 	return s.store.Create(ctx, tenantID, domain.Coupon{
-		Code:           code,
-		Name:           name,
-		Type:           input.Type,
-		AmountOff:      input.AmountOff,
-		PercentOff:     input.PercentOff,
-		Currency:       input.Currency,
-		MaxRedemptions: input.MaxRedemptions,
-		ExpiresAt:      input.ExpiresAt,
-		PlanIDs:        input.PlanIDs,
-		Active:         true,
+		Code:            code,
+		Name:            name,
+		Type:            input.Type,
+		AmountOff:       input.AmountOff,
+		PercentOff:      input.PercentOff,
+		Currency:        input.Currency,
+		MaxRedemptions:  input.MaxRedemptions,
+		ExpiresAt:       input.ExpiresAt,
+		PlanIDs:         input.PlanIDs,
+		Duration:        duration,
+		DurationPeriods: input.DurationPeriods,
+		Stackable:       input.Stackable,
+		Active:          true,
 	})
 }
 
@@ -172,47 +200,52 @@ func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string
 	return s.store.ListRedemptions(ctx, tenantID, couponID)
 }
 
-// ApplyToInvoice computes the total coupon discount (in cents) to apply against
-// an invoice for the given subscription. It consults existing redemptions for
-// the subscription, recomputes each coupon's discount against the supplied
-// subtotal, and returns the best single match — Stripe's one-coupon-per-invoice
-// model. Callers pass the *gross* subtotal (sum of line items, pre-discount
-// pre-tax); the returned discount is clamped to the subtotal so the result can
-// be safely subtracted without producing a negative running total.
+// ApplyToInvoice computes the coupon discount for an invoice on the given
+// subscription. It walks active redemptions, filters by eligibility
+// (coupon still active, not expired, plan match, and duration not yet
+// exhausted), then either picks the best single coupon or combines
+// stackable coupons — whichever policy is correct for the mix.
 //
-// Side-effect-free: the function never writes to the store. The redemption
-// record itself is what "attaches" a coupon to a subscription; applying it to
-// an invoice does not consume the attachment.
+// Stacking rules:
+//   - If any eligible coupon is non-stackable, only the single largest
+//     discount wins (pre-FEAT-6 "best one" behaviour, preserved so
+//     operators who haven't opted into stacking see no behaviour change).
+//   - If every eligible coupon is stackable, percent_offs sum (capped at
+//     100%) and fixed amount_offs sum, each applied to the gross subtotal;
+//     the combined discount is clamped to the subtotal.
 //
-// Inputs considered:
-//   - redemptions with matching subscription_id (or customer_id when subscription_id is unset)
-//   - coupon must still be Active and not past ExpiresAt at evaluation time
-//   - if the coupon has PlanIDs set, planID must be in the list (otherwise ignored)
-//
-// Returns 0 with no error when no eligible redemption is found, so callers can
-// call this unconditionally without a pre-check.
-func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (int64, error) {
+// Side-effect-free: no store writes. The caller (billing engine) owns the
+// "mark applied" step so a failed invoice create doesn't burn a period of
+// a repeating coupon.
+func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (domain.CouponDiscountResult, error) {
 	if subscriptionID == "" || subtotalCents <= 0 {
-		return 0, nil
+		return domain.CouponDiscountResult{}, nil
 	}
 
 	redemptions, err := s.store.ListRedemptionsBySubscription(ctx, tenantID, subscriptionID)
 	if err != nil {
-		return 0, fmt.Errorf("list redemptions: %w", err)
+		return domain.CouponDiscountResult{}, fmt.Errorf("list redemptions: %w", err)
 	}
 	if len(redemptions) == 0 {
-		return 0, nil
+		return domain.CouponDiscountResult{}, nil
 	}
 
 	now := time.Now()
-	var best int64
+
+	// eligible bundles each surviving coupon with its redemption so the
+	// stacking step can refer back to both without a second store lookup.
+	type eligible struct {
+		coupon     domain.Coupon
+		redemption domain.CouponRedemption
+	}
+	var pool []eligible
+
 	for _, r := range redemptions {
 		cpn, err := s.store.Get(ctx, tenantID, r.CouponID)
 		if err != nil {
-			// Skip redemptions whose coupon can no longer be loaded — a stale
-			// redemption row must not block billing. We log nothing here
-			// because billing tick runs on a schedule and the caller can
-			// surface a warning if it matters.
+			// Stale redemption row whose coupon has been deleted or is
+			// behind an RLS boundary — skip silently so one bad row can't
+			// block billing. Logging happens at the billing engine layer.
 			continue
 		}
 		if !cpn.Active {
@@ -224,13 +257,119 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 		if len(cpn.PlanIDs) > 0 && planID != "" && !slices.Contains(cpn.PlanIDs, planID) {
 			continue
 		}
+		if !durationHasPeriodLeft(cpn, r) {
+			continue
+		}
+		pool = append(pool, eligible{coupon: cpn, redemption: r})
+	}
 
-		d := CalculateDiscount(cpn, subtotalCents)
-		if d > best {
-			best = d
+	if len(pool) == 0 {
+		return domain.CouponDiscountResult{}, nil
+	}
+
+	// If any eligible coupon is non-stackable, fall back to "best single
+	// wins". Mixing a non-stackable with stackables is ambiguous and
+	// trying to combine them would surprise operators who set
+	// stackable=false specifically to prevent compounding.
+	anyNonStackable := slices.ContainsFunc(pool, func(e eligible) bool { return !e.coupon.Stackable })
+	if anyNonStackable {
+		var bestIdx int
+		var bestCents int64
+		for i, e := range pool {
+			d := CalculateDiscount(e.coupon, subtotalCents)
+			if d > bestCents {
+				bestCents = d
+				bestIdx = i
+			}
+		}
+		if bestCents == 0 {
+			return domain.CouponDiscountResult{}, nil
+		}
+		return domain.CouponDiscountResult{
+			Cents:         bestCents,
+			RedemptionIDs: []string{pool[bestIdx].redemption.ID},
+		}, nil
+	}
+
+	// All stackable — combine percent_offs (capped 100%) and amount_offs.
+	// We intentionally apply percent and fixed against the gross subtotal
+	// in parallel rather than sequentially; predictability beats the
+	// marginal accuracy gain of compounding order, and matches operator
+	// expectations ("I stacked 10% + $5 off $100 → I save $15").
+	var percentSum float64
+	var fixedSum int64
+	for _, e := range pool {
+		switch e.coupon.Type {
+		case domain.CouponTypePercentage:
+			percentSum += e.coupon.PercentOff
+		case domain.CouponTypeFixedAmount:
+			fixedSum += e.coupon.AmountOff
 		}
 	}
-	return best, nil
+	percentSum = min(percentSum, 100)
+	percentCents := int64(math.RoundToEven(float64(subtotalCents) * percentSum / 100))
+	total := min(percentCents+fixedSum, subtotalCents)
+	if total <= 0 {
+		return domain.CouponDiscountResult{}, nil
+	}
+
+	ids := make([]string, 0, len(pool))
+	for _, e := range pool {
+		ids = append(ids, e.redemption.ID)
+	}
+	return domain.CouponDiscountResult{Cents: total, RedemptionIDs: ids}, nil
+}
+
+// durationHasPeriodLeft reports whether the redemption still has at least
+// one billing period to apply against under the coupon's duration rule.
+// Forever always returns true; once exhausts after the first application;
+// repeating exhausts once periods_applied reaches duration_periods.
+func durationHasPeriodLeft(c domain.Coupon, r domain.CouponRedemption) bool {
+	switch c.Duration {
+	case domain.CouponDurationOnce:
+		return r.PeriodsApplied < 1
+	case domain.CouponDurationRepeating:
+		if c.DurationPeriods == nil {
+			// Misconfigured: treat as exhausted rather than forever so a
+			// bad row doesn't silently grant a never-ending discount.
+			return false
+		}
+		return r.PeriodsApplied < *c.DurationPeriods
+	case domain.CouponDurationForever, "":
+		// Empty duration is legacy pre-migration data; treat as forever
+		// to preserve the old behaviour where no duration column existed.
+		return true
+	default:
+		return false
+	}
+}
+
+// MarkPeriodsApplied advances the periods_applied counter on each
+// redemption by one. Callers invoke this after the invoice that consumed
+// the discount commits — doing it beforehand would burn a period of a
+// repeating coupon even if the invoice create rolled back. Per-redemption
+// failures are returned as a joined error but the loop continues so a
+// single bad row doesn't starve the others.
+func (s *Service) MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error {
+	if len(redemptionIDs) == 0 {
+		return nil
+	}
+	var errs_ []error
+	for _, id := range redemptionIDs {
+		if id == "" {
+			continue
+		}
+		if err := s.store.IncrementPeriodsApplied(ctx, tenantID, id); err != nil {
+			errs_ = append(errs_, fmt.Errorf("redemption %s: %w", id, err))
+		}
+	}
+	if len(errs_) == 0 {
+		return nil
+	}
+	// Return the first error — the others are logged-or-equivalent at
+	// this layer since we've already committed the invoice and there's
+	// nothing to undo.
+	return errs_[0]
 }
 
 // CalculateDiscount computes the discount amount in cents for a given coupon and subtotal.

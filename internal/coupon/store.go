@@ -17,4 +17,10 @@ type Store interface {
 	CreateRedemption(ctx context.Context, tenantID string, redemption domain.CouponRedemption) (domain.CouponRedemption, error)
 	ListRedemptions(ctx context.Context, tenantID, couponID string) ([]domain.CouponRedemption, error)
 	ListRedemptionsBySubscription(ctx context.Context, tenantID, subscriptionID string) ([]domain.CouponRedemption, error)
+	// IncrementPeriodsApplied bumps periods_applied by 1 on a redemption. Called
+	// by the billing engine after an invoice that used the redemption commits,
+	// so duration-limited coupons (once / repeating) exhaust on schedule. Not
+	// a batch operation: callers invoke it per redemption so a per-row failure
+	// is localised and the others still advance.
+	IncrementPeriodsApplied(ctx context.Context, tenantID, redemptionID string) error
 }

@@ -53,3 +53,13 @@ type CouponRedemption struct {
 	PeriodsApplied int       `json:"periods_applied"`
 	CreatedAt      time.Time `json:"created_at"`
 }
+
+// CouponDiscountResult is what coupon-apply returns to the billing side.
+// Lives in domain because billing and subscription both consume it but
+// can't import each other — domain is their shared vocabulary.
+// RedemptionIDs lists the redemptions that actually contributed so the
+// caller can advance periods_applied after the invoice commits.
+type CouponDiscountResult struct {
+	Cents         int64    `json:"cents"`
+	RedemptionIDs []string `json:"redemption_ids,omitempty"`
+}

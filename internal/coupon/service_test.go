@@ -116,6 +116,29 @@ func (m *mockStore) ListRedemptionsBySubscription(_ context.Context, _, subscrip
 	return out, nil
 }
 
+func (m *mockStore) IncrementPeriodsApplied(_ context.Context, _, redemptionID string) error {
+	for i := range m.redemptions {
+		if m.redemptions[i].ID == redemptionID {
+			m.redemptions[i].PeriodsApplied++
+			return nil
+		}
+	}
+	return fmt.Errorf("redemption %s not found", redemptionID)
+}
+
+// seedRedemption appends a redemption with an auto-assigned ID so tests
+// can round-trip the ID through MarkPeriodsApplied. Pre-FEAT-6 tests
+// appended to m.redemptions directly with no ID — kept working because
+// ApplyToInvoice didn't care, but the new duration tests do.
+func (m *mockStore) seedRedemption(r domain.CouponRedemption) string {
+	if r.ID == "" {
+		m.nextID++
+		r.ID = fmt.Sprintf("red_%d", m.nextID)
+	}
+	m.redemptions = append(m.redemptions, r)
+	return r.ID
+}
+
 // seedCoupon inserts a coupon directly into the mock store for Redeem tests.
 func (m *mockStore) seedCoupon(c domain.Coupon) {
 	if c.ID == "" {
@@ -760,8 +783,8 @@ func TestApplyToInvoice_PercentageCoupon(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// 10% of 12345 = 1234.5 → banker's rounding to 1234.
-	if got != 1234 {
-		t.Errorf("expected discount 1234, got %d", got)
+	if got.Cents != 1234 {
+		t.Errorf("expected discount 1234, got %d", got.Cents)
 	}
 }
 
@@ -789,8 +812,8 @@ func TestApplyToInvoice_FixedAmountCoupon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 500 {
-		t.Errorf("expected discount 500, got %d", got)
+	if got.Cents != 500 {
+		t.Errorf("expected discount 500, got %d", got.Cents)
 	}
 }
 
@@ -820,8 +843,8 @@ func TestApplyToInvoice_ClampsToSubtotal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 2000 {
-		t.Errorf("expected clamp to 2000, got %d", got)
+	if got.Cents != 2000 {
+		t.Errorf("expected clamp to 2000, got %d", got.Cents)
 	}
 }
 
@@ -849,8 +872,8 @@ func TestApplyToInvoice_ExpiredCouponIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 0 {
-		t.Errorf("expected 0 discount for expired coupon, got %d", got)
+	if got.Cents != 0 {
+		t.Errorf("expected 0 discount for expired coupon, got %d", got.Cents)
 	}
 }
 
@@ -876,8 +899,8 @@ func TestApplyToInvoice_InactiveCouponIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 0 {
-		t.Errorf("expected 0 discount for inactive coupon, got %d", got)
+	if got.Cents != 0 {
+		t.Errorf("expected 0 discount for inactive coupon, got %d", got.Cents)
 	}
 }
 
@@ -905,8 +928,8 @@ func TestApplyToInvoice_PlanRestriction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 0 {
-		t.Errorf("plan_B should not match restricted coupon, got %d", got)
+	if got.Cents != 0 {
+		t.Errorf("plan_B should not match restricted coupon, got %d", got.Cents)
 	}
 
 	// Subscription is on plan_A — restriction passes.
@@ -914,8 +937,8 @@ func TestApplyToInvoice_PlanRestriction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 1000 {
-		t.Errorf("plan_A should match restricted coupon, got %d", got)
+	if got.Cents != 1000 {
+		t.Errorf("plan_A should match restricted coupon, got %d", got.Cents)
 	}
 }
 
@@ -927,8 +950,8 @@ func TestApplyToInvoice_NoRedemptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 0 {
-		t.Errorf("expected 0 with no redemptions, got %d", got)
+	if got.Cents != 0 {
+		t.Errorf("expected 0 with no redemptions, got %d", got.Cents)
 	}
 }
 
@@ -940,8 +963,8 @@ func TestApplyToInvoice_EmptySubscriptionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 0 {
-		t.Errorf("expected 0 with empty subscription ID, got %d", got)
+	if got.Cents != 0 {
+		t.Errorf("expected 0 with empty subscription ID, got %d", got.Cents)
 	}
 }
 
@@ -977,7 +1000,327 @@ func TestApplyToInvoice_MultipleCouponsTakesLargest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 2000 {
-		t.Errorf("expected largest discount 2000, got %d", got)
+	if got.Cents != 2000 {
+		t.Errorf("expected largest discount 2000, got %d", got.Cents)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FEAT-6: duration semantics — once / repeating / forever
+// ---------------------------------------------------------------------------
+
+func TestApplyToInvoice_DurationOnce_ExhaustsAfterFirst(t *testing.T) {
+	// once = apply to exactly one invoice. Before MarkPeriodsApplied runs it
+	// still appears as eligible; after one cycle it filters out.
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_once", Code: "ONCE10", Name: "10% once",
+		Type: domain.CouponTypePercentage, PercentOff: 10,
+		Duration: domain.CouponDurationOnce, Active: true,
+	})
+	redID := store.seedRedemption(domain.CouponRedemption{
+		CouponID: "cpn_once", SubscriptionID: "sub_1",
+	})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cents != 1000 {
+		t.Fatalf("cycle 1: expected discount 1000, got %d", got.Cents)
+	}
+	if len(got.RedemptionIDs) != 1 || got.RedemptionIDs[0] != redID {
+		t.Fatalf("cycle 1: expected redemption id %q, got %v", redID, got.RedemptionIDs)
+	}
+
+	if err := svc.MarkPeriodsApplied(context.Background(), "t1", got.RedemptionIDs); err != nil {
+		t.Fatalf("MarkPeriodsApplied: %v", err)
+	}
+
+	got, err = svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error on cycle 2: %v", err)
+	}
+	if got.Cents != 0 {
+		t.Errorf("cycle 2: expected 0 after 'once' exhausted, got %d", got.Cents)
+	}
+}
+
+func TestApplyToInvoice_DurationRepeating_ExhaustsAfterNPeriods(t *testing.T) {
+	// repeating with duration_periods=3 applies for invoices 1..3; invoice 4
+	// sees an empty DiscountResult because periods_applied has caught up.
+	store := newMockStore()
+	svc := NewService(store)
+
+	three := 3
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_rep", Code: "REP10", Name: "10% for 3 months",
+		Type: domain.CouponTypePercentage, PercentOff: 10,
+		Duration: domain.CouponDurationRepeating, DurationPeriods: &three,
+		Active: true,
+	})
+	store.seedRedemption(domain.CouponRedemption{
+		CouponID: "cpn_rep", SubscriptionID: "sub_1",
+	})
+
+	for cycle := 1; cycle <= 3; cycle++ {
+		got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "plan_1", 10000)
+		if err != nil {
+			t.Fatalf("cycle %d unexpected error: %v", cycle, err)
+		}
+		if got.Cents != 1000 {
+			t.Errorf("cycle %d: expected 1000, got %d", cycle, got.Cents)
+		}
+		if err := svc.MarkPeriodsApplied(context.Background(), "t1", got.RedemptionIDs); err != nil {
+			t.Fatalf("cycle %d MarkPeriodsApplied: %v", cycle, err)
+		}
+	}
+
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("cycle 4 unexpected error: %v", err)
+	}
+	if got.Cents != 0 {
+		t.Errorf("cycle 4: expected 0 after 3 periods exhausted, got %d", got.Cents)
+	}
+	if len(got.RedemptionIDs) != 0 {
+		t.Errorf("cycle 4: expected no redemption IDs, got %v", got.RedemptionIDs)
+	}
+}
+
+func TestApplyToInvoice_DurationForever_NeverExhausts(t *testing.T) {
+	// forever keeps applying regardless of periods_applied count.
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_forever", Code: "FOREVER10", Name: "10% forever",
+		Type: domain.CouponTypePercentage, PercentOff: 10,
+		Duration: domain.CouponDurationForever, Active: true,
+	})
+	redID := store.seedRedemption(domain.CouponRedemption{
+		CouponID: "cpn_forever", SubscriptionID: "sub_1",
+		PeriodsApplied: 99, // already applied many times
+	})
+	_ = redID
+
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cents != 1000 {
+		t.Errorf("forever should still apply at periods_applied=99, got %d", got.Cents)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FEAT-6: stacking
+// ---------------------------------------------------------------------------
+
+func TestApplyToInvoice_StackablePercentAndFixed(t *testing.T) {
+	// Two stackable coupons: 10% + $5. On a $100 invoice that's $10 + $5 = $15.
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_pct", Code: "PCT10", Type: domain.CouponTypePercentage,
+		PercentOff: 10, Duration: domain.CouponDurationForever,
+		Stackable: true, Active: true,
+	})
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_fix", Code: "FIX500", Type: domain.CouponTypeFixedAmount,
+		AmountOff: 500, Currency: "USD", Duration: domain.CouponDurationForever,
+		Stackable: true, Active: true,
+	})
+	id1 := store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_pct", SubscriptionID: "sub_1"})
+	id2 := store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_fix", SubscriptionID: "sub_1"})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cents != 1500 {
+		t.Errorf("expected stacked discount 1500 (1000 + 500), got %d", got.Cents)
+	}
+	if len(got.RedemptionIDs) != 2 {
+		t.Fatalf("expected both redemptions attributed, got %v", got.RedemptionIDs)
+	}
+	// Order: stackable pool iterates in seed order → pct first, fixed second.
+	if got.RedemptionIDs[0] != id1 || got.RedemptionIDs[1] != id2 {
+		t.Errorf("expected [%s, %s], got %v", id1, id2, got.RedemptionIDs)
+	}
+}
+
+func TestApplyToInvoice_StackablePercentCappedAt100(t *testing.T) {
+	// Two 60% stackable coupons → 120% naive, capped at 100% = $100 on $100.
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_a", Code: "HALF_A", Type: domain.CouponTypePercentage,
+		PercentOff: 60, Duration: domain.CouponDurationForever,
+		Stackable: true, Active: true,
+	})
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_b", Code: "HALF_B", Type: domain.CouponTypePercentage,
+		PercentOff: 60, Duration: domain.CouponDurationForever,
+		Stackable: true, Active: true,
+	})
+	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_a", SubscriptionID: "sub_1"})
+	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_b", SubscriptionID: "sub_1"})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cents != 10000 {
+		t.Errorf("expected capped 10000, got %d", got.Cents)
+	}
+}
+
+func TestApplyToInvoice_StackableClampedToSubtotal(t *testing.T) {
+	// $50 fixed + $80 fixed = $130 combined, clamped to a $100 subtotal.
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_50", Code: "FIX50", Type: domain.CouponTypeFixedAmount,
+		AmountOff: 5000, Currency: "USD", Duration: domain.CouponDurationForever,
+		Stackable: true, Active: true,
+	})
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_80", Code: "FIX80", Type: domain.CouponTypeFixedAmount,
+		AmountOff: 8000, Currency: "USD", Duration: domain.CouponDurationForever,
+		Stackable: true, Active: true,
+	})
+	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_50", SubscriptionID: "sub_1"})
+	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_80", SubscriptionID: "sub_1"})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cents != 10000 {
+		t.Errorf("expected clamp to 10000, got %d", got.Cents)
+	}
+}
+
+func TestApplyToInvoice_NonStackableOverridesStackable(t *testing.T) {
+	// If any coupon is non-stackable, the combined-stack policy is skipped and
+	// we fall back to "best single wins" — documented FEAT-6 rule.
+	// Layout: 5% stackable + 20% non-stackable + $3 stackable. Non-stackable
+	// forces single-coupon mode; the 20% wins ($2000 on $10000) despite the
+	// stackable combination (5% + $3 = $800) being available if we ignored it.
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_5p_s", Code: "SMALL_S", Type: domain.CouponTypePercentage,
+		PercentOff: 5, Duration: domain.CouponDurationForever,
+		Stackable: true, Active: true,
+	})
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_20p_ns", Code: "BIG_NS", Type: domain.CouponTypePercentage,
+		PercentOff: 20, Duration: domain.CouponDurationForever,
+		Stackable: false, Active: true,
+	})
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_3f_s", Code: "FIX3_S", Type: domain.CouponTypeFixedAmount,
+		AmountOff: 300, Currency: "USD", Duration: domain.CouponDurationForever,
+		Stackable: true, Active: true,
+	})
+	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_5p_s", SubscriptionID: "sub_1"})
+	bigID := store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_20p_ns", SubscriptionID: "sub_1"})
+	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_3f_s", SubscriptionID: "sub_1"})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "plan_1", 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cents != 2000 {
+		t.Errorf("expected single best (2000) when non-stackable present, got %d", got.Cents)
+	}
+	if len(got.RedemptionIDs) != 1 || got.RedemptionIDs[0] != bigID {
+		t.Errorf("expected only bigID %q attributed, got %v", bigID, got.RedemptionIDs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FEAT-6: Create-time validation for duration + stackable
+// ---------------------------------------------------------------------------
+
+func TestCreate_DurationDefaultsToForever(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	got, err := svc.Create(context.Background(), "t1", CreateInput{
+		Code: "SAVE10", Name: "10%", Type: domain.CouponTypePercentage, PercentOff: 10,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Duration != domain.CouponDurationForever {
+		t.Errorf("expected default duration=forever, got %q", got.Duration)
+	}
+}
+
+func TestCreate_RepeatingRequiresPositivePeriods(t *testing.T) {
+	svc := NewService(newMockStore())
+	_, err := svc.Create(context.Background(), "t1", CreateInput{
+		Code: "REP10", Name: "10%", Type: domain.CouponTypePercentage,
+		PercentOff: 10, Duration: domain.CouponDurationRepeating,
+	})
+	assertErrContains(t, err, "duration_periods")
+
+	zero := 0
+	_, err = svc.Create(context.Background(), "t1", CreateInput{
+		Code: "REP10B", Name: "10%", Type: domain.CouponTypePercentage,
+		PercentOff: 10, Duration: domain.CouponDurationRepeating, DurationPeriods: &zero,
+	})
+	assertErrContains(t, err, "duration_periods")
+}
+
+func TestCreate_OnceAndForeverRejectDurationPeriods(t *testing.T) {
+	// once/forever coupons have no meaningful period count — reject so the
+	// on-disk row can't disagree with its own duration label.
+	svc := NewService(newMockStore())
+	n := 3
+
+	_, err := svc.Create(context.Background(), "t1", CreateInput{
+		Code: "ONCE10", Name: "10%", Type: domain.CouponTypePercentage,
+		PercentOff: 10, Duration: domain.CouponDurationOnce, DurationPeriods: &n,
+	})
+	assertErrContains(t, err, "duration_periods")
+
+	_, err = svc.Create(context.Background(), "t1", CreateInput{
+		Code: "FOR10", Name: "10%", Type: domain.CouponTypePercentage,
+		PercentOff: 10, Duration: domain.CouponDurationForever, DurationPeriods: &n,
+	})
+	assertErrContains(t, err, "duration_periods")
+}
+
+func TestCreate_InvalidDurationRejected(t *testing.T) {
+	svc := NewService(newMockStore())
+	_, err := svc.Create(context.Background(), "t1", CreateInput{
+		Code: "TEST10", Name: "10%", Type: domain.CouponTypePercentage,
+		PercentOff: 10, Duration: "bogus",
+	})
+	assertErrContains(t, err, "duration")
+}
+
+func TestMarkPeriodsApplied_NoopOnEmpty(t *testing.T) {
+	svc := NewService(newMockStore())
+	if err := svc.MarkPeriodsApplied(context.Background(), "t1", nil); err != nil {
+		t.Errorf("nil slice: %v", err)
+	}
+	if err := svc.MarkPeriodsApplied(context.Background(), "t1", []string{}); err != nil {
+		t.Errorf("empty slice: %v", err)
+	}
+	// Empty-string IDs in the slice are skipped — they represent "no
+	// redemption to increment" (defensive guard, see service.go).
+	if err := svc.MarkPeriodsApplied(context.Background(), "t1", []string{""}); err != nil {
+		t.Errorf("empty-string id: %v", err)
 	}
 }
