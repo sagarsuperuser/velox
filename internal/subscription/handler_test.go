@@ -423,3 +423,301 @@ func TestUpdateItem_ProrationAppliesTax(t *testing.T) {
 		t.Errorf("invoice amount_due = %d, want %d", inv.AmountDueCents, wantTotal)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Event dispatch tests — P0 #2. Design partners building on Velox need a
+// webhook stream for subscription lifecycle the same way Stripe customers
+// depend on customer.subscription.*. These tests pin the dispatch contract
+// for every mutating handler so a silent regression can't ship.
+// ---------------------------------------------------------------------------
+
+type capturedEvent struct {
+	tenantID  string
+	eventType string
+	payload   map[string]any
+}
+
+type capturingDispatcher struct {
+	events []capturedEvent
+	err    error
+}
+
+func (d *capturingDispatcher) Dispatch(_ context.Context, tenantID, eventType string, payload map[string]any) error {
+	d.events = append(d.events, capturedEvent{tenantID: tenantID, eventType: eventType, payload: payload})
+	return d.err
+}
+
+func (d *capturingDispatcher) firstOfType(eventType string) (capturedEvent, bool) {
+	for _, e := range d.events {
+		if e.eventType == eventType {
+			return e, true
+		}
+	}
+	return capturedEvent{}, false
+}
+
+func TestHandler_Cancel_FiresSubscriptionCanceled(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetEventDispatcher(dispatcher)
+
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/"+subID+"/cancel", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+
+	rr := httptest.NewRecorder()
+	h.cancel(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+
+	ev, ok := dispatcher.firstOfType(domain.EventSubscriptionCanceled)
+	if !ok {
+		t.Fatalf("expected %s event, got types=%v", domain.EventSubscriptionCanceled, eventTypes(dispatcher.events))
+	}
+	if ev.tenantID != tenantID {
+		t.Errorf("tenant_id: got %q, want %q", ev.tenantID, tenantID)
+	}
+	if ev.payload["subscription_id"] != subID {
+		t.Errorf("payload subscription_id: got %v, want %q", ev.payload["subscription_id"], subID)
+	}
+	if ev.payload["customer_id"] != "cus_1" {
+		t.Errorf("payload customer_id: got %v, want cus_1", ev.payload["customer_id"])
+	}
+}
+
+func TestHandler_PauseResume_FireLifecycleEvents(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetEventDispatcher(dispatcher)
+
+	tenantCtx := context.WithValue(ctx, auth.TestTenantIDKey(), tenantID)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("id", subID)
+
+	// Pause
+	pauseReq := httptest.NewRequest(http.MethodPost, "/subscriptions/"+subID+"/pause", nil).
+		WithContext(context.WithValue(tenantCtx, chi.RouteCtxKey, routeCtx))
+	pauseRR := httptest.NewRecorder()
+	h.pause(pauseRR, pauseReq)
+	if pauseRR.Code != http.StatusOK {
+		t.Fatalf("pause status: got %d, want 200. body=%s", pauseRR.Code, pauseRR.Body.String())
+	}
+	if _, ok := dispatcher.firstOfType(domain.EventSubscriptionPaused); !ok {
+		t.Errorf("expected %s after pause, got types=%v", domain.EventSubscriptionPaused, eventTypes(dispatcher.events))
+	}
+
+	// Resume
+	resumeReq := httptest.NewRequest(http.MethodPost, "/subscriptions/"+subID+"/resume", nil).
+		WithContext(context.WithValue(tenantCtx, chi.RouteCtxKey, routeCtx))
+	resumeRR := httptest.NewRecorder()
+	h.resume(resumeRR, resumeReq)
+	if resumeRR.Code != http.StatusOK {
+		t.Fatalf("resume status: got %d, want 200. body=%s", resumeRR.Code, resumeRR.Body.String())
+	}
+	if _, ok := dispatcher.firstOfType(domain.EventSubscriptionResumed); !ok {
+		t.Errorf("expected %s after resume, got types=%v", domain.EventSubscriptionResumed, eventTypes(dispatcher.events))
+	}
+}
+
+func TestHandler_UpdateItem_ImmediatePlanChangeFiresItemUpdated(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+	}}
+	invoices := &invoicesMock{}
+	credits := &creditsMock{}
+
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+	h.SetEventDispatcher(dispatcher)
+
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+
+	ev, ok := dispatcher.firstOfType(domain.EventSubscriptionItemUpdated)
+	if !ok {
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionItemUpdated, eventTypes(dispatcher.events))
+	}
+	item, _ := ev.payload["item"].(map[string]any)
+	if item == nil {
+		t.Fatalf("payload.item missing: %v", ev.payload)
+	}
+	if item["item_id"] != itemID {
+		t.Errorf("item_id: got %v, want %q", item["item_id"], itemID)
+	}
+	if item["plan_id"] != "plan_new" {
+		t.Errorf("plan_id: got %v, want plan_new (post-change plan expected)", item["plan_id"])
+	}
+	// Scheduled event must NOT fire on immediate plan change.
+	if _, fired := dispatcher.firstOfType(domain.EventSubscriptionPendingChangeScheduled); fired {
+		t.Errorf("pending_change.scheduled fired on immediate plan change")
+	}
+}
+
+func TestHandler_UpdateItem_ScheduledPlanChangeFiresPendingChangeScheduled(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+	}}
+	invoices := &invoicesMock{}
+	credits := &creditsMock{}
+
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+	h.SetEventDispatcher(dispatcher)
+
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: false})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+
+	ev, ok := dispatcher.firstOfType(domain.EventSubscriptionPendingChangeScheduled)
+	if !ok {
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionPendingChangeScheduled, eventTypes(dispatcher.events))
+	}
+	if ev.payload["new_plan_id"] != "plan_new" {
+		t.Errorf("new_plan_id: got %v, want plan_new", ev.payload["new_plan_id"])
+	}
+	// item.updated must NOT also fire for a scheduled change — the intent is
+	// observable but the item hasn't mutated yet.
+	if _, fired := dispatcher.firstOfType(domain.EventSubscriptionItemUpdated); fired {
+		t.Errorf("item.updated fired on scheduled (non-immediate) plan change")
+	}
+}
+
+func TestHandler_RemoveItem_FiresItemRemoved(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	// seed a sub with 2 items so RemoveItem doesn't trip the "last item"
+	// guard.
+	subID, firstItemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_a")
+	svc := NewService(store, nil)
+	if _, err := svc.AddItem(ctx, tenantID, subID, AddItemInput{PlanID: "plan_b", Quantity: 1}); err != nil {
+		t.Fatalf("seed second item: %v", err)
+	}
+
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetEventDispatcher(dispatcher)
+
+	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/"+subID+"/items/"+firstItemID, nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	rctx.URLParams.Add("itemID", firstItemID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+	rr := httptest.NewRecorder()
+	h.removeItem(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204. body=%s", rr.Code, rr.Body.String())
+	}
+
+	ev, ok := dispatcher.firstOfType(domain.EventSubscriptionItemRemoved)
+	if !ok {
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionItemRemoved, eventTypes(dispatcher.events))
+	}
+	if ev.payload["item_id"] != firstItemID {
+		t.Errorf("item_id: got %v, want %q", ev.payload["item_id"], firstItemID)
+	}
+}
+
+// TestHandler_CancelPendingItemChange_FiresPendingChangeCanceled locks in that
+// clearing a scheduled plan change surfaces as its own event type, so a
+// webhook consumer listening for upgrade/downgrade flows can distinguish
+// "scheduled but rolled back" from "applied at cycle boundary".
+func TestHandler_CancelPendingItemChange_FiresPendingChangeCanceled(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+	}}
+
+	// Stage a scheduled change first so CancelPendingItemChange has something
+	// to clear. The UpdateItem path drives this via svc so the scheduled fields
+	// land on the item row.
+	if _, err := svc.UpdateItem(ctx, tenantID, subID, itemID, UpdateItemInput{NewPlanID: "plan_new", Immediate: false}); err != nil {
+		t.Fatalf("stage scheduled change: %v", err)
+	}
+
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, &invoicesMock{}, &creditsMock{})
+	h.SetEventDispatcher(dispatcher)
+
+	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/"+subID+"/items/"+itemID+"/pending-change", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	rctx.URLParams.Add("itemID", itemID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+	rr := httptest.NewRecorder()
+	h.cancelPendingItemChange(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+
+	if _, ok := dispatcher.firstOfType(domain.EventSubscriptionPendingChangeCanceled); !ok {
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionPendingChangeCanceled, eventTypes(dispatcher.events))
+	}
+}
+
+func eventTypes(events []capturedEvent) []string {
+	out := make([]string, 0, len(events))
+	for _, e := range events {
+		out = append(out, e.eventType)
+	}
+	return out
+}

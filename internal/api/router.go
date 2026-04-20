@@ -178,6 +178,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	} else {
 		slog.Warn("webhook outbox DISABLED — using legacy direct-dispatch path (set VELOX_WEBHOOK_OUTBOX_ENABLED=true to re-enable)")
 	}
+	subH.SetEventDispatcher(eventDispatcher)
 	auditLogger := audit.NewLogger(db)
 	auditH := audit.NewHandler(auditLogger)
 	settingsH := tenant.NewSettingsHandler(settingsStore)
@@ -313,6 +314,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	engine := billing.NewEngine(subStore, usageStore, pricingSvc,
 		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, customerStore, stripeAdapter, clk, customerStore)
 	engine.SetTestClockReader(testClockStore)
+	engine.SetEventDispatcher(eventDispatcher)
 	testClockSvc.SetBillingRunner(engine)
 
 	// Tax calculator: use Stripe Tax when enabled via feature flag, otherwise manual

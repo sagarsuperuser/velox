@@ -43,6 +43,7 @@ type Engine struct {
 	coupons       CouponApplier
 	clock         clock.Clock
 	testClocks    TestClockReader
+	events        domain.EventDispatcher
 }
 
 // TestClockReader looks up a test clock's frozen_time. The billing engine
@@ -156,6 +157,14 @@ func (e *Engine) SetCouponApplier(c CouponApplier) {
 // (useful in narrow unit tests that don't exercise test-mode timing).
 func (e *Engine) SetTestClockReader(r TestClockReader) {
 	e.testClocks = r
+}
+
+// SetEventDispatcher wires the outbound webhook dispatcher. The engine emits
+// subscription.pending_change.applied at the cycle boundary when a scheduled
+// item plan change rolls into effect; without a dispatcher that event is
+// dropped (acceptable for narrow billing unit tests).
+func (e *Engine) SetEventDispatcher(d domain.EventDispatcher) {
+	e.events = d
 }
 
 // effectiveNow returns the clock time the engine should use for this sub.
@@ -461,6 +470,18 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		}
 	}
 	if anyDue {
+		// Snapshot the item IDs whose pending change was due before the atomic
+		// swap — ApplyDuePendingItemPlansAtomic returns the full refreshed item
+		// set (due + not-due) with pending_plan_id cleared, so we can't tell
+		// post-hoc which rows actually changed. This pre-swap list is what we
+		// fire subscription.pending_change.applied events for.
+		dueItems := make([]domain.SubscriptionItem, 0)
+		for _, it := range sub.Items {
+			if it.PendingPlanID != "" && it.PendingPlanEffectiveAt != nil && !it.PendingPlanEffectiveAt.After(now) {
+				dueItems = append(dueItems, it)
+			}
+		}
+
 		applied, err := e.subs.ApplyDuePendingItemPlansAtomic(ctx, sub.TenantID, sub.ID, now)
 		if err != nil && !errors.Is(err, errs.ErrNotFound) {
 			return false, fmt.Errorf("apply pending item plans: %w", err)
@@ -471,6 +492,34 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 				"subscription_id", sub.ID,
 				"items_changed", len(applied),
 			)
+
+			// Post-swap the plan swap is durable; fire one event per item that
+			// transitioned. Emitted only on successful swap so a half-applied
+			// state doesn't lie to webhook consumers.
+			if e.events != nil {
+				newPlanByItem := make(map[string]string, len(applied))
+				for _, it := range applied {
+					newPlanByItem[it.ID] = it.PlanID
+				}
+				for _, was := range dueItems {
+					payload := map[string]any{
+						"subscription_id": sub.ID,
+						"customer_id":     sub.CustomerID,
+						"item_id":         was.ID,
+						"old_plan_id":     was.PlanID,
+						"new_plan_id":     newPlanByItem[was.ID],
+						"applied_at":      now.UTC(),
+					}
+					if err := e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionPendingChangeApplied, payload); err != nil {
+						slog.Error("dispatch subscription.pending_change.applied",
+							"subscription_id", sub.ID,
+							"item_id", was.ID,
+							"tenant_id", sub.TenantID,
+							"error", err,
+						)
+					}
+				}
+			}
 		}
 	}
 
