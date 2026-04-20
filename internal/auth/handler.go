@@ -45,7 +45,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.svc.CreateKey(r.Context(), tenantID, input)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "api_key")
 		return
 	}
 
@@ -120,14 +120,8 @@ func (h *Handler) rotate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := h.svc.RotateKey(r.Context(), tenantID, id, input)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "api key")
-		return
-	}
 	if err != nil {
-		// Validation errors (invalid grace, revoked key) come through as
-		// typed errs.ValidationError — Respond.Validation handles them.
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "api_key")
 		return
 	}
 

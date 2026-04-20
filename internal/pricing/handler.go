@@ -65,7 +65,7 @@ func (h *Handler) createOverride(w http.ResponseWriter, r *http.Request) {
 
 	override, err := h.svc.CreateOverride(r.Context(), tenantID, input)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "price_override")
 		return
 	}
 
@@ -103,12 +103,8 @@ func (h *Handler) createRatingRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rule, err := h.svc.CreateRatingRule(r.Context(), tenantID, input)
-	if errors.Is(err, errs.ErrAlreadyExists) {
-		respond.Conflict(w, r, err.Error())
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "rating_rule")
 		return
 	}
 
@@ -170,12 +166,8 @@ func (h *Handler) createMeter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	meter, err := h.svc.CreateMeter(r.Context(), tenantID, input)
-	if errors.Is(err, errs.ErrAlreadyExists) {
-		respond.Conflict(w, r, err.Error())
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "meter")
 		return
 	}
 
@@ -230,12 +222,8 @@ func (h *Handler) createPlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	plan, err := h.svc.CreatePlan(r.Context(), tenantID, input)
-	if errors.Is(err, errs.ErrAlreadyExists) {
-		respond.Conflict(w, r, err.Error())
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "plan")
 		return
 	}
 
@@ -287,12 +275,8 @@ func (h *Handler) updatePlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	plan, err := h.svc.UpdatePlan(r.Context(), tenantID, id, input)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "plan")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "plan")
 		return
 	}
 

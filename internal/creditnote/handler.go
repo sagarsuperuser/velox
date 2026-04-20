@@ -49,7 +49,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	cn, err := h.svc.Create(r.Context(), tenantID, input)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "credit_note")
 		return
 	}
 
@@ -59,7 +59,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// CN was created but issue failed — void the draft to avoid orphans
 			_, _ = h.svc.Void(r.Context(), tenantID, cn.ID)
-			respond.Validation(w, r, err.Error())
+			respond.FromError(w, r, err, "credit_note")
 			return
 		}
 		h.auditLogCreditNote(r, tenantID, issued)
@@ -120,7 +120,7 @@ func (h *Handler) issue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "credit_note")
 		return
 	}
 
@@ -139,7 +139,7 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "credit_note")
 		return
 	}
 

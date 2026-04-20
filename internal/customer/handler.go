@@ -57,12 +57,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	customer, err := h.svc.Create(r.Context(), tenantID, input)
-	if errors.Is(err, errs.ErrAlreadyExists) {
-		respond.Conflict(w, r, err.Error())
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "customer")
 		return
 	}
 
@@ -126,12 +122,8 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	customer, err := h.svc.Update(r.Context(), tenantID, id, input)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "customer")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "customer")
 		return
 	}
 
@@ -151,7 +143,7 @@ func (h *Handler) upsertBillingProfile(w http.ResponseWriter, r *http.Request) {
 
 	profile, err := h.svc.UpsertBillingProfile(r.Context(), tenantID, bp)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "billing profile")
 		return
 	}
 

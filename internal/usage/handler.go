@@ -3,7 +3,6 @@ package usage
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -120,17 +119,13 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 
 	input, err := h.resolve(r.Context(), tenantID, evt)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "usage_event")
 		return
 	}
 
 	event, err := h.svc.Ingest(r.Context(), tenantID, input)
-	if errors.Is(err, errs.ErrDuplicateKey) {
-		respond.Conflict(w, r, err.Error())
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "usage_event")
 		return
 	}
 
@@ -155,17 +150,13 @@ func (h *Handler) backfill(w http.ResponseWriter, r *http.Request) {
 
 	input, err := h.resolve(r.Context(), tenantID, evt)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "usage_event")
 		return
 	}
 
 	event, err := h.svc.Backfill(r.Context(), tenantID, input)
-	if errors.Is(err, errs.ErrDuplicateKey) {
-		respond.Conflict(w, r, err.Error())
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "usage_event")
 		return
 	}
 

@@ -109,7 +109,7 @@ func (h *Handler) upsertPolicy(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.svc.UpsertPolicy(r.Context(), tenantID, policy)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "dunning_policy")
 		return
 	}
 
@@ -198,7 +198,7 @@ func (h *Handler) upsertCustomerOverride(w http.ResponseWriter, r *http.Request)
 
 	result, err := h.svc.UpsertCustomerOverride(r.Context(), tenantID, override)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "customer_dunning_override")
 		return
 	}
 
@@ -238,12 +238,8 @@ func (h *Handler) resolveRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	run, err := h.svc.ResolveRun(r.Context(), tenantID, id, domain.DunningResolution(input.Resolution))
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "dunning run")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "dunning_run")
 		return
 	}
 

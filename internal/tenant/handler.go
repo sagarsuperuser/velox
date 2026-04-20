@@ -38,7 +38,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	tenant, err := h.svc.Create(r.Context(), input)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "tenant")
 		return
 	}
 
