@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -294,6 +295,7 @@ func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.Webhoo
 	}
 
 	_, _ = s.store.UpdateDelivery(ctx, tenantID, delivery)
+	mw.RecordWebhookDelivery("succeeded")
 
 	slog.Info("webhook delivered",
 		"endpoint_id", ep.ID,
@@ -317,6 +319,9 @@ func (s *Service) scheduleRetryOrFail(ctx context.Context, tenantID string, d do
 		d.Status = domain.DeliveryFailed
 		d.CompletedAt = &now
 		d.NextRetryAt = nil
+		// Only count permanent failures — per-attempt retries are transient
+		// and would drown the alert's success-rate denominator.
+		mw.RecordWebhookDelivery("failed")
 		slog.Error("webhook delivery permanently failed",
 			"delivery_id", d.ID,
 			"endpoint_id", d.WebhookEndpointID,

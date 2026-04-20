@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
@@ -59,6 +60,7 @@ func (h *Handler) grant(w http.ResponseWriter, r *http.Request) {
 			"description":  entry.Description,
 		})
 	}
+	mw.RecordCreditOperation("grant")
 
 	respond.JSON(w, r, http.StatusCreated, entry)
 }
@@ -89,6 +91,7 @@ func (h *Handler) adjust(w http.ResponseWriter, r *http.Request) {
 			"description":  entry.Description,
 		})
 	}
+	mw.RecordCreditOperation("adjustment")
 
 	respond.JSON(w, r, http.StatusCreated, entry)
 }
