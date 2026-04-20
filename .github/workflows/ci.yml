@@ -49,7 +49,11 @@ jobs:
 
       - name: Create test database and app user
         run: |
+          # velox_app is referenced by migration GRANT statements (source of
+          # truth is docker/init.sql for local dev). It must exist cluster-wide
+          # before migrations run or they fail with "role does not exist".
           PGPASSWORD=velox psql -h localhost -U velox -d velox -c "
+            CREATE ROLE velox_app WITH LOGIN PASSWORD 'velox_app';
             CREATE DATABASE velox_test OWNER velox;
           "
           PGPASSWORD=velox psql -h localhost -U velox -d velox_test -c "
