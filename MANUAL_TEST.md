@@ -142,16 +142,16 @@ make dev
 ```bash
 make migrate-status
 ```
-- [ ] Verify: shows `version: 3, dirty: false` (3 migrations: schema, seed, tax cleanup)
+- [ ] Verify: shows `version: 28, dirty: false` (confirm against `ls internal/platform/migrate/sql/*.up.sql | wc -l` — bump this doc when a new migration lands)
 
 ### 3.2 Rollback (Staging Only — careful!)
 ```bash
-make migrate-status                                     # Note: version 2
+make migrate-status                                     # Note current version N
 DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
   go run ./cmd/velox migrate rollback
-make migrate-status                                     # Verify: version 1
+make migrate-status                                     # Verify: version N-1
 make migrate                                            # Re-apply
-make migrate-status                                     # Verify: version 3 again
+make migrate-status                                     # Verify: version N again
 ```
 - [ ] Verify: rollback reverts one migration
 - [ ] Verify: re-running `make migrate` re-applies cleanly
@@ -160,7 +160,7 @@ make migrate-status                                     # Verify: version 3 agai
 ```bash
 docker compose down -v && make up
 make dev                                                # Migrations run on boot
-make migrate-status                                     # Verify: version 3
+make migrate-status                                     # Verify: version matches latest file number
 ```
 - [ ] Verify: clean start with all tables created
 
@@ -592,6 +592,8 @@ SELECT id, auto_charge_pending, payment_status FROM invoices ORDER BY created_at
 
 ## FLOW 24: Stripe Tax Integration
 
+> **Account limitation:** `V1TaxCalculations.Create` is gated by the home country of your Stripe account. India-registered accounts currently return `"Stripe Tax isn't yet supported for your country"` in both live and test mode — the block is account-level, not key-level. To exercise this flow end-to-end, use a separate Stripe account registered in a supported country (US, GB, EU, AU, etc.). For India-based launches, use Flow 24b (Phase 1-lite manual tax with cross-border zero-rating) instead.
+
 ### 24.1 Enable Stripe Tax
 - [ ] Enable feature flag: `PUT /v1/feature-flags/billing.stripe_tax` with `{"enabled": true}`
 - [ ] Ensure customer has a billing profile with full address (country, state, postal code)
@@ -605,11 +607,103 @@ SELECT id, auto_charge_pending, payment_status FROM invoices ORDER BY created_at
 - [ ] Temporarily set an invalid Stripe key
 - [ ] Run billing > verify: invoice still generated with zero tax (graceful fallback)
 - [ ] Check logs for "tax calculation failed" warning
+- [ ] Verify: Prometheus counter `velox_tax_fallback_total{reason="api_error"}` incremented (see Flow 24d)
 - [ ] Restore valid key
 
 ### 24.4 Tax-Exempt Customer
 - [ ] Set customer billing profile `tax_exempt: true`
 - [ ] Run billing > verify: zero tax regardless of Stripe Tax or manual rate
+
+---
+
+## FLOW 24b: Cross-Border Zero-Rated Export (Phase 1-lite Manual Tax)
+
+> **What this tests:** Velox's tenant-side tax fallback when Stripe Tax is unavailable. When `tenant_settings.tax_home_country` is set and the customer's billing country differs, the billing engine zero-rates the tax line and stamps `tax_name = "<original> (zero-rated export)"` for the audit trail. Matches IGST treatment of exports under LUT for Indian tenants, plus equivalent export rules in other jurisdictions.
+
+### 24b.1 Setup
+- [ ] Settings: set `tax_home_country = "IN"`, `tax_rate_bp = 1800`, `tax_name = "IGST"` (18%)
+- [ ] Verify: invalid country ("INDIA", "in ", "XX") is rejected with "must be an ISO-3166 alpha-2 country code"
+- [ ] Verify: empty string is accepted (legacy tenants not forced to migrate)
+- [ ] Feature flag `billing.stripe_tax` stays OFF for this flow (Phase 1-lite is Stripe-Tax-agnostic)
+
+### 24b.2 Domestic Customer — Full IGST
+- [ ] Create customer with billing profile country = `"IN"`
+- [ ] Run billing on a $100 subtotal
+- [ ] Verify: `tax_amount_cents = 1800`, `tax_rate_bp = 1800`, `tax_name = "IGST"`
+- [ ] Verify: invoice PDF shows "IGST (18.00%) ₹18.00" (no export annotation)
+
+### 24b.3 Export Customer — Zero-Rated
+- [ ] Create a second customer with billing profile country = `"US"`
+- [ ] Run billing on a $100 subtotal
+- [ ] Verify: `tax_amount_cents = 0`, `tax_rate_bp = 0`, `tax_name = "IGST (zero-rated export)"`
+- [ ] Verify: per-line-item taxes also zero, `total_amount_cents = subtotal`
+- [ ] Verify: invoice PDF shows "IGST (zero-rated export) $0.00"
+- [ ] Verify: `tax_country` still stamped as `"US"` (customer destination, not blank)
+
+### 24b.4 Missing Customer Country — No Zero-Rating
+- [ ] Create customer whose billing profile has no country set
+- [ ] Run billing > verify: normal IGST applies (can't prove export without a destination country, so we don't zero-rate)
+
+### 24b.5 Exempt Overrides Export Annotation
+- [ ] Set export customer's `tax_exempt = true`
+- [ ] Run billing > verify: `tax_amount_cents = 0`, `tax_name = ""` (blank, NOT annotated as "zero-rated export" — exempt is a stronger signal)
+
+### 24b.6 Home Country Unset — No Zero-Rating
+- [ ] Settings: clear `tax_home_country` (set to empty string)
+- [ ] Run billing for the US customer again > verify: normal 18% applies (no home country → can't distinguish export)
+
+---
+
+## FLOW 24c: Tax-ID Format Validation
+
+> **What this tests:** `UpsertBillingProfile` normalizes (trim + uppercase) and format-validates the tax ID against `tax_id_type`. GSTIN, EU VAT, and AU ABN are explicitly supported. Unknown kinds pass through untouched so jurisdictions we haven't added support for aren't rejected.
+
+### 24c.1 Valid Formats Accepted
+- [ ] Customer > Billing Profile with `tax_id_type = "gstin"`, `tax_id = "27aaepm1234c1z5"` → verify saved as `"27AAEPM1234C1Z5"` (normalized uppercase)
+- [ ] Same with `tax_id_type = "in_gst"` or `"in_gstin"` (aliases) → accepted
+- [ ] `tax_id_type = "vat"`, `tax_id = "DE123456789"` → accepted
+- [ ] `tax_id_type = "abn"`, `tax_id = "51824753556"` → accepted
+
+### 24c.2 Malformed Rejected
+- [ ] `tax_id_type = "gstin"`, `tax_id = "27INVALID"` → 422 with body message "invalid GSTIN format: expected 15-char code like 27AAEPM1234C1Z5"
+- [ ] `tax_id_type = "vat"`, `tax_id = "12"` → 422 "invalid EU VAT format"
+- [ ] `tax_id_type = "abn"`, `tax_id = "123"` → 422 "invalid ABN format: expected 11 digits"
+- [ ] Verify: billing profile NOT saved when validation fails
+
+### 24c.3 Unknown Kinds Pass Through
+- [ ] `tax_id_type = "br_cnpj"`, `tax_id = "12.345.678/0001-90"` → accepted as-is (no validation for unsupported jurisdictions)
+- [ ] `tax_id_type = ""`, `tax_id = "anything"` → accepted (no kind → no validation)
+
+### 24c.4 Empty Tax ID Always Valid
+- [ ] `tax_id_type = "gstin"`, `tax_id = ""` → accepted (presence is a separate concern from format)
+
+---
+
+## FLOW 24d: Tax Fallback Metrics
+
+> **What this tests:** `velox_tax_fallback_total{reason}` Prometheus counter, emitted every time `StripeCalculator` falls through to `ManualCalculator`. Operators alert on sustained non-zero values to catch Stripe Tax going dark before invoices silently switch to the tenant flat rate.
+
+### 24d.1 Scrape Endpoint
+- [ ] `curl -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep velox_tax_fallback_total`
+- [ ] Verify: counter is registered (shows HELP + TYPE lines even if values are zero)
+
+### 24d.2 Reason = `no_country`
+- [ ] Enable `billing.stripe_tax`, configure a valid Stripe key
+- [ ] Run billing for a customer whose billing profile has NO country set
+- [ ] Scrape metrics > verify `velox_tax_fallback_total{reason="no_country"}` incremented
+
+### 24d.3 Reason = `no_client_for_mode`
+- [ ] Configure ONLY `STRIPE_SECRET_KEY` (live-only) but run a tenant provisioned in test livemode — or vice versa
+- [ ] Run billing > verify `velox_tax_fallback_total{reason="no_client_for_mode"}` incremented
+
+### 24d.4 Reason = `api_error`
+- [ ] Set an invalid `STRIPE_SECRET_KEY` (or disconnect network)
+- [ ] Run billing with a fully-addressed customer > verify `velox_tax_fallback_total{reason="api_error"}` incremented
+- [ ] Restore valid key
+
+### 24d.5 Happy Path — No Increment
+- [ ] With a valid key + fully-addressed customer, run billing
+- [ ] Verify: counter values unchanged between before and after (Stripe Tax path did not fall back)
 
 ---
 
@@ -1129,6 +1223,9 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 | 22 | Credit Notes | | |
 | 23 | Coupons + Plan Restrictions | | |
 | 24 | Stripe Tax Integration | | |
+| 24b | Cross-Border Zero-Rated Export | | |
+| 24c | Tax-ID Format Validation | | |
+| 24d | Tax Fallback Metrics | | |
 | 25 | Multiple Meters | | |
 | 26 | Negative Usage (Corrections) | | |
 | 27 | Manual Line Items | | |
