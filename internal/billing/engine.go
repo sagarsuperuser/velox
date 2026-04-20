@@ -232,15 +232,18 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 	app.DiscountCents = discount
 
 	var inclusive bool
+	var homeCountry string
 	if e.settings != nil {
 		if ts, err := e.settings.Get(ctx, tenantID); err == nil {
 			app.TaxRateBP = ts.TaxRateBP
 			app.TaxName = ts.TaxName
 			inclusive = ts.TaxInclusive
+			homeCountry = ts.TaxHomeCountry
 		}
 	}
 
 	var customerAddr tax.CustomerAddress
+	var zeroRatedExport bool
 	if e.profiles != nil && customerID != "" {
 		if bp, err := e.profiles.GetBillingProfile(ctx, tenantID, customerID); err == nil {
 			customerAddr = tax.CustomerAddress{
@@ -259,12 +262,42 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 				}
 				app.TaxCountry = bp.Country
 				app.TaxID = bp.TaxID
+
+				// Cross-border zero-rating. When the tenant has declared a home
+				// country, supply to a customer in a different country is treated
+				// as an export and zero-rated. This matches Indian GST export
+				// handling (zero-rated under LUT) and is generally correct for
+				// VAT/GST regimes that put cross-border B2B supply out of scope.
+				// Wins over TaxOverrideRateBP because export rating is a legal
+				// classification, not a customer preference.
+				if homeCountry != "" && bp.Country != "" && bp.Country != homeCountry {
+					zeroRatedExport = true
+					app.TaxRateBP = 0
+					if app.TaxName != "" {
+						app.TaxName = app.TaxName + " (zero-rated export)"
+					} else {
+						app.TaxName = "Zero-rated export"
+					}
+				}
 			}
 		}
 	}
 
 	discountedSubtotal := subtotal - discount
 	if discountedSubtotal <= 0 {
+		return app, nil
+	}
+
+	// When cross-border export applies, short-circuit before the calculator
+	// or inline math — either would otherwise re-derive tax from the
+	// destination jurisdiction and overwrite our explicit zero-rating.
+	// Stamp each line's TotalAmountCents so downstream sums still balance.
+	if zeroRatedExport {
+		for i := range lineItems {
+			lineItems[i].TaxRateBP = 0
+			lineItems[i].TaxAmountCents = 0
+			lineItems[i].TotalAmountCents = lineItems[i].AmountCents
+		}
 		return app, nil
 	}
 
