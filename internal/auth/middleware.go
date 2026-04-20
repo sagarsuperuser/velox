@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 type contextKey string
@@ -14,7 +15,6 @@ const (
 	tenantIDKey contextKey = "tenant_id"
 	apiKeyIDKey contextKey = "api_key_id"
 	keyTypeKey  contextKey = "key_type"
-	livemodeKey contextKey = "livemode"
 )
 
 // TestTenantIDKey returns the context key for tenant ID (for use in tests).
@@ -40,7 +40,7 @@ func Middleware(svc *Service) func(http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, tenantIDKey, key.TenantID)
 			ctx = context.WithValue(ctx, apiKeyIDKey, key.ID)
 			ctx = context.WithValue(ctx, keyTypeKey, KeyType(key.KeyType))
-			ctx = context.WithValue(ctx, livemodeKey, key.Livemode)
+			ctx = postgres.WithLivemode(ctx, key.Livemode)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -80,23 +80,18 @@ func GetKeyType(ctx context.Context) KeyType {
 	return v
 }
 
-// Livemode returns whether the request is operating in live mode. Absent a
-// value, defaults to true — the safe fallback that matches production
-// behavior and prevents background workers / tests from silently operating
-// as if in test mode.
+// Livemode returns whether the request is operating in live mode. Delegates
+// to the shared postgres-package accessor so BeginTx and auth see the same
+// value off the same ctx key.
 func Livemode(ctx context.Context) bool {
-	v, ok := ctx.Value(livemodeKey).(bool)
-	if !ok {
-		return true
-	}
-	return v
+	return postgres.Livemode(ctx)
 }
 
 // WithLivemode returns a derived context carrying the livemode flag. Used by
 // auth middleware to propagate the key's mode downstream, and by tests to
 // simulate test-mode requests.
 func WithLivemode(ctx context.Context, live bool) context.Context {
-	return context.WithValue(ctx, livemodeKey, live)
+	return postgres.WithLivemode(ctx, live)
 }
 
 func extractBearerToken(r *http.Request) string {
