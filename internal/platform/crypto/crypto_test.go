@@ -171,3 +171,64 @@ func TestNoopDecryptEncryptedValue(t *testing.T) {
 		t.Error("expected error when noop tries to decrypt encrypted value")
 	}
 }
+
+// TestBlinderDeterministicAndKeyed locks down the two properties the
+// magic-link lookup relies on: identical inputs produce identical blind
+// indexes (so the lookup works at all), and different keys produce
+// different blind indexes (so the HMAC key is the only oracle).
+func TestBlinderDeterministicAndKeyed(t *testing.T) {
+	b1, err := NewBlinder(testKey(t))
+	if err != nil {
+		t.Fatalf("NewBlinder: %v", err)
+	}
+
+	// Deterministic: same input → same output.
+	a := b1.Blind("hello@example.com")
+	if a == "" {
+		t.Fatalf("expected non-empty blind index")
+	}
+	if b1.Blind("hello@example.com") != a {
+		t.Fatalf("blind index is not deterministic")
+	}
+
+	// Different input → different output (collision resistance of HMAC).
+	if b1.Blind("other@example.com") == a {
+		t.Fatalf("different inputs produced identical blind index")
+	}
+
+	// Different key → different output even for the same input. This is
+	// what prevents an attacker who only sees email_bidx values from
+	// reversing them without the key.
+	altKey := make([]byte, 32)
+	for i := range altKey {
+		altKey[i] = byte(255 - i)
+	}
+	b2, err := NewBlinder(hex.EncodeToString(altKey))
+	if err != nil {
+		t.Fatalf("NewBlinder alt: %v", err)
+	}
+	if b2.Blind("hello@example.com") == a {
+		t.Fatalf("different keys produced identical blind index")
+	}
+}
+
+// TestBlinderNoopAndEmptyInputs — an unconfigured blinder or an empty input
+// both safely return "". The customer store relies on this: a NULL/empty
+// email_bidx is never queryable, so misconfigured environments silently
+// fail closed instead of leaking rows through a blank-string match.
+func TestBlinderNoopAndEmptyInputs(t *testing.T) {
+	if NewNoopBlinder().Blind("anything") != "" {
+		t.Errorf("noop blinder must return empty string")
+	}
+	if NewNoopBlinder().IsEnabled() {
+		t.Errorf("noop blinder must report !IsEnabled")
+	}
+
+	b, err := NewBlinder(testKey(t))
+	if err != nil {
+		t.Fatalf("NewBlinder: %v", err)
+	}
+	if got := b.Blind(""); got != "" {
+		t.Errorf("empty input must yield empty index, got %q", got)
+	}
+}
