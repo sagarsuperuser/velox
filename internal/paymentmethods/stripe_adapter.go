@@ -90,6 +90,30 @@ func (a *StripeAdapter) CreateSetupIntent(ctx context.Context, stripeCustomerID 
 	return si.ClientSecret, si.ID, nil
 }
 
+// CreateSetupCheckoutSession creates a Checkout Session in setup mode so
+// the customer can be redirected to Stripe's hosted UI to enter card
+// details without being charged. Mirrors payment.PortalHandler but for
+// the self-serve /me path — the metadata we attach here is what the
+// setup_intent.succeeded webhook routes back to the right customer.
+func (a *StripeAdapter) CreateSetupCheckoutSession(ctx context.Context, stripeCustomerID, returnURL string, metadata map[string]string) (string, string, error) {
+	sc, err := a.client(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	sess, err := sc.CheckoutSessions.New(&stripe.CheckoutSessionParams{
+		Customer:           stripe.String(stripeCustomerID),
+		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
+		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
+		SuccessURL:         stripe.String(returnURL),
+		CancelURL:          stripe.String(returnURL),
+		Params:             stripe.Params{Metadata: metadata},
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("stripe create setup checkout session: %w", err)
+	}
+	return sess.URL, sess.ID, nil
+}
+
 func (a *StripeAdapter) DetachPaymentMethod(ctx context.Context, stripePaymentMethodID string) error {
 	sc, err := a.client(ctx)
 	if err != nil {

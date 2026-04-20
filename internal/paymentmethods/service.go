@@ -17,7 +17,14 @@ import (
 type StripeAPI interface {
 	// CreateSetupIntent makes a SetupIntent for the Stripe customer and
 	// returns the client_secret the frontend needs for confirmCardSetup().
+	// Used by integrations that build an inline Stripe Elements UI.
 	CreateSetupIntent(ctx context.Context, stripeCustomerID string, metadata map[string]string) (clientSecret, setupIntentID string, err error)
+
+	// CreateSetupCheckoutSession creates a Stripe Checkout Session in
+	// setup mode and returns a hosted URL the customer can redirect to.
+	// Used by the default web-v2 portal UI, which redirects rather than
+	// embedding Stripe Elements.
+	CreateSetupCheckoutSession(ctx context.Context, stripeCustomerID, returnURL string, metadata map[string]string) (checkoutURL, sessionID string, err error)
 
 	// EnsureStripeCustomer returns the existing Stripe customer ID from
 	// customer_payment_setups, or creates one if absent and writes it back
@@ -79,6 +86,33 @@ func (s *Service) CreateSetupIntent(ctx context.Context, tenantID, customerID st
 		"velox_livemode":    livemodeLabel(ctx),
 	}
 	return s.stripe.CreateSetupIntent(ctx, stripeCustomerID, metadata)
+}
+
+// CreateSetupSession returns a hosted Stripe Checkout URL the customer can
+// be redirected to for adding a new card without being charged. On
+// success Stripe fires setup_intent.succeeded, which the webhook handler
+// turns into a payment_methods row via AttachForWebhook.
+func (s *Service) CreateSetupSession(ctx context.Context, tenantID, customerID, returnURL string) (checkoutURL, sessionID string, err error) {
+	if tenantID == "" || customerID == "" {
+		return "", "", errs.Required("tenant_id, customer_id")
+	}
+	stripeCustomerID, err := s.stripe.EnsureStripeCustomer(ctx, tenantID, customerID)
+	if err != nil {
+		return "", "", fmt.Errorf("ensure stripe customer: %w", err)
+	}
+	if returnURL == "" {
+		returnURL = s.portalBaseURL
+	}
+	if returnURL == "" {
+		returnURL = "http://localhost:5173/customer-portal"
+	}
+	metadata := map[string]string{
+		"velox_tenant_id":   tenantID,
+		"velox_customer_id": customerID,
+		"velox_livemode":    livemodeLabel(ctx),
+		"velox_purpose":     "portal_add_payment_method",
+	}
+	return s.stripe.CreateSetupCheckoutSession(ctx, stripeCustomerID, returnURL, metadata)
 }
 
 // SetDefault flips is_default atomically in payment_methods AND refreshes

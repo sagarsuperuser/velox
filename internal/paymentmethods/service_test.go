@@ -162,6 +162,9 @@ func (f *fakeStripe) CreateSetupIntent(_ context.Context, _ string, _ map[string
 	f.setupCalls++
 	return "seti_secret_fake", "seti_fake", nil
 }
+func (f *fakeStripe) CreateSetupCheckoutSession(_ context.Context, _, _ string, _ map[string]string) (string, string, error) {
+	return "https://checkout.stripe.com/fake", "cs_fake", nil
+}
 func (f *fakeStripe) EnsureStripeCustomer(_ context.Context, _, _ string) (string, error) {
 	return "cus_stripe_fake", nil
 }
