@@ -19,7 +19,7 @@ type Store interface {
 	// amount would be negative.
 	AdjustAtomic(ctx context.Context, tenantID, customerID, description string, amountCents int64) (domain.CreditLedgerEntry, error)
 	GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error)
-	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error)
+	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.CreditLedgerEntry, error)
 	ListBalances(ctx context.Context, tenantID string) ([]domain.CreditBalance, error)
 	ListEntries(ctx context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error)
 	ListExpiredGrants(ctx context.Context) ([]domain.CreditLedgerEntry, error)

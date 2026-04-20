@@ -55,7 +55,7 @@ func (m *invoicesMock) CreateInvoiceWithLineItems(_ context.Context, tenantID st
 	return inv, nil
 }
 
-func (m *invoicesMock) GetByProrationSource(_ context.Context, _, _, _ string, _ time.Time) (domain.Invoice, error) {
+func (m *invoicesMock) GetByProrationSource(_ context.Context, _, _, _ string, _ domain.ItemChangeType, _ time.Time) (domain.Invoice, error) {
 	m.existingCreateCalls++
 	if m.lookupInvoiceErr != nil {
 		return domain.Invoice{}, m.lookupInvoiceErr
@@ -83,7 +83,7 @@ func (m *creditsMock) GrantProration(_ context.Context, _ string, input Proratio
 	return m.grantErr
 }
 
-func (m *creditsMock) GetByProrationSource(_ context.Context, _, _, _ string, _ time.Time) (domain.CreditLedgerEntry, error) {
+func (m *creditsMock) GetByProrationSource(_ context.Context, _, _, _ string, _ domain.ItemChangeType, _ time.Time) (domain.CreditLedgerEntry, error) {
 	if m.lookupEntryErr != nil {
 		return domain.CreditLedgerEntry{}, m.lookupEntryErr
 	}
@@ -711,6 +711,276 @@ func TestHandler_CancelPendingItemChange_FiresPendingChangeCanceled(t *testing.T
 
 	if _, ok := dispatcher.firstOfType(domain.EventSubscriptionPendingChangeCanceled); !ok {
 		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionPendingChangeCanceled, eventTypes(dispatcher.events))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mid-cycle proration tests — P1 gap #188. Plan changes were the only mutation
+// that drove proration; qty changes, item adds, and item removes silently
+// skipped it. These tests pin the new behaviour so the invoice/credit is
+// produced even when the billing engine doesn't touch the row.
+// ---------------------------------------------------------------------------
+
+// addItemURL builds the POST /subscriptions/{id}/items request with chi params.
+func addItemURL(ctx context.Context, subID string, body []byte) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/"+subID+"/items", bytes.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	return req.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx))
+}
+
+// removeItemURL builds the DELETE /subscriptions/{id}/items/{itemID} request.
+func removeItemURL(ctx context.Context, subID, itemID string) *http.Request {
+	url := fmt.Sprintf("/subscriptions/%s/items/%s", subID, itemID)
+	req := httptest.NewRequest(http.MethodDelete, url, nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	rctx.URLParams.Add("itemID", itemID)
+	return req.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx))
+}
+
+// TestAddItem_ProratesMidCycle verifies that adding a priced line to an active
+// subscription mid-period emits a proration invoice for the partial-period
+// portion of the new item's cost. Prior behaviour was silent skip — the
+// customer got the new item for free until next cycle close.
+func TestAddItem_ProratesMidCycle(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_existing")
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_existing": {ID: "plan_existing", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
+		"plan_new":      {ID: "plan_new", Name: "Add-on", BaseAmountCents: 2000, Currency: "USD"},
+	}}
+	invoices := &invoicesMock{}
+	credits := &creditsMock{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+
+	body, _ := json.Marshal(AddItemInput{PlanID: "plan_new", Quantity: 1})
+	req := addItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, body)
+
+	rr := httptest.NewRecorder()
+	h.addItem(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201. body=%s", rr.Code, rr.Body.String())
+	}
+	if len(invoices.createdInvoices) != 1 {
+		t.Fatalf("createdInvoices: got %d, want 1 — proration invoice must be emitted for mid-cycle add",
+			len(invoices.createdInvoices))
+	}
+	inv := invoices.createdInvoices[0]
+	if inv.SourceChangeType != domain.ItemChangeTypeAdd {
+		t.Errorf("invoice SourceChangeType: got %q, want %q", inv.SourceChangeType, domain.ItemChangeTypeAdd)
+	}
+	if inv.SubscriptionID != subID {
+		t.Errorf("invoice subscription_id: got %q, want %q", inv.SubscriptionID, subID)
+	}
+	// Factor is ~0.5 (seeded period is ±15 days, now is midpoint), so the
+	// prorated amount on a $20 plan should be roughly $10. Accept 800-1200
+	// to absorb any near-midnight drift.
+	if inv.SubtotalCents < 800 || inv.SubtotalCents > 1200 {
+		t.Errorf("invoice subtotal: got %d, want ~1000 (half of 2000)", inv.SubtotalCents)
+	}
+	if inv.AmountDueCents <= 0 {
+		t.Errorf("invoice amount_due: got %d, want > 0", inv.AmountDueCents)
+	}
+	if len(credits.grantCalls) != 0 {
+		t.Errorf("grantCalls: got %d, want 0 — add should bill not credit", len(credits.grantCalls))
+	}
+}
+
+// TestUpdateItem_QuantityIncreaseProratesAsInvoice verifies a mid-cycle qty
+// increase emits an invoice for the partial-period delta. Prior behaviour was
+// silent skip, leaving the customer on the new qty with no delta billed.
+func TestUpdateItem_QuantityIncreaseProratesAsInvoice(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_seats")
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_seats": {ID: "plan_seats", Name: "Seat", BaseAmountCents: 1000, Currency: "USD"},
+	}}
+	invoices := &invoicesMock{}
+	credits := &creditsMock{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+
+	// Seed starts at qty=1; bump to 3 → delta = 2 seats × $10 = $20 per full
+	// period, half-period → ~$10.
+	newQty := int64(3)
+	body, _ := json.Marshal(UpdateItemInput{Quantity: &newQty})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+	if len(invoices.createdInvoices) != 1 {
+		t.Fatalf("createdInvoices: got %d, want 1 — qty increase must invoice the delta",
+			len(invoices.createdInvoices))
+	}
+	inv := invoices.createdInvoices[0]
+	if inv.SourceChangeType != domain.ItemChangeTypeQuantity {
+		t.Errorf("invoice SourceChangeType: got %q, want %q", inv.SourceChangeType, domain.ItemChangeTypeQuantity)
+	}
+	if inv.SourceSubscriptionItemID != itemID {
+		t.Errorf("invoice item_id: got %q, want %q", inv.SourceSubscriptionItemID, itemID)
+	}
+	if inv.SubtotalCents < 800 || inv.SubtotalCents > 1200 {
+		t.Errorf("invoice subtotal: got %d, want ~1000 (half of 2000 delta)", inv.SubtotalCents)
+	}
+	if len(credits.grantCalls) != 0 {
+		t.Errorf("grantCalls: got %d, want 0 — qty increase should bill not credit", len(credits.grantCalls))
+	}
+}
+
+// TestUpdateItem_QuantityDecreaseProratesAsCredit verifies a mid-cycle qty
+// reduction issues a credit for the unused portion of the removed seats.
+func TestUpdateItem_QuantityDecreaseProratesAsCredit(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_seats")
+	svc := NewService(store, nil)
+	// Start at qty=3 so we can drop to 1.
+	startQty := int64(3)
+	if _, err := svc.UpdateItem(ctx, tenantID, subID, itemID, UpdateItemInput{Quantity: &startQty}); err != nil {
+		t.Fatalf("seed qty=3: %v", err)
+	}
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_seats": {ID: "plan_seats", Name: "Seat", BaseAmountCents: 1000, Currency: "USD"},
+	}}
+	invoices := &invoicesMock{}
+	credits := &creditsMock{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+
+	// Drop 3 → 1 = 2 seats × $10 = $20 full-period, half-period → ~$10 credit.
+	newQty := int64(1)
+	body, _ := json.Marshal(UpdateItemInput{Quantity: &newQty})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+	if len(invoices.createdInvoices) != 0 {
+		t.Errorf("createdInvoices: got %d, want 0 — qty decrease should credit not invoice",
+			len(invoices.createdInvoices))
+	}
+	if len(credits.grantCalls) != 1 {
+		t.Fatalf("grantCalls: got %d, want 1 — qty decrease must credit the unused portion",
+			len(credits.grantCalls))
+	}
+	call := credits.grantCalls[0]
+	if call.SourceChangeType != domain.ItemChangeTypeQuantity {
+		t.Errorf("credit SourceChangeType: got %q, want %q", call.SourceChangeType, domain.ItemChangeTypeQuantity)
+	}
+	if call.AmountCents < 800 || call.AmountCents > 1200 {
+		t.Errorf("credit amount: got %d, want ~1000", call.AmountCents)
+	}
+}
+
+// TestRemoveItem_ProratesAsCredit verifies mid-cycle item removal credits the
+// customer for the unused portion of the already-paid period. Seeds a 2-item
+// subscription so RemoveItem's "last item" guard doesn't trip.
+func TestRemoveItem_ProratesAsCredit(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, firstItemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_a")
+	svc := NewService(store, nil)
+	if _, err := svc.AddItem(ctx, tenantID, subID, AddItemInput{PlanID: "plan_b", Quantity: 1}); err != nil {
+		t.Fatalf("seed second item: %v", err)
+	}
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_a": {ID: "plan_a", Name: "Base A", BaseAmountCents: 2000, Currency: "USD"},
+		"plan_b": {ID: "plan_b", Name: "Base B", BaseAmountCents: 1000, Currency: "USD"},
+	}}
+	invoices := &invoicesMock{}
+	credits := &creditsMock{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+
+	req := removeItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, firstItemID)
+	rr := httptest.NewRecorder()
+	h.removeItem(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204. body=%s", rr.Code, rr.Body.String())
+	}
+	if len(invoices.createdInvoices) != 0 {
+		t.Errorf("createdInvoices: got %d, want 0 — remove should credit not invoice",
+			len(invoices.createdInvoices))
+	}
+	if len(credits.grantCalls) != 1 {
+		t.Fatalf("grantCalls: got %d, want 1 — removed item must be credited", len(credits.grantCalls))
+	}
+	call := credits.grantCalls[0]
+	if call.SourceChangeType != domain.ItemChangeTypeRemove {
+		t.Errorf("credit SourceChangeType: got %q, want %q", call.SourceChangeType, domain.ItemChangeTypeRemove)
+	}
+	if call.SourceSubscriptionItemID != firstItemID {
+		t.Errorf("credit item_id: got %q, want %q", call.SourceSubscriptionItemID, firstItemID)
+	}
+	// plan_a is $20/period, half-period → ~$10 credit.
+	if call.AmountCents < 800 || call.AmountCents > 1200 {
+		t.Errorf("credit amount: got %d, want ~1000", call.AmountCents)
+	}
+}
+
+// TestUpdateItem_QuantityNoOpRejected ensures a qty-change request that doesn't
+// actually change the qty returns 400 rather than silently emitting a zero
+// proration invoice. Mirrors the same guard on plan changes.
+func TestUpdateItem_QuantityNoOpRejected(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_seats")
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_seats": {ID: "plan_seats", Name: "Seat", BaseAmountCents: 1000, Currency: "USD"},
+	}}
+	invoices := &invoicesMock{}
+	credits := &creditsMock{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+
+	sameQty := int64(1) // seeded qty is 1
+	body, _ := json.Marshal(UpdateItemInput{Quantity: &sameQty})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+
+	if rr.Code != http.StatusBadRequest && rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status: got %d, want 400/422 for no-op qty. body=%s", rr.Code, rr.Body.String())
+	}
+	if len(invoices.createdInvoices) != 0 || len(credits.grantCalls) != 0 {
+		t.Errorf("no-op qty must not trigger proration")
 	}
 }
 

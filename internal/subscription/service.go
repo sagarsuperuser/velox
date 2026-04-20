@@ -317,6 +317,9 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, subscriptionID, item
 		if *input.Quantity < 1 {
 			return ItemChangeResult{}, errs.Invalid("quantity", "must be >= 1")
 		}
+		if *input.Quantity == item.Quantity {
+			return ItemChangeResult{}, errs.Invalid("quantity", "new quantity is the same as current quantity")
+		}
 		updated, err := s.store.UpdateItemQuantity(ctx, tenantID, itemID, *input.Quantity)
 		if err != nil {
 			return ItemChangeResult{}, err
