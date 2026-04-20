@@ -376,7 +376,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 		magicLinkDelivery,
 		slog.Default(),
 	)
-	publicPortalH := customerportal.NewPublicHandler(magicLinkRequestSvc)
+	publicPortalH := customerportal.NewPublicHandler(magicLinkRequestSvc, magicLinkSvc)
 
 	// Customer self-service payment methods — the customer-facing half of
 	// the portal. Writes to payment_methods (multi-row) and keeps the
