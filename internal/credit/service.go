@@ -25,14 +25,16 @@ type GrantInput struct {
 	InvoiceID   string     `json:"invoice_id,omitempty"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 
-	// SourceSubscriptionID + SourceSubscriptionItemID + SourcePlanChangedAt,
-	// when all set, mark this grant as a downgrade proration credit for a
-	// specific item. The store enforces (tenant, source_subscription_id,
-	// source_subscription_item_id, source_plan_changed_at) uniqueness so
-	// retries return ErrAlreadyExists instead of duplicating the credit.
-	SourceSubscriptionID     string     `json:"source_subscription_id,omitempty"`
-	SourceSubscriptionItemID string     `json:"source_subscription_item_id,omitempty"`
-	SourcePlanChangedAt      *time.Time `json:"source_plan_changed_at,omitempty"`
+	// SourceSubscriptionID + SourceSubscriptionItemID + SourcePlanChangedAt +
+	// SourceChangeType, when all set, mark this grant as a proration credit
+	// for a specific item mutation (plan downgrade, qty reduction, remove).
+	// The store enforces uniqueness on the full tuple so retries return
+	// ErrAlreadyExists instead of duplicating the credit — see migration 0027
+	// for the unique partial index.
+	SourceSubscriptionID     string                `json:"source_subscription_id,omitempty"`
+	SourceSubscriptionItemID string                `json:"source_subscription_item_id,omitempty"`
+	SourcePlanChangedAt      *time.Time            `json:"source_plan_changed_at,omitempty"`
+	SourceChangeType         domain.ItemChangeType `json:"source_change_type,omitempty"`
 }
 
 func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) (domain.CreditLedgerEntry, error) {
@@ -63,14 +65,15 @@ func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) 
 		SourceSubscriptionID:     input.SourceSubscriptionID,
 		SourceSubscriptionItemID: input.SourceSubscriptionItemID,
 		SourcePlanChangedAt:      input.SourcePlanChangedAt,
+		SourceChangeType:         input.SourceChangeType,
 	})
 }
 
 // GetByProrationSource exposes the store-level source lookup. Used by the
 // subscription proration path to complete an idempotent retry after
 // AppendEntry returns ErrAlreadyExists.
-func (s *Service) GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error) {
-	return s.store.GetByProrationSource(ctx, tenantID, subscriptionID, subscriptionItemID, planChangedAt)
+func (s *Service) GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.CreditLedgerEntry, error) {
+	return s.store.GetByProrationSource(ctx, tenantID, subscriptionID, subscriptionItemID, changeType, changeAt)
 }
 
 // ApplyToInvoice deducts credits from a customer's balance AND reduces the

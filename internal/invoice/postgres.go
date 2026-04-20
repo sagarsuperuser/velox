@@ -28,7 +28,8 @@ const invCols = `id, tenant_id, customer_id, subscription_id, invoice_number, st
 	billing_period_start, billing_period_end, issued_at, due_at, paid_at, voided_at,
 	COALESCE(stripe_payment_intent_id,''), COALESCE(last_payment_error,''),
 	payment_overdue, auto_charge_pending, net_payment_term_days, COALESCE(memo,''), COALESCE(footer,''),
-	metadata, created_at, updated_at, source_plan_changed_at, COALESCE(source_subscription_item_id,'')`
+	metadata, created_at, updated_at, source_plan_changed_at, COALESCE(source_subscription_item_id,''),
+	COALESCE(source_change_type,'')`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -51,8 +52,8 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 			total_amount_cents, amount_due_cents, amount_paid_cents, credits_applied_cents,
 			billing_period_start, billing_period_end, issued_at, due_at,
 			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
-			source_plan_changed_at, source_subscription_item_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29)
+			source_plan_changed_at, source_subscription_item_id, source_change_type)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, inv.SubscriptionID, inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -65,6 +66,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 		postgres.NullableString(inv.Footer), metaJSON, now,
 		postgres.NullableTime(inv.SourcePlanChangedAt),
 		postgres.NullableString(inv.SourceSubscriptionItemID),
+		postgres.NullableString(string(inv.SourceChangeType)),
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
@@ -96,12 +98,13 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.In
 }
 
 // GetByProrationSource returns the invoice previously generated for a
-// specific (subscription, item, plan_changed_at) event, if any. Callers use
-// this after CreateWithLineItems returns ErrAlreadyExists to complete an
-// idempotent retry — the proration dedup index ensures uniqueness. The
-// subscription_item_id joins the key so two items on the same subscription
-// changing at the same wall-clock moment don't collide on one row.
-func (s *PostgresStore) GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, planChangedAt time.Time) (domain.Invoice, error) {
+// specific (subscription, item, change_type, change_at) event, if any.
+// Callers use this after CreateWithLineItems returns ErrAlreadyExists to
+// complete an idempotent retry — the proration dedup index ensures
+// uniqueness. change_type disambiguates plan-vs-quantity-vs-add-vs-remove
+// mutations that coincidentally share a wall-clock timestamp; the item id
+// keeps cross-item changes in the same transaction distinct.
+func (s *PostgresStore) GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Invoice{}, err
@@ -111,8 +114,8 @@ func (s *PostgresStore) GetByProrationSource(ctx context.Context, tenantID, subs
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `SELECT `+invCols+`
 		FROM invoices
-		WHERE tenant_id = $1 AND subscription_id = $2 AND source_subscription_item_id = $3 AND source_plan_changed_at = $4`,
-		tenantID, subscriptionID, subscriptionItemID, planChangedAt,
+		WHERE tenant_id = $1 AND subscription_id = $2 AND source_subscription_item_id = $3 AND source_change_type = $4 AND source_plan_changed_at = $5`,
+		tenantID, subscriptionID, subscriptionItemID, string(changeType), changeAt,
 	).Scan(scanInvDest(&inv)...)
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
@@ -609,8 +612,8 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 			total_amount_cents, amount_due_cents, amount_paid_cents, credits_applied_cents,
 			billing_period_start, billing_period_end, issued_at, due_at,
 			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
-			source_plan_changed_at, source_subscription_item_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30)
+			source_plan_changed_at, source_subscription_item_id, source_change_type)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, inv.SubscriptionID, inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -624,6 +627,7 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 		postgres.NullableString(inv.Footer), metaJSON, now,
 		postgres.NullableTime(inv.SourcePlanChangedAt),
 		postgres.NullableString(inv.SourceSubscriptionItemID),
+		postgres.NullableString(string(inv.SourceChangeType)),
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
@@ -775,7 +779,7 @@ func scanInvDest(inv *domain.Invoice) []any {
 		&inv.StripePaymentIntentID, &inv.LastPaymentError,
 		&inv.PaymentOverdue, &inv.AutoChargePending, &inv.NetPaymentTermDays, &inv.Memo, &inv.Footer,
 		&metaJSON, &inv.CreatedAt, &inv.UpdatedAt, &inv.SourcePlanChangedAt,
-		&inv.SourceSubscriptionItemID,
+		&inv.SourceSubscriptionItemID, (*string)(&inv.SourceChangeType),
 	}
 }
 

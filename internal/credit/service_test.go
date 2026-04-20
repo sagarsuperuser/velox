@@ -46,11 +46,12 @@ func (m *memStore) AppendEntry(_ context.Context, tenantID string, entry domain.
 	return entry, nil
 }
 
-func (m *memStore) GetByProrationSource(_ context.Context, tenantID, subscriptionID, subscriptionItemID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error) {
+func (m *memStore) GetByProrationSource(_ context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.CreditLedgerEntry, error) {
 	for _, e := range m.entries {
 		if e.TenantID == tenantID && e.SourceSubscriptionID == subscriptionID &&
 			e.SourceSubscriptionItemID == subscriptionItemID &&
-			e.SourcePlanChangedAt != nil && e.SourcePlanChangedAt.Equal(planChangedAt) {
+			e.SourceChangeType == changeType &&
+			e.SourcePlanChangedAt != nil && e.SourcePlanChangedAt.Equal(changeAt) {
 			return e, nil
 		}
 	}

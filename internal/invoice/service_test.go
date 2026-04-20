@@ -40,11 +40,12 @@ func (m *memStore) Get(_ context.Context, tenantID, id string) (domain.Invoice, 
 	return inv, nil
 }
 
-func (m *memStore) GetByProrationSource(_ context.Context, tenantID, subscriptionID, subscriptionItemID string, planChangedAt time.Time) (domain.Invoice, error) {
+func (m *memStore) GetByProrationSource(_ context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.Invoice, error) {
 	for _, inv := range m.invoices {
 		if inv.TenantID == tenantID && inv.SubscriptionID == subscriptionID &&
 			inv.SourceSubscriptionItemID == subscriptionItemID &&
-			inv.SourcePlanChangedAt != nil && inv.SourcePlanChangedAt.Equal(planChangedAt) {
+			inv.SourceChangeType == changeType &&
+			inv.SourcePlanChangedAt != nil && inv.SourcePlanChangedAt.Equal(changeAt) {
 			return inv, nil
 		}
 	}

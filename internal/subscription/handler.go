@@ -35,7 +35,7 @@ type PlanReader interface {
 // matches this tuple.
 type ProrationInvoiceCreator interface {
 	CreateInvoiceWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
-	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, planChangedAt time.Time) (domain.Invoice, error)
+	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.Invoice, error)
 	NextInvoiceNumber(ctx context.Context, tenantID string) (string, error)
 }
 
@@ -43,7 +43,7 @@ type ProrationInvoiceCreator interface {
 // (subscription, item, plan_changed_at) — see ProrationInvoiceCreator comment.
 type ProrationCreditGranter interface {
 	GrantProration(ctx context.Context, tenantID string, input ProrationGrantInput) error
-	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error)
+	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.CreditLedgerEntry, error)
 }
 
 // ProrationCouponApplier computes a coupon discount against a proration
@@ -75,8 +75,10 @@ type ProrationTaxApplier interface {
 	ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, currency string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (ProrationTaxResult, error)
 }
 
-// ProrationGrantInput carries the downgrade credit payload plus the
-// provenance fields required for dedup.
+// ProrationGrantInput carries the downgrade/removal/reduction credit payload
+// plus the provenance fields required for dedup. SourceChangeType
+// distinguishes plan-downgrade from qty-reduction from item-remove when the
+// same item is mutated multiple ways within the same billing period.
 type ProrationGrantInput struct {
 	CustomerID               string
 	AmountCents              int64
@@ -84,6 +86,7 @@ type ProrationGrantInput struct {
 	SourceSubscriptionID     string
 	SourceSubscriptionItemID string
 	SourcePlanChangedAt      time.Time
+	SourceChangeType         domain.ItemChangeType
 }
 
 type Handler struct {
@@ -349,7 +352,10 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusOK, sub)
 }
 
-// addItem appends a new priced line to a subscription.
+// addItem appends a new priced line to a subscription. When the parent
+// subscription is mid-period, the new item drives a proration invoice so the
+// customer is charged for the partial-period cost of the addition rather than
+// getting it free until next cycle close.
 func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	id := chi.URLParam(r, "id")
@@ -358,6 +364,21 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		respond.BadRequest(w, r, "invalid JSON body")
 		return
+	}
+
+	// Snapshot the pre-add subscription for proration. Factor is computed
+	// from the period boundaries which don't change when an item is added
+	// mid-cycle, so a pre-add read is equivalent to a post-add read here.
+	var subBefore domain.Subscription
+	var prorationFactor float64
+	if h.plans != nil && h.invoices != nil {
+		sub, serr := h.svc.Get(r.Context(), tenantID, id)
+		if serr == nil {
+			subBefore = sub
+			if sub.Status == domain.SubscriptionActive {
+				prorationFactor = remainingPeriodFactor(sub, time.Now().UTC())
+			}
+		}
 	}
 
 	item, err := h.svc.AddItem(r.Context(), tenantID, id, input)
@@ -383,16 +404,68 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Re-fetch the subscription so the event payload reflects the full post-add
-	// item_count and status. Silent fallback: if the read fails we still emit
-	// with a minimal struct — the item.added event is still useful without
-	// the enclosing sub snapshot.
-	if h.events != nil {
-		sub, getErr := h.svc.Get(r.Context(), tenantID, id)
+	// Re-fetch the subscription so downstream payload/proration paths see the
+	// full post-add Items slice. Silent fallback: if the read fails we use a
+	// minimal struct for events — item.added is still useful without the
+	// enclosing snapshot.
+	var subAfter domain.Subscription
+	if h.events != nil || (prorationFactor > 0) {
+		s, getErr := h.svc.Get(r.Context(), tenantID, id)
 		if getErr != nil {
-			sub = domain.Subscription{ID: id}
+			subAfter = subBefore
+			if subAfter.ID == "" {
+				subAfter = domain.Subscription{ID: id}
+			}
+		} else {
+			subAfter = s
 		}
-		h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionItemAdded, sub, map[string]any{
+	}
+
+	if prorationFactor > 0 && h.invoices != nil {
+		changeAt := item.CreatedAt
+		if changeAt.IsZero() {
+			changeAt = time.Now().UTC()
+		}
+		spec := itemProrationSpec{
+			changeType:      domain.ItemChangeTypeAdd,
+			changeAt:        changeAt,
+			prorationFactor: prorationFactor,
+			itemID:          item.ID,
+			oldPlanID:       "",
+			oldQuantity:     0,
+			newPlanID:       item.PlanID,
+			newQuantity:     item.Quantity,
+		}
+		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec)
+		if prorationErr != nil {
+			slog.Error("item proration failed after item add committed",
+				"subscription_id", id,
+				"item_id", item.ID,
+				"tenant_id", tenantID,
+				"plan_id", item.PlanID,
+				"quantity", item.Quantity,
+				"proration_factor", prorationFactor,
+				"error", prorationErr,
+			)
+			if h.auditLogger != nil {
+				_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.proration_failed", "subscription", id, map[string]any{
+					"item_id":          item.ID,
+					"change_type":      string(domain.ItemChangeTypeAdd),
+					"plan_id":          item.PlanID,
+					"quantity":         item.Quantity,
+					"proration_factor": prorationFactor,
+					"error":            prorationErr.Error(),
+				})
+			}
+			respond.Error(w, r, http.StatusInternalServerError, "api_error", "proration_failed",
+				"item add succeeded but proration generation failed — item is on the subscription; retry or contact support to reconcile")
+			return
+		}
+		_ = prorationResult
+	}
+
+	if h.events != nil {
+		h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionItemAdded, subAfter, map[string]any{
 			"item": itemPayload(item),
 		})
 	}
@@ -415,17 +488,21 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Capture the pre-change plan only when we're about to drive proration —
-	// the old plan id and the subscription's remaining period both come from
-	// a snapshot taken before UpdateItem mutates the row.
+	// Capture the pre-change item/plan only when we're about to drive proration
+	// — the old plan id, old quantity, and the subscription's remaining period
+	// all come from a snapshot taken before UpdateItem mutates the row.
 	var oldPlanID string
+	var oldQuantity int64
 	var prorationFactor float64
 	var subBefore domain.Subscription
 	isImmediatePlanChange := input.NewPlanID != "" && input.Immediate
-	if isImmediatePlanChange && h.plans != nil {
+	isQuantityChange := input.Quantity != nil
+	prorationEligible := (isImmediatePlanChange || isQuantityChange) && h.plans != nil
+	if prorationEligible {
 		item, gerr := h.svc.store.GetItem(r.Context(), tenantID, itemID)
 		if gerr == nil && item.SubscriptionID == subID {
 			oldPlanID = item.PlanID
+			oldQuantity = item.Quantity
 		}
 		sub, serr := h.svc.Get(r.Context(), tenantID, subID)
 		if serr == nil {
@@ -460,37 +537,81 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.item_updated", "subscription", subID, payload)
 	}
 
-	if isImmediatePlanChange && prorationFactor > 0 && h.plans != nil && h.invoices != nil {
+	if prorationEligible && prorationFactor > 0 && h.invoices != nil {
 		// Re-hydrate the subscription post-change so the Items slice reflects
-		// the swapped plan — handleProration walks it to resolve coupon plan
-		// eligibility. We fall back to subBefore on error so the handler still
-		// responds, but use the fresh Items when available.
+		// the swapped plan/quantity — handleProration walks it to resolve
+		// coupon plan eligibility. Fall back to subBefore on error so the
+		// handler still responds, but use the fresh Items when available.
 		subAfter, getErr := h.svc.Get(r.Context(), tenantID, subID)
 		if getErr != nil {
 			subAfter = subBefore
 		}
-		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, result.Item, oldPlanID, prorationFactor)
+		var spec itemProrationSpec
+		if isImmediatePlanChange {
+			var changeAt time.Time
+			if result.Item.PlanChangedAt != nil {
+				changeAt = *result.Item.PlanChangedAt
+			} else {
+				changeAt = time.Now().UTC()
+			}
+			spec = itemProrationSpec{
+				changeType:      domain.ItemChangeTypePlan,
+				changeAt:        changeAt,
+				prorationFactor: prorationFactor,
+				itemID:          result.Item.ID,
+				oldPlanID:       oldPlanID,
+				oldQuantity:     result.Item.Quantity,
+				newPlanID:       result.Item.PlanID,
+				newQuantity:     result.Item.Quantity,
+			}
+		} else {
+			// Quantity-only change. Plan is unchanged; store doesn't stamp a
+			// dedicated timestamp so we use UpdatedAt (the store bumps it on
+			// every item write) — stable across retries of the same in-flight
+			// UpdateItemQuantity call.
+			changeAt := result.Item.UpdatedAt
+			if changeAt.IsZero() {
+				changeAt = time.Now().UTC()
+			}
+			spec = itemProrationSpec{
+				changeType:      domain.ItemChangeTypeQuantity,
+				changeAt:        changeAt,
+				prorationFactor: prorationFactor,
+				itemID:          result.Item.ID,
+				oldPlanID:       oldPlanID,
+				oldQuantity:     oldQuantity,
+				newPlanID:       result.Item.PlanID,
+				newQuantity:     result.Item.Quantity,
+			}
+		}
+		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec)
 		if prorationErr != nil {
-			slog.Error("item proration failed after plan change committed",
+			slog.Error("item proration failed after item change committed",
 				"subscription_id", subID,
 				"item_id", result.Item.ID,
 				"tenant_id", tenantID,
+				"change_type", spec.changeType,
 				"old_plan_id", oldPlanID,
 				"new_plan_id", input.NewPlanID,
+				"old_quantity", oldQuantity,
+				"new_quantity", spec.newQuantity,
 				"proration_factor", prorationFactor,
 				"error", prorationErr,
 			)
 			if h.auditLogger != nil {
 				_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.proration_failed", "subscription", subID, map[string]any{
 					"item_id":          result.Item.ID,
+					"change_type":      string(spec.changeType),
 					"old_plan_id":      oldPlanID,
 					"new_plan_id":      input.NewPlanID,
+					"old_quantity":     oldQuantity,
+					"new_quantity":     spec.newQuantity,
 					"proration_factor": prorationFactor,
 					"error":            prorationErr.Error(),
 				})
 			}
 			respond.Error(w, r, http.StatusInternalServerError, "api_error", "proration_failed",
-				"plan change succeeded but proration generation failed — subscription item is on the new plan; retry or contact support to reconcile")
+				"item change succeeded but proration generation failed — item is on the new state; retry or contact support to reconcile")
 			return
 		}
 		if prorationResult != nil {
@@ -563,6 +684,29 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 	subID := chi.URLParam(r, "id")
 	itemID := chi.URLParam(r, "itemID")
 
+	// Capture the pre-delete item + sub for proration. Removing mid-period
+	// should credit back the unused portion of what the customer already paid
+	// for this item. RemoveItem is a hard delete so the snapshot must be
+	// taken before the call.
+	var removedPlanID string
+	var removedQuantity int64
+	var subBefore domain.Subscription
+	var prorationFactor float64
+	if h.plans != nil && h.credits != nil {
+		item, gerr := h.svc.store.GetItem(r.Context(), tenantID, itemID)
+		if gerr == nil && item.SubscriptionID == subID {
+			removedPlanID = item.PlanID
+			removedQuantity = item.Quantity
+		}
+		sub, serr := h.svc.Get(r.Context(), tenantID, subID)
+		if serr == nil {
+			subBefore = sub
+			if sub.Status == domain.SubscriptionActive {
+				prorationFactor = remainingPeriodFactor(sub, time.Now().UTC())
+			}
+		}
+	}
+
 	if err := h.svc.RemoveItem(r.Context(), tenantID, subID, itemID); err != nil {
 		if errors.Is(err, errs.ErrNotFound) {
 			respond.NotFound(w, r, "subscription item")
@@ -579,6 +723,50 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	if prorationFactor > 0 && removedPlanID != "" {
+		// Re-fetch for coupon plan eligibility over the remaining items.
+		subAfter, getErr := h.svc.Get(r.Context(), tenantID, subID)
+		if getErr != nil {
+			subAfter = subBefore
+		}
+		spec := itemProrationSpec{
+			changeType:      domain.ItemChangeTypeRemove,
+			changeAt:        time.Now().UTC(),
+			prorationFactor: prorationFactor,
+			itemID:          itemID,
+			oldPlanID:       removedPlanID,
+			oldQuantity:     removedQuantity,
+			newPlanID:       "",
+			newQuantity:     0,
+		}
+		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec)
+		if prorationErr != nil {
+			slog.Error("item proration failed after item remove committed",
+				"subscription_id", subID,
+				"item_id", itemID,
+				"tenant_id", tenantID,
+				"plan_id", removedPlanID,
+				"quantity", removedQuantity,
+				"proration_factor", prorationFactor,
+				"error", prorationErr,
+			)
+			if h.auditLogger != nil {
+				_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.proration_failed", "subscription", subID, map[string]any{
+					"item_id":          itemID,
+					"change_type":      string(domain.ItemChangeTypeRemove),
+					"plan_id":          removedPlanID,
+					"quantity":         removedQuantity,
+					"proration_factor": prorationFactor,
+					"error":            prorationErr.Error(),
+				})
+			}
+			respond.Error(w, r, http.StatusInternalServerError, "api_error", "proration_failed",
+				"item remove succeeded but proration credit failed — item is removed; retry or contact support to reconcile")
+			return
+		}
+		_ = prorationResult
+	}
+
 	if h.events != nil {
 		sub, getErr := h.svc.Get(r.Context(), tenantID, subID)
 		if getErr != nil {
@@ -592,52 +780,101 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleItemProration creates a proration invoice (upgrade) or grants credit
-// (downgrade) for an immediate plan change on one item. Dedup key is
-// (subscription, item, plan_changed_at) — retries of the same change converge
-// on the existing invoice/credit via the proration dedup index.
-func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub domain.Subscription, item domain.SubscriptionItem, oldPlanID string, prorationFactor float64) (*ProrationDetail, error) {
-	oldPlan, err := h.plans.GetPlan(ctx, tenantID, oldPlanID)
-	if err != nil {
-		return nil, fmt.Errorf("get old plan: %w", err)
+// itemProrationSpec describes a single item mutation that the proration
+// generator should price. The generator computes a per-unit-period delta
+// between the before-state amount (oldPlan × oldQty) and the after-state
+// amount (newPlan × newQty), scales by prorationFactor, and emits either a
+// proration invoice (positive delta) or a proration credit (negative).
+//
+// Each of the four mutation types fills the struct slightly differently:
+//   - plan:     old/new plan differ, old/new qty equal (single item.Quantity)
+//   - quantity: old/new plan equal, old/new qty differ
+//   - add:      oldPlanID="", oldQuantity=0; new populated (delta = +new)
+//   - remove:   newPlanID="", newQuantity=0; old populated (delta = -old)
+//
+// changeAt is the dedup-key timestamp (kept on invoice.source_plan_changed_at
+// for historical reasons — see migration 0027 comment). Callers should pass
+// item.PlanChangedAt for plan changes, or a freshly-stamped clock for the
+// other three.
+type itemProrationSpec struct {
+	changeType      domain.ItemChangeType
+	changeAt        time.Time
+	prorationFactor float64
+	itemID          string
+	oldPlanID       string
+	oldQuantity     int64
+	newPlanID       string
+	newQuantity     int64
+}
+
+// handleItemProration generates the invoice or credit for a single item
+// mutation. Dedup key is (tenant, subscription, item, change_type, change_at)
+// — retries of the same mutation converge on the existing artifact via the
+// proration dedup index.
+func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub domain.Subscription, spec itemProrationSpec) (*ProrationDetail, error) {
+	// Resolve plans needed for pricing and naming. The "effective" plan drives
+	// currency and coupon eligibility — for a remove it's the old plan; for
+	// anything else it's the new plan.
+	var oldPlan, newPlan domain.Plan
+	if spec.oldPlanID != "" {
+		p, err := h.plans.GetPlan(ctx, tenantID, spec.oldPlanID)
+		if err != nil {
+			return nil, fmt.Errorf("get old plan: %w", err)
+		}
+		oldPlan = p
 	}
-	newPlan, err := h.plans.GetPlan(ctx, tenantID, item.PlanID)
-	if err != nil {
-		return nil, fmt.Errorf("get new plan: %w", err)
+	if spec.newPlanID != "" {
+		p, err := h.plans.GetPlan(ctx, tenantID, spec.newPlanID)
+		if err != nil {
+			return nil, fmt.Errorf("get new plan: %w", err)
+		}
+		newPlan = p
 	}
 
-	// Quantity multiplies the per-unit proration so a 10-seat upgrade charges
-	// 10× the single-seat diff. Fixed-amount coupons still apply at the
-	// invoice level (downstream).
-	diff := float64(newPlan.BaseAmountCents-oldPlan.BaseAmountCents) * prorationFactor * float64(item.Quantity)
+	effectivePlan := newPlan
+	if spec.newPlanID == "" {
+		effectivePlan = oldPlan
+	}
+	if effectivePlan.ID == "" {
+		return nil, fmt.Errorf("proration spec resolved no plan; cannot price item mutation")
+	}
+
+	oldAmount := oldPlan.BaseAmountCents * spec.oldQuantity
+	newAmount := newPlan.BaseAmountCents * spec.newQuantity
+	diff := float64(newAmount-oldAmount) * spec.prorationFactor
 	proratedCents := int64(math.RoundToEven(diff))
 
 	if proratedCents == 0 {
 		return nil, nil
 	}
 
-	if item.PlanChangedAt == nil {
-		return nil, fmt.Errorf("item missing plan_changed_at; cannot generate proration safely")
-	}
-	planChangedAt := *item.PlanChangedAt
-
 	detail := &ProrationDetail{
-		OldPlanID:       oldPlanID,
-		NewPlanID:       newPlan.ID,
-		ProrationFactor: prorationFactor,
+		OldPlanID:       spec.oldPlanID,
+		NewPlanID:       spec.newPlanID,
+		ProrationFactor: spec.prorationFactor,
 		AmountCents:     proratedCents,
 	}
+
+	memo := prorationMemo(spec, oldPlan, newPlan)
 
 	if proratedCents > 0 {
 		now := time.Now().UTC()
 		dueAt := now.AddDate(0, 0, 30)
 
-		periodStart := planChangedAt
+		periodStart := spec.changeAt
 		var periodEnd time.Time
 		if sub.CurrentBillingPeriodEnd != nil {
 			periodEnd = *sub.CurrentBillingPeriodEnd
 		} else {
-			periodEnd = planChangedAt
+			periodEnd = spec.changeAt
+		}
+
+		// Line item quantity represents "what was billed" for this charge.
+		// For plan changes it's the item quantity; for qty/add it's the
+		// new quantity (effectively the delta billed).
+		lineQty := spec.newQuantity
+		if lineQty == 0 {
+			lineQty = 1
 		}
 
 		var discountCents int64
@@ -652,15 +889,14 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 				appliedRedemptionIDs = d.RedemptionIDs
 			}
 		}
-		memo := fmt.Sprintf("Plan upgrade proration: %s -> %s (qty %d)", oldPlan.Name, newPlan.Name, item.Quantity)
 		lineItem := domain.InvoiceLineItem{
 			LineType:         domain.LineTypeBaseFee,
 			Description:      memo,
-			Quantity:         item.Quantity,
-			UnitAmountCents:  proratedCents / max64(item.Quantity, 1),
+			Quantity:         lineQty,
+			UnitAmountCents:  proratedCents / max64(lineQty, 1),
 			AmountCents:      proratedCents,
 			TotalAmountCents: proratedCents,
-			Currency:         newPlan.Currency,
+			Currency:         effectivePlan.Currency,
 		}
 		lineItems := []domain.InvoiceLineItem{lineItem}
 
@@ -669,7 +905,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			DiscountCents: discountCents,
 		}
 		if h.tax != nil {
-			r, err := h.tax.ApplyTaxToLineItems(ctx, tenantID, sub.CustomerID, newPlan.Currency, proratedCents, discountCents, lineItems)
+			r, err := h.tax.ApplyTaxToLineItems(ctx, tenantID, sub.CustomerID, effectivePlan.Currency, proratedCents, discountCents, lineItems)
 			if err != nil {
 				slog.Warn("tax apply failed on proration, proceeding with zero tax",
 					"error", err, "subscription_id", sub.ID)
@@ -679,12 +915,13 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		}
 		netProrated := taxResult.SubtotalCents - taxResult.DiscountCents + taxResult.TaxAmountCents
 
+		changeAt := spec.changeAt
 		invoice := domain.Invoice{
 			CustomerID:               sub.CustomerID,
 			SubscriptionID:           sub.ID,
 			Status:                   domain.InvoiceFinalized,
 			PaymentStatus:            domain.PaymentPending,
-			Currency:                 newPlan.Currency,
+			Currency:                 effectivePlan.Currency,
 			SubtotalCents:            taxResult.SubtotalCents,
 			DiscountCents:            taxResult.DiscountCents,
 			TaxRateBP:                taxResult.TaxRateBP,
@@ -700,8 +937,9 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			DueAt:                    &dueAt,
 			NetPaymentTermDays:       30,
 			Memo:                     memo,
-			SourcePlanChangedAt:      &planChangedAt,
-			SourceSubscriptionItemID: item.ID,
+			SourcePlanChangedAt:      &changeAt,
+			SourceSubscriptionItemID: spec.itemID,
+			SourceChangeType:         spec.changeType,
 		}
 
 		invoiceNumber, err := h.invoices.NextInvoiceNumber(ctx, tenantID)
@@ -712,15 +950,16 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 		inv, err := h.invoices.CreateInvoiceWithLineItems(ctx, tenantID, invoice, lineItems)
 		if errors.Is(err, errs.ErrAlreadyExists) {
-			existing, lookupErr := h.invoices.GetByProrationSource(ctx, tenantID, sub.ID, item.ID, planChangedAt)
+			existing, lookupErr := h.invoices.GetByProrationSource(ctx, tenantID, sub.ID, spec.itemID, spec.changeType, spec.changeAt)
 			if lookupErr != nil {
 				return nil, fmt.Errorf("proration dedup lookup: %w", lookupErr)
 			}
 			slog.Info("proration invoice already exists; retry dedup",
 				"invoice_id", existing.ID,
 				"subscription_id", sub.ID,
-				"item_id", item.ID,
-				"plan_changed_at", planChangedAt,
+				"item_id", spec.itemID,
+				"change_type", spec.changeType,
+				"change_at", spec.changeAt,
 			)
 			detail.InvoiceID = existing.ID
 			detail.Type = "invoice"
@@ -745,33 +984,33 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		slog.Info("proration invoice created",
 			"invoice_id", inv.ID,
 			"subscription_id", sub.ID,
-			"item_id", item.ID,
+			"item_id", spec.itemID,
+			"change_type", spec.changeType,
 			"amount_cents", proratedCents,
-			"old_plan", oldPlan.Name,
-			"new_plan", newPlan.Name,
 		)
 	} else {
 		creditAmount := -proratedCents
 		if h.credits != nil {
-			desc := fmt.Sprintf("Plan downgrade proration: %s -> %s (qty %d)", oldPlan.Name, newPlan.Name, item.Quantity)
 			err := h.credits.GrantProration(ctx, tenantID, ProrationGrantInput{
 				CustomerID:               sub.CustomerID,
 				AmountCents:              creditAmount,
-				Description:              desc,
+				Description:              memo,
 				SourceSubscriptionID:     sub.ID,
-				SourceSubscriptionItemID: item.ID,
-				SourcePlanChangedAt:      planChangedAt,
+				SourceSubscriptionItemID: spec.itemID,
+				SourcePlanChangedAt:      spec.changeAt,
+				SourceChangeType:         spec.changeType,
 			})
 			if errors.Is(err, errs.ErrAlreadyExists) {
-				existing, lookupErr := h.credits.GetByProrationSource(ctx, tenantID, sub.ID, item.ID, planChangedAt)
+				existing, lookupErr := h.credits.GetByProrationSource(ctx, tenantID, sub.ID, spec.itemID, spec.changeType, spec.changeAt)
 				if lookupErr != nil {
 					return nil, fmt.Errorf("proration credit dedup lookup: %w", lookupErr)
 				}
 				slog.Info("proration credit already granted; retry dedup",
 					"entry_id", existing.ID,
 					"subscription_id", sub.ID,
-					"item_id", item.ID,
-					"plan_changed_at", planChangedAt,
+					"item_id", spec.itemID,
+					"change_type", spec.changeType,
+					"change_at", spec.changeAt,
 				)
 				detail.AmountCents = existing.AmountCents
 				detail.Type = "credit"
@@ -786,15 +1025,34 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 			slog.Info("proration credit granted",
 				"subscription_id", sub.ID,
-				"item_id", item.ID,
+				"item_id", spec.itemID,
+				"change_type", spec.changeType,
 				"credit_cents", creditAmount,
-				"old_plan", oldPlan.Name,
-				"new_plan", newPlan.Name,
 			)
 		}
 	}
 
 	return detail, nil
+}
+
+// prorationMemo picks a human-readable description per change type. Kept
+// separate from handleItemProration so the math and the wording don't tangle.
+func prorationMemo(spec itemProrationSpec, oldPlan, newPlan domain.Plan) string {
+	switch spec.changeType {
+	case domain.ItemChangeTypePlan:
+		verb := "upgrade"
+		if newPlan.BaseAmountCents < oldPlan.BaseAmountCents {
+			verb = "downgrade"
+		}
+		return fmt.Sprintf("Plan %s proration: %s -> %s (qty %d)", verb, oldPlan.Name, newPlan.Name, spec.newQuantity)
+	case domain.ItemChangeTypeQuantity:
+		return fmt.Sprintf("Quantity change proration: %s (%d -> %d seats)", newPlan.Name, spec.oldQuantity, spec.newQuantity)
+	case domain.ItemChangeTypeAdd:
+		return fmt.Sprintf("Item add proration: %s (qty %d)", newPlan.Name, spec.newQuantity)
+	case domain.ItemChangeTypeRemove:
+		return fmt.Sprintf("Item remove proration: %s (qty %d)", oldPlan.Name, spec.oldQuantity)
+	}
+	return "Item change proration"
 }
 
 // remainingPeriodFactor returns the fraction of the current billing period
