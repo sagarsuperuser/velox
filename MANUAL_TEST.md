@@ -1137,18 +1137,6 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 
 ---
 
-## FLOW 50b: Keyboard Shortcuts
-
-- [ ] Press `?` > verify: keyboard help overlay appears
-- [ ] Verify: shows navigation shortcuts (g+d, g+c, g+i, g+s, g+u, g+p, g+a, g+k)
-- [ ] Press Escape > verify: overlay closes
-- [ ] Press `g` then `c` > verify: navigated to Customers
-- [ ] Press `g` then `i` > verify: navigated to Invoices
-- [ ] Press `g` then `a` > verify: navigated to Analytics
-- [ ] Verify: shortcuts don't fire when typing in an input field
-
----
-
 ## FLOW 51: Dark Mode
 
 - [ ] Click the dark mode toggle (Sun/Moon icon in sidebar footer)
@@ -1253,7 +1241,6 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 | 48b | Analytics Page | | |
 | 49 | Usage Events Page Quality | | |
 | 50 | Cmd+K Command Palette | | |
-| 50b | Keyboard Shortcuts | | |
 | 51 | Dark Mode | | |
 | 52 | Responsive / Mobile | | |
 | 53 | Edge Cases | | |
