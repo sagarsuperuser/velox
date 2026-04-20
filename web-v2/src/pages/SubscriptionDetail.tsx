@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, type Subscription, type Customer, type Plan, type Invoice, type InvoicePreview } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, type Subscription, type SubscriptionItem, type Plan, type ItemChangeResult } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { cn } from '@/lib/utils'
@@ -12,10 +12,10 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
-import { Separator } from '@/components/ui/separator'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
 import {
-  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -28,11 +28,18 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { Loader2 } from 'lucide-react'
+import { Loader2, Plus } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
 const statusVariant = statusBadgeVariant
+
+type ItemDialogState =
+  | { kind: 'add' }
+  | { kind: 'change-plan'; item: SubscriptionItem }
+  | { kind: 'change-quantity'; item: SubscriptionItem }
+  | { kind: 'remove'; item: SubscriptionItem }
+  | null
 
 export default function SubscriptionDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -41,7 +48,7 @@ export default function SubscriptionDetailPage() {
 
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   const [showPauseConfirm, setShowPauseConfirm] = useState(false)
-  const [showChangePlan, setShowChangePlan] = useState(false)
+  const [itemDialog, setItemDialog] = useState<ItemDialogState>(null)
 
   const { data: sub, isLoading, error: loadError, refetch } = useQuery({
     queryKey: ['subscription', id],
@@ -60,7 +67,8 @@ export default function SubscriptionDetailPage() {
     queryFn: () => api.listPlans().then(r => r.data),
   })
 
-  const plan = plansData?.find(p => p.id === sub?.plan_id)
+  const planById = (planID: string): Plan | undefined => plansData?.find(p => p.id === planID)
+  const items = sub?.items ?? []
 
   const { data: invoices } = useQuery({
     queryKey: ['subscription-invoices', id],
@@ -106,6 +114,12 @@ export default function SubscriptionDetailPage() {
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to cancel'),
   })
 
+  const cancelPendingMutation = useMutation({
+    mutationFn: (itemID: string) => api.cancelPendingItemChange(id!, itemID),
+    onSuccess: () => { invalidateAll(); toast.success('Pending plan change canceled') },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to cancel pending change'),
+  })
+
   const acting = activateMutation.isPending || pauseMutation.isPending || resumeMutation.isPending || cancelMutation.isPending
 
   const loading = isLoading
@@ -145,6 +159,8 @@ export default function SubscriptionDetailPage() {
     )
   }
 
+  const firstItemPlan = items[0] ? planById(items[0].plan_id) : undefined
+
   return (
     <Layout>
       <DetailBreadcrumb to="/subscriptions" parentLabel="Subscriptions" currentLabel={sub.display_name} />
@@ -167,9 +183,6 @@ export default function SubscriptionDetailPage() {
           )}
           {sub.status === 'active' && (
             <>
-              <Button variant="outline" onClick={() => setShowChangePlan(true)} disabled={acting}>
-                Change Plan
-              </Button>
               <Button variant="outline" className="border-amber-300 text-amber-600 hover:bg-amber-50" onClick={() => setShowPauseConfirm(true)} disabled={acting}>
                 Pause
               </Button>
@@ -235,7 +248,6 @@ export default function SubscriptionDetailPage() {
 
         if (timelinePoints.length < 2) return null
 
-        // Find the last past point to draw the progress fill
         const lastPastIndex = timelinePoints.reduce((acc, p, i) => (p.isPast ? i : acc), -1)
         const progressPercent = lastPastIndex >= 0
           ? (lastPastIndex / (timelinePoints.length - 1)) * 100
@@ -245,15 +257,12 @@ export default function SubscriptionDetailPage() {
           <Card className="mt-6 mb-6">
             <CardContent className="py-5 px-6">
               <div className="relative">
-                {/* Track */}
                 <div className="absolute left-[calc(0%+6px)] right-[calc(0%+6px)] top-[11px] h-[2px] bg-border" />
-                {/* Progress fill */}
                 <div
                   className="absolute left-[calc(0%+6px)] top-[11px] h-[2px] bg-primary transition-all duration-300"
                   style={{ width: `calc(${progressPercent}% - 12px)` }}
                 />
 
-                {/* Points */}
                 <div className="relative flex justify-between">
                   {timelinePoints.map((point, i) => (
                     <div key={i} className="flex flex-col items-center" style={{ width: 90 }}>
@@ -298,18 +307,21 @@ export default function SubscriptionDetailPage() {
               )}
             </div>
             <div className="flex-1 px-6 py-4">
-              <p className="text-sm text-muted-foreground">Plan</p>
-              {plan ? (
-                <Link to={`/plans/${plan.id}`} className="text-lg font-semibold text-primary hover:underline mt-1 block">
-                  {plan.name}
-                </Link>
+              <p className="text-sm text-muted-foreground">Items</p>
+              {items.length === 0 ? (
+                <p className="text-lg font-semibold text-foreground mt-1">—</p>
+              ) : items.length === 1 && firstItemPlan ? (
+                <>
+                  <Link to={`/plans/${firstItemPlan.id}`} className="text-lg font-semibold text-primary hover:underline mt-1 block">
+                    {firstItemPlan.name}
+                  </Link>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {items[0].quantity > 1 ? `${items[0].quantity} × ` : ''}
+                    {formatCents(firstItemPlan.base_amount_cents)}/{firstItemPlan.billing_interval === 'yearly' ? 'yr' : 'mo'}
+                  </p>
+                </>
               ) : (
-                <p className="text-lg font-semibold text-foreground mt-1">{sub.plan_id.slice(0, 8)}...</p>
-              )}
-              {plan && (
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {formatCents(plan.base_amount_cents)}/{plan.billing_interval === 'yearly' ? 'yr' : 'mo'}
-                </p>
+                <p className="text-lg font-semibold text-foreground mt-1">{items.length} items</p>
               )}
             </div>
             <div className="flex-1 px-6 py-4">
@@ -327,6 +339,103 @@ export default function SubscriptionDetailPage() {
               </div>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Items */}
+      <Card className="mt-6">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm">Items ({items.length})</CardTitle>
+            {sub.status === 'active' && plansData && (
+              <Button size="sm" variant="outline" onClick={() => setItemDialog({ kind: 'add' })}>
+                <Plus size={14} className="mr-1" /> Add Item
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {items.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-8">
+              No items on this subscription yet
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Plan</TableHead>
+                  <TableHead className="text-right">Quantity</TableHead>
+                  <TableHead>Pending Change</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.map(item => {
+                  const itemPlan = planById(item.plan_id)
+                  const pendingPlan = item.pending_plan_id ? planById(item.pending_plan_id) : undefined
+                  return (
+                    <TableRow key={item.id}>
+                      <TableCell>
+                        {itemPlan ? (
+                          <div>
+                            <Link to={`/plans/${itemPlan.id}`} className="text-sm font-medium text-primary hover:underline">
+                              {itemPlan.name}
+                            </Link>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {formatCents(itemPlan.base_amount_cents)}/{itemPlan.billing_interval === 'yearly' ? 'yr' : 'mo'}
+                            </p>
+                          </div>
+                        ) : (
+                          <span className="text-sm text-foreground font-mono">{item.plan_id.slice(0, 8)}...</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right text-sm font-medium">{item.quantity}</TableCell>
+                      <TableCell>
+                        {item.pending_plan_id ? (
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline">
+                              → {pendingPlan?.name || item.pending_plan_id.slice(0, 8) + '...'}
+                            </Badge>
+                            {item.pending_plan_effective_at && (
+                              <span className="text-xs text-muted-foreground">
+                                {formatDate(item.pending_plan_effective_at)}
+                              </span>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs"
+                              disabled={cancelPendingMutation.isPending}
+                              onClick={() => cancelPendingMutation.mutate(item.id)}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {sub.status === 'active' && (
+                          <div className="flex items-center gap-2 justify-end">
+                            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setItemDialog({ kind: 'change-quantity', item })}>
+                              Change Qty
+                            </Button>
+                            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setItemDialog({ kind: 'change-plan', item })}>
+                              Change Plan
+                            </Button>
+                            <Button size="sm" variant="outline" className="h-7 text-xs border-destructive text-destructive hover:bg-destructive/10" onClick={() => setItemDialog({ kind: 'remove', item })}>
+                              Remove
+                            </Button>
+                          </div>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
 
@@ -349,21 +458,6 @@ export default function SubscriptionDetailPage() {
                 </Link>
               ) : (
                 <span className="text-sm text-foreground font-mono">{sub.customer_id}</span>
-              )}
-            </div>
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground w-40 shrink-0">Plan</span>
-              {plan ? (
-                <span className="text-sm">
-                  <Link to={`/plans/${plan.id}`} className="font-medium text-primary hover:underline">
-                    {plan.name}
-                  </Link>
-                  <span className="text-muted-foreground ml-1.5">
-                    {formatCents(plan.base_amount_cents)}/{plan.billing_interval === 'yearly' ? 'yr' : 'mo'}
-                  </span>
-                </span>
-              ) : (
-                <span className="text-sm text-foreground font-mono">{sub.plan_id}</span>
               )}
             </div>
             <div className="flex items-center justify-between px-6 py-3">
@@ -538,56 +632,200 @@ export default function SubscriptionDetailPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Change Plan Dialog */}
-      {showChangePlan && plansData && (
-        <ChangePlanDialog
-          subscriptionId={sub.id}
-          currentPlanId={sub.plan_id}
-          currentPlanName={plan?.name || 'Unknown'}
+      {/* Add Item */}
+      {itemDialog?.kind === 'add' && plansData && (
+        <AddItemDialog
+          subscription={sub}
           plans={plansData}
-          onClose={() => setShowChangePlan(false)}
-          onChanged={(proration) => {
-            setShowChangePlan(false)
+          existingPlanIDs={items.map(i => i.plan_id)}
+          onClose={() => setItemDialog(null)}
+          onAdded={() => { setItemDialog(null); invalidateAll(); toast.success('Item added') }}
+        />
+      )}
+
+      {/* Change Item Plan */}
+      {itemDialog?.kind === 'change-plan' && plansData && (
+        <ChangeItemPlanDialog
+          subscriptionID={sub.id}
+          item={itemDialog.item}
+          plans={plansData}
+          existingPlanIDs={items.map(i => i.plan_id)}
+          onClose={() => setItemDialog(null)}
+          onChanged={(res) => {
+            setItemDialog(null)
             invalidateAll()
-            if (proration) {
-              if (proration.type === 'upgrade') {
-                toast.success(`Proration invoice created for ${formatCents(proration.amount_cents)}`)
-              } else if (proration.type === 'downgrade') {
-                toast.success(`${formatCents(Math.abs(proration.amount_cents))} credited to customer balance`)
+            if (res.proration) {
+              if (res.proration.type === 'invoice') {
+                toast.success(`Proration invoice created for ${formatCents(res.proration.amount_cents)}`)
               } else {
-                toast.success('Plan changed successfully')
+                toast.success(`${formatCents(Math.abs(res.proration.amount_cents))} credited to customer balance`)
               }
             } else {
-              toast.success('Plan changed successfully')
+              toast.success('Plan change saved')
             }
           }}
+        />
+      )}
+
+      {/* Change Item Quantity */}
+      {itemDialog?.kind === 'change-quantity' && (
+        <ChangeItemQuantityDialog
+          subscriptionID={sub.id}
+          item={itemDialog.item}
+          plan={planById(itemDialog.item.plan_id)}
+          onClose={() => setItemDialog(null)}
+          onChanged={(res) => {
+            setItemDialog(null)
+            invalidateAll()
+            if (res.proration) {
+              if (res.proration.type === 'invoice') {
+                toast.success(`Proration invoice created for ${formatCents(res.proration.amount_cents)}`)
+              } else {
+                toast.success(`${formatCents(Math.abs(res.proration.amount_cents))} credited to customer balance`)
+              }
+            } else {
+              toast.success('Quantity updated')
+            }
+          }}
+        />
+      )}
+
+      {/* Remove Item */}
+      {itemDialog?.kind === 'remove' && (
+        <RemoveItemConfirm
+          subscriptionID={sub.id}
+          item={itemDialog.item}
+          plan={planById(itemDialog.item.plan_id)}
+          onClose={() => setItemDialog(null)}
+          onRemoved={() => { setItemDialog(null); invalidateAll(); toast.success('Item removed') }}
         />
       )}
     </Layout>
   )
 }
 
-function ChangePlanDialog({ subscriptionId, currentPlanId, currentPlanName, plans, onClose, onChanged }: {
-  subscriptionId: string
-  currentPlanId: string
-  currentPlanName: string
+// AddItemDialog picks a plan + quantity and POSTs to /subscriptions/:id/items.
+// The backend rejects duplicates on (subscription, plan); we pre-filter to
+// keep the dropdown clean.
+function AddItemDialog({ subscription, plans, existingPlanIDs, onClose, onAdded }: {
+  subscription: Subscription
   plans: Plan[]
+  existingPlanIDs: string[]
   onClose: () => void
-  onChanged: (proration?: { type: string; amount_cents: number; invoice_id?: string }) => void
+  onAdded: () => void
+}) {
+  const [selectedPlan, setSelectedPlan] = useState('')
+  const [quantity, setQuantity] = useState('1')
+  const [submitting, setSubmitting] = useState(false)
+
+  const availablePlans = plans.filter(p => p.status === 'active' && !existingPlanIDs.includes(p.id))
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedPlan) return
+    const qty = parseInt(quantity, 10)
+    if (!Number.isFinite(qty) || qty < 1) {
+      toast.error('Quantity must be a positive integer')
+      return
+    }
+    setSubmitting(true)
+    try {
+      await api.addSubscriptionItem(subscription.id, { plan_id: selectedPlan, quantity: qty })
+      onAdded()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to add item')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Add Item</DialogTitle>
+          <DialogDescription>
+            Add a plan to this subscription. Mid-cycle adds are prorated against the remaining period.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} noValidate className="space-y-4">
+          <div className="space-y-2">
+            <Label>Plan</Label>
+            <Select value={selectedPlan} onValueChange={(v) => setSelectedPlan(v ?? '')}>
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Select a plan..." />
+              </SelectTrigger>
+              <SelectContent>
+                {availablePlans.length === 0 ? (
+                  <div className="px-2 py-2 text-sm text-muted-foreground">
+                    No plans available — all active plans are already on this subscription.
+                  </div>
+                ) : availablePlans.map(p => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name} — {formatCents(p.base_amount_cents)}/{p.billing_interval}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="add-qty">Quantity</Label>
+            <Input
+              id="add-qty"
+              type="number"
+              min="1"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={submitting || !selectedPlan}>
+              {submitting ? (
+                <><Loader2 size={14} className="animate-spin mr-2" />Adding...</>
+              ) : 'Add Item'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ChangeItemPlanDialog swaps an item's plan. Immediate swaps prorate; deferred
+// swaps stamp pending_plan_id and apply at the next cycle boundary.
+function ChangeItemPlanDialog({ subscriptionID, item, plans, existingPlanIDs, onClose, onChanged }: {
+  subscriptionID: string
+  item: SubscriptionItem
+  plans: Plan[]
+  existingPlanIDs: string[]
+  onClose: () => void
+  onChanged: (res: ItemChangeResult) => void
 }) {
   const [selectedPlan, setSelectedPlan] = useState('')
   const [immediate, setImmediate] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
-  const availablePlans = plans.filter(p => p.id !== currentPlanId && p.status === 'active')
+  // Candidates: active plans that aren't the current item's plan and that
+  // aren't already attached to another item on this subscription (the backend
+  // rejects the duplicate with 409).
+  const availablePlans = plans.filter(
+    p => p.status === 'active' && p.id !== item.plan_id && !existingPlanIDs.includes(p.id),
+  )
+  const currentPlan = plans.find(p => p.id === item.plan_id)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!selectedPlan) return
     setSubmitting(true)
     try {
-      const res = await api.changePlan(subscriptionId, { new_plan_id: selectedPlan, immediate })
-      onChanged(res.proration)
+      const res = await api.updateSubscriptionItem(subscriptionID, item.id, {
+        new_plan_id: selectedPlan,
+        immediate,
+      })
+      onChanged(res)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to change plan')
     } finally {
@@ -604,24 +842,23 @@ function ChangePlanDialog({ subscriptionId, currentPlanId, currentPlanName, plan
         <form onSubmit={handleSubmit} noValidate className="space-y-4">
           <div>
             <p className="text-sm text-muted-foreground">Current plan</p>
-            <p className="text-sm font-semibold text-foreground mt-0.5">{currentPlanName}</p>
+            <p className="text-sm font-semibold text-foreground mt-0.5">
+              {currentPlan?.name || item.plan_id}
+            </p>
           </div>
 
           <div className="space-y-2">
             <Label>New Plan</Label>
-            <Select value={selectedPlan} onValueChange={setSelectedPlan}>
+            <Select value={selectedPlan} onValueChange={(v) => setSelectedPlan(v ?? '')}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select a plan...">
-                  {(value: string) => {
-                    const plan = availablePlans.find(p => p.id === value)
-                    return plan ? `${plan.name} — ${formatCents(plan.base_amount_cents)}/${plan.billing_interval}` : value
-                  }}
-                </SelectValue>
+                <SelectValue placeholder="Select a plan..." />
               </SelectTrigger>
               <SelectContent>
-                {availablePlans.map(p => (
+                {availablePlans.length === 0 ? (
+                  <div className="px-2 py-2 text-sm text-muted-foreground">No other plans available</div>
+                ) : availablePlans.map(p => (
                   <SelectItem key={p.id} value={p.id}>
-                    {p.name} -- {formatCents(p.base_amount_cents)}/{p.billing_interval}
+                    {p.name} — {formatCents(p.base_amount_cents)}/{p.billing_interval}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -636,9 +873,13 @@ function ChangePlanDialog({ subscriptionId, currentPlanId, currentPlanName, plan
             />
             <div>
               <span className="font-medium text-foreground">Apply immediately (with proration)</span>
-              {immediate && (
+              {immediate ? (
                 <p className="text-xs text-muted-foreground mt-1">
-                  The remaining time on the current billing period will be prorated. A credit or charge will be applied based on the price difference between plans.
+                  The remaining time on the current billing period will be prorated. A credit or charge is applied based on the price difference between plans.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Scheduled — the plan swap will apply at the next billing cycle boundary. No proration.
                 </p>
               )}
             </div>
@@ -655,5 +896,124 @@ function ChangePlanDialog({ subscriptionId, currentPlanId, currentPlanName, plan
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// ChangeItemQuantityDialog updates a single item's quantity. The backend
+// rejects no-ops (new qty == current qty) with a 422 — we pre-check to keep
+// the UX tight.
+function ChangeItemQuantityDialog({ subscriptionID, item, plan, onClose, onChanged }: {
+  subscriptionID: string
+  item: SubscriptionItem
+  plan: Plan | undefined
+  onClose: () => void
+  onChanged: (res: ItemChangeResult) => void
+}) {
+  const [quantity, setQuantity] = useState(String(item.quantity))
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const qty = parseInt(quantity, 10)
+    if (!Number.isFinite(qty) || qty < 1) {
+      toast.error('Quantity must be a positive integer')
+      return
+    }
+    if (qty === item.quantity) {
+      toast.error('New quantity is the same as current quantity')
+      return
+    }
+    setSubmitting(true)
+    try {
+      const res = await api.updateSubscriptionItem(subscriptionID, item.id, { quantity: qty })
+      onChanged(res)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to change quantity')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Change Quantity</DialogTitle>
+          <DialogDescription>
+            Applied immediately. Quantity increases charge prorated incrementally; decreases credit the customer.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} noValidate className="space-y-4">
+          <div>
+            <p className="text-sm text-muted-foreground">Plan</p>
+            <p className="text-sm font-semibold text-foreground mt-0.5">{plan?.name || item.plan_id}</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="qty-input">Quantity</Label>
+            <Input
+              id="qty-input"
+              type="number"
+              min="1"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">Current: {item.quantity}</p>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? (
+                <><Loader2 size={14} className="animate-spin mr-2" />Saving...</>
+              ) : 'Save'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// RemoveItemConfirm deletes an item. Removing mid-period generates a credit
+// for the unused portion of the just-paid period on the backend — surface
+// that explicitly so the operator isn't surprised.
+function RemoveItemConfirm({ subscriptionID, item, plan, onClose, onRemoved }: {
+  subscriptionID: string
+  item: SubscriptionItem
+  plan: Plan | undefined
+  onClose: () => void
+  onRemoved: () => void
+}) {
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleConfirm = async () => {
+    setSubmitting(true)
+    try {
+      await api.removeSubscriptionItem(subscriptionID, item.id)
+      onRemoved()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to remove item')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <AlertDialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Remove item from subscription?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Remove <strong>{plan?.name || item.plan_id}</strong> (qty {item.quantity}) from this subscription. If removed mid-period, a credit will be issued for the unused portion.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={handleConfirm} disabled={submitting}>
+            {submitting ? 'Removing...' : 'Remove Item'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
