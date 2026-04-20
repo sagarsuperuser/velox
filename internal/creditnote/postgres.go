@@ -102,6 +102,11 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	}
 	defer postgres.Rollback(tx)
 
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
 	query := `SELECT id, tenant_id, invoice_id, customer_id, credit_note_number,
 		status, reason, subtotal_cents, tax_amount_cents, total_cents,
 		refund_amount_cents, credit_amount_cents, currency,
@@ -120,6 +125,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	if filter.Status != "" {
 		clauses = append(clauses, fmt.Sprintf("status = $%d", idx))
 		args = append(args, filter.Status)
+		idx++
 	}
 	if len(clauses) > 0 {
 		query += " WHERE "
@@ -130,7 +136,8 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 			query += c
 		}
 	}
-	query += " ORDER BY created_at DESC"
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", idx, idx+1)
+	args = append(args, limit, filter.Offset)
 
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {

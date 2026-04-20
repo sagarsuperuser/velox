@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
@@ -71,11 +72,14 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
+	page := middleware.ParsePageParams(r)
 
 	cns, err := h.svc.List(r.Context(), ListFilter{
 		TenantID:  tenantID,
 		InvoiceID: r.URL.Query().Get("invoice_id"),
 		Status:    r.URL.Query().Get("status"),
+		Limit:     page.Limit,
+		Offset:    page.Offset,
 	})
 	if err != nil {
 		respond.InternalError(w, r)
