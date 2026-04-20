@@ -908,6 +908,96 @@ func TestRunCycle_FiresPendingChangeAppliedEvent(t *testing.T) {
 	}
 }
 
+// TestRunCycle_OneSubFailsOthersContinue asserts the batch loop's isolation
+// guarantee: a single subscription with bad data (here: a plan referencing a
+// meter whose rating rule is missing) must not prevent healthy subscriptions
+// in the same batch from being invoiced. Without this guarantee, one broken
+// customer could stall the entire billing cycle.
+func TestRunCycle_OneSubFailsOthersContinue(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_ok": {
+				ID: "sub_ok", TenantID: "t1", CustomerID: "cus_ok",
+				Items:  []domain.SubscriptionItem{{ID: "si_ok", PlanID: "pln_ok", Quantity: 1}},
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+			"sub_bad": {
+				ID: "sub_bad", TenantID: "t1", CustomerID: "cus_bad",
+				Items:  []domain.SubscriptionItem{{ID: "si_bad", PlanID: "pln_bad", Quantity: 1}},
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_ok":  {ID: "pln_ok", Name: "Flat", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 1000},
+			"pln_bad": {ID: "pln_bad", Name: "Broken", Currency: "USD", BillingInterval: domain.BillingMonthly, MeterIDs: []string{"mtr_missing"}},
+		},
+		// mtr_missing references rrv_missing which isn't in rules — lookup fails
+		meters: map[string]domain.Meter{
+			"mtr_missing": {ID: "mtr_missing", Name: "Missing", RatingRuleVersionID: "rrv_missing"},
+		},
+	}
+	invoices := &mockInvoices{}
+	usage := &mockUsage{totals: map[string]int64{"mtr_missing": 100}}
+	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+
+	count, runErrs := engine.RunCycle(context.Background(), 50)
+
+	if count != 1 {
+		t.Errorf("got %d invoices, want 1 (only sub_ok should succeed)", count)
+	}
+	if len(runErrs) != 1 {
+		t.Fatalf("got %d errors, want 1 (sub_bad should fail)", len(runErrs))
+	}
+	// Healthy subscription's cycle should have advanced despite the neighbor failing.
+	if !subs.cycleUpdated["sub_ok"] {
+		t.Error("sub_ok billing cycle should have advanced")
+	}
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("got %d invoices stored, want 1", len(invoices.invoices))
+	}
+	if invoices.invoices[0].SubscriptionID != "sub_ok" {
+		t.Errorf("stored invoice should be for sub_ok, got %q", invoices.invoices[0].SubscriptionID)
+	}
+}
+
+// TestRunCycle_TaxCalculatorErrorProducesInvoiceWithZeroTax asserts end-to-end
+// that a tax calculator failure during RunCycle does NOT block invoice
+// generation. The invoice is issued with zero tax and a warning is logged;
+// revenue reconciliation is the tenant's responsibility in this scenario
+// (documented in docs/ops/tax-calculation.md).
+func TestRunCycle_TaxCalculatorErrorProducesInvoiceWithZeroTax(t *testing.T) {
+	engine, _, _, _, invoices := setupEngine()
+	// Installed calculator always errors — mimics Stripe outage when the
+	// fallback ManualCalculator is either absent or also failing.
+	engine.SetTaxCalculator(&stubCalculator{err: fmt.Errorf("stripe down")})
+
+	count, runErrs := engine.RunCycle(context.Background(), 50)
+	if len(runErrs) > 0 {
+		t.Fatalf("unexpected errors: %v", runErrs)
+	}
+	if count != 1 {
+		t.Fatalf("got %d invoices, want 1", count)
+	}
+	inv := invoices.invoices[0]
+	if inv.TaxAmountCents != 0 {
+		t.Errorf("got tax %d, want 0 when calculator errors", inv.TaxAmountCents)
+	}
+	if inv.Status != domain.InvoiceFinalized {
+		t.Errorf("invoice should still finalize, got status %q", inv.Status)
+	}
+}
+
 // TestRunCycle_NoPendingChangeNoAppliedEvent ensures the event is gated on an
 // actual swap — a subscription billing on its existing plan with no pending
 // change must not emit a spurious applied event.
