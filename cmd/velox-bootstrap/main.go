@@ -54,12 +54,13 @@ func main() {
 		fatal("create tenant: %v", err)
 	}
 
-	// Create secret API key
+	// Create live-mode secret API key (bootstrap always seeds live mode —
+	// operators create test keys via the API once the server is up).
 	secret := make([]byte, 32)
 	rand.Read(secret)
 	secretHex := hex.EncodeToString(secret)
-	rawKey := "vlx_secret_" + secretHex
-	prefix := "vlx_secret_" + secretHex[:12]
+	rawKey := "vlx_secret_live_" + secretHex
+	prefix := "vlx_secret_live_" + secretHex[:12]
 	hash := sha256.Sum256([]byte(rawKey))
 	hashHex := hex.EncodeToString(hash[:])
 	keyID := postgres.NewID("vlx_key")
@@ -71,27 +72,27 @@ func main() {
 	}
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, name, tenant_id)
-		VALUES ($1, $2, $3, 'secret', 'Bootstrap Key', $4)`,
+		`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, livemode, name, tenant_id)
+		VALUES ($1, $2, $3, 'secret', true, 'Bootstrap Key', $4)`,
 		keyID, prefix, hashHex, tenantID)
 	if err != nil {
 		_ = tx.Rollback()
 		fatal("create api key: %v", err)
 	}
 
-	// Create publishable key too
+	// Live-mode publishable key.
 	pubSecret := make([]byte, 32)
 	rand.Read(pubSecret)
 	pubHex := hex.EncodeToString(pubSecret)
-	pubRawKey := "vlx_pub_" + pubHex
-	pubPrefix := "vlx_pub_" + pubHex[:12]
+	pubRawKey := "vlx_pub_live_" + pubHex
+	pubPrefix := "vlx_pub_live_" + pubHex[:12]
 	pubHash := sha256.Sum256([]byte(pubRawKey))
 	pubHashHex := hex.EncodeToString(pubHash[:])
 	pubKeyID := postgres.NewID("vlx_key")
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, name, tenant_id)
-		VALUES ($1, $2, $3, 'publishable', 'Bootstrap Publishable Key', $4)`,
+		`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, livemode, name, tenant_id)
+		VALUES ($1, $2, $3, 'publishable', true, 'Bootstrap Publishable Key', $4)`,
 		pubKeyID, pubPrefix, pubHashHex, tenantID)
 	if err != nil {
 		_ = tx.Rollback()

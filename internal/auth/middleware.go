@@ -40,6 +40,7 @@ func Middleware(svc *Service) func(http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, tenantIDKey, key.TenantID)
 			ctx = context.WithValue(ctx, apiKeyIDKey, key.ID)
 			ctx = context.WithValue(ctx, keyTypeKey, KeyType(key.KeyType))
+			ctx = context.WithValue(ctx, livemodeKey, key.Livemode)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

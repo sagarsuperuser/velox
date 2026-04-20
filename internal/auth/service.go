@@ -54,16 +54,21 @@ func (s *Service) CreateKey(ctx context.Context, tenantID string, input CreateKe
 		return CreateKeyResult{}, errs.Invalid("key_type", "must be one of: platform, secret, publishable")
 	}
 
+	// Mode inherits from caller ctx, matching Stripe: a test-mode key creates
+	// new test-mode keys, a live-mode key creates live. There is no cross-mode
+	// key creation path — caller must switch authenticators to switch mode.
+	livemode := Livemode(ctx)
+
 	// Generate raw key: prefix + random hex
 	secret := make([]byte, keySecretLen)
 	if _, err := rand.Read(secret); err != nil {
 		return CreateKeyResult{}, fmt.Errorf("generate key: %w", err)
 	}
 	secretHex := hex.EncodeToString(secret)
-	prefix := keyType.Prefix()
+	prefix := KeyPrefix(keyType, livemode)
 	rawKey := prefix + secretHex
 
-	// DB prefix: type prefix + first N hex chars (for indexed lookup)
+	// DB prefix: full mode-aware prefix + first N hex chars (indexed lookup)
 	dbPrefix := prefix + secretHex[:keyPrefixLen]
 
 	// Generate a 16-byte random salt for this key
@@ -85,6 +90,7 @@ func (s *Service) CreateKey(ctx context.Context, tenantID string, input CreateKe
 		KeyHash:   hashHex,
 		KeySalt:   saltHex,
 		KeyType:   string(keyType),
+		Livemode:  livemode,
 		Name:      name,
 		TenantID:  tenantID,
 		ExpiresAt: input.ExpiresAt,
@@ -97,29 +103,52 @@ func (s *Service) CreateKey(ctx context.Context, tenantID string, input CreateKe
 }
 
 // ValidateKey looks up a key by prefix, verifies hash, checks expiry.
+//
+// Accepts three prefix forms, in priority order:
+//  1. "vlx_{type}_live_..." (new, post-FEAT-8)
+//  2. "vlx_{type}_test_..." (new, post-FEAT-8)
+//  3. "vlx_{type}_..."       (legacy, pre-FEAT-8 — treated as live)
+//
+// Backward compat for (3) keeps existing production keys working through
+// the cutover. Newly issued keys always use form (1) or (2).
 func (s *Service) ValidateKey(ctx context.Context, rawKey string) (domain.APIKey, error) {
 	rawKey = strings.TrimSpace(rawKey)
 
-	// Determine key type from prefix
-	var keyType KeyType
-	switch {
-	case strings.HasPrefix(rawKey, KeyTypePlatform.Prefix()):
-		keyType = KeyTypePlatform
-	case strings.HasPrefix(rawKey, KeyTypeSecret.Prefix()):
-		keyType = KeyTypeSecret
-	case strings.HasPrefix(rawKey, KeyTypePublishable.Prefix()):
-		keyType = KeyTypePublishable
-	default:
+	var (
+		keyType  KeyType
+		fullPrefix string
+	)
+	for _, kt := range []KeyType{KeyTypePlatform, KeyTypeSecret, KeyTypePublishable} {
+		typeP := kt.TypePrefix()
+		if !strings.HasPrefix(rawKey, typeP) {
+			continue
+		}
+		after := rawKey[len(typeP):]
+		switch {
+		case strings.HasPrefix(after, "live_"):
+			keyType = kt
+			fullPrefix = typeP + "live_"
+		case strings.HasPrefix(after, "test_"):
+			keyType = kt
+			fullPrefix = typeP + "test_"
+		default:
+			// Legacy format (pre-FEAT-8): no mode infix — treat as live.
+			keyType = kt
+			fullPrefix = typeP
+		}
+		break
+	}
+	if fullPrefix == "" {
 		return domain.APIKey{}, fmt.Errorf("invalid key format")
 	}
+	_ = keyType // retained for future use (permission routing pre-lookup)
 
-	prefix := keyType.Prefix()
-	secretPart := strings.TrimPrefix(rawKey, prefix)
+	secretPart := strings.TrimPrefix(rawKey, fullPrefix)
 	if len(secretPart) < keyPrefixLen {
 		return domain.APIKey{}, fmt.Errorf("invalid key format")
 	}
 
-	dbPrefix := prefix + secretPart[:keyPrefixLen]
+	dbPrefix := fullPrefix + secretPart[:keyPrefixLen]
 
 	key, err := s.store.GetByPrefix(ctx, dbPrefix)
 	if err != nil {

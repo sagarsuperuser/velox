@@ -38,7 +38,9 @@ const (
 	KeyTypePublishable KeyType = "publishable" // vlx_pub_      — restricted tenant access
 )
 
-func (kt KeyType) Prefix() string {
+// TypePrefix returns the type-only prefix (e.g. "vlx_secret_"). Used when
+// parsing a raw key to identify its type before the mode infix.
+func (kt KeyType) TypePrefix() string {
 	switch kt {
 	case KeyTypePlatform:
 		return "vlx_platform_"
@@ -47,6 +49,18 @@ func (kt KeyType) Prefix() string {
 	default:
 		return "vlx_secret_"
 	}
+}
+
+// KeyPrefix returns the full "vlx_{type}_{mode}_" prefix used on new keys.
+// Stripe-style: vlx_secret_live_..., vlx_secret_test_..., etc. A visible mode
+// infix lets operators spot "test key in prod config" misrouting without
+// decoding the key.
+func KeyPrefix(kt KeyType, livemode bool) string {
+	mode := "test"
+	if livemode {
+		mode = "live"
+	}
+	return kt.TypePrefix() + mode + "_"
 }
 
 var keyPermissions = map[KeyType]map[Permission]bool{
