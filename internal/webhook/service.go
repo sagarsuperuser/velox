@@ -147,9 +147,14 @@ func (s *Service) CreateEndpoint(ctx context.Context, tenantID string, input Cre
 		events = []string{"*"}
 	}
 
-	// Generate signing secret
+	// Generate signing secret. A short read from the entropy pool would yield a
+	// low-entropy or partially-zeroed HMAC key that still validates downstream —
+	// treat any rand.Read error as fatal to endpoint creation rather than
+	// minting a compromised secret.
 	secretBytes := make([]byte, 24)
-	rand.Read(secretBytes)
+	if _, err := rand.Read(secretBytes); err != nil {
+		return CreateEndpointResult{}, fmt.Errorf("generate webhook secret: %w", err)
+	}
 	secret := "whsec_" + hex.EncodeToString(secretBytes)
 
 	ep, err := s.store.CreateEndpoint(ctx, tenantID, domain.WebhookEndpoint{
@@ -170,7 +175,9 @@ func (s *Service) CreateEndpoint(ctx context.Context, tenantID string, input Cre
 // The new secret is shown once to the user.
 func (s *Service) RotateSecret(ctx context.Context, tenantID, endpointID string) (string, error) {
 	secretBytes := make([]byte, 24)
-	rand.Read(secretBytes)
+	if _, err := rand.Read(secretBytes); err != nil {
+		return "", fmt.Errorf("generate webhook secret: %w", err)
+	}
 	newSecret := "whsec_" + hex.EncodeToString(secretBytes)
 
 	if _, err := s.store.UpdateEndpointSecret(ctx, tenantID, endpointID, newSecret); err != nil {
