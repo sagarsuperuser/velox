@@ -67,7 +67,7 @@ type CreditApplier interface {
 // 'repeating' coupon, so it must run only when the invoice that consumed
 // the discount is durably persisted.
 type CouponApplier interface {
-	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (domain.CouponDiscountResult, error)
+	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
 	MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
 }
 
@@ -91,10 +91,14 @@ type SubscriptionReader interface {
 	GetDueBilling(ctx context.Context, before time.Time, limit int) ([]domain.Subscription, error)
 	Get(ctx context.Context, tenantID, id string) (domain.Subscription, error)
 	UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time) error
-	// ApplyPendingPlanAtomic swaps plan_id ← pending_plan_id when a scheduled
-	// change is due; returns errs.ErrNotFound if no due change is present (the
-	// caller treats that as "nothing to apply", not an error).
-	ApplyPendingPlanAtomic(ctx context.Context, tenantID, id string, now time.Time) (domain.Subscription, error)
+	// ApplyDuePendingItemPlansAtomic swaps plan_id ← pending_plan_id for every
+	// item on the subscription whose pending_plan_effective_at <= now, in one
+	// statement. Returns the refreshed items (including any that weren't due,
+	// untouched). Called at the cycle boundary so the just-closed period is
+	// billed on the pre-change plan and the next period uses the new plan.
+	// Returns nil + no error when no items are due (caller proceeds with the
+	// existing plan).
+	ApplyDuePendingItemPlansAtomic(ctx context.Context, tenantID, subscriptionID string, now time.Time) ([]domain.SubscriptionItem, error)
 }
 
 // UsageAggregator aggregates usage events for a billing period.
@@ -443,41 +447,72 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	// decisions stay consistent with the clock the sub lives on.
 	now := e.effectiveNow(ctx, sub)
 
-	// If a scheduled plan change is due, apply it BEFORE reading the plan so
-	// the new cycle bills on the new plan. A concurrent DELETE /pending-change
-	// can race this: whichever statement commits first wins; ApplyPendingPlanAtomic
-	// returns ErrNotFound on the loser, which we treat as "already handled".
-	if sub.PendingPlanID != "" && sub.PendingPlanEffectiveAt != nil && !sub.PendingPlanEffectiveAt.After(now) {
-		applied, err := e.subs.ApplyPendingPlanAtomic(ctx, sub.TenantID, sub.ID, now)
-		if err == nil {
-			slog.Info("applied scheduled plan change",
-				"subscription_id", sub.ID,
-				"previous_plan_id", applied.PreviousPlanID,
-				"new_plan_id", applied.PlanID,
-			)
-			sub = applied
-		} else if !errors.Is(err, errs.ErrNotFound) {
-			return false, fmt.Errorf("apply pending plan: %w", err)
+	// If any item has a scheduled plan change whose effective_at is due, apply
+	// them all BEFORE reading plans so the new cycle bills on the new plans.
+	// A concurrent DELETE on an item's /pending-change can race this — the
+	// atomic UPDATE swaps the row only if pending_plan_id is still set, so
+	// whichever statement commits first wins. Items with no due change are
+	// left untouched.
+	anyDue := false
+	for _, it := range sub.Items {
+		if it.PendingPlanID != "" && it.PendingPlanEffectiveAt != nil && !it.PendingPlanEffectiveAt.After(now) {
+			anyDue = true
+			break
 		}
+	}
+	if anyDue {
+		applied, err := e.subs.ApplyDuePendingItemPlansAtomic(ctx, sub.TenantID, sub.ID, now)
+		if err != nil && !errors.Is(err, errs.ErrNotFound) {
+			return false, fmt.Errorf("apply pending item plans: %w", err)
+		}
+		if applied != nil {
+			sub.Items = applied
+			slog.Info("applied scheduled item plan changes",
+				"subscription_id", sub.ID,
+				"items_changed", len(applied),
+			)
+		}
+	}
+
+	if len(sub.Items) == 0 {
+		return false, fmt.Errorf("subscription has no items to bill")
 	}
 
 	periodStart := *sub.CurrentBillingPeriodStart
 	periodEnd := *sub.CurrentBillingPeriodEnd
 
-	// Skip if in trial — advance cycle but don't generate invoice
+	// Skip if in trial — advance cycle but don't generate invoice.
 	if sub.TrialEndAt != nil && now.Before(*sub.TrialEndAt) {
 		nextBilling := advanceBillingPeriod(periodEnd, domain.BillingMonthly)
 		slog.Info("skipping billing (trial active)", "subscription_id", sub.ID)
 		return false, e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, periodEnd, nextBilling, nextBilling)
 	}
 
-	plan, err := e.pricing.GetPlan(ctx, sub.TenantID, sub.PlanID)
-	if err != nil {
-		return false, fmt.Errorf("get plan: %w", err)
+	// Resolve every item's plan up-front so we can read currency / meters / base
+	// fee from the set. Plans come back keyed by item plan_id — items sharing a
+	// plan (which UNIQUE (sub_id, plan_id) prevents, but defend anyway) resolve
+	// to the same plan struct.
+	plans := make(map[string]domain.Plan, len(sub.Items))
+	planIDs := make([]string, 0, len(sub.Items))
+	for _, it := range sub.Items {
+		if _, ok := plans[it.PlanID]; ok {
+			continue
+		}
+		pl, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
+		if err != nil {
+			return false, fmt.Errorf("get plan %s: %w", it.PlanID, err)
+		}
+		plans[it.PlanID] = pl
+		planIDs = append(planIDs, it.PlanID)
 	}
 
-	// Resolve invoice currency: customer billing profile > tenant settings > plan > "usd"
-	invoiceCurrency := plan.Currency
+	// Invoice currency: customer billing profile > tenant settings > first
+	// item's plan currency > "usd". The tie-breaker in multi-item mode is the
+	// plan of the first item (created_at ordering) — items on a single
+	// subscription are expected to share a currency; mismatches are a pricing
+	// misconfiguration, not a billing problem to solve here.
+	firstPlanCurrency := plans[sub.Items[0].PlanID].Currency
+	invoiceCurrency := firstPlanCurrency
 	if e.profiles != nil {
 		if bp, err := e.profiles.GetBillingProfile(ctx, sub.TenantID, sub.CustomerID); err == nil && bp.Currency != "" {
 			invoiceCurrency = bp.Currency
@@ -492,24 +527,37 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		invoiceCurrency = "usd"
 	}
 
-	// Build meter aggregation map (meter_id → aggregation type)
+	// Collect the union of meter_ids across every item's plan. Usage is
+	// customer+meter-scoped (not item-scoped) — a meter shared between two
+	// items' plans aggregates once, not twice. The aggregation type is picked
+	// from whichever meter lookup resolves first; in practice a meter has one
+	// canonical aggregation so this is a no-op, but the map shape tolerates
+	// duplicates defensively.
 	meterAggs := make(map[string]string)
-	for _, meterID := range plan.MeterIDs {
-		m, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
-		if err == nil {
-			meterAggs[meterID] = m.Aggregation
-		} else {
-			meterAggs[meterID] = "sum" // default
+	for _, it := range sub.Items {
+		for _, meterID := range plans[it.PlanID].MeterIDs {
+			if _, ok := meterAggs[meterID]; ok {
+				continue
+			}
+			m, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
+			if err == nil {
+				meterAggs[meterID] = m.Aggregation
+			} else {
+				meterAggs[meterID] = "sum"
+			}
 		}
 	}
 
-	// Aggregate usage for each meter using its configured aggregation type
+	// Aggregate usage for each meter using its configured aggregation type.
 	usageTotals, err := e.usage.AggregateForBillingPeriodByAgg(ctx, sub.TenantID, sub.CustomerID, meterAggs, periodStart, periodEnd)
 	if err != nil {
 		return false, fmt.Errorf("aggregate usage: %w", err)
 	}
 
-	// Enforce usage cap if configured (integer math only)
+	// Enforce usage cap if configured (integer math only). Cap is a
+	// subscription-level total across all meters — it doesn't need to respect
+	// item boundaries because the cap is a container-level guardrail, not a
+	// per-plan constraint.
 	if sub.UsageCapUnits != nil && *sub.UsageCapUnits > 0 && sub.OverageAction == "block" {
 		totalUsage := int64(0)
 		for _, qty := range usageTotals {
@@ -518,36 +566,46 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		if totalUsage > *sub.UsageCapUnits {
 			cap := *sub.UsageCapUnits
 			for mid, qty := range usageTotals {
-				// Integer proportional cap: qty * cap / totalUsage (no float)
 				usageTotals[mid] = qty * cap / totalUsage
 			}
 		}
 	}
 
-	// Build line items
+	// Build line items.
 	var lineItems []domain.InvoiceLineItem
 	subtotal := int64(0)
 
-	// Base fee line item — prorate for partial periods (e.g., mid-month start)
-	if plan.BaseAmountCents > 0 {
-		baseFee := plan.BaseAmountCents
-		description := fmt.Sprintf("%s - base fee", plan.Name)
+	// Detect partial period once — same across all items since they share the
+	// billing period.
+	periodDays := int(periodEnd.Sub(periodStart).Hours() / 24)
 
-		// Detect partial period: compare actual days to a full billing cycle
-		periodDays := int(periodEnd.Sub(periodStart).Hours() / 24)
+	// Base fee line item per item — quantity-multiplied and prorated for partial
+	// periods. One line per item so the invoice clearly shows what each plan
+	// contributes (mirrors Stripe's per-item invoice layout).
+	for _, it := range sub.Items {
+		plan := plans[it.PlanID]
+		if plan.BaseAmountCents <= 0 {
+			continue
+		}
+		baseFee := plan.BaseAmountCents * it.Quantity
+		description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
+
 		fullCycleDays := int(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart).Hours() / 24)
 		if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
-			// Prorate baseFee * (periodDays / fullCycleDays) with banker's rounding
-			// so mid-cycle changes don't accumulate a rounding bias across tenants.
-			baseFee = money.RoundHalfToEven(plan.BaseAmountCents*int64(periodDays), int64(fullCycleDays))
-			description = fmt.Sprintf("%s - base fee (prorated %d/%d days)", plan.Name, periodDays, fullCycleDays)
+			baseFee = money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(periodDays), int64(fullCycleDays))
+			description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, it.Quantity, periodDays, fullCycleDays)
+		}
+
+		unitAmount := plan.BaseAmountCents
+		if it.Quantity > 0 {
+			unitAmount = money.RoundHalfToEven(baseFee, it.Quantity)
 		}
 
 		lineItems = append(lineItems, domain.InvoiceLineItem{
 			LineType:         domain.LineTypeBaseFee,
 			Description:      description,
-			Quantity:         1,
-			UnitAmountCents:  baseFee,
+			Quantity:         it.Quantity,
+			UnitAmountCents:  unitAmount,
 			AmountCents:      baseFee,
 			TotalAmountCents: baseFee,
 			Currency:         invoiceCurrency,
@@ -555,71 +613,73 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		subtotal += baseFee
 	}
 
-	// Usage line items — one per meter
-	for _, meterID := range plan.MeterIDs {
-		quantity, ok := usageTotals[meterID]
-		if !ok || quantity == 0 {
-			continue
-		}
+	// Usage line items — one per meter. Usage is billed once per meter even if
+	// multiple items' plans reference the same meter; quantity on a usage line
+	// is the metered count, not the item's seat quantity.
+	seenMeters := make(map[string]struct{})
+	for _, it := range sub.Items {
+		plan := plans[it.PlanID]
+		for _, meterID := range plan.MeterIDs {
+			if _, ok := seenMeters[meterID]; ok {
+				continue
+			}
+			seenMeters[meterID] = struct{}{}
 
-		meter, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
-		if err != nil {
-			return false, fmt.Errorf("get meter %s: %w", meterID, err)
-		}
+			quantity, ok := usageTotals[meterID]
+			if !ok || quantity == 0 {
+				continue
+			}
 
-		if meter.RatingRuleVersionID == "" {
-			continue // No pricing rule attached
-		}
+			meter, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
+			if err != nil {
+				return false, fmt.Errorf("get meter %s: %w", meterID, err)
+			}
 
-		// Get the linked rule to find its key, then resolve the latest version
-		linkedRule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, meter.RatingRuleVersionID)
-		if err != nil {
-			return false, fmt.Errorf("get rating rule for meter %s: %w", meterID, err)
-		}
+			if meter.RatingRuleVersionID == "" {
+				continue
+			}
 
-		// Use the latest active version of this rule (not the hardcoded version)
-		rule, err := e.pricing.GetLatestRuleByKey(ctx, sub.TenantID, linkedRule.RuleKey)
-		if err != nil {
-			// Fall back to the linked version if latest lookup fails
-			rule = linkedRule
-		}
+			linkedRule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, meter.RatingRuleVersionID)
+			if err != nil {
+				return false, fmt.Errorf("get rating rule for meter %s: %w", meterID, err)
+			}
 
-		// Check for per-customer price override
-		override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, rule.ID)
-		if overrideErr == nil && override.Active {
-			rule = override.ToRatingRule()
-		}
+			rule, err := e.pricing.GetLatestRuleByKey(ctx, sub.TenantID, linkedRule.RuleKey)
+			if err != nil {
+				rule = linkedRule
+			}
 
-		amount, err := domain.ComputeAmountCents(rule, quantity)
-		if err != nil {
-			return false, fmt.Errorf("compute amount for meter %s: %w", meterID, err)
-		}
+			override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, rule.ID)
+			if overrideErr == nil && override.Active {
+				rule = override.ToRatingRule()
+			}
 
-		// For graduated/tiered pricing the "unit amount" shown on the invoice is
-		// a blended display value — amount/quantity rarely divides cleanly. Use
-		// banker's rounding (money.RoundHalfToEven) so the displayed unit price
-		// is the nearest cent rather than systematically truncating downward,
-		// which would introduce a negative bias over large batches.
-		unitAmount := int64(0)
-		if quantity > 0 {
-			unitAmount = money.RoundHalfToEven(amount, quantity)
-		}
+			amount, err := domain.ComputeAmountCents(rule, quantity)
+			if err != nil {
+				return false, fmt.Errorf("compute amount for meter %s: %w", meterID, err)
+			}
 
-		lineItems = append(lineItems, domain.InvoiceLineItem{
-			LineType:            domain.LineTypeUsage,
-			MeterID:             meterID,
-			Description:         fmt.Sprintf("%s (%s)", meter.Name, meter.Unit),
-			Quantity:            quantity,
-			UnitAmountCents:     unitAmount,
-			AmountCents:         amount,
-			TotalAmountCents:    amount,
-			Currency:            invoiceCurrency,
-			PricingMode:         string(rule.Mode),
-			RatingRuleVersionID: rule.ID,
-			BillingPeriodStart:  &periodStart,
-			BillingPeriodEnd:    &periodEnd,
-		})
-		subtotal += amount
+			unitAmount := int64(0)
+			if quantity > 0 {
+				unitAmount = money.RoundHalfToEven(amount, quantity)
+			}
+
+			lineItems = append(lineItems, domain.InvoiceLineItem{
+				LineType:            domain.LineTypeUsage,
+				MeterID:             meterID,
+				Description:         fmt.Sprintf("%s (%s)", meter.Name, meter.Unit),
+				Quantity:            quantity,
+				UnitAmountCents:     unitAmount,
+				AmountCents:         amount,
+				TotalAmountCents:    amount,
+				Currency:            invoiceCurrency,
+				PricingMode:         string(rule.Mode),
+				RatingRuleVersionID: rule.ID,
+				BillingPeriodStart:  &periodStart,
+				BillingPeriodEnd:    &periodEnd,
+			})
+			subtotal += amount
+		}
 	}
 
 	// Create invoice — pull settings for payment terms + tax, then allocate the
@@ -654,7 +714,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	var discountCents int64
 	var appliedRedemptionIDs []string
 	if e.coupons != nil && subtotal > 0 && sub.ID != "" {
-		d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, sub.PlanID, subtotal)
+		d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, planIDs, subtotal)
 		if err != nil {
 			slog.Warn("coupon apply failed, proceeding without discount",
 				"error", err, "subscription_id", sub.ID)
@@ -716,7 +776,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			)
 			// Still advance the billing cycle in case it was missed
 			nextPeriodStart := periodEnd
-			nextPeriodEnd := advanceBillingPeriod(periodEnd, plan.BillingInterval)
+			nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
 			_ = e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd)
 			return false, nil
 		}
@@ -768,7 +828,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 				slog.Info("invoice fully covered by credits, marked as paid", "invoice_id", inv.ID)
 				// Still advance the billing cycle
 				nextPeriodStart := periodEnd
-				nextPeriodEnd := advanceBillingPeriod(periodEnd, plan.BillingInterval)
+				nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
 				if err := e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd); err != nil {
 					return true, fmt.Errorf("advance billing cycle: %w", err)
 				}
@@ -804,7 +864,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 
 	// Advance billing cycle
 	nextPeriodStart := periodEnd
-	nextPeriodEnd := advanceBillingPeriod(periodEnd, plan.BillingInterval)
+	nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
 
 	if err := e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd); err != nil {
 		return false, fmt.Errorf("advance billing cycle: %w", err)

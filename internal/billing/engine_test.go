@@ -87,21 +87,30 @@ func (m *mockSubs) UpdateBillingCycle(_ context.Context, _, id string, start, en
 	return nil
 }
 
-func (m *mockSubs) ApplyPendingPlanAtomic(_ context.Context, _, id string, now time.Time) (domain.Subscription, error) {
+// ApplyDuePendingItemPlansAtomic mirrors the postgres store: for every item on
+// the subscription whose pending change is due (effective_at <= now), swap
+// plan_id ← pending_plan_id and clear the pending fields in one pass. Returns
+// the applied items so the engine can audit which swaps landed at this cycle.
+func (m *mockSubs) ApplyDuePendingItemPlansAtomic(_ context.Context, _, id string, now time.Time) ([]domain.SubscriptionItem, error) {
 	s, ok := m.subs[id]
 	if !ok {
-		return domain.Subscription{}, errs.ErrNotFound
+		return nil, errs.ErrNotFound
 	}
-	if s.PendingPlanID == "" || s.PendingPlanEffectiveAt == nil || s.PendingPlanEffectiveAt.After(now) {
-		return domain.Subscription{}, errs.ErrNotFound
+	var applied []domain.SubscriptionItem
+	for i := range s.Items {
+		it := s.Items[i]
+		if it.PendingPlanID == "" || it.PendingPlanEffectiveAt == nil || it.PendingPlanEffectiveAt.After(now) {
+			continue
+		}
+		it.PlanID = it.PendingPlanID
+		it.PlanChangedAt = &now
+		it.PendingPlanID = ""
+		it.PendingPlanEffectiveAt = nil
+		s.Items[i] = it
+		applied = append(applied, it)
 	}
-	s.PreviousPlanID = s.PlanID
-	s.PlanID = s.PendingPlanID
-	s.PlanChangedAt = &now
-	s.PendingPlanID = ""
-	s.PendingPlanEffectiveAt = nil
 	m.subs[id] = s
-	return s, nil
+	return applied, nil
 }
 
 type mockUsage struct {
@@ -289,7 +298,8 @@ func setupEngine() (*Engine, *mockSubs, *mockUsage, *mockPricing, *mockInvoices)
 	subs := &mockSubs{
 		subs: map[string]domain.Subscription{
 			"sub_1": {
-				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", PlanID: "pln_1",
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:  []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
 				NextBillingAt: &nextBilling,
@@ -562,7 +572,8 @@ func TestRunCycle_UnitAmountRoundsBankers(t *testing.T) {
 	subs := &mockSubs{
 		subs: map[string]domain.Subscription{
 			"sub_1": {
-				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", PlanID: "pln_1",
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:  []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
 				NextBillingAt: &periodEnd,
@@ -639,12 +650,16 @@ func TestRunCycle_AppliesScheduledPlanChangeAtBoundary(t *testing.T) {
 	subs := &mockSubs{
 		subs: map[string]domain.Subscription{
 			"sub_1": {
-				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", PlanID: "pln_old",
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{{
+					PlanID:                 "pln_old",
+					Quantity:               1,
+					PendingPlanID:          "pln_new",
+					PendingPlanEffectiveAt: &effectiveAt,
+				}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
 				NextBillingAt:             &periodEnd,
-				PendingPlanID:             "pln_new",
-				PendingPlanEffectiveAt:    &effectiveAt,
 			},
 		},
 		cycleUpdated: make(map[string]bool),
@@ -674,17 +689,21 @@ func TestRunCycle_AppliesScheduledPlanChangeAtBoundary(t *testing.T) {
 		t.Errorf("billed on wrong plan: subtotal %d cents, want 3000 (new plan)", inv.SubtotalCents)
 	}
 
-	// Sub row must reflect the swap.
+	// Item row must reflect the swap.
 	got := subs.subs["sub_1"]
-	if got.PlanID != "pln_new" {
-		t.Errorf("plan_id: got %q, want pln_new", got.PlanID)
+	if len(got.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(got.Items))
 	}
-	if got.PreviousPlanID != "pln_old" {
-		t.Errorf("previous_plan_id: got %q, want pln_old", got.PreviousPlanID)
+	it := got.Items[0]
+	if it.PlanID != "pln_new" {
+		t.Errorf("item plan_id: got %q, want pln_new", it.PlanID)
 	}
-	if got.PendingPlanID != "" || got.PendingPlanEffectiveAt != nil {
+	if it.PendingPlanID != "" || it.PendingPlanEffectiveAt != nil {
 		t.Errorf("pending fields should be cleared: got pending_id=%q effective_at=%v",
-			got.PendingPlanID, got.PendingPlanEffectiveAt)
+			it.PendingPlanID, it.PendingPlanEffectiveAt)
+	}
+	if it.PlanChangedAt == nil {
+		t.Error("plan_changed_at should be set after swap")
 	}
 }
 
@@ -698,12 +717,16 @@ func TestRunCycle_SkipsPendingChangeNotYetDue(t *testing.T) {
 	subs := &mockSubs{
 		subs: map[string]domain.Subscription{
 			"sub_1": {
-				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", PlanID: "pln_old",
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{{
+					PlanID:                 "pln_old",
+					Quantity:               1,
+					PendingPlanID:          "pln_new",
+					PendingPlanEffectiveAt: &futureEffective,
+				}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
 				NextBillingAt:             &periodEnd,
-				PendingPlanID:             "pln_new",
-				PendingPlanEffectiveAt:    &futureEffective,
 			},
 		},
 		cycleUpdated: make(map[string]bool),
@@ -730,12 +753,12 @@ func TestRunCycle_SkipsPendingChangeNotYetDue(t *testing.T) {
 		t.Errorf("should have billed on old plan: subtotal %d, want 1000", inv.SubtotalCents)
 	}
 
-	got := subs.subs["sub_1"]
-	if got.PendingPlanID != "pln_new" {
-		t.Errorf("pending change should be preserved: got %q", got.PendingPlanID)
+	it := subs.subs["sub_1"].Items[0]
+	if it.PendingPlanID != "pln_new" {
+		t.Errorf("pending change should be preserved: got %q", it.PendingPlanID)
 	}
-	if got.PlanID != "pln_old" {
-		t.Errorf("plan_id should not have swapped: got %q", got.PlanID)
+	if it.PlanID != "pln_old" {
+		t.Errorf("plan_id should not have swapped: got %q", it.PlanID)
 	}
 }
 

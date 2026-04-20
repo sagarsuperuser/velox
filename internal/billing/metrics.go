@@ -49,20 +49,27 @@ func (m *Metrics) ComputeDashboard(ctx context.Context, tenantID string, plans m
 	}
 	d.ActiveSubscriptions = len(activeSubs)
 
+	// MRR is summed per item (plan × quantity) across the active set. Items
+	// sharing one subscription contribute independently — a 2-seat Pro plan +
+	// 10-seat Add-on plan rolls up as (pro.base × 2) + (addon.base × 10).
+	// Yearly-billing items are normalized by dividing base / 12.
 	customerSet := make(map[string]bool)
 	for _, sub := range activeSubs {
 		customerSet[sub.CustomerID] = true
 
-		plan, ok := plans[sub.PlanID]
-		if !ok {
-			continue
-		}
+		for _, it := range sub.Items {
+			plan, ok := plans[it.PlanID]
+			if !ok {
+				continue
+			}
 
-		switch plan.BillingInterval {
-		case domain.BillingMonthly:
-			d.MRRCents += plan.BaseAmountCents
-		case domain.BillingYearly:
-			d.MRRCents += plan.BaseAmountCents / 12
+			perMonth := plan.BaseAmountCents
+			if plan.BillingInterval == domain.BillingYearly {
+				perMonth = plan.BaseAmountCents / 12
+			} else if plan.BillingInterval != domain.BillingMonthly {
+				continue
+			}
+			d.MRRCents += perMonth * it.Quantity
 		}
 	}
 	d.TotalCustomers = len(customerSet)

@@ -14,6 +14,10 @@ func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("APP_ENV", "")
 	t.Setenv("RUN_MIGRATIONS_ON_BOOT", "")
 	t.Setenv("DB_MAX_OPEN_CONNS", "")
+	// This test exercises generic defaults, not webhook security — opt into
+	// the unsigned path so validateFatal doesn't refuse startup on a missing
+	// STRIPE_WEBHOOK_SECRET.
+	t.Setenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", "1")
 
 	cfg, err := Load()
 	if err != nil {
@@ -47,8 +51,10 @@ func TestLoad_MissingDatabaseURL(t *testing.T) {
 func TestLoad_CustomPort(t *testing.T) {
 	_ = os.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
 	_ = os.Setenv("PORT", "3000")
+	_ = os.Setenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", "1")
 	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
 	defer func() { _ = os.Unsetenv("PORT") }()
+	defer func() { _ = os.Unsetenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS") }()
 
 	cfg, err := Load()
 	if err != nil {
@@ -228,17 +234,63 @@ func TestLoad_InvalidEncryptionKeyFormat(t *testing.T) {
 	}
 }
 
+// TestLoad_RefusesUnsignedWebhooksInProduction verifies the fail-safe added
+// for P0 #1: production/staging must refuse to start when STRIPE_WEBHOOK_SECRET
+// (and its test-mode sibling) are unset. The worst-case pre-fix behavior was
+// silently accepting any POST to /v1/webhooks/stripe without signature checks,
+// which would let any internet caller spoof payment events.
+func TestLoad_RefusesUnsignedWebhooksInProduction(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("STRIPE_WEBHOOK_SECRET", "")
+	t.Setenv("STRIPE_WEBHOOK_SECRET_TEST", "")
+	// Even with the opt-in flag, non-local envs must still refuse.
+	t.Setenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", "1")
+	t.Setenv("VELOX_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when STRIPE_WEBHOOK_SECRET is missing in production")
+	}
+	if !strings.Contains(err.Error(), "STRIPE_WEBHOOK_SECRET") {
+		t.Errorf("error should mention STRIPE_WEBHOOK_SECRET, got: %v", err)
+	}
+}
+
+// TestLoad_RefusesUnsignedWebhooksInLocalWithoutOptIn verifies that even
+// local-env developers must say yes explicitly. Running `go run ./cmd/velox`
+// in a fresh checkout with no .env is the exact scenario that caused the
+// pre-fix fail-open; refusing here makes the unsafe path impossible to reach
+// by accident.
+func TestLoad_RefusesUnsignedWebhooksInLocalWithoutOptIn(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	t.Setenv("APP_ENV", "local")
+	t.Setenv("STRIPE_WEBHOOK_SECRET", "")
+	t.Setenv("STRIPE_WEBHOOK_SECRET_TEST", "")
+	t.Setenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", "")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when STRIPE_WEBHOOK_SECRET is missing without opt-in")
+	}
+	if !strings.Contains(err.Error(), "ALLOW_UNSIGNED_STRIPE_WEBHOOKS") {
+		t.Errorf("error should mention the opt-in env var, got: %v", err)
+	}
+}
+
 func TestLoad_DiscreteDBVars(t *testing.T) {
 	_ = os.Unsetenv("DATABASE_URL")
 	_ = os.Setenv("DB_HOST", "localhost")
 	_ = os.Setenv("DB_NAME", "velox")
 	_ = os.Setenv("DB_USER", "velox")
 	_ = os.Setenv("DB_PASSWORD", "secret")
+	_ = os.Setenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", "1")
 	defer func() {
 		_ = os.Unsetenv("DB_HOST")
 		_ = os.Unsetenv("DB_NAME")
 		_ = os.Unsetenv("DB_USER")
 		_ = os.Unsetenv("DB_PASSWORD")
+		_ = os.Unsetenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS")
 	}()
 
 	cfg, err := Load()

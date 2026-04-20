@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -20,7 +21,10 @@ type PreviewLine struct {
 	PricingMode     string `json:"pricing_mode,omitempty"`
 }
 
-// PreviewResult is the result of an invoice preview.
+// PreviewResult is the result of an invoice preview. PlanName is a joined
+// list of the subscription's item plans (comma-separated) — the previous
+// single-plan shape can't represent a multi-item sub, and exposing the raw
+// item list here would leak more than preview consumers need.
 type PreviewResult struct {
 	CustomerID         string        `json:"customer_id"`
 	SubscriptionID     string        `json:"subscription_id"`
@@ -33,21 +37,46 @@ type PreviewResult struct {
 	GeneratedAt        time.Time     `json:"generated_at"`
 }
 
-// Preview generates a dry-run invoice for a subscription without persisting anything.
+// Preview generates a dry-run invoice for a subscription without persisting
+// anything. Walks every item, resolves its plan, and emits a base_fee line
+// per item plus deduped usage lines across the union of meter_ids.
 func (e *Engine) Preview(ctx context.Context, sub domain.Subscription) (PreviewResult, error) {
 	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
 		return PreviewResult{}, fmt.Errorf("subscription has no billing period set")
+	}
+	if len(sub.Items) == 0 {
+		return PreviewResult{}, fmt.Errorf("subscription has no items")
 	}
 
 	periodStart := *sub.CurrentBillingPeriodStart
 	periodEnd := *sub.CurrentBillingPeriodEnd
 
-	plan, err := e.pricing.GetPlan(ctx, sub.TenantID, sub.PlanID)
-	if err != nil {
-		return PreviewResult{}, fmt.Errorf("get plan: %w", err)
+	plans := make(map[string]domain.Plan, len(sub.Items))
+	planNames := make([]string, 0, len(sub.Items))
+	var allMeterIDs []string
+	seenMeter := make(map[string]struct{})
+	for _, it := range sub.Items {
+		if _, ok := plans[it.PlanID]; ok {
+			continue
+		}
+		pl, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
+		if err != nil {
+			return PreviewResult{}, fmt.Errorf("get plan %s: %w", it.PlanID, err)
+		}
+		plans[it.PlanID] = pl
+		planNames = append(planNames, pl.Name)
+		for _, mid := range pl.MeterIDs {
+			if _, ok := seenMeter[mid]; ok {
+				continue
+			}
+			seenMeter[mid] = struct{}{}
+			allMeterIDs = append(allMeterIDs, mid)
+		}
 	}
 
-	usageTotals, err := e.usage.AggregateForBillingPeriod(ctx, sub.TenantID, sub.ID, plan.MeterIDs, periodStart, periodEnd)
+	currency := plans[sub.Items[0].PlanID].Currency
+
+	usageTotals, err := e.usage.AggregateForBillingPeriod(ctx, sub.TenantID, sub.ID, allMeterIDs, periodStart, periodEnd)
 	if err != nil {
 		return PreviewResult{}, fmt.Errorf("aggregate usage: %w", err)
 	}
@@ -55,27 +84,36 @@ func (e *Engine) Preview(ctx context.Context, sub domain.Subscription) (PreviewR
 	result := PreviewResult{
 		CustomerID:         sub.CustomerID,
 		SubscriptionID:     sub.ID,
-		PlanName:           plan.Name,
-		Currency:           plan.Currency,
+		PlanName:           strings.Join(planNames, ", "),
+		Currency:           currency,
 		BillingPeriodStart: periodStart,
 		BillingPeriodEnd:   periodEnd,
 		GeneratedAt:        e.clock.Now(),
 	}
 
-	// Base fee
-	if plan.BaseAmountCents > 0 {
+	for _, it := range sub.Items {
+		plan := plans[it.PlanID]
+		if plan.BaseAmountCents <= 0 {
+			continue
+		}
+		baseFee := plan.BaseAmountCents * it.Quantity
 		result.Lines = append(result.Lines, PreviewLine{
 			LineType:        "base_fee",
-			Description:     fmt.Sprintf("%s - base fee", plan.Name),
-			Quantity:        1,
+			Description:     fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity),
+			Quantity:        it.Quantity,
 			UnitAmountCents: plan.BaseAmountCents,
-			AmountCents:     plan.BaseAmountCents,
+			AmountCents:     baseFee,
 		})
-		result.SubtotalCents += plan.BaseAmountCents
+		result.SubtotalCents += baseFee
 	}
 
-	// Usage lines
-	for _, meterID := range plan.MeterIDs {
+	rendered := make(map[string]struct{})
+	for _, meterID := range allMeterIDs {
+		if _, ok := rendered[meterID]; ok {
+			continue
+		}
+		rendered[meterID] = struct{}{}
+
 		quantity := usageTotals[meterID]
 		if quantity == 0 {
 			continue

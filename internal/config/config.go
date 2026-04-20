@@ -30,6 +30,12 @@ type Config struct {
 	StripeSecretKeyTest     string
 	StripeWebhookSecretTest string
 
+	// StripeAllowUnsignedWebhooks opts the handler into accepting Stripe
+	// webhook POSTs without a configured signing secret. Only honored when
+	// Env == "local" — production/staging must refuse to start without a
+	// signing secret. Default false.
+	StripeAllowUnsignedWebhooks bool
+
 	// Redis (optional — rate limiting fails open without it)
 	RedisURL string
 
@@ -68,12 +74,13 @@ func Load() (Config, error) {
 			PingTimeout:     time.Duration(intEnv("DB_PING_TIMEOUT_SEC", 5)) * time.Second,
 			QueryTimeout:    time.Duration(intEnv("DB_QUERY_TIMEOUT_MS", 5000)) * time.Millisecond,
 		},
-		StripeSecretKey:         strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
-		StripeWebhookSecret:     strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
-		StripeSecretKeyTest:     strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY_TEST")),
-		StripeWebhookSecretTest: strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET_TEST")),
-		RedisURL:            strings.TrimSpace(os.Getenv("REDIS_URL")),
-		BootstrapToken:      strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_TOKEN")),
+		StripeSecretKey:             strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
+		StripeWebhookSecret:         strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+		StripeSecretKeyTest:         strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY_TEST")),
+		StripeWebhookSecretTest:     strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET_TEST")),
+		StripeAllowUnsignedWebhooks: boolEnv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", false),
+		RedisURL:                    strings.TrimSpace(os.Getenv("REDIS_URL")),
+		BootstrapToken:              strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_TOKEN")),
 	}
 
 	if warnings := cfg.Validate(); len(warnings) > 0 {
@@ -106,6 +113,21 @@ func (c Config) validateFatal() error {
 		}
 		if _, err := hex.DecodeString(encKey); err != nil {
 			return fmt.Errorf("VELOX_ENCRYPTION_KEY is not valid hex: %w", err)
+		}
+	}
+
+	// Stripe webhook signing. Without at least one signing secret an operator
+	// has no defense against forged payment-state events; a deployment in
+	// staging or production that forgot STRIPE_WEBHOOK_SECRET must fail to
+	// start rather than silently accept unsigned traffic. Local-dev callers
+	// can opt in to unsigned mode with ALLOW_UNSIGNED_STRIPE_WEBHOOKS=1 (for
+	// running the handler without a real Stripe listener).
+	if c.StripeWebhookSecret == "" && c.StripeWebhookSecretTest == "" {
+		if c.Env != "local" {
+			return fmt.Errorf("STRIPE_WEBHOOK_SECRET (or STRIPE_WEBHOOK_SECRET_TEST) is required in %s — refusing to start with unsigned Stripe webhooks", c.Env)
+		}
+		if !c.StripeAllowUnsignedWebhooks {
+			return fmt.Errorf("STRIPE_WEBHOOK_SECRET is not set — set ALLOW_UNSIGNED_STRIPE_WEBHOOKS=1 to explicitly opt into unsigned webhook handling (local env only)")
 		}
 	}
 

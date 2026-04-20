@@ -59,21 +59,22 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO customer_credit_ledger (id, tenant_id, customer_id, entry_type,
 			amount_cents, balance_after, description, invoice_id, expires_at, metadata, created_at,
-			source_subscription_id, source_plan_changed_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			source_subscription_id, source_subscription_item_id, source_plan_changed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		RETURNING id, tenant_id, customer_id, entry_type, amount_cents, balance_after,
 			description, COALESCE(invoice_id,''), expires_at, metadata, created_at,
-			COALESCE(source_subscription_id,''), source_plan_changed_at
+			COALESCE(source_subscription_id,''), COALESCE(source_subscription_item_id,''), source_plan_changed_at
 	`, entry.ID, tenantID, entry.CustomerID, entry.EntryType,
 		entry.AmountCents, entry.BalanceAfter, entry.Description,
 		postgres.NullableString(entry.InvoiceID), postgres.NullableTime(entry.ExpiresAt),
 		metaJSON, time.Now().UTC(),
 		postgres.NullableString(entry.SourceSubscriptionID),
+		postgres.NullableString(entry.SourceSubscriptionItemID),
 		postgres.NullableTime(entry.SourcePlanChangedAt),
 	).Scan(&entry.ID, &entry.TenantID, &entry.CustomerID, &entry.EntryType,
 		&entry.AmountCents, &entry.BalanceAfter, &entry.Description,
 		&entry.InvoiceID, &entry.ExpiresAt, &metaJSON, &entry.CreatedAt,
-		&entry.SourceSubscriptionID, &entry.SourcePlanChangedAt)
+		&entry.SourceSubscriptionID, &entry.SourceSubscriptionItemID, &entry.SourcePlanChangedAt)
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
@@ -242,10 +243,12 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 }
 
 // GetByProrationSource returns the credit ledger entry previously written
-// for a specific (subscription, plan_changed_at) event, if any. Callers use
-// this after AppendEntry returns ErrAlreadyExists to complete an idempotent
-// retry — the proration dedup partial index ensures uniqueness.
-func (s *PostgresStore) GetByProrationSource(ctx context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error) {
+// for a specific (subscription, item, plan_changed_at) event, if any. Callers
+// use this after AppendEntry returns ErrAlreadyExists to complete an
+// idempotent retry — the proration dedup partial index ensures uniqueness.
+// The subscription_item_id disambiguates items whose downgrades shared a
+// wall-clock timestamp.
+func (s *PostgresStore) GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.CreditLedgerEntry{}, err
@@ -257,14 +260,14 @@ func (s *PostgresStore) GetByProrationSource(ctx context.Context, tenantID, subs
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, tenant_id, customer_id, entry_type, amount_cents, balance_after,
 			description, COALESCE(invoice_id,''), expires_at, metadata, created_at,
-			COALESCE(source_subscription_id,''), source_plan_changed_at
+			COALESCE(source_subscription_id,''), COALESCE(source_subscription_item_id,''), source_plan_changed_at
 		FROM customer_credit_ledger
-		WHERE tenant_id = $1 AND source_subscription_id = $2 AND source_plan_changed_at = $3
-	`, tenantID, subscriptionID, planChangedAt,
+		WHERE tenant_id = $1 AND source_subscription_id = $2 AND source_subscription_item_id = $3 AND source_plan_changed_at = $4
+	`, tenantID, subscriptionID, subscriptionItemID, planChangedAt,
 	).Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.EntryType,
 		&e.AmountCents, &e.BalanceAfter, &e.Description, &e.InvoiceID,
 		&e.ExpiresAt, &metaJSON, &e.CreatedAt,
-		&e.SourceSubscriptionID, &e.SourcePlanChangedAt)
+		&e.SourceSubscriptionID, &e.SourceSubscriptionItemID, &e.SourcePlanChangedAt)
 	if err == sql.ErrNoRows {
 		return domain.CreditLedgerEntry{}, errs.ErrNotFound
 	}

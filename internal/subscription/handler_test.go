@@ -55,7 +55,7 @@ func (m *invoicesMock) CreateInvoiceWithLineItems(_ context.Context, tenantID st
 	return inv, nil
 }
 
-func (m *invoicesMock) GetByProrationSource(_ context.Context, _, _ string, _ time.Time) (domain.Invoice, error) {
+func (m *invoicesMock) GetByProrationSource(_ context.Context, _, _, _ string, _ time.Time) (domain.Invoice, error) {
 	m.existingCreateCalls++
 	if m.lookupInvoiceErr != nil {
 		return domain.Invoice{}, m.lookupInvoiceErr
@@ -83,44 +83,62 @@ func (m *creditsMock) GrantProration(_ context.Context, _ string, input Proratio
 	return m.grantErr
 }
 
-func (m *creditsMock) GetByProrationSource(_ context.Context, _, _ string, _ time.Time) (domain.CreditLedgerEntry, error) {
+func (m *creditsMock) GetByProrationSource(_ context.Context, _, _, _ string, _ time.Time) (domain.CreditLedgerEntry, error) {
 	if m.lookupEntryErr != nil {
 		return domain.CreditLedgerEntry{}, m.lookupEntryErr
 	}
 	return m.lookupEntry, nil
 }
 
+// seedSubWithItem creates an active subscription on `plan_old` for the given
+// tenant and returns the subscription ID plus the seeded item ID. The billing
+// period spans 30 days centered on now so proration_factor > 0.
+func seedSubWithItem(t *testing.T, store *memStore, tenantID, custID, initialPlan string) (string, string) {
+	t.Helper()
+	now := time.Now().UTC()
+	periodStart := now.Add(-15 * 24 * time.Hour)
+	periodEnd := now.Add(15 * 24 * time.Hour)
+	sub, err := store.Create(context.Background(), tenantID, domain.Subscription{
+		Code: fmt.Sprintf("sub-%d", len(store.subs)+1),
+		DisplayName: "Test Sub", CustomerID: custID,
+		Status:                    domain.SubscriptionActive,
+		BillingTime:               domain.BillingTimeCalendar,
+		CurrentBillingPeriodStart: &periodStart,
+		CurrentBillingPeriodEnd:   &periodEnd,
+		Items:                     []domain.SubscriptionItem{{PlanID: initialPlan, Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+	return sub.ID, sub.Items[0].ID
+}
+
+// updateItemURL builds the route URL for the per-item PATCH handler and wires
+// the chi context with {id, itemID} params so chi.URLParam resolves them.
+func updateItemURL(ctx context.Context, subID, itemID string, body []byte) *http.Request {
+	url := fmt.Sprintf("/subscriptions/%s/items/%s", subID, itemID)
+	req := httptest.NewRequest(http.MethodPatch, url, bytes.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	rctx.URLParams.Add("itemID", itemID)
+	return req.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-// TestChangePlan_ProrationFailureSurfacesAs500 locks in the fix for a silent
-// data-loss bug: previously, if proration generation failed after the plan
-// change committed, the error was logged and the client received 200 OK.
-// That meant customers ended up on new plans without ever being charged the
-// upgrade proration (or without receiving their downgrade credit).
-//
-// The handler must now return 500 with the distinct code "proration_failed"
-// so clients and operators can distinguish this partial-success state from
-// either a total failure or a clean success.
-func TestChangePlan_ProrationFailureSurfacesAs500(t *testing.T) {
+// TestUpdateItem_ProrationFailureSurfacesAs500 locks in the fix for a silent
+// data-loss bug: if proration generation fails after the plan change has
+// already committed, the error must surface as a 500 with the distinct code
+// "proration_failed". Prior behaviour was a 200 OK, leaving the customer on
+// the new plan but never billed (or credited) for the mid-cycle swap.
+func TestUpdateItem_ProrationFailureSurfacesAs500(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "t1"
 
-	// Seed a subscription with a billing period so proration factor > 0.
-	now := time.Now().UTC()
-	periodStart := now.Add(-15 * 24 * time.Hour)
-	periodEnd := now.Add(15 * 24 * time.Hour)
-	store := &memStore{
-		subs: map[string]domain.Subscription{
-			"sub_1": {
-				ID: "sub_1", TenantID: tenantID, CustomerID: "cus_1",
-				PlanID: "plan_old", Status: domain.SubscriptionActive,
-				CurrentBillingPeriodStart: &periodStart,
-				CurrentBillingPeriodEnd:   &periodEnd,
-			},
-		},
-	}
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
@@ -135,20 +153,14 @@ func TestChangePlan_ProrationFailureSurfacesAs500(t *testing.T) {
 	h := NewHandler(svc)
 	h.SetProrationDeps(plans, invoices, credits)
 
-	body, _ := json.Marshal(ChangePlanInput{NewPlanID: "plan_new", Immediate: true})
-	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub_1/change-plan", bytes.NewReader(body))
-
-	reqCtx := context.WithValue(ctx, auth.TestTenantIDKey(), tenantID)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "sub_1")
-	reqCtx = context.WithValue(reqCtx, chi.RouteCtxKey, rctx)
-	req = req.WithContext(reqCtx)
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
 
 	rr := httptest.NewRecorder()
-	h.changePlan(rr, req)
+	h.updateItem(rr, req)
 
 	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status: got %d, want 500", rr.Code)
+		t.Fatalf("status: got %d, want 500. body=%s", rr.Code, rr.Body.String())
 	}
 
 	var resp map[string]any
@@ -164,41 +176,32 @@ func TestChangePlan_ProrationFailureSurfacesAs500(t *testing.T) {
 	}
 
 	// The plan change itself must still have committed — that's the whole
-	// point of surfacing the error: state is divergent, and the client has
-	// to know so they can reconcile.
-	stored := store.subs["sub_1"]
-	if stored.PlanID != "plan_new" {
-		t.Errorf("subscription plan_id: got %q, want %q (plan change should commit even when proration fails)",
-			stored.PlanID, "plan_new")
+	// point of surfacing the error: state is divergent, and the client has to
+	// know so they can reconcile.
+	storedItem, err := store.GetItem(ctx, tenantID, itemID)
+	if err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if storedItem.PlanID != "plan_new" {
+		t.Errorf("item plan_id: got %q, want %q (plan change should commit even when proration fails)",
+			storedItem.PlanID, "plan_new")
 	}
 }
 
-// TestChangePlan_ProrationDedup_UpgradeReturnsExisting exercises the
-// idempotent-retry path introduced in migration 0005: if a proration invoice
-// for the same (subscription, plan_changed_at) already exists, the store
-// returns errs.ErrAlreadyExists and the handler re-fetches the existing
-// invoice rather than creating a duplicate.
+// TestUpdateItem_ProrationDedup_UpgradeReturnsExisting exercises the
+// idempotent-retry path: if a proration invoice for the same (subscription,
+// item, plan_changed_at) already exists, the store returns errs.ErrAlreadyExists
+// and the handler re-fetches the existing invoice rather than creating a duplicate.
 //
 // Without this, an operator-triggered retry (or any worker that recomputes
 // proration from subscription state) would silently double-bill on the
 // upgrade side, or grant double credits on the downgrade side.
-func TestChangePlan_ProrationDedup_UpgradeReturnsExisting(t *testing.T) {
+func TestUpdateItem_ProrationDedup_UpgradeReturnsExisting(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "t1"
 
-	now := time.Now().UTC()
-	periodStart := now.Add(-15 * 24 * time.Hour)
-	periodEnd := now.Add(15 * 24 * time.Hour)
-	store := &memStore{
-		subs: map[string]domain.Subscription{
-			"sub_1": {
-				ID: "sub_1", TenantID: tenantID, CustomerID: "cus_1",
-				PlanID: "plan_old", Status: domain.SubscriptionActive,
-				CurrentBillingPeriodStart: &periodStart,
-				CurrentBillingPeriodEnd:   &periodEnd,
-			},
-		},
-	}
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
@@ -206,14 +209,15 @@ func TestChangePlan_ProrationDedup_UpgradeReturnsExisting(t *testing.T) {
 		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
 	}}
 
-	existingAt := now.Add(-time.Minute)
+	existingAt := time.Now().UTC().Add(-time.Minute)
 	existingInvoice := domain.Invoice{
-		ID:                  "vlx_inv_prior",
-		TenantID:            tenantID,
-		SubscriptionID:      "sub_1",
-		InvoiceNumber:       "VLX-000001",
-		Status:              domain.InvoiceFinalized,
-		SourcePlanChangedAt: &existingAt,
+		ID:                       "vlx_inv_prior",
+		TenantID:                 tenantID,
+		SubscriptionID:           subID,
+		InvoiceNumber:            "VLX-000001",
+		Status:                   domain.InvoiceFinalized,
+		SourcePlanChangedAt:      &existingAt,
+		SourceSubscriptionItemID: itemID,
 	}
 	// CreateInvoiceWithLineItems returns ErrAlreadyExists to emulate the
 	// unique partial index firing. The handler must then call
@@ -228,17 +232,11 @@ func TestChangePlan_ProrationDedup_UpgradeReturnsExisting(t *testing.T) {
 	h := NewHandler(svc)
 	h.SetProrationDeps(plans, invoices, credits)
 
-	body, _ := json.Marshal(ChangePlanInput{NewPlanID: "plan_new", Immediate: true})
-	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub_1/change-plan", bytes.NewReader(body))
-
-	reqCtx := context.WithValue(ctx, auth.TestTenantIDKey(), tenantID)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "sub_1")
-	reqCtx = context.WithValue(reqCtx, chi.RouteCtxKey, rctx)
-	req = req.WithContext(reqCtx)
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
 
 	rr := httptest.NewRecorder()
-	h.changePlan(rr, req)
+	h.updateItem(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200 (dedup should succeed as idempotent retry), body=%s",
@@ -252,7 +250,7 @@ func TestChangePlan_ProrationDedup_UpgradeReturnsExisting(t *testing.T) {
 		t.Errorf("createdInvoices: got %d, want 0 (dedup must not create a new invoice)", len(invoices.createdInvoices))
 	}
 
-	var resp ChangePlanResult
+	var resp ItemChangeResult
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
@@ -268,27 +266,16 @@ func TestChangePlan_ProrationDedup_UpgradeReturnsExisting(t *testing.T) {
 	}
 }
 
-// TestChangePlan_ProrationDedup_DowngradeReturnsExisting exercises the
+// TestUpdateItem_ProrationDedup_DowngradeReturnsExisting exercises the
 // credit-ledger side of proration dedup. Same failure mode as the upgrade
-// variant: a retry with the same (subscription, plan_changed_at) must return
-// the prior credit entry, never double-grant.
-func TestChangePlan_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
+// variant: a retry with the same (subscription, item, plan_changed_at) must
+// return the prior credit entry, never double-grant.
+func TestUpdateItem_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "t1"
 
-	now := time.Now().UTC()
-	periodStart := now.Add(-15 * 24 * time.Hour)
-	periodEnd := now.Add(15 * 24 * time.Hour)
-	store := &memStore{
-		subs: map[string]domain.Subscription{
-			"sub_2": {
-				ID: "sub_2", TenantID: tenantID, CustomerID: "cus_2",
-				PlanID: "plan_pro", Status: domain.SubscriptionActive,
-				CurrentBillingPeriodStart: &periodStart,
-				CurrentBillingPeriodEnd:   &periodEnd,
-			},
-		},
-	}
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_2", "plan_pro")
 	svc := NewService(store, nil)
 
 	// Downgrade: Pro (3000) → Basic (1000).
@@ -298,12 +285,13 @@ func TestChangePlan_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
 	}}
 
 	existingEntry := domain.CreditLedgerEntry{
-		ID:                   "vlx_ccl_prior",
-		TenantID:             tenantID,
-		CustomerID:           "cus_2",
-		EntryType:            domain.CreditGrant,
-		AmountCents:          987, // arbitrary — handler must surface this, not recompute.
-		SourceSubscriptionID: "sub_2",
+		ID:                       "vlx_ccl_prior",
+		TenantID:                 tenantID,
+		CustomerID:               "cus_2",
+		EntryType:                domain.CreditGrant,
+		AmountCents:              987, // arbitrary — handler must surface this, not recompute.
+		SourceSubscriptionID:     subID,
+		SourceSubscriptionItemID: itemID,
 	}
 
 	invoices := &invoicesMock{}
@@ -315,17 +303,11 @@ func TestChangePlan_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
 	h := NewHandler(svc)
 	h.SetProrationDeps(plans, invoices, credits)
 
-	body, _ := json.Marshal(ChangePlanInput{NewPlanID: "plan_basic", Immediate: true})
-	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub_2/change-plan", bytes.NewReader(body))
-
-	reqCtx := context.WithValue(ctx, auth.TestTenantIDKey(), tenantID)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "sub_2")
-	reqCtx = context.WithValue(reqCtx, chi.RouteCtxKey, rctx)
-	req = req.WithContext(reqCtx)
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_basic", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
 
 	rr := httptest.NewRecorder()
-	h.changePlan(rr, req)
+	h.updateItem(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200, body=%s", rr.Code, rr.Body.String())
@@ -334,7 +316,7 @@ func TestChangePlan_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
 		t.Errorf("GrantProration call count: got %d, want 1", len(credits.grantCalls))
 	}
 
-	var resp ChangePlanResult
+	var resp ItemChangeResult
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
@@ -373,26 +355,15 @@ func (m *prorationTaxApplierMock) ApplyTaxToLineItems(_ context.Context, _, _, _
 	return m.result, nil
 }
 
-// TestChangePlan_ProrationAppliesTax locks in COR-2: proration invoices must
+// TestUpdateItem_ProrationAppliesTax locks in COR-2: proration invoices must
 // carry tax. Prior behaviour was tax-free proration even when the customer
 // had a configured rate.
-func TestChangePlan_ProrationAppliesTax(t *testing.T) {
+func TestUpdateItem_ProrationAppliesTax(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "t1"
 
-	now := time.Now().UTC()
-	periodStart := now.Add(-15 * 24 * time.Hour)
-	periodEnd := now.Add(15 * 24 * time.Hour)
-	store := &memStore{
-		subs: map[string]domain.Subscription{
-			"sub_1": {
-				ID: "sub_1", TenantID: tenantID, CustomerID: "cus_1",
-				PlanID: "plan_old", Status: domain.SubscriptionActive,
-				CurrentBillingPeriodStart: &periodStart,
-				CurrentBillingPeriodEnd:   &periodEnd,
-			},
-		},
-	}
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
@@ -415,17 +386,11 @@ func TestChangePlan_ProrationAppliesTax(t *testing.T) {
 	h.SetProrationDeps(plans, invoices, credits)
 	h.SetProrationTaxApplier(taxMock)
 
-	body, _ := json.Marshal(ChangePlanInput{NewPlanID: "plan_new", Immediate: true})
-	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub_1/change-plan", bytes.NewReader(body))
-
-	reqCtx := context.WithValue(ctx, auth.TestTenantIDKey(), tenantID)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "sub_1")
-	reqCtx = context.WithValue(reqCtx, chi.RouteCtxKey, rctx)
-	req = req.WithContext(reqCtx)
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
 
 	rr := httptest.NewRecorder()
-	h.changePlan(rr, req)
+	h.updateItem(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
@@ -447,8 +412,9 @@ func TestChangePlan_ProrationAppliesTax(t *testing.T) {
 	if inv.TaxName != "VAT" {
 		t.Errorf("invoice TaxName = %q, want VAT", inv.TaxName)
 	}
-	// SubtotalCents should remain the pre-discount proration amount; TotalAmountCents
-	// should add tax on top of discounted subtotal (no discount here → subtotal + tax).
+	// SubtotalCents should remain the pre-discount proration amount;
+	// TotalAmountCents should add tax on top of discounted subtotal (no
+	// discount here → subtotal + tax).
 	wantTotal := inv.SubtotalCents - inv.DiscountCents + inv.TaxAmountCents
 	if inv.TotalAmountCents != wantTotal {
 		t.Errorf("invoice total = %d, want %d (subtotal - discount + tax)", inv.TotalAmountCents, wantTotal)
