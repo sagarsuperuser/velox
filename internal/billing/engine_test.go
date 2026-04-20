@@ -15,9 +15,9 @@ import (
 // returns a canned (TestClock, error) pair and records the last ID queried so
 // the test can assert the engine looked up the right clock.
 type stubClockReader struct {
-	clk      domain.TestClock
-	err      error
-	lastID   string
+	clk        domain.TestClock
+	err        error
+	lastID     string
 	lastTenant string
 }
 
@@ -659,7 +659,7 @@ func TestRunCycle_AppliesScheduledPlanChangeAtBoundary(t *testing.T) {
 				}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
-				NextBillingAt:             &periodEnd,
+				NextBillingAt: &periodEnd,
 			},
 		},
 		cycleUpdated: make(map[string]bool),
@@ -726,7 +726,7 @@ func TestRunCycle_SkipsPendingChangeNotYetDue(t *testing.T) {
 				}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
-				NextBillingAt:             &periodEnd,
+				NextBillingAt: &periodEnd,
 			},
 		},
 		cycleUpdated: make(map[string]bool),
@@ -857,7 +857,7 @@ func TestRunCycle_FiresPendingChangeAppliedEvent(t *testing.T) {
 				}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
-				NextBillingAt:             &periodEnd,
+				NextBillingAt: &periodEnd,
 			},
 		},
 		cycleUpdated: make(map[string]bool),
@@ -924,14 +924,14 @@ func TestRunCycle_OneSubFailsOthersContinue(t *testing.T) {
 				Items:  []domain.SubscriptionItem{{ID: "si_ok", PlanID: "pln_ok", Quantity: 1}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
-				NextBillingAt:             &periodEnd,
+				NextBillingAt: &periodEnd,
 			},
 			"sub_bad": {
 				ID: "sub_bad", TenantID: "t1", CustomerID: "cus_bad",
 				Items:  []domain.SubscriptionItem{{ID: "si_bad", PlanID: "pln_bad", Quantity: 1}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
-				NextBillingAt:             &periodEnd,
+				NextBillingAt: &periodEnd,
 			},
 		},
 		cycleUpdated: make(map[string]bool),
@@ -1014,7 +1014,7 @@ func TestRunCycle_NoPendingChangeNoAppliedEvent(t *testing.T) {
 				}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
-				NextBillingAt:             &periodEnd,
+				NextBillingAt: &periodEnd,
 			},
 		},
 		cycleUpdated: make(map[string]bool),

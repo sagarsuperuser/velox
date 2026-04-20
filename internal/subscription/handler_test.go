@@ -99,7 +99,7 @@ func seedSubWithItem(t *testing.T, store *memStore, tenantID, custID, initialPla
 	periodStart := now.Add(-15 * 24 * time.Hour)
 	periodEnd := now.Add(15 * 24 * time.Hour)
 	sub, err := store.Create(context.Background(), tenantID, domain.Subscription{
-		Code: fmt.Sprintf("sub-%d", len(store.subs)+1),
+		Code:        fmt.Sprintf("sub-%d", len(store.subs)+1),
 		DisplayName: "Test Sub", CustomerID: custID,
 		Status:                    domain.SubscriptionActive,
 		BillingTime:               domain.BillingTimeCalendar,

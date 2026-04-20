@@ -41,7 +41,7 @@ func (h *Handler) getEndpointStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.svc.GetEndpointStats(r.Context(), tenantID)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"get webhook endpoint stats", "error", err)
+		slog.ErrorContext(r.Context(), "get webhook endpoint stats", "error", err)
 		return
 	}
 	if stats == nil {
@@ -75,7 +75,7 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 	endpoints, err := h.svc.ListEndpoints(r.Context(), tenantID)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"list webhook endpoints", "error", err)
+		slog.ErrorContext(r.Context(), "list webhook endpoints", "error", err)
 		return
 	}
 	if endpoints == nil {
@@ -113,7 +113,7 @@ func (h *Handler) rotateSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"rotate webhook secret", "error", err)
+		slog.ErrorContext(r.Context(), "rotate webhook secret", "error", err)
 		return
 	}
 
@@ -126,7 +126,7 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := h.svc.ListEvents(r.Context(), tenantID, 50)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"list webhook events", "error", err)
+		slog.ErrorContext(r.Context(), "list webhook events", "error", err)
 		return
 	}
 	if events == nil {
@@ -143,7 +143,7 @@ func (h *Handler) listDeliveries(w http.ResponseWriter, r *http.Request) {
 	deliveries, err := h.svc.ListDeliveries(r.Context(), tenantID, eventID)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"list webhook deliveries", "error", err)
+		slog.ErrorContext(r.Context(), "list webhook deliveries", "error", err)
 		return
 	}
 	if deliveries == nil {
@@ -164,7 +164,7 @@ func (h *Handler) replayEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"replay webhook event", "error", err)
+		slog.ErrorContext(r.Context(), "replay webhook event", "error", err)
 		return
 	}
 

@@ -63,13 +63,13 @@ func TestCoupon_DurationAndStacking_E2E(t *testing.T) {
 		t.Fatalf("create repeating coupon: %v", err)
 	}
 	forCpn, err := svc.Create(ctx, tenant, coupon.CreateInput{
-		Code:       "FOREVER5",
-		Name:       "$5 forever",
-		Type:       domain.CouponTypeFixedAmount,
-		AmountOff:  500,
-		Currency:   "USD",
-		Duration:   domain.CouponDurationForever,
-		Stackable:  true,
+		Code:      "FOREVER5",
+		Name:      "$5 forever",
+		Type:      domain.CouponTypeFixedAmount,
+		AmountOff: 500,
+		Currency:  "USD",
+		Duration:  domain.CouponDurationForever,
+		Stackable: true,
 	})
 	if err != nil {
 		t.Fatalf("create forever coupon: %v", err)
@@ -153,23 +153,23 @@ func TestCoupon_DurationAndStacking_E2E(t *testing.T) {
 	// Scenario 2: non-stackable present → best single wins
 	// ----------------------------------------------------------------------
 	nsCpn, err := svc.Create(ctx, tenant, coupon.CreateInput{
-		Code:      "BIG20",
-		Name:      "20% off",
-		Type:      domain.CouponTypePercentage,
+		Code:       "BIG20",
+		Name:       "20% off",
+		Type:       domain.CouponTypePercentage,
 		PercentOff: 20,
-		Duration:  domain.CouponDurationForever,
-		Stackable: false,
+		Duration:   domain.CouponDurationForever,
+		Stackable:  false,
 	})
 	if err != nil {
 		t.Fatalf("create non-stackable coupon: %v", err)
 	}
 	sCpn, err := svc.Create(ctx, tenant, coupon.CreateInput{
-		Code:      "SMALL5",
-		Name:      "5% off",
-		Type:      domain.CouponTypePercentage,
+		Code:       "SMALL5",
+		Name:       "5% off",
+		Type:       domain.CouponTypePercentage,
 		PercentOff: 5,
-		Duration:  domain.CouponDurationForever,
-		Stackable: true,
+		Duration:   domain.CouponDurationForever,
+		Stackable:  true,
 	})
 	if err != nil {
 		t.Fatalf("create small stackable coupon: %v", err)

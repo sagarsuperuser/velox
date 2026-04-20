@@ -363,4 +363,3 @@ func resetDue(db *postgres.DB, id string) error {
 	}
 	return tx.Commit()
 }
-

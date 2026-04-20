@@ -53,7 +53,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	tenants, err := h.svc.List(r.Context(), filter)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"list tenants", "error", err)
+		slog.ErrorContext(r.Context(), "list tenants", "error", err)
 		return
 	}
 
@@ -76,7 +76,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"get tenant", "error", err)
+		slog.ErrorContext(r.Context(), "get tenant", "error", err)
 		return
 	}
 

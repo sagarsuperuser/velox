@@ -35,9 +35,9 @@ import (
 //  9. Customer promotes the second PM → the partial unique index admits
 //     the swap atomically; summary row reflects the new card.
 //  10. Customer detaches the current default → the replacement (older PM)
-//      is auto-promoted to default; summary row reflects that.
+//     is auto-promoted to default; summary row reflects that.
 //  11. Customer detaches the remaining PM → list empty; summary row
-//      returns to "missing" state.
+//     returns to "missing" state.
 //
 // If any assertion here fails, a regression has been introduced either in
 // the Postgres store (livemode trigger, unique index, CASCADE), the Service

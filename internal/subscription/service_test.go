@@ -343,12 +343,12 @@ func TestCreate(t *testing.T) {
 
 	t.Run("validation errors", func(t *testing.T) {
 		cases := []CreateInput{
-			{DisplayName: "x", CustomerID: "c", Items: []CreateItemInput{{PlanID: "p"}}},             // missing code
-			{Code: "x", CustomerID: "c", Items: []CreateItemInput{{PlanID: "p"}}},                    // missing display_name
-			{Code: "x", DisplayName: "x", Items: []CreateItemInput{{PlanID: "p"}}},                   // missing customer_id
-			{Code: "x", DisplayName: "x", CustomerID: "c"},                                           // missing items
-			{Code: "x", DisplayName: "x", CustomerID: "c", Items: []CreateItemInput{{}}},             // item missing plan_id
-			{Code: "x", DisplayName: "x", CustomerID: "c", Items: []CreateItemInput{{PlanID: "p"}, {PlanID: "p"}}}, // duplicate plan
+			{DisplayName: "x", CustomerID: "c", Items: []CreateItemInput{{PlanID: "p"}}},                                   // missing code
+			{Code: "x", CustomerID: "c", Items: []CreateItemInput{{PlanID: "p"}}},                                          // missing display_name
+			{Code: "x", DisplayName: "x", Items: []CreateItemInput{{PlanID: "p"}}},                                         // missing customer_id
+			{Code: "x", DisplayName: "x", CustomerID: "c"},                                                                 // missing items
+			{Code: "x", DisplayName: "x", CustomerID: "c", Items: []CreateItemInput{{}}},                                   // item missing plan_id
+			{Code: "x", DisplayName: "x", CustomerID: "c", Items: []CreateItemInput{{PlanID: "p"}, {PlanID: "p"}}},         // duplicate plan
 			{Code: "x", DisplayName: "x", CustomerID: "c", Items: []CreateItemInput{{PlanID: "p"}}, BillingTime: "weekly"}, // invalid billing_time
 		}
 		for _, input := range cases {

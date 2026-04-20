@@ -153,7 +153,7 @@ func orDefault(s, d string) string {
 // fakeStripe — only what Service touches.
 // ---------------------------------------------------------------------------
 type fakeStripe struct {
-	setupCalls int
+	setupCalls  int
 	detachCalls int
 	detachErr   error
 }

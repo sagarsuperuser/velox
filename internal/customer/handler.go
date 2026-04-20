@@ -82,7 +82,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	customers, total, err := h.svc.List(r.Context(), filter)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"list customers", "error", err)
+		slog.ErrorContext(r.Context(), "list customers", "error", err)
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"get customer", "error", err)
+		slog.ErrorContext(r.Context(), "get customer", "error", err)
 		return
 	}
 
@@ -161,7 +161,7 @@ func (h *Handler) getBillingProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"get billing profile", "error", err)
+		slog.ErrorContext(r.Context(), "get billing profile", "error", err)
 		return
 	}
 

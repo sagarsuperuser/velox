@@ -975,4 +975,3 @@ func advanceBillingPeriod(from time.Time, interval domain.BillingInterval) time.
 		return from.AddDate(0, 1, 0)
 	}
 }
-

@@ -17,7 +17,7 @@ import (
 // customers. Mounted under tenant auth + PermCustomerWrite. Not to be
 // confused with the customer-side Middleware above.
 type OperatorHandler struct {
-	svc     *Service
+	svc       *Service
 	portalURL string
 }
 
