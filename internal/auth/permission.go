@@ -90,11 +90,15 @@ var keyPermissions = map[KeyType]map[Permission]bool{
 		PermAPIKeyWrite:       true,
 		PermTestClockWrite:    true,
 	},
+	// Publishable keys are browser-embeddable (vlx_pub_live_… ships in JS
+	// SDKs). They must be read-only: any write permission granted here is
+	// exploitable by every visitor to every page that embeds the key.
+	// Stripe's pk_live_ equivalents can only mint tokens / retrieve public
+	// resources — write flows for end-users go through the customer portal's
+	// magic-link session, not publishable keys.
 	KeyTypePublishable: {
 		PermCustomerRead:     true,
-		PermCustomerWrite:    true,
 		PermUsageRead:        true,
-		PermUsageWrite:       true,
 		PermSubscriptionRead: true,
 		PermInvoiceRead:      true,
 	},
