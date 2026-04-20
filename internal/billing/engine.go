@@ -59,13 +59,16 @@ type CreditApplier interface {
 	ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64, invoiceNumber ...string) (int64, error)
 }
 
-// CouponApplier computes the coupon discount (in cents) to apply to an
-// invoice's gross subtotal for a given subscription. Implementations are
-// side-effect-free: the coupon discount is captured on the invoice itself;
-// attachment-consumption semantics (once vs forever) are owned by the coupon
-// domain and are not tracked per-invoice here.
+// CouponApplier computes the coupon discount to apply to an invoice's
+// gross subtotal for a given subscription, then — after the invoice
+// commits — is called to advance the periods_applied counter on every
+// redemption that contributed. ApplyToInvoice itself is side-effect-free;
+// the MarkPeriodsApplied step is what burns a period of a 'once' /
+// 'repeating' coupon, so it must run only when the invoice that consumed
+// the discount is durably persisted.
 type CouponApplier interface {
-	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (int64, error)
+	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (domain.CouponDiscountResult, error)
+	MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
 }
 
 // BillingProfileReader reads customer billing profiles for tax exemption checks.
@@ -644,14 +647,20 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	// aren't taxed on money they didn't actually pay. A zero result here is
 	// the happy no-coupon path; a non-zero result is clamped to subtotal by
 	// the coupon service before reaching us, so no negative-total risk.
+	// appliedRedemptionIDs carries FEAT-6 state across the invoice-create
+	// boundary: we must only advance periods_applied AFTER the invoice is
+	// durably persisted, otherwise a create failure would burn a period of
+	// a repeating coupon that the customer never actually got.
 	var discountCents int64
+	var appliedRedemptionIDs []string
 	if e.coupons != nil && subtotal > 0 && sub.ID != "" {
 		d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, sub.PlanID, subtotal)
 		if err != nil {
 			slog.Warn("coupon apply failed, proceeding without discount",
 				"error", err, "subscription_id", sub.ID)
 		} else {
-			discountCents = d
+			discountCents = d.Cents
+			appliedRedemptionIDs = d.RedemptionIDs
 		}
 	}
 	taxApp, _ := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, lineItems)
@@ -712,6 +721,22 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			return false, nil
 		}
 		return false, fmt.Errorf("create invoice: %w", err)
+	}
+
+	// Advance periods_applied on every redemption that contributed to the
+	// discount. This MUST happen after CreateInvoiceWithLineItems succeeds
+	// (and only on the non-idempotent-skip path) so a coupon period is
+	// burned exactly once per real invoice. Per-redemption failures are
+	// logged and swallowed — the invoice already exists, so the worst case
+	// is a repeating coupon applying one extra cycle, which we'd rather
+	// have than refusing to bill the customer over a bookkeeping glitch.
+	if e.coupons != nil && len(appliedRedemptionIDs) > 0 {
+		if err := e.coupons.MarkPeriodsApplied(ctx, sub.TenantID, appliedRedemptionIDs); err != nil {
+			slog.Warn("coupon mark-periods-applied failed",
+				"invoice_id", inv.ID,
+				"subscription_id", sub.ID,
+				"error", err)
+		}
 	}
 
 	// Apply customer credits before charging. ApplyToInvoice is atomic:

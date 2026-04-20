@@ -54,10 +54,14 @@ type ProrationCreditGranter interface {
 }
 
 // ProrationCouponApplier computes a coupon discount against a proration
-// invoice's subtotal. Optional — when nil, proration invoices carry a zero
-// discount (previous behaviour).
+// invoice's subtotal and advances periods_applied after the proration
+// invoice commits. Optional — when nil, proration invoices carry a zero
+// discount (previous behaviour). MarkPeriodsApplied runs only on the
+// successful-create path so a dedup hit or rollback doesn't burn a
+// period of a repeating coupon.
 type ProrationCouponApplier interface {
-	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (int64, error)
+	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (domain.CouponDiscountResult, error)
+	MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
 }
 
 // ProrationTaxResult is what ApplyTaxToLineItems returns: invoice-level tax
@@ -408,14 +412,19 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 
 		// Apply coupon discount before tax — Stripe-style order
 		// (subtotal → discount → tax → total) matches the main billing path.
+		// appliedRedemptionIDs is held across the create boundary so the
+		// periods_applied bump only runs if we actually persist the proration
+		// invoice — see the matching MarkPeriodsApplied call below.
 		var discountCents int64
+		var appliedRedemptionIDs []string
 		if h.coupons != nil {
 			d, err := h.coupons.ApplyToInvoice(ctx, tenantID, result.Subscription.ID, result.Subscription.PlanID, proratedCents)
 			if err != nil {
 				slog.Warn("coupon apply failed on proration, proceeding without discount",
 					"error", err, "subscription_id", result.Subscription.ID)
 			} else {
-				discountCents = d
+				discountCents = d.Cents
+				appliedRedemptionIDs = d.RedemptionIDs
 			}
 		}
 		memo := fmt.Sprintf("Plan upgrade proration: %s -> %s", oldPlan.Name, newPlan.Name)
@@ -504,6 +513,18 @@ func (h *Handler) handleProration(ctx context.Context, tenantID string, result C
 
 		detail.InvoiceID = inv.ID
 		detail.Type = "invoice"
+
+		// Bump periods_applied only on real creates. The dedup branch above
+		// returns before reaching this line, so a retry that hits the
+		// existing invoice doesn't double-burn a repeating coupon period.
+		if h.coupons != nil && len(appliedRedemptionIDs) > 0 {
+			if err := h.coupons.MarkPeriodsApplied(ctx, tenantID, appliedRedemptionIDs); err != nil {
+				slog.Warn("coupon mark-periods-applied failed on proration",
+					"invoice_id", inv.ID,
+					"subscription_id", result.Subscription.ID,
+					"error", err)
+			}
+		}
 
 		slog.Info("proration invoice created",
 			"invoice_id", inv.ID,
