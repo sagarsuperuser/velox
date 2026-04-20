@@ -355,6 +355,13 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	paymentMethodsSvc := paymentmethods.NewService(paymentMethodsStore, paymentMethodsStripe, customerStore)
 	paymentMethodsH := paymentmethods.NewHandler(paymentMethodsSvc)
 
+	// setup_intent.succeeded webhooks write payment_methods rows via the
+	// service. Wired here because stripeAdapter (payment/) must not import
+	// paymentmethods/ — the interface lives in payment/ and the method
+	// name is AttachForWebhook so the two AttachFromSetupIntent callers
+	// (tests, webhook) keep their own signatures.
+	stripeAdapter.SetPaymentMethodAttacher(paymentMethodsSvc)
+
 	// GDPR data export + deletion — wired into customer handler
 	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, auditLogger)
 	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))

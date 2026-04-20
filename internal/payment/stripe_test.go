@@ -410,3 +410,116 @@ func TestHandleWebhook_UnhandledEvent(t *testing.T) {
 		t.Fatalf("unhandled events should not error: %v", err)
 	}
 }
+
+// recordingAttacher captures calls so the test can assert the attacher was
+// invoked with the right (tenant, customer, pm) tuple.
+type recordingAttacher struct {
+	tenantID, customerID, pmID string
+	called                     int
+	err                        error
+}
+
+func (r *recordingAttacher) AttachForWebhook(_ context.Context, tenantID, customerID, pmID string) error {
+	r.called++
+	r.tenantID, r.customerID, r.pmID = tenantID, customerID, pmID
+	return r.err
+}
+
+// TestHandleWebhook_SetupIntentSucceeded — a setup_intent.succeeded event
+// must re-parse the raw payload, pull payment_method + velox_customer_id
+// from it, and delegate to the configured attacher.
+func TestHandleWebhook_SetupIntentSucceeded(t *testing.T) {
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
+	attacher := &recordingAttacher{}
+	stripe.SetPaymentMethodAttacher(attacher)
+
+	rawPayload := `{
+		"id": "evt_seti_ok",
+		"type": "setup_intent.succeeded",
+		"data": { "object": {
+			"id": "seti_1",
+			"payment_method": "pm_stripe_42",
+			"customer": "cus_stripe_99",
+			"metadata": {
+				"velox_tenant_id": "tnt_x",
+				"velox_customer_id": "cus_local_7"
+			}
+		}}
+	}`
+
+	err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
+		StripeEventID: "evt_seti_ok",
+		EventType:     "setup_intent.succeeded",
+		Payload:       map[string]any{"raw": rawPayload},
+	})
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if attacher.called != 1 {
+		t.Fatalf("expected attacher called once, got %d", attacher.called)
+	}
+	if attacher.tenantID != "tnt_x" || attacher.customerID != "cus_local_7" || attacher.pmID != "pm_stripe_42" {
+		t.Fatalf("attacher got wrong args: tenant=%q customer=%q pm=%q",
+			attacher.tenantID, attacher.customerID, attacher.pmID)
+	}
+}
+
+// TestHandleWebhook_SetupIntent_NoAttacherNoError — if the operator hasn't
+// wired an attacher (e.g. test env without the paymentmethods package),
+// setup_intent events should ack silently rather than error.
+func TestHandleWebhook_SetupIntent_NoAttacher(t *testing.T) {
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
+
+	err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
+		StripeEventID: "evt_noop",
+		EventType:     "setup_intent.succeeded",
+		Payload:       map[string]any{"raw": `{"data":{"object":{}}}`},
+	})
+	if err != nil {
+		t.Fatalf("no-attacher path should be a no-op, got %v", err)
+	}
+}
+
+// TestHandleWebhook_SetupIntent_MissingMetadata — a setup_intent with no
+// velox metadata shouldn't error (someone else's SI passing through); we
+// just skip.
+func TestHandleWebhook_SetupIntent_MissingMetadata(t *testing.T) {
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
+	attacher := &recordingAttacher{}
+	stripe.SetPaymentMethodAttacher(attacher)
+
+	err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
+		StripeEventID: "evt_no_meta",
+		EventType:     "setup_intent.succeeded",
+		Payload: map[string]any{"raw": `{
+			"data": {"object": {"id": "seti_2", "payment_method": "pm_1"}}
+		}`},
+	})
+	if err != nil {
+		t.Fatalf("missing metadata should skip, got %v", err)
+	}
+	if attacher.called != 0 {
+		t.Fatalf("attacher must not be called when velox_customer_id is missing")
+	}
+}
+
+// TestHandleWebhook_SetupIntentFailed — setup_intent.setup_failed is
+// logged and ack'd; nothing else needs to happen.
+func TestHandleWebhook_SetupIntentFailed(t *testing.T) {
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
+	attacher := &recordingAttacher{}
+	stripe.SetPaymentMethodAttacher(attacher)
+
+	err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
+		StripeEventID:  "evt_seti_fail",
+		EventType:      "setup_intent.setup_failed",
+		FailureMessage: "card declined",
+		Payload:        map[string]any{"raw": `{"data":{"object":{}}}`},
+	})
+	if err != nil {
+		t.Fatalf("setup_failed should ack: %v", err)
+	}
+	if attacher.called != 0 {
+		t.Fatalf("setup_failed must not attach anything")
+	}
+}
