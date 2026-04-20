@@ -68,6 +68,7 @@ type Stripe struct {
 	paymentUpdateURL   string
 	tokenSvc           *TokenService
 	breaker            *breaker.Breaker // optional; nil = no breaker
+	pmAttacher         PaymentMethodAttacher
 }
 
 // StripeClient is the interface for Stripe API calls.
@@ -153,6 +154,25 @@ func (s *Stripe) SetEventDispatcher(events domain.EventDispatcher) {
 // ticking attempt_count.
 func (s *Stripe) SetBreaker(b *breaker.Breaker) {
 	s.breaker = b
+}
+
+// PaymentMethodAttacher persists a PM row after a Stripe setup_intent
+// succeeds. Optional — if nil, setup_intent.succeeded events are logged
+// and ack'd but no payment_methods row is created. In practice the
+// router always wires paymentmethods.Service here.
+//
+// The method name is AttachForWebhook (not AttachFromSetupIntent) so
+// paymentmethods.Service can keep its richer AttachFromSetupIntent
+// method — returning (PaymentMethod, error) — for tests and direct
+// callers, while this package imports nothing from paymentmethods.
+type PaymentMethodAttacher interface {
+	AttachForWebhook(ctx context.Context, tenantID, customerID, stripePaymentMethodID string) error
+}
+
+// SetPaymentMethodAttacher configures the handler that processes
+// setup_intent.succeeded events.
+func (s *Stripe) SetPaymentMethodAttacher(a PaymentMethodAttacher) {
+	s.pmAttacher = a
 }
 
 // IsUnknownPaymentFailure classifies an error returned from ChargeInvoice
@@ -310,10 +330,75 @@ func (s *Stripe) HandleWebhook(ctx context.Context, tenantID string, event domai
 		return s.handlePaymentFailed(ctx, tenantID, event)
 	case "checkout.session.completed":
 		return s.handleCheckoutCompleted(ctx, tenantID, event)
+	case "setup_intent.succeeded":
+		return s.handleSetupIntentSucceeded(ctx, tenantID, event)
+	case "setup_intent.setup_failed":
+		// We don't persist anything for setup_failed — Stripe Elements
+		// already surfaced the error to the customer browser. Just log
+		// so operators can tell this happened from event history.
+		slog.Info("setup_intent.setup_failed",
+			"stripe_event_id", event.StripeEventID,
+			"failure_message", event.FailureMessage)
+		return nil
 	default:
 		slog.Debug("unhandled webhook event type", "type", event.EventType)
 		return nil
 	}
+}
+
+// handleSetupIntentSucceeded re-parses the raw payload to pull out the
+// velox_customer_id + payment_method fields, then delegates to the
+// PaymentMethodAttacher. Re-parsing (instead of adding fields to
+// StripeWebhookEvent) keeps the event struct narrow — other consumers
+// of the event don't need to know about setup-intent-specific fields.
+func (s *Stripe) handleSetupIntentSucceeded(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {
+	if s.pmAttacher == nil {
+		slog.Debug("setup_intent.succeeded: no PaymentMethodAttacher wired, skipping")
+		return nil
+	}
+
+	raw, ok := event.Payload["raw"].(string)
+	if !ok {
+		return fmt.Errorf("setup_intent.succeeded: missing raw payload")
+	}
+	var parsed struct {
+		Data struct {
+			Object struct {
+				ID            string            `json:"id"`
+				PaymentMethod string            `json:"payment_method"`
+				Customer      string            `json:"customer"`
+				Metadata      map[string]string `json:"metadata"`
+			} `json:"object"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return fmt.Errorf("setup_intent.succeeded: parse payload: %w", err)
+	}
+
+	customerID := parsed.Data.Object.Metadata["velox_customer_id"]
+	pmID := parsed.Data.Object.PaymentMethod
+	if customerID == "" || pmID == "" {
+		slog.Warn("setup_intent.succeeded missing velox_customer_id or payment_method — skipping",
+			"stripe_event_id", event.StripeEventID)
+		return nil
+	}
+
+	if err := s.pmAttacher.AttachForWebhook(ctx, tenantID, customerID, pmID); err != nil {
+		return fmt.Errorf("attach payment method: %w", err)
+	}
+
+	slog.Info("payment method attached via setup_intent",
+		"stripe_event_id", event.StripeEventID,
+		"customer_id", customerID,
+		"stripe_pm_id", pmID,
+	)
+
+	s.fireEvent(ctx, tenantID, "payment_method.attached", map[string]any{
+		"customer_id":              customerID,
+		"stripe_payment_method_id": pmID,
+	})
+
+	return nil
 }
 
 func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {

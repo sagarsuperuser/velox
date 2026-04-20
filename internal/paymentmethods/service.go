@@ -183,6 +183,15 @@ func (s *Service) clearSummary(ctx context.Context, tenantID, customerID string)
 	return err
 }
 
+// AttachForWebhook is the error-only variant of AttachFromSetupIntent,
+// used by payment.Stripe.HandleWebhook which doesn't need the PM row. Keeps
+// the webhook-facing signature narrow so payment/ doesn't have to know
+// about PaymentMethod.
+func (s *Service) AttachForWebhook(ctx context.Context, tenantID, customerID, stripePaymentMethodID string) error {
+	_, err := s.AttachFromSetupIntent(ctx, tenantID, customerID, stripePaymentMethodID)
+	return err
+}
+
 // AttachFromSetupIntent is the entry point the P5 webhook handler uses:
 // after setup_intent.succeeded, we know the PM and customer, and we
 // persist the row here. Called with an RLS ctx already staged to the
