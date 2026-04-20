@@ -299,7 +299,7 @@ func TestEmailMagicLinkDelivery_HappyPath(t *testing.T) {
 	if got := sender.lastTo; got != "alice@example.com" {
 		t.Fatalf("to: got %q, want alice@example.com", got)
 	}
-	wantURL := "https://portal.velox.dev/login?magic_token=vlx_cpml_raw_abc"
+	wantURL := "https://portal.velox.dev/customer-portal/login?magic_token=vlx_cpml_raw_abc"
 	if sender.lastURL != wantURL {
 		t.Fatalf("url: got %q, want %q", sender.lastURL, wantURL)
 	}
@@ -335,7 +335,7 @@ func TestEmailMagicLinkDelivery_TrimTrailingSlash(t *testing.T) {
 	if err := d.DeliverMagicLink(context.Background(), "tnt", "cus", "tok"); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
-	if sender.lastURL != "https://portal.velox.dev/login?magic_token=tok" {
+	if sender.lastURL != "https://portal.velox.dev/customer-portal/login?magic_token=tok" {
 		t.Fatalf("trailing slash not trimmed: %q", sender.lastURL)
 	}
 }

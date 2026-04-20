@@ -209,14 +209,14 @@ func (d *EmailMagicLinkDelivery) DeliverMagicLink(ctx context.Context, tenantID,
 }
 
 // buildMagicLinkURL assembles the URL the email points at. The frontend
-// route is /login — it reads ?magic_token=... from the URL, POSTs to
-// /v1/public/customer-portal/magic/consume, then redirects into the
-// portal with the returned session token.
+// route is /customer-portal/login — it reads ?magic_token=... from the
+// URL, POSTs to /v1/public/customer-portal/magic/consume, then
+// redirects into /customer-portal with the returned session token.
 //
-// magic_token is a distinct query-string key from `token` (used for
-// reusable portal sessions) so the frontend can't conflate the two
-// cookies/storage slots if an operator accidentally routes the wrong
-// URL at the wrong page.
+// The namespaced path (/customer-portal/login) keeps it from colliding
+// with operator auth at /login when the same domain hosts both.
+// magic_token is a distinct query-string key from `token` (reusable
+// session) so the page can't conflate the two storage slots.
 func buildMagicLinkURL(base, rawToken string) string {
 	if base == "" {
 		// No portal URL configured — return just the token so the email
@@ -225,5 +225,5 @@ func buildMagicLinkURL(base, rawToken string) string {
 		return rawToken
 	}
 	base = strings.TrimRight(base, "/")
-	return base + "/login?magic_token=" + rawToken
+	return base + "/customer-portal/login?magic_token=" + rawToken
 }
