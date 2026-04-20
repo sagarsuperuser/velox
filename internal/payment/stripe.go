@@ -10,6 +10,7 @@ import (
 
 	chimw "github.com/go-chi/chi/v5/middleware"
 
+	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
@@ -296,6 +297,10 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 			)
 		}
 		_, _ = s.invoices.UpdatePayment(ctx, tenantID, inv.ID, status, pe.PaymentIntentID, pe.Message, nil)
+		// Count unknown outcomes as failed for the success-rate alert — a
+		// Stripe outage genuinely impairs customer charging and should page,
+		// even though the reconciler will later resolve the per-invoice state.
+		mw.RecordPaymentCharge("failed")
 		return domain.Invoice{}, fmt.Errorf("%s: %s", verb, pe.Message)
 	}
 
@@ -305,6 +310,7 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		"amount_cents", inv.AmountDueCents,
 		"request_id", chimw.GetReqID(ctx),
 	)
+	mw.RecordPaymentCharge("succeeded")
 
 	// Update invoice with PI reference and set to processing
 	return s.invoices.UpdatePayment(ctx, tenantID, inv.ID,
