@@ -24,6 +24,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
+	"github.com/sagarsuperuser/velox/internal/customerportal"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
@@ -336,6 +337,15 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	billingH := billing.NewHandler(engine, subStore)
 	analyticsH := analytics.NewHandler(db)
 
+	// Customer portal sessions — operators mint a session for a customer
+	// via POST /v1/customer-portal-sessions. The returned token is what
+	// authenticates the customer against /v1/me/* (see Middleware below).
+	portalSvc := customerportal.NewService(customerportal.NewPostgresStore(db))
+	portalOperatorH := customerportal.NewOperatorHandler(
+		portalSvc,
+		strings.TrimSpace(os.Getenv("CUSTOMER_PORTAL_URL")),
+	)
+
 	// GDPR data export + deletion — wired into customer handler
 	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, auditLogger)
 	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
@@ -473,6 +483,20 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 		if portalH != nil {
 			r.With(auth.Require(auth.PermCustomerWrite)).Mount("/payment-portal", portalH.Routes())
 		}
+
+		// Operator endpoint that mints portal bearer tokens for customers
+		// to use against /v1/me/* below. Customer-side routes deliberately
+		// live OUTSIDE this /v1 block because they're gated by the portal
+		// session middleware, not by API-key auth.
+		r.With(auth.Require(auth.PermCustomerWrite)).Mount("/customer-portal-sessions", portalOperatorH.Routes())
+	})
+
+	// Customer self-service surface — authenticated by a portal bearer
+	// token (vlx_cps_...) rather than a tenant API key. See customerportal
+	// package. Payment-method handlers are mounted here in P4.
+	r.Route("/v1/me", func(r chi.Router) {
+		r.Use(portalSvc.Middleware())
+		r.Use(rateLimiter.Middleware())
 	})
 
 	s.router = r
