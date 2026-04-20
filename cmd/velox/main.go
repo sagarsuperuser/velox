@@ -150,7 +150,7 @@ func serve() {
 	webhookSecret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))           // set by injectSecret above
 	webhookSecretTest := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET_TEST")) // optional; test-mode webhooks only
 
-	server := api.NewServer(db, webhookSecret, webhookSecretTest, nil)
+	server := api.NewServer(db, webhookSecret, webhookSecretTest, cfg.StripeAllowUnsignedWebhooks, nil)
 
 	billingInterval := 1 * time.Hour
 	if cfg.Env == "local" {

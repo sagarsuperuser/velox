@@ -193,17 +193,18 @@ type prorationCreditGranterAdapter struct {
 func (a *prorationCreditGranterAdapter) GrantProration(ctx context.Context, tenantID string, input subscription.ProrationGrantInput) error {
 	planChangedAt := input.SourcePlanChangedAt
 	_, err := a.svc.Grant(ctx, tenantID, credit.GrantInput{
-		CustomerID:           input.CustomerID,
-		AmountCents:          input.AmountCents,
-		Description:          input.Description,
-		SourceSubscriptionID: input.SourceSubscriptionID,
-		SourcePlanChangedAt:  &planChangedAt,
+		CustomerID:               input.CustomerID,
+		AmountCents:              input.AmountCents,
+		Description:              input.Description,
+		SourceSubscriptionID:     input.SourceSubscriptionID,
+		SourceSubscriptionItemID: input.SourceSubscriptionItemID,
+		SourcePlanChangedAt:      &planChangedAt,
 	})
 	return err
 }
 
-func (a *prorationCreditGranterAdapter) GetByProrationSource(ctx context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error) {
-	return a.svc.GetByProrationSource(ctx, tenantID, subscriptionID, planChangedAt)
+func (a *prorationCreditGranterAdapter) GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, planChangedAt time.Time) (domain.CreditLedgerEntry, error) {
+	return a.svc.GetByProrationSource(ctx, tenantID, subscriptionID, subscriptionItemID, planChangedAt)
 }
 
 // prorationInvoiceCreatorAdapter bridges invoice.PostgresStore + tenant.SettingsStore → subscription.ProrationInvoiceCreator.
@@ -216,8 +217,8 @@ func (a *prorationInvoiceCreatorAdapter) CreateInvoiceWithLineItems(ctx context.
 	return a.store.CreateWithLineItems(ctx, tenantID, inv, items)
 }
 
-func (a *prorationInvoiceCreatorAdapter) GetByProrationSource(ctx context.Context, tenantID, subscriptionID string, planChangedAt time.Time) (domain.Invoice, error) {
-	return a.store.GetByProrationSource(ctx, tenantID, subscriptionID, planChangedAt)
+func (a *prorationInvoiceCreatorAdapter) GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, planChangedAt time.Time) (domain.Invoice, error) {
+	return a.store.GetByProrationSource(ctx, tenantID, subscriptionID, subscriptionItemID, planChangedAt)
 }
 
 func (a *prorationInvoiceCreatorAdapter) NextInvoiceNumber(ctx context.Context, tenantID string) (string, error) {

@@ -27,9 +27,12 @@ func (m *mockMetricsInvoices) ListRecent(_ context.Context, _ string, _ time.Tim
 func TestComputeDashboard(t *testing.T) {
 	subs := &mockMetricsSubs{
 		subs: []domain.Subscription{
-			{ID: "sub_1", CustomerID: "cus_1", PlanID: "pln_monthly", Status: domain.SubscriptionActive},
-			{ID: "sub_2", CustomerID: "cus_2", PlanID: "pln_monthly", Status: domain.SubscriptionActive},
-			{ID: "sub_3", CustomerID: "cus_3", PlanID: "pln_yearly", Status: domain.SubscriptionActive},
+			{ID: "sub_1", CustomerID: "cus_1", Status: domain.SubscriptionActive,
+				Items: []domain.SubscriptionItem{{PlanID: "pln_monthly", Quantity: 1}}},
+			{ID: "sub_2", CustomerID: "cus_2", Status: domain.SubscriptionActive,
+				Items: []domain.SubscriptionItem{{PlanID: "pln_monthly", Quantity: 1}}},
+			{ID: "sub_3", CustomerID: "cus_3", Status: domain.SubscriptionActive,
+				Items: []domain.SubscriptionItem{{PlanID: "pln_yearly", Quantity: 1}}},
 		},
 	}
 

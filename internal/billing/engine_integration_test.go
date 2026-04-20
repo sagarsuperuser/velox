@@ -34,8 +34,8 @@ func (a *subStoreAdapter) UpdateBillingCycle(ctx context.Context, tenantID, id s
 	return a.store.UpdateBillingCycle(ctx, tenantID, id, start, end, next)
 }
 
-func (a *subStoreAdapter) ApplyPendingPlanAtomic(ctx context.Context, tenantID, id string, now time.Time) (domain.Subscription, error) {
-	return a.store.ApplyPendingPlanAtomic(ctx, tenantID, id, now)
+func (a *subStoreAdapter) ApplyDuePendingItemPlansAtomic(ctx context.Context, tenantID, id string, now time.Time) ([]domain.SubscriptionItem, error) {
+	return a.store.ApplyDuePendingItemPlansAtomic(ctx, tenantID, id, now)
 }
 
 // pricingStoreAdapter wraps pricing.PostgresStore to implement billing.PricingReader
@@ -206,8 +206,9 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 
 	sub, err := subStore.Create(ctx, tenantID, domain.Subscription{
 		Code: "sub-e2e-001", DisplayName: "Pro Monthly",
-		CustomerID: cust.ID, PlanID: plan.ID,
-		Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+		CustomerID: cust.ID,
+		Items:      []domain.SubscriptionItem{{PlanID: plan.ID, Quantity: 1}},
+		Status:     domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 		StartedAt: &periodStart,
 	})
 	if err != nil {

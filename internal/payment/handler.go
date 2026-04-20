@@ -30,6 +30,12 @@ type Handler struct {
 	stripe            *Stripe
 	webhookSecretLive string // Stripe live-mode signing secret
 	webhookSecretTest string // Stripe test-mode signing secret (optional)
+	// allowUnsigned lets the handler accept POSTs with NO configured secret.
+	// Only set by callers who explicitly opted in via
+	// ALLOW_UNSIGNED_STRIPE_WEBHOOKS=1 in local env. Production/staging
+	// configs fail startup before we ever reach here when no secret is set,
+	// so in those envs this field is always false.
+	allowUnsigned bool
 }
 
 // NewHandler accepts both the live and test Stripe webhook signing secrets.
@@ -37,11 +43,18 @@ type Handler struct {
 // either secret, and the event's own livemode field decides which downstream
 // context to process it under. Passing "" for the test secret disables
 // test-mode webhook intake (live-only deployment).
-func NewHandler(stripe *Stripe, webhookSecretLive, webhookSecretTest string) *Handler {
+//
+// allowUnsigned opts this handler into the "no secrets configured" path —
+// only honored when at least one caller (config.Load in local env with
+// ALLOW_UNSIGNED_STRIPE_WEBHOOKS=1) has explicitly said "yes, accept
+// unsigned". Any non-local deployment should pass false; config.validateFatal
+// enforces that a secret is configured before NewHandler ever runs there.
+func NewHandler(stripe *Stripe, webhookSecretLive, webhookSecretTest string, allowUnsigned bool) *Handler {
 	return &Handler{
 		stripe:            stripe,
 		webhookSecretLive: webhookSecretLive,
 		webhookSecretTest: webhookSecretTest,
+		allowUnsigned:     allowUnsigned,
 	}
 }
 
@@ -65,11 +78,12 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	// classification. Falling back gracefully if the operator only has one
 	// secret configured mirrors NewStripeClients' tolerance.
 	sigHeader := r.Header.Get("Stripe-Signature")
-	eventLivemode, ok := verifyWebhookDualSecret(body, sigHeader, h.webhookSecretLive, h.webhookSecretTest)
+	eventLivemode, ok := verifyWebhookDualSecret(body, sigHeader, h.webhookSecretLive, h.webhookSecretTest, h.allowUnsigned)
 	if !ok {
 		slog.Warn("stripe webhook signature verification failed",
 			"live_secret_set", h.webhookSecretLive != "",
 			"test_secret_set", h.webhookSecretTest != "",
+			"allow_unsigned", h.allowUnsigned,
 		)
 		respond.BadRequest(w, r, "invalid signature")
 		return
@@ -176,14 +190,20 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 // verifyWebhookDualSecret tries to verify the signature against each provided
 // secret in turn. Returns the livemode implied by the matched secret (true
 // for live, false for test) and ok=true on any match. When both secrets are
-// empty we treat that as "unconfigured — accept anything" to preserve the
-// previous dev-mode behavior where the handler runs without a secret set.
-func verifyWebhookDualSecret(payload []byte, sigHeader, liveSecret, testSecret string) (bool, bool) {
+// empty and allowUnsigned=false (the default / non-local deployment path)
+// the verifier refuses to match — a deployment that forgot to configure
+// STRIPE_WEBHOOK_SECRET must never silently accept unsigned events. Only
+// local-dev callers who explicitly opted in (ALLOW_UNSIGNED_STRIPE_WEBHOOKS=1)
+// reach the permissive branch.
+func verifyWebhookDualSecret(payload []byte, sigHeader, liveSecret, testSecret string, allowUnsigned bool) (bool, bool) {
 	if liveSecret == "" && testSecret == "" {
-		// No secrets configured — accept and default to live for downstream
-		// processing. This matches the pre-dual-key behavior and only fires
-		// in local dev without STRIPE_WEBHOOK_SECRET.
-		return true, true
+		if allowUnsigned {
+			// Local-dev opt-in: accept and default to live for downstream
+			// processing. Production/staging validators refuse startup before
+			// this branch is reachable.
+			return true, true
+		}
+		return false, false
 	}
 	if liveSecret != "" {
 		if err := verifyStripeSignature(payload, sigHeader, liveSecret); err == nil {

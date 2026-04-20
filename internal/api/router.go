@@ -88,7 +88,7 @@ type Server struct {
 	PaymentReconciler  *payment.Reconciler
 }
 
-func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest string, clk clock.Clock) *Server {
+func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest string, allowUnsignedStripeWebhooks bool, clk clock.Clock) *Server {
 	if clk == nil {
 		clk = clock.Real()
 	}
@@ -219,7 +219,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	})
 	dunningSvc.SetSubscriptionPauser(&subscriptionPauserAdapter{svc: subSvc}, invoiceStore)
 	dunningSvc.SetEventDispatcher(eventDispatcher)
-	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret, stripeWebhookSecretTest)
+	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret, stripeWebhookSecretTest, allowUnsignedStripeWebhooks)
 
 	invoiceSvc := invoice.NewService(invoiceStore, clk, settingsStore)
 	invoiceH := invoice.NewHandler(invoiceSvc, customerStore, settingsStore, invoice.HandlerDeps{
@@ -526,9 +526,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 		r.With(auth.Require(auth.PermSubscriptionRead)).Mount("/subscriptions", subH.Routes())
 		// Backfill is mounted ahead of the /usage-events subtree so chi picks
 		// the more-specific pattern; PermUsageWrite gates it to secret-tier
-		// keys (publishable keys also carry PermUsageWrite, but the
-		// registration slot leaves room for a future stricter gate without
-		// breaking this call site).
+		// keys (publishable keys are read-only).
 		r.With(auth.Require(auth.PermUsageWrite)).Post("/usage-events/backfill", usageH.Backfill)
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-events", usageH.Routes())
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices", invoiceH.Routes())

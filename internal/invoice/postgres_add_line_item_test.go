@@ -145,9 +145,10 @@ func seedDraftInvoice(t *testing.T, db *postgres.DB, tenantID string) string {
 	periodStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	sub, err := subscription.NewPostgresStore(db).Create(ctx, tenantID, domain.Subscription{
 		Code: "sub-line-item", DisplayName: "Line Item Sub",
-		CustomerID: cust.ID, PlanID: plan.ID,
-		Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+		CustomerID: cust.ID,
+		Status:     domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 		StartedAt: &periodStart,
+		Items: []domain.SubscriptionItem{{PlanID: plan.ID, Quantity: 1}},
 	})
 	if err != nil {
 		t.Fatalf("create subscription: %v", err)

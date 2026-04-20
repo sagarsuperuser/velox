@@ -217,7 +217,13 @@ func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string
 // Side-effect-free: no store writes. The caller (billing engine) owns the
 // "mark applied" step so a failed invoice create doesn't burn a period of
 // a repeating coupon.
-func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, planID string, subtotalCents int64) (domain.CouponDiscountResult, error) {
+// ApplyToInvoice takes the full set of plan_ids on the target subscription
+// (one per item) rather than a single plan_id. A coupon whose PlanIDs gate
+// references any plan the subscription currently carries is eligible — this
+// matches Stripe's model for multi-item subscriptions where a coupon for
+// "Plan A" discounts the invoice so long as Plan A is present, regardless
+// of whatever other plans share the subscription.
+func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error) {
 	if subscriptionID == "" || subtotalCents <= 0 {
 		return domain.CouponDiscountResult{}, nil
 	}
@@ -254,7 +260,7 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 		if cpn.ExpiresAt != nil && cpn.ExpiresAt.Before(now) {
 			continue
 		}
-		if len(cpn.PlanIDs) > 0 && planID != "" && !slices.Contains(cpn.PlanIDs, planID) {
+		if len(cpn.PlanIDs) > 0 && len(planIDs) > 0 && !anyPlanMatches(cpn.PlanIDs, planIDs) {
 			continue
 		}
 		if !durationHasPeriodLeft(cpn, r) {
@@ -321,6 +327,19 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 }
 
 // durationHasPeriodLeft reports whether the redemption still has at least
+// anyPlanMatches returns true if any plan_id in itemPlans appears in the
+// coupon's allowed PlanIDs gate. Used to evaluate coupon eligibility against
+// the full item set of a multi-item subscription — a coupon for "Plan A"
+// activates so long as Plan A is one of the items.
+func anyPlanMatches(couponPlans, itemPlans []string) bool {
+	for _, p := range itemPlans {
+		if slices.Contains(couponPlans, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // one billing period to apply against under the coupon's duration rule.
 // Forever always returns true; once exhausts after the first application;
 // repeating exhausts once periods_applied reaches duration_periods.

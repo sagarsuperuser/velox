@@ -44,7 +44,7 @@ func TestVerifyWebhookDualSecret_MatchesLive(t *testing.T) {
 	sig := hex.EncodeToString(mac.Sum(nil))
 	header := fmt.Sprintf("t=%s,v1=%s", ts, sig)
 
-	mode, ok := verifyWebhookDualSecret(payload, header, live, test)
+	mode, ok := verifyWebhookDualSecret(payload, header, live, test, false)
 	if !ok {
 		t.Fatal("live-signed payload should verify")
 	}
@@ -63,7 +63,7 @@ func TestVerifyWebhookDualSecret_MatchesTest(t *testing.T) {
 	sig := hex.EncodeToString(mac.Sum(nil))
 	header := fmt.Sprintf("t=%s,v1=%s", ts, sig)
 
-	mode, ok := verifyWebhookDualSecret(payload, header, live, test)
+	mode, ok := verifyWebhookDualSecret(payload, header, live, test, false)
 	if !ok {
 		t.Fatal("test-signed payload should verify")
 	}
@@ -75,20 +75,30 @@ func TestVerifyWebhookDualSecret_MatchesTest(t *testing.T) {
 func TestVerifyWebhookDualSecret_RejectsWrongSignature(t *testing.T) {
 	payload := []byte(`{"id":"evt_1"}`)
 	header := fmt.Sprintf("t=%d,v1=deadbeef", time.Now().Unix())
-	if _, ok := verifyWebhookDualSecret(payload, header, "whsec_live", "whsec_test"); ok {
+	if _, ok := verifyWebhookDualSecret(payload, header, "whsec_live", "whsec_test", false); ok {
 		t.Fatal("unsigned-by-either-secret payload must fail")
 	}
 }
 
-func TestVerifyWebhookDualSecret_NoSecretsAcceptsAll(t *testing.T) {
-	// Dev mode: operator runs without webhook secrets. The handler must
-	// still accept events so local Stripe CLI forwards keep working.
-	mode, ok := verifyWebhookDualSecret([]byte(`{}`), "", "", "")
+func TestVerifyWebhookDualSecret_NoSecretsRejectsByDefault(t *testing.T) {
+	// Safety default: no configured secret AND allowUnsigned=false (the
+	// production path) must refuse the event. A deployment that forgot to
+	// set STRIPE_WEBHOOK_SECRET cannot silently accept spoofable traffic.
+	if _, ok := verifyWebhookDualSecret([]byte(`{}`), "", "", "", false); ok {
+		t.Fatal("unconfigured secrets must reject when allowUnsigned=false")
+	}
+}
+
+func TestVerifyWebhookDualSecret_NoSecretsAcceptsWhenAllowed(t *testing.T) {
+	// Local-dev opt-in: operator explicitly set ALLOW_UNSIGNED_STRIPE_WEBHOOKS.
+	// The permissive branch defaults to livemode=true so downstream processing
+	// uses live-tenancy context (matches the previous dev-mode behavior).
+	mode, ok := verifyWebhookDualSecret([]byte(`{}`), "", "", "", true)
 	if !ok {
-		t.Fatal("unconfigured secrets should accept event")
+		t.Fatal("unconfigured secrets with allowUnsigned=true should accept")
 	}
 	if !mode {
-		t.Errorf("unconfigured secrets should default to livemode=true")
+		t.Errorf("unconfigured opt-in path should default to livemode=true")
 	}
 }
 
@@ -127,7 +137,10 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 	webhooks := newMockWebhookStoreHandler()
 
 	stripeAdapter := NewStripe(nil, invoices, webhooks, nil)
-	handler := NewHandler(stripeAdapter, "", "") // No signature verification in test
+	// allowUnsigned=true: this test sends no Stripe-Signature header and we
+	// want the handler to skip verification so we can exercise the downstream
+	// payment-succeeded path.
+	handler := NewHandler(stripeAdapter, "", "", true)
 
 	event := map[string]any{
 		"id":       "evt_success_1",
@@ -175,7 +188,7 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 
 func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
-	handler := NewHandler(stripeAdapter, "", "")
+	handler := NewHandler(stripeAdapter, "", "", true)
 
 	event := map[string]any{
 		"id":       "evt_foreign",
@@ -209,7 +222,7 @@ func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 
 func TestWebhookHandler_SignatureRequired(t *testing.T) {
 	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
-	handler := NewHandler(stripeAdapter, "whsec_real_secret", "")
+	handler := NewHandler(stripeAdapter, "whsec_real_secret", "", false)
 
 	req := httptest.NewRequest("POST", "/stripe", strings.NewReader(`{"id":"evt_1"}`))
 	// No Stripe-Signature header

@@ -180,8 +180,12 @@ func (s *PostgresStore) ListSubscriptionsOnClock(ctx context.Context, tenantID, 
 	}
 	defer postgres.Rollback(tx)
 
+	// Items aren't hydrated here — this list is used by the test clock
+	// advance path which only reads scheduling fields (trial, billing period,
+	// next_billing_at). If a caller needs item data they should go through
+	// the subscription package's Get/List which hydrate Items explicitly.
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, code, customer_id, plan_id, status,
+		SELECT id, tenant_id, code, customer_id, status,
 			trial_end_at, current_billing_period_start, current_billing_period_end,
 			next_billing_at,
 			COALESCE(test_clock_id,''), created_at, updated_at
@@ -197,7 +201,7 @@ func (s *PostgresStore) ListSubscriptionsOnClock(ctx context.Context, tenantID, 
 	var subs []domain.Subscription
 	for rows.Next() {
 		var sub domain.Subscription
-		if err := rows.Scan(&sub.ID, &sub.TenantID, &sub.Code, &sub.CustomerID, &sub.PlanID,
+		if err := rows.Scan(&sub.ID, &sub.TenantID, &sub.Code, &sub.CustomerID,
 			&sub.Status, &sub.TrialEndAt, &sub.CurrentBillingPeriodStart,
 			&sub.CurrentBillingPeriodEnd, &sub.NextBillingAt,
 			&sub.TestClockID, &sub.CreatedAt, &sub.UpdatedAt); err != nil {

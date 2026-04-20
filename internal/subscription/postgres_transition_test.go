@@ -182,9 +182,10 @@ func seedActiveSubscription(t *testing.T, db *postgres.DB, tenantID, custExt, pl
 	now := time.Now().UTC()
 	sub, err := subscription.NewPostgresStore(db).Create(ctx, tenantID, domain.Subscription{
 		Code: subCode, DisplayName: "Transition Sub",
-		CustomerID: cust.ID, PlanID: plan.ID,
-		Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+		CustomerID: cust.ID,
+		Status:     domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 		StartedAt: &now,
+		Items:     []domain.SubscriptionItem{{PlanID: plan.ID, Quantity: 1}},
 	})
 	if err != nil {
 		t.Fatalf("create subscription: %v", err)
