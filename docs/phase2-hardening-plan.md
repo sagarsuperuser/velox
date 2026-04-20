@@ -296,9 +296,27 @@ On `Issue`, call `invoice.ApplyCreditNote` (method exists). Clamp at invoice tot
 - Tests: 10 unit tests in `creditnote/service_refund_test.go` (full/partial/default/prior-refund accounting/over-refund/unpaid/no-PI/missing-fields/Stripe-failure-issues-with-failed-status) + 9 handler tests in `invoice/refund_handler_test.go` (success, default amount passthrough, reason-enum validation across all 4 valid values plus rejection, missing reason, negative amount, 404, bubbled service error, unconfigured provider, generic error).
 - Stripe refund leg untouched: `StripeRefunder.CreateRefund` already exists (pre-dating this work) and is reused via the `creditnote.Refunder` interface.
 
-### [FEAT-3] Customer payment-method self-service — M
+### [FEAT-3] Customer payment-method self-service — M — ✅ DONE
 
 `/v1/me/payment-methods` via portal session. Stripe SetupIntent for 3DS. Endpoints: list, set default, remove. Wire to `web-v2`.
+
+**✅ Resolution (P1–P7 + magic-link P1–P7, closed 2026-04-20):**
+
+- **Portal sessions (P3):** `customer_portal_sessions` table, sha256(raw_token) at rest, `vlx_cps_` prefix. `Service.Create` mints, `Service.Validate` resolves via TxBypass (no tenant context yet at the /v1/me/* edge). Middleware maps token → (tenant, customer) into ctx for downstream handlers.
+- **Payment methods (P4):** `payment_methods` + 1:1 `customer_payment_setups` summary. `Service.syncSummary` keeps the summary in lockstep with multi-row state; partial unique index `(customer_id) WHERE is_default` makes atomic default swaps safe. Endpoints: `GET /v1/me/payment-methods`, `POST /v1/me/payment-methods/setup`, `POST /v1/me/payment-methods/:id/default`, `DELETE /v1/me/payment-methods/:id`.
+- **Setup-intent webhook (P5):** `setup_intent.succeeded` attaches the PM and auto-promotes if it's the customer's first. `setup_intent.setup_failed` and `.canceled` log and no-op — nothing persisted, nothing to roll back.
+- **web-v2 (P6):** `CustomerPortal.tsx` lists PMs, provides setup-checkout redirect, and wires set-default / detach. Entry point `?token=vlx_cps_…` (operator-minted link).
+- **E2E (P7):** `TestFullLoop_PortalCustomer_E2E` walks operator mint → validate → first PM attach → default promotion → second PM attach → manual set-default → detach-current-default → auto-promote → detach-last → summary clears.
+
+**Magic-link extension (P4.5, closed 2026-04-20):** customer-initiated `/v1/public/customer-portal/magic-link` flow so the portal works without operator-minted links.
+
+- **P1:** `customers.email_bidx` blind index (HMAC-SHA256 with a distinct key from `VELOX_ENCRYPTION_KEY` so one compromise doesn't unlock the other). `FindByEmailBlindIndex` is cross-tenant by design — a shared email legitimately belongs to multiple tenants.
+- **P2:** `customer_portal_magic_links` table. 15-min TTL, sha256 at rest, `vlx_cpml_` prefix. Atomic `UPDATE … WHERE used_at IS NULL AND expires_at > now()` enforces single-use; unknown/used/expired all surface as `ErrNotFound` so the handler's 401 doesn't leak which bucket the attacker hit.
+- **P3:** `POST /v1/public/customer-portal/magic-link` returns 202 regardless of match — the enumeration-resistance contract. 400 only for structural failures (non-JSON, missing email field).
+- **P4:** `POST /v1/public/customer-portal/magic/consume` trades the single-use token for a reusable session. POST not GET so the token stays out of Referer headers and access logs.
+- **P5:** Email outbox `TypePortalMagicLink` with `EmailMagicLinkDelivery` adapter. Falls back to `LogMagicLinkDelivery` when `CUSTOMER_PORTAL_URL` is unset so an ops misconfiguration logs loudly instead of silently shipping emails with bare tokens.
+- **P6:** `CustomerPortalLogin.tsx` at `/customer-portal/login` — email-entry form on blank load, auto-consume-and-redirect when `?magic_token=…` is present, generic "link invalid/expired" error mirroring the backend's uniform 401.
+- **P7:** `TestMagicLink_FullLoop_E2E` against real Postgres — covers the column actually indexing encrypted-email rows across tenants, the atomic single-use marker, the case-folded normalisation path, and the expired-token branch. Backfill cmd deemed unnecessary for pre-launch (no historical rows to backfill).
 
 ### [FEAT-4] Price overrides consumed at rating — S — ✅ DONE
 
@@ -521,7 +539,7 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 28. **RES-2** — scheduler advisory lock ✅
 29. **RES-6** — email outbox ✅
 30. ~~**SEC-2 Phase B/C**~~ — collapsed into single cutover (see item 15)
-31. **FEAT-2 ✅, FEAT-3, FEAT-4 ✅, FEAT-7 ✅, FEAT-8 ✅** — feature completeness
+31. **FEAT-2 ✅, FEAT-3 ✅, FEAT-4 ✅, FEAT-7 ✅, FEAT-8 ✅** — feature completeness
 32. **FEAT-6** — coupon stacking
 33. **FEAT-5** — multi-item subs (Phase 3)
 
