@@ -181,7 +181,7 @@ func (h *Handler) fireEvent(ctx context.Context, tenantID, eventType string, inv
 		"amount_due_cents":   inv.AmountDueCents,
 		"currency":           inv.Currency,
 	}); err != nil {
-		slog.Error("dispatch invoice event",
+		slog.ErrorContext(ctx, "dispatch invoice event",
 			"event_type", eventType,
 			"invoice_id", inv.ID,
 			"tenant_id", tenantID,
@@ -260,7 +260,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("list invoices", "error", err)
+		slog.ErrorContext(r.Context(), "list invoices", "error", err)
 		return
 	}
 	if invoices == nil {
@@ -281,7 +281,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("get invoice", "error", err)
+		slog.ErrorContext(r.Context(), "get invoice", "error", err)
 		return
 	}
 	if items == nil {
@@ -330,7 +330,7 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 			defer cancel()
 			cust, err := h.customers.Get(emailCtx, tenantID, inv.CustomerID)
 			if err != nil || cust.Email == "" {
-				slog.Warn("skip invoice email — cannot resolve customer email",
+				slog.WarnContext(emailCtx, "skip invoice email — cannot resolve customer email",
 					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
 				return
 			}
@@ -346,7 +346,7 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 			}
 			_, items, err := h.svc.GetWithLineItems(emailCtx, tenantID, inv.ID)
 			if err != nil {
-				slog.Warn("skip invoice email — cannot fetch line items",
+				slog.WarnContext(emailCtx, "skip invoice email — cannot fetch line items",
 					"invoice_id", inv.ID, "error", err)
 				return
 			}
@@ -354,24 +354,24 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 			// so we don't waste a render when the deadline already passed, and
 			// so we don't send a stale email if it did.
 			if err := emailCtx.Err(); err != nil {
-				slog.Warn("skip invoice email — deadline reached before PDF render",
+				slog.WarnContext(emailCtx, "skip invoice email — deadline reached before PDF render",
 					"invoice_id", inv.ID, "error", err)
 				return
 			}
 			bt := BillToInfo{Name: name, Email: email}
 			pdfBytes, err := RenderPDF(inv, items, bt, nil, CompanyInfo{})
 			if err != nil {
-				slog.Warn("skip invoice email — PDF render failed",
+				slog.WarnContext(emailCtx, "skip invoice email — PDF render failed",
 					"invoice_id", inv.ID, "error", err)
 				return
 			}
 			if err := emailCtx.Err(); err != nil {
-				slog.Warn("skip invoice email — deadline reached after PDF render",
+				slog.WarnContext(emailCtx, "skip invoice email — deadline reached after PDF render",
 					"invoice_id", inv.ID, "error", err)
 				return
 			}
 			if err := h.emailSender.SendInvoice(tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes); err != nil {
-				slog.Error("failed to send invoice email",
+				slog.ErrorContext(emailCtx, "failed to send invoice email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
 		}()
@@ -382,11 +382,11 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 		if ps, err := h.paymentSetups.GetPaymentSetup(r.Context(), tenantID, inv.CustomerID); err == nil &&
 			ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
 			if charged, err := h.charger.ChargeInvoice(r.Context(), tenantID, inv, ps.StripeCustomerID); err != nil {
-				slog.Warn("auto-charge failed, invoice stays finalized",
+				slog.WarnContext(r.Context(), "auto-charge failed, invoice stays finalized",
 					"invoice_id", inv.ID, "error", err)
 			} else {
 				inv = charged
-				slog.Info("auto-charge initiated", "invoice_id", inv.ID)
+				slog.InfoContext(r.Context(), "auto-charge initiated", "invoice_id", inv.ID)
 			}
 		}
 	}
@@ -407,27 +407,27 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	// Cancel Stripe PaymentIntent if one was created
 	if h.paymentCancel != nil && inv.StripePaymentIntentID != "" {
 		if err := h.paymentCancel.CancelPaymentIntent(r.Context(), inv.StripePaymentIntentID); err != nil {
-			slog.Warn("failed to cancel payment intent on void", "invoice_id", id, "pi_id", inv.StripePaymentIntentID, "error", err)
+			slog.WarnContext(r.Context(), "failed to cancel payment intent on void", "invoice_id", id, "pi_id", inv.StripePaymentIntentID, "error", err)
 		} else {
-			slog.Info("payment intent canceled on void", "invoice_id", id)
+			slog.InfoContext(r.Context(), "payment intent canceled on void", "invoice_id", id)
 		}
 	}
 
 	// Reverse any credits that were applied to this invoice
 	if h.creditReverser != nil && inv.CustomerID != "" {
 		if reversed, err := h.creditReverser.ReverseForInvoice(r.Context(), tenantID, inv.CustomerID, id, inv.InvoiceNumber); err != nil {
-			slog.Warn("failed to reverse credits on void", "invoice_id", id, "error", err)
+			slog.WarnContext(r.Context(), "failed to reverse credits on void", "invoice_id", id, "error", err)
 		} else if reversed > 0 {
-			slog.Info("credits reversed on invoice void", "invoice_id", id, "reversed_cents", reversed)
+			slog.InfoContext(r.Context(), "credits reversed on invoice void", "invoice_id", id, "reversed_cents", reversed)
 		}
 	}
 
 	// Resolve any active dunning runs for this invoice
 	if h.dunning != nil {
 		if err := h.dunning.ResolveByInvoice(r.Context(), tenantID, id, domain.ResolutionManuallyResolved); err != nil {
-			slog.Warn("failed to resolve dunning on void", "invoice_id", id, "error", err)
+			slog.WarnContext(r.Context(), "failed to resolve dunning on void", "invoice_id", id, "error", err)
 		} else {
-			slog.Info("dunning resolved on invoice void", "invoice_id", id)
+			slog.InfoContext(r.Context(), "dunning resolved on invoice void", "invoice_id", id)
 		}
 	}
 
@@ -554,7 +554,7 @@ func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {
 	// Resolve any active dunning run — manual collect payment bypasses dunning retry
 	if h.dunning != nil {
 		if err := h.dunning.ResolveByInvoice(r.Context(), tenantID, id, domain.ResolutionPaymentRecovered); err != nil {
-			slog.Warn("failed to resolve dunning after collect payment", "invoice_id", id, "error", err)
+			slog.WarnContext(r.Context(), "failed to resolve dunning after collect payment", "invoice_id", id, "error", err)
 		}
 	}
 

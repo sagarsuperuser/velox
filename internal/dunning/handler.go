@@ -91,7 +91,7 @@ func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("get dunning policy", "error", err)
+		slog.ErrorContext(r.Context(), "get dunning policy", "error", err)
 		return
 	}
 
@@ -131,7 +131,7 @@ func (h *Handler) listRuns(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("list dunning runs", "error", err)
+		slog.ErrorContext(r.Context(), "list dunning runs", "error", err)
 		return
 	}
 	if runs == nil {
@@ -152,7 +152,7 @@ func (h *Handler) getRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("get dunning run", "error", err)
+		slog.ErrorContext(r.Context(), "get dunning run", "error", err)
 		return
 	}
 
@@ -178,7 +178,7 @@ func (h *Handler) getCustomerOverride(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("get customer dunning override", "error", err)
+		slog.ErrorContext(r.Context(), "get customer dunning override", "error", err)
 		return
 	}
 
@@ -216,7 +216,7 @@ func (h *Handler) deleteCustomerOverride(w http.ResponseWriter, r *http.Request)
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("delete customer dunning override", "error", err)
+		slog.ErrorContext(r.Context(), "delete customer dunning override", "error", err)
 		return
 	}
 
@@ -249,26 +249,26 @@ func (h *Handler) resolveRun(w http.ResponseWriter, r *http.Request) {
 		case domain.ResolutionPaymentRecovered:
 			now := time.Now().UTC()
 			if _, err := h.invoices.MarkPaid(r.Context(), tenantID, run.InvoiceID, "", now); err != nil {
-				slog.Warn("failed to mark invoice as paid after dunning resolution", "invoice_id", run.InvoiceID, "error", err)
+				slog.WarnContext(r.Context(), "failed to mark invoice as paid after dunning resolution", "invoice_id", run.InvoiceID, "error", err)
 			}
 		case domain.ResolutionManuallyResolved:
 			// Full void: status change + credit reversal + PI cancellation
 			inv, _ := h.invoices.Get(r.Context(), tenantID, run.InvoiceID)
 			if _, err := h.invoices.UpdateStatus(r.Context(), tenantID, run.InvoiceID, domain.InvoiceVoided); err != nil {
-				slog.Warn("failed to void invoice after dunning resolution", "invoice_id", run.InvoiceID, "error", err)
+				slog.WarnContext(r.Context(), "failed to void invoice after dunning resolution", "invoice_id", run.InvoiceID, "error", err)
 			}
 			// Reverse credits
 			if h.creditReverser != nil && inv.CustomerID != "" {
 				if reversed, err := h.creditReverser.ReverseForInvoice(r.Context(), tenantID, inv.CustomerID, run.InvoiceID, inv.InvoiceNumber); err != nil {
-					slog.Warn("failed to reverse credits on dunning void", "invoice_id", run.InvoiceID, "error", err)
+					slog.WarnContext(r.Context(), "failed to reverse credits on dunning void", "invoice_id", run.InvoiceID, "error", err)
 				} else if reversed > 0 {
-					slog.Info("credits reversed on dunning void", "invoice_id", run.InvoiceID, "reversed_cents", reversed)
+					slog.InfoContext(r.Context(), "credits reversed on dunning void", "invoice_id", run.InvoiceID, "reversed_cents", reversed)
 				}
 			}
 			// Cancel Stripe PI
 			if h.paymentCancel != nil && inv.StripePaymentIntentID != "" {
 				if err := h.paymentCancel.CancelPaymentIntent(r.Context(), inv.StripePaymentIntentID); err != nil {
-					slog.Warn("failed to cancel PI on dunning void", "invoice_id", run.InvoiceID, "error", err)
+					slog.WarnContext(r.Context(), "failed to cancel PI on dunning void", "invoice_id", run.InvoiceID, "error", err)
 				}
 			}
 		}

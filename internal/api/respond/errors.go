@@ -79,10 +79,9 @@ func FromError(w http.ResponseWriter, r *http.Request, err error, resource strin
 			return
 		}
 
-		slog.Error("unhandled error",
+		slog.ErrorContext(r.Context(), "unhandled error",
 			"error", err,
 			"resource", resource,
-			"request_id", requestID(r),
 		)
 		InternalError(w, r)
 	}

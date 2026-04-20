@@ -44,7 +44,7 @@ func (h *GDPRHandler) exportData(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("gdpr export customer data", "customer_id", customerID, "error", err)
+		slog.ErrorContext(r.Context(), "gdpr export customer data", "customer_id", customerID, "error", err)
 		return
 	}
 
@@ -69,7 +69,7 @@ func (h *GDPRHandler) deleteData(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respond.InternalError(w, r)
-		slog.Error("gdpr delete customer data", "customer_id", customerID, "error", err)
+		slog.ErrorContext(r.Context(), "gdpr delete customer data", "customer_id", customerID, "error", err)
 		return
 	}
 

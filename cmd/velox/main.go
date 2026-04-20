@@ -65,7 +65,8 @@ func main() {
 }
 
 func serve() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(telemetry.NewContextHandler(jsonHandler)))
 
 	cfg, err := config.Load()
 	if err != nil {

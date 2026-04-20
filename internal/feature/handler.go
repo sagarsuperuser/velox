@@ -33,7 +33,7 @@ func (h *Handler) Routes() chi.Router {
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	flags, err := h.svc.List(r.Context())
 	if err != nil {
-		slog.Error("feature flags: list", "error", err)
+		slog.ErrorContext(r.Context(), "feature flags: list", "error", err)
 		respond.InternalError(w, r)
 		return
 	}
@@ -57,7 +57,7 @@ func (h *Handler) setGlobal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.SetGlobal(r.Context(), key, req.Enabled); err != nil {
-		slog.Error("feature flags: set global", "key", key, "error", err)
+		slog.ErrorContext(r.Context(), "feature flags: set global", "key", key, "error", err)
 		respond.NotFound(w, r, "feature flag")
 		return
 	}
@@ -80,7 +80,7 @@ func (h *Handler) setOverride(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.SetOverride(r.Context(), tenantID, key, req.Enabled); err != nil {
-		slog.Error("feature flags: set override", "key", key, "tenant", tenantID, "error", err)
+		slog.ErrorContext(r.Context(), "feature flags: set override", "key", key, "tenant", tenantID, "error", err)
 		respond.InternalError(w, r)
 		return
 	}
@@ -97,7 +97,7 @@ func (h *Handler) removeOverride(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenant_id")
 
 	if err := h.svc.RemoveOverride(r.Context(), tenantID, key); err != nil {
-		slog.Error("feature flags: remove override", "key", key, "tenant", tenantID, "error", err)
+		slog.ErrorContext(r.Context(), "feature flags: remove override", "key", key, "tenant", tenantID, "error", err)
 		respond.InternalError(w, r)
 		return
 	}

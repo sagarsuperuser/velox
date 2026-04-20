@@ -154,7 +154,7 @@ func (h *Handler) fireEvent(ctx context.Context, tenantID, eventType string, sub
 		payload[k] = v
 	}
 	if err := h.events.Dispatch(ctx, tenantID, eventType, payload); err != nil {
-		slog.Error("dispatch subscription event",
+		slog.ErrorContext(ctx, "dispatch subscription event",
 			"event_type", eventType,
 			"subscription_id", sub.ID,
 			"tenant_id", tenantID,
@@ -236,7 +236,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("list subscriptions", "error", err)
+		slog.ErrorContext(r.Context(), "list subscriptions", "error", err)
 		return
 	}
 	if subs == nil {
@@ -257,7 +257,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("get subscription", "error", err)
+		slog.ErrorContext(r.Context(), "get subscription", "error", err)
 		return
 	}
 
@@ -410,7 +410,7 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 		}
 		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec)
 		if prorationErr != nil {
-			slog.Error("item proration failed after item add committed",
+			slog.ErrorContext(r.Context(), "item proration failed after item add committed",
 				"subscription_id", id,
 				"item_id", item.ID,
 				"tenant_id", tenantID,
@@ -554,7 +554,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec)
 		if prorationErr != nil {
-			slog.Error("item proration failed after item change committed",
+			slog.ErrorContext(r.Context(), "item proration failed after item change committed",
 				"subscription_id", subID,
 				"item_id", result.Item.ID,
 				"tenant_id", tenantID,
@@ -701,7 +701,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 		}
 		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec)
 		if prorationErr != nil {
-			slog.Error("item proration failed after item remove committed",
+			slog.ErrorContext(r.Context(), "item proration failed after item remove committed",
 				"subscription_id", subID,
 				"item_id", itemID,
 				"tenant_id", tenantID,
@@ -842,7 +842,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		if h.coupons != nil {
 			d, err := h.coupons.ApplyToInvoice(ctx, tenantID, sub.ID, planIDsFromItems(sub.Items), proratedCents)
 			if err != nil {
-				slog.Warn("coupon apply failed on proration, proceeding without discount",
+				slog.WarnContext(ctx, "coupon apply failed on proration, proceeding without discount",
 					"error", err, "subscription_id", sub.ID)
 			} else {
 				discountCents = d.Cents
@@ -867,7 +867,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		if h.tax != nil {
 			r, err := h.tax.ApplyTaxToLineItems(ctx, tenantID, sub.CustomerID, effectivePlan.Currency, proratedCents, discountCents, lineItems)
 			if err != nil {
-				slog.Warn("tax apply failed on proration, proceeding with zero tax",
+				slog.WarnContext(ctx, "tax apply failed on proration, proceeding with zero tax",
 					"error", err, "subscription_id", sub.ID)
 			} else {
 				taxResult = r
@@ -914,7 +914,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			if lookupErr != nil {
 				return nil, fmt.Errorf("proration dedup lookup: %w", lookupErr)
 			}
-			slog.Info("proration invoice already exists; retry dedup",
+			slog.InfoContext(ctx, "proration invoice already exists; retry dedup",
 				"invoice_id", existing.ID,
 				"subscription_id", sub.ID,
 				"item_id", spec.itemID,
@@ -934,14 +934,14 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 		if h.coupons != nil && len(appliedRedemptionIDs) > 0 {
 			if err := h.coupons.MarkPeriodsApplied(ctx, tenantID, appliedRedemptionIDs); err != nil {
-				slog.Warn("coupon mark-periods-applied failed on proration",
+				slog.WarnContext(ctx, "coupon mark-periods-applied failed on proration",
 					"invoice_id", inv.ID,
 					"subscription_id", sub.ID,
 					"error", err)
 			}
 		}
 
-		slog.Info("proration invoice created",
+		slog.InfoContext(ctx, "proration invoice created",
 			"invoice_id", inv.ID,
 			"subscription_id", sub.ID,
 			"item_id", spec.itemID,
@@ -965,7 +965,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 				if lookupErr != nil {
 					return nil, fmt.Errorf("proration credit dedup lookup: %w", lookupErr)
 				}
-				slog.Info("proration credit already granted; retry dedup",
+				slog.InfoContext(ctx, "proration credit already granted; retry dedup",
 					"entry_id", existing.ID,
 					"subscription_id", sub.ID,
 					"item_id", spec.itemID,
@@ -983,7 +983,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			detail.AmountCents = creditAmount
 			detail.Type = "credit"
 
-			slog.Info("proration credit granted",
+			slog.InfoContext(ctx, "proration credit granted",
 				"subscription_id", sub.ID,
 				"item_id", spec.itemID,
 				"change_type", spec.changeType,
