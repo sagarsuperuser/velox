@@ -1,14 +1,18 @@
-// Package breaker provides a per-tenant circuit breaker around Stripe API
-// calls, built on sony/gobreaker/v2. One misbehaving tenant — or Stripe
-// having a rough hour for accounts in a specific region — must not burn
-// request budget for every other tenant on the platform, so each tenant
-// has its own state machine.
+// Package breaker provides a global circuit breaker around Stripe API
+// calls, built on sony/gobreaker/v2. Stripe is a single external
+// dependency; when it's unhealthy (5xx, timeout, connection reset), every
+// caller should back off together so we don't pile on during an incident.
 //
 // Only "unknown" outcomes (5xx, timeout, connection reset — i.e. the
 // Stripe-side problem category) count as failures. Card declines,
 // validation errors, and breaker-rejected calls are excluded from breaker
-// accounting so a bad merchant card batch doesn't open every tenant's
-// breaker.
+// accounting so a batch of expired cards doesn't trip the breaker.
+//
+// Per-tenant isolation is not provided here — if one tenant's Stripe
+// account is consistently 5xx-ing, that's a rare case we can split off
+// later. The operational complexity of per-tenant breakers (state machine
+// per tenant, metric cardinality, admin endpoints) isn't worth paying for
+// a scenario that hasn't shown up in production.
 package breaker
 
 import (
@@ -41,15 +45,15 @@ func fromGB(s gb.State) State {
 	return StateClosed
 }
 
-// ErrOpen is returned when the tenant's breaker is open (or half-open and
-// at its probe limit). Callers should treat this as a transient, retryable
+// ErrOpen is returned when the breaker is open (or half-open and at its
+// probe limit). Callers should treat this as a transient, retryable
 // failure — the Stripe call never happened, so don't mark the invoice
 // failed and don't tick the dunning attempt count.
 //
 // A single sentinel unifies gobreaker's ErrOpenState and ErrTooManyRequests
 // for our callers, since the two conditions are operationally identical:
 // "breaker is protecting Stripe right now, try later."
-var ErrOpen = errors.New("stripe circuit breaker open for tenant")
+var ErrOpen = errors.New("stripe circuit breaker open")
 
 // Countable reports whether an error returned from a Stripe call should
 // count as a breaker failure. The canonical implementation in package
@@ -78,15 +82,14 @@ type Config struct {
 	Interval time.Duration
 	// Countable classifies errors returned from Stripe. Required.
 	Countable Countable
-	// OnStateChange fires whenever a tenant transitions states.
-	OnStateChange func(tenantID string, from, to State)
+	// OnStateChange fires whenever the breaker transitions states.
+	OnStateChange func(from, to State)
 }
 
-// Breaker is a thread-safe per-tenant circuit breaker.
+// Breaker is a thread-safe global circuit breaker.
 type Breaker struct {
-	cfg      Config
-	mu       sync.Mutex
-	breakers map[string]*gb.CircuitBreaker[any]
+	cb *gb.CircuitBreaker[any]
+	mu sync.Mutex
 }
 
 // New constructs a Breaker. cfg.Countable is required; zero values for
@@ -107,82 +110,16 @@ func New(cfg Config) *Breaker {
 		// avoid a nil deref if someone forgets.
 		cfg.Countable = func(err error) bool { return err != nil }
 	}
-	return &Breaker{cfg: cfg, breakers: make(map[string]*gb.CircuitBreaker[any])}
-}
 
-// Execute runs fn under tenantID's breaker. Returns ErrOpen if the breaker
-// is rejecting; otherwise returns fn's (T, error). Only errors where
-// cfg.Countable returns true count toward the breaker's failure counter —
-// card declines return an error but are excluded from accounting.
-func (b *Breaker) Execute(ctx context.Context, tenantID string, fn func(context.Context) (any, error)) (any, error) {
-	cb := b.get(tenantID)
-	result, err := cb.Execute(func() (any, error) {
-		return fn(ctx)
-	})
-	if errors.Is(err, gb.ErrOpenState) || errors.Is(err, gb.ErrTooManyRequests) {
-		return nil, ErrOpen
-	}
-	return result, err
-}
-
-// Reset forces tenantID's breaker back to closed. Used by the manual
-// operator endpoint after Stripe's status page confirms recovery, so a
-// tenant can shave the final cooldown off their own recovery time without
-// waiting for the probe cycle.
-//
-// Implemented by dropping the breaker from the map — the next Execute
-// recreates it in the closed state. This works because gobreaker exposes
-// no public Reset and the per-tenant breaker has no cross-call state we
-// care to preserve (Counts are internal and only drive trip decisions).
-// The OnStateChange callback fires only on real transitions inside the
-// breaker; a destroy-and-recreate is invisible to it, so we emit a
-// synthetic "* -> closed" notification ourselves.
-func (b *Breaker) Reset(tenantID string) {
-	b.mu.Lock()
-	cb, existed := b.breakers[tenantID]
-	var prev State
-	if existed {
-		prev = fromGB(cb.State())
-	}
-	delete(b.breakers, tenantID)
-	b.mu.Unlock()
-
-	if existed && prev != StateClosed && b.cfg.OnStateChange != nil {
-		b.cfg.OnStateChange(tenantID, prev, StateClosed)
-	}
-}
-
-// State returns the current state for tenantID. Intended for metrics and
-// the admin endpoint response; do NOT gate calls on this (races with
-// concurrent Execute) — always call Execute and handle ErrOpen.
-func (b *Breaker) State(tenantID string) State {
-	b.mu.Lock()
-	cb, ok := b.breakers[tenantID]
-	b.mu.Unlock()
-	if !ok {
-		return StateClosed
-	}
-	return fromGB(cb.State())
-}
-
-// get returns the breaker for tenantID, creating it on first use.
-func (b *Breaker) get(tenantID string) *gb.CircuitBreaker[any] {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if cb, ok := b.breakers[tenantID]; ok {
-		return cb
-	}
-
-	threshold := b.cfg.FailureThreshold
-	countable := b.cfg.Countable
-	onChange := b.cfg.OnStateChange
+	threshold := cfg.FailureThreshold
+	countable := cfg.Countable
+	onChange := cfg.OnStateChange
 
 	cb := gb.NewCircuitBreaker[any](gb.Settings{
-		Name:        "stripe:" + tenantID,
+		Name:        "stripe",
 		MaxRequests: 1, // one half-open probe at a time
-		Interval:    b.cfg.Interval,
-		Timeout:     b.cfg.Cooldown,
+		Interval:    cfg.Interval,
+		Timeout:     cfg.Cooldown,
 		ReadyToTrip: func(c gb.Counts) bool {
 			return int(c.ConsecutiveFailures) >= threshold
 		},
@@ -199,10 +136,33 @@ func (b *Breaker) get(tenantID string) *gb.CircuitBreaker[any] {
 		},
 		OnStateChange: func(_ string, from, to gb.State) {
 			if onChange != nil {
-				onChange(tenantID, fromGB(from), fromGB(to))
+				onChange(fromGB(from), fromGB(to))
 			}
 		},
 	})
-	b.breakers[tenantID] = cb
-	return cb
+
+	return &Breaker{cb: cb}
+}
+
+// Execute runs fn under the breaker. Returns ErrOpen if the breaker is
+// rejecting; otherwise returns fn's (any, error). Only errors where
+// cfg.Countable returns true count toward the breaker's failure counter —
+// card declines return an error but are excluded from accounting.
+func (b *Breaker) Execute(ctx context.Context, fn func(context.Context) (any, error)) (any, error) {
+	result, err := b.cb.Execute(func() (any, error) {
+		return fn(ctx)
+	})
+	if errors.Is(err, gb.ErrOpenState) || errors.Is(err, gb.ErrTooManyRequests) {
+		return nil, ErrOpen
+	}
+	return result, err
+}
+
+// State returns the current breaker state. Intended for metrics; do NOT
+// gate calls on this (races with concurrent Execute) — always call
+// Execute and handle ErrOpen.
+func (b *Breaker) State() State {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return fromGB(b.cb.State())
 }
