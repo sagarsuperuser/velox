@@ -8,6 +8,7 @@ import (
 type WebhookEndpoint struct {
 	ID          string    `json:"id"`
 	TenantID    string    `json:"tenant_id,omitempty"`
+	Livemode    bool      `json:"livemode"`
 	URL         string    `json:"url"`
 	Description string    `json:"description,omitempty"`
 	Secret      string    `json:"-"` // Plaintext signing key. Only populated after create/rotate or after store decrypts it for dispatch.
@@ -21,6 +22,7 @@ type WebhookEndpoint struct {
 type WebhookEvent struct {
 	ID        string         `json:"id"`
 	TenantID  string         `json:"tenant_id,omitempty"`
+	Livemode  bool           `json:"livemode"`
 	EventType string         `json:"event_type"`
 	Payload   map[string]any `json:"payload"`
 	CreatedAt time.Time      `json:"created_at"`
@@ -37,6 +39,7 @@ const (
 type WebhookDelivery struct {
 	ID                string         `json:"id"`
 	TenantID          string         `json:"tenant_id,omitempty"`
+	Livemode          bool           `json:"livemode"`
 	WebhookEndpointID string         `json:"webhook_endpoint_id"`
 	WebhookEventID    string         `json:"webhook_event_id"`
 	Status            DeliveryStatus `json:"status"`

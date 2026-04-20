@@ -15,6 +15,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // ---------------------------------------------------------------------------
@@ -31,9 +32,10 @@ func newMemStore() *memStore {
 	return &memStore{endpoints: make(map[string]domain.WebhookEndpoint)}
 }
 
-func (m *memStore) CreateEndpoint(_ context.Context, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error) {
+func (m *memStore) CreateEndpoint(ctx context.Context, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error) {
 	ep.ID = fmt.Sprintf("vlx_whe_%d", len(m.endpoints)+1)
 	ep.TenantID = tenantID
+	ep.Livemode = postgres.Livemode(ctx)
 	ep.CreatedAt = time.Now().UTC()
 	ep.UpdatedAt = ep.CreatedAt
 	ep.SecretLast4 = lastFour(ep.Secret)
@@ -49,10 +51,11 @@ func (m *memStore) GetEndpoint(_ context.Context, tenantID, id string) (domain.W
 	return ep, nil
 }
 
-func (m *memStore) ListEndpoints(_ context.Context, tenantID string) ([]domain.WebhookEndpoint, error) {
+func (m *memStore) ListEndpoints(ctx context.Context, tenantID string) ([]domain.WebhookEndpoint, error) {
+	live := postgres.Livemode(ctx)
 	var result []domain.WebhookEndpoint
 	for _, ep := range m.endpoints {
-		if ep.TenantID == tenantID && ep.Active {
+		if ep.TenantID == tenantID && ep.Active && ep.Livemode == live {
 			result = append(result, ep)
 		}
 	}
@@ -80,9 +83,10 @@ func (m *memStore) UpdateEndpointSecret(_ context.Context, tenantID, id, newSecr
 	return ep, nil
 }
 
-func (m *memStore) CreateEvent(_ context.Context, tenantID string, event domain.WebhookEvent) (domain.WebhookEvent, error) {
+func (m *memStore) CreateEvent(ctx context.Context, tenantID string, event domain.WebhookEvent) (domain.WebhookEvent, error) {
 	event.ID = fmt.Sprintf("vlx_whevt_%d", len(m.events)+1)
 	event.TenantID = tenantID
+	event.Livemode = postgres.Livemode(ctx)
 	event.CreatedAt = time.Now().UTC()
 	m.events = append(m.events, event)
 	return event, nil
@@ -472,5 +476,69 @@ func TestReplay_NotFound(t *testing.T) {
 	err := svc.Replay(context.Background(), "t1", "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent event")
+	}
+}
+
+// TestDispatch_ModeScoped verifies the core FEAT-8 P6 contract: a Dispatch
+// in one mode (test or live) only creates deliveries for endpoints in the
+// same mode. Cross-mode delivery would leak synthetic data into production
+// monitoring (or vice versa), so both the RLS-driven ListEndpoints filter
+// and the defensive ep.Livemode == event.Livemode check in service.go must
+// hold. This test exercises both paths by seeding endpoints in both modes.
+func TestDispatch_ModeScoped(t *testing.T) {
+	store := newMemStore()
+	client := &mockHTTPClient{statusCode: 200}
+	svc := NewTestService(store, client)
+
+	liveCtx := postgres.WithLivemode(context.Background(), true)
+	testCtx := postgres.WithLivemode(context.Background(), false)
+
+	liveEP, err := svc.CreateEndpoint(liveCtx, "t1", CreateEndpointInput{
+		URL: "http://localhost:9001/live", Events: []string{"*"},
+	})
+	if err != nil {
+		t.Fatalf("create live endpoint: %v", err)
+	}
+	testEP, err := svc.CreateEndpoint(testCtx, "t1", CreateEndpointInput{
+		URL: "http://localhost:9002/test", Events: []string{"*"},
+	})
+	if err != nil {
+		t.Fatalf("create test endpoint: %v", err)
+	}
+
+	if !liveEP.Endpoint.Livemode {
+		t.Error("live endpoint should have livemode=true")
+	}
+	if testEP.Endpoint.Livemode {
+		t.Error("test endpoint should have livemode=false")
+	}
+
+	// A test-mode Dispatch must land the event in the test partition and
+	// only produce a delivery for the test endpoint.
+	if err := svc.Dispatch(testCtx, "t1", "invoice.created", map[string]any{"n": 1}); err != nil {
+		t.Fatalf("test dispatch: %v", err)
+	}
+	if len(store.events) != 1 || store.events[0].Livemode {
+		t.Errorf("event after test dispatch: want livemode=false, got %+v", store.events)
+	}
+	if len(store.deliveries) != 1 {
+		t.Fatalf("test dispatch: got %d deliveries, want 1", len(store.deliveries))
+	}
+	if store.deliveries[0].WebhookEndpointID != testEP.Endpoint.ID {
+		t.Errorf("test dispatch went to wrong endpoint: %s", store.deliveries[0].WebhookEndpointID)
+	}
+
+	// A live-mode Dispatch must only hit the live endpoint.
+	if err := svc.Dispatch(liveCtx, "t1", "invoice.created", map[string]any{"n": 2}); err != nil {
+		t.Fatalf("live dispatch: %v", err)
+	}
+	if len(store.events) != 2 || !store.events[1].Livemode {
+		t.Errorf("event after live dispatch: want livemode=true, got %+v", store.events[1])
+	}
+	if len(store.deliveries) != 2 {
+		t.Fatalf("live dispatch: got %d deliveries total, want 2", len(store.deliveries))
+	}
+	if store.deliveries[1].WebhookEndpointID != liveEP.Endpoint.ID {
+		t.Errorf("live dispatch went to wrong endpoint: %s", store.deliveries[1].WebhookEndpointID)
 	}
 }

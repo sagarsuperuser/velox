@@ -20,6 +20,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 const maxAttempts = 5
@@ -187,6 +188,13 @@ func (s *Service) DeleteEndpoint(ctx context.Context, tenantID, id string) error
 }
 
 // Dispatch creates a webhook event and delivers it to all matching endpoints.
+//
+// Mode scoping: ListEndpoints runs under the caller's ctx livemode, which
+// RLS already filters on. The explicit ep.Livemode == event.Livemode check
+// below is defense-in-depth — if a future call path opens a bypass tx or
+// the RLS predicate is relaxed, test-mode events must still never cross
+// into a live endpoint (and vice versa). Cross-mode delivery would leak
+// synthetic data into production monitoring.
 func (s *Service) Dispatch(ctx context.Context, tenantID, eventType string, payload map[string]any) error {
 	event, err := s.store.CreateEvent(ctx, tenantID, domain.WebhookEvent{
 		EventType: eventType,
@@ -203,6 +211,9 @@ func (s *Service) Dispatch(ctx context.Context, tenantID, eventType string, payl
 
 	for _, ep := range endpoints {
 		if !ep.Active {
+			continue
+		}
+		if ep.Livemode != event.Livemode {
 			continue
 		}
 		if !matchesEvent(ep.Events, eventType) {
@@ -386,7 +397,7 @@ func (s *Service) Replay(ctx context.Context, tenantID, eventID string) error {
 	}
 
 	for _, ep := range endpoints {
-		if !ep.Active || !matchesEvent(ep.Events, event.EventType) {
+		if !ep.Active || ep.Livemode != event.Livemode || !matchesEvent(ep.Events, event.EventType) {
 			continue
 		}
 		if s.syncDeliver {
@@ -414,7 +425,13 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 	slog.Info("retrying webhook deliveries", "count", len(deliveries))
 
 	for _, d := range deliveries {
-		ep, err := s.store.GetEndpoint(ctx, d.TenantID, d.WebhookEndpointID)
+		// ListPendingDeliveries runs in TxBypass (cross-tenant), so we tag
+		// the per-delivery ctx with the row's livemode. Every downstream
+		// store call opens its own TxTenant and needs this to route the
+		// delivery back to the same mode partition.
+		dCtx := postgres.WithLivemode(ctx, d.Livemode)
+
+		ep, err := s.store.GetEndpoint(dCtx, d.TenantID, d.WebhookEndpointID)
 		if err != nil {
 			slog.Error("get endpoint for retry", "delivery_id", d.ID, "error", err)
 			continue
@@ -426,11 +443,11 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 			d.ErrorMessage = "endpoint disabled"
 			d.CompletedAt = &now
 			d.NextRetryAt = nil
-			_, _ = s.store.UpdateDelivery(ctx, d.TenantID, d)
+			_, _ = s.store.UpdateDelivery(dCtx, d.TenantID, d)
 			continue
 		}
 
-		events, err := s.store.ListEvents(ctx, d.TenantID, 1000)
+		events, err := s.store.ListEvents(dCtx, d.TenantID, 1000)
 		if err != nil {
 			slog.Error("list events for retry", "delivery_id", d.ID, "error", err)
 			continue
@@ -447,7 +464,7 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 			continue
 		}
 
-		s.retryDeliver(ctx, d, ep, *event)
+		s.retryDeliver(dCtx, d, ep, *event)
 	}
 
 	return nil

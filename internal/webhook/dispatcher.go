@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // DispatcherConfig controls the outbox dispatcher loop.
@@ -118,6 +120,13 @@ func (d *Dispatcher) tick(ctx context.Context) {
 
 // handle is the per-row handler. Returning nil marks the row 'dispatched';
 // returning an error schedules a retry (or DLQ after MaxOutboxAttempts).
+//
+// Propagates the outbox row's livemode into ctx so the downstream Dispatch
+// lands the webhook_event/deliveries in the same partition and matches only
+// same-mode endpoints. Without this, a test-mode producer would cross over
+// to live endpoints (or vice versa) because the background dispatcher has
+// no intrinsic mode.
 func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
+	ctx = postgres.WithLivemode(ctx, row.Livemode)
 	return d.svc.Dispatch(ctx, row.TenantID, row.EventType, row.Payload)
 }

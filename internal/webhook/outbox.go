@@ -16,6 +16,7 @@ import (
 type OutboxRow struct {
 	ID            string
 	TenantID      string
+	Livemode      bool // Carries the producer tx's mode; dispatcher propagates this into ctx so delivery hits only same-mode endpoints.
 	EventType     string
 	Payload       map[string]any
 	Status        string
@@ -151,7 +152,7 @@ func (s *OutboxStore) ProcessBatch(ctx context.Context, limit int, handler Outbo
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, event_type, payload, status, attempts,
+		SELECT id, tenant_id, livemode, event_type, payload, status, attempts,
 		       next_attempt_at, COALESCE(last_error,''), created_at, dispatched_at
 		FROM webhook_outbox
 		WHERE status = 'pending' AND next_attempt_at <= now()
@@ -167,7 +168,7 @@ func (s *OutboxStore) ProcessBatch(ctx context.Context, limit int, handler Outbo
 	for rows.Next() {
 		var r OutboxRow
 		var payloadJSON []byte
-		if err := rows.Scan(&r.ID, &r.TenantID, &r.EventType, &payloadJSON,
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.Livemode, &r.EventType, &payloadJSON,
 			&r.Status, &r.Attempts, &r.NextAttemptAt, &r.LastError,
 			&r.CreatedAt, &r.DispatchedAt); err != nil {
 			_ = rows.Close()
