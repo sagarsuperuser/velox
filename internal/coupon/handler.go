@@ -55,7 +55,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	coupons, err := h.svc.List(r.Context(), tenantID)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("list coupons", "error", err)
+		slog.ErrorContext(r.Context(), "list coupons", "error", err)
 		return
 	}
 	if coupons == nil {
@@ -115,7 +115,7 @@ func (h *Handler) listRedemptions(w http.ResponseWriter, r *http.Request) {
 	redemptions, err := h.svc.ListRedemptions(r.Context(), tenantID, couponID)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("list coupon redemptions", "error", err)
+		slog.ErrorContext(r.Context(), "list coupon redemptions", "error", err)
 		return
 	}
 	if redemptions == nil {

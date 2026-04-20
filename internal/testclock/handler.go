@@ -70,7 +70,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	clocks, err := h.svc.List(r.Context(), tenantID)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("list test clocks", "error", err)
+		slog.ErrorContext(r.Context(), "list test clocks", "error", err)
 		return
 	}
 	if clocks == nil {

@@ -60,7 +60,7 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error("billing preview: get subscription", "error", err, "subscription_id", subID)
+		slog.ErrorContext(r.Context(), "billing preview: get subscription", "error", err, "subscription_id", subID)
 		respond.InternalError(w, r)
 		return
 	}

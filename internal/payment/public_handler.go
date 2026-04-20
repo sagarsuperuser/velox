@@ -73,7 +73,7 @@ func (h *PublicPaymentHandler) validateToken(w http.ResponseWriter, r *http.Requ
 		SELECT invoice_number, amount_due_cents, currency FROM invoices WHERE id = $1
 	`, token.InvoiceID).Scan(&invoiceNumber, &amountDueCents, &currency)
 	if err != nil {
-		slog.Error("public payment: failed to fetch invoice", "invoice_id", token.InvoiceID, "error", err)
+		slog.ErrorContext(r.Context(), "public payment: failed to fetch invoice", "invoice_id", token.InvoiceID, "error", err)
 		respond.InternalError(w, r)
 		return
 	}
@@ -84,7 +84,7 @@ func (h *PublicPaymentHandler) validateToken(w http.ResponseWriter, r *http.Requ
 		SELECT display_name FROM customers WHERE id = $1
 	`, token.CustomerID).Scan(&customerName)
 	if err != nil {
-		slog.Error("public payment: failed to fetch customer", "customer_id", token.CustomerID, "error", err)
+		slog.ErrorContext(r.Context(), "public payment: failed to fetch customer", "customer_id", token.CustomerID, "error", err)
 		respond.InternalError(w, r)
 		return
 	}
@@ -162,7 +162,7 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 		},
 	})
 	if err != nil {
-		slog.Error("public payment: failed to create checkout session",
+		slog.ErrorContext(r.Context(), "public payment: failed to create checkout session",
 			"customer_id", token.CustomerID, "error", err)
 		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
 			fmt.Sprintf("failed to create checkout session: %v", err))
@@ -171,11 +171,11 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 
 	// Mark token as used (single use)
 	if err := h.tokens.MarkUsed(r.Context(), token.TenantID, rawToken); err != nil {
-		slog.Error("public payment: failed to mark token used", "error", err)
+		slog.ErrorContext(r.Context(), "public payment: failed to mark token used", "error", err)
 		// Non-fatal: session was already created
 	}
 
-	slog.Info("public payment update session created",
+	slog.InfoContext(r.Context(), "public payment update session created",
 		"customer_id", token.CustomerID,
 		"invoice_id", token.InvoiceID,
 		"session_id", sess.ID,

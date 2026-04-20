@@ -80,7 +80,7 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	sigHeader := r.Header.Get("Stripe-Signature")
 	eventLivemode, ok := verifyWebhookDualSecret(body, sigHeader, h.webhookSecretLive, h.webhookSecretTest, h.allowUnsigned)
 	if !ok {
-		slog.Warn("stripe webhook signature verification failed",
+		slog.WarnContext(r.Context(), "stripe webhook signature verification failed",
 			"live_secret_set", h.webhookSecretLive != "",
 			"test_secret_set", h.webhookSecretTest != "",
 			"allow_unsigned", h.allowUnsigned,
@@ -109,7 +109,7 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	// signed with the wrong secret — reject to avoid processing a test event
 	// under live tenancy or vice versa.
 	if raw.Livemode != eventLivemode {
-		slog.Warn("stripe webhook livemode mismatch",
+		slog.WarnContext(r.Context(), "stripe webhook livemode mismatch",
 			"signature_mode", eventLivemode,
 			"payload_mode", raw.Livemode,
 			"stripe_event_id", raw.ID,
@@ -172,7 +172,7 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	ctx := postgres.WithLivemode(r.Context(), eventLivemode)
 	event.Livemode = eventLivemode
 	if err := h.stripe.HandleWebhook(ctx, tenantID, event); err != nil {
-		slog.Error("webhook processing failed",
+		slog.ErrorContext(ctx, "webhook processing failed",
 			"stripe_event_id", raw.ID,
 			"event_type", raw.Type,
 			"error", err,

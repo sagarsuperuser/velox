@@ -79,7 +79,7 @@ func (h *Handler) listOverrides(w http.ResponseWriter, r *http.Request) {
 	overrides, err := h.svc.ListOverrides(r.Context(), tenantID, customerID)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("list overrides", "error", err)
+		slog.ErrorContext(r.Context(),"list overrides", "error", err)
 		return
 	}
 	if overrides == nil {
@@ -124,7 +124,7 @@ func (h *Handler) listRatingRules(w http.ResponseWriter, r *http.Request) {
 	rules, err := h.svc.ListRatingRules(r.Context(), filter)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("list rating rules", "error", err)
+		slog.ErrorContext(r.Context(),"list rating rules", "error", err)
 		return
 	}
 	if rules == nil {
@@ -145,7 +145,7 @@ func (h *Handler) getRatingRule(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("get rating rule", "error", err)
+		slog.ErrorContext(r.Context(),"get rating rule", "error", err)
 		return
 	}
 
@@ -180,7 +180,7 @@ func (h *Handler) listMeters(w http.ResponseWriter, r *http.Request) {
 	meters, err := h.svc.ListMeters(r.Context(), tenantID)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("list meters", "error", err)
+		slog.ErrorContext(r.Context(),"list meters", "error", err)
 		return
 	}
 	if meters == nil {
@@ -201,7 +201,7 @@ func (h *Handler) getMeter(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("get meter", "error", err)
+		slog.ErrorContext(r.Context(),"get meter", "error", err)
 		return
 	}
 
@@ -236,7 +236,7 @@ func (h *Handler) listPlans(w http.ResponseWriter, r *http.Request) {
 	plans, err := h.svc.ListPlans(r.Context(), tenantID)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("list plans", "error", err)
+		slog.ErrorContext(r.Context(),"list plans", "error", err)
 		return
 	}
 	if plans == nil {
@@ -257,7 +257,7 @@ func (h *Handler) getPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.Error("get plan", "error", err)
+		slog.ErrorContext(r.Context(),"get plan", "error", err)
 		return
 	}
 

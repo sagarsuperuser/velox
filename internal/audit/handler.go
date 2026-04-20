@@ -43,7 +43,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		Offset:       offset,
 	})
 	if err != nil {
-		slog.Error("list audit log", "error", err)
+		slog.ErrorContext(r.Context(), "list audit log", "error", err)
 		respond.InternalError(w, r)
 		return
 	}

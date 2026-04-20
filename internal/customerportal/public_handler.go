@@ -65,7 +65,7 @@ func (h *PublicHandler) requestMagicLink(w http.ResponseWriter, r *http.Request)
 		// generic so the client still can't infer "we found your email
 		// but failed to mint" vs. "we failed before lookup". All the
 		// identifying detail lives in slog.
-		slog.Error("magic-link request failed", "error", err)
+		slog.ErrorContext(r.Context(), "magic-link request failed", "error", err)
 		respond.InternalError(w, r)
 		return
 	}
@@ -108,7 +108,7 @@ func (h *PublicHandler) consumeMagicLink(w http.ResponseWriter, r *http.Request)
 			respond.Unauthorized(w, r, "invalid or expired magic link")
 			return
 		}
-		slog.Error("magic-link consume failed", "error", err)
+		slog.ErrorContext(r.Context(), "magic-link consume failed", "error", err)
 		respond.InternalError(w, r)
 		return
 	}
