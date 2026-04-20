@@ -76,7 +76,7 @@ func (h *PortalHandler) createUpdateSession(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Create a Checkout Session in setup mode to collect a new payment method
-	sess, err := sc.CheckoutSessions.New(&stripe.CheckoutSessionParams{
+	sess, err := sc.V1CheckoutSessions.Create(r.Context(), &stripe.CheckoutSessionCreateParams{
 		Customer:           stripe.String(ps.StripeCustomerID),
 		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),

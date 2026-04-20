@@ -3,12 +3,12 @@ package payment
 import (
 	"context"
 
-	stripeclient "github.com/stripe/stripe-go/v82/client"
+	"github.com/stripe/stripe-go/v82"
 
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
-// StripeClients holds one stripe-go *client.API per mode. Callers select
+// StripeClients holds one *stripe.Client per mode. Callers select
 // per request via ForCtx(ctx), which reads the livemode flag set by auth
 // middleware. This replaces the SDK's package-global stripe.Key — the
 // global cannot represent two keys at once and would race under
@@ -19,8 +19,8 @@ import (
 // the typical guard is "if c := clients.ForCtx(ctx); c == nil { return
 // ErrModeNotConfigured }".
 type StripeClients struct {
-	Live *stripeclient.API
-	Test *stripeclient.API
+	Live *stripe.Client
+	Test *stripe.Client
 }
 
 // NewStripeClients builds a StripeClients from the two secret keys. Returns
@@ -32,19 +32,17 @@ func NewStripeClients(liveKey, testKey string) *StripeClients {
 	}
 	c := &StripeClients{}
 	if liveKey != "" {
-		c.Live = &stripeclient.API{}
-		c.Live.Init(liveKey, nil)
+		c.Live = stripe.NewClient(liveKey)
 	}
 	if testKey != "" {
-		c.Test = &stripeclient.API{}
-		c.Test.Init(testKey, nil)
+		c.Test = stripe.NewClient(testKey)
 	}
 	return c
 }
 
-// ForCtx returns the API client for the ctx's livemode. Returns nil if
+// ForCtx returns the client for the ctx's livemode. Returns nil if
 // the caller's mode has no key configured — callers must guard.
-func (c *StripeClients) ForCtx(ctx context.Context) *stripeclient.API {
+func (c *StripeClients) ForCtx(ctx context.Context) *stripe.Client {
 	if c == nil {
 		return nil
 	}

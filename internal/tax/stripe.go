@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/stripe/stripe-go/v82"
-	stripeclient "github.com/stripe/stripe-go/v82/client"
 
 	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -24,8 +23,8 @@ import (
 // bug — but the mode split still matters because test keys are rate-limited
 // differently and tests must not call the live endpoint.
 type StripeCalculator struct {
-	live     *stripeclient.API
-	test     *stripeclient.API
+	live     *stripe.Client
+	test     *stripe.Client
 	fallback *ManualCalculator
 }
 
@@ -35,17 +34,15 @@ type StripeCalculator struct {
 func NewStripeCalculator(liveKey, testKey string, fallback *ManualCalculator) *StripeCalculator {
 	c := &StripeCalculator{fallback: fallback}
 	if liveKey != "" {
-		c.live = &stripeclient.API{}
-		c.live.Init(liveKey, nil)
+		c.live = stripe.NewClient(liveKey)
 	}
 	if testKey != "" {
-		c.test = &stripeclient.API{}
-		c.test.Init(testKey, nil)
+		c.test = stripe.NewClient(testKey)
 	}
 	return c
 }
 
-func (s *StripeCalculator) clientForCtx(ctx context.Context) *stripeclient.API {
+func (s *StripeCalculator) clientForCtx(ctx context.Context) *stripe.Client {
 	if postgres.Livemode(ctx) {
 		return s.live
 	}
@@ -64,10 +61,10 @@ func (s *StripeCalculator) CalculateTax(ctx context.Context, currency string, ad
 	}
 
 	// Build Stripe Tax Calculation request
-	stripeLineItems := make([]*stripe.TaxCalculationLineItemParams, len(lineItems))
+	stripeLineItems := make([]*stripe.TaxCalculationCreateLineItemParams, len(lineItems))
 	for i, li := range lineItems {
 		ref := fmt.Sprintf("line_%d", i)
-		stripeLineItems[i] = &stripe.TaxCalculationLineItemParams{
+		stripeLineItems[i] = &stripe.TaxCalculationCreateLineItemParams{
 			Amount:      stripe.Int64(li.AmountCents),
 			Quantity:    stripe.Int64(max(li.Quantity, 1)),
 			Reference:   stripe.String(ref),
@@ -75,9 +72,9 @@ func (s *StripeCalculator) CalculateTax(ctx context.Context, currency string, ad
 		}
 	}
 
-	params := &stripe.TaxCalculationParams{
+	params := &stripe.TaxCalculationCreateParams{
 		Currency: stripe.String(strings.ToLower(currency)),
-		CustomerDetails: &stripe.TaxCalculationCustomerDetailsParams{
+		CustomerDetails: &stripe.TaxCalculationCreateCustomerDetailsParams{
 			AddressSource: stripe.String("billing"),
 			Address: &stripe.AddressParams{
 				Country:    stripe.String(addr.Country),
@@ -108,7 +105,7 @@ func (s *StripeCalculator) CalculateTax(ctx context.Context, currency string, ad
 		return s.fallback.CalculateTax(ctx, currency, addr, lineItems)
 	}
 
-	calc, err := sc.TaxCalculations.New(params)
+	calc, err := sc.V1TaxCalculations.Create(ctx, params)
 	if err != nil {
 		slog.Warn("stripe tax API error, falling back to manual",
 			"error", err,
@@ -200,11 +197,4 @@ func parseLineRef(ref string) int {
 		return -1
 	}
 	return n
-}
-
-func max(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }

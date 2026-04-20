@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/stripe/stripe-go/v82"
-	stripeclient "github.com/stripe/stripe-go/v82/client"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -27,7 +26,7 @@ func NewStripeAdapter(clients *payment.StripeClients, summary PaymentSetupSummar
 
 var _ StripeAPI = (*StripeAdapter)(nil)
 
-func (a *StripeAdapter) client(ctx context.Context) (*stripeclient.API, error) {
+func (a *StripeAdapter) client(ctx context.Context) (*stripe.Client, error) {
 	c := a.clients.ForCtx(ctx)
 	if c == nil {
 		return nil, errors.New("stripe not configured for this mode")
@@ -51,7 +50,7 @@ func (a *StripeAdapter) EnsureStripeCustomer(ctx context.Context, tenantID, cust
 		return "", err
 	}
 
-	cust, err := sc.Customers.New(&stripe.CustomerParams{
+	cust, err := sc.V1Customers.Create(ctx, &stripe.CustomerCreateParams{
 		Params: stripe.Params{
 			Metadata: map[string]string{
 				"velox_tenant_id":   tenantID,
@@ -78,7 +77,7 @@ func (a *StripeAdapter) CreateSetupIntent(ctx context.Context, stripeCustomerID 
 	if err != nil {
 		return "", "", err
 	}
-	si, err := sc.SetupIntents.New(&stripe.SetupIntentParams{
+	si, err := sc.V1SetupIntents.Create(ctx, &stripe.SetupIntentCreateParams{
 		Customer:           stripe.String(stripeCustomerID),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
 		Usage:              stripe.String("off_session"),
@@ -100,7 +99,7 @@ func (a *StripeAdapter) CreateSetupCheckoutSession(ctx context.Context, stripeCu
 	if err != nil {
 		return "", "", err
 	}
-	sess, err := sc.CheckoutSessions.New(&stripe.CheckoutSessionParams{
+	sess, err := sc.V1CheckoutSessions.Create(ctx, &stripe.CheckoutSessionCreateParams{
 		Customer:           stripe.String(stripeCustomerID),
 		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
@@ -119,7 +118,7 @@ func (a *StripeAdapter) DetachPaymentMethod(ctx context.Context, stripePaymentMe
 	if err != nil {
 		return err
 	}
-	if _, err := sc.PaymentMethods.Detach(stripePaymentMethodID, nil); err != nil {
+	if _, err := sc.V1PaymentMethods.Detach(ctx, stripePaymentMethodID, nil); err != nil {
 		// Stripe returns 404 for "already detached" / "no such payment
 		// method". Translate to ErrNotFound so callers can decide
 		// whether to treat it as success.
@@ -137,7 +136,7 @@ func (a *StripeAdapter) FetchPaymentMethodCard(ctx context.Context, stripePaymen
 	if err != nil {
 		return "", "", 0, 0, err
 	}
-	pm, err := sc.PaymentMethods.Get(stripePaymentMethodID, nil)
+	pm, err := sc.V1PaymentMethods.Retrieve(ctx, stripePaymentMethodID, nil)
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("stripe retrieve pm: %w", err)
 	}

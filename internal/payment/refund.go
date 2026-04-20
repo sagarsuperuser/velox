@@ -25,7 +25,7 @@ func (r *StripeRefunder) CreateRefund(ctx context.Context, paymentIntentID strin
 	if sc == nil {
 		return "", ErrStripeNotConfigured
 	}
-	ref, err := sc.Refunds.New(&stripe.RefundParams{
+	ref, err := sc.V1Refunds.Create(ctx, &stripe.RefundCreateParams{
 		PaymentIntent: stripe.String(paymentIntentID),
 		Amount:        stripe.Int64(amountCents),
 	})
