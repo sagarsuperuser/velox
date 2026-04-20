@@ -47,6 +47,8 @@ tags:
     description: Billing engine operations
   - name: Analytics
     description: Revenue and usage analytics
+  - name: API Keys
+    description: API key lifecycle — issue, list, rotate, revoke
 
 paths:
   # --- Customers ---
@@ -1251,6 +1253,100 @@ paths:
         '503':
           description: Service is degraded
 
+  # --- API Keys ---
+  /v1/api-keys:
+    get:
+      tags: [API Keys]
+      summary: List API keys for the current tenant
+      responses:
+        '200':
+          description: Keys listed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/APIKey'
+    post:
+      tags: [API Keys]
+      summary: Create a new API key (raw key shown once)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAPIKeyInput'
+      responses:
+        '201':
+          description: Key created — raw_key is shown once
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateAPIKeyResult'
+
+  /v1/api-keys/{id}:
+    delete:
+      tags: [API Keys]
+      summary: Revoke an API key
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      responses:
+        '200':
+          description: Key revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKey'
+        '404':
+          description: Key not found
+        '422':
+          description: Cannot revoke the key being used to authenticate this request
+
+  /v1/api-keys/{id}/rotate:
+    post:
+      tags: [API Keys]
+      summary: Rotate an API key (issue replacement, retire old)
+      description: |
+        Mints a replacement key with the same type, name, livemode, and
+        expires_at as the old one. Returns the new key's raw secret — shown
+        once, never retrievable later.
+
+        The old key is retired based on `expires_in_seconds`:
+
+        - `0` (default) → revoked immediately. The next call using the old
+          key returns 401.
+        - `> 0` → the old key's `expires_at` is set to `now + N seconds` and
+          remains valid until then. Use this for zero-downtime rotation:
+          deploy the new key, let traffic drain, then let the old key lapse.
+
+        The grace window is capped at 7 days (`604800` seconds).
+
+        Self-rotation (rotating the key that authenticated the request) is
+        rejected with 422 — authenticate with a different key first. This
+        prevents locking yourself out during an interactive rotation.
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RotateAPIKeyInput'
+      responses:
+        '200':
+          description: Key rotated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotateAPIKeyResult'
+        '404':
+          description: Key not found
+        '422':
+          description: Invalid grace period, key already revoked, or self-rotation attempt
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -1288,6 +1384,109 @@ components:
         default: 0
 
   schemas:
+    APIKey:
+      type: object
+      properties:
+        id:
+          type: string
+          example: vlx_key_cv2q6ktjml6ng3v2q0tg
+        key_prefix:
+          type: string
+          description: |
+            Lookup prefix (mode-aware + first 12 hex chars of the secret).
+            Stored in the clear so a leaked key can be correlated with a
+            specific row without revealing the full secret.
+          example: vlx_secret_live_1a2b3c4d5e6f
+        key_type:
+          type: string
+          enum: [platform, secret, publishable]
+        livemode:
+          type: boolean
+        name:
+          type: string
+          description: Human-readable label shown in the dashboard.
+        tenant_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateAPIKeyInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: Production web backend
+        key_type:
+          type: string
+          enum: [platform, secret, publishable]
+          default: secret
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Optional absolute expiry for the key.
+
+    CreateAPIKeyResult:
+      type: object
+      properties:
+        key:
+          $ref: '#/components/schemas/APIKey'
+        raw_key:
+          type: string
+          description: |
+            Full raw key (shown exactly once). Save it now — the server does
+            not store the secret, only a salted hash. Subsequent GETs on the
+            key return the metadata but not this value.
+          example: vlx_secret_live_d1e2f3a4b5c6...
+
+    RotateAPIKeyInput:
+      type: object
+      properties:
+        expires_in_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 604800
+          default: 0
+          description: |
+            Seconds the old key stays valid after rotation (grace window).
+            `0` (default) revokes the old key immediately. Capped at
+            `604800` (7 days). Set this when you need time to deploy the
+            new key across fleet instances before old credentials stop
+            working.
+
+    RotateAPIKeyResult:
+      type: object
+      properties:
+        old_key:
+          allOf:
+            - $ref: '#/components/schemas/APIKey'
+          description: |
+            The retired key's post-rotation state. `revoked_at` is set for
+            immediate rotations; `expires_at` is set for grace-period
+            rotations. Both are terminal — the key is not coming back.
+        new_key:
+          $ref: '#/components/schemas/APIKey'
+        raw_key:
+          type: string
+          description: |
+            The new key's raw secret (shown exactly once). Deploy this to
+            your clients before the grace window closes.
+
     Customer:
       type: object
       properties:

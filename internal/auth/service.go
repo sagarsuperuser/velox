@@ -181,6 +181,105 @@ func (s *Service) RevokeKey(ctx context.Context, tenantID, id string) (domain.AP
 	return s.store.Revoke(ctx, tenantID, id)
 }
 
+// MaxRotationGraceSeconds caps how long a caller can keep the old key alive
+// during rotation. Seven days matches the longest grace window Stripe offers
+// in its dashboard "roll key" flow — long enough for a scheduled deploy
+// cadence, short enough that a forgotten rotation still self-heals.
+const MaxRotationGraceSeconds = 7 * 24 * 60 * 60
+
+// RotateKeyInput parameterises rotation. ExpiresInSeconds=0 revokes the old
+// key immediately on rotation; a positive value keeps it valid for that many
+// seconds past now, giving deployed clients time to swap credentials without
+// a hard cutover.
+type RotateKeyInput struct {
+	ExpiresInSeconds int64 `json:"expires_in_seconds,omitempty"`
+}
+
+// RotateKeyResult returns both sides of a rotation. RawKey is the new key's
+// plaintext — shown once, never persisted or returned on any subsequent
+// fetch. OldKey's ExpiresAt (grace window) or RevokedAt (immediate) reflects
+// which path the caller took.
+type RotateKeyResult struct {
+	OldKey domain.APIKey `json:"old_key"`
+	NewKey domain.APIKey `json:"new_key"`
+	RawKey string        `json:"raw_key"`
+}
+
+// RotateKey issues a replacement key for `id`, preserving its name, type,
+// livemode, and any configured expires_at. The old key is either revoked
+// immediately (grace=0) or scheduled to expire after input.ExpiresInSeconds
+// seconds; callers trading zero-downtime deploys for slightly wider blast
+// radius pick a non-zero grace.
+//
+// Self-rotation guard (handler-level, not service-level): the caller must not
+// rotate the key that authenticated the request — same rationale as Revoke.
+// The handler checks this before invoking the service; the service itself
+// has no access to the requesting key's identity.
+func (s *Service) RotateKey(ctx context.Context, tenantID, id string, input RotateKeyInput) (RotateKeyResult, error) {
+	if input.ExpiresInSeconds < 0 {
+		return RotateKeyResult{}, errs.Invalid("expires_in_seconds", "must be >= 0")
+	}
+	if input.ExpiresInSeconds > MaxRotationGraceSeconds {
+		return RotateKeyResult{}, errs.Invalid("expires_in_seconds",
+			fmt.Sprintf("must be <= %d (7 days)", MaxRotationGraceSeconds))
+	}
+
+	old, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return RotateKeyResult{}, err
+	}
+	if old.RevokedAt != nil {
+		return RotateKeyResult{}, errs.InvalidState("cannot rotate a revoked key")
+	}
+
+	// Mint the replacement through the same CreateKey path so livemode
+	// propagation, hashing, and prefix generation stay in one place. The new
+	// key inherits name+type+expires_at from the old; a rotation is a
+	// credential swap, not a reconfiguration.
+	createInput := CreateKeyInput{
+		Name:      old.Name,
+		KeyType:   KeyType(old.KeyType),
+		ExpiresAt: old.ExpiresAt,
+	}
+	// The new key must land on the same livemode as the old — Livemode(ctx)
+	// depends on the request ctx, which the caller controls. We force the
+	// ctx to match the old key's mode so a live key rotated from a test-mode
+	// session (unlikely but possible through platform keys) still produces a
+	// live replacement.
+	newCtx := ctx
+	if Livemode(ctx) != old.Livemode {
+		newCtx = WithLivemode(ctx, old.Livemode)
+	}
+	created, err := s.CreateKey(newCtx, tenantID, createInput)
+	if err != nil {
+		return RotateKeyResult{}, fmt.Errorf("mint replacement key: %w", err)
+	}
+
+	var oldAfter domain.APIKey
+	if input.ExpiresInSeconds == 0 {
+		// Immediate revocation: old key stops authenticating on the next
+		// ValidateKey call. Any request already in flight under the old key
+		// completes; subsequent ones fail.
+		oldAfter, err = s.store.Revoke(ctx, tenantID, id)
+	} else {
+		graceUntil := time.Now().UTC().Add(time.Duration(input.ExpiresInSeconds) * time.Second)
+		oldAfter, err = s.store.ScheduleExpiry(ctx, tenantID, id, graceUntil)
+	}
+	if err != nil {
+		// The new key is already minted. Leaving it live (and failing rotation)
+		// means callers can retry the rotation using the new key — the old
+		// stays valid until its retry succeeds. A garbage-collection job can
+		// eventually reap the unused new key if the caller never retries.
+		return RotateKeyResult{}, fmt.Errorf("retire old key (replacement %s was created and must be cleaned up if retry fails): %w", created.Key.ID, err)
+	}
+
+	return RotateKeyResult{
+		OldKey: oldAfter,
+		NewKey: created.Key,
+		RawKey: created.RawKey,
+	}, nil
+}
+
 func (s *Service) ListKeys(ctx context.Context, filter ListFilter) ([]domain.APIKey, error) {
 	return s.store.List(ctx, filter)
 }

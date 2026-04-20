@@ -30,6 +30,28 @@ func (m *memStore) Create(_ context.Context, key domain.APIKey) (domain.APIKey, 
 	return key, nil
 }
 
+func (m *memStore) Get(_ context.Context, tenantID, id string) (domain.APIKey, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	k, ok := m.keys[id]
+	if !ok || k.TenantID != tenantID {
+		return domain.APIKey{}, errs.ErrNotFound
+	}
+	return k, nil
+}
+
+func (m *memStore) ScheduleExpiry(_ context.Context, tenantID, id string, expiresAt time.Time) (domain.APIKey, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k, ok := m.keys[id]
+	if !ok || k.TenantID != tenantID || k.RevokedAt != nil {
+		return domain.APIKey{}, errs.ErrNotFound
+	}
+	k.ExpiresAt = &expiresAt
+	m.keys[id] = k
+	return k, nil
+}
+
 func (m *memStore) GetByPrefix(_ context.Context, prefix string) (domain.APIKey, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -339,5 +361,175 @@ func TestRevokeKey_WrongTenant(t *testing.T) {
 	_, err := svc.RevokeKey(ctx, "wrong_tenant", result.Key.ID)
 	if err == nil {
 		t.Fatal("expected error revoking from wrong tenant")
+	}
+}
+
+// TestRotateKey_ImmediateRevoke covers the default rotation flow: the old key
+// stops validating as soon as rotate returns, the new key validates, and the
+// new key inherits the old's type/name/livemode/expires_at.
+func TestRotateKey_ImmediateRevoke(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	expiry := time.Now().UTC().Add(90 * 24 * time.Hour)
+	original, err := svc.CreateKey(ctx, "t1", CreateKeyInput{
+		Name:      "Prod deploy",
+		KeyType:   KeyTypeSecret,
+		ExpiresAt: &expiry,
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rotated, err := svc.RotateKey(ctx, "t1", original.Key.ID, RotateKeyInput{})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	if rotated.NewKey.ID == original.Key.ID {
+		t.Fatal("new key must have a distinct ID")
+	}
+	if rotated.NewKey.Name != original.Key.Name {
+		t.Errorf("new key name: got %q, want %q", rotated.NewKey.Name, original.Key.Name)
+	}
+	if rotated.NewKey.KeyType != original.Key.KeyType {
+		t.Errorf("new key type: got %q, want %q", rotated.NewKey.KeyType, original.Key.KeyType)
+	}
+	if rotated.NewKey.Livemode != original.Key.Livemode {
+		t.Errorf("new key livemode: got %v, want %v", rotated.NewKey.Livemode, original.Key.Livemode)
+	}
+	if rotated.NewKey.ExpiresAt == nil || !rotated.NewKey.ExpiresAt.Equal(expiry) {
+		t.Errorf("new key expires_at: got %v, want %v", rotated.NewKey.ExpiresAt, expiry)
+	}
+	if rotated.OldKey.RevokedAt == nil {
+		t.Fatal("old key should be revoked after immediate rotation")
+	}
+	if rotated.RawKey == "" {
+		t.Fatal("raw key must be returned once on rotation")
+	}
+	if rotated.RawKey == original.RawKey {
+		t.Fatal("new raw key must differ from old raw key")
+	}
+
+	if _, err := svc.ValidateKey(ctx, original.RawKey); err == nil {
+		t.Fatal("old key should fail validation after rotation")
+	}
+	valid, err := svc.ValidateKey(ctx, rotated.RawKey)
+	if err != nil {
+		t.Fatalf("new key validation: %v", err)
+	}
+	if valid.ID != rotated.NewKey.ID {
+		t.Errorf("new key ID mismatch: got %q, want %q", valid.ID, rotated.NewKey.ID)
+	}
+}
+
+// TestRotateKey_WithGracePeriod covers the zero-downtime rotation flow: the
+// old key stays valid for the grace window, the new key is immediately valid,
+// and both can authenticate concurrently within the window.
+func TestRotateKey_WithGracePeriod(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	original, _ := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "App", KeyType: KeyTypeSecret})
+
+	rotated, err := svc.RotateKey(ctx, "t1", original.Key.ID, RotateKeyInput{ExpiresInSeconds: 3600})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	if rotated.OldKey.RevokedAt != nil {
+		t.Fatal("grace-period rotation must not set revoked_at on the old key")
+	}
+	if rotated.OldKey.ExpiresAt == nil {
+		t.Fatal("grace-period rotation must set expires_at on the old key")
+	}
+	until := time.Until(*rotated.OldKey.ExpiresAt)
+	if until < 50*time.Minute || until > 70*time.Minute {
+		t.Errorf("old key expires_at should be ~1 hour out, got %v", until)
+	}
+
+	// Both keys authenticate during the grace window.
+	if _, err := svc.ValidateKey(ctx, original.RawKey); err != nil {
+		t.Errorf("old key should still validate in grace window: %v", err)
+	}
+	if _, err := svc.ValidateKey(ctx, rotated.RawKey); err != nil {
+		t.Errorf("new key should validate immediately: %v", err)
+	}
+}
+
+func TestRotateKey_RejectsNegativeGrace(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	result, _ := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "K", KeyType: KeyTypeSecret})
+
+	_, err := svc.RotateKey(ctx, "t1", result.Key.ID, RotateKeyInput{ExpiresInSeconds: -1})
+	if err == nil {
+		t.Fatal("expected validation error for negative grace")
+	}
+}
+
+func TestRotateKey_RejectsExcessiveGrace(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	result, _ := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "K", KeyType: KeyTypeSecret})
+
+	_, err := svc.RotateKey(ctx, "t1", result.Key.ID, RotateKeyInput{ExpiresInSeconds: MaxRotationGraceSeconds + 1})
+	if err == nil {
+		t.Fatal("expected validation error for grace > 7 days")
+	}
+}
+
+func TestRotateKey_RejectsAlreadyRevoked(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	result, _ := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "K", KeyType: KeyTypeSecret})
+	_, _ = svc.RevokeKey(ctx, "t1", result.Key.ID)
+
+	_, err := svc.RotateKey(ctx, "t1", result.Key.ID, RotateKeyInput{})
+	if err == nil {
+		t.Fatal("expected error rotating an already-revoked key")
+	}
+}
+
+func TestRotateKey_WrongTenant(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	result, _ := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "K", KeyType: KeyTypeSecret})
+
+	_, err := svc.RotateKey(ctx, "wrong_tenant", result.Key.ID, RotateKeyInput{})
+	if err == nil {
+		t.Fatal("expected error rotating from wrong tenant")
+	}
+}
+
+// TestRotateKey_PreservesTestmode guards against a subtle regression: if the
+// caller's ctx is live-mode but the rotated key is test-mode, the mint path
+// must still produce a test-mode replacement. Losing the mode here would
+// issue a live key silently, which is the worst class of mode leak — a
+// dashboard-issued "rotate" button should never mint a cross-mode key.
+func TestRotateKey_PreservesTestmode(t *testing.T) {
+	svc := NewService(newMemStore())
+
+	testCtx := WithLivemode(context.Background(), false)
+	original, _ := svc.CreateKey(testCtx, "t1", CreateKeyInput{Name: "Sandbox", KeyType: KeyTypeSecret})
+	if original.Key.Livemode {
+		t.Fatal("seed should be test-mode")
+	}
+
+	// Caller context is LIVE here — the mismatch is intentional.
+	liveCtx := context.Background()
+	rotated, err := svc.RotateKey(liveCtx, "t1", original.Key.ID, RotateKeyInput{})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if rotated.NewKey.Livemode {
+		t.Fatal("rotated key must stay test-mode regardless of caller ctx mode")
+	}
+	if !strings.HasPrefix(rotated.RawKey, "vlx_secret_test_") {
+		t.Errorf("test-mode raw key prefix expected, got %q...", rotated.RawKey[:20])
 	}
 }

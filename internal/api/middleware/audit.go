@@ -237,7 +237,7 @@ func parseAuditPath(method, path string) (action, resourceType, resourceID strin
 		// e.g., /subscriptions/{id}/cancel → cancel, subscription, {id}
 		lastPart := parts[len(parts)-1]
 		switch lastPart {
-		case "activate", "cancel", "pause", "resume", "finalize", "void", "issue", "resolve", "replay", "run", "grant", "adjust":
+		case "activate", "cancel", "pause", "resume", "finalize", "void", "issue", "resolve", "replay", "run", "grant", "adjust", "rotate":
 			action = lastPart
 			resourceID = parts[1]
 			return
