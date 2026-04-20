@@ -14,6 +14,7 @@ const (
 	tenantIDKey contextKey = "tenant_id"
 	apiKeyIDKey contextKey = "api_key_id"
 	keyTypeKey  contextKey = "key_type"
+	livemodeKey contextKey = "livemode"
 )
 
 // TestTenantIDKey returns the context key for tenant ID (for use in tests).
@@ -76,6 +77,25 @@ func KeyID(ctx context.Context) string {
 func GetKeyType(ctx context.Context) KeyType {
 	v, _ := ctx.Value(keyTypeKey).(KeyType)
 	return v
+}
+
+// Livemode returns whether the request is operating in live mode. Absent a
+// value, defaults to true — the safe fallback that matches production
+// behavior and prevents background workers / tests from silently operating
+// as if in test mode.
+func Livemode(ctx context.Context) bool {
+	v, ok := ctx.Value(livemodeKey).(bool)
+	if !ok {
+		return true
+	}
+	return v
+}
+
+// WithLivemode returns a derived context carrying the livemode flag. Used by
+// auth middleware to propagate the key's mode downstream, and by tests to
+// simulate test-mode requests.
+func WithLivemode(ctx context.Context, live bool) context.Context {
+	return context.WithValue(ctx, livemodeKey, live)
 }
 
 func extractBearerToken(r *http.Request) string {
