@@ -90,11 +90,14 @@ func TestCreateKey_Secret(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.HasPrefix(result.RawKey, "vlx_secret_") {
-		t.Errorf("raw key should start with vlx_secret_, got prefix: %q", result.RawKey[:15])
+	if !strings.HasPrefix(result.RawKey, "vlx_secret_live_") {
+		t.Errorf("raw key should start with vlx_secret_live_, got prefix: %q", result.RawKey[:16])
 	}
-	if len(result.RawKey) != len("vlx_secret_")+64 {
-		t.Errorf("raw key length: got %d, want %d", len(result.RawKey), len("vlx_secret_")+64)
+	if len(result.RawKey) != len("vlx_secret_live_")+64 {
+		t.Errorf("raw key length: got %d, want %d", len(result.RawKey), len("vlx_secret_live_")+64)
+	}
+	if !result.Key.Livemode {
+		t.Error("key should be live by default")
 	}
 	if result.Key.KeyType != "secret" {
 		t.Errorf("key_type: got %q, want secret", result.Key.KeyType)
@@ -127,8 +130,8 @@ func TestCreateKey_Publishable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.HasPrefix(result.RawKey, "vlx_pub_") {
-		t.Errorf("raw key should start with vlx_pub_")
+	if !strings.HasPrefix(result.RawKey, "vlx_pub_live_") {
+		t.Errorf("raw key should start with vlx_pub_live_")
 	}
 	if result.Key.KeyType != "publishable" {
 		t.Errorf("key_type: got %q, want publishable", result.Key.KeyType)
@@ -145,8 +148,8 @@ func TestCreateKey_Platform(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.HasPrefix(result.RawKey, "vlx_platform_") {
-		t.Errorf("raw key should start with vlx_platform_")
+	if !strings.HasPrefix(result.RawKey, "vlx_platform_live_") {
+		t.Errorf("raw key should start with vlx_platform_live_")
 	}
 	if result.Key.KeyType != "platform" {
 		t.Errorf("key_type: got %q, want platform", result.Key.KeyType)
@@ -232,7 +235,7 @@ func TestValidateKey_WrongSecret(t *testing.T) {
 	result, _ := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "Real", KeyType: KeyTypeSecret})
 
 	// Same prefix length but different secret
-	fake := "vlx_secret_" + strings.Repeat("ff", 32)
+	fake := "vlx_secret_live_" + strings.Repeat("ff", 32)
 	if fake == result.RawKey {
 		t.Skip("astronomically unlikely collision")
 	}
@@ -269,6 +272,62 @@ func TestValidateKey_Revoked(t *testing.T) {
 	_, err := svc.ValidateKey(ctx, result.RawKey)
 	if err == nil {
 		t.Fatal("expected error for revoked key")
+	}
+}
+
+func TestCreateKey_TestModeFromCtx(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := WithLivemode(context.Background(), false)
+
+	result, err := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "Sandbox", KeyType: KeyTypeSecret})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !strings.HasPrefix(result.RawKey, "vlx_secret_test_") {
+		t.Errorf("test-mode key should start with vlx_secret_test_, got %q", result.RawKey[:20])
+	}
+	if result.Key.Livemode {
+		t.Error("key should be test-mode")
+	}
+
+	// ValidateKey on the same raw key recovers livemode=false.
+	key, err := svc.ValidateKey(context.Background(), result.RawKey)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if key.Livemode {
+		t.Error("validated key should be test-mode")
+	}
+}
+
+func TestValidateKey_LegacyFormat(t *testing.T) {
+	// Pre-FEAT-8 keys have no mode infix (vlx_secret_<hex>). They must still
+	// validate, and must be classified as live.
+	store := newMemStore()
+	svc := NewService(store)
+
+	// Seed a legacy-format key directly.
+	rawKey := "vlx_secret_" + strings.Repeat("ab", 32)
+	dbPrefix := "vlx_secret_" + strings.Repeat("ab", 6) // first 12 hex chars
+	salt := []byte("legacytestsalt16")
+	saltHex := hex.EncodeToString(salt)
+	hash := sha256.Sum256(append(salt, []byte(rawKey)...))
+	store.keys["legacy1"] = domain.APIKey{
+		ID:        "legacy1",
+		KeyPrefix: dbPrefix,
+		KeyHash:   hex.EncodeToString(hash[:]),
+		KeySalt:   saltHex,
+		KeyType:   string(KeyTypeSecret),
+		Livemode:  true,
+		TenantID:  "t1",
+	}
+
+	key, err := svc.ValidateKey(context.Background(), rawKey)
+	if err != nil {
+		t.Fatalf("legacy key validate: %v", err)
+	}
+	if !key.Livemode {
+		t.Error("legacy key should be classified as live")
 	}
 }
 

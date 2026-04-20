@@ -19,11 +19,11 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
-const keyCols = `id, key_prefix, key_type, name, tenant_id, created_at, expires_at, revoked_at, last_used_at`
+const keyCols = `id, key_prefix, key_type, livemode, name, tenant_id, created_at, expires_at, revoked_at, last_used_at`
 
 func scanKey(row interface{ Scan(...any) error }) (domain.APIKey, error) {
 	var k domain.APIKey
-	err := row.Scan(&k.ID, &k.KeyPrefix, &k.KeyType, &k.Name, &k.TenantID,
+	err := row.Scan(&k.ID, &k.KeyPrefix, &k.KeyType, &k.Livemode, &k.Name, &k.TenantID,
 		&k.CreatedAt, &k.ExpiresAt, &k.RevokedAt, &k.LastUsedAt)
 	return k, err
 }
@@ -37,10 +37,10 @@ func (s *PostgresStore) Create(ctx context.Context, key domain.APIKey) (domain.A
 
 	now := time.Now().UTC()
 	k, err := scanKey(tx.QueryRowContext(ctx, `
-		INSERT INTO api_keys (id, key_prefix, key_hash, key_salt, key_type, name, tenant_id, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO api_keys (id, key_prefix, key_hash, key_salt, key_type, livemode, name, tenant_id, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING `+keyCols,
-		key.ID, key.KeyPrefix, key.KeyHash, key.KeySalt, key.KeyType, key.Name, key.TenantID, now,
+		key.ID, key.KeyPrefix, key.KeyHash, key.KeySalt, key.KeyType, key.Livemode, key.Name, key.TenantID, now,
 		postgres.NullableTime(key.ExpiresAt),
 	))
 	if err != nil {
@@ -65,7 +65,7 @@ func (s *PostgresStore) GetByPrefix(ctx context.Context, prefix string) (domain.
 		SELECT `+keyCols+`, key_hash, key_salt
 		FROM api_keys
 		WHERE key_prefix = $1 AND revoked_at IS NULL
-	`, prefix).Scan(&key.ID, &key.KeyPrefix, &key.KeyType, &key.Name, &key.TenantID,
+	`, prefix).Scan(&key.ID, &key.KeyPrefix, &key.KeyType, &key.Livemode, &key.Name, &key.TenantID,
 		&key.CreatedAt, &key.ExpiresAt, &key.RevokedAt, &key.LastUsedAt, &key.KeyHash, &key.KeySalt)
 
 	if err == sql.ErrNoRows {
