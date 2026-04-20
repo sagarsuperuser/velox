@@ -210,12 +210,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sub, err := h.svc.Create(r.Context(), tenantID, input)
-	if errors.Is(err, errs.ErrAlreadyExists) {
-		respond.Conflict(w, r, err.Error())
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "subscription")
 		return
 	}
 
@@ -273,12 +269,8 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	sub, err := h.svc.Activate(r.Context(), tenantID, id)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "subscription")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "subscription")
 		return
 	}
 
@@ -292,12 +284,8 @@ func (h *Handler) pause(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	sub, err := h.svc.Pause(r.Context(), tenantID, id)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "subscription")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "subscription")
 		return
 	}
 
@@ -311,12 +299,8 @@ func (h *Handler) resume(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	sub, err := h.svc.Resume(r.Context(), tenantID, id)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "subscription")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "subscription")
 		return
 	}
 
@@ -330,12 +314,8 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	sub, err := h.svc.Cancel(r.Context(), tenantID, id)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "subscription")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "subscription")
 		return
 	}
 
@@ -382,16 +362,8 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	item, err := h.svc.AddItem(r.Context(), tenantID, id, input)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "subscription")
-		return
-	}
-	if errors.Is(err, errs.ErrAlreadyExists) {
-		respond.Conflict(w, r, "an item for this plan already exists on the subscription")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "subscription")
 		return
 	}
 
@@ -512,12 +484,8 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := h.svc.UpdateItem(r.Context(), tenantID, subID, itemID, input)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "subscription item")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "subscription item")
 		return
 	}
 
@@ -650,12 +618,8 @@ func (h *Handler) cancelPendingItemChange(w http.ResponseWriter, r *http.Request
 	itemID := chi.URLParam(r, "itemID")
 
 	item, err := h.svc.CancelPendingItemChange(r.Context(), tenantID, subID, itemID)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "subscription item")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "subscription item")
 		return
 	}
 
@@ -708,11 +672,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.RemoveItem(r.Context(), tenantID, subID, itemID); err != nil {
-		if errors.Is(err, errs.ErrNotFound) {
-			respond.NotFound(w, r, "subscription item")
-			return
-		}
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "subscription item")
 		return
 	}
 

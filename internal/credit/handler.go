@@ -49,7 +49,7 @@ func (h *Handler) grant(w http.ResponseWriter, r *http.Request) {
 
 	entry, err := h.svc.Grant(r.Context(), tenantID, input)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "credit")
 		return
 	}
 
@@ -76,7 +76,7 @@ func (h *Handler) adjust(w http.ResponseWriter, r *http.Request) {
 
 	entry, err := h.svc.Adjust(r.Context(), tenantID, input)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "credit")
 		return
 	}
 

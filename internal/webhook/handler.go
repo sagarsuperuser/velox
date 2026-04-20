@@ -62,7 +62,7 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.svc.CreateEndpoint(r.Context(), tenantID, input)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "webhook_endpoint")
 		return
 	}
 

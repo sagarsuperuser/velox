@@ -61,7 +61,7 @@ func (h *OperatorHandler) create(w http.ResponseWriter, r *http.Request) {
 
 	res, err := h.svc.Create(r.Context(), tenantID, in.CustomerID, ttl)
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "customer_portal_session")
 		return
 	}
 

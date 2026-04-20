@@ -235,12 +235,8 @@ func (h *Handler) addLineItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	item, err := h.svc.AddLineItem(r.Context(), tenantID, id, input)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "invoice")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "invoice")
 		return
 	}
 
@@ -303,12 +299,8 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	inv, err := h.svc.Finalize(r.Context(), tenantID, id)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "invoice")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "invoice")
 		return
 	}
 
@@ -407,12 +399,8 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	inv, err := h.svc.Void(r.Context(), tenantID, id)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "invoice")
-		return
-	}
 	if err != nil {
-		respond.Validation(w, r, err.Error())
+		respond.FromError(w, r, err, "invoice")
 		return
 	}
 
