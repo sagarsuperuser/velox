@@ -154,6 +154,21 @@ func IsForeignKeyViolation(err error) bool {
 	return false
 }
 
+// IsCheckViolation reports whether err is a Postgres check-constraint
+// violation (SQLSTATE 23514). Used to translate DB-level invariant failures
+// (e.g. the test_clocks livemode CHECK, or subscriptions_test_clock_requires_testmode)
+// into user-facing 400s instead of leaking raw SQL error text.
+func IsCheckViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23514"
+	}
+	return false
+}
+
 func NullableString(v string) any {
 	if strings.TrimSpace(v) == "" {
 		return nil

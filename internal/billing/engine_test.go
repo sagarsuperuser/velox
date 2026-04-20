@@ -8,7 +8,27 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
+
+// stubClockReader is a TestClockReader spy used by TestEffectiveNow. It
+// returns a canned (TestClock, error) pair and records the last ID queried so
+// the test can assert the engine looked up the right clock.
+type stubClockReader struct {
+	clk      domain.TestClock
+	err      error
+	lastID   string
+	lastTenant string
+}
+
+func (s *stubClockReader) Get(_ context.Context, tenantID, id string) (domain.TestClock, error) {
+	s.lastID = id
+	s.lastTenant = tenantID
+	if s.err != nil {
+		return domain.TestClock{}, s.err
+	}
+	return s.clk, nil
+}
 
 // mockSettings is a minimal SettingsReader for engine tests. Hands out
 // VLX-000001, VLX-000002, ... deterministically; Get returns a zero-value
@@ -717,4 +737,58 @@ func TestRunCycle_SkipsPendingChangeNotYetDue(t *testing.T) {
 	if got.PlanID != "pln_old" {
 		t.Errorf("plan_id should not have swapped: got %q", got.PlanID)
 	}
+}
+
+// TestEffectiveNow covers the four branches of Engine.effectiveNow:
+// no test clock → wall-clock; test clock wired → frozen_time; clock id set
+// but no reader → wall-clock; reader errors → wall-clock. These branches
+// are what makes a test-mode sub bill at simulated time without affecting
+// live subs on the same engine instance.
+func TestEffectiveNow(t *testing.T) {
+	wall := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
+	frozen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fakeClk := clock.NewFake(wall)
+
+	liveSub := domain.Subscription{ID: "s_live", TenantID: "t1"}
+	testSub := domain.Subscription{ID: "s_test", TenantID: "t1", TestClockID: "tc_1"}
+
+	t.Run("no test clock id returns wall clock", func(t *testing.T) {
+		e := NewEngine(nil, nil, nil, nil, nil, nil, nil, nil, fakeClk)
+		e.SetTestClockReader(&stubClockReader{clk: domain.TestClock{FrozenTime: frozen}})
+		got := e.effectiveNow(context.Background(), liveSub)
+		if !got.Equal(wall) {
+			t.Errorf("wall-clock sub: got %v, want %v", got, wall)
+		}
+	})
+
+	t.Run("test clock id with reader returns frozen time", func(t *testing.T) {
+		reader := &stubClockReader{clk: domain.TestClock{FrozenTime: frozen}}
+		e := NewEngine(nil, nil, nil, nil, nil, nil, nil, nil, fakeClk)
+		e.SetTestClockReader(reader)
+		got := e.effectiveNow(context.Background(), testSub)
+		if !got.Equal(frozen) {
+			t.Errorf("test-mode sub: got %v, want %v", got, frozen)
+		}
+		if reader.lastID != "tc_1" || reader.lastTenant != "t1" {
+			t.Errorf("reader lookup: got (%q,%q), want (t1,tc_1)",
+				reader.lastTenant, reader.lastID)
+		}
+	})
+
+	t.Run("test clock id without reader falls back to wall clock", func(t *testing.T) {
+		e := NewEngine(nil, nil, nil, nil, nil, nil, nil, nil, fakeClk)
+		got := e.effectiveNow(context.Background(), testSub)
+		if !got.Equal(wall) {
+			t.Errorf("nil-reader fallback: got %v, want %v", got, wall)
+		}
+	})
+
+	t.Run("reader error falls back to wall clock", func(t *testing.T) {
+		e := NewEngine(nil, nil, nil, nil, nil, nil, nil, nil, fakeClk)
+		e.SetTestClockReader(&stubClockReader{err: errs.ErrNotFound})
+		got := e.effectiveNow(context.Background(), testSub)
+		if !got.Equal(wall) {
+			t.Errorf("error fallback: got %v, want %v", got, wall)
+		}
+	})
 }

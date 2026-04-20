@@ -27,6 +27,11 @@ const (
 
 	PermAPIKeyRead  Permission = "apikey:read"
 	PermAPIKeyWrite Permission = "apikey:write"
+
+	// PermTestClockWrite grants create / advance / delete on test_clocks.
+	// Only secret-mode keys hold this — publishable keys are for browser
+	// contexts and must never be able to move time for an entire tenant.
+	PermTestClockWrite Permission = "testclock:write"
 )
 
 // KeyType determines the prefix and permission set for an API key.
@@ -83,6 +88,7 @@ var keyPermissions = map[KeyType]map[Permission]bool{
 		PermDunningWrite:      true,
 		PermAPIKeyRead:        true,
 		PermAPIKeyWrite:       true,
+		PermTestClockWrite:    true,
 	},
 	KeyTypePublishable: {
 		PermCustomerRead:     true,
