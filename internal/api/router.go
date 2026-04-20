@@ -32,6 +32,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
+	"github.com/sagarsuperuser/velox/internal/paymentmethods"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -346,6 +347,14 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 		strings.TrimSpace(os.Getenv("CUSTOMER_PORTAL_URL")),
 	)
 
+	// Customer self-service payment methods — the customer-facing half of
+	// the portal. Writes to payment_methods (multi-row) and keeps the
+	// 1:1 customer_payment_setups summary in sync via Service.syncSummary.
+	paymentMethodsStore := paymentmethods.NewPostgresStore(db)
+	paymentMethodsStripe := paymentmethods.NewStripeAdapter(stripeClients, customerStore)
+	paymentMethodsSvc := paymentmethods.NewService(paymentMethodsStore, paymentMethodsStripe, customerStore)
+	paymentMethodsH := paymentmethods.NewHandler(paymentMethodsSvc)
+
 	// GDPR data export + deletion — wired into customer handler
 	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, auditLogger)
 	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
@@ -493,10 +502,11 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 
 	// Customer self-service surface — authenticated by a portal bearer
 	// token (vlx_cps_...) rather than a tenant API key. See customerportal
-	// package. Payment-method handlers are mounted here in P4.
+	// package.
 	r.Route("/v1/me", func(r chi.Router) {
 		r.Use(portalSvc.Middleware())
 		r.Use(rateLimiter.Middleware())
+		r.Mount("/payment-methods", paymentMethodsH.Routes())
 	})
 
 	s.router = r
