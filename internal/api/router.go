@@ -347,6 +347,37 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 		strings.TrimSpace(os.Getenv("CUSTOMER_PORTAL_URL")),
 	)
 
+	// Customer-initiated magic-link flow: the customer enters their email
+	// at /login, we look up matches via the keyed blind index (separate
+	// HMAC key from VELOX_ENCRYPTION_KEY so one compromise doesn't
+	// reveal the other), mint a short-lived token per match, and deliver
+	// via the email outbox. Blinder is required; without it the email
+	// lookup silently fails closed and no links can be minted.
+	var emailBlinder *crypto.Blinder
+	if bidxKey := strings.TrimSpace(os.Getenv("VELOX_EMAIL_BIDX_KEY")); bidxKey != "" {
+		b, err := crypto.NewBlinder(bidxKey)
+		if err != nil {
+			slog.Error("invalid VELOX_EMAIL_BIDX_KEY, magic-link requests will fail closed", "error", err)
+		} else {
+			emailBlinder = b
+			customerStore.SetBlinder(b)
+			slog.Info("email blind index enabled for customer-portal magic-link lookup")
+		}
+	} else {
+		slog.Warn("VELOX_EMAIL_BIDX_KEY not set — magic-link requests will fail closed (no customers findable by email)")
+	}
+	magicLinkStore := customerportal.NewPostgresMagicLinkStore(db)
+	magicLinkSvc := customerportal.NewMagicLinkService(magicLinkStore, portalSvc)
+	magicLinkDelivery := customerportal.NewLogMagicLinkDelivery(slog.Default())
+	magicLinkRequestSvc := customerportal.NewMagicLinkRequestService(
+		magicLinkSvc,
+		&customerLookupAdapter{store: customerStore},
+		emailBlinder,
+		magicLinkDelivery,
+		slog.Default(),
+	)
+	publicPortalH := customerportal.NewPublicHandler(magicLinkRequestSvc)
+
 	// Customer self-service payment methods — the customer-facing half of
 	// the portal. Writes to payment_methods (multi-row) and keeps the
 	// 1:1 customer_payment_setups summary in sync via Service.syncSummary.
@@ -446,6 +477,17 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	if publicPaymentH != nil {
 		r.Mount("/v1/public/payment-updates", publicPaymentH.Routes())
 	}
+
+	// Public customer-portal routes (magic-link request + consume). No
+	// API-key auth: the caller supplies an email (request) or a token
+	// (consume) and that's the only credential. Rate-limited by IP via
+	// the same middleware that limits authenticated traffic — unauthed
+	// callers fall through to ip:<addr> buckets, so a single host
+	// probing emails hits the same 100/min ceiling as any other caller.
+	r.Route("/v1/public/customer-portal", func(r chi.Router) {
+		r.Use(rateLimiter.Middleware())
+		r.Mount("/", publicPortalH.Routes())
+	})
 
 	// Platform routes
 	r.Route("/v1/tenants", func(r chi.Router) {
