@@ -102,24 +102,10 @@ func (m *memStore) ListBalances(_ context.Context, _ string) ([]domain.CreditBal
 }
 
 func (m *memStore) ListExpiredGrants(_ context.Context) ([]domain.CreditLedgerEntry, error) {
-	var result []domain.CreditLedgerEntry
-	for _, e := range m.entries {
-		if e.EntryType != domain.CreditGrant || e.ExpiresAt == nil || !e.ExpiresAt.Before(time.Now()) {
-			continue
-		}
-		// Check no expiry entry already exists for this grant
-		expired := false
-		for _, e2 := range m.entries {
-			if e2.EntryType == domain.CreditExpiry && e2.Description == fmt.Sprintf("Expired grant %s", e.ID) {
-				expired = true
-				break
-			}
-		}
-		if !expired {
-			result = append(result, e)
-		}
-	}
-	return result, nil
+	// Stub: no test exercises ExpireCredits against memStore; integration
+	// coverage of expiry lives against PostgresStore. Present only to
+	// satisfy the Store interface.
+	return nil, nil
 }
 
 func (m *memStore) AdjustAtomic(ctx context.Context, tenantID, customerID, description string, amountCents int64) (domain.CreditLedgerEntry, error) {
