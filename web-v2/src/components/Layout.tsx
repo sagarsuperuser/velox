@@ -6,7 +6,6 @@ import {
   Sun, Moon, Search, TrendingUp, type LucideIcon,
 } from 'lucide-react'
 import { useDarkMode } from '@/hooks/useDarkMode'
-import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { cn } from '@/lib/utils'
 import { api, setActiveCurrency, clearApiKey } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -15,7 +14,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Badge } from '@/components/ui/badge'
 import { CommandPalette } from '@/components/CommandPalette'
 import { VeloxLogo } from '@/components/VeloxLogo'
-import { KeyboardHelp } from '@/components/KeyboardHelp'
 
 const billingNav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -92,7 +90,6 @@ export function Layout({ children }: { children: ReactNode }) {
   const [commandOpen, setCommandOpen] = useState(false)
   const [navCounts, setNavCounts] = useState<Record<string, number>>({})
   const { dark, toggle: toggleDark } = useDarkMode()
-  useKeyboardShortcuts()
 
   // Cmd+K / Ctrl+K keyboard shortcut
   useEffect(() => {
@@ -254,9 +251,6 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {/* Command Palette */}
       <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} />
-
-      {/* Keyboard Shortcuts Help */}
-      <KeyboardHelp />
     </div>
   )
 }
