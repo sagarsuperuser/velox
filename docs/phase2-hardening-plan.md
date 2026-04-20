@@ -330,9 +330,25 @@ Add `coupons.duration` enum (once/repeating/forever), `coupons.duration_periods 
 - Billing interaction: backfilled events participate in `AggregateForBillingPeriod` the same as live events. Finalized invoices are immutable (they reference `billed_entries`, not live aggregations), so backfill into a closed period updates the audit ledger without rewriting history.
 - Tests: unit (`TestBackfill` + extended `TestIngest`) cover missing / future timestamps, origin tagging, and default-origin-on-live-ingest; integration (`TestBackfill_PersistsOriginAndAggregates`) confirms the SQL round-trips `origin` correctly and aggregation sums `api` + `backfill` quantities together.
 
-### [FEAT-8] Test mode / sandbox — M
+### [FEAT-8] Test mode / sandbox — M — ✅ DONE
 
-New key namespace `sk_test_*` / `pk_test_*`. Stripe calls replaced with stub in test mode. Isolated invoices marked `livemode=false`. Stripe convention.
+Stripe-style dual-mode per tenant: a single tenant holds parallel live and test partitions that share schema but never share rows. Key prefix `vlx_secret_live_…` / `vlx_secret_test_…` routes the request into the correct partition; the partition is enforced at the database layer by RLS on a `livemode` column present on every tenant-scoped table, not by application-level filtering.
+
+**Delivered scope (P1–P7):**
+
+- **P1** — Migration `0020_livemode_test_clocks`: adds `livemode BOOLEAN NOT NULL DEFAULT TRUE` to all 32 tenant-scoped tables; adds `test_clocks` table (CHECK `livemode=false`) for deterministic time travel in test mode; widens every RLS policy to `USING (tenant_id = app.tenant_id AND livemode = app.livemode)`.
+- **P2** — Auth key-prefix parsing + middleware: recognises `vlx_secret_live_…`, `vlx_secret_test_…`, and legacy `vlx_secret_…` (treated as live for back-compat). Middleware writes `livemode` into ctx so every downstream tx picks it up.
+- **P3** — `db.BeginTx` propagates `livemode` from ctx into the session variable `app.livemode`; RLS reads it on every SELECT/UPDATE. `TxBypass` intentionally does NOT set it, because it's used for cross-tenant maintenance paths.
+- **P4** — Stripe dual-key: live keys → real Stripe; test keys → test-mode Stripe API keys. Both flows share the same PaymentIntent handler; the routing is one switch on ctx livemode.
+- **P5** — Test clocks: CRUD on `/v1/test-clocks` (test-mode keys only, 403 otherwise). Billing engine's `effectiveNow(sub)` consults the sub's attached clock when present, else wall clock. `GetDueBilling` LEFT JOINs `test_clocks` so test-mode subs become "due" when their clock's `frozen_time` catches up.
+- **P6** — Mode-scoped webhooks: `livemode` propagates from the producing tx through `webhook_outbox` → dispatcher → `webhook_events` + `webhook_deliveries` so test-mode events never reach live endpoints. Defence-in-depth check `ep.Livemode == event.Livemode` on top of RLS.
+- **P7** — Integration test `TestE2E_TestModeIsolation` proves disjoint customers, webhook endpoints, and test-clock visibility between a live key and a test key on the same tenant. Also landed migration `0021_livemode_autoset`: a BEFORE INSERT trigger that reads `app.livemode` and sets `NEW.livemode`, so producers don't have to remember the column on every INSERT — zero code churn across 32 tables.
+
+**Invariants enforced end-to-end:**
+1. A test-mode key cannot read, write, or trigger side-effects on any live-mode row.
+2. A test-mode customer/subscription/invoice/webhook-event never appears in a live-mode listing or list endpoint.
+3. `test_clocks` only advance in test mode; the billing engine's time source in test mode is the clock, not wall time.
+4. Outbound webhooks honour partition: a test-mode event only reaches endpoints registered in test mode.
 
 ---
 
@@ -506,7 +522,7 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 28. **RES-2** — scheduler advisory lock ✅
 29. **RES-6** — email outbox ✅
 30. ~~**SEC-2 Phase B/C**~~ — collapsed into single cutover (see item 15)
-31. **FEAT-2 ✅, FEAT-3, FEAT-4 ✅, FEAT-7 ✅, FEAT-8** — feature completeness
+31. **FEAT-2 ✅, FEAT-3, FEAT-4 ✅, FEAT-7 ✅, FEAT-8 ✅** — feature completeness
 32. **FEAT-6** — coupon stacking
 33. **FEAT-5** — multi-item subs (Phase 3)
 

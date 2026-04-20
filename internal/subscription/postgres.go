@@ -427,7 +427,7 @@ func (s *PostgresStore) UpdateBillingCycle(ctx context.Context, tenantID, id str
 // with overlapping column names like id / tenant_id.
 func qualifiedSubCols(alias string) string {
 	var b strings.Builder
-	for i, col := range strings.Split(subCols, ",") {
+	for i, col := range splitTopLevelCommas(subCols) {
 		if i > 0 {
 			b.WriteString(", ")
 		}
@@ -453,6 +453,29 @@ func qualifiedSubCols(alias string) string {
 		b.WriteString(col)
 	}
 	return b.String()
+}
+
+// splitTopLevelCommas splits s on commas that are outside any parenthesised
+// group, so `a, COALESCE(b,'c'), d` yields `["a", " COALESCE(b,'c')", " d"]`
+// — naive strings.Split would break COALESCE(b,'c') in half.
+func splitTopLevelCommas(s string) []string {
+	var out []string
+	depth := 0
+	start := 0
+	for i, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(out, s[start:])
 }
 
 func scanSubDest(s *domain.Subscription) []any {
