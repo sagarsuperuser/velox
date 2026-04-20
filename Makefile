@@ -66,13 +66,13 @@ test-integration:
 
 # Frontend
 web-install:
-	cd web && npm install
+	cd web-v2 && npm install
 
 web-dev:
-	cd web && npm run dev
+	cd web-v2 && npm run dev
 
 web-build:
-	cd web && npm run build
+	cd web-v2 && npm run build
 
 # Docker compose for local dev
 up:
@@ -91,7 +91,7 @@ stats:
 	@printf "  SQL files:    %s\n" "$$(find . -name '*.sql' | wc -l | tr -d ' ')"
 	@printf "  Packages:     %s\n" "$$(find ./internal -type d | wc -l | tr -d ' ')"
 	@printf "  API routes:   ~76\n"
-	@printf "  TS/TSX files: %s\n" "$$(find ./web/src -name '*.ts' -o -name '*.tsx' 2>/dev/null | wc -l | tr -d ' ')"
+	@printf "  TS/TSX files: %s\n" "$$(find ./web-v2/src -name '*.ts' -o -name '*.tsx' 2>/dev/null | wc -l | tr -d ' ')"
 	@echo ""
 	@printf "  Tests:        " && go test ./... -short -count=1 2>&1 | grep -c "^ok" && echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"
