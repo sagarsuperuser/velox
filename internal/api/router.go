@@ -191,19 +191,18 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 		PaymentCancel:  payment.NewLiveStripeClient(stripeClients),
 	})
 
-	// Per-tenant circuit breaker around Stripe calls. One tenant's broken
-	// integration — or a Stripe regional incident — must not let retries
-	// from the scheduler burn request budget for every other tenant. The
-	// breaker opens after 5 consecutive Unknown (5xx/timeout/network)
-	// failures, probes after 30s, and emits state transitions to the
-	// velox_stripe_breaker_state gauge so operators can alert on it.
+	// Global circuit breaker around Stripe calls. When Stripe is unhealthy
+	// (5xx/timeout/network), every caller backs off together so we don't
+	// pile retries onto a struggling dependency. Opens after 5 consecutive
+	// Unknown failures, probes after 30s, and emits state transitions to
+	// the velox_stripe_breaker_state gauge so operators can alert on it.
 	stripeBreaker := breaker.New(breaker.Config{
 		FailureThreshold: 5,
 		Cooldown:         30 * time.Second,
 		Interval:         60 * time.Second,
 		Countable:        payment.IsUnknownPaymentFailure,
-		OnStateChange: func(tenantID string, _, to breaker.State) {
-			mw.RecordStripeBreakerState(tenantID, string(to))
+		OnStateChange: func(_, to breaker.State) {
+			mw.RecordStripeBreakerState(string(to))
 		},
 	})
 
@@ -250,7 +249,6 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	// spend an extra API call.
 	paymentReconciler := payment.NewReconciler(stripeClient, invoiceStore, 60*time.Second)
 	paymentReconciler.SetBreaker(stripeBreaker)
-	stripeBreakerH := payment.NewBreakerAdminHandler(stripeBreaker)
 	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeClients,
 		strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_RETURN_URL")))
 
@@ -543,7 +541,6 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/analytics", analyticsH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/feature-flags", featureH.Routes())
-		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/integrations/stripe/breaker", stripeBreakerH.Routes())
 		r.With(auth.Require(auth.PermTestClockWrite)).Mount("/test-clocks", testClockH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
 		if checkoutH != nil {

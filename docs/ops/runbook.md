@@ -43,7 +43,7 @@ it with an ingress that restricts access to the monitoring backend.
 |--------|------|--------|---------|
 | `velox_payment_charges_total` | counter | `result` | `result` ∈ {`succeeded`, `failed`}. Per-attempt, not per-invoice. |
 | `velox_auto_charge_retries_total` | counter | `result` | Retries triggered by the dunning loop. |
-| `velox_stripe_breaker_state` | gauge | `tenant_id` | Per-tenant circuit breaker: `0` closed, `1` half-open, `2` open. |
+| `velox_stripe_breaker_state` | gauge | — | Global circuit breaker for Stripe calls: `0` closed, `1` half-open, `2` open. |
 
 ### Webhooks
 
@@ -128,7 +128,7 @@ ALERT VeloxNoInvoicesGenerated
 ### Payments
 
 ```promql
-# page — Stripe breaker is open for any tenant (payments blocked)
+# page — Stripe breaker is open (payments blocked for every tenant)
 ALERT VeloxStripeBreakerOpen
   EXPR velox_stripe_breaker_state == 2
   FOR 5m
@@ -190,7 +190,7 @@ Suggested Grafana layout. One screen per audience.
 ### Payments (for revenue team)
 
 1. Payment success rate (24h rolling).
-2. Per-tenant breaker state as a status table.
+2. Stripe breaker state (global gauge).
 3. Auto-charge retry volume by result.
 4. Credit operations by type (grant vs usage vs expiry).
 
@@ -252,19 +252,16 @@ generating. Each failed run is visible in `velox_billing_cycle_errors_total`.
 
 ### Playbook: `VeloxStripeBreakerOpen`
 
-**What's happening:** The circuit breaker for a tenant's Stripe account has
-opened. Payments for that tenant are being rejected fast without hitting the
-API.
+**What's happening:** The global Stripe circuit breaker has opened. All
+payment attempts are being rejected fast without hitting the API — Stripe
+is almost certainly having an incident.
 
 **Triage:**
 
-1. Identify the tenant from the alert labels.
-2. Check recent Stripe API error codes in logs for that tenant.
-3. Common distinction:
-   - Account-specific: invalid API key, account suspended, keys rotated on
-     Stripe side — the breaker is working correctly, resolve with the customer.
-   - Platform-wide: if multiple tenants' breakers opened within minutes of each
-     other, it's a Stripe outage — check status.stripe.com.
+1. Check status.stripe.com for an active incident.
+2. Check recent Stripe API error codes in logs (5xx/timeout pattern).
+3. If Stripe reports healthy but our breaker is open, the root cause is
+   likely in our network/egress — check outbound latency and DNS.
 
 **Resolution:**
 

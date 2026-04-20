@@ -148,11 +148,11 @@ func (s *Stripe) SetEventDispatcher(events domain.EventDispatcher) {
 	s.events = events
 }
 
-// SetBreaker wires a per-tenant circuit breaker around Stripe calls. When
-// set, ChargeInvoice short-circuits with breaker.ErrOpen if the tenant's
-// breaker is rejecting — the Stripe call is not made and the invoice
-// state is left untouched so dunning treats it as "try later" without
-// ticking attempt_count.
+// SetBreaker wires a global circuit breaker around Stripe calls. When
+// set, ChargeInvoice short-circuits with breaker.ErrOpen if the breaker
+// is rejecting — the Stripe call is not made and the invoice state is
+// left untouched so dunning treats it as "try later" without ticking
+// attempt_count.
 func (s *Stripe) SetBreaker(b *breaker.Breaker) {
 	s.breaker = b
 }
@@ -253,7 +253,7 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 	var err error
 	if s.breaker != nil {
 		var out any
-		out, err = s.breaker.Execute(ctx, tenantID, func(ctx context.Context) (any, error) {
+		out, err = s.breaker.Execute(ctx, func(ctx context.Context) (any, error) {
 			return s.client.CreatePaymentIntent(ctx, params)
 		})
 		if errors.Is(err, breaker.ErrOpen) {

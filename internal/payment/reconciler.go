@@ -34,7 +34,7 @@ type Reconciler struct {
 	invoices  ReconcileInvoiceStore
 	olderThan time.Duration
 	now       func() time.Time // injectable for tests
-	breaker   *breaker.Breaker // optional; skip tenants whose breaker is open
+	breaker   *breaker.Breaker // optional; skip reconcile ticks when breaker is open
 }
 
 // NewReconciler constructs a Reconciler. If olderThan <= 0, defaults to 60s.
@@ -50,10 +50,10 @@ func NewReconciler(client StripeClient, invoices ReconcileInvoiceStore, olderTha
 	}
 }
 
-// SetBreaker wires the same per-tenant circuit breaker used by ChargeInvoice.
-// When a tenant's breaker is open, the reconciler skips their unresolved
-// invoices this tick rather than piling Stripe reads onto an already-sick
-// service; the next tick after cooldown picks them up.
+// SetBreaker wires the same global circuit breaker used by ChargeInvoice.
+// When the breaker is open, the reconciler skips unresolved invoices this
+// tick rather than piling Stripe reads onto an already-sick service; the
+// next tick after cooldown picks them up.
 func (r *Reconciler) SetBreaker(b *breaker.Breaker) {
 	r.breaker = b
 }
@@ -109,13 +109,13 @@ func (r *Reconciler) reconcileOne(ctx context.Context, inv domain.Invoice) (bool
 	var err error
 	if r.breaker != nil {
 		var out any
-		out, err = r.breaker.Execute(ctx, inv.TenantID, func(ctx context.Context) (any, error) {
+		out, err = r.breaker.Execute(ctx, func(ctx context.Context) (any, error) {
 			return r.client.GetPaymentIntent(ctx, inv.StripePaymentIntentID)
 		})
 		if errors.Is(err, breaker.ErrOpen) {
-			// Breaker open for this tenant — don't pile reads onto Stripe
-			// while it's struggling; return silently so Run() doesn't log
-			// a per-invoice error for every unresolved invoice.
+			// Breaker open — don't pile reads onto Stripe while it's
+			// struggling; return silently so Run() doesn't log a per-invoice
+			// error for every unresolved invoice.
 			return false, nil
 		}
 		if out != nil {
