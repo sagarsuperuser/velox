@@ -7,23 +7,49 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/tax/calculation"
+	stripeclient "github.com/stripe/stripe-go/v82/client"
+
+	"github.com/sagarsuperuser/velox/internal/platform/money"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // StripeCalculator calls the Stripe Tax Calculations API for jurisdiction-based
 // tax. On any Stripe API error it falls back to the provided ManualCalculator
 // so billing is never blocked by a third-party outage.
+//
+// Dual-key: holds per-mode clients and selects live/test based on ctx
+// livemode. The tax calculation doesn't mutate Stripe state, so using the
+// "wrong" account's API is merely incorrect accounting, not a destructive
+// bug — but the mode split still matters because test keys are rate-limited
+// differently and tests must not call the live endpoint.
 type StripeCalculator struct {
-	apiKey   string
+	live     *stripeclient.API
+	test     *stripeclient.API
 	fallback *ManualCalculator
 }
 
-// NewStripeCalculator creates a Stripe Tax calculator.
-// fallback is used when the Stripe API returns an error (resilience).
-func NewStripeCalculator(apiKey string, fallback *ManualCalculator) *StripeCalculator {
-	return &StripeCalculator{apiKey: apiKey, fallback: fallback}
+// NewStripeCalculator creates a Stripe Tax calculator. Each key may be empty;
+// if only one is set, the other mode falls through to the manual calculator.
+// fallback is used on any Stripe API error or when the mode's key is missing.
+func NewStripeCalculator(liveKey, testKey string, fallback *ManualCalculator) *StripeCalculator {
+	c := &StripeCalculator{fallback: fallback}
+	if liveKey != "" {
+		c.live = &stripeclient.API{}
+		c.live.Init(liveKey, nil)
+	}
+	if testKey != "" {
+		c.test = &stripeclient.API{}
+		c.test.Init(testKey, nil)
+	}
+	return c
+}
+
+func (s *StripeCalculator) clientForCtx(ctx context.Context) *stripeclient.API {
+	if postgres.Livemode(ctx) {
+		return s.live
+	}
+	return s.test
 }
 
 func (s *StripeCalculator) CalculateTax(ctx context.Context, currency string, addr CustomerAddress, lineItems []LineItemInput) (*TaxResult, error) {
@@ -74,7 +100,15 @@ func (s *StripeCalculator) CalculateTax(ctx context.Context, currency string, ad
 	// Expand line_items so we get per-line tax in the response
 	params.AddExpand("line_items")
 
-	calc, err := calculation.New(params)
+	sc := s.clientForCtx(ctx)
+	if sc == nil {
+		slog.Warn("stripe tax: no client configured for mode, falling back to manual",
+			"livemode", postgres.Livemode(ctx),
+		)
+		return s.fallback.CalculateTax(ctx, currency, addr, lineItems)
+	}
+
+	calc, err := sc.TaxCalculations.New(params)
 	if err != nil {
 		slog.Warn("stripe tax API error, falling back to manual",
 			"error", err,

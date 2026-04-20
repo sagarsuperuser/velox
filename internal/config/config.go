@@ -22,9 +22,13 @@ type Config struct {
 	DB      DBConfig
 	Migrate bool
 
-	// Stripe
-	StripeSecretKey     string
-	StripeWebhookSecret string
+	// Stripe — dual-key (live + test). Either may be empty; at least one
+	// should be set for payment flows to function. Test keys gate test-mode
+	// API-key traffic end-to-end.
+	StripeSecretKey         string
+	StripeWebhookSecret     string
+	StripeSecretKeyTest     string
+	StripeWebhookSecretTest string
 
 	// Redis (optional — rate limiting fails open without it)
 	RedisURL string
@@ -64,8 +68,10 @@ func Load() (Config, error) {
 			PingTimeout:     time.Duration(intEnv("DB_PING_TIMEOUT_SEC", 5)) * time.Second,
 			QueryTimeout:    time.Duration(intEnv("DB_QUERY_TIMEOUT_MS", 5000)) * time.Millisecond,
 		},
-		StripeSecretKey:     strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
-		StripeWebhookSecret: strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+		StripeSecretKey:         strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
+		StripeWebhookSecret:     strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+		StripeSecretKeyTest:     strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY_TEST")),
+		StripeWebhookSecretTest: strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET_TEST")),
 		RedisURL:            strings.TrimSpace(os.Getenv("REDIS_URL")),
 		BootstrapToken:      strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_TOKEN")),
 	}
@@ -119,6 +125,16 @@ func (c Config) Validate() []string {
 		warnings = append(warnings, "STRIPE_WEBHOOK_SECRET is not set — webhook signature verification will fail")
 	} else if !strings.HasPrefix(c.StripeWebhookSecret, "whsec_") {
 		warnings = append(warnings, "STRIPE_WEBHOOK_SECRET does not start with 'whsec_' — may be invalid")
+	}
+	// Test-mode keys are optional; only validate shape when provided. Absence
+	// just means test-mode API keys will fail to charge (explicit error at
+	// call site), which is the correct behavior for operators who haven't
+	// opted into test mode yet.
+	if c.StripeSecretKeyTest != "" && !strings.HasPrefix(c.StripeSecretKeyTest, "sk_test_") {
+		warnings = append(warnings, "STRIPE_SECRET_KEY_TEST does not start with 'sk_test_' — may be a live key in the wrong slot")
+	}
+	if c.StripeWebhookSecretTest != "" && !strings.HasPrefix(c.StripeWebhookSecretTest, "whsec_") {
+		warnings = append(warnings, "STRIPE_WEBHOOK_SECRET_TEST does not start with 'whsec_' — may be invalid")
 	}
 
 	encKey := strings.TrimSpace(os.Getenv("VELOX_ENCRYPTION_KEY"))

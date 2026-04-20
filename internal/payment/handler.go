@@ -18,6 +18,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 const (
@@ -26,12 +27,22 @@ const (
 )
 
 type Handler struct {
-	stripe        *Stripe
-	webhookSecret string // Stripe webhook signing secret
+	stripe            *Stripe
+	webhookSecretLive string // Stripe live-mode signing secret
+	webhookSecretTest string // Stripe test-mode signing secret (optional)
 }
 
-func NewHandler(stripe *Stripe, webhookSecret string) *Handler {
-	return &Handler{stripe: stripe, webhookSecret: webhookSecret}
+// NewHandler accepts both the live and test Stripe webhook signing secrets.
+// Dispatch between modes happens per-event at verification time: we accept
+// either secret, and the event's own livemode field decides which downstream
+// context to process it under. Passing "" for the test secret disables
+// test-mode webhook intake (live-only deployment).
+func NewHandler(stripe *Stripe, webhookSecretLive, webhookSecretTest string) *Handler {
+	return &Handler{
+		stripe:            stripe,
+		webhookSecretLive: webhookSecretLive,
+		webhookSecretTest: webhookSecretTest,
+	}
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -47,27 +58,49 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify Stripe signature
+	// Verify Stripe signature against both (live, test) secrets. The event
+	// carries its own livemode field, but we must NOT trust untrusted payload
+	// data — so we verify the signature first against whichever secret
+	// accepts it, then use the matched secret's mode as the authoritative
+	// classification. Falling back gracefully if the operator only has one
+	// secret configured mirrors NewStripeClients' tolerance.
 	sigHeader := r.Header.Get("Stripe-Signature")
-	if h.webhookSecret != "" {
-		if err := verifyStripeSignature(body, sigHeader, h.webhookSecret); err != nil {
-			slog.Warn("stripe webhook signature verification failed", "error", err)
-			respond.BadRequest(w, r, "invalid signature")
-			return
-		}
+	eventLivemode, ok := verifyWebhookDualSecret(body, sigHeader, h.webhookSecretLive, h.webhookSecretTest)
+	if !ok {
+		slog.Warn("stripe webhook signature verification failed",
+			"live_secret_set", h.webhookSecretLive != "",
+			"test_secret_set", h.webhookSecretTest != "",
+		)
+		respond.BadRequest(w, r, "invalid signature")
+		return
 	}
 
 	// Parse the event
 	var raw struct {
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		Created int64  `json:"created"`
-		Data    struct {
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		Created  int64  `json:"created"`
+		Livemode bool   `json:"livemode"`
+		Data     struct {
 			Object json.RawMessage `json:"object"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		respond.BadRequest(w, r, "invalid JSON")
+		return
+	}
+
+	// Signature-verified livemode takes precedence over the payload's self-
+	// declared livemode. If they disagree, the event is malformed or was
+	// signed with the wrong secret — reject to avoid processing a test event
+	// under live tenancy or vice versa.
+	if raw.Livemode != eventLivemode {
+		slog.Warn("stripe webhook livemode mismatch",
+			"signature_mode", eventLivemode,
+			"payload_mode", raw.Livemode,
+			"stripe_event_id", raw.ID,
+		)
+		respond.BadRequest(w, r, "livemode mismatch")
 		return
 	}
 
@@ -119,7 +152,12 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		OccurredAt:         time.Unix(raw.Created, 0).UTC(),
 	}
 
-	if err := h.stripe.HandleWebhook(r.Context(), tenantID, event); err != nil {
+	// Stage the ctx with the verified livemode before handing off to the
+	// adapter — the adapter's DB writes go through BeginTx which reads
+	// ctx livemode to set app.livemode on the session.
+	ctx := postgres.WithLivemode(r.Context(), eventLivemode)
+	event.Livemode = eventLivemode
+	if err := h.stripe.HandleWebhook(ctx, tenantID, event); err != nil {
 		slog.Error("webhook processing failed",
 			"stripe_event_id", raw.ID,
 			"event_type", raw.Type,
@@ -133,6 +171,31 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "processed"})
+}
+
+// verifyWebhookDualSecret tries to verify the signature against each provided
+// secret in turn. Returns the livemode implied by the matched secret (true
+// for live, false for test) and ok=true on any match. When both secrets are
+// empty we treat that as "unconfigured — accept anything" to preserve the
+// previous dev-mode behavior where the handler runs without a secret set.
+func verifyWebhookDualSecret(payload []byte, sigHeader, liveSecret, testSecret string) (bool, bool) {
+	if liveSecret == "" && testSecret == "" {
+		// No secrets configured — accept and default to live for downstream
+		// processing. This matches the pre-dual-key behavior and only fires
+		// in local dev without STRIPE_WEBHOOK_SECRET.
+		return true, true
+	}
+	if liveSecret != "" {
+		if err := verifyStripeSignature(payload, sigHeader, liveSecret); err == nil {
+			return true, true
+		}
+	}
+	if testSecret != "" {
+		if err := verifyStripeSignature(payload, sigHeader, testSecret); err == nil {
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // verifyStripeSignature verifies the Stripe-Signature header using HMAC-SHA256.

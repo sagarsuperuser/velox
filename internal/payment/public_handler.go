@@ -7,7 +7,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/checkout/session"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -15,21 +14,26 @@ import (
 
 // PublicPaymentHandler serves tokenized payment update endpoints.
 // These routes require NO auth — the token itself is the credential.
+//
+// Mode routing: these endpoints are anonymous by design, so there's no
+// API-key livemode on the incoming request. The token's underlying invoice
+// determines the mode — we resolve via the invoice row's livemode column
+// and stage the ctx before hitting Stripe.
 type PublicPaymentHandler struct {
 	tokens    *TokenService
 	db        *postgres.DB
-	apiKey    string
+	clients   *StripeClients
 	returnURL string
 }
 
-func NewPublicPaymentHandler(tokens *TokenService, db *postgres.DB, apiKey, returnURL string) *PublicPaymentHandler {
-	if tokens == nil || apiKey == "" {
+func NewPublicPaymentHandler(tokens *TokenService, db *postgres.DB, clients *StripeClients, returnURL string) *PublicPaymentHandler {
+	if tokens == nil || !clients.Has() {
 		return nil
 	}
 	return &PublicPaymentHandler{
 		tokens:    tokens,
 		db:        db,
-		apiKey:    apiKey,
+		clients:   clients,
 		returnURL: returnURL,
 	}
 }
@@ -111,7 +115,8 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Look up the customer's Stripe customer ID
+	// Look up the customer's Stripe customer ID + resolve invoice's livemode
+	// so the Stripe call routes to the matching mode's key.
 	var stripeCustomerID string
 	err = h.db.Pool.QueryRowContext(r.Context(), `
 		SELECT stripe_customer_id FROM customer_payment_setups
@@ -123,6 +128,17 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 		return
 	}
 
+	var invLivemode bool
+	_ = h.db.Pool.QueryRowContext(r.Context(),
+		`SELECT livemode FROM invoices WHERE id = $1`, token.InvoiceID).Scan(&invLivemode)
+	ctx := postgres.WithLivemode(r.Context(), invLivemode)
+	sc := h.clients.ForCtx(ctx)
+	if sc == nil {
+		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
+			"stripe not configured for this mode")
+		return
+	}
+
 	// Build return URL
 	returnURL := h.returnURL
 	if returnURL == "" {
@@ -130,7 +146,7 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	}
 
 	// Create a Checkout Session in setup mode for new payment method
-	sess, err := session.New(&stripe.CheckoutSessionParams{
+	sess, err := sc.CheckoutSessions.New(&stripe.CheckoutSessionParams{
 		Customer:           stripe.String(stripeCustomerID),
 		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),

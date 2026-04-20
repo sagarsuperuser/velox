@@ -147,9 +147,10 @@ func serve() {
 	}
 
 	db := postgres.NewDB(appPool, cfg.DB.QueryTimeout)
-	webhookSecret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")) // set by injectSecret above
+	webhookSecret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))           // set by injectSecret above
+	webhookSecretTest := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET_TEST")) // optional; test-mode webhooks only
 
-	server := api.NewServer(db, webhookSecret, nil)
+	server := api.NewServer(db, webhookSecret, webhookSecretTest, nil)
 
 	billingInterval := 1 * time.Hour
 	if cfg.Env == "local" {

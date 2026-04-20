@@ -6,9 +6,6 @@ import (
 	"fmt"
 
 	"github.com/stripe/stripe-go/v82"
-	stripecustomer "github.com/stripe/stripe-go/v82/customer"
-	"github.com/stripe/stripe-go/v82/paymentintent"
-	"github.com/stripe/stripe-go/v82/paymentmethod"
 
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -86,29 +83,42 @@ func classifyStripeError(err error) *PaymentError {
 	return pe
 }
 
-// LiveStripeClient wraps the Stripe SDK for real PaymentIntent operations.
+// ErrStripeNotConfigured is returned when a request routes to a Stripe mode
+// (live or test) for which no secret key is configured. Surfaces as an
+// explicit PaymentError rather than a nil deref so operators get an
+// actionable signal ("your test-mode key tried to charge, set STRIPE_SECRET_KEY_TEST").
+var ErrStripeNotConfigured = &PaymentError{Message: "stripe not configured for this mode"}
+
+// LiveStripeClient wraps the Stripe SDK for PaymentIntent operations. Despite
+// the "Live" in the name, it handles both live and test modes — it selects
+// the underlying per-mode client from clients.ForCtx(ctx) on each call.
 // Implements the StripeClient interface used by the payment adapter.
 type LiveStripeClient struct {
-	apiKey string
+	clients *StripeClients
 }
 
-// NewLiveStripeClient creates a client with the given Stripe secret key.
-// Returns nil if apiKey is empty (allows graceful degradation).
-func NewLiveStripeClient(apiKey string) *LiveStripeClient {
-	if apiKey == "" {
+// NewLiveStripeClient creates a client from the mode-aware StripeClients
+// bundle. Returns nil if clients is nil or has no configured modes.
+func NewLiveStripeClient(clients *StripeClients) *LiveStripeClient {
+	if !clients.Has() {
 		return nil
 	}
-	return &LiveStripeClient{apiKey: apiKey}
+	return &LiveStripeClient{clients: clients}
 }
 
-func (c *LiveStripeClient) CreatePaymentIntent(_ context.Context, params PaymentIntentParams) (PaymentIntentResult, error) {
+func (c *LiveStripeClient) CreatePaymentIntent(ctx context.Context, params PaymentIntentParams) (PaymentIntentResult, error) {
+	sc := c.clients.ForCtx(ctx)
+	if sc == nil {
+		return PaymentIntentResult{}, ErrStripeNotConfigured
+	}
+
 	metadata := make(map[string]string)
 	for k, v := range params.Metadata {
 		metadata[k] = v
 	}
 
 	// Use the customer's default payment method, fall back to most recent card
-	cus, err := stripecustomer.Get(params.CustomerID, nil)
+	cus, err := sc.Customers.Get(params.CustomerID, nil)
 	var defaultPM string
 	if err == nil && cus.InvoiceSettings != nil && cus.InvoiceSettings.DefaultPaymentMethod != nil {
 		defaultPM = cus.InvoiceSettings.DefaultPaymentMethod.ID
@@ -116,7 +126,7 @@ func (c *LiveStripeClient) CreatePaymentIntent(_ context.Context, params Payment
 	if defaultPM == "" {
 		// Fall back to most recently created card
 		var latest *stripe.PaymentMethod
-		pmIter := paymentmethod.List(&stripe.PaymentMethodListParams{
+		pmIter := sc.PaymentMethods.List(&stripe.PaymentMethodListParams{
 			Customer: stripe.String(params.CustomerID),
 			Type:     stripe.String("card"),
 		})
@@ -135,7 +145,7 @@ func (c *LiveStripeClient) CreatePaymentIntent(_ context.Context, params Payment
 		return PaymentIntentResult{}, &PaymentError{Message: "customer has no payment method on file"}
 	}
 
-	pi, err := paymentintent.New(&stripe.PaymentIntentParams{
+	pi, err := sc.PaymentIntents.New(&stripe.PaymentIntentParams{
 		Amount:        stripe.Int64(params.AmountCents),
 		Currency:      stripe.String(params.Currency),
 		Customer:      stripe.String(params.CustomerID),
@@ -159,10 +169,15 @@ func (c *LiveStripeClient) CreatePaymentIntent(_ context.Context, params Payment
 	}, nil
 }
 
-func (c *LiveStripeClient) FetchCardDetails(_ context.Context, stripeCustomerID string) (CardDetails, error) {
+func (c *LiveStripeClient) FetchCardDetails(ctx context.Context, stripeCustomerID string) (CardDetails, error) {
+	sc := c.clients.ForCtx(ctx)
+	if sc == nil {
+		return CardDetails{}, ErrStripeNotConfigured
+	}
+
 	// Get the most recently created card
 	var latest *stripe.PaymentMethod
-	pmIter := paymentmethod.List(&stripe.PaymentMethodListParams{
+	pmIter := sc.PaymentMethods.List(&stripe.PaymentMethodListParams{
 		Customer: stripe.String(stripeCustomerID),
 		Type:     stripe.String("card"),
 	})
@@ -177,7 +192,7 @@ func (c *LiveStripeClient) FetchCardDetails(_ context.Context, stripeCustomerID 
 	}
 
 	// Set this card as the customer's default payment method
-	_, _ = stripecustomer.Update(stripeCustomerID, &stripe.CustomerParams{
+	_, _ = sc.Customers.Update(stripeCustomerID, &stripe.CustomerParams{
 		InvoiceSettings: &stripe.CustomerInvoiceSettingsParams{
 			DefaultPaymentMethod: stripe.String(latest.ID),
 		},
@@ -192,8 +207,12 @@ func (c *LiveStripeClient) FetchCardDetails(_ context.Context, stripeCustomerID 
 	}, nil
 }
 
-func (c *LiveStripeClient) CancelPaymentIntent(_ context.Context, paymentIntentID string) error {
-	_, err := paymentintent.Cancel(paymentIntentID, nil)
+func (c *LiveStripeClient) CancelPaymentIntent(ctx context.Context, paymentIntentID string) error {
+	sc := c.clients.ForCtx(ctx)
+	if sc == nil {
+		return ErrStripeNotConfigured
+	}
+	_, err := sc.PaymentIntents.Cancel(paymentIntentID, nil)
 	if err != nil {
 		return fmt.Errorf("stripe cancel: %s", stripeErrorMessage(err))
 	}
@@ -203,8 +222,12 @@ func (c *LiveStripeClient) CancelPaymentIntent(_ context.Context, paymentIntentI
 // GetPaymentIntent fetches the current state of a PaymentIntent. Used by the
 // reconciler to resolve PaymentUnknown invoices — Stripe is the source of
 // truth for whether a charge actually succeeded.
-func (c *LiveStripeClient) GetPaymentIntent(_ context.Context, paymentIntentID string) (PaymentIntentResult, error) {
-	pi, err := paymentintent.Get(paymentIntentID, nil)
+func (c *LiveStripeClient) GetPaymentIntent(ctx context.Context, paymentIntentID string) (PaymentIntentResult, error) {
+	sc := c.clients.ForCtx(ctx)
+	if sc == nil {
+		return PaymentIntentResult{}, ErrStripeNotConfigured
+	}
+	pi, err := sc.PaymentIntents.Get(paymentIntentID, nil)
 	if err != nil {
 		return PaymentIntentResult{}, classifyStripeError(err)
 	}

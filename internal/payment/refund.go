@@ -5,23 +5,27 @@ import (
 	"fmt"
 
 	"github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/refund"
 )
 
 // StripeRefunder processes refunds via the Stripe API.
+// Mode-aware: selects live/test client per ctx livemode.
 type StripeRefunder struct {
-	apiKey string
+	clients *StripeClients
 }
 
-func NewStripeRefunder(apiKey string) *StripeRefunder {
-	if apiKey == "" {
+func NewStripeRefunder(clients *StripeClients) *StripeRefunder {
+	if !clients.Has() {
 		return nil
 	}
-	return &StripeRefunder{apiKey: apiKey}
+	return &StripeRefunder{clients: clients}
 }
 
-func (r *StripeRefunder) CreateRefund(_ context.Context, paymentIntentID string, amountCents int64) (string, error) {
-	ref, err := refund.New(&stripe.RefundParams{
+func (r *StripeRefunder) CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64) (string, error) {
+	sc := r.clients.ForCtx(ctx)
+	if sc == nil {
+		return "", ErrStripeNotConfigured
+	}
+	ref, err := sc.Refunds.New(&stripe.RefundParams{
 		PaymentIntent: stripe.String(paymentIntentID),
 		Amount:        stripe.Int64(amountCents),
 	})
