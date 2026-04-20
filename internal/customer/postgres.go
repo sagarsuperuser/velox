@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -13,8 +14,9 @@ import (
 )
 
 type PostgresStore struct {
-	db  *postgres.DB
-	enc *crypto.Encryptor
+	db      *postgres.DB
+	enc     *crypto.Encryptor
+	blinder *crypto.Blinder
 }
 
 func NewPostgresStore(db *postgres.DB) *PostgresStore {
@@ -27,6 +29,24 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 // decrypted after read.
 func (s *PostgresStore) SetEncryptor(enc *crypto.Encryptor) {
 	s.enc = enc
+}
+
+// SetBlinder configures the HMAC blinder used to populate customers.email_bidx.
+// Required for the customer-initiated magic-link flow, optional otherwise —
+// when unset, email_bidx is left NULL and FindByEmailBlindIndex returns no
+// matches.
+func (s *PostgresStore) SetBlinder(b *crypto.Blinder) {
+	s.blinder = b
+}
+
+// emailBlindIndex normalises the email (trim + lowercase) and returns its
+// blind-index representation. Empty string when the blinder isn't configured
+// or the email is empty — both safe-by-default for INSERT/UPDATE.
+func (s *PostgresStore) emailBlindIndex(email string) string {
+	if s.blinder == nil {
+		return ""
+	}
+	return s.blinder.Blind(strings.ToLower(strings.TrimSpace(email)))
 }
 
 // encryptCustomer encrypts PII fields on a Customer before writing to the DB.
@@ -117,11 +137,11 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Cu
 	now := time.Now().UTC()
 
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO customers (id, tenant_id, external_id, display_name, email, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+		INSERT INTO customers (id, tenant_id, external_id, display_name, email, email_bidx, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), $7, $8, $8)
 		RETURNING id, tenant_id, external_id, display_name, email, status, created_at, updated_at
 	`, id, tenantID, c.ExternalID, enc.DisplayName, enc.Email,
-		domain.CustomerStatusActive, now,
+		s.emailBlindIndex(c.Email), domain.CustomerStatusActive, now,
 	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.CreatedAt, &c.UpdatedAt)
 
 	if err != nil {
@@ -186,6 +206,66 @@ func (s *PostgresStore) GetByExternalID(ctx context.Context, tenantID, externalI
 	return s.decryptCustomer(c)
 }
 
+// EmailMatch is the narrow result row from FindByEmailBlindIndex — enough
+// identity to mint a magic link but no PII. Returned cross-tenant, so the
+// caller (the public magic-link handler) iterates one match per (tenant,
+// customer) and never leaks details across boundaries.
+type EmailMatch struct {
+	TenantID   string
+	CustomerID string
+	Livemode   bool
+	Status     string
+}
+
+// FindByEmailBlindIndex resolves the email → customer(s) lookup the public
+// magic-link endpoint needs. Runs under TxBypass because the caller is
+// unauthenticated until this returns — the blind index itself is the only
+// handle we have, and an attacker who can't compute HMAC(key, email)
+// can't enumerate. Callers must pre-compute the blind index via their own
+// crypto.Blinder instance so this method stays a pure DB read.
+//
+// Returns at most `limit` matches (sane ceiling so a colliding index can
+// never fan out into thousands of emails). Empty blind → no matches,
+// regardless of DB state, so misconfigured blinders silently fail closed.
+func (s *PostgresStore) FindByEmailBlindIndex(ctx context.Context, blind string, limit int) ([]EmailMatch, error) {
+	if blind == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT tenant_id, id, livemode, status
+		FROM customers
+		WHERE email_bidx = $1 AND status = 'active'
+		ORDER BY tenant_id, id
+		LIMIT $2
+	`, blind, limit)
+	if err != nil {
+		return nil, fmt.Errorf("select: %w", err)
+	}
+	defer rows.Close()
+
+	var out []EmailMatch
+	for rows.Next() {
+		var m EmailMatch
+		if err := rows.Scan(&m.TenantID, &m.CustomerID, &m.Livemode, &m.Status); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, tx.Commit()
+}
+
 func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.Customer, int, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, filter.TenantID)
 	if err != nil {
@@ -245,10 +325,10 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Cu
 
 	now := time.Now().UTC()
 	err = tx.QueryRowContext(ctx, `
-		UPDATE customers SET display_name = $1, email = $2, status = $3, updated_at = $4
-		WHERE id = $5
+		UPDATE customers SET display_name = $1, email = $2, email_bidx = NULLIF($3,''), status = $4, updated_at = $5
+		WHERE id = $6
 		RETURNING id, tenant_id, external_id, display_name, email, status, created_at, updated_at
-	`, enc.DisplayName, enc.Email, c.Status, now, c.ID,
+	`, enc.DisplayName, enc.Email, s.emailBlindIndex(c.Email), c.Status, now, c.ID,
 	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {

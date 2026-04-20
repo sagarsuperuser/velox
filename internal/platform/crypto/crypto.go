@@ -3,7 +3,9 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -119,4 +121,54 @@ func (e *Encryptor) Decrypt(value string) (string, error) {
 	}
 
 	return string(plaintext), nil
+}
+
+// Blinder computes a deterministic, keyed hash of a value so encrypted-at-rest
+// fields can still be looked up by exact equality. The HMAC key is distinct
+// from the AES encryption key on purpose — an attacker who compromises one
+// should not automatically gain the ability to reverse the other.
+//
+// Suitable for normalised, relatively low-entropy inputs (email addresses,
+// phone numbers). NOT suitable for password-like fields — use a real password
+// hash there. A nil Blinder passes values through unchanged so callers can
+// stay open to dev environments without the key configured.
+type Blinder struct {
+	key []byte // nil = noop
+}
+
+// NewBlinder creates a Blinder from a 64-character hex-encoded key (32 bytes).
+// Distinct from the encryption key so the two surfaces rotate independently.
+func NewBlinder(hexKey string) (*Blinder, error) {
+	if len(hexKey) != 64 {
+		return nil, fmt.Errorf("blind-index key must be exactly 64 hex characters (32 bytes), got %d", len(hexKey))
+	}
+	key, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return nil, fmt.Errorf("blind-index key is not valid hex: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("decoded blind-index key must be 32 bytes, got %d", len(key))
+	}
+	return &Blinder{key: key}, nil
+}
+
+// NewNoopBlinder returns a Blinder that returns the empty string for any
+// input. Used when VELOX_EMAIL_BIDX_KEY is not configured — the column gets
+// NULL/empty and the magic-link lookup path silently returns "no match".
+func NewNoopBlinder() *Blinder { return &Blinder{key: nil} }
+
+// IsEnabled reports whether the blinder has a key configured. Callers use
+// this to decide whether to run the magic-link code path at all.
+func (b *Blinder) IsEnabled() bool { return b != nil && b.key != nil }
+
+// Blind returns hex-encoded HMAC-SHA256(key, value). Empty inputs and an
+// unconfigured blinder both return "" — a natural "never matches" sentinel
+// that's safe to write into the blind-index column.
+func (b *Blinder) Blind(value string) string {
+	if !b.IsEnabled() || value == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, b.key)
+	mac.Write([]byte(value))
+	return hex.EncodeToString(mac.Sum(nil))
 }
