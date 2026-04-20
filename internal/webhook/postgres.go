@@ -68,9 +68,9 @@ func (s *PostgresStore) CreateEndpoint(ctx context.Context, tenantID string, ep 
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO webhook_endpoints (id, tenant_id, url, description, secret_encrypted, secret_last4, events, active, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
-		RETURNING id, tenant_id, url, COALESCE(description,''), events, active, created_at, updated_at
+		RETURNING id, tenant_id, livemode, url, COALESCE(description,''), events, active, created_at, updated_at
 	`, id, tenantID, ep.URL, postgres.NullableString(ep.Description), secretEncrypted, secretLast4, eventsJSON, ep.Active, now,
-	).Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
+	).Scan(&ep.ID, &ep.TenantID, &ep.Livemode, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
 	if err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
@@ -94,9 +94,9 @@ func (s *PostgresStore) GetEndpoint(ctx context.Context, tenantID, id string) (d
 	var eventsJSON []byte
 	var secretEncrypted string
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, url, COALESCE(description,''), secret_encrypted, secret_last4, events, active, created_at, updated_at
+		SELECT id, tenant_id, livemode, url, COALESCE(description,''), secret_encrypted, secret_last4, events, active, created_at, updated_at
 		FROM webhook_endpoints WHERE id = $1
-	`, id).Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &secretEncrypted, &ep.SecretLast4, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
+	`, id).Scan(&ep.ID, &ep.TenantID, &ep.Livemode, &ep.URL, &ep.Description, &secretEncrypted, &ep.SecretLast4, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return domain.WebhookEndpoint{}, errs.ErrNotFound
 	}
@@ -118,7 +118,7 @@ func (s *PostgresStore) ListEndpoints(ctx context.Context, tenantID string) ([]d
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, url, COALESCE(description,''), secret_encrypted, secret_last4, events, active, created_at, updated_at
+		SELECT id, tenant_id, livemode, url, COALESCE(description,''), secret_encrypted, secret_last4, events, active, created_at, updated_at
 		FROM webhook_endpoints WHERE active = true ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -131,7 +131,7 @@ func (s *PostgresStore) ListEndpoints(ctx context.Context, tenantID string) ([]d
 		var ep domain.WebhookEndpoint
 		var eventsJSON []byte
 		var secretEncrypted string
-		if err := rows.Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &secretEncrypted, &ep.SecretLast4, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
+		if err := rows.Scan(&ep.ID, &ep.TenantID, &ep.Livemode, &ep.URL, &ep.Description, &secretEncrypted, &ep.SecretLast4, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if ep.Secret, err = s.enc.Decrypt(secretEncrypted); err != nil {
@@ -179,8 +179,8 @@ func (s *PostgresStore) UpdateEndpointSecret(ctx context.Context, tenantID, id, 
 	err = tx.QueryRowContext(ctx, `
 		UPDATE webhook_endpoints SET secret_encrypted = $1, secret_last4 = $2, updated_at = NOW()
 		WHERE id = $3
-		RETURNING id, tenant_id, url, COALESCE(description,''), events, active, created_at, updated_at
-	`, secretEncrypted, secretLast4, id).Scan(&ep.ID, &ep.TenantID, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
+		RETURNING id, tenant_id, livemode, url, COALESCE(description,''), events, active, created_at, updated_at
+	`, secretEncrypted, secretLast4, id).Scan(&ep.ID, &ep.TenantID, &ep.Livemode, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return domain.WebhookEndpoint{}, errs.ErrNotFound
 	}
@@ -211,10 +211,13 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, tenantID string, event 
 	event.TenantID = tenantID
 	event.CreatedAt = now
 
-	_, err = tx.ExecContext(ctx, `
+	// The 0021 trigger sets livemode from app.livemode — read it back so
+	// callers (dispatcher) can pass the same mode through when delivering.
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO webhook_events (id, tenant_id, event_type, payload, created_at)
 		VALUES ($1,$2,$3,$4,$5)
-	`, id, tenantID, event.EventType, payloadJSON, now)
+		RETURNING livemode
+	`, id, tenantID, event.EventType, payloadJSON, now).Scan(&event.Livemode)
 	if err != nil {
 		return domain.WebhookEvent{}, err
 	}
@@ -236,7 +239,7 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID string, limit i
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, event_type, payload, created_at
+		SELECT id, tenant_id, livemode, event_type, payload, created_at
 		FROM webhook_events ORDER BY created_at DESC LIMIT $1
 	`, limit)
 	if err != nil {
@@ -248,7 +251,7 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID string, limit i
 	for rows.Next() {
 		var e domain.WebhookEvent
 		var payloadJSON []byte
-		if err := rows.Scan(&e.ID, &e.TenantID, &e.EventType, &payloadJSON, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.Livemode, &e.EventType, &payloadJSON, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(payloadJSON, &e.Payload)
@@ -271,11 +274,12 @@ func (s *PostgresStore) CreateDelivery(ctx context.Context, tenantID string, d d
 	d.TenantID = tenantID
 	d.CreatedAt = now
 
-	_, err = tx.ExecContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO webhook_deliveries (id, tenant_id, webhook_endpoint_id, webhook_event_id,
 			status, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6)
-	`, id, tenantID, d.WebhookEndpointID, d.WebhookEventID, d.Status, now)
+		RETURNING livemode
+	`, id, tenantID, d.WebhookEndpointID, d.WebhookEventID, d.Status, now).Scan(&d.Livemode)
 	if err != nil {
 		return domain.WebhookDelivery{}, err
 	}
@@ -321,7 +325,7 @@ func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, webhook_endpoint_id, webhook_event_id, status,
+		SELECT id, tenant_id, livemode, webhook_endpoint_id, webhook_event_id, status,
 			COALESCE(http_status_code, 0), COALESCE(response_body,''), COALESCE(error_message,''),
 			attempt_count, next_retry_at, created_at, completed_at
 		FROM webhook_deliveries
@@ -337,7 +341,7 @@ func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([
 	var deliveries []domain.WebhookDelivery
 	for rows.Next() {
 		var d domain.WebhookDelivery
-		if err := rows.Scan(&d.ID, &d.TenantID, &d.WebhookEndpointID, &d.WebhookEventID,
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.Livemode, &d.WebhookEndpointID, &d.WebhookEventID,
 			&d.Status, &d.HTTPStatusCode, &d.ResponseBody, &d.ErrorMessage,
 			&d.AttemptCount, &d.NextRetryAt, &d.CreatedAt, &d.CompletedAt); err != nil {
 			return nil, err
@@ -389,7 +393,7 @@ func (s *PostgresStore) ListDeliveries(ctx context.Context, tenantID, eventID st
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, webhook_endpoint_id, webhook_event_id, status,
+		SELECT id, tenant_id, livemode, webhook_endpoint_id, webhook_event_id, status,
 			COALESCE(http_status_code, 0), COALESCE(response_body,''), COALESCE(error_message,''),
 			attempt_count, next_retry_at, created_at, completed_at
 		FROM webhook_deliveries WHERE webhook_event_id = $1
@@ -403,7 +407,7 @@ func (s *PostgresStore) ListDeliveries(ctx context.Context, tenantID, eventID st
 	var deliveries []domain.WebhookDelivery
 	for rows.Next() {
 		var d domain.WebhookDelivery
-		if err := rows.Scan(&d.ID, &d.TenantID, &d.WebhookEndpointID, &d.WebhookEventID,
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.Livemode, &d.WebhookEndpointID, &d.WebhookEventID,
 			&d.Status, &d.HTTPStatusCode, &d.ResponseBody, &d.ErrorMessage,
 			&d.AttemptCount, &d.NextRetryAt, &d.CreatedAt, &d.CompletedAt); err != nil {
 			return nil, err
