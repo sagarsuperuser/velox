@@ -324,11 +324,17 @@ On `Issue`, call `invoice.ApplyCreditNote` (method exists). Clamp at invoice tot
 
 **Resolution (pre-existing, verified 2026-04-19):** `e.pricing.GetOverride(ctx, tenantID, customerID, ratingRuleVersionID)` is called at `billing/engine.go:544` (finalize path) and `engine.go:94` (preview path) before `ComputeAmountCents`. When an active override is found, `override.ToRatingRule()` replaces the default rule; otherwise the default is used. `Pricing` interface defined at `engine.go:99` requires the `GetOverride` method.
 
-### [FEAT-5] Multi-item subscriptions — L (Phase 3)
+### [FEAT-5] Multi-item subscriptions — L — ✅ DONE
 
 Schema: `subscription_items(id, subscription_id, plan_id, quantity, price_override_id)`. Subscription PlanID deprecated → set of items. Rating/billing iterates. Proration per item. Plan change = item change. Portal updated.
 
-**Deferred:** 3-day initiative; not a Phase 2 blocker.
+**✅ Resolution (2026-04-20):**
+
+- **P1** — Migration `0026_subscription_items` creates `subscription_items(id, tenant_id, subscription_id, plan_id, quantity, pending_plan_id, pending_plan_effective_at, plan_changed_at, created_at, updated_at)` with RLS + per-subscription partial-unique on `(subscription_id, plan_id)` (FK to plans RESTRICT so plans can't vanish under an item). Existing `subscriptions.plan_id` backfilled into a single item per subscription, then the column dropped. `domain.SubscriptionItem` + `ItemChangeType` enum (`plan`/`quantity`/`add`/`remove`) introduced.
+- **P2** — `subscription.Store` gains `ListItems`/`GetItem`/`AddItem`/`UpdateItemQuantity`/`SetItemPendingPlan`/`ApplyItemPlanImmediately`/`RemoveItem`/`CancelPendingItemChange`. `Service.CreateSubscription` now requires `items[]` (plan_id + qty each, ≥1 item); old `plan_id` top-level input removed. `Service.UpdateItem` enforces the XOR between `quantity` and `{new_plan_id, immediate}` with a backend-side no-op qty rejection. Per-item handlers wired at `POST/PATCH/DELETE /subscriptions/{id}/items[/{itemID}]` + `DELETE .../pending-change`.
+- **P3** — `billing.Engine` iterates `sub.Items` when rating a period, emitting one line per item (plan × qty). Mid-cycle item mutations drive proration through a unified `itemProrationSpec` (4 change types) — plan swap (`(newAmount - oldAmount) × factor`), qty change (`delta × unitPrice × factor`), add (`+newCost × factor`), remove (`-oldCost × factor`). Migration `0027_source_change_type` adds `invoices.source_change_type` + `credit_ledger.source_change_type` as part of the proration dedup key `(tenant, subscription, item, change_type, change_at)` — same item changing twice in one cycle produces two distinct artifacts, same change retried converges on one. Coupon plan-eligibility walks the post-change items slice.
+- **P4** — `subscription/handler_test.go` now covers: add-item prorates as invoice, qty increase prorates as invoice, qty decrease prorates as credit, remove prorates as credit, qty no-op rejected (422). Pre-existing plan-swap tests continue to pass. Integration: `TestMultiItemSubscription_E2E` exercises the full lifecycle against real Postgres.
+- **P5** — `web-v2/src/lib/api.ts` replaces `createSubscription({plan_id})` with `createSubscription({items: [{plan_id, quantity}]})`; adds `addSubscriptionItem`, `updateSubscriptionItem` (quantity OR new_plan_id+immediate, XOR matches backend), `removeSubscriptionItem`, `cancelPendingItemChange`; `api.changePlan` removed (dead). Types: `SubscriptionItem`, `ProrationDetail`, `ItemChangeResult`; `Subscription.plan_id` → `Subscription.items[]`. `Subscriptions.tsx` create form rewritten with a `useFieldArray`-driven items array + "Add Item"/"Remove" rows + duplicate-plan validation; list column shows "N items" or item-name for singletons. `PlanDetail.tsx` + `CustomerDetail.tsx` migrated off `plan_id`. `SubscriptionDetail.tsx` adds an Items card (table: Plan, Quantity, Pending Change, Actions) with inline `Add Item`/`Change Qty`/`Change Plan`/`Remove` buttons per item and inline `Cancel Pending Change`; the old single `ChangePlanDialog` is gone. All buttons visible (no hover-to-reveal) per UI standing guidance.
 
 ### [FEAT-6] Coupon duration + stacking — M — ✅ DONE
 
@@ -508,7 +514,7 @@ RES-4 (inbound dedup) independent
 
 FEAT-1 ← COR-1/2 (amounts finalized)
 FEAT-6 ← COR-1
-FEAT-5 is Phase 3
+FEAT-5 ✅ (shipped — see resolution)
 
 UI-1..5 independent of backend; can run in parallel with Wave 2/3
 UI-6 ← UI-1, UI-2 (uses primitives those waves create)
@@ -548,8 +554,7 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 28. **RES-2** — scheduler advisory lock ✅
 29. **RES-6** — email outbox ✅
 30. ~~**SEC-2 Phase B/C**~~ — collapsed into single cutover (see item 15)
-31. **FEAT-2 ✅, FEAT-3 ✅, FEAT-4 ✅, FEAT-6 ✅, FEAT-7 ✅, FEAT-8 ✅** — feature completeness
-32. **FEAT-5** — multi-item subs (Phase 3)
+31. **FEAT-2 ✅, FEAT-3 ✅, FEAT-4 ✅, FEAT-5 ✅, FEAT-6 ✅, FEAT-7 ✅, FEAT-8 ✅** — feature completeness
 
 **UI parallelization note:** UI-1..5 are independent of backend correctness work. A frontend-focused contributor can ship UI-1 → UI-2 → UI-3 → UI-5 → UI-6 in a single thread while backend commits land. UI-4 has a soft dependency on the backend error-envelope audit (small item) — slot it after COR-2 so any API fixes can be bundled.
 
@@ -578,11 +583,11 @@ UI-6 ← UI-1, UI-2 (uses primitives those waves create)
 | 1 | 1-2d | SEC-1 (M), SEC-2 (L, staged) |
 | 2 | 3-4d | 6 correctness items |
 | 3 | 5-7d | 8 resilience items, incl. L outbox |
-| 4 excl. FEAT-5 | 3d | 7 features |
-| 4 FEAT-5 | 3d | Multi-item subs (Phase 3) |
+| 4 | 3d | 7 features |
+| 4 FEAT-5 | 3d | Multi-item subs ✅ |
 | 5 | 4-5d | 6 UI/UX P0s (design-partner bar) |
 
-**Total (Phase 2 = Waves 0-5 excl. FEAT-5): ~3 weeks of focused work.** UI wave can run in parallel with Waves 2/3 by a second contributor — elapsed-time closer to 2 weeks with two threads.
+**Total (Phase 2 = Waves 0-5 incl. FEAT-5): ~3 weeks of focused work.** UI wave can run in parallel with Waves 2/3 by a second contributor — elapsed-time closer to 2 weeks with two threads.
 
 ## Deferred UI items (Phase 3)
 

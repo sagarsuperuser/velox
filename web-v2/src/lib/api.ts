@@ -95,7 +95,7 @@ export const api = {
   // Subscriptions
   listSubscriptions: (params?: string) =>
     request<{ data: Subscription[]; total: number }>('GET', `/subscriptions${params ? '?' + params : ''}`),
-  createSubscription: (data: { code: string; display_name: string; customer_id: string; plan_id: string; start_now?: boolean; billing_time?: string; trial_days?: number; usage_cap_units?: number | null; overage_action?: string }) =>
+  createSubscription: (data: { code: string; display_name: string; customer_id: string; items: { plan_id: string; quantity?: number }[]; start_now?: boolean; billing_time?: string; trial_days?: number; usage_cap_units?: number | null; overage_action?: string }) =>
     request<Subscription>('POST', '/subscriptions', data),
 
   // Pricing
@@ -196,8 +196,16 @@ export const api = {
     request<Subscription>('POST', `/subscriptions/${id}/resume`),
   cancelSubscription: (id: string) =>
     request<Subscription>('POST', `/subscriptions/${id}/cancel`),
-  changePlan: (id: string, data: { new_plan_id: string; immediate?: boolean }) =>
-    request<{ subscription: Subscription; proration_factor?: number; proration?: { type: string; amount_cents: number; invoice_id?: string } }>('POST', `/subscriptions/${id}/change-plan`, data),
+  // Item CRUD. PATCH body is either `{quantity}` or `{new_plan_id, immediate}`,
+  // never both — mirrors the backend's UpdateItemInput guard.
+  addSubscriptionItem: (id: string, data: { plan_id: string; quantity?: number }) =>
+    request<SubscriptionItem>('POST', `/subscriptions/${id}/items`, data),
+  updateSubscriptionItem: (id: string, itemID: string, data: { quantity?: number; new_plan_id?: string; immediate?: boolean }) =>
+    request<ItemChangeResult>('PATCH', `/subscriptions/${id}/items/${itemID}`, data),
+  removeSubscriptionItem: (id: string, itemID: string) =>
+    request<{ status: string }>('DELETE', `/subscriptions/${id}/items/${itemID}`),
+  cancelPendingItemChange: (id: string, itemID: string) =>
+    request<SubscriptionItem>('DELETE', `/subscriptions/${id}/items/${itemID}/pending-change`),
   invoicePreview: (subscriptionId: string) =>
     request<InvoicePreview>('GET', `/billing/preview/${subscriptionId}`),
 
@@ -280,12 +288,44 @@ export interface Customer {
   created_at: string
 }
 
+export interface SubscriptionItem {
+  id: string
+  subscription_id: string
+  plan_id: string
+  quantity: number
+  pending_plan_id?: string
+  pending_plan_effective_at?: string
+  // plan_changed_at stamps the last immediate plan swap on this item. Feeds
+  // the per-item proration dedup key on the backend.
+  plan_changed_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ProrationDetail {
+  old_plan_id: string
+  new_plan_id: string
+  proration_factor: number
+  amount_cents: number
+  type: 'invoice' | 'credit'
+  invoice_id?: string
+}
+
+export interface ItemChangeResult {
+  item: SubscriptionItem
+  effective_at: string
+  proration?: ProrationDetail
+}
+
 export interface Subscription {
   id: string
   code: string
   display_name: string
   customer_id: string
-  plan_id: string
+  // items is the authoritative list of priced lines on the subscription.
+  // Present on all list/get responses from FEAT-5 onward. Pre-FEAT-5 code
+  // paths may omit it, so treat as optional and fall back gracefully.
+  items?: SubscriptionItem[]
   status: string
   billing_time: string
   current_billing_period_start?: string

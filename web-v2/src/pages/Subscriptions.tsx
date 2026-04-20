@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useForm } from 'react-hook-form'
+import { useForm, useFieldArray } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
@@ -57,15 +57,26 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Repeat } from 'lucide-react'
+import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Repeat, Trash2 } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 
+// Items are modeled as an array so the form can bind a dynamic number of
+// priced lines. Quantity is a string in form state to keep the input
+// controlled cleanly across empty/partial entry; it's coerced to a number at
+// submit time. We enforce min-1, positive qty, and no-duplicate-plan on the
+// schema to surface the same constraints the backend enforces at API level.
 const createSubSchema = z.object({
   code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
   display_name: z.string().min(1, 'Display name is required'),
   customer_id: z.string().min(1, 'Customer is required'),
-  plan_id: z.string().min(1, 'Plan is required'),
+  items: z.array(z.object({
+    plan_id: z.string().min(1, 'Plan is required'),
+    quantity: z.string().refine(v => v === '' || (Number.isInteger(Number(v)) && Number(v) >= 1), 'Quantity must be a positive integer'),
+  })).min(1, 'At least one item is required').refine(
+    (items) => new Set(items.map(i => i.plan_id)).size === items.length,
+    { message: 'Each plan can only appear once per subscription' },
+  ),
   start_now: z.boolean(),
   billing_time: z.string(),
   trial_days: z.string(),
@@ -118,11 +129,14 @@ export default function SubscriptionsPage() {
   const form = useForm<CreateSubData>({
     resolver: zodResolver(createSubSchema),
     defaultValues: {
-      code: '', display_name: '', customer_id: '', plan_id: '', start_now: true,
+      code: '', display_name: '', customer_id: '',
+      items: [{ plan_id: '', quantity: '1' }],
+      start_now: true,
       billing_time: 'calendar', trial_days: '',
       usage_cap_units: '', overage_action: 'charge',
     },
   })
+  const itemsArray = useFieldArray({ control: form.control, name: 'items' })
 
   const queryParams = useMemo(() => {
     const params = new URLSearchParams()
@@ -163,7 +177,10 @@ export default function SubscriptionsPage() {
       code: data.code,
       display_name: data.display_name,
       customer_id: data.customer_id,
-      plan_id: data.plan_id,
+      items: data.items.map(it => ({
+        plan_id: it.plan_id,
+        ...(it.quantity ? { quantity: parseInt(it.quantity) } : {}),
+      })),
       start_now: data.start_now,
       billing_time: data.billing_time,
       ...(data.trial_days ? { trial_days: parseInt(data.trial_days) } : {}),
@@ -177,7 +194,7 @@ export default function SubscriptionsPage() {
       form.reset()
     },
     onError: (err) => {
-      applyApiError(form, err, ['code', 'display_name', 'customer_id', 'plan_id', 'billing_time', 'trial_days', 'usage_cap_units', 'overage_action'])
+      applyApiError(form, err, ['code', 'display_name', 'customer_id', 'items', 'billing_time', 'trial_days', 'usage_cap_units', 'overage_action'])
     },
   })
 
@@ -366,7 +383,19 @@ export default function SubscriptionsPage() {
                         </div>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {plans.find(p => p.id === sub.plan_id)?.name || '\u2014'}
+                        {(() => {
+                          const items = sub.items ?? []
+                          if (items.length === 0) return '\u2014'
+                          if (items.length === 1) {
+                            const name = plans.find(p => p.id === items[0].plan_id)?.name
+                            const qty = items[0].quantity
+                            return qty > 1 ? `${name || '\u2014'} × ${qty}` : (name || '\u2014')
+                          }
+                          const title = items
+                            .map(it => `${plans.find(p => p.id === it.plan_id)?.name || it.plan_id}${it.quantity > 1 ? ` × ${it.quantity}` : ''}`)
+                            .join(', ')
+                          return <span title={title}>{items.length} items</span>
+                        })()}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground font-mono truncate max-w-[120px]" title={sub.code}>
                         {sub.code}
@@ -482,51 +511,105 @@ export default function SubscriptionsPage() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="customer_id"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Customer</FormLabel>
-                      <FormControl>
-                        <select
-                          value={field.value}
-                          onChange={field.onChange}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        >
-                          <option value="">Select customer...</option>
-                          {customers.map(c => (
-                            <option key={c.id} value={c.id}>{c.display_name}</option>
-                          ))}
-                        </select>
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="plan_id"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Plan</FormLabel>
-                      <FormControl>
-                        <select
-                          value={field.value}
-                          onChange={field.onChange}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        >
-                          <option value="">Select plan...</option>
-                          {plans.map(p => (
-                            <option key={p.id} value={p.id}>{p.name}</option>
-                          ))}
-                        </select>
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+              <FormField
+                control={form.control}
+                name="customer_id"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Customer</FormLabel>
+                    <FormControl>
+                      <select
+                        value={field.value}
+                        onChange={field.onChange}
+                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      >
+                        <option value="">Select customer...</option>
+                        {customers.map(c => (
+                          <option key={c.id} value={c.id}>{c.display_name}</option>
+                        ))}
+                      </select>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {/* Items — dynamic array. Each row is a plan+qty pair. Backend
+                  rejects duplicate plan_ids so we surface the same in zod. */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <FormLabel>Plans</FormLabel>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => itemsArray.append({ plan_id: '', quantity: '1' })}
+                  >
+                    <Plus size={14} className="mr-1.5" />
+                    Add Item
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {itemsArray.fields.map((field, idx) => (
+                    <div key={field.id} className="flex items-start gap-2">
+                      <FormField
+                        control={form.control}
+                        name={`items.${idx}.plan_id`}
+                        render={({ field }) => (
+                          <FormItem className="flex-1">
+                            <FormControl>
+                              <select
+                                value={field.value}
+                                onChange={field.onChange}
+                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                              >
+                                <option value="">Select plan...</option>
+                                {plans.map(p => (
+                                  <option key={p.id} value={p.id}>{p.name}</option>
+                                ))}
+                              </select>
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name={`items.${idx}.quantity`}
+                        render={({ field }) => (
+                          <FormItem className="w-24">
+                            <FormControl>
+                              <Input
+                                type="number"
+                                min={1}
+                                placeholder="Qty"
+                                {...field}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-9 px-2 text-muted-foreground hover:text-destructive"
+                        onClick={() => itemsArray.remove(idx)}
+                        disabled={itemsArray.fields.length <= 1}
+                        title={itemsArray.fields.length <= 1 ? 'At least one item required' : 'Remove'}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                {form.formState.errors.items?.root && (
+                  <p className="text-xs text-destructive">{form.formState.errors.items.root.message}</p>
+                )}
+                {form.formState.errors.items?.message && (
+                  <p className="text-xs text-destructive">{form.formState.errors.items.message}</p>
+                )}
               </div>
 
               {/* Billing config */}

@@ -416,12 +416,37 @@ paths:
           application/json:
             schema:
               type: object
-              required: [customer_id, plan_id]
+              required: [code, display_name, customer_id, items]
               properties:
+                code:
+                  type: string
+                display_name:
+                  type: string
                 customer_id:
                   type: string
-                plan_id:
+                items:
+                  type: array
+                  minItems: 1
+                  description: One or more priced items. Duplicate plan_id rejected per subscription.
+                  items:
+                    type: object
+                    required: [plan_id]
+                    properties:
+                      plan_id:
+                        type: string
+                      quantity:
+                        type: integer
+                        format: int64
+                        minimum: 1
+                        default: 1
+                start_now:
+                  type: boolean
+                  description: Activate immediately (skips draft state).
+                billing_time:
                   type: string
+                  enum: [anniversary, calendar]
+                trial_days:
+                  type: integer
                 trial_end_at:
                   type: string
                   format: date-time
@@ -517,14 +542,19 @@ paths:
         '200':
           description: Subscription resumed
 
-  /v1/subscriptions/{id}/change-plan:
+  /v1/subscriptions/{id}/items:
     post:
       tags: [Subscriptions]
-      summary: Change the subscription plan
-      operationId: changePlan
+      summary: Add an item to a subscription
+      description: |
+        Adds a new plan line to an active subscription. Mid-cycle adds are
+        prorated against the remaining period as an invoice line. The backend
+        rejects duplicates on (subscription_id, plan_id) with 409.
+      operationId: addSubscriptionItem
       parameters:
         - $ref: '#/components/parameters/ResourceID'
       requestBody:
+        required: true
         content:
           application/json:
             schema:
@@ -533,13 +563,98 @@ paths:
               properties:
                 plan_id:
                   type: string
-                effective:
+                quantity:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  default: 1
+      responses:
+        '201':
+          description: Item added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionItem'
+
+  /v1/subscriptions/{id}/items/{itemID}:
+    patch:
+      tags: [Subscriptions]
+      summary: Update a subscription item
+      description: |
+        Exactly one of `quantity` or `{new_plan_id, immediate}` must be
+        provided — the two payload shapes are XOR. Quantity changes are
+        applied immediately and prorated. Plan changes with `immediate=true`
+        swap the plan now and prorate; with `immediate=false` they stamp
+        `pending_plan_id` and apply at the next cycle boundary.
+      operationId: updateSubscriptionItem
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+        - name: itemID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                quantity:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                new_plan_id:
                   type: string
-                  enum: [immediately, at_period_end]
-                  default: immediately
+                immediate:
+                  type: boolean
+                  default: false
       responses:
         '200':
-          description: Plan changed
+          description: Item updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemChangeResult'
+    delete:
+      tags: [Subscriptions]
+      summary: Remove a subscription item
+      description: |
+        Hard-deletes the item. Mid-cycle removes credit the customer for the
+        unused portion of the just-paid period.
+      operationId: removeSubscriptionItem
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+        - name: itemID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Item removed
+
+  /v1/subscriptions/{id}/items/{itemID}/pending-change:
+    delete:
+      tags: [Subscriptions]
+      summary: Cancel a pending plan change on an item
+      description: Idempotent. No-op if nothing was scheduled.
+      operationId: cancelPendingItemChange
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+        - name: itemID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Pending change cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionItem'
 
   # --- Usage Events ---
   /v1/usage-events:
@@ -1321,13 +1436,25 @@ components:
       properties:
         id:
           type: string
+        code:
+          type: string
+        display_name:
+          type: string
         customer_id:
           type: string
-        plan_id:
-          type: string
+        items:
+          type: array
+          description: |
+            Priced lines on the subscription. Each item has its own plan and
+            quantity; billing emits one invoice line per item × quantity.
+          items:
+            $ref: '#/components/schemas/SubscriptionItem'
         status:
           type: string
-          enum: [draft, active, paused, cancelled]
+          enum: [draft, active, paused, cancelled, trialing]
+        billing_time:
+          type: string
+          enum: [anniversary, calendar]
         trial_start_at:
           type: string
           format: date-time
@@ -1343,12 +1470,83 @@ components:
         next_billing_at:
           type: string
           format: date-time
+        usage_cap_units:
+          type: integer
+          format: int64
+          nullable: true
+        overage_action:
+          type: string
+          enum: [block, charge]
         cancelled_at:
           type: string
           format: date-time
         created_at:
           type: string
           format: date-time
+
+    SubscriptionItem:
+      type: object
+      properties:
+        id:
+          type: string
+        subscription_id:
+          type: string
+        plan_id:
+          type: string
+        quantity:
+          type: integer
+          format: int64
+          minimum: 1
+        pending_plan_id:
+          type: string
+          description: Set when a deferred plan change is scheduled on this item.
+        pending_plan_effective_at:
+          type: string
+          format: date-time
+          description: When the pending plan change applies (typically next cycle boundary).
+        plan_changed_at:
+          type: string
+          format: date-time
+          description: Timestamp of the last immediate plan swap on this item.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ItemChangeResult:
+      type: object
+      description: Returned by `PATCH /subscriptions/{id}/items/{itemID}`.
+      properties:
+        item:
+          $ref: '#/components/schemas/SubscriptionItem'
+        effective_at:
+          type: string
+          format: date-time
+          description: When the change is applied (now for immediate, future for scheduled).
+        proration:
+          type: object
+          nullable: true
+          description: Populated when the change drove a proration invoice or credit.
+          properties:
+            old_plan_id:
+              type: string
+            new_plan_id:
+              type: string
+            proration_factor:
+              type: number
+              format: double
+              description: Share of the current period remaining, in [0, 1].
+            amount_cents:
+              type: integer
+              format: int64
+              description: Positive = additional charge; negative = credit.
+            type:
+              type: string
+              enum: [invoice, credit]
+            invoice_id:
+              type: string
 
     Invoice:
       type: object

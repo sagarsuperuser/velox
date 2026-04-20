@@ -773,7 +773,7 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
       const sub = await api.createSubscription({
         ...data,
         customer_id: customerId,
-        plan_id: planId,
+        items: [{ plan_id: planId }],
         start_now: startNow,
       })
       onCreated(sub)
