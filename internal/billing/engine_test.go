@@ -815,3 +815,138 @@ func TestEffectiveNow(t *testing.T) {
 		}
 	})
 }
+
+// capturingEventDispatcher records every Dispatch call for event-firing tests.
+type capturingEventDispatcher struct {
+	events []struct {
+		tenantID  string
+		eventType string
+		payload   map[string]any
+	}
+}
+
+func (d *capturingEventDispatcher) Dispatch(_ context.Context, tenantID, eventType string, payload map[string]any) error {
+	d.events = append(d.events, struct {
+		tenantID  string
+		eventType string
+		payload   map[string]any
+	}{tenantID, eventType, payload})
+	return nil
+}
+
+// TestRunCycle_FiresPendingChangeAppliedEvent locks in P0 #2: when a due
+// pending item plan change rolls in at the cycle boundary, the engine must
+// emit subscription.pending_change.applied per swapped item so downstream
+// systems (analytics, revrec, customer notifications) don't have to poll for
+// state diffs to know the change landed.
+func TestRunCycle_FiresPendingChangeAppliedEvent(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	effectiveAt := periodEnd
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{{
+					ID:                     "si_1",
+					PlanID:                 "pln_old",
+					Quantity:               1,
+					PendingPlanID:          "pln_new",
+					PendingPlanEffectiveAt: &effectiveAt,
+				}},
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_old": {ID: "pln_old", Name: "Old", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 1000},
+			"pln_new": {ID: "pln_new", Name: "New", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 3000},
+		},
+	}
+
+	invoices := &mockInvoices{}
+	usage := &mockUsage{totals: map[string]int64{}}
+	dispatcher := &capturingEventDispatcher{}
+	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine.SetEventDispatcher(dispatcher)
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	var applied map[string]any
+	for _, ev := range dispatcher.events {
+		if ev.eventType == domain.EventSubscriptionPendingChangeApplied {
+			applied = ev.payload
+			if ev.tenantID != "t1" {
+				t.Errorf("tenant_id: got %q, want t1", ev.tenantID)
+			}
+			break
+		}
+	}
+	if applied == nil {
+		types := make([]string, 0, len(dispatcher.events))
+		for _, ev := range dispatcher.events {
+			types = append(types, ev.eventType)
+		}
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionPendingChangeApplied, types)
+	}
+	if applied["item_id"] != "si_1" {
+		t.Errorf("item_id: got %v, want si_1", applied["item_id"])
+	}
+	if applied["old_plan_id"] != "pln_old" {
+		t.Errorf("old_plan_id: got %v, want pln_old", applied["old_plan_id"])
+	}
+	if applied["new_plan_id"] != "pln_new" {
+		t.Errorf("new_plan_id: got %v, want pln_new", applied["new_plan_id"])
+	}
+}
+
+// TestRunCycle_NoPendingChangeNoAppliedEvent ensures the event is gated on an
+// actual swap — a subscription billing on its existing plan with no pending
+// change must not emit a spurious applied event.
+func TestRunCycle_NoPendingChangeNoAppliedEvent(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{{
+					ID: "si_1", PlanID: "pln_old", Quantity: 1,
+				}},
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_old": {ID: "pln_old", Name: "Old", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 1000},
+		},
+	}
+	invoices := &mockInvoices{}
+	usage := &mockUsage{totals: map[string]int64{}}
+	dispatcher := &capturingEventDispatcher{}
+	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine.SetEventDispatcher(dispatcher)
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	for _, ev := range dispatcher.events {
+		if ev.eventType == domain.EventSubscriptionPendingChangeApplied {
+			t.Fatalf("applied event fired without a pending change: %+v", ev)
+		}
+	}
+}
