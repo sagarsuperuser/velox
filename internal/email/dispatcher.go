@@ -48,6 +48,7 @@ type EmailDeliverer interface {
 	SendDunningEscalation(tenantID, to, customerName, invoiceNumber string, action string) error
 	SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason string) error
 	SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
+	SendPortalMagicLink(tenantID, to, customerName, magicLinkURL string) error
 }
 
 // Dispatcher drains the email_outbox by deserialising each row's payload and
@@ -162,6 +163,8 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 	case TypePaymentUpdateRequest:
 		return d.sender.SendPaymentUpdateRequest(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.AmountCents, msg.Currency, msg.UpdateURL)
+	case TypePortalMagicLink:
+		return d.sender.SendPortalMagicLink(row.TenantID, msg.To, msg.CustomerName, msg.MagicLinkURL)
 	default:
 		return fmt.Errorf("unknown email_type %q", row.EmailType)
 	}

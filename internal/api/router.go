@@ -263,21 +263,22 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	emailOutboxStore := email.NewOutboxStore(db)
 	emailOutboxEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_EMAIL_OUTBOX_ENABLED"))) != "false"
 
-	// Any one of the four domain email interfaces; all four are satisfied by
+	// Any one of the five domain email interfaces; all are satisfied by
 	// both *email.Sender and *email.OutboxSender, so we pick once and wire
 	// the same value everywhere.
 	var (
-		invoiceEmail  invoice.EmailSender
-		dunningEmail  dunning.EmailNotifier
-		receiptEmail  payment.EmailReceipt
-		paymentUpdate payment.EmailPaymentUpdate
+		invoiceEmail   invoice.EmailSender
+		dunningEmail   dunning.EmailNotifier
+		receiptEmail   payment.EmailReceipt
+		paymentUpdate  payment.EmailPaymentUpdate
+		magicLinkEmail customerportal.MagicLinkEmailSender
 	)
 	if emailOutboxEnabled {
 		outboxSender := email.NewOutboxSender(emailOutboxStore)
-		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate = outboxSender, outboxSender, outboxSender, outboxSender
+		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail = outboxSender, outboxSender, outboxSender, outboxSender, outboxSender
 		slog.Info("email outbox enabled — producers will enqueue emails via email_outbox")
 	} else {
-		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate = emailSender, emailSender, emailSender, emailSender
+		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail = emailSender, emailSender, emailSender, emailSender, emailSender
 		slog.Warn("email outbox DISABLED — using direct-SMTP path (set VELOX_EMAIL_OUTBOX_ENABLED=true to re-enable)")
 	}
 	invoiceH.SetEmailSender(invoiceEmail)
@@ -368,7 +369,21 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	}
 	magicLinkStore := customerportal.NewPostgresMagicLinkStore(db)
 	magicLinkSvc := customerportal.NewMagicLinkService(magicLinkStore, portalSvc)
-	magicLinkDelivery := customerportal.NewLogMagicLinkDelivery(slog.Default())
+	// Email delivery: when CUSTOMER_PORTAL_URL is configured, wire the
+	// real email path so customers receive a clickable /login URL. Without
+	// that URL the delivery would email only the raw token, which is
+	// worse than no email — fall back to the logger stub so ops notices
+	// and configures the var rather than silently shipping broken emails.
+	var magicLinkDelivery customerportal.MagicLinkDelivery
+	portalURL := strings.TrimSpace(os.Getenv("CUSTOMER_PORTAL_URL"))
+	if portalURL != "" {
+		magicLinkDelivery = customerportal.NewEmailMagicLinkDelivery(
+			magicLinkEmail, customerEmailAdapter, portalURL, slog.Default(),
+		)
+	} else {
+		slog.Warn("CUSTOMER_PORTAL_URL not set — magic-link emails disabled, logging tokens instead")
+		magicLinkDelivery = customerportal.NewLogMagicLinkDelivery(slog.Default())
+	}
 	magicLinkRequestSvc := customerportal.NewMagicLinkRequestService(
 		magicLinkSvc,
 		&customerLookupAdapter{store: customerStore},

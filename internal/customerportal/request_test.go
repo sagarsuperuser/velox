@@ -281,6 +281,84 @@ func TestPublicHandler_ConsumeMagicLink_HappyPath(t *testing.T) {
 	}
 }
 
+// TestEmailMagicLinkDelivery_HappyPath pins the production delivery path:
+// (tenant, customer) → customer email/name resolved → URL built from
+// CUSTOMER_PORTAL_URL + raw token → sender called once with the tuple.
+// This is the contract the router relies on when magic-link emails are
+// enabled, so it's worth a test even without SMTP infrastructure.
+func TestEmailMagicLinkDelivery_HappyPath(t *testing.T) {
+	sender := &fakeMagicLinkSender{}
+	resolver := fakeEmailResolver{
+		"tnt_a/cus_1": {email: "alice@example.com", name: "Alice"},
+	}
+	d := NewEmailMagicLinkDelivery(sender, resolver, "https://portal.velox.dev", nil)
+
+	if err := d.DeliverMagicLink(context.Background(), "tnt_a", "cus_1", "vlx_cpml_raw_abc"); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if got := sender.lastTo; got != "alice@example.com" {
+		t.Fatalf("to: got %q, want alice@example.com", got)
+	}
+	wantURL := "https://portal.velox.dev/login?magic_token=vlx_cpml_raw_abc"
+	if sender.lastURL != wantURL {
+		t.Fatalf("url: got %q, want %q", sender.lastURL, wantURL)
+	}
+}
+
+// TestEmailMagicLinkDelivery_MissingEmail_NoOp — a customer row without
+// an email shouldn't error the delivery (the caller would log it as a
+// "request failed"), it should skip. Gives us a clean audit trail
+// without breaking the enumeration-resistance guarantee.
+func TestEmailMagicLinkDelivery_MissingEmail_NoOp(t *testing.T) {
+	sender := &fakeMagicLinkSender{}
+	resolver := fakeEmailResolver{
+		"tnt_a/cus_1": {email: "", name: "Alice"},
+	}
+	d := NewEmailMagicLinkDelivery(sender, resolver, "https://portal.velox.dev", nil)
+
+	if err := d.DeliverMagicLink(context.Background(), "tnt_a", "cus_1", "vlx_cpml_raw"); err != nil {
+		t.Fatalf("missing-email delivery should swallow, got %v", err)
+	}
+	if sender.lastTo != "" {
+		t.Fatalf("sender should not have been called, got %+v", sender)
+	}
+}
+
+// TestEmailMagicLinkDelivery_TrimTrailingSlash — operators often ship
+// CUSTOMER_PORTAL_URL with a trailing slash. The built URL shouldn't
+// end up with a double-slash before /login.
+func TestEmailMagicLinkDelivery_TrimTrailingSlash(t *testing.T) {
+	sender := &fakeMagicLinkSender{}
+	resolver := fakeEmailResolver{"tnt/cus": {email: "x@y.z", name: "X"}}
+	d := NewEmailMagicLinkDelivery(sender, resolver, "https://portal.velox.dev/", nil)
+
+	if err := d.DeliverMagicLink(context.Background(), "tnt", "cus", "tok"); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if sender.lastURL != "https://portal.velox.dev/login?magic_token=tok" {
+		t.Fatalf("trailing slash not trimmed: %q", sender.lastURL)
+	}
+}
+
+type fakeMagicLinkSender struct {
+	lastTenant string
+	lastTo     string
+	lastName   string
+	lastURL    string
+}
+
+func (f *fakeMagicLinkSender) SendPortalMagicLink(tenantID, to, name, url string) error {
+	f.lastTenant, f.lastTo, f.lastName, f.lastURL = tenantID, to, name, url
+	return nil
+}
+
+type fakeEmailResolver map[string]struct{ email, name string }
+
+func (r fakeEmailResolver) GetCustomerEmail(_ context.Context, tenantID, customerID string) (string, string, error) {
+	v := r[tenantID+"/"+customerID]
+	return v.email, v.name, nil
+}
+
 // TestPublicHandler_ConsumeMagicLink_FailureModes asserts the critical
 // uniformity property: unknown / used / expired / malformed all surface
 // as 401 with the same generic message. An attacker replaying a leaked

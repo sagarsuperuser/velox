@@ -14,6 +14,7 @@ const (
 	TypeDunningEscalation    = "dunning_escalation"
 	TypePaymentFailed        = "payment_failed"
 	TypePaymentUpdateRequest = "payment_update_request"
+	TypePortalMagicLink      = "portal_magic_link"
 )
 
 // outboxMessage is the union payload persisted to email_outbox.payload. Each
@@ -33,6 +34,7 @@ type outboxMessage struct {
 	Action         string `json:"action,omitempty"`
 	Reason         string `json:"reason,omitempty"`
 	UpdateURL      string `json:"update_url,omitempty"`
+	MagicLinkURL   string `json:"magic_link_url,omitempty"`
 	PDF            []byte `json:"pdf,omitempty"`
 }
 
@@ -69,6 +71,7 @@ func (s *OutboxSender) enqueue(tenantID, emailType string, msg outboxMessage) er
 		"action":          msg.Action,
 		"reason":          msg.Reason,
 		"update_url":      msg.UpdateURL,
+		"magic_link_url":  msg.MagicLinkURL,
 	}
 	if len(msg.PDF) > 0 {
 		payload["pdf"] = msg.PDF
@@ -142,5 +145,17 @@ func (s *OutboxSender) SendPaymentUpdateRequest(tenantID, to, customerName, invo
 		AmountCents:   amountDueCents,
 		Currency:      currency,
 		UpdateURL:     updateURL,
+	})
+}
+
+// SendPortalMagicLink enqueues a portal magic-link email. Satisfies
+// customerportal.MagicLinkEmailSender (narrow interface at the wiring
+// layer). The URL carries the one-time-use raw token that lands the
+// customer at the frontend /login page for consumption.
+func (s *OutboxSender) SendPortalMagicLink(tenantID, to, customerName, magicLinkURL string) error {
+	return s.enqueue(tenantID, TypePortalMagicLink, outboxMessage{
+		To:           to,
+		CustomerName: customerName,
+		MagicLinkURL: magicLinkURL,
 	})
 }
