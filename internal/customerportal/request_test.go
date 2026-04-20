@@ -220,7 +220,8 @@ func TestRequestByEmail_EmptyEmail_NoOp(t *testing.T) {
 func TestPublicHandler_RequestMagicLink_Responses(t *testing.T) {
 	svc, lookup, _, blinder := newRequestSvcForTest(t)
 	lookup.seed(blinder.Blind("alice@example.com"), CustomerMatch{TenantID: "tnt_a", CustomerID: "cus_1"})
-	h := NewPublicHandler(svc)
+	magicSvc, _, _ := newMagicLinkServiceForTest()
+	h := NewPublicHandler(svc, magicSvc)
 
 	call := func(body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/magic-link", bytes.NewBufferString(body))
@@ -242,5 +243,80 @@ func TestPublicHandler_RequestMagicLink_Responses(t *testing.T) {
 	body, _ = json.Marshal(map[string]string{"email": "nobody@example.com"})
 	if code := call(string(body)); code != http.StatusAccepted {
 		t.Fatalf("unknown email: want 202, got %d", code)
+	}
+}
+
+// TestPublicHandler_ConsumeMagicLink_HappyPath walks the end-to-end
+// flow: mint a magic link (via the service directly) → POST its raw
+// token to /magic/consume → receive a portal session token back. The
+// session token must carry the vlx_cps_ prefix so the frontend can
+// immediately use it against /v1/me/*.
+func TestPublicHandler_ConsumeMagicLink_HappyPath(t *testing.T) {
+	magicSvc, _, _ := newMagicLinkServiceForTest()
+	requestSvc := NewMagicLinkRequestService(magicSvc, newFakeLookup(), testBlinder(t), &captureDelivery{}, nil)
+	h := NewPublicHandler(requestSvc, magicSvc)
+
+	mint, err := magicSvc.Mint(context.Background(), "tnt_a", "cus_1")
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"token": mint.RawToken})
+	req := httptest.NewRequest(http.MethodPost, "/magic/consume", bytes.NewBuffer(body))
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("happy path: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out consumeMagicLinkResponse
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.CustomerID != "cus_1" {
+		t.Fatalf("customer identity: want cus_1, got %q", out.CustomerID)
+	}
+	if len(out.Token) < len(tokenPrefix) || out.Token[:len(tokenPrefix)] != tokenPrefix {
+		t.Fatalf("session token missing prefix: %q", out.Token)
+	}
+}
+
+// TestPublicHandler_ConsumeMagicLink_FailureModes asserts the critical
+// uniformity property: unknown / used / expired / malformed all surface
+// as 401 with the same generic message. An attacker replaying a leaked
+// email URL can't distinguish "this was a real token that expired" from
+// "this was never a valid token at all".
+func TestPublicHandler_ConsumeMagicLink_FailureModes(t *testing.T) {
+	magicSvc, _, _ := newMagicLinkServiceForTest()
+	requestSvc := NewMagicLinkRequestService(magicSvc, newFakeLookup(), testBlinder(t), &captureDelivery{}, nil)
+	h := NewPublicHandler(requestSvc, magicSvc)
+
+	call := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/magic/consume", bytes.NewBufferString(body))
+		rec := httptest.NewRecorder()
+		h.Routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Malformed body.
+	if rec := call("not-json"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("malformed body: want 401, got %d", rec.Code)
+	}
+	// Unknown token.
+	body, _ := json.Marshal(map[string]string{"token": magicTokenPrefix + "deadbeef"})
+	if rec := call(string(body)); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown token: want 401, got %d", rec.Code)
+	}
+	// Already-used token — first consume passes, second must 401.
+	mint, err := magicSvc.Mint(context.Background(), "tnt_a", "cus_1")
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	body, _ = json.Marshal(map[string]string{"token": mint.RawToken})
+	if rec := call(string(body)); rec.Code != http.StatusOK {
+		t.Fatalf("first consume: want 200, got %d", rec.Code)
+	}
+	if rec := call(string(body)); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("replay: want 401, got %d", rec.Code)
 	}
 }
