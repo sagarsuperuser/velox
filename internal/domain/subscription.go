@@ -42,6 +42,7 @@ type Subscription struct {
 	NextBillingAt             *time.Time              `json:"next_billing_at,omitempty"`
 	UsageCapUnits             *int64                  `json:"usage_cap_units,omitempty"` // Max usage units per billing period (nil = unlimited)
 	OverageAction             string                  `json:"overage_action,omitempty"`  // "block" or "charge" (default: charge)
+	TestClockID               string                  `json:"test_clock_id,omitempty"`   // Test mode only — attached simulator clock
 	CreatedAt                 time.Time               `json:"created_at"`
 	UpdatedAt                 time.Time               `json:"updated_at"`
 }

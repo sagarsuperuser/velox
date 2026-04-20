@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -36,6 +37,7 @@ type CreateInput struct {
 	StartNow      bool                           `json:"start_now,omitempty"`
 	UsageCapUnits *int64                         `json:"usage_cap_units,omitempty"`
 	OverageAction string                         `json:"overage_action,omitempty"`
+	TestClockID   string                         `json:"test_clock_id,omitempty"`
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Subscription, error) {
@@ -64,6 +66,13 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	}
 	if billingTime != domain.BillingTimeCalendar && billingTime != domain.BillingTimeAnniversary {
 		return domain.Subscription{}, errs.Invalid("billing_time", "must be calendar or anniversary")
+	}
+
+	// test_clock_id is a test-mode-only affordance; the DB CHECK constraint
+	// would reject it, but we surface a 400 up-front rather than leaking a
+	// cryptic integrity error to the API caller.
+	if input.TestClockID != "" && auth.Livemode(ctx) {
+		return domain.Subscription{}, errs.Invalid("test_clock_id", "test_clock_id is only permitted on test-mode subscriptions")
 	}
 
 	status := domain.SubscriptionDraft
@@ -135,6 +144,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		NextBillingAt:             nextBilling,
 		UsageCapUnits:             input.UsageCapUnits,
 		OverageAction:             overageAction,
+		TestClockID:               input.TestClockID,
 	})
 }
 

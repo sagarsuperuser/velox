@@ -42,6 +42,16 @@ type Engine struct {
 	taxCalc       tax.Calculator
 	coupons       CouponApplier
 	clock         clock.Clock
+	testClocks    TestClockReader
+}
+
+// TestClockReader looks up a test clock's frozen_time. The billing engine
+// calls this for every subscription that has test_clock_id set, so the clock
+// decides "what time is it for this sub?" instead of wall-clock. Returns
+// errs.ErrNotFound when the clock has been deleted (caller treats missing
+// clock as wall-clock — the detached sub quietly rejoins the live timeline).
+type TestClockReader interface {
+	Get(ctx context.Context, tenantID, id string) (domain.TestClock, error)
 }
 
 // CreditApplier applies customer credits to an invoice before charging.
@@ -132,6 +142,31 @@ func (e *Engine) SetTaxCalculator(c tax.Calculator) {
 // engine skips coupon resolution entirely and invoice discount_cents remains 0.
 func (e *Engine) SetCouponApplier(c CouponApplier) {
 	e.coupons = c
+}
+
+// SetTestClockReader wires the test-clock resolver. Optional: when nil, the
+// engine always uses wall-clock time, even for subs with test_clock_id set
+// (useful in narrow unit tests that don't exercise test-mode timing).
+func (e *Engine) SetTestClockReader(r TestClockReader) {
+	e.testClocks = r
+}
+
+// effectiveNow returns the clock time the engine should use for this sub.
+// If the sub is attached to a test clock, the clock's frozen_time wins;
+// otherwise wall-clock via e.clock. A deleted or unreadable test clock
+// falls back silently to wall-clock — a dangling test_clock_id must not
+// stall the billing tick for every other tenant.
+func (e *Engine) effectiveNow(ctx context.Context, sub domain.Subscription) time.Time {
+	if sub.TestClockID == "" || e.testClocks == nil {
+		return e.clock.Now()
+	}
+	tc, err := e.testClocks.Get(ctx, sub.TenantID, sub.TestClockID)
+	if err != nil {
+		slog.Warn("test clock lookup failed, falling back to wall clock",
+			"subscription_id", sub.ID, "test_clock_id", sub.TestClockID, "error", err)
+		return e.clock.Now()
+	}
+	return tc.FrozenTime
 }
 
 // TaxApplication is the invoice-level tax summary returned by
@@ -399,12 +434,18 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		return false, fmt.Errorf("subscription has no billing period set")
 	}
 
+	// Resolve "now" once per sub: a test-clock-attached sub runs on its
+	// frozen_time, wall-clock otherwise. All subsequent time comparisons in
+	// this function must use this value so trial/pending-plan/mark-paid
+	// decisions stay consistent with the clock the sub lives on.
+	now := e.effectiveNow(ctx, sub)
+
 	// If a scheduled plan change is due, apply it BEFORE reading the plan so
 	// the new cycle bills on the new plan. A concurrent DELETE /pending-change
 	// can race this: whichever statement commits first wins; ApplyPendingPlanAtomic
 	// returns ErrNotFound on the loser, which we treat as "already handled".
-	if sub.PendingPlanID != "" && sub.PendingPlanEffectiveAt != nil && !sub.PendingPlanEffectiveAt.After(e.clock.Now()) {
-		applied, err := e.subs.ApplyPendingPlanAtomic(ctx, sub.TenantID, sub.ID, e.clock.Now())
+	if sub.PendingPlanID != "" && sub.PendingPlanEffectiveAt != nil && !sub.PendingPlanEffectiveAt.After(now) {
+		applied, err := e.subs.ApplyPendingPlanAtomic(ctx, sub.TenantID, sub.ID, now)
 		if err == nil {
 			slog.Info("applied scheduled plan change",
 				"subscription_id", sub.ID,
@@ -421,7 +462,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	periodEnd := *sub.CurrentBillingPeriodEnd
 
 	// Skip if in trial — advance cycle but don't generate invoice
-	if sub.TrialEndAt != nil && e.clock.Now().Before(*sub.TrialEndAt) {
+	if sub.TrialEndAt != nil && now.Before(*sub.TrialEndAt) {
 		nextBilling := advanceBillingPeriod(periodEnd, domain.BillingMonthly)
 		slog.Info("skipping billing (trial active)", "subscription_id", sub.ID)
 		return false, e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, periodEnd, nextBilling, nextBilling)
@@ -582,7 +623,9 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	// invoice number as a strictly monotonic per-tenant sequence. No fallback:
 	// a collision-prone number is worse than a failed billing tick since the
 	// tick will retry, while a duplicate invoice number corrupts accounting.
-	now := e.clock.Now()
+	// `now` was resolved at the top of billSubscription via effectiveNow —
+	// reuse it so invoice timestamps sit on the same timeline as the rest of
+	// this call (matters for test-clock subs where wall-clock ≠ frozen_time).
 	netDays := 30
 
 	if e.settings == nil {
@@ -692,8 +735,9 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	if totalWithTax > 0 {
 		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
 		if err == nil && updatedInv.AmountDueCents <= 0 {
-			paidNow := e.clock.Now()
-			if _, err := e.invoices.MarkPaid(ctx, sub.TenantID, inv.ID, "", paidNow); err != nil {
+			// Reuse the sub-scoped `now` so fully-credit-paid invoices on a
+			// test clock get paid_at from the frozen timeline, not wall-clock.
+			if _, err := e.invoices.MarkPaid(ctx, sub.TenantID, inv.ID, "", now); err != nil {
 				slog.Warn("failed to mark fully-credited invoice as paid", "invoice_id", inv.ID, "error", err)
 			} else {
 				slog.Info("invoice fully covered by credits, marked as paid", "invoice_id", inv.ID)

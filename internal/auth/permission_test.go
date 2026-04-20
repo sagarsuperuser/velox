@@ -8,6 +8,7 @@ func TestHasPermission_SecretHasAll(t *testing.T) {
 		PermSubscriptionRead, PermSubscriptionWrite, PermUsageRead, PermUsageWrite,
 		PermInvoiceRead, PermInvoiceWrite, PermDunningRead, PermDunningWrite,
 		PermAPIKeyRead, PermAPIKeyWrite,
+		PermTestClockWrite,
 	}
 	for _, p := range allPerms {
 		if !HasPermission(KeyTypeSecret, p) {
@@ -56,8 +57,8 @@ func TestHasPermission_UnknownType(t *testing.T) {
 
 func TestAllPermissions(t *testing.T) {
 	secretPerms := AllPermissions(KeyTypeSecret)
-	if len(secretPerms) != 14 {
-		t.Errorf("secret should have 14 permissions, got %d", len(secretPerms))
+	if len(secretPerms) != 15 {
+		t.Errorf("secret should have 15 permissions, got %d", len(secretPerms))
 	}
 
 	pubPerms := AllPermissions(KeyTypePublishable)

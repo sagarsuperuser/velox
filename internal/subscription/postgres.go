@@ -26,6 +26,7 @@ const subCols = `id, tenant_id, code, display_name, customer_id, plan_id, status
 	COALESCE(pending_plan_id,''), pending_plan_effective_at,
 	current_billing_period_start, current_billing_period_end, next_billing_at,
 	usage_cap_units, COALESCE(overage_action,'charge'),
+	COALESCE(test_clock_id,''),
 	created_at, updated_at`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.Subscription) (domain.Subscription, error) {
@@ -42,9 +43,9 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 		INSERT INTO subscriptions (id, tenant_id, code, display_name, customer_id, plan_id, status,
 			billing_time, trial_start_at, trial_end_at, started_at,
 			current_billing_period_start, current_billing_period_end, next_billing_at,
-			usage_cap_units, overage_action,
+			usage_cap_units, overage_action, test_clock_id,
 			created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,COALESCE(NULLIF($16,''),'charge'),$17,$17)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,COALESCE(NULLIF($16,''),'charge'),NULLIF($17,''),$18,$18)
 		RETURNING `+subCols,
 		id, tenantID, sub.Code, sub.DisplayName, sub.CustomerID, sub.PlanID,
 		sub.Status, sub.BillingTime, postgres.NullableTime(sub.TrialStartAt),
@@ -52,7 +53,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 		postgres.NullableTime(sub.CurrentBillingPeriodStart),
 		postgres.NullableTime(sub.CurrentBillingPeriodEnd),
 		postgres.NullableTime(sub.NextBillingAt),
-		sub.UsageCapUnits, sub.OverageAction, now,
+		sub.UsageCapUnits, sub.OverageAction, sub.TestClockID, now,
 	).Scan(scanSubDest(&sub)...)
 
 	if err != nil {
@@ -370,11 +371,17 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 		limit = 50
 	}
 
+	// Subscriptions attached to a test clock are "due" when their
+	// next_billing_at is on-or-before the clock's frozen time, not wall clock.
+	// LEFT JOIN keeps live subs (test_clock_id NULL) comparing against $1.
+	// Columns must be qualified because test_clocks shares id/tenant_id/etc.
 	rows, err := tx.QueryContext(ctx, `
-		SELECT `+subCols+` FROM subscriptions
-		WHERE status = 'active' AND next_billing_at <= $1
-		ORDER BY next_billing_at ASC LIMIT $2
-		FOR UPDATE SKIP LOCKED
+		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
+		LEFT JOIN test_clocks tc ON tc.id = s.test_clock_id
+		WHERE s.status = 'active'
+		  AND s.next_billing_at <= COALESCE(tc.frozen_time, $1)
+		ORDER BY s.next_billing_at ASC LIMIT $2
+		FOR UPDATE OF s SKIP LOCKED
 	`, before, limit)
 	if err != nil {
 		return nil, err
@@ -415,6 +422,39 @@ func (s *PostgresStore) UpdateBillingCycle(ctx context.Context, tenantID, id str
 	return tx.Commit()
 }
 
+// qualifiedSubCols prefixes every column in subCols with the given table alias.
+// Needed when subscriptions is JOINed against another table (e.g. test_clocks)
+// with overlapping column names like id / tenant_id.
+func qualifiedSubCols(alias string) string {
+	var b strings.Builder
+	for i, col := range strings.Split(subCols, ",") {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		col = strings.TrimSpace(col)
+		if strings.HasPrefix(col, "COALESCE(") {
+			// COALESCE(x,'') → COALESCE(alias.x,'')
+			closing := strings.IndexByte(col, ')')
+			inner := col[len("COALESCE(") : closing]
+			parts := strings.SplitN(inner, ",", 2)
+			b.WriteString("COALESCE(")
+			b.WriteString(alias)
+			b.WriteByte('.')
+			b.WriteString(strings.TrimSpace(parts[0]))
+			if len(parts) == 2 {
+				b.WriteString(",")
+				b.WriteString(parts[1])
+			}
+			b.WriteString(col[closing:])
+			continue
+		}
+		b.WriteString(alias)
+		b.WriteByte('.')
+		b.WriteString(col)
+	}
+	return b.String()
+}
+
 func scanSubDest(s *domain.Subscription) []any {
 	return []any{
 		&s.ID, &s.TenantID, &s.Code, &s.DisplayName, &s.CustomerID, &s.PlanID,
@@ -424,6 +464,7 @@ func scanSubDest(s *domain.Subscription) []any {
 		&s.CurrentBillingPeriodStart,
 		&s.CurrentBillingPeriodEnd, &s.NextBillingAt,
 		&s.UsageCapUnits, &s.OverageAction,
+		&s.TestClockID,
 		&s.CreatedAt, &s.UpdatedAt,
 	}
 }

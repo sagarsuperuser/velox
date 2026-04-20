@@ -38,6 +38,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/subscription"
 	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
+	"github.com/sagarsuperuser/velox/internal/testclock"
 	"github.com/sagarsuperuser/velox/internal/usage"
 	"github.com/sagarsuperuser/velox/internal/webhook"
 )
@@ -297,9 +298,19 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	featureSvc := feature.NewService(feature.NewPostgresStore(db))
 	featureH := feature.NewHandler(featureSvc)
 
+	// Test clocks (FEAT-8 P5) — test-mode-only frozen-time simulator.
+	// Constructed before the billing engine so the engine can read clock
+	// state; the service then receives the engine as its billing runner via
+	// SetBillingRunner below, breaking the circular dep.
+	testClockStore := testclock.NewPostgresStore(db)
+	testClockSvc := testclock.NewService(testClockStore)
+	testClockH := testclock.NewHandler(testClockSvc)
+
 	// Billing engine + manual trigger (with credit auto-application)
 	engine := billing.NewEngine(subStore, usageStore, pricingSvc,
 		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, customerStore, stripeAdapter, clk, customerStore)
+	engine.SetTestClockReader(testClockStore)
+	testClockSvc.SetBillingRunner(engine)
 
 	// Tax calculator: use Stripe Tax when enabled via feature flag, otherwise manual
 	manualTaxCalc := tax.NewManualCalculator(0, "") // rate resolved per-subscription at billing time
@@ -450,6 +461,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/analytics", analyticsH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/feature-flags", featureH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/integrations/stripe/breaker", stripeBreakerH.Routes())
+		r.With(auth.Require(auth.PermTestClockWrite)).Mount("/test-clocks", testClockH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
 		if checkoutH != nil {
 			r.With(auth.Require(auth.PermCustomerWrite)).Mount("/checkout", checkoutH.Routes())
