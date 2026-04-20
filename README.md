@@ -21,8 +21,8 @@ make bootstrap    # Creates demo tenant + API keys
 make dev          # Starts API server on :8080
 
 # Frontend (new terminal)
-cd web && npm install && npm run dev
-# → http://localhost:3000 (paste your API key to login)
+cd web-v2 && npm install && npm run dev
+# → http://localhost:5173 (paste your API key to login)
 ```
 
 Or run the full billing cycle via CLI:
@@ -115,8 +115,8 @@ internal/
   platform/postgres/        — RLS-aware database layer
   platform/migrate/         — Embedded SQL migrations
 
-web/                        — Operator dashboard (React + TypeScript)
-  src/pages/                — 6 pages (Dashboard, Customers, Invoices, etc.)
+web-v2/                     — Operator dashboard (React + TypeScript + shadcn/ui)
+  src/pages/                — Dashboard, Customers, Invoices, Subscriptions, etc.
   src/components/           — Shared components (Layout, Badge, StatCard)
   src/lib/api.ts            — Typed API client with auth
 ```
