@@ -118,19 +118,18 @@ One migration `0006_schema_hygiene.up.sql`. Online-safe (IF NOT EXISTS, no big-t
 
 **Resolution (pre-existing, verified 2026-04-19):** Migration `0007` adds `subscriptions.pending_plan_id` + `pending_plan_effective_at`. `subscription/service.go:228` writes pending fields when `immediate=false` without touching `PlanID`. Cycle-boundary apply is `engine.ApplyPendingPlanAtomic` at `engine.go:407`. Cancel endpoint `DELETE /subscriptions/{id}/pending-change` wired at `subscription/handler.go:149`. Idempotent.
 
-### [COR-4] Three concurrency races (3 commits × S each)
+### [COR-4] Three concurrency races (3 commits × S each) — ✅ DONE
 
 **Problem:** Read-check-write patterns without locks in:
-- `invoice/service.go:182-202` (AddLineItem + UpdateTotals not atomic)
-- `credit/service.go:174-204` (Adjust balance-check + append not locked)
-- `subscription/service.go` Cancel/Pause/Resume (state-check + write not guarded)
+- `invoice/service.go` AddLineItem + UpdateTotals not atomic
+- `credit/service.go` Adjust balance-check + append not locked
+- `subscription/service.go` Cancel/Pause/Resume state-check + write not guarded
 
-**Targets:**
-- **Invoice totals**: wrap CreateLineItem + ListLineItems + UpdateTotals in one tx; roll back line item on any failure.
-- **Credit Adjust**: wrap balance read + append in tx with `SELECT ... FOR UPDATE` on ledger rows (same pattern `ApplyToInvoiceAtomic` uses).
-- **Subscription state transitions**: replace read-check-write with conditional UPDATE — `UPDATE subscriptions SET status='canceled' WHERE id=$1 AND status IN ('active','paused') RETURNING *`; 0 rows → re-fetch and return idempotent current state or conflict error.
+**Resolution (verified 2026-04-20):** All three paths now funnel through `*Atomic` store methods that hold the relevant row lock for the whole critical section.
 
-**Tests (each):** two concurrent goroutines → exactly one state transition, one event.
+- **Invoice** — `PostgresStore.AddLineItemAtomic` (`invoice/postgres.go:488`) opens one tx, `SELECT … FOR UPDATE` on the invoice row, rejects non-draft, inserts the line, recomputes subtotal/total/amount-due from the locked row set, and commits. Regression: `TestAddLineItemAtomic_ConcurrentAdds` — 8 goroutines × 5 lines, subtotal must equal the expected sum (lost-update canary). `TestAddLineItemAtomic_RejectsNonDraft` pins the status check inside the lock.
+- **Credit** — `PostgresStore.AdjustAtomic` (`credit/postgres.go:103`) mirrors `ApplyToInvoiceAtomic`: `SELECT … FOR UPDATE` on the existing ledger rows for that customer, reject if the resulting balance would go negative, append the adjustment row. Regression: `TestAdjustAtomic_NoOversellUnderContention` — concurrent deductions cannot oversell a $10 balance.
+- **Subscription** — `PauseAtomic` / `ResumeAtomic` / `CancelAtomic` (`subscription/postgres.go:171-187`) use conditional UPDATEs — `UPDATE … WHERE status IN (allowed) RETURNING …`. Zero rows returned means the transition wasn't valid from the observed state; the caller re-reads and surfaces the current-state error, making the race impossible. Regression: `TestCancelAtomic_OneWinnerUnderContention` + `TestPauseAtomic_OneWinnerUnderContention` — N goroutines race the same id, exactly one returns success.
 
 ### [COR-5] Fix truncating division in unit-amount + Stripe tax rate — S — ✅ DONE
 
