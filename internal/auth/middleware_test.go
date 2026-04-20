@@ -127,8 +127,8 @@ func TestRequire_PublishableKeyRestricted(t *testing.T) {
 	svc := NewService(newMemStore())
 	result, _ := svc.CreateKey(t.Context(), "t1", CreateKeyInput{Name: "Pub", KeyType: KeyTypePublishable})
 
-	// Should have
-	allowed := []Permission{PermCustomerRead, PermCustomerWrite, PermUsageRead, PermUsageWrite, PermSubscriptionRead, PermInvoiceRead}
+	// Should have — reads only; publishable keys ship in browsers.
+	allowed := []Permission{PermCustomerRead, PermUsageRead, PermSubscriptionRead, PermInvoiceRead}
 	for _, perm := range allowed {
 		t.Run("allowed_"+string(perm), func(t *testing.T) {
 			handler := Middleware(svc)(Require(perm)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,8 +146,11 @@ func TestRequire_PublishableKeyRestricted(t *testing.T) {
 		})
 	}
 
-	// Should NOT have
-	denied := []Permission{PermPricingWrite, PermSubscriptionWrite, PermInvoiceWrite, PermDunningRead, PermDunningWrite, PermAPIKeyWrite}
+	// Should NOT have — every write path is closed on publishable.
+	denied := []Permission{
+		PermCustomerWrite, PermUsageWrite,
+		PermPricingWrite, PermSubscriptionWrite, PermInvoiceWrite, PermDunningRead, PermDunningWrite, PermAPIKeyWrite,
+	}
 	for _, perm := range denied {
 		t.Run("denied_"+string(perm), func(t *testing.T) {
 			handler := Middleware(svc)(Require(perm)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
