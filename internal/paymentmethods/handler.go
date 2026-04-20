@@ -35,14 +35,14 @@ func (h *Handler) Routes() chi.Router {
 }
 
 type pmResponse struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	CardBrand  string `json:"card_brand,omitempty"`
-	CardLast4  string `json:"card_last4,omitempty"`
-	CardExpMo  int    `json:"card_exp_month,omitempty"`
-	CardExpYr  int    `json:"card_exp_year,omitempty"`
-	IsDefault  bool   `json:"is_default"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID        string    `json:"id"`
+	Type      string    `json:"type"`
+	CardBrand string    `json:"card_brand,omitempty"`
+	CardLast4 string    `json:"card_last4,omitempty"`
+	CardExpMo int       `json:"card_exp_month,omitempty"`
+	CardExpYr int       `json:"card_exp_year,omitempty"`
+	IsDefault bool      `json:"is_default"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func toResp(pm PaymentMethod) pmResponse {
@@ -174,4 +174,3 @@ func identity(r *http.Request) (tenantID, customerID string, ok bool) {
 	customerID = customerportal.CustomerID(r.Context())
 	return tenantID, customerID, tenantID != "" && customerID != ""
 }
-

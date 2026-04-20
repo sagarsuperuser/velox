@@ -83,7 +83,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"list credit notes", "error", err)
+		slog.ErrorContext(r.Context(), "list credit notes", "error", err)
 		return
 	}
 	if cns == nil {

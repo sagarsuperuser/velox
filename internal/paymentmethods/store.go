@@ -66,7 +66,7 @@ func (s *PostgresStore) List(ctx context.Context, tenantID, customerID string) (
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []PaymentMethod
 	for rows.Next() {

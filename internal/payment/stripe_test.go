@@ -17,7 +17,7 @@ import (
 type mockStripeClient struct {
 	lastParams PaymentIntentParams
 	shouldFail bool
-	failErr    error                          // when set, overrides the default card_declined failure
+	failErr    error // when set, overrides the default card_declined failure
 	piID       string
 	piStates   map[string]PaymentIntentResult // reconciler lookups by PI ID
 }

@@ -62,7 +62,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	keys, err := h.svc.ListKeys(r.Context(), ListFilter{TenantID: tenantID})
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"list api keys", "error", err)
+		slog.ErrorContext(r.Context(), "list api keys", "error", err)
 		return
 	}
 	if keys == nil {
@@ -89,7 +89,7 @@ func (h *Handler) revoke(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"revoke api key", "error", err)
+		slog.ErrorContext(r.Context(), "revoke api key", "error", err)
 		return
 	}
 

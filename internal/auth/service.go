@@ -115,7 +115,7 @@ func (s *Service) ValidateKey(ctx context.Context, rawKey string) (domain.APIKey
 	rawKey = strings.TrimSpace(rawKey)
 
 	var (
-		keyType  KeyType
+		keyType    KeyType
 		fullPrefix string
 	)
 	for _, kt := range []KeyType{KeyTypePlatform, KeyTypeSecret, KeyTypePublishable} {

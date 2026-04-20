@@ -56,10 +56,10 @@ type EmailDeliverer interface {
 // SMTP Sender in production). Handler semantics: a row is marked 'dispatched'
 // once the Send* call returns nil.
 type Dispatcher struct {
-	outbox   *OutboxStore
-	sender   EmailDeliverer
-	cfg      DispatcherConfig
-	locker   DispatchLocker
+	outbox *OutboxStore
+	sender EmailDeliverer
+	cfg    DispatcherConfig
+	locker DispatchLocker
 }
 
 func NewDispatcher(outbox *OutboxStore, sender EmailDeliverer, cfg DispatcherConfig) *Dispatcher {

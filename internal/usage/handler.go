@@ -178,7 +178,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"list usage events", "error", err)
+		slog.ErrorContext(r.Context(), "list usage events", "error", err)
 		return
 	}
 	if events == nil {

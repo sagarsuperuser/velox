@@ -13,7 +13,7 @@ import (
 )
 
 // TestCustomersEmail_NotNull verifies the HYG-1 DB constraint: customers.email
-// is NOT NULL DEFAULT ''. Empty-string emails are allowed (email is optional
+// is NOT NULL DEFAULT ”. Empty-string emails are allowed (email is optional
 // at the API layer), but a raw NULL must be rejected by Postgres regardless
 // of what the application thinks it is writing.
 func TestCustomersEmail_NotNull(t *testing.T) {

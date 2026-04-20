@@ -102,7 +102,7 @@ func (h *Handler) listBalances(w http.ResponseWriter, r *http.Request) {
 	balances, err := h.svc.ListBalances(r.Context(), tenantID)
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"list credit balances", "error", err)
+		slog.ErrorContext(r.Context(), "list credit balances", "error", err)
 		return
 	}
 	if balances == nil {
@@ -123,7 +123,7 @@ func (h *Handler) getBalance(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"get credit balance", "error", err)
+		slog.ErrorContext(r.Context(), "get credit balance", "error", err)
 		return
 	}
 
@@ -141,7 +141,7 @@ func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(),"list credit entries", "error", err)
+		slog.ErrorContext(r.Context(), "list credit entries", "error", err)
 		return
 	}
 	if entries == nil {

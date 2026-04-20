@@ -70,9 +70,9 @@ type Invoice struct {
 	// key used to dedup retries of proration generation (see migrations 0026
 	// + 0027 — the item id + change_type disambiguate simultaneous mutations
 	// of different kinds that coincidentally share a wall-clock timestamp).
-	SourcePlanChangedAt      *time.Time       `json:"source_plan_changed_at,omitempty"`
-	SourceSubscriptionItemID string           `json:"source_subscription_item_id,omitempty"`
-	SourceChangeType         ItemChangeType   `json:"source_change_type,omitempty"`
+	SourcePlanChangedAt      *time.Time     `json:"source_plan_changed_at,omitempty"`
+	SourceSubscriptionItemID string         `json:"source_subscription_item_id,omitempty"`
+	SourceChangeType         ItemChangeType `json:"source_change_type,omitempty"`
 }
 
 // ItemChangeType classifies per-item proration artifacts so the dedup index

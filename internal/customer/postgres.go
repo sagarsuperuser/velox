@@ -250,7 +250,7 @@ func (s *PostgresStore) FindByEmailBlindIndex(ctx context.Context, blind string,
 	if err != nil {
 		return nil, fmt.Errorf("select: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []EmailMatch
 	for rows.Next() {

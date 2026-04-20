@@ -52,9 +52,9 @@ type PaymentSetupSummaryWriter interface {
 }
 
 type Service struct {
-	store    Store
-	stripe   StripeAPI
-	summary  PaymentSetupSummaryWriter
+	store         Store
+	stripe        StripeAPI
+	summary       PaymentSetupSummaryWriter
 	portalBaseURL string // optional; used as return_url fallback when the handler doesn't pass one
 }
 

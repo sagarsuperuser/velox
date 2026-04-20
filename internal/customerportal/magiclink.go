@@ -129,7 +129,7 @@ func (s *MagicLinkService) Consume(ctx context.Context, rawToken string) (Consum
 	if err != nil {
 		return ConsumeResult{}, fmt.Errorf("mint session: %w", err)
 	}
-	return ConsumeResult{Session: mint.Session, RawToken: mint.RawToken}, nil
+	return ConsumeResult(mint), nil
 }
 
 // PostgresMagicLinkStore is the real implementation backed by the
