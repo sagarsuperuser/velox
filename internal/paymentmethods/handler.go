@@ -1,6 +1,7 @@
 package paymentmethods
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -27,6 +28,7 @@ func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.list)
 	r.Post("/setup-intent", h.createSetupIntent)
+	r.Post("/setup-session", h.createSetupSession)
 	r.Post("/{id}/default", h.setDefault)
 	r.Delete("/{id}", h.detach)
 	return r
@@ -89,6 +91,33 @@ func (h *Handler) createSetupIntent(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusCreated, setupIntentResponse{
 		ClientSecret: secret, SetupIntentID: siID,
 	})
+}
+
+type setupSessionRequest struct {
+	ReturnURL string `json:"return_url,omitempty"`
+}
+
+type setupSessionResponse struct {
+	URL       string `json:"url"`
+	SessionID string `json:"session_id"`
+}
+
+func (h *Handler) createSetupSession(w http.ResponseWriter, r *http.Request) {
+	tenantID, customerID, ok := identity(r)
+	if !ok {
+		respond.Unauthorized(w, r, "missing portal session context")
+		return
+	}
+	var req setupSessionRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	url, sessionID, err := h.svc.CreateSetupSession(r.Context(), tenantID, customerID, req.ReturnURL)
+	if err != nil {
+		respond.FromError(w, r, err, "payment_method")
+		return
+	}
+	respond.JSON(w, r, http.StatusCreated, setupSessionResponse{URL: url, SessionID: sessionID})
 }
 
 func (h *Handler) setDefault(w http.ResponseWriter, r *http.Request) {
