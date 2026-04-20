@@ -8,6 +8,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
 var phonePattern = regexp.MustCompile(`^[\+\d\s\-\(\)]{7,20}$`)
@@ -123,6 +124,12 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 		if !phonePattern.MatchString(phone) {
 			return domain.CustomerBillingProfile{}, errs.Invalid("phone", "must be 7-20 characters and contain only digits, spaces, +, -, (, )")
 		}
+	}
+	// Normalize + format-validate tax IDs. Unknown kinds pass through untouched
+	// so we don't reject jurisdictions we haven't added explicit support for.
+	bp.TaxID = tax.NormalizeTaxID(bp.TaxID)
+	if err := tax.ValidateTaxID(bp.TaxIDType, bp.TaxID); err != nil {
+		return domain.CustomerBillingProfile{}, errs.Invalid("tax_id", err.Error())
 	}
 	if bp.ProfileStatus == "" {
 		bp.ProfileStatus = domain.BillingProfileIncomplete

@@ -7,11 +7,34 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stripe/stripe-go/v82"
 
 	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
+
+// stripeTaxFallbacks counts every time StripeCalculator falls through to its
+// ManualCalculator fallback, labeled by reason. Operators use this to alert
+// when Stripe Tax stops being usable (country unsupported, API outage, missing
+// credentials) so invoices don't silently switch to the tenant's flat rate.
+var stripeTaxFallbacks *prometheus.CounterVec
+
+func init() {
+	c := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "velox_tax_fallback_total",
+		Help: "Count of Stripe tax calculator fallbacks to manual, by reason.",
+	}, []string{"reason"})
+	if err := prometheus.DefaultRegisterer.Register(c); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			stripeTaxFallbacks = are.ExistingCollector.(*prometheus.CounterVec)
+		} else {
+			panic(err)
+		}
+	} else {
+		stripeTaxFallbacks = c
+	}
+}
 
 // StripeCalculator calls the Stripe Tax Calculations API for jurisdiction-based
 // tax. On any Stripe API error it falls back to the provided ManualCalculator
@@ -57,6 +80,7 @@ func (s *StripeCalculator) CalculateTax(ctx context.Context, currency string, ad
 	// Require at minimum a country for Stripe Tax to work
 	if addr.Country == "" {
 		slog.Warn("stripe tax: no customer country, falling back to manual")
+		stripeTaxFallbacks.WithLabelValues("no_country").Inc()
 		return s.fallback.CalculateTax(ctx, currency, addr, lineItems)
 	}
 
@@ -102,6 +126,7 @@ func (s *StripeCalculator) CalculateTax(ctx context.Context, currency string, ad
 		slog.Warn("stripe tax: no client configured for mode, falling back to manual",
 			"livemode", postgres.Livemode(ctx),
 		)
+		stripeTaxFallbacks.WithLabelValues("no_client_for_mode").Inc()
 		return s.fallback.CalculateTax(ctx, currency, addr, lineItems)
 	}
 
@@ -110,6 +135,7 @@ func (s *StripeCalculator) CalculateTax(ctx context.Context, currency string, ad
 		slog.Warn("stripe tax API error, falling back to manual",
 			"error", err,
 		)
+		stripeTaxFallbacks.WithLabelValues("api_error").Inc()
 		return s.fallback.CalculateTax(ctx, currency, addr, lineItems)
 	}
 

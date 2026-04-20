@@ -14,13 +14,19 @@ import (
 // NextInvoiceNumber() is unused by ApplyTaxToLineItems so it errors to catch
 // any accidental call.
 type taxSettings struct {
-	rateBP    int64
-	name      string
-	inclusive bool
+	rateBP      int64
+	name        string
+	inclusive   bool
+	homeCountry string
 }
 
 func (s *taxSettings) Get(_ context.Context, _ string) (domain.TenantSettings, error) {
-	return domain.TenantSettings{TaxRateBP: s.rateBP, TaxName: s.name, TaxInclusive: s.inclusive}, nil
+	return domain.TenantSettings{
+		TaxRateBP:      s.rateBP,
+		TaxName:        s.name,
+		TaxInclusive:   s.inclusive,
+		TaxHomeCountry: s.homeCountry,
+	}, nil
 }
 
 func (s *taxSettings) NextInvoiceNumber(_ context.Context, _ string) (string, error) {
@@ -375,5 +381,125 @@ func TestApplyTaxToLineItems_RoundingReconciliation(t *testing.T) {
 	}
 	if sum != r.TaxAmountCents {
 		t.Errorf("line tax sum %d != invoice tax %d after reconciliation", sum, r.TaxAmountCents)
+	}
+}
+
+// --- Cross-border zero-rating (Phase 1-lite) ---
+
+func newZeroRatedExportEngine(rateBP int64, name, homeCountry string, profiles map[string]domain.CustomerBillingProfile) *Engine {
+	e := &Engine{
+		settings: &taxSettings{rateBP: rateBP, name: name, homeCountry: homeCountry},
+	}
+	if profiles != nil {
+		e.profiles = &taxProfiles{profiles: profiles}
+	}
+	return e
+}
+
+func TestApplyTaxToLineItems_ZeroRatedExport(t *testing.T) {
+	// Indian tenant (IN) billing a US customer — tax must be zero-rated.
+	profiles := map[string]domain.CustomerBillingProfile{
+		"cus_us": {CustomerID: "cus_us", Country: "US"},
+	}
+	e := newZeroRatedExportEngine(1800, "IGST", "IN", profiles)
+	lineItems := []domain.InvoiceLineItem{{AmountCents: 10000}}
+
+	r, err := e.ApplyTaxToLineItems(context.Background(), "t1", "cus_us", "USD", 10000, 0, lineItems)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.TaxAmountCents != 0 {
+		t.Errorf("got tax %d, want 0 (zero-rated export)", r.TaxAmountCents)
+	}
+	if r.TaxRateBP != 0 {
+		t.Errorf("got rate %d, want 0", r.TaxRateBP)
+	}
+	if r.TaxName != "IGST (zero-rated export)" {
+		t.Errorf("got tax name %q, want annotated zero-rated export label", r.TaxName)
+	}
+	if r.TaxCountry != "US" {
+		t.Errorf("got country %q, want US (still stamped from customer)", r.TaxCountry)
+	}
+	if lineItems[0].TaxAmountCents != 0 {
+		t.Errorf("line item tax = %d, want 0", lineItems[0].TaxAmountCents)
+	}
+	if lineItems[0].TotalAmountCents != 10000 {
+		t.Errorf("line item total = %d, want 10000", lineItems[0].TotalAmountCents)
+	}
+}
+
+func TestApplyTaxToLineItems_SameCountry_NotZeroRated(t *testing.T) {
+	// Indian tenant billing Indian customer — normal IGST applies.
+	profiles := map[string]domain.CustomerBillingProfile{
+		"cus_in": {CustomerID: "cus_in", Country: "IN"},
+	}
+	e := newZeroRatedExportEngine(1800, "IGST", "IN", profiles)
+	lineItems := []domain.InvoiceLineItem{{AmountCents: 10000}}
+
+	r, err := e.ApplyTaxToLineItems(context.Background(), "t1", "cus_in", "USD", 10000, 0, lineItems)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.TaxAmountCents != 1800 {
+		t.Errorf("got tax %d, want 1800 (domestic IGST)", r.TaxAmountCents)
+	}
+	if r.TaxName != "IGST" {
+		t.Errorf("got tax name %q, want IGST (no export annotation)", r.TaxName)
+	}
+}
+
+func TestApplyTaxToLineItems_NoHomeCountry_NotZeroRated(t *testing.T) {
+	// Legacy tenant without tax_home_country set — must keep existing behavior
+	// (no zero-rating) regardless of customer country.
+	profiles := map[string]domain.CustomerBillingProfile{
+		"cus_us": {CustomerID: "cus_us", Country: "US"},
+	}
+	e := newZeroRatedExportEngine(1800, "VAT", "", profiles)
+	lineItems := []domain.InvoiceLineItem{{AmountCents: 10000}}
+
+	r, err := e.ApplyTaxToLineItems(context.Background(), "t1", "cus_us", "USD", 10000, 0, lineItems)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.TaxAmountCents != 1800 {
+		t.Errorf("got tax %d, want 1800 (no home country → no zero-rating)", r.TaxAmountCents)
+	}
+}
+
+func TestApplyTaxToLineItems_ZeroRatedExport_EmptyCustomerCountry(t *testing.T) {
+	// Home country set but customer has no country — can't prove export, don't zero-rate.
+	profiles := map[string]domain.CustomerBillingProfile{
+		"cus_unknown": {CustomerID: "cus_unknown"},
+	}
+	e := newZeroRatedExportEngine(1800, "IGST", "IN", profiles)
+	lineItems := []domain.InvoiceLineItem{{AmountCents: 10000}}
+
+	r, err := e.ApplyTaxToLineItems(context.Background(), "t1", "cus_unknown", "USD", 10000, 0, lineItems)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.TaxAmountCents != 1800 {
+		t.Errorf("got tax %d, want 1800 (unknown country → no zero-rating)", r.TaxAmountCents)
+	}
+}
+
+func TestApplyTaxToLineItems_ZeroRatedExport_RespectsExempt(t *testing.T) {
+	// TaxExempt is a stronger signal — already zeros out before export check.
+	// Tax name should NOT be annotated as export.
+	profiles := map[string]domain.CustomerBillingProfile{
+		"cus_ex": {CustomerID: "cus_ex", Country: "US", TaxExempt: true},
+	}
+	e := newZeroRatedExportEngine(1800, "IGST", "IN", profiles)
+	lineItems := []domain.InvoiceLineItem{{AmountCents: 10000}}
+
+	r, err := e.ApplyTaxToLineItems(context.Background(), "t1", "cus_ex", "USD", 10000, 0, lineItems)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.TaxAmountCents != 0 {
+		t.Errorf("got tax %d, want 0 (exempt)", r.TaxAmountCents)
+	}
+	if r.TaxName != "" {
+		t.Errorf("exempt customer should have blank tax name, got %q", r.TaxName)
 	}
 }

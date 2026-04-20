@@ -90,12 +90,14 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 	err = tx.QueryRowContext(ctx, `
 		SELECT tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
 			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
+			COALESCE(tax_home_country,''),
 			COALESCE(company_name,''), COALESCE(company_address,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			audit_fail_closed, created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1
 	`, tenantID).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
 		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
+		&ts.TaxHomeCountry,
 		&ts.CompanyName, &ts.CompanyAddress,
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL, &ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
 
@@ -121,32 +123,34 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 	now := time.Now().UTC()
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO tenant_settings (tenant_id, default_currency, timezone, invoice_prefix,
-			net_payment_terms, tax_rate_bp, tax_name, tax_inclusive,
+			net_payment_terms, tax_rate_bp, tax_name, tax_inclusive, tax_home_country,
 			company_name, company_address, company_email, company_phone,
 			logo_url, audit_fail_closed, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			default_currency = EXCLUDED.default_currency, timezone = EXCLUDED.timezone,
 			invoice_prefix = EXCLUDED.invoice_prefix, net_payment_terms = EXCLUDED.net_payment_terms,
 			tax_rate_bp = EXCLUDED.tax_rate_bp, tax_name = EXCLUDED.tax_name,
-			tax_inclusive = EXCLUDED.tax_inclusive,
+			tax_inclusive = EXCLUDED.tax_inclusive, tax_home_country = EXCLUDED.tax_home_country,
 			company_name = EXCLUDED.company_name, company_address = EXCLUDED.company_address,
 			company_email = EXCLUDED.company_email, company_phone = EXCLUDED.company_phone,
 			logo_url = EXCLUDED.logo_url, audit_fail_closed = EXCLUDED.audit_fail_closed,
 			updated_at = EXCLUDED.updated_at
 		RETURNING tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
 			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
+			COALESCE(tax_home_country,''),
 			COALESCE(company_name,''), COALESCE(company_address,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			audit_fail_closed, created_at, updated_at
 	`, ts.TenantID, ts.DefaultCurrency, ts.Timezone, ts.InvoicePrefix,
-		ts.NetPaymentTerms, ts.TaxRateBP, ts.TaxName, ts.TaxInclusive,
+		ts.NetPaymentTerms, ts.TaxRateBP, ts.TaxName, ts.TaxInclusive, ts.TaxHomeCountry,
 		postgres.NullableString(ts.CompanyName),
 		postgres.NullableString(ts.CompanyAddress), postgres.NullableString(ts.CompanyEmail),
 		postgres.NullableString(ts.CompanyPhone), postgres.NullableString(ts.LogoURL),
 		ts.AuditFailClosed, now,
 	).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
 		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
+		&ts.TaxHomeCountry,
 		&ts.CompanyName, &ts.CompanyAddress,
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL, &ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
 	if err != nil {
@@ -351,5 +355,14 @@ func validateSettings(ts *domain.TenantSettings) error {
 	if ts.TaxRateBP < 0 || ts.TaxRateBP > 10000 {
 		return errs.Invalid("tax_rate_bp", "must be between 0 and 10000 (e.g. 1850 for 18.50%)")
 	}
+	ts.TaxHomeCountry = strings.ToUpper(strings.TrimSpace(ts.TaxHomeCountry))
+	if ts.TaxHomeCountry != "" && !iso3166Alpha2.MatchString(ts.TaxHomeCountry) {
+		return errs.Invalid("tax_home_country", "must be an ISO-3166 alpha-2 country code (e.g. 'IN', 'US')")
+	}
 	return nil
 }
+
+// iso3166Alpha2 matches an uppercase 2-letter country code. Full validation
+// against the registered list would require a dep we don't need at tenant
+// setup time — format check is sufficient to catch typos.
+var iso3166Alpha2 = regexp.MustCompile(`^[A-Z]{2}$`)

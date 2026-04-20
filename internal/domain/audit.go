@@ -42,11 +42,15 @@ type TenantSettings struct {
 	TaxRateBP       int64  `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
 	TaxName         string `json:"tax_name,omitempty"`
 	TaxInclusive    bool   `json:"tax_inclusive"`
-	CompanyName     string `json:"company_name,omitempty"`
-	CompanyAddress  string `json:"company_address,omitempty"`
-	CompanyEmail    string `json:"company_email,omitempty"`
-	CompanyPhone    string `json:"company_phone,omitempty"`
-	LogoURL         string `json:"logo_url,omitempty"`
+	// TaxHomeCountry (ISO-3166 alpha-2) is the tenant's jurisdiction for tax.
+	// When set, invoices to customers in other countries are zero-rated
+	// (exports). Empty string disables cross-border zero-rating.
+	TaxHomeCountry string `json:"tax_home_country,omitempty"`
+	CompanyName    string `json:"company_name,omitempty"`
+	CompanyAddress string `json:"company_address,omitempty"`
+	CompanyEmail   string `json:"company_email,omitempty"`
+	CompanyPhone   string `json:"company_phone,omitempty"`
+	LogoURL        string `json:"logo_url,omitempty"`
 	// AuditFailClosed makes audit log write failures hard-fail the request
 	// with 503 audit_error instead of logging and returning the handler's
 	// response. SOC-2-bound tenants opt in so a recorded action is a
