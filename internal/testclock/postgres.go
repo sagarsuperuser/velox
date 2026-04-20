@@ -74,7 +74,7 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string) ([]domain.Tes
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT `+clockCols+` FROM test_clocks ORDER BY created_at DESC
+		SELECT `+clockCols+` FROM test_clocks ORDER BY created_at DESC LIMIT 500
 	`)
 	if err != nil {
 		return nil, err
@@ -191,7 +191,7 @@ func (s *PostgresStore) ListSubscriptionsOnClock(ctx context.Context, tenantID, 
 			COALESCE(test_clock_id,''), created_at, updated_at
 		FROM subscriptions
 		WHERE test_clock_id = $1
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC LIMIT 1000
 	`, clockID)
 	if err != nil {
 		return nil, err

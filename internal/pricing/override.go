@@ -104,7 +104,7 @@ func (s *PostgresStore) ListOverrides(ctx context.Context, tenantID, customerID 
 		query += fmt.Sprintf(" AND customer_id = $%d", len(args)+1)
 		args = append(args, customerID)
 	}
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY created_at DESC LIMIT 500"
 
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {

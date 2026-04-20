@@ -102,7 +102,7 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string) ([]domain.Cou
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT `+couponColumns+` FROM coupons ORDER BY created_at DESC
+		SELECT `+couponColumns+` FROM coupons ORDER BY created_at DESC LIMIT 500
 	`)
 	if err != nil {
 		return nil, err
@@ -230,7 +230,7 @@ func (s *PostgresStore) ListRedemptions(ctx context.Context, tenantID, couponID 
 			COALESCE(subscription_id,''), COALESCE(invoice_id,''),
 			discount_cents, periods_applied, created_at
 		FROM coupon_redemptions WHERE coupon_id = $1
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC LIMIT 1000
 	`, couponID)
 	if err != nil {
 		return nil, err

@@ -121,6 +121,8 @@ func (s *PostgresStore) ListRatingRules(ctx context.Context, filter RatingRuleFi
 		query += " ORDER BY rule_key, version DESC"
 	}
 
+	query += " LIMIT 500"
+
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -220,7 +222,7 @@ func (s *PostgresStore) ListMeters(ctx context.Context, tenantID string) ([]doma
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, tenant_id, key, name, unit, aggregation, COALESCE(rating_rule_version_id,''), created_at, updated_at
-		FROM meters ORDER BY created_at DESC
+		FROM meters ORDER BY created_at DESC LIMIT 500
 	`)
 	if err != nil {
 		return nil, err
@@ -331,7 +333,7 @@ func (s *PostgresStore) ListPlans(ctx context.Context, tenantID string) ([]domai
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, tenant_id, code, name, COALESCE(description,''), currency, billing_interval,
 			status, base_amount_cents, meter_ids, created_at, updated_at
-		FROM plans ORDER BY created_at DESC
+		FROM plans ORDER BY created_at DESC LIMIT 500
 	`)
 	if err != nil {
 		return nil, err

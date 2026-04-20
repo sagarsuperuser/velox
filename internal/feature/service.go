@@ -245,7 +245,7 @@ func (s *PostgresStore) RemoveOverride(ctx context.Context, tenantID, key string
 func (s *PostgresStore) List(ctx context.Context) ([]Flag, error) {
 	rows, err := s.db.Pool.QueryContext(ctx, `
 		SELECT key, enabled, description, created_at, updated_at
-		FROM feature_flags ORDER BY key
+		FROM feature_flags ORDER BY key LIMIT 500
 	`)
 	if err != nil {
 		return nil, err
@@ -266,7 +266,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]Flag, error) {
 func (s *PostgresStore) ListOverrides(ctx context.Context, tenantID string) ([]FlagOverride, error) {
 	rows, err := s.db.Pool.QueryContext(ctx, `
 		SELECT flag_key, tenant_id, enabled, created_at
-		FROM feature_flag_overrides WHERE tenant_id = $1 ORDER BY flag_key
+		FROM feature_flag_overrides WHERE tenant_id = $1 ORDER BY flag_key LIMIT 500
 	`, tenantID)
 	if err != nil {
 		return nil, err
