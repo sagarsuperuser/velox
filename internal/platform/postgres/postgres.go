@@ -42,6 +42,30 @@ const (
 	TxBypass               // Sets app.bypass_rls = on, skips RLS
 )
 
+// Context key for livemode propagation. Owned by the postgres package because
+// BeginTx is the single choke point that needs to read it — having the key
+// live here avoids circular imports between auth and postgres.
+type livemodeCtxKey struct{}
+
+// WithLivemode returns a derived context carrying the mode flag. BeginTx
+// reads this to set app.livemode on the tx session, which the RLS policy
+// uses to filter rows by mode alongside tenant.
+func WithLivemode(ctx context.Context, live bool) context.Context {
+	return context.WithValue(ctx, livemodeCtxKey{}, live)
+}
+
+// Livemode reads the livemode flag from ctx. Absent a value, defaults to
+// true — the RLS policy interprets unset as "live mode" so background
+// workers and bootstrap tooling that don't propagate mode operate safely
+// against production data by default.
+func Livemode(ctx context.Context) bool {
+	v, ok := ctx.Value(livemodeCtxKey{}).(bool)
+	if !ok {
+		return true
+	}
+	return v
+}
+
 func (db *DB) BeginTx(ctx context.Context, mode TxMode, tenantID string) (*sql.Tx, error) {
 	tx, err := db.Pool.BeginTx(ctx, nil)
 	if err != nil {
@@ -59,6 +83,14 @@ func (db *DB) BeginTx(ctx context.Context, mode TxMode, tenantID string) (*sql.T
 			tid = "default"
 		}
 		if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tid); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		mode := "on"
+		if !Livemode(ctx) {
+			mode = "off"
+		}
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('app.livemode', $1, true)`, mode); err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}
