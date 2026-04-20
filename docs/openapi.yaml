@@ -449,9 +449,6 @@ paths:
                   enum: [anniversary, calendar]
                 trial_days:
                   type: integer
-                trial_end_at:
-                  type: string
-                  format: date-time
                 usage_cap_units:
                   type: integer
                   format: int64
@@ -820,6 +817,26 @@ paths:
                         items:
                           $ref: '#/components/schemas/InvoiceLineItem'
 
+  /v1/invoices/{id}/finalize:
+    post:
+      tags: [Invoices]
+      summary: Finalize a draft invoice
+      description: |
+        Transitions the invoice from draft to finalized, issues the
+        invoice number, fires invoice.finalized, and attempts auto-charge
+        if the customer has a payment method on file. Emails the invoice
+        PDF to the customer asynchronously.
+      operationId: finalizeInvoice
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      responses:
+        '200':
+          description: Invoice finalized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+
   /v1/invoices/{id}/void:
     post:
       tags: [Invoices]
@@ -830,17 +847,162 @@ paths:
       responses:
         '200':
           description: Invoice voided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
 
-  /v1/invoices/{id}/mark-paid:
+  /v1/invoices/{id}/line-items:
     post:
       tags: [Invoices]
-      summary: Mark an invoice as paid
-      operationId: markInvoicePaid
+      summary: Add a manual line item to a draft invoice
+      operationId: addInvoiceLineItem
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [description, quantity, unit_amount_cents]
+              properties:
+                description:
+                  type: string
+                line_type:
+                  type: string
+                  description: Defaults to "manual" if omitted.
+                quantity:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                unit_amount_cents:
+                  type: integer
+                  format: int64
+                  minimum: 1
+      responses:
+        '201':
+          description: Line item added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceLineItem'
+
+  /v1/invoices/{id}/send:
+    post:
+      tags: [Invoices]
+      summary: Email the invoice PDF to a specific address
+      operationId: sendInvoice
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        '200':
+          description: Email dispatched
+
+  /v1/invoices/{id}/collect:
+    post:
+      tags: [Invoices]
+      summary: Attempt immediate payment collection for a finalized invoice
+      description: |
+        Creates a PaymentIntent against the customer's stored payment
+        method. Only valid on finalized, unpaid invoices with amount_due > 0.
+      operationId: collectInvoicePayment
       parameters:
         - $ref: '#/components/parameters/ResourceID'
       responses:
         '200':
-          description: Invoice marked as paid
+          description: Payment initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+
+  /v1/invoices/{id}/refund:
+    post:
+      tags: [Invoices]
+      summary: Issue a refund via credit note
+      description: |
+        Issues a refund through Stripe and records the corresponding
+        credit note. amount_cents=0 refunds the full remaining
+        refundable balance.
+      operationId: refundInvoice
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                amount_cents:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                reason:
+                  type: string
+                  enum: [duplicate, fraudulent, requested_by_customer, other]
+                description:
+                  type: string
+      responses:
+        '200':
+          description: Refund issued, credit note returned
+
+  /v1/invoices/{id}/payment-timeline:
+    get:
+      tags: [Invoices]
+      summary: Get operator-facing payment + dunning event timeline
+      operationId: getInvoicePaymentTimeline
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      responses:
+        '200':
+          description: Chronological list of payment and dunning events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        timestamp:
+                          type: string
+                          format: date-time
+                        source:
+                          type: string
+                          enum: [stripe, dunning]
+                        event_type:
+                          type: string
+                        status:
+                          type: string
+                        description:
+                          type: string
+                        error:
+                          type: string
+                        amount_cents:
+                          type: integer
+                          format: int64
+                        currency:
+                          type: string
+                        payment_intent_id:
+                          type: string
+                        attempt_count:
+                          type: integer
 
   /v1/invoices/{id}/pdf:
     get:
@@ -977,6 +1139,53 @@ paths:
       responses:
         '200':
           description: List of coupons
+
+  /v1/coupons/{id}:
+    get:
+      tags: [Coupons]
+      summary: Get a coupon by ID
+      operationId: getCoupon
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      responses:
+        '200':
+          description: Coupon
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Coupon'
+
+  /v1/coupons/{id}/deactivate:
+    post:
+      tags: [Coupons]
+      summary: Deactivate a coupon
+      description: Deactivated coupons cannot be redeemed but existing redemptions are preserved.
+      operationId: deactivateCoupon
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      responses:
+        '200':
+          description: Coupon deactivated
+
+  /v1/coupons/{id}/redemptions:
+    get:
+      tags: [Coupons]
+      summary: List redemptions for a coupon
+      operationId: listCouponRedemptions
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      responses:
+        '200':
+          description: List of redemptions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CouponRedemption'
 
   /v1/coupons/redeem:
     post:
