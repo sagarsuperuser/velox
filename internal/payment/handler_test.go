@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/tenantstripe"
 )
 
 func TestVerifyStripeSignature_Valid(t *testing.T) {
@@ -21,7 +23,6 @@ func TestVerifyStripeSignature_Valid(t *testing.T) {
 	payload := []byte(`{"id":"evt_123","type":"payment_intent.succeeded"}`)
 	ts := fmt.Sprintf("%d", time.Now().Unix())
 
-	// Compute valid signature
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(ts + "." + string(payload)))
 	sig := hex.EncodeToString(mac.Sum(nil))
@@ -31,74 +32,6 @@ func TestVerifyStripeSignature_Valid(t *testing.T) {
 	err := verifyStripeSignature(payload, header, secret)
 	if err != nil {
 		t.Fatalf("valid signature should pass: %v", err)
-	}
-}
-
-func TestVerifyWebhookDualSecret_MatchesLive(t *testing.T) {
-	live := "whsec_live_xxx"
-	test := "whsec_test_xxx"
-	payload := []byte(`{"id":"evt_1","livemode":true}`)
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-	mac := hmac.New(sha256.New, []byte(live))
-	mac.Write([]byte(ts + "." + string(payload)))
-	sig := hex.EncodeToString(mac.Sum(nil))
-	header := fmt.Sprintf("t=%s,v1=%s", ts, sig)
-
-	mode, ok := verifyWebhookDualSecret(payload, header, live, test, false)
-	if !ok {
-		t.Fatal("live-signed payload should verify")
-	}
-	if !mode {
-		t.Errorf("live signature must return livemode=true")
-	}
-}
-
-func TestVerifyWebhookDualSecret_MatchesTest(t *testing.T) {
-	live := "whsec_live_xxx"
-	test := "whsec_test_xxx"
-	payload := []byte(`{"id":"evt_1","livemode":false}`)
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-	mac := hmac.New(sha256.New, []byte(test))
-	mac.Write([]byte(ts + "." + string(payload)))
-	sig := hex.EncodeToString(mac.Sum(nil))
-	header := fmt.Sprintf("t=%s,v1=%s", ts, sig)
-
-	mode, ok := verifyWebhookDualSecret(payload, header, live, test, false)
-	if !ok {
-		t.Fatal("test-signed payload should verify")
-	}
-	if mode {
-		t.Errorf("test signature must return livemode=false")
-	}
-}
-
-func TestVerifyWebhookDualSecret_RejectsWrongSignature(t *testing.T) {
-	payload := []byte(`{"id":"evt_1"}`)
-	header := fmt.Sprintf("t=%d,v1=deadbeef", time.Now().Unix())
-	if _, ok := verifyWebhookDualSecret(payload, header, "whsec_live", "whsec_test", false); ok {
-		t.Fatal("unsigned-by-either-secret payload must fail")
-	}
-}
-
-func TestVerifyWebhookDualSecret_NoSecretsRejectsByDefault(t *testing.T) {
-	// Safety default: no configured secret AND allowUnsigned=false (the
-	// production path) must refuse the event. A deployment that forgot to
-	// set STRIPE_WEBHOOK_SECRET cannot silently accept spoofable traffic.
-	if _, ok := verifyWebhookDualSecret([]byte(`{}`), "", "", "", false); ok {
-		t.Fatal("unconfigured secrets must reject when allowUnsigned=false")
-	}
-}
-
-func TestVerifyWebhookDualSecret_NoSecretsAcceptsWhenAllowed(t *testing.T) {
-	// Local-dev opt-in: operator explicitly set ALLOW_UNSIGNED_STRIPE_WEBHOOKS.
-	// The permissive branch defaults to livemode=true so downstream processing
-	// uses live-tenancy context (matches the previous dev-mode behavior).
-	mode, ok := verifyWebhookDualSecret([]byte(`{}`), "", "", "", true)
-	if !ok {
-		t.Fatal("unconfigured secrets with allowUnsigned=true should accept")
-	}
-	if !mode {
-		t.Errorf("unconfigured opt-in path should default to livemode=true")
 	}
 }
 
@@ -126,6 +59,19 @@ func TestVerifyStripeSignature_Invalid(t *testing.T) {
 	}
 }
 
+// stubResolver returns a preset endpoint lookup keyed by endpoint id.
+type stubResolver struct {
+	rows map[string]tenantstripe.EndpointLookup
+}
+
+func (s *stubResolver) LookupEndpoint(_ context.Context, id string) (tenantstripe.EndpointLookup, error) {
+	row, ok := s.rows[id]
+	if !ok {
+		return tenantstripe.EndpointLookup{}, errs.ErrNotFound
+	}
+	return row, nil
+}
+
 func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 	invoices := newMockInvoiceUpdaterH()
 	invoices.invoices["inv_1"] = mockInvoice{
@@ -137,10 +83,11 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 	webhooks := newMockWebhookStoreHandler()
 
 	stripeAdapter := NewStripe(nil, invoices, webhooks, nil)
-	// allowUnsigned=true: this test sends no Stripe-Signature header and we
-	// want the handler to skip verification so we can exercise the downstream
-	// payment-succeeded path.
-	handler := NewHandler(stripeAdapter, "", "", true)
+	secret := "whsec_handler_test"
+	resolver := &stubResolver{rows: map[string]tenantstripe.EndpointLookup{
+		"vlx_spc_abc": {ID: "vlx_spc_abc", TenantID: "t1", Livemode: true, WebhookSecret: secret},
+	}}
+	handler := NewHandler(stripeAdapter, resolver)
 
 	event := map[string]any{
 		"id":       "evt_success_1",
@@ -163,8 +110,9 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 	}
 	body, _ := json.Marshal(event)
 
-	req := httptest.NewRequest("POST", "/stripe", strings.NewReader(string(body)))
+	req := httptest.NewRequest("POST", "/stripe/vlx_spc_abc", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Stripe-Signature", signStripePayload(body, secret))
 	rec := httptest.NewRecorder()
 
 	handler.Routes().ServeHTTP(rec, req)
@@ -179,7 +127,6 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 		t.Errorf("response status: got %q, want processed", resp["status"])
 	}
 
-	// Verify invoice was updated
 	inv := invoices.invoices["inv_1"]
 	if inv.paymentStatus != "succeeded" {
 		t.Errorf("payment_status: got %q, want succeeded", inv.paymentStatus)
@@ -188,7 +135,11 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 
 func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
-	handler := NewHandler(stripeAdapter, "", "", true)
+	secret := "whsec_foreign_test"
+	resolver := &stubResolver{rows: map[string]tenantstripe.EndpointLookup{
+		"vlx_spc_abc": {ID: "vlx_spc_abc", TenantID: "t1", Livemode: true, WebhookSecret: secret},
+	}}
+	handler := NewHandler(stripeAdapter, resolver)
 
 	event := map[string]any{
 		"id":       "evt_foreign",
@@ -199,13 +150,14 @@ func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 			"object": map[string]any{
 				"id":       "pi_not_ours",
 				"object":   "payment_intent",
-				"metadata": map[string]string{}, // No velox metadata
+				"metadata": map[string]string{},
 			},
 		},
 	}
 	body, _ := json.Marshal(event)
 
-	req := httptest.NewRequest("POST", "/stripe", strings.NewReader(string(body)))
+	req := httptest.NewRequest("POST", "/stripe/vlx_spc_abc", strings.NewReader(string(body)))
+	req.Header.Set("Stripe-Signature", signStripePayload(body, secret))
 	rec := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(rec, req)
 
@@ -220,18 +172,80 @@ func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 	}
 }
 
+func TestWebhookHandler_UnknownEndpoint404(t *testing.T) {
+	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
+	resolver := &stubResolver{rows: map[string]tenantstripe.EndpointLookup{}}
+	handler := NewHandler(stripeAdapter, resolver)
+
+	req := httptest.NewRequest("POST", "/stripe/vlx_spc_does_not_exist",
+		strings.NewReader(`{"id":"evt_1"}`))
+	req.Header.Set("Stripe-Signature", "t=0,v1=00")
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown endpoint should 404, got %d", rec.Code)
+	}
+}
+
 func TestWebhookHandler_SignatureRequired(t *testing.T) {
 	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
-	handler := NewHandler(stripeAdapter, "whsec_real_secret", "", false)
+	resolver := &stubResolver{rows: map[string]tenantstripe.EndpointLookup{
+		"vlx_spc_abc": {ID: "vlx_spc_abc", TenantID: "t1", Livemode: true, WebhookSecret: "whsec_real"},
+	}}
+	handler := NewHandler(stripeAdapter, resolver)
 
-	req := httptest.NewRequest("POST", "/stripe", strings.NewReader(`{"id":"evt_1"}`))
-	// No Stripe-Signature header
+	req := httptest.NewRequest("POST", "/stripe/vlx_spc_abc", strings.NewReader(`{"id":"evt_1"}`))
 	rec := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("should reject unsigned webhook, got %d", rec.Code)
 	}
+}
+
+func TestWebhookHandler_TenantMismatchRejects(t *testing.T) {
+	// Defense in depth: endpoint belongs to t1 but payload metadata claims t2.
+	// Accepting this would let a misconfigured tenant write webhook events
+	// into another tenant's data space.
+	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
+	secret := "whsec_mismatch"
+	resolver := &stubResolver{rows: map[string]tenantstripe.EndpointLookup{
+		"vlx_spc_abc": {ID: "vlx_spc_abc", TenantID: "t1", Livemode: true, WebhookSecret: secret},
+	}}
+	handler := NewHandler(stripeAdapter, resolver)
+
+	event := map[string]any{
+		"id":       "evt_mismatch",
+		"type":     "payment_intent.succeeded",
+		"created":  time.Now().Unix(),
+		"livemode": true,
+		"data": map[string]any{
+			"object": map[string]any{
+				"id":       "pi_other",
+				"object":   "payment_intent",
+				"metadata": map[string]string{"velox_tenant_id": "t2"},
+			},
+		},
+	}
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest("POST", "/stripe/vlx_spc_abc", strings.NewReader(string(body)))
+	req.Header.Set("Stripe-Signature", signStripePayload(body, secret))
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("tenant mismatch should reject, got %d", rec.Code)
+	}
+}
+
+// signStripePayload produces a valid Stripe-Signature header for payload+secret.
+func signStripePayload(payload []byte, secret string) string {
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts + "." + string(payload)))
+	return fmt.Sprintf("t=%s,v1=%s", ts, hex.EncodeToString(mac.Sum(nil)))
 }
 
 // --- Mock helpers for handler tests ---

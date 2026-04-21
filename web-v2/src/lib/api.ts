@@ -142,10 +142,6 @@ export const api = {
   getPaymentStatus: (customerId: string) =>
     request<PaymentSetup>('GET', `/checkout/status/${customerId}`),
 
-  // Billing
-  triggerBilling: () =>
-    request<{ invoices_generated: number; errors: string[] }>('POST', '/billing/run'),
-
   // Credits
   listBalances: () =>
     request<{ data: CreditBalance[] }>('GET', '/credits/balances'),
@@ -249,6 +245,7 @@ export const api = {
 
   // Audit Log
   listAuditLog: (params?: string) => request<{ data: AuditEntry[]; total: number }>('GET', `/audit-log${params ? '?' + params : ''}`),
+  getAuditFilters: () => request<AuditFilterOptions>('GET', '/audit-log/filters'),
 
   // Webhooks
   listWebhookEndpoints: () => request<{ data: WebhookEndpoint[] }>('GET', '/webhook-endpoints/endpoints'),
@@ -276,6 +273,15 @@ export const api = {
   listApiKeys: () => request<{ data: ApiKeyInfo[] }>('GET', '/api-keys'),
   createApiKey: (data: { name: string; key_type: string; expires_at?: string }) => request<{ key: ApiKeyInfo; raw_key: string }>('POST', '/api-keys', data),
   revokeApiKey: (id: string) => request<ApiKeyInfo>('DELETE', `/api-keys/${id}`),
+
+  // Stripe credentials (per-tenant). Secrets post once here; the server keeps
+  // them encrypted and only returns last4 + verify status. Deleting a row
+  // revokes that mode entirely.
+  listStripeCredentials: () => request<{ data: StripeProviderCredentials[] }>('GET', '/settings/stripe'),
+  connectStripe: (data: { livemode: boolean; secret_key: string; publishable_key: string; webhook_secret?: string }) =>
+    request<StripeProviderCredentials>('POST', '/settings/stripe', data),
+  deleteStripeCredentials: (mode: 'live' | 'test') =>
+    request<void>('DELETE', `/settings/stripe/${mode}`),
 }
 
 // Types
@@ -508,6 +514,7 @@ export interface TenantSettings {
   invoice_prefix: string
   invoice_next_seq: number
   net_payment_terms: number
+  tax_provider: 'none' | 'manual'
   tax_rate_bp: number
   tax_name: string
   tax_inclusive: boolean
@@ -516,6 +523,22 @@ export interface TenantSettings {
   company_email: string
   company_phone: string
   logo_url: string
+}
+
+export interface StripeProviderCredentials {
+  id: string
+  tenant_id: string
+  livemode: boolean
+  stripe_account_id?: string
+  stripe_account_name?: string
+  secret_key_last4: string
+  publishable_key: string
+  webhook_secret_last4?: string
+  has_webhook_secret: boolean
+  verified_at?: string | null
+  last_verified_error?: string
+  created_at: string
+  updated_at: string
 }
 
 export interface InvoicePreview {
@@ -621,12 +644,20 @@ export interface AuditEntry {
   id: string
   actor_type: string
   actor_id: string
+  actor_name?: string
   action: string
   resource_type: string
   resource_id: string
   resource_label?: string
   metadata?: Record<string, unknown>
+  ip_address?: string
+  request_id?: string
   created_at: string
+}
+
+export interface AuditFilterOptions {
+  actions: string[]
+  resource_types: string[]
 }
 
 export interface WebhookEndpoint {

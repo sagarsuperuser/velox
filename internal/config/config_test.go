@@ -14,10 +14,6 @@ func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("APP_ENV", "")
 	t.Setenv("RUN_MIGRATIONS_ON_BOOT", "")
 	t.Setenv("DB_MAX_OPEN_CONNS", "")
-	// This test exercises generic defaults, not webhook security — opt into
-	// the unsigned path so validateFatal doesn't refuse startup on a missing
-	// STRIPE_WEBHOOK_SECRET.
-	t.Setenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", "1")
 
 	cfg, err := Load()
 	if err != nil {
@@ -51,10 +47,8 @@ func TestLoad_MissingDatabaseURL(t *testing.T) {
 func TestLoad_CustomPort(t *testing.T) {
 	_ = os.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
 	_ = os.Setenv("PORT", "3000")
-	_ = os.Setenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", "1")
 	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
 	defer func() { _ = os.Unsetenv("PORT") }()
-	defer func() { _ = os.Unsetenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS") }()
 
 	cfg, err := Load()
 	if err != nil {
@@ -65,63 +59,32 @@ func TestLoad_CustomPort(t *testing.T) {
 	}
 }
 
-func TestValidate_MissingStripeKeys(t *testing.T) {
+func TestValidate_ProductionWarnsMissingRedis(t *testing.T) {
 	cfg := Config{
 		Port: "8080",
 		Env:  "production",
 		DB:   DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second},
 	}
 	warnings := cfg.Validate()
-	found := map[string]bool{}
+	var found bool
 	for _, w := range warnings {
-		if w == "STRIPE_SECRET_KEY is not set — payment processing will fail" {
-			found["stripe_key"] = true
-		}
-		if w == "STRIPE_WEBHOOK_SECRET is not set — webhook signature verification will fail" {
-			found["webhook_secret"] = true
-		}
 		if w == "REDIS_URL is not set — rate limiting will fail open (not enforced)" {
-			found["redis"] = true
+			found = true
 		}
 	}
-	if !found["stripe_key"] {
-		t.Error("expected warning about missing STRIPE_SECRET_KEY")
-	}
-	if !found["webhook_secret"] {
-		t.Error("expected warning about missing STRIPE_WEBHOOK_SECRET")
-	}
-	if !found["redis"] {
+	if !found {
 		t.Error("expected warning about missing REDIS_URL in production")
 	}
 }
 
-func TestValidate_InvalidStripePrefix(t *testing.T) {
-	cfg := Config{
-		Port:            "8080",
-		Env:             "local",
-		StripeSecretKey: "bad_key_123",
-		DB:              DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second},
-	}
-	warnings := cfg.Validate()
-	for _, w := range warnings {
-		if w == "STRIPE_SECRET_KEY does not start with 'sk_' — may be invalid" {
-			return
-		}
-	}
-	t.Error("expected warning about invalid STRIPE_SECRET_KEY prefix")
-}
-
 func TestValidate_ValidConfig(t *testing.T) {
-	// Set a valid 64-char hex encryption key so the validator doesn't warn
 	t.Setenv("VELOX_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 
 	cfg := Config{
-		Port:                "8080",
-		Env:                 "production",
-		StripeSecretKey:     "sk_live_abc123",
-		StripeWebhookSecret: "whsec_abc123",
-		RedisURL:            "redis://localhost:6379",
-		DB:                  DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second},
+		Port:     "8080",
+		Env:      "production",
+		RedisURL: "redis://localhost:6379",
+		DB:       DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second},
 	}
 	warnings := cfg.Validate()
 	if len(warnings) > 0 {
@@ -130,10 +93,12 @@ func TestValidate_ValidConfig(t *testing.T) {
 }
 
 func TestValidate_EncryptionKeyWarnings(t *testing.T) {
-	// Production without key should warn
 	_ = os.Unsetenv("VELOX_ENCRYPTION_KEY")
-	cfg := Config{Env: "production", Port: "8080", StripeSecretKey: "sk_live_x", StripeWebhookSecret: "whsec_x",
-		RedisURL: "redis://localhost:6379", DB: DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second}}
+	cfg := Config{
+		Env: "production", Port: "8080",
+		RedisURL: "redis://localhost:6379",
+		DB:       DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second},
+	}
 	warnings := cfg.Validate()
 	found := false
 	for _, w := range warnings {
@@ -145,7 +110,6 @@ func TestValidate_EncryptionKeyWarnings(t *testing.T) {
 		t.Error("expected warning about missing encryption key in production")
 	}
 
-	// Invalid length should warn
 	t.Setenv("VELOX_ENCRYPTION_KEY", "tooshort")
 	warnings = cfg.Validate()
 	found = false
@@ -158,7 +122,6 @@ func TestValidate_EncryptionKeyWarnings(t *testing.T) {
 		t.Error("expected warning about invalid encryption key length")
 	}
 
-	// Invalid hex should warn
 	t.Setenv("VELOX_ENCRYPTION_KEY", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
 	warnings = cfg.Validate()
 	found = false
@@ -171,10 +134,11 @@ func TestValidate_EncryptionKeyWarnings(t *testing.T) {
 		t.Error("expected warning about invalid hex")
 	}
 
-	// Local env without key should NOT warn
 	_ = os.Unsetenv("VELOX_ENCRYPTION_KEY")
-	localCfg := Config{Env: "local", Port: "8080", StripeSecretKey: "sk_test_x", StripeWebhookSecret: "whsec_x",
-		DB: DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second}}
+	localCfg := Config{
+		Env: "local", Port: "8080",
+		DB: DBConfig{MaxOpenConns: 20, MaxIdleConns: 5, QueryTimeout: 5 * time.Second},
+	}
 	warnings = localCfg.Validate()
 	for _, w := range warnings {
 		if w == "VELOX_ENCRYPTION_KEY is not set — customer PII will be stored in plaintext" {
@@ -185,11 +149,9 @@ func TestValidate_EncryptionKeyWarnings(t *testing.T) {
 
 func TestValidate_DBPoolSanity(t *testing.T) {
 	cfg := Config{
-		Port:                "8080",
-		Env:                 "local",
-		StripeSecretKey:     "sk_test_abc",
-		StripeWebhookSecret: "whsec_abc",
-		DB:                  DBConfig{MaxOpenConns: 5, MaxIdleConns: 10, QueryTimeout: 5 * time.Second},
+		Port: "8080",
+		Env:  "local",
+		DB:   DBConfig{MaxOpenConns: 5, MaxIdleConns: 10, QueryTimeout: 5 * time.Second},
 	}
 	warnings := cfg.Validate()
 	found := false
@@ -234,63 +196,17 @@ func TestLoad_InvalidEncryptionKeyFormat(t *testing.T) {
 	}
 }
 
-// TestLoad_RefusesUnsignedWebhooksInProduction verifies the fail-safe added
-// for P0 #1: production/staging must refuse to start when STRIPE_WEBHOOK_SECRET
-// (and its test-mode sibling) are unset. The worst-case pre-fix behavior was
-// silently accepting any POST to /v1/webhooks/stripe without signature checks,
-// which would let any internet caller spoof payment events.
-func TestLoad_RefusesUnsignedWebhooksInProduction(t *testing.T) {
-	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
-	t.Setenv("APP_ENV", "production")
-	t.Setenv("STRIPE_WEBHOOK_SECRET", "")
-	t.Setenv("STRIPE_WEBHOOK_SECRET_TEST", "")
-	// Even with the opt-in flag, non-local envs must still refuse.
-	t.Setenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", "1")
-	t.Setenv("VELOX_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected error when STRIPE_WEBHOOK_SECRET is missing in production")
-	}
-	if !strings.Contains(err.Error(), "STRIPE_WEBHOOK_SECRET") {
-		t.Errorf("error should mention STRIPE_WEBHOOK_SECRET, got: %v", err)
-	}
-}
-
-// TestLoad_RefusesUnsignedWebhooksInLocalWithoutOptIn verifies that even
-// local-env developers must say yes explicitly. Running `go run ./cmd/velox`
-// in a fresh checkout with no .env is the exact scenario that caused the
-// pre-fix fail-open; refusing here makes the unsafe path impossible to reach
-// by accident.
-func TestLoad_RefusesUnsignedWebhooksInLocalWithoutOptIn(t *testing.T) {
-	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
-	t.Setenv("APP_ENV", "local")
-	t.Setenv("STRIPE_WEBHOOK_SECRET", "")
-	t.Setenv("STRIPE_WEBHOOK_SECRET_TEST", "")
-	t.Setenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", "")
-
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected error when STRIPE_WEBHOOK_SECRET is missing without opt-in")
-	}
-	if !strings.Contains(err.Error(), "ALLOW_UNSIGNED_STRIPE_WEBHOOKS") {
-		t.Errorf("error should mention the opt-in env var, got: %v", err)
-	}
-}
-
 func TestLoad_DiscreteDBVars(t *testing.T) {
 	_ = os.Unsetenv("DATABASE_URL")
 	_ = os.Setenv("DB_HOST", "localhost")
 	_ = os.Setenv("DB_NAME", "velox")
 	_ = os.Setenv("DB_USER", "velox")
 	_ = os.Setenv("DB_PASSWORD", "secret")
-	_ = os.Setenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS", "1")
 	defer func() {
 		_ = os.Unsetenv("DB_HOST")
 		_ = os.Unsetenv("DB_NAME")
 		_ = os.Unsetenv("DB_USER")
 		_ = os.Unsetenv("DB_PASSWORD")
-		_ = os.Unsetenv("ALLOW_UNSIGNED_STRIPE_WEBHOOKS")
 	}()
 
 	cfg, err := Load()
