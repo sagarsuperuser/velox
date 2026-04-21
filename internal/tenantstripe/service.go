@@ -1,0 +1,177 @@
+package tenantstripe
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/stripe/stripe-go/v82"
+
+	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
+)
+
+// StripeClientFactory builds a *stripe.Client from a secret key. Injected so
+// tests can substitute a fake without hitting the network.
+type StripeClientFactory func(secretKey string) *stripe.Client
+
+// Service coordinates credential writes + a post-write Stripe verify so the
+// tenant gets immediate feedback that their key works ("Connected as Acme
+// Inc.") rather than discovering it later when their first invoice fails.
+type Service struct {
+	store  *Store
+	newCli StripeClientFactory
+	logger *slog.Logger
+}
+
+func NewService(store *Store, newCli StripeClientFactory) *Service {
+	return &Service{
+		store:  store,
+		newCli: newCli,
+		logger: slog.Default(),
+	}
+}
+
+// ConnectInput is the HTTP-facing body for POST /v1/settings/stripe. TenantID
+// is not in the body — it's derived from the auth key on the handler.
+type ConnectInput struct {
+	Livemode       bool   `json:"livemode"`
+	SecretKey      string `json:"secret_key"`
+	PublishableKey string `json:"publishable_key"`
+	WebhookSecret  string `json:"webhook_secret,omitempty"`
+}
+
+// Connect validates key shapes, writes the credentials, then calls Stripe
+// with the supplied secret to confirm it works and capture account identity.
+// A verify failure does NOT roll back the write — the row is persisted so
+// the UI can show "connected but failing verify: <reason>" and the tenant
+// can retry without re-entering keys.
+func (s *Service) Connect(ctx context.Context, tenantID string, in ConnectInput) (domain.StripeProviderCredentials, error) {
+	if tenantID == "" {
+		return domain.StripeProviderCredentials{}, errs.Required("tenant_id")
+	}
+	in.SecretKey = strings.TrimSpace(in.SecretKey)
+	in.PublishableKey = strings.TrimSpace(in.PublishableKey)
+	in.WebhookSecret = strings.TrimSpace(in.WebhookSecret)
+
+	if err := validateKeyShape(in.SecretKey, in.PublishableKey, in.WebhookSecret, in.Livemode); err != nil {
+		return domain.StripeProviderCredentials{}, err
+	}
+
+	creds, err := s.store.Upsert(ctx, UpsertInput{
+		TenantID:       tenantID,
+		Livemode:       in.Livemode,
+		SecretKey:      in.SecretKey,
+		PublishableKey: in.PublishableKey,
+		WebhookSecret:  in.WebhookSecret,
+	})
+	if err != nil {
+		return domain.StripeProviderCredentials{}, err
+	}
+
+	// Verify by calling /v1/account with the supplied key. A 200 confirms
+	// the key is valid and scoped to the intended Stripe account.
+	sc := s.newCli(in.SecretKey)
+	acct, verifyErr := sc.V1Accounts.Retrieve(ctx, nil)
+	if verifyErr != nil {
+		msg := errs.Scrub(verifyErr.Error())
+		if err := s.store.MarkVerifyFailed(ctx, tenantID, in.Livemode, msg); err != nil {
+			s.logger.ErrorContext(ctx, "mark stripe verify failed", "error", err)
+		}
+		creds.LastVerifiedError = msg
+		return creds, nil // return creds with error surfaced on the row, not as a 5xx
+	}
+
+	name := accountDisplayName(acct)
+	if err := s.store.MarkVerified(ctx, tenantID, in.Livemode, acct.ID, name); err != nil {
+		return creds, fmt.Errorf("mark verified: %w", err)
+	}
+	creds.StripeAccountID = acct.ID
+	creds.StripeAccountName = name
+	now := time.Now().UTC()
+	creds.VerifiedAt = &now
+	creds.LastVerifiedError = ""
+	return creds, nil
+}
+
+// List returns both modes' public views. Handlers enforce that the caller's
+// auth key tenant matches tenantID before calling.
+func (s *Service) List(ctx context.Context, tenantID string) ([]domain.StripeProviderCredentials, error) {
+	if tenantID == "" {
+		return nil, errs.Required("tenant_id")
+	}
+	return s.store.ListByTenant(ctx, tenantID)
+}
+
+// Delete removes credentials for a single mode. Returns errs.ErrNotFound if
+// no row exists — handler translates to 404.
+func (s *Service) Delete(ctx context.Context, tenantID string, livemode bool) error {
+	if tenantID == "" {
+		return errs.Required("tenant_id")
+	}
+	return s.store.Delete(ctx, tenantID, livemode)
+}
+
+// GetPlaintext returns the decrypted keys for a (tenant, mode) — used by the
+// client resolver and webhook verifier. Not wired to any HTTP route.
+func (s *Service) GetPlaintext(ctx context.Context, tenantID string, livemode bool) (PlaintextSecrets, error) {
+	return s.store.GetPlaintext(ctx, tenantID, livemode)
+}
+
+// LookupEndpoint resolves an opaque webhook endpoint id to the owning tenant
+// plus its decrypted signing secret. The webhook handler calls this before
+// verifying the signature on an incoming Stripe event.
+func (s *Service) LookupEndpoint(ctx context.Context, endpointID string) (EndpointLookup, error) {
+	return s.store.GetByID(ctx, endpointID)
+}
+
+// validateKeyShape rejects obviously-wrong keys before touching the DB. The
+// Stripe verify call catches revoked/bad keys but catching "sk_live_ on test
+// mode" here gives a field-level error the UI can highlight.
+func validateKeyShape(secret, publishable, webhook string, livemode bool) error {
+	wantSK := "sk_test_"
+	wantPK := "pk_test_"
+	if livemode {
+		wantSK = "sk_live_"
+		wantPK = "pk_live_"
+	}
+
+	// Restricted keys (rk_test_ / rk_live_) are also valid for secret.
+	secretPrefixes := []string{wantSK, strings.Replace(wantSK, "sk_", "rk_", 1)}
+	if !hasAnyPrefix(secret, secretPrefixes) {
+		return errs.Invalid("secret_key", fmt.Sprintf("must start with %q for this mode", wantSK))
+	}
+	if !strings.HasPrefix(publishable, wantPK) {
+		return errs.Invalid("publishable_key", fmt.Sprintf("must start with %q for this mode", wantPK))
+	}
+	if webhook != "" && !strings.HasPrefix(webhook, "whsec_") {
+		return errs.Invalid("webhook_secret", `must start with "whsec_"`)
+	}
+	return nil
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// accountDisplayName picks a human-friendly name from a Stripe account. Falls
+// back through business name → dashboard display name → email → "".
+func accountDisplayName(acct *stripe.Account) string {
+	if acct == nil {
+		return ""
+	}
+	if acct.BusinessProfile != nil && acct.BusinessProfile.Name != "" {
+		return acct.BusinessProfile.Name
+	}
+	if acct.Settings != nil && acct.Settings.Dashboard != nil && acct.Settings.Dashboard.DisplayName != "" {
+		return acct.Settings.Dashboard.DisplayName
+	}
+	return acct.Email
+}

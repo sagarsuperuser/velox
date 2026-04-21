@@ -11,6 +11,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
@@ -226,6 +227,13 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 	if stripeCustomerID == "" {
 		return domain.Invoice{}, fmt.Errorf("stripe customer ID is required")
 	}
+
+	// Seed tenantID on ctx so the per-tenant Stripe client resolver
+	// (payment.StripeClients) can look it up. Scheduler / billing-engine
+	// driven charges arrive on background ctx without tenant stamped.
+	// Livemode is already carried on ctx by authenticated callers; for
+	// background workers it defaults to live (postgres.Livemode default).
+	ctx = auth.WithTenantID(ctx, tenantID)
 
 	// Idempotency: use invoice ID as the key so retries don't create duplicate PIs
 	metadata := map[string]string{

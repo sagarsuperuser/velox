@@ -59,3 +59,25 @@ type TenantSettings struct {
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
+
+// StripeProviderCredentials holds a tenant's connection to their own Stripe
+// account for a single mode (live or test). Velox is a billing engine, not a
+// merchant of record — tenants bring their own Stripe accounts and Velox
+// orchestrates billing through the supplied keys. Secret keys and webhook
+// signing secrets are encrypted at rest; the plaintext is only present in
+// transit (Connect call → Stripe verify → DB row).
+type StripeProviderCredentials struct {
+	ID                 string     `json:"id"`
+	TenantID           string     `json:"tenant_id"`
+	Livemode           bool       `json:"livemode"`
+	StripeAccountID    string     `json:"stripe_account_id,omitempty"`
+	StripeAccountName  string     `json:"stripe_account_name,omitempty"`
+	SecretKeyLast4     string     `json:"secret_key_last4"`
+	PublishableKey     string     `json:"publishable_key"`
+	WebhookSecretLast4 string     `json:"webhook_secret_last4,omitempty"`
+	HasWebhookSecret   bool       `json:"has_webhook_secret"`
+	VerifiedAt         *time.Time `json:"verified_at,omitempty"`
+	LastVerifiedError  string     `json:"last_verified_error,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}

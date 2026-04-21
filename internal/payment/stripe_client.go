@@ -84,9 +84,9 @@ func classifyStripeError(err error) *PaymentError {
 }
 
 // ErrStripeNotConfigured is returned when a request routes to a Stripe mode
-// (live or test) for which no secret key is configured. Surfaces as an
-// explicit PaymentError rather than a nil deref so operators get an
-// actionable signal ("your test-mode key tried to charge, set STRIPE_SECRET_KEY_TEST").
+// (live or test) for which the tenant has not connected credentials. Surfaces
+// as an explicit PaymentError rather than a nil deref so operators get an
+// actionable signal ("connect Stripe under Settings → Payments").
 var ErrStripeNotConfigured = &PaymentError{Message: "stripe not configured for this mode"}
 
 // LiveStripeClient wraps the Stripe SDK for PaymentIntent operations. Despite

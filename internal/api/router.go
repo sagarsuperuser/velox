@@ -38,11 +38,13 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/subscription"
-	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
+	"github.com/sagarsuperuser/velox/internal/tenantstripe"
 	"github.com/sagarsuperuser/velox/internal/testclock"
 	"github.com/sagarsuperuser/velox/internal/usage"
 	"github.com/sagarsuperuser/velox/internal/webhook"
+
+	"github.com/stripe/stripe-go/v82"
 )
 
 // --- Scheduler health tracking ---
@@ -88,7 +90,7 @@ type Server struct {
 	PaymentReconciler  *payment.Reconciler
 }
 
-func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest string, allowUnsignedStripeWebhooks bool, clk clock.Clock) *Server {
+func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	if clk == nil {
 		clk = clock.Real()
 	}
@@ -106,15 +108,12 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 
 	// Domain handlers
 	tenantH := tenant.NewHandler(tenant.NewService(tenant.NewPostgresStore(db)))
-	stripeKey := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
-	stripeKeyTest := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY_TEST"))
-	stripeClients := payment.NewStripeClients(stripeKey, stripeKeyTest)
 	customerStore := customer.NewPostgresStore(db)
 
 	// PII + webhook-secret encryption at rest — AES-256-GCM via VELOX_ENCRYPTION_KEY.
-	// Customer PII (email, names, phone, tax IDs) and webhook signing secrets
-	// live in separate stores; we set the same encryptor on both so a key
-	// rotation or swap flows through uniformly. Without a key, both fall back
+	// Customer PII (email, names, phone, tax IDs), webhook signing secrets,
+	// and per-tenant Stripe credentials all share the same encryptor so a
+	// key rotation flows through uniformly. Without a key, they fall back
 	// to plaintext — config.go already requires the key in production.
 	var sharedEnc *crypto.Encryptor
 	if encKey := strings.TrimSpace(os.Getenv("VELOX_ENCRYPTION_KEY")); encKey != "" {
@@ -124,11 +123,25 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 		} else {
 			sharedEnc = enc
 			customerStore.SetEncryptor(enc)
-			slog.Info("encryption at rest enabled for customer PII and webhook secrets")
+			slog.Info("encryption at rest enabled for customer PII, webhook secrets, and Stripe credentials")
 		}
 	} else {
-		slog.Warn("VELOX_ENCRYPTION_KEY not set — customer PII and webhook secrets stored in plaintext")
+		slog.Warn("VELOX_ENCRYPTION_KEY not set — customer PII, webhook secrets, and Stripe credentials stored in plaintext")
 	}
+
+	// Per-tenant Stripe credentials. Each tenant connects their own Stripe
+	// account via POST /v1/settings/stripe; the service looks up the right
+	// keys per request. There are no platform-level STRIPE_SECRET_KEY env
+	// vars anymore — Velox is a billing engine, not a merchant of record.
+	tenantStripeStore := tenantstripe.NewStore(db)
+	if sharedEnc != nil {
+		tenantStripeStore.SetEncryptor(sharedEnc)
+	}
+	tenantStripeSvc := tenantstripe.NewService(tenantStripeStore, func(secretKey string) *stripe.Client {
+		return stripe.NewClient(secretKey)
+	})
+	tenantStripeH := tenantstripe.NewHandler(tenantStripeSvc)
+	stripeClients := payment.NewStripeClients(tenantStripeSvc)
 
 	pricingSvc := pricing.NewService(pricingStore)
 	customerSvc := customer.NewService(customerStore)
@@ -219,7 +232,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	})
 	dunningSvc.SetSubscriptionPauser(&subscriptionPauserAdapter{svc: subSvc}, invoiceStore)
 	dunningSvc.SetEventDispatcher(eventDispatcher)
-	webhookH := payment.NewHandler(stripeAdapter, stripeWebhookSecret, stripeWebhookSecretTest, allowUnsignedStripeWebhooks)
+	webhookH := payment.NewHandler(stripeAdapter, tenantStripeSvc)
 
 	invoiceSvc := invoice.NewService(invoiceStore, clk, settingsStore)
 	invoiceH := invoice.NewHandler(invoiceSvc, customerStore, settingsStore, invoice.HandlerDeps{
@@ -315,18 +328,11 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 	engine.SetEventDispatcher(eventDispatcher)
 	testClockSvc.SetBillingRunner(engine)
 
-	// Tax calculator: use Stripe Tax when enabled via feature flag, otherwise manual
-	manualTaxCalc := tax.NewManualCalculator(0, "") // rate resolved per-subscription at billing time
-	if (stripeKey != "" || stripeKeyTest != "") && featureSvc.IsEnabled(context.Background(), "billing.stripe_tax", "") {
-		slog.Info("stripe tax enabled, using Stripe Tax calculator with manual fallback")
-		engine.SetTaxCalculator(tax.NewStripeCalculator(stripeKey, stripeKeyTest, manualTaxCalc))
-	} else {
-		// ManualCalculator with rate 0 is a no-op — the engine still reads
-		// tenant/customer tax rates and passes them into the calculator.
-		// We leave the taxCalc nil here so the engine uses its inline legacy path
-		// which resolves rates from settings + billing profiles per subscription.
-		slog.Info("using manual tax calculation (inline)")
-	}
+	// Tax calculator: Stripe Tax wiring took operator-level sk_*/sk_test_
+	// env vars that no longer exist after the per-tenant credential refactor.
+	// Re-wiring it against stripe_provider_credentials is a separate step;
+	// for now the engine's inline manual path handles tax via settingsStore
+	// without a registered Calculator.
 
 	// Coupon discount applier: billing engine consults redemptions at finalize time.
 	engine.SetCouponApplier(couponSvc)
@@ -539,6 +545,7 @@ func NewServer(db *postgres.DB, stripeWebhookSecret, stripeWebhookSecretTest str
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/webhook-endpoints", webhookOutH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyRead)).Mount("/audit-log", auditH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
+		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings/stripe", tenantStripeH.Routes())
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/analytics", analyticsH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/feature-flags", featureH.Routes())
 		r.With(auth.Require(auth.PermTestClockWrite)).Mount("/test-clocks", testClockH.Routes())

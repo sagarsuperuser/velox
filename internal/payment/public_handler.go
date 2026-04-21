@@ -131,8 +131,7 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	var invLivemode bool
 	_ = h.db.Pool.QueryRowContext(r.Context(),
 		`SELECT livemode FROM invoices WHERE id = $1`, token.InvoiceID).Scan(&invLivemode)
-	ctx := postgres.WithLivemode(r.Context(), invLivemode)
-	sc := h.clients.ForCtx(ctx)
+	sc := h.clients.For(r.Context(), token.TenantID, invLivemode)
 	if sc == nil {
 		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
 			"stripe not configured for this mode")
