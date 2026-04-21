@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
 )
@@ -88,6 +89,10 @@ func (r *Reconciler) Run(ctx context.Context, limit int) (int, []error) {
 // reconcileOne queries Stripe for the PI and transitions the invoice to
 // succeeded / failed / still-unknown based on the returned status.
 func (r *Reconciler) reconcileOne(ctx context.Context, inv domain.Invoice) (bool, error) {
+	// Stamp the invoice's tenant onto ctx so the per-tenant Stripe client
+	// resolver can look up credentials. Background ctx has no auth.
+	ctx = auth.WithTenantID(ctx, inv.TenantID)
+
 	if inv.StripePaymentIntentID == "" {
 		// No PI ID was returned with the ambiguous error — we cannot query
 		// Stripe. Mark the invoice failed so the operator / dunning flow

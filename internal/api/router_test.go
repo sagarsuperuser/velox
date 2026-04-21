@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -14,15 +13,8 @@ import (
 func newTestServer() *Server {
 	// Create server with nil DB — handlers that don't touch DB will work,
 	// auth middleware will reject (no valid keys), which is what we want to test.
-	// Clear Stripe key so NewServer doesn't try to initialize real Stripe clients
-	// (which would panic with nil DB). This can happen when `make test-unit` exports
-	// .env vars into the test environment.
-	prev := os.Getenv("STRIPE_SECRET_KEY")
-	_ = os.Setenv("STRIPE_SECRET_KEY", "")
-	defer func() { _ = os.Setenv("STRIPE_SECRET_KEY", prev) }()
-
 	db := &postgres.DB{}
-	return NewServer(db, "", "", true, nil)
+	return NewServer(db, nil)
 }
 
 func TestHealthEndpoint(t *testing.T) {

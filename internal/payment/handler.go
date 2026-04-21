@@ -1,10 +1,12 @@
 package payment
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,9 +18,11 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/tenantstripe"
 )
 
 const (
@@ -26,64 +30,74 @@ const (
 	signatureToleranceSec = 300   // 5 minutes
 )
 
-type Handler struct {
-	stripe            *Stripe
-	webhookSecretLive string // Stripe live-mode signing secret
-	webhookSecretTest string // Stripe test-mode signing secret (optional)
-	// allowUnsigned lets the handler accept POSTs with NO configured secret.
-	// Only set by callers who explicitly opted in via
-	// ALLOW_UNSIGNED_STRIPE_WEBHOOKS=1 in local env. Production/staging
-	// configs fail startup before we ever reach here when no secret is set,
-	// so in those envs this field is always false.
-	allowUnsigned bool
+// EndpointResolver is the narrow surface the webhook handler needs from
+// tenantstripe.Service. Exists so the handler can be tested without a DB.
+type EndpointResolver interface {
+	LookupEndpoint(ctx context.Context, endpointID string) (tenantstripe.EndpointLookup, error)
 }
 
-// NewHandler accepts both the live and test Stripe webhook signing secrets.
-// Dispatch between modes happens per-event at verification time: we accept
-// either secret, and the event's own livemode field decides which downstream
-// context to process it under. Passing "" for the test secret disables
-// test-mode webhook intake (live-only deployment).
-//
-// allowUnsigned opts this handler into the "no secrets configured" path —
-// only honored when at least one caller (config.Load in local env with
-// ALLOW_UNSIGNED_STRIPE_WEBHOOKS=1) has explicitly said "yes, accept
-// unsigned". Any non-local deployment should pass false; config.validateFatal
-// enforces that a secret is configured before NewHandler ever runs there.
-func NewHandler(stripe *Stripe, webhookSecretLive, webhookSecretTest string, allowUnsigned bool) *Handler {
+type Handler struct {
+	stripe    *Stripe
+	endpoints EndpointResolver
+}
+
+// NewHandler wires the Stripe webhook receiver. Credentials (signing secret,
+// tenant id, livemode) are resolved per request via the endpoint id embedded
+// in the URL path — there is no operator-level secret: each tenant registers
+// their own webhook endpoint in their own Stripe dashboard pointing at
+// /v1/webhooks/stripe/{endpoint_id}, where endpoint_id is the
+// stripe_provider_credentials.id (vlx_spc_XXX) Velox handed them when they
+// connected. Moving secrets off env vars is the whole point of the per-
+// tenant model (see migration 0032).
+func NewHandler(stripe *Stripe, endpoints EndpointResolver) *Handler {
 	return &Handler{
-		stripe:            stripe,
-		webhookSecretLive: webhookSecretLive,
-		webhookSecretTest: webhookSecretTest,
-		allowUnsigned:     allowUnsigned,
+		stripe:    stripe,
+		endpoints: endpoints,
 	}
 }
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
-	r.Post("/stripe", h.handleStripeWebhook)
+	r.Post("/stripe/{endpoint_id}", h.handleStripeWebhook)
 	return r
 }
 
 func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
+	endpointID := chi.URLParam(r, "endpoint_id")
+	if endpointID == "" {
+		respond.NotFound(w, r, "webhook_endpoint")
+		return
+	}
+
+	// Look up the tenant-owned endpoint BEFORE reading the body — a bogus URL
+	// shouldn't even buffer the payload.
+	lookup, err := h.endpoints.LookupEndpoint(r.Context(), endpointID)
+	if err != nil {
+		if errors.Is(err, errs.ErrNotFound) {
+			// Tenant disconnected / never registered the webhook, or someone
+			// is probing random endpoint ids. 404 either way — don't leak
+			// the distinction.
+			respond.NotFound(w, r, "webhook_endpoint")
+			return
+		}
+		slog.ErrorContext(r.Context(), "webhook endpoint lookup failed",
+			"endpoint_id", endpointID, "error", err)
+		respond.InternalError(w, r)
+		return
+	}
+
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
 	if err != nil {
 		respond.BadRequest(w, r, "failed to read body")
 		return
 	}
 
-	// Verify Stripe signature against both (live, test) secrets. The event
-	// carries its own livemode field, but we must NOT trust untrusted payload
-	// data — so we verify the signature first against whichever secret
-	// accepts it, then use the matched secret's mode as the authoritative
-	// classification. Falling back gracefully if the operator only has one
-	// secret configured mirrors NewStripeClients' tolerance.
 	sigHeader := r.Header.Get("Stripe-Signature")
-	eventLivemode, ok := verifyWebhookDualSecret(body, sigHeader, h.webhookSecretLive, h.webhookSecretTest, h.allowUnsigned)
-	if !ok {
+	if err := verifyStripeSignature(body, sigHeader, lookup.WebhookSecret); err != nil {
 		slog.WarnContext(r.Context(), "stripe webhook signature verification failed",
-			"live_secret_set", h.webhookSecretLive != "",
-			"test_secret_set", h.webhookSecretTest != "",
-			"allow_unsigned", h.allowUnsigned,
+			"endpoint_id", endpointID,
+			"tenant_id", lookup.TenantID,
+			"reason", err.Error(),
 		)
 		respond.BadRequest(w, r, "invalid signature")
 		return
@@ -104,13 +118,15 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Signature-verified livemode takes precedence over the payload's self-
-	// declared livemode. If they disagree, the event is malformed or was
-	// signed with the wrong secret — reject to avoid processing a test event
-	// under live tenancy or vice versa.
-	if raw.Livemode != eventLivemode {
+	// The credentials row's livemode is authoritative — it's what the secret
+	// was registered against. A tenant can't cross the streams by forging a
+	// payload livemode because the HMAC above already rejected anything not
+	// signed by the mode-specific secret.
+	if raw.Livemode != lookup.Livemode {
 		slog.WarnContext(r.Context(), "stripe webhook livemode mismatch",
-			"signature_mode", eventLivemode,
+			"endpoint_id", endpointID,
+			"tenant_id", lookup.TenantID,
+			"endpoint_mode", lookup.Livemode,
 			"payload_mode", raw.Livemode,
 			"stripe_event_id", raw.ID,
 		)
@@ -133,10 +149,25 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(raw.Data.Object, &obj)
 
-	// Determine tenant from metadata
-	tenantID := obj.Metadata["velox_tenant_id"]
-	if tenantID == "" {
-		// Not a Velox-originated payment intent — acknowledge but skip
+	// Defense in depth: velox_tenant_id in metadata should match the
+	// endpoint's tenant. If they disagree, someone's Stripe account is
+	// configured with the wrong endpoint — reject so we don't write one
+	// tenant's webhook into another's invoice rows.
+	metaTenant := obj.Metadata["velox_tenant_id"]
+	if metaTenant != "" && metaTenant != lookup.TenantID {
+		slog.WarnContext(r.Context(), "stripe webhook tenant mismatch",
+			"endpoint_id", endpointID,
+			"endpoint_tenant", lookup.TenantID,
+			"metadata_tenant", metaTenant,
+			"stripe_event_id", raw.ID,
+		)
+		respond.BadRequest(w, r, "tenant mismatch")
+		return
+	}
+
+	if metaTenant == "" {
+		// Not a Velox-originated payment intent (tenant fires their own
+		// Stripe objects at the same endpoint). Acknowledge and skip.
 		respond.JSON(w, r, http.StatusOK, map[string]string{"status": "skipped", "reason": "no velox metadata"})
 		return
 	}
@@ -164,17 +195,19 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		InvoiceID:          obj.Metadata["velox_invoice_id"],
 		Payload:            map[string]any{"raw": string(body)},
 		OccurredAt:         time.Unix(raw.Created, 0).UTC(),
+		Livemode:           lookup.Livemode,
 	}
 
-	// Stage the ctx with the verified livemode before handing off to the
-	// adapter — the adapter's DB writes go through BeginTx which reads
-	// ctx livemode to set app.livemode on the session.
-	ctx := postgres.WithLivemode(r.Context(), eventLivemode)
-	event.Livemode = eventLivemode
-	if err := h.stripe.HandleWebhook(ctx, tenantID, event); err != nil {
+	// Stage ctx with the endpoint's tenant + livemode before handing off —
+	// adapter DB writes read ctx tenant/livemode to satisfy RLS policies.
+	ctx := auth.WithTenantID(r.Context(), lookup.TenantID)
+	ctx = postgres.WithLivemode(ctx, lookup.Livemode)
+
+	if err := h.stripe.HandleWebhook(ctx, lookup.TenantID, event); err != nil {
 		slog.ErrorContext(ctx, "webhook processing failed",
 			"stripe_event_id", raw.ID,
 			"event_type", raw.Type,
+			"tenant_id", lookup.TenantID,
 			"error", err,
 		)
 		// Return 200 anyway — Stripe will retry on 5xx and we don't want infinite retries
@@ -185,37 +218,6 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "processed"})
-}
-
-// verifyWebhookDualSecret tries to verify the signature against each provided
-// secret in turn. Returns the livemode implied by the matched secret (true
-// for live, false for test) and ok=true on any match. When both secrets are
-// empty and allowUnsigned=false (the default / non-local deployment path)
-// the verifier refuses to match — a deployment that forgot to configure
-// STRIPE_WEBHOOK_SECRET must never silently accept unsigned events. Only
-// local-dev callers who explicitly opted in (ALLOW_UNSIGNED_STRIPE_WEBHOOKS=1)
-// reach the permissive branch.
-func verifyWebhookDualSecret(payload []byte, sigHeader, liveSecret, testSecret string, allowUnsigned bool) (bool, bool) {
-	if liveSecret == "" && testSecret == "" {
-		if allowUnsigned {
-			// Local-dev opt-in: accept and default to live for downstream
-			// processing. Production/staging validators refuse startup before
-			// this branch is reachable.
-			return true, true
-		}
-		return false, false
-	}
-	if liveSecret != "" {
-		if err := verifyStripeSignature(payload, sigHeader, liveSecret); err == nil {
-			return true, true
-		}
-	}
-	if testSecret != "" {
-		if err := verifyStripeSignature(payload, sigHeader, testSecret); err == nil {
-			return false, true
-		}
-	}
-	return false, false
 }
 
 // verifyStripeSignature verifies the Stripe-Signature header using HMAC-SHA256.

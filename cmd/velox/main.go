@@ -148,10 +148,8 @@ func serve() {
 	}
 
 	db := postgres.NewDB(appPool, cfg.DB.QueryTimeout)
-	webhookSecret := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))          // set by injectSecret above
-	webhookSecretTest := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET_TEST")) // optional; test-mode webhooks only
 
-	server := api.NewServer(db, webhookSecret, webhookSecretTest, cfg.StripeAllowUnsignedWebhooks, nil)
+	server := api.NewServer(db, nil)
 
 	billingInterval := 1 * time.Hour
 	if cfg.Env == "local" {
@@ -340,7 +338,6 @@ Environment:
   PORT                      HTTP port (default: 8080)
   APP_ENV                   Environment: local, staging, production (default: local)
   RUN_MIGRATIONS_ON_BOOT    Run migrations on server start (default: false)
-  STRIPE_WEBHOOK_SECRET     Stripe webhook signing secret
   VELOX_BOOTSTRAP_TOKEN     Token for POST /v1/bootstrap endpoint
   PAYMENT_UPDATE_URL        Base URL for payment update page (e.g. https://app.example.com/update-payment)
   VELOX_ENCRYPTION_KEY      64-char hex key for PII encryption at rest

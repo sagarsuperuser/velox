@@ -70,6 +70,15 @@ func TenantID(ctx context.Context) string {
 	return v
 }
 
+// WithTenantID returns a derived context carrying tenantID. Middleware uses
+// this indirectly via its own WithValue call; background workers (reconciler,
+// billing engine charge loop) use this explicitly to seed the tenant ctx
+// before calling Stripe-resolver-backed clients so per-tenant credentials
+// can be looked up.
+func WithTenantID(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, tenantIDKey, tenantID)
+}
+
 func KeyID(ctx context.Context) string {
 	v, _ := ctx.Value(apiKeyIDKey).(string)
 	return v
