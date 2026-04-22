@@ -81,6 +81,7 @@ func (s *Store) Upsert(ctx context.Context, in UpsertInput) (domain.StripeProvid
 		return domain.StripeProviderCredentials{}, fmt.Errorf("encrypt secret key: %w", err)
 	}
 	secretLast4 := last4(in.SecretKey)
+	secretPrefix := keyPrefix(in.SecretKey)
 
 	var webhookEnc, webhookLast4 sql.NullString
 	if in.WebhookSecret != "" {
@@ -101,13 +102,14 @@ func (s *Store) Upsert(ctx context.Context, in UpsertInput) (domain.StripeProvid
 	const q = `
 		INSERT INTO stripe_provider_credentials (
 			tenant_id, livemode,
-			secret_key_encrypted, secret_key_last4, publishable_key,
+			secret_key_encrypted, secret_key_last4, secret_key_prefix, publishable_key,
 			webhook_secret_encrypted, webhook_secret_last4
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (tenant_id, livemode) DO UPDATE SET
 			secret_key_encrypted     = EXCLUDED.secret_key_encrypted,
 			secret_key_last4         = EXCLUDED.secret_key_last4,
+			secret_key_prefix        = EXCLUDED.secret_key_prefix,
 			publishable_key          = EXCLUDED.publishable_key,
 			webhook_secret_encrypted = COALESCE(EXCLUDED.webhook_secret_encrypted, stripe_provider_credentials.webhook_secret_encrypted),
 			webhook_secret_last4     = COALESCE(EXCLUDED.webhook_secret_last4, stripe_provider_credentials.webhook_secret_last4),
@@ -115,14 +117,14 @@ func (s *Store) Upsert(ctx context.Context, in UpsertInput) (domain.StripeProvid
 			last_verified_error      = NULL,
 			updated_at               = NOW()
 		RETURNING id, tenant_id, livemode, stripe_account_id, stripe_account_name,
-			secret_key_last4, publishable_key, webhook_secret_last4,
+			secret_key_prefix, secret_key_last4, publishable_key, webhook_secret_last4,
 			(webhook_secret_encrypted IS NOT NULL),
 			verified_at, last_verified_error, created_at, updated_at
 	`
 
 	row := tx.QueryRowContext(ctx, q,
 		in.TenantID, in.Livemode,
-		secretEnc, secretLast4, in.PublishableKey,
+		secretEnc, secretLast4, secretPrefix, in.PublishableKey,
 		webhookEnc, webhookLast4,
 	)
 
@@ -198,7 +200,7 @@ func (s *Store) ListByTenant(ctx context.Context, tenantID string) ([]domain.Str
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, tenant_id, livemode, stripe_account_id, stripe_account_name,
-		       secret_key_last4, publishable_key, webhook_secret_last4,
+		       secret_key_prefix, secret_key_last4, publishable_key, webhook_secret_last4,
 		       (webhook_secret_encrypted IS NOT NULL),
 		       verified_at, last_verified_error, created_at, updated_at
 		FROM stripe_provider_credentials
@@ -253,6 +255,57 @@ func (s *Store) GetPlaintext(ctx context.Context, tenantID string, livemode bool
 		if out.WebhookSecret, err = s.enc.Decrypt(webhookEnc.String); err != nil {
 			return PlaintextSecrets{}, fmt.Errorf("decrypt webhook secret: %w", err)
 		}
+	}
+	return out, nil
+}
+
+// SetWebhookSecret updates only the webhook_secret_encrypted / _last4 columns
+// on an existing (tenant, livemode) row. Returns errs.ErrNotFound when no row
+// exists — the tenant must complete Connect (API keys) first. The API-key
+// verify status is left untouched: verified_at / last_verified_error are
+// unchanged because we haven't re-probed Stripe.
+func (s *Store) SetWebhookSecret(ctx context.Context, tenantID string, livemode bool, plaintext string) (domain.StripeProviderCredentials, error) {
+	if tenantID == "" {
+		return domain.StripeProviderCredentials{}, errs.Required("tenant_id")
+	}
+	if plaintext == "" {
+		return domain.StripeProviderCredentials{}, errs.Required("webhook_secret")
+	}
+
+	enc, err := s.enc.Encrypt(plaintext)
+	if err != nil {
+		return domain.StripeProviderCredentials{}, fmt.Errorf("encrypt webhook secret: %w", err)
+	}
+	lastFour := last4(plaintext)
+
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return domain.StripeProviderCredentials{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	const q = `
+		UPDATE stripe_provider_credentials
+		SET webhook_secret_encrypted = $3,
+		    webhook_secret_last4     = $4,
+		    updated_at               = NOW()
+		WHERE tenant_id = $1 AND livemode = $2
+		RETURNING id, tenant_id, livemode, stripe_account_id, stripe_account_name,
+			secret_key_prefix, secret_key_last4, publishable_key, webhook_secret_last4,
+			(webhook_secret_encrypted IS NOT NULL),
+			verified_at, last_verified_error, created_at, updated_at
+	`
+
+	row := tx.QueryRowContext(ctx, q, tenantID, livemode, enc, lastFour)
+	out, err := scanPublic(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.StripeProviderCredentials{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.StripeProviderCredentials{}, fmt.Errorf("update webhook secret: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.StripeProviderCredentials{}, fmt.Errorf("commit: %w", err)
 	}
 	return out, nil
 }
@@ -350,7 +403,7 @@ func scanPublic(r scanner) (domain.StripeProviderCredentials, error) {
 	err := r.Scan(
 		&c.ID, &c.TenantID, &c.Livemode,
 		&accountID, &accountName,
-		&c.SecretKeyLast4, &c.PublishableKey, &webhookLast4, &c.HasWebhookSecret,
+		&c.SecretKeyPrefix, &c.SecretKeyLast4, &c.PublishableKey, &webhookLast4, &c.HasWebhookSecret,
 		&verifiedAt, &verifyErr, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
@@ -372,4 +425,17 @@ func last4(s string) string {
 		return s
 	}
 	return s[len(s)-4:]
+}
+
+// keyPrefix captures the leading portion of a Stripe API key to display
+// Stripe-dashboard-style ("sk_live_51ab••••••••wxyz"). 12 chars covers the
+// type prefix (sk_live_ / rk_test_ / etc., 8 chars) plus 4 account-identifying
+// chars — matches what tenants see in their Stripe dashboard, enough to tell
+// keys apart at a glance, too short to be useful to an attacker.
+func keyPrefix(s string) string {
+	const n = 12
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
 }

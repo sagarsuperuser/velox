@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, type Customer, type CustomerOverview, type BillingProfile, type UsageSummary, type Meter, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, type Customer, type BillingProfile, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
@@ -17,7 +17,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
-import { Switch } from '@/components/ui/switch'
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
@@ -30,10 +29,18 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { Loader2, Pencil, CreditCard, Archive } from 'lucide-react'
+import { Loader2, Pencil, CreditCard, Archive, Wand2 } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
+import { Combobox } from '@/components/Combobox'
+import {
+  COUNTRIES,
+  COUNTRY_NAME,
+  CURRENCIES as GEO_CURRENCIES,
+  statesForCountry,
+  stateLabelForCountry,
+  postalPlaceholderForCountry,
+} from '@/lib/geo'
 
 const statusVariant = statusBadgeVariant
 
@@ -50,19 +57,14 @@ const billingProfileSchema = z.object({
   address_line1: z.string(), address_line2: z.string(),
   city: z.string(), state: z.string(), postal_code: z.string(),
   country: z.string(), currency: z.string(),
-  tax_exempt: z.boolean(),
+  tax_status: z.enum(['standard', 'exempt', 'reverse_charge']),
+  tax_exempt_reason: z.string().max(500, 'Must be at most 500 characters'),
   tax_id: z.string(), tax_id_type: z.string(),
-  tax_override_rate_bp: z.string(),
-})
+}).refine(
+  d => d.tax_status !== 'exempt' || d.tax_exempt_reason.trim().length > 0,
+  { message: 'Exempt reason is required when tax status is Exempt', path: ['tax_exempt_reason'] }
+)
 type BillingProfileData = z.infer<typeof billingProfileSchema>
-
-const createSubFromCustomerSchema = z.object({
-  display_name: z.string().min(1, 'Display name is required'),
-  code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
-  plan_id: z.string().min(1, 'Plan is required'),
-  start_now: z.boolean(),
-})
-type CreateSubFromCustomerData = z.infer<typeof createSubFromCustomerSchema>
 
 export default function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -101,11 +103,11 @@ export default function CustomerDetailPage() {
 
   const { data: metersData } = useQuery({
     queryKey: ['meters'],
-    queryFn: () => api.listMeters().then(r => r.data),
+    queryFn: () => api.listMeters(),
   })
 
   const meterMap: Record<string, { name: string; unit: string }> = {}
-  metersData?.forEach(m => { meterMap[m.id] = { name: m.name, unit: m.unit }; meterMap[m.key] = { name: m.name, unit: m.unit } })
+  metersData?.data?.forEach(m => { meterMap[m.id] = { name: m.name, unit: m.unit }; meterMap[m.key] = { name: m.name, unit: m.unit } })
 
   const { data: plans } = useQuery({
     queryKey: ['plans-active'],
@@ -264,11 +266,9 @@ export default function CustomerDetailPage() {
           )}
           {customer.status === 'active' && (
             <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="outline" size="sm" className="text-destructive hover:text-destructive">
-                  <Archive size={14} className="mr-1.5" />
-                  Archive
-                </Button>
+              <AlertDialogTrigger render={<Button variant="outline" size="sm" className="text-destructive hover:text-destructive" />}>
+                <Archive size={14} className="mr-1.5" />
+                Archive
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
@@ -371,54 +371,96 @@ export default function CustomerDetailPage() {
                 )}
               </div>
             </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-5">
-                <div>
-                  <p className="text-sm text-muted-foreground">Legal Name</p>
-                  <p className="text-sm text-foreground mt-1">{billingProfile.legal_name || '\u2014'}</p>
+            <CardContent className="space-y-6">
+              {/* Contact */}
+              <section>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-3">Contact</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-x-8 gap-y-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Legal Name</p>
+                    <p className="text-sm text-foreground mt-1">{billingProfile.legal_name || '\u2014'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Email</p>
+                    <p className="text-sm text-foreground mt-1">{billingProfile.email || '\u2014'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Phone</p>
+                    <p className="text-sm text-foreground mt-1">{billingProfile.phone || '\u2014'}</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Email</p>
-                  <p className="text-sm text-foreground mt-1">{billingProfile.email || '\u2014'}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Phone</p>
-                  <p className="text-sm text-foreground mt-1">{billingProfile.phone || '\u2014'}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Address</p>
-                  {billingProfile.address_line1 || billingProfile.city ? (
-                    <div className="text-sm text-foreground mt-1 leading-relaxed">
-                      {billingProfile.address_line1 && <p>{billingProfile.address_line1}</p>}
-                      {billingProfile.address_line2 && <p>{billingProfile.address_line2}</p>}
+              </section>
+
+              <Separator />
+
+              {/* Address */}
+              <section>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-3">Address</p>
+                {billingProfile.address_line1 || billingProfile.city || billingProfile.country ? (
+                  <div className="text-sm text-foreground leading-relaxed">
+                    {billingProfile.address_line1 && <p>{billingProfile.address_line1}</p>}
+                    {billingProfile.address_line2 && <p>{billingProfile.address_line2}</p>}
+                    {(billingProfile.city || billingProfile.state || billingProfile.postal_code) && (
                       <p>
                         {[billingProfile.city, billingProfile.state].filter(Boolean).join(', ')}
                         {billingProfile.postal_code && ` ${billingProfile.postal_code}`}
                       </p>
-                      {billingProfile.country && <p>{billingProfile.country}</p>}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground mt-1">\u2014</p>
-                  )}
+                    )}
+                    {billingProfile.country && <p>{COUNTRY_NAME[billingProfile.country] || billingProfile.country}</p>}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No address on file</p>
+                )}
+              </section>
+
+              <Separator />
+
+              {/* Tax */}
+              <section>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Tax</p>
+                  {billingProfile.tax_status === 'exempt' && <Badge variant="warning">Exempt</Badge>}
+                  {billingProfile.tax_status === 'reverse_charge' && <Badge variant="outline">Reverse charge</Badge>}
                 </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Tax ID</p>
-                  <p className="text-sm text-foreground mt-1 font-mono">{billingProfile.tax_id || '\u2014'}</p>
-                  {billingProfile.tax_id_type && <p className="text-xs text-muted-foreground mt-0.5 uppercase">{billingProfile.tax_id_type}</p>}
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Tax Override</p>
-                  <p className="text-sm text-foreground mt-1">
-                    {billingProfile.tax_override_rate_bp != null
-                      ? `${(billingProfile.tax_override_rate_bp / 100).toFixed(2)}%`
-                      : '\u2014'}
+                {billingProfile.tax_status === 'exempt' ? (
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">Tax-exempt — invoices issue with zero tax and an audit note.</p>
+                    {billingProfile.tax_exempt_reason && (
+                      <p className="text-sm text-foreground">
+                        <span className="text-xs text-muted-foreground">Reason: </span>
+                        {billingProfile.tax_exempt_reason}
+                      </p>
+                    )}
+                  </div>
+                ) : billingProfile.tax_status === 'reverse_charge' ? (
+                  <p className="text-sm text-muted-foreground">
+                    B2B reverse charge — tax is zero on the invoice; the buyer self-accounts for VAT/GST in their jurisdiction.
                   </p>
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Currency</p>
-                  <p className="text-sm text-foreground mt-1">{billingProfile.currency ? billingProfile.currency.toUpperCase() : 'Default (from settings)'}</p>
-                </div>
-              </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Tax ID Type</p>
+                      <p className="text-sm text-foreground mt-1 uppercase">{billingProfile.tax_id_type || '\u2014'}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Tax ID</p>
+                      <p className="text-sm text-foreground mt-1 font-mono">{billingProfile.tax_id || '\u2014'}</p>
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              <Separator />
+
+              {/* Currency */}
+              <section>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-3">Currency</p>
+                <p className="text-sm text-foreground">
+                  {billingProfile.currency
+                    ? billingProfile.currency.toUpperCase()
+                    : <span className="text-muted-foreground">Use tenant default</span>}
+                </p>
+              </section>
             </CardContent>
           </>
         ) : (
@@ -663,9 +705,10 @@ export default function CustomerDetailPage() {
       )}
 
       {/* Edit Billing Profile Dialog */}
-      {showEditBilling && id && (
+      {showEditBilling && id && customer && (
         <EditBillingProfileDialog
           customerId={id}
+          customer={customer}
           profile={billingProfile ?? null}
           onClose={() => setShowEditBilling(false)}
           onSaved={() => {
@@ -801,7 +844,7 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
           </div>
           <div className="space-y-2">
             <Label>Plan</Label>
-            <Select value={planId} onValueChange={(v) => { setPlanId(v); setPlanError('') }}>
+            <Select value={planId} onValueChange={(v) => { setPlanId(v ?? ''); setPlanError('') }}>
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Select plan...">
                   {(value: string) => {
@@ -836,48 +879,20 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
 
 /* ─── Edit Billing Profile ───────────────────────────────────── */
 
-const US_STATES = [
-  ['AL','Alabama'],['AK','Alaska'],['AZ','Arizona'],['AR','Arkansas'],['CA','California'],
-  ['CO','Colorado'],['CT','Connecticut'],['DE','Delaware'],['DC','District of Columbia'],['FL','Florida'],
-  ['GA','Georgia'],['HI','Hawaii'],['ID','Idaho'],['IL','Illinois'],['IN','Indiana'],
-  ['IA','Iowa'],['KS','Kansas'],['KY','Kentucky'],['LA','Louisiana'],['ME','Maine'],
-  ['MD','Maryland'],['MA','Massachusetts'],['MI','Michigan'],['MN','Minnesota'],['MS','Mississippi'],
-  ['MO','Missouri'],['MT','Montana'],['NE','Nebraska'],['NV','Nevada'],['NH','New Hampshire'],
-  ['NJ','New Jersey'],['NM','New Mexico'],['NY','New York'],['NC','North Carolina'],['ND','North Dakota'],
-  ['OH','Ohio'],['OK','Oklahoma'],['OR','Oregon'],['PA','Pennsylvania'],['RI','Rhode Island'],
-  ['SC','South Carolina'],['SD','South Dakota'],['TN','Tennessee'],['TX','Texas'],['UT','Utah'],
-  ['VT','Vermont'],['VA','Virginia'],['WA','Washington'],['WV','West Virginia'],['WI','Wisconsin'],['WY','Wyoming'],
-]
-const CA_PROVINCES = [
-  ['AB','Alberta'],['BC','British Columbia'],['MB','Manitoba'],['NB','New Brunswick'],
-  ['NL','Newfoundland and Labrador'],['NS','Nova Scotia'],['NT','Northwest Territories'],
-  ['NU','Nunavut'],['ON','Ontario'],['PE','Prince Edward Island'],['QC','Quebec'],
-  ['SK','Saskatchewan'],['YT','Yukon'],
-]
-const IN_STATES = [
-  ['AP','Andhra Pradesh'],['AR','Arunachal Pradesh'],['AS','Assam'],['BR','Bihar'],
-  ['CT','Chhattisgarh'],['GA','Goa'],['GJ','Gujarat'],['HR','Haryana'],['HP','Himachal Pradesh'],
-  ['JK','Jammu & Kashmir'],['JH','Jharkhand'],['KA','Karnataka'],['KL','Kerala'],['MP','Madhya Pradesh'],
-  ['MH','Maharashtra'],['MN','Manipur'],['ML','Meghalaya'],['MZ','Mizoram'],['NL','Nagaland'],
-  ['OD','Odisha'],['PB','Punjab'],['RJ','Rajasthan'],['SK','Sikkim'],['TN','Tamil Nadu'],
-  ['TG','Telangana'],['TR','Tripura'],['UP','Uttar Pradesh'],['UK','Uttarakhand'],['WB','West Bengal'],
-  ['DL','Delhi'],['CH','Chandigarh'],['PY','Puducherry'],
-]
-const COUNTRIES = [
-  ['US','United States'],['CA','Canada'],['GB','United Kingdom'],['DE','Germany'],['FR','France'],
-  ['IN','India'],['JP','Japan'],['AU','Australia'],['BR','Brazil'],['MX','Mexico'],
-  ['SG','Singapore'],['NL','Netherlands'],['SE','Sweden'],['CH','Switzerland'],
-]
-const CURRENCIES = [
-  ['','Default (from settings)'],['usd','USD - US Dollar'],['eur','EUR - Euro'],['gbp','GBP - British Pound'],
-  ['cad','CAD - Canadian Dollar'],['aud','AUD - Australian Dollar'],['jpy','JPY - Japanese Yen'],
-  ['inr','INR - Indian Rupee'],['chf','CHF - Swiss Franc'],['sgd','SGD - Singapore Dollar'],
-  ['brl','BRL - Brazilian Real'],['mxn','MXN - Mexican Peso'],['sek','SEK - Swedish Krona'],
-  ['nzd','NZD - New Zealand Dollar'],['hkd','HKD - Hong Kong Dollar'],['zar','ZAR - South African Rand'],
-]
+const TAX_ID_HINTS: Record<string, string> = {
+  gst: 'e.g. 29ABCDE1234F1Z5 (India GSTIN)',
+  vat: 'e.g. GB123456789 (UK), DE123456789 (EU)',
+  ein: 'e.g. 12-3456789 (US Employer ID)',
+  abn: 'e.g. 12 345 678 901 (Australia)',
+  other: 'Enter the identifier in your jurisdiction\u2019s format',
+}
 
-function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
-  customerId: string; profile: BillingProfile | null; onClose: () => void; onSaved: () => void
+function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSaved }: {
+  customerId: string
+  customer: Customer
+  profile: BillingProfile | null
+  onClose: () => void
+  onSaved: () => void
 }) {
   const defaultValues: BillingProfileData = {
     legal_name: profile?.legal_name || '',
@@ -890,10 +905,10 @@ function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
     postal_code: profile?.postal_code || '',
     country: profile?.country || '',
     currency: profile?.currency || '',
-    tax_exempt: profile?.tax_exempt || false,
+    tax_status: profile?.tax_status || 'standard',
+    tax_exempt_reason: profile?.tax_exempt_reason || '',
     tax_id: profile?.tax_id || '',
     tax_id_type: profile?.tax_id_type || '',
-    tax_override_rate_bp: profile?.tax_override_rate_bp != null ? String(profile.tax_override_rate_bp) : '',
   }
 
   const formMethods = useForm<BillingProfileData>({
@@ -901,38 +916,79 @@ function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
     defaultValues,
   })
   const { register, handleSubmit, watch, setValue, control, formState: { errors: formErrors, isSubmitting, isDirty } } = formMethods
-
   const form = watch()
 
   const onSubmit = handleSubmit(async (data) => {
     if (!isDirty) return
     try {
-      const payload = {
-        ...data,
-        tax_override_rate_bp: data.tax_override_rate_bp !== '' ? parseInt(data.tax_override_rate_bp, 10) : null,
-      }
-      await api.upsertBillingProfile(customerId, payload)
+      await api.upsertBillingProfile(customerId, data)
       onSaved()
     } catch (err) {
       applyApiError(formMethods, err, [
         'legal_name', 'email', 'phone',
         'address_line1', 'address_line2', 'city', 'state', 'postal_code', 'country',
-        'currency', 'tax_exempt', 'tax_id', 'tax_id_type', 'tax_override_rate_bp',
+        'currency', 'tax_status', 'tax_exempt_reason', 'tax_id', 'tax_id_type',
       ], { toastTitle: 'Failed to save billing profile' })
     }
   })
 
-  const stateOptions = form.country === 'US' ? US_STATES :
-    form.country === 'CA' ? CA_PROVINCES :
-    form.country === 'IN' ? IN_STATES : null
+  const fillFromCustomer = () => {
+    if (!form.legal_name && customer.display_name) {
+      setValue('legal_name', customer.display_name, { shouldDirty: true })
+    }
+    if (!form.email && customer.email) {
+      setValue('email', customer.email, { shouldDirty: true })
+    }
+  }
+
+  const countryOptions = COUNTRIES.map(([code, name]) => ({
+    value: code, label: name, keywords: [code],
+  }))
+  const statesList = statesForCountry(form.country)
+  const stateLabel = stateLabelForCountry(form.country)
+  const postalPlaceholder = postalPlaceholderForCountry(form.country)
+  const stateOptions = statesList
+    ? statesList.map(([code, name]) => ({ value: code, label: name, keywords: [code] }))
+    : null
+
+  const currencyOptions = [
+    { value: '', label: 'Use tenant default', keywords: ['default', 'tenant', 'inherit'] },
+    ...GEO_CURRENCIES.map(c => ({
+      value: c.code.toLowerCase(),
+      label: `${c.code} — ${c.label}`,
+      keywords: [c.code, c.code.toLowerCase(), c.symbol, c.label],
+      prefix: <span className="text-muted-foreground font-mono text-[11px] w-7 inline-block text-center">{c.symbol}</span>,
+    })),
+  ]
+
+  const canFillFromCustomer = !profile && (
+    (!form.legal_name && !!customer.display_name) || (!form.email && !!customer.email)
+  )
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
       <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Billing Profile</DialogTitle>
+          <DialogTitle>{profile ? 'Edit Billing Profile' : 'Set Up Billing Profile'}</DialogTitle>
         </DialogHeader>
         <form onSubmit={onSubmit} noValidate className="space-y-6">
+
+          {canFillFromCustomer && (
+            <button
+              type="button"
+              onClick={fillFromCustomer}
+              className="w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-md border border-dashed border-border bg-muted/30 hover:bg-muted text-sm text-foreground transition-colors"
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <Wand2 size={14} className="shrink-0 text-muted-foreground" />
+                <span>Use customer details for name and email</span>
+              </span>
+              <span className="text-xs text-muted-foreground truncate">
+                {customer.display_name}{customer.email && ` \u00b7 ${customer.email}`}
+              </span>
+            </button>
+          )}
+
           {/* Contact */}
           <div className="space-y-3">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Contact</p>
@@ -961,23 +1017,23 @@ function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Address</p>
             <div className="space-y-2">
               <Label>Country</Label>
-              <Select value={form.country} onValueChange={(val) => { setValue('country', val, { shouldDirty: true }); setValue('state', '', { shouldDirty: true }) }}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select country..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {COUNTRIES.map(([code, name]) => (
-                    <SelectItem key={code} value={code}>{name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Combobox
+                value={form.country}
+                onChange={(val) => {
+                  setValue('country', val, { shouldDirty: true })
+                  setValue('state', '', { shouldDirty: true })
+                }}
+                options={countryOptions}
+                placeholder="Select country..."
+                clearable
+              />
             </div>
             <div className="space-y-2">
               <Label>Street Address</Label>
               <Input maxLength={200} placeholder="123 Main Street" {...register('address_line1')} />
             </div>
             <div className="space-y-2">
-              <Label>Apt / Suite / Floor</Label>
+              <Label>Apt / Suite / Floor <span className="text-muted-foreground font-normal">(optional)</span></Label>
               <Input maxLength={200} placeholder="Suite 100" {...register('address_line2')} />
             </div>
             <div className="grid grid-cols-3 gap-4">
@@ -986,89 +1042,117 @@ function EditBillingProfileDialog({ customerId, profile, onClose, onSaved }: {
                 <Input maxLength={100} placeholder="San Francisco" {...register('city')} />
               </div>
               <div className="space-y-2">
-                <Label>{form.country === 'CA' ? 'Province' : 'State'}</Label>
+                <Label>{stateLabel}</Label>
                 {stateOptions ? (
-                  <Select value={form.state} onValueChange={(val) => setValue('state', val, { shouldDirty: true })}>
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder={`Select ${form.country === 'CA' ? 'province' : 'state'}...`} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {stateOptions.map(([code, name]) => (
-                        <SelectItem key={code} value={code}>{name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Combobox
+                    value={form.state}
+                    onChange={(val) => setValue('state', val, { shouldDirty: true })}
+                    options={stateOptions}
+                    placeholder={`Select ${stateLabel.toLowerCase()}...`}
+                    clearable
+                  />
                 ) : (
-                  <Input placeholder="State" maxLength={50} {...register('state')} />
+                  <Input placeholder={stateLabel} maxLength={100} {...register('state')} />
                 )}
               </div>
               <div className="space-y-2">
                 <Label>Postal Code</Label>
-                <Input
-                  placeholder={form.country === 'US' ? '94105' : form.country === 'GB' ? 'SW1A 1AA' : form.country === 'IN' ? '400001' : 'Postal code'}
-                  maxLength={10}
-                  {...register('postal_code')}
-                />
+                <Input placeholder={postalPlaceholder} maxLength={20} {...register('postal_code')} />
               </div>
             </div>
           </div>
 
           <Separator />
 
-          {/* Tax & Billing */}
+          {/* Tax — status picks a path: standard (tax ID fields), exempt (reason), reverse_charge (buyer's tax ID) */}
           <div className="space-y-3">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Tax & Billing</p>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Tax ID</Label>
-                <Input maxLength={50} className="font-mono" placeholder="Tax ID" {...register('tax_id')} />
-              </div>
-              <div className="space-y-2">
-                <Label>Tax ID Type</Label>
-                <Select value={form.tax_id_type} onValueChange={(val) => setValue('tax_id_type', val, { shouldDirty: true })}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select type..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="">None</SelectItem>
-                    <SelectItem value="gst">GST</SelectItem>
-                    <SelectItem value="vat">VAT</SelectItem>
-                    <SelectItem value="ein">EIN</SelectItem>
-                    <SelectItem value="abn">ABN</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Tax Rate Override (basis points)</Label>
-                <Input maxLength={5} placeholder="e.g. 1850 = 18.50%" {...register('tax_override_rate_bp')} />
-                <p className="text-xs text-muted-foreground">Leave empty to use tenant default. 1850 = 18.50%</p>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="flex items-center gap-3 pt-2">
-                <Controller
-                  name="tax_exempt"
-                  control={control}
-                  render={({ field }) => (
-                    <Switch checked={field.value} onCheckedChange={field.onChange} />
-                  )}
-                />
-                <span className="text-sm text-foreground">Tax Exempt</span>
-              </div>
-            </div>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Tax</p>
+
             <div className="space-y-2">
-              <Label>Billing Currency</Label>
-              <Select value={form.currency} onValueChange={(val) => setValue('currency', val, { shouldDirty: true })}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Default (from settings)" />
-                </SelectTrigger>
-                <SelectContent>
-                  {CURRENCIES.map(([code, label]) => (
-                    <SelectItem key={code} value={code}>{label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>Tax status</Label>
+              <Controller
+                name="tax_status"
+                control={control}
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="standard">Standard — tax applied per provider rules</SelectItem>
+                      <SelectItem value="exempt">Exempt — no tax (certificate, non-profit, etc.)</SelectItem>
+                      <SelectItem value="reverse_charge">Reverse charge — B2B buyer self-accounts</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              <p className="text-xs text-muted-foreground">
+                {form.tax_status === 'exempt'
+                  ? 'Invoice ships with zero tax and the exempt reason printed on the PDF audit trail.'
+                  : form.tax_status === 'reverse_charge'
+                    ? 'Invoice ships with zero tax and the reverse-charge VAT legend directing the buyer to self-assess.'
+                    : 'Tax is calculated by the tenant\'s configured provider.'}
+              </p>
+            </div>
+
+            {form.tax_status === 'exempt' && (
+              <div className="space-y-2">
+                <Label>Exempt reason</Label>
+                <Input
+                  maxLength={500}
+                  placeholder="e.g. 501(c)(3) non-profit — certificate on file"
+                  {...register('tax_exempt_reason')}
+                />
+                {formErrors.tax_exempt_reason
+                  ? <p className="text-xs text-destructive">{formErrors.tax_exempt_reason.message}</p>
+                  : <p className="text-xs text-muted-foreground">Printed on every invoice for this customer as audit trail.</p>}
+              </div>
+            )}
+
+            {form.tax_status !== 'exempt' && (
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Tax ID Type</Label>
+                  <Select value={form.tax_id_type} onValueChange={(val) => setValue('tax_id_type', val ?? '', { shouldDirty: true })}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select type..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">None</SelectItem>
+                      <SelectItem value="gst">GST</SelectItem>
+                      <SelectItem value="vat">VAT</SelectItem>
+                      <SelectItem value="ein">EIN</SelectItem>
+                      <SelectItem value="abn">ABN</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Tax ID</Label>
+                  <Input maxLength={50} className="font-mono" placeholder="Identifier" {...register('tax_id')} />
+                  {form.tax_id_type && TAX_ID_HINTS[form.tax_id_type] && (
+                    <p className="text-xs text-muted-foreground">{TAX_ID_HINTS[form.tax_id_type]}</p>
+                  )}
+                  {form.tax_status === 'reverse_charge' && (
+                    <p className="text-xs text-muted-foreground">Required — reverse charge is only valid when the buyer has a registered tax ID.</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <Separator />
+
+          {/* Billing */}
+          <div className="space-y-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Billing</p>
+            <div className="space-y-2">
+              <Label>Currency</Label>
+              <Combobox
+                value={form.currency}
+                onChange={(val) => setValue('currency', val, { shouldDirty: true })}
+                options={currencyOptions}
+                placeholder="Select currency..."
+              />
+              <p className="text-xs text-muted-foreground">Overrides the tenant default for invoices on this customer.</p>
             </div>
           </div>
 
@@ -1147,7 +1231,7 @@ function DunningOverrideDialog({ customerId, override, onClose, onSaved, onDelet
           </div>
           <div className="space-y-2">
             <Label>Final Action</Label>
-            <Select value={form.final_action} onValueChange={(val) => setForm(f => ({ ...f, final_action: val }))}>
+            <Select value={form.final_action} onValueChange={(val) => setForm(f => ({ ...f, final_action: val ?? '' }))}>
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Tenant default" />
               </SelectTrigger>

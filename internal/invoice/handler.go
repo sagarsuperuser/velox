@@ -489,7 +489,17 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 	var ci CompanyInfo
 	if h.settings != nil {
 		if ts, tsErr := h.settings.Get(r.Context(), tenantID); tsErr == nil {
-			ci = CompanyInfo{Name: ts.CompanyName, Email: ts.CompanyEmail, Phone: ts.CompanyPhone, Address: ts.CompanyAddress}
+			ci = CompanyInfo{
+				Name:         ts.CompanyName,
+				Email:        ts.CompanyEmail,
+				Phone:        ts.CompanyPhone,
+				AddressLine1: ts.CompanyAddressLine1,
+				AddressLine2: ts.CompanyAddressLine2,
+				City:         ts.CompanyCity,
+				State:        ts.CompanyState,
+				PostalCode:   ts.CompanyPostalCode,
+				Country:      ts.CompanyCountry,
+			}
 		}
 	}
 
@@ -822,10 +832,15 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 	if h.settings != nil {
 		if ts, err := h.settings.Get(r.Context(), tenantID); err == nil {
 			ci = CompanyInfo{
-				Name:    ts.CompanyName,
-				Email:   ts.CompanyEmail,
-				Phone:   ts.CompanyPhone,
-				Address: ts.CompanyAddress,
+				Name:         ts.CompanyName,
+				Email:        ts.CompanyEmail,
+				Phone:        ts.CompanyPhone,
+				AddressLine1: ts.CompanyAddressLine1,
+				AddressLine2: ts.CompanyAddressLine2,
+				City:         ts.CompanyCity,
+				State:        ts.CompanyState,
+				PostalCode:   ts.CompanyPostalCode,
+				Country:      ts.CompanyCountry,
 			}
 		}
 	}

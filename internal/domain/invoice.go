@@ -41,6 +41,15 @@ type Invoice struct {
 	TaxName               string               `json:"tax_name,omitempty"`
 	TaxCountry            string               `json:"tax_country,omitempty"`
 	TaxID                 string               `json:"tax_id,omitempty"`
+	// Durable audit snapshot of the tax decision. Written once at invoice
+	// build time and never mutated so a finalized invoice remains
+	// reconstructable even after the upstream provider's tax_calculation
+	// expires (Stripe Tax: 24 h). TaxCalculationID is the provider ref used
+	// by Commit to create a tax_transaction at finalize time.
+	TaxProvider       string `json:"tax_provider,omitempty"`
+	TaxCalculationID  string `json:"tax_calculation_id,omitempty"`
+	TaxReverseCharge  bool   `json:"tax_reverse_charge,omitempty"`
+	TaxExemptReason   string `json:"tax_exempt_reason,omitempty"`
 	TotalAmountCents      int64                `json:"total_amount_cents"`
 	AmountDueCents        int64                `json:"amount_due_cents"`
 	AmountPaidCents       int64                `json:"amount_paid_cents"`
@@ -110,6 +119,8 @@ type InvoiceLineItem struct {
 	AmountCents         int64               `json:"amount_cents"`
 	TaxRateBP           int64               `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
 	TaxAmountCents      int64               `json:"tax_amount_cents"`
+	TaxJurisdiction     string              `json:"tax_jurisdiction,omitempty"`
+	TaxCode             string              `json:"tax_code,omitempty"`
 	TotalAmountCents    int64               `json:"total_amount_cents"`
 	Currency            string              `json:"currency"`
 	PricingMode         string              `json:"pricing_mode,omitempty"`

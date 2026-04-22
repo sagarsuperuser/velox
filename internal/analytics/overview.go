@@ -175,49 +175,88 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusOK, resp)
 }
 
-// currentMRR sums normalized-to-monthly base fees for all active subscriptions.
+// currentMRR sums normalized-to-monthly base fees across all items of active
+// subscriptions. Each item contributes plan.base × item.quantity, normalized
+// from the plan's billing_interval.
 func currentMRR(ctx context.Context, tx *sql.Tx) (int64, error) {
 	var v int64
 	err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(
-			CASE WHEN p.billing_interval = 'yearly' THEN p.base_amount_cents / 12
-			     ELSE p.base_amount_cents
+			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * si.quantity
+			     ELSE p.base_amount_cents * si.quantity
 			END
 		), 0)
 		FROM subscriptions s
-		JOIN plans p ON p.id = s.plan_id
+		JOIN subscription_items si ON si.subscription_id = s.id
+		JOIN plans p ON p.id = si.plan_id
 		WHERE s.status = 'active'
 	`).Scan(&v)
 	return v, err
 }
 
-// mrrAtPointInTime reconstructs MRR at instant t from the current schema. It
-// accounts for (a) subscriptions already started by t and not yet canceled by
-// t, and (b) plan changes — if a sub's plan changed after t, its previous_plan
-// is used instead. With only one previous_plan_id column, multi-step plan
-// histories earlier than the most recent change are approximated as the
-// current plan.
+// mrrAtPointInTime reconstructs MRR at instant t by replaying the audit log
+// backwards from the current item state. For each item that existed at t, we
+// sum its MRR using the plan/quantity it held at that moment — rewound
+// through any subscription_item_changes that happened after t.
+//
+// Items added after t are excluded. Items removed after t are re-included
+// (using their state before removal). An item's (plan, quantity) at t is
+// derived from the most recent 'add' / 'plan' / 'quantity' event at or
+// before t; if the only change event is after t, we use the event's
+// `from_*` values as the pre-change state.
 func mrrAtPointInTime(ctx context.Context, tx *sql.Tx, t any) (int64, error) {
 	var v int64
 	err := tx.QueryRowContext(ctx, `
+		WITH items_at_t AS (
+			-- Items that existed at time $1: either still live today (and were
+			-- added on/before t) or removed after t. For each, compute the
+			-- (plan_id, quantity) as-of t by walking the change log.
+			SELECT
+				c.subscription_id,
+				c.subscription_item_id,
+				-- Latest event at or before t on this item gives its state at t.
+				-- If none exists (item added after t, then a later event), the
+				-- earliest post-t event's from_* describes the pre-change state.
+				COALESCE(
+					(SELECT c2.to_plan_id FROM subscription_item_changes c2
+					   WHERE c2.subscription_item_id = c.subscription_item_id
+					     AND c2.changed_at <= $1
+					     AND c2.change_type IN ('add', 'plan', 'quantity')
+					   ORDER BY c2.changed_at DESC LIMIT 1),
+					(SELECT c3.from_plan_id FROM subscription_item_changes c3
+					   WHERE c3.subscription_item_id = c.subscription_item_id
+					     AND c3.changed_at > $1
+					     AND c3.change_type IN ('plan', 'quantity', 'remove')
+					     AND c3.from_plan_id IS NOT NULL
+					   ORDER BY c3.changed_at ASC LIMIT 1)
+				) AS plan_id,
+				COALESCE(
+					(SELECT c2.to_quantity FROM subscription_item_changes c2
+					   WHERE c2.subscription_item_id = c.subscription_item_id
+					     AND c2.changed_at <= $1
+					     AND c2.change_type IN ('add', 'plan', 'quantity')
+					   ORDER BY c2.changed_at DESC LIMIT 1),
+					(SELECT c3.from_quantity FROM subscription_item_changes c3
+					   WHERE c3.subscription_item_id = c.subscription_item_id
+					     AND c3.changed_at > $1
+					     AND c3.change_type IN ('plan', 'quantity', 'remove')
+					     AND c3.from_quantity IS NOT NULL
+					   ORDER BY c3.changed_at ASC LIMIT 1)
+				) AS quantity
+			FROM subscription_item_changes c
+			GROUP BY c.subscription_id, c.subscription_item_id
+		)
 		SELECT COALESCE(SUM(
-			CASE WHEN eff.billing_interval = 'yearly' THEN eff.base_amount_cents / 12
-			     ELSE eff.base_amount_cents
+			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * i.quantity
+			     ELSE p.base_amount_cents * i.quantity
 			END
 		), 0)
-		FROM subscriptions s
-		JOIN LATERAL (
-			SELECT p.billing_interval, p.base_amount_cents
-			FROM plans p
-			WHERE p.id = CASE
-				WHEN s.plan_changed_at IS NOT NULL
-				  AND s.plan_changed_at > $1
-				  AND s.previous_plan_id IS NOT NULL
-				THEN s.previous_plan_id
-				ELSE s.plan_id
-			END
-		) eff ON true
-		WHERE s.activated_at IS NOT NULL
+		FROM items_at_t i
+		JOIN subscriptions s ON s.id = i.subscription_id
+		JOIN plans p ON p.id = i.plan_id
+		WHERE i.plan_id IS NOT NULL
+		  AND i.quantity IS NOT NULL
+		  AND s.activated_at IS NOT NULL
 		  AND s.activated_at <= $1
 		  AND (s.canceled_at IS NULL OR s.canceled_at > $1)
 	`, t).Scan(&v)
@@ -235,68 +274,72 @@ func sumPaidRevenue(ctx context.Context, tx *sql.Tx, start, end any) (int64, err
 }
 
 // computeMRRMovement returns gross new/expansion/contraction/churned MRR
-// within [start, end). Deltas are computed from the subscription's current
-// plan_id / previous_plan_id — a simplification that holds when a subscription
-// changes plans at most once in the period.
+// within [start, end).
+//
+// New / Churned use current subscription_items (items are preserved on
+// cancel — only the subscription's status/canceled_at change). Expansion /
+// Contraction come from the subscription_item_changes audit log, restricted
+// to subscriptions that were active throughout the period so their events
+// don't double-count against New / Churned.
 func computeMRRMovement(ctx context.Context, tx *sql.Tx, start, end any) (MRRMovementTotals, error) {
 	var m MRRMovementTotals
 
-	// New MRR: subs first activated inside the period, at their current plan.
+	// New MRR: items of subscriptions activated in [start, end).
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(
-			CASE WHEN p.billing_interval = 'yearly' THEN p.base_amount_cents / 12
-			     ELSE p.base_amount_cents
+			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * si.quantity
+			     ELSE p.base_amount_cents * si.quantity
 			END
 		), 0)
 		FROM subscriptions s
-		JOIN plans p ON p.id = s.plan_id
+		JOIN subscription_items si ON si.subscription_id = s.id
+		JOIN plans p ON p.id = si.plan_id
 		WHERE s.activated_at >= $1 AND s.activated_at < $2
 	`, start, end).Scan(&m.New); err != nil {
 		return m, err
 	}
 
-	// Churned MRR: subs canceled inside the period (use plan_id at cancel time).
+	// Churned MRR: items of subscriptions canceled in [start, end).
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(
-			CASE WHEN p.billing_interval = 'yearly' THEN p.base_amount_cents / 12
-			     ELSE p.base_amount_cents
+			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * si.quantity
+			     ELSE p.base_amount_cents * si.quantity
 			END
 		), 0)
 		FROM subscriptions s
-		JOIN plans p ON p.id = s.plan_id
+		JOIN subscription_items si ON si.subscription_id = s.id
+		JOIN plans p ON p.id = si.plan_id
 		WHERE s.canceled_at >= $1 AND s.canceled_at < $2
 	`, start, end).Scan(&m.Churned); err != nil {
 		return m, err
 	}
 
-	// Expansion / contraction: plan changes inside the period.
-	rows, err := tx.QueryContext(ctx, `
+	// Expansion / Contraction: plan or quantity changes on subs that were
+	// active throughout the period. Subs activated or canceled inside the
+	// period are excluded — their MRR impact is already in New / Churned.
+	err := tx.QueryRowContext(ctx, `
 		SELECT
-			CASE WHEN pnew.billing_interval = 'yearly' THEN pnew.base_amount_cents / 12 ELSE pnew.base_amount_cents END AS new_mrr,
-			CASE WHEN pold.billing_interval = 'yearly' THEN pold.base_amount_cents / 12 ELSE pold.base_amount_cents END AS old_mrr
-		FROM subscriptions s
-		JOIN plans pnew ON pnew.id = s.plan_id
-		JOIN plans pold ON pold.id = s.previous_plan_id
-		WHERE s.plan_changed_at IS NOT NULL
-		  AND s.plan_changed_at >= $1 AND s.plan_changed_at < $2
-	`, start, end)
+			COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0)
+		FROM (
+			SELECT (
+				(CASE WHEN pto.billing_interval = 'yearly' THEN pto.base_amount_cents / 12
+				      ELSE pto.base_amount_cents END) * c.to_quantity
+			  - (CASE WHEN pfrom.billing_interval = 'yearly' THEN pfrom.base_amount_cents / 12
+				      ELSE pfrom.base_amount_cents END) * c.from_quantity
+			) AS delta
+			FROM subscription_item_changes c
+			JOIN subscriptions s ON s.id = c.subscription_id
+			JOIN plans pfrom ON pfrom.id = c.from_plan_id
+			JOIN plans pto ON pto.id = c.to_plan_id
+			WHERE c.change_type IN ('plan', 'quantity')
+			  AND c.changed_at >= $1 AND c.changed_at < $2
+			  AND s.activated_at IS NOT NULL
+			  AND s.activated_at < $1
+			  AND (s.canceled_at IS NULL OR s.canceled_at >= $2)
+		) d
+	`, start, end).Scan(&m.Expansion, &m.Contraction)
 	if err != nil {
-		return m, err
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var newMRR, oldMRR int64
-		if err := rows.Scan(&newMRR, &oldMRR); err != nil {
-			return m, err
-		}
-		delta := newMRR - oldMRR
-		if delta > 0 {
-			m.Expansion += delta
-		} else {
-			m.Contraction += -delta
-		}
-	}
-	if err := rows.Err(); err != nil {
 		return m, err
 	}
 

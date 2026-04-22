@@ -110,9 +110,18 @@ func (h *BootstrapHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	defer postgres.Rollback(tx)
 
+	// Bootstrap seeds test-mode keys so a fresh install can connect Stripe test
+	// credentials without a live-mode detour. TxBypass doesn't set
+	// app.livemode, and the 0021 trigger on api_keys defaults it to live when
+	// unset — pin it to test here.
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.livemode', 'off', true)`); err != nil {
+		respond.InternalError(w, r)
+		return
+	}
+
 	secretKeyID := postgres.NewID("vlx_key")
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, name, tenant_id) VALUES ($1,$2,$3,'secret','Bootstrap Secret Key',$4)`,
+		`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, name, tenant_id) VALUES ($1,$2,$3,'secret','Bootstrap Secret Key (Test)',$4)`,
 		secretKeyID, secretPrefix, secretHash, tenantID); err != nil {
 		respond.InternalError(w, r)
 		return
@@ -120,7 +129,7 @@ func (h *BootstrapHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 
 	pubKeyID := postgres.NewID("vlx_key")
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, name, tenant_id) VALUES ($1,$2,$3,'publishable','Bootstrap Publishable Key',$4)`,
+		`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, name, tenant_id) VALUES ($1,$2,$3,'publishable','Bootstrap Publishable Key (Test)',$4)`,
 		pubKeyID, pubPrefix, pubHash, tenantID); err != nil {
 		respond.InternalError(w, r)
 		return

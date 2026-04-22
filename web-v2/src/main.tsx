@@ -5,9 +5,9 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { getApiKey } from '@/lib/api'
-import '@fontsource-variable/geist'
-import '@fontsource-variable/geist-mono'
+import { AuthProvider, useAuth } from '@/contexts/AuthContext'
+import '@fontsource-variable/geist/index.css'
+import '@fontsource-variable/geist-mono/index.css'
 import './index.css'
 
 // Error Boundary
@@ -61,7 +61,15 @@ const queryClient = new QueryClient({
 })
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
-  if (!getApiKey()) {
+  const { user, loading } = useAuth()
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin h-8 w-8 border-2 border-primary border-t-transparent rounded-full" />
+      </div>
+    )
+  }
+  if (!user) {
     return <Navigate to="/login" replace />
   }
   return <>{children}</>
@@ -69,6 +77,10 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
 
 // Lazy load pages
 const LoginPage = lazy(() => import('@/pages/Login'))
+const ForgotPasswordPage = lazy(() => import('@/pages/ForgotPassword'))
+const ResetPasswordPage = lazy(() => import('@/pages/ResetPassword'))
+const AcceptInvitePage = lazy(() => import('@/pages/AcceptInvite'))
+const MembersPage = lazy(() => import('@/pages/Members'))
 const DashboardPage = lazy(() => import('@/pages/Dashboard'))
 const CustomersPage = lazy(() => import('@/pages/Customers'))
 const PricingPage = lazy(() => import('@/pages/Pricing'))
@@ -96,6 +108,7 @@ const MeterDetailPage = lazy(() => import('@/pages/MeterDetail'))
 const App = () => (
   <ErrorBoundary>
     <QueryClientProvider client={queryClient}>
+      <AuthProvider>
       <TooltipProvider>
         <BrowserRouter>
           <Suspense
@@ -107,6 +120,9 @@ const App = () => (
           >
             <Routes>
               <Route path="/login" element={<LoginPage />} />
+              <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+              <Route path="/reset-password" element={<ResetPasswordPage />} />
+              <Route path="/accept-invite" element={<AcceptInvitePage />} />
               <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
               <Route path="/customers" element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
               <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
@@ -122,6 +138,7 @@ const App = () => (
               <Route path="/credit-notes" element={<ProtectedRoute><CreditNotesPage /></ProtectedRoute>} />
               <Route path="/audit-log" element={<ProtectedRoute><AuditLogPage /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+              <Route path="/members" element={<ProtectedRoute><MembersPage /></ProtectedRoute>} />
               <Route path="/customers/:id" element={<ProtectedRoute><CustomerDetailPage /></ProtectedRoute>} />
               <Route path="/invoices/:id" element={<ProtectedRoute><InvoiceDetailPage /></ProtectedRoute>} />
               <Route path="/subscriptions/:id" element={<ProtectedRoute><SubscriptionDetailPage /></ProtectedRoute>} />
@@ -135,6 +152,7 @@ const App = () => (
         </BrowserRouter>
         <Toaster position="bottom-right" richColors closeButton />
       </TooltipProvider>
+      </AuthProvider>
     </QueryClientProvider>
   </ErrorBoundary>
 )

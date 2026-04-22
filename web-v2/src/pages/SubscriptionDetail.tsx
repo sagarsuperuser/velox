@@ -64,7 +64,8 @@ export default function SubscriptionDetailPage() {
 
   const { data: plansData } = useQuery({
     queryKey: ['plans'],
-    queryFn: () => api.listPlans().then(r => r.data),
+    queryFn: () => api.listPlans(),
+    select: (res) => res.data,
   })
 
   const planById = (planID: string): Plan | undefined => plansData?.find(p => p.id === planID)

@@ -15,6 +15,8 @@ const (
 	TypePaymentFailed        = "payment_failed"
 	TypePaymentUpdateRequest = "payment_update_request"
 	TypePortalMagicLink      = "portal_magic_link"
+	TypePasswordReset        = "password_reset"
+	TypeMemberInvite         = "member_invite"
 )
 
 // outboxMessage is the union payload persisted to email_outbox.payload. Each
@@ -23,19 +25,23 @@ const (
 // serialisation ceremony — the dispatcher reads the type tag and knows which
 // fields are meaningful.
 type outboxMessage struct {
-	To            string `json:"to"`
-	CustomerName  string `json:"customer_name,omitempty"`
-	InvoiceNumber string `json:"invoice_number,omitempty"`
-	AmountCents   int64  `json:"amount_cents,omitempty"`
-	Currency      string `json:"currency,omitempty"`
-	AttemptNumber int    `json:"attempt_number,omitempty"`
-	MaxAttempts   int    `json:"max_attempts,omitempty"`
-	NextRetryDate string `json:"next_retry_date,omitempty"`
-	Action        string `json:"action,omitempty"`
-	Reason        string `json:"reason,omitempty"`
-	UpdateURL     string `json:"update_url,omitempty"`
-	MagicLinkURL  string `json:"magic_link_url,omitempty"`
-	PDF           []byte `json:"pdf,omitempty"`
+	To              string `json:"to"`
+	CustomerName    string `json:"customer_name,omitempty"`
+	InvoiceNumber   string `json:"invoice_number,omitempty"`
+	AmountCents     int64  `json:"amount_cents,omitempty"`
+	Currency        string `json:"currency,omitempty"`
+	AttemptNumber   int    `json:"attempt_number,omitempty"`
+	MaxAttempts     int    `json:"max_attempts,omitempty"`
+	NextRetryDate   string `json:"next_retry_date,omitempty"`
+	Action          string `json:"action,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	UpdateURL       string `json:"update_url,omitempty"`
+	MagicLinkURL    string `json:"magic_link_url,omitempty"`
+	PasswordResetURL string `json:"password_reset_url,omitempty"`
+	InviteURL       string `json:"invite_url,omitempty"`
+	InviterEmail    string `json:"inviter_email,omitempty"`
+	TenantName      string `json:"tenant_name,omitempty"`
+	PDF             []byte `json:"pdf,omitempty"`
 }
 
 // OutboxSender satisfies the four domain email interfaces (invoice.EmailSender,
@@ -60,18 +66,22 @@ func (s *OutboxSender) enqueue(tenantID, emailType string, msg outboxMessage) er
 		return fmt.Errorf("email outbox sender: tenant_id required for %s", emailType)
 	}
 	payload := map[string]any{
-		"to":              msg.To,
-		"customer_name":   msg.CustomerName,
-		"invoice_number":  msg.InvoiceNumber,
-		"amount_cents":    msg.AmountCents,
-		"currency":        msg.Currency,
-		"attempt_number":  msg.AttemptNumber,
-		"max_attempts":    msg.MaxAttempts,
-		"next_retry_date": msg.NextRetryDate,
-		"action":          msg.Action,
-		"reason":          msg.Reason,
-		"update_url":      msg.UpdateURL,
-		"magic_link_url":  msg.MagicLinkURL,
+		"to":                 msg.To,
+		"customer_name":      msg.CustomerName,
+		"invoice_number":     msg.InvoiceNumber,
+		"amount_cents":       msg.AmountCents,
+		"currency":           msg.Currency,
+		"attempt_number":     msg.AttemptNumber,
+		"max_attempts":       msg.MaxAttempts,
+		"next_retry_date":    msg.NextRetryDate,
+		"action":             msg.Action,
+		"reason":             msg.Reason,
+		"update_url":         msg.UpdateURL,
+		"magic_link_url":     msg.MagicLinkURL,
+		"password_reset_url": msg.PasswordResetURL,
+		"invite_url":         msg.InviteURL,
+		"inviter_email":      msg.InviterEmail,
+		"tenant_name":        msg.TenantName,
 	}
 	if len(msg.PDF) > 0 {
 		payload["pdf"] = msg.PDF
@@ -157,5 +167,28 @@ func (s *OutboxSender) SendPortalMagicLink(tenantID, to, customerName, magicLink
 		To:           to,
 		CustomerName: customerName,
 		MagicLinkURL: magicLinkURL,
+	})
+}
+
+// SendPasswordReset enqueues a password-reset email. The URL carries the
+// one-time-use raw reset token that lands the dashboard user on the
+// frontend password-reset confirmation page.
+func (s *OutboxSender) SendPasswordReset(tenantID, to, displayName, resetURL string) error {
+	return s.enqueue(tenantID, TypePasswordReset, outboxMessage{
+		To:               to,
+		CustomerName:     displayName,
+		PasswordResetURL: resetURL,
+	})
+}
+
+// SendMemberInvite enqueues a team-invite email. The URL carries the
+// raw invite token. Unlike the other flows this is tenant-initiated
+// (inviter sits inside tenantID) rather than system-initiated.
+func (s *OutboxSender) SendMemberInvite(tenantID, to, inviterEmail, tenantName, acceptURL string) error {
+	return s.enqueue(tenantID, TypeMemberInvite, outboxMessage{
+		To:           to,
+		InviterEmail: inviterEmail,
+		TenantName:   tenantName,
+		InviteURL:    acceptURL,
 	})
 }

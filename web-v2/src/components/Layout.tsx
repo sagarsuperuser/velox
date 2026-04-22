@@ -1,17 +1,24 @@
-import { useState, useEffect, useCallback, type ReactNode } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { useState, useEffect, type ReactNode } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
   Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3, Ticket,
-  Sun, Moon, Search, TrendingUp, type LucideIcon,
+  Sun, Moon, Search, TrendingUp, UsersRound, ChevronsUpDown, type LucideIcon,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { useDarkMode } from '@/hooks/useDarkMode'
 import { cn } from '@/lib/utils'
-import { api, setActiveCurrency, clearApiKey } from '@/lib/api'
-import { Button } from '@/components/ui/button'
+import { api, setActiveCurrency } from '@/lib/api'
+import { useAuth } from '@/contexts/AuthContext'
 import { Separator } from '@/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { Badge } from '@/components/ui/badge'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { CommandPalette } from '@/components/CommandPalette'
 import { VeloxLogo } from '@/components/VeloxLogo'
 
@@ -36,6 +43,7 @@ const systemNav = [
   { to: '/audit-log', icon: ScrollText, label: 'Audit Log' },
   { to: '/webhooks', icon: Globe, label: 'Webhooks' },
   { to: '/api-keys', icon: Key, label: 'API Keys' },
+  { to: '/members', icon: UsersRound, label: 'Members' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 
@@ -48,18 +56,21 @@ function NavLink({
   return (
     <div>
     <Tooltip>
-      <TooltipTrigger asChild>
-        <Link
-          to={to}
-          onClick={onClick}
-          aria-current={active ? 'page' : undefined}
-          className={cn(
-            'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-all duration-150 relative',
-            active
-              ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
-              : 'text-muted-foreground hover:text-foreground hover:bg-sidebar-accent/50 hover:translate-x-0.5'
-          )}
-        >
+      <TooltipTrigger
+        render={
+          <Link
+            to={to}
+            onClick={onClick}
+            aria-current={active ? 'page' : undefined}
+            className={cn(
+              'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-all duration-150 relative',
+              active
+                ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
+                : 'text-muted-foreground hover:text-foreground hover:bg-sidebar-accent/50 hover:translate-x-0.5'
+            )}
+          />
+        }
+      >
           {active && (
             <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-sidebar-primary" />
           )}
@@ -74,7 +85,6 @@ function NavLink({
               </span>
             )}
           </div>
-        </Link>
       </TooltipTrigger>
       <TooltipContent side="right" className="md:hidden">
         {label}
@@ -84,12 +94,69 @@ function NavLink({
   )
 }
 
+// ModeToggle — a Stripe-style Test/Live pill. The active side gets a subtle
+// surface to mark state; "Live" gets a green dot so the state is legible at
+// a glance across test/live sessions.
+function ModeToggle({ livemode, onToggle, busy }: { livemode: boolean; onToggle: () => void; busy: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={busy}
+      aria-label={`Switch to ${livemode ? 'test' : 'live'} mode`}
+      className={cn(
+        'flex items-center rounded-full border border-border bg-muted p-0.5 text-xs font-medium transition-opacity',
+        busy && 'opacity-60 cursor-not-allowed'
+      )}
+    >
+      <span
+        className={cn(
+          'px-3 py-1 rounded-full transition-colors',
+          !livemode ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'
+        )}
+      >
+        Test
+      </span>
+      <span
+        className={cn(
+          'px-3 py-1 rounded-full transition-colors flex items-center gap-1.5',
+          livemode ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'
+        )}
+      >
+        {livemode && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />}
+        Live
+      </span>
+    </button>
+  )
+}
+
 export function Layout({ children }: { children: ReactNode }) {
   const location = useLocation()
+  const navigate = useNavigate()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [commandOpen, setCommandOpen] = useState(false)
   const [navCounts, setNavCounts] = useState<Record<string, number>>({})
+  const [toggling, setToggling] = useState(false)
   const { dark, toggle: toggleDark } = useDarkMode()
+  const { user, logout, toggleLivemode } = useAuth()
+
+  const handleLogout = async () => {
+    await logout()
+    navigate('/login', { replace: true })
+  }
+
+  const handleToggleLivemode = async () => {
+    if (toggling) return
+    setToggling(true)
+    try {
+      await toggleLivemode()
+      toast.success(user?.livemode ? 'Switched to test mode' : 'Switched to live mode')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not switch mode')
+    } finally {
+      setToggling(false)
+    }
+  }
 
   // Cmd+K / Ctrl+K keyboard shortcut
   useEffect(() => {
@@ -176,32 +243,60 @@ export function Layout({ children }: { children: ReactNode }) {
         ))}
       </nav>
 
-      {/* Footer */}
-      <div className="p-3 border-t border-border space-y-1">
-        <div className="px-3 pb-2">
-          <Badge variant="outline" className="text-[10px] tracking-wide border-primary/30 text-primary">
-            v2.0
-          </Badge>
-        </div>
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-3 text-muted-foreground hover:text-foreground"
-          onClick={toggleDark}
-        >
-          {dark ? <Sun size={18} /> : <Moon size={18} />}
-          {dark ? 'Light Mode' : 'Dark Mode'}
-        </Button>
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-3 text-muted-foreground hover:text-foreground"
-          onClick={() => {
-            clearApiKey()
-            window.location.href = '/login'
-          }}
-        >
-          <LogOut size={18} />
-          Sign Out
-        </Button>
+      {/* Footer — enterprise account menu. Trigger row shows identity +
+          chevron; dropdown (opens upward) surfaces theme toggle and sign-out
+          in a full-bleed menu, matching Linear/Vercel/Notion. Version tag
+          lives inside the menu so the sidebar itself stays lean. */}
+      <div className="p-2 border-t border-border">
+        {user && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              aria-label="Account menu"
+              className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent data-[popup-open]:bg-accent outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors"
+            >
+              <div
+                aria-hidden="true"
+                className="h-7 w-7 shrink-0 rounded-full bg-gradient-to-br from-primary/25 to-primary/5 ring-1 ring-primary/20 text-primary flex items-center justify-center text-xs font-semibold"
+              >
+                {user.email.charAt(0).toUpperCase()}
+              </div>
+              <p className="text-xs text-foreground truncate flex-1 min-w-0" title={user.email}>
+                {user.email}
+              </p>
+              <ChevronsUpDown size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="top" sideOffset={8} className="w-60">
+              <div className="flex items-center gap-2.5 px-2 py-2">
+                <div
+                  aria-hidden="true"
+                  className="h-9 w-9 shrink-0 rounded-full bg-gradient-to-br from-primary/25 to-primary/5 ring-1 ring-primary/20 text-primary flex items-center justify-center text-sm font-semibold"
+                >
+                  {user.email.charAt(0).toUpperCase()}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground truncate" title={user.email}>
+                    {user.email}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">Signed in</p>
+                </div>
+              </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={toggleDark}>
+                {dark ? <Sun /> : <Moon />}
+                <span>{dark ? 'Light mode' : 'Dark mode'}</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onClick={handleLogout}>
+                <LogOut />
+                <span>Sign out</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <p className="px-2 py-1 text-[10px] text-muted-foreground/60 text-center tracking-wide">
+                Velox v2.0
+              </p>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
     </>
   )
@@ -233,16 +328,21 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {/* Main content */}
       <main className="flex-1 overflow-auto bg-background">
-        {/* Mobile header */}
-        <div className="md:hidden flex items-center gap-3 px-4 py-3 border-b border-border bg-card sticky top-0 z-20">
+        {/* Top bar — always visible. Mobile adds a hamburger, desktop leaves
+            the left empty; the right carries the Test/Live toggle. */}
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-card sticky top-0 z-20">
           <button
             onClick={() => setSidebarOpen(true)}
             aria-label="Open menu"
-            className="text-muted-foreground hover:text-foreground"
+            className="md:hidden text-muted-foreground hover:text-foreground"
           >
             <Menu size={22} />
           </button>
-          <VeloxLogo size="sm" />
+          <div className="md:hidden">
+            <VeloxLogo size="sm" />
+          </div>
+          <div className="flex-1" />
+          {user && <ModeToggle livemode={user.livemode} onToggle={handleToggleLivemode} busy={toggling} />}
         </div>
         <div className="max-w-7xl mx-auto p-4 md:p-8">
           {children}

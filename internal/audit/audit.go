@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -75,11 +76,16 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 		actorID = "system"
 	}
 
+	ipAddress := ClientIP(ctx)
+	requestID := chimw.GetReqID(ctx)
+
 	_, err = tx.ExecContext(writeCtx, `
 		INSERT INTO audit_log (id, tenant_id, actor_type, actor_id, action,
-			resource_type, resource_id, resource_label, metadata, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, label, metaJSON, time.Now().UTC())
+			resource_type, resource_id, resource_label, metadata, ip_address,
+			request_id, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, label, metaJSON,
+		nullIfEmpty(ipAddress), nullIfEmpty(requestID), time.Now().UTC())
 	if err != nil {
 		auditWriteErrors.WithLabelValues(tenantID).Inc()
 		slog.Error("audit: failed to insert entry",
@@ -98,7 +104,19 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 		return fmt.Errorf("audit log: commit: %w", err)
 	}
 
+	// Signal the AuditLog middleware (if this request is under it) that an
+	// audit row has been written so its catch-all path suppresses a duplicate.
+	MarkHandled(ctx)
 	return nil
+}
+
+// nullIfEmpty preserves SQL NULL for optional text columns — avoids a
+// column full of empty strings that later force callers to COALESCE.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // Query reads audit entries for a tenant.
@@ -119,24 +137,24 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 	where := ""
 
 	if filter.ResourceType != "" {
-		where += andClause(&idx, "resource_type", &args, filter.ResourceType)
+		where += andClause(&idx, "al.resource_type", &args, filter.ResourceType)
 	}
 	if filter.ResourceID != "" {
-		where += andClause(&idx, "resource_id", &args, filter.ResourceID)
+		where += andClause(&idx, "al.resource_id", &args, filter.ResourceID)
 	}
 	if filter.Action != "" {
-		where += andClause(&idx, "action", &args, filter.Action)
+		where += andClause(&idx, "al.action", &args, filter.Action)
 	}
 	if filter.ActorID != "" {
-		where += andClause(&idx, "actor_id", &args, filter.ActorID)
+		where += andClause(&idx, "al.actor_id", &args, filter.ActorID)
 	}
 	if filter.DateFrom != "" {
-		where += fmt.Sprintf(" AND created_at >= $%d", idx)
+		where += fmt.Sprintf(" AND al.created_at >= $%d", idx)
 		args = append(args, filter.DateFrom+"T00:00:00Z")
 		idx++
 	}
 	if filter.DateTo != "" {
-		where += fmt.Sprintf(" AND created_at <= $%d", idx)
+		where += fmt.Sprintf(" AND al.created_at <= $%d", idx)
 		args = append(args, filter.DateTo+"T23:59:59Z")
 		idx++
 	}
@@ -147,16 +165,23 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 	}
 
 	var total int
-	countQuery := `SELECT COUNT(*) FROM audit_log` + whereClause
+	countQuery := `SELECT COUNT(*) FROM audit_log al` + whereClause
 	if err := tx.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	query := `SELECT id, tenant_id, actor_type, actor_id, action, resource_type,
-		resource_id, COALESCE(resource_label,''), metadata, COALESCE(ip_address,''), created_at
-		FROM audit_log` + whereClause
+	// LEFT JOIN api_keys so the UI can show a human-readable key name instead
+	// of the raw actor_id (e.g., "Production" vs "vlx_secret_live_abc123…").
+	// Join is (tenant_id, id) which matches the api_keys PK's tenant scope.
+	query := `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
+		COALESCE(k.name, '') AS actor_name,
+		al.action, al.resource_type, al.resource_id,
+		COALESCE(al.resource_label,''), al.metadata,
+		COALESCE(al.ip_address,''), COALESCE(al.request_id,''), al.created_at
+		FROM audit_log al
+		LEFT JOIN api_keys k ON k.id = al.actor_id AND k.tenant_id = al.tenant_id` + whereClause
 
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY al.created_at DESC"
 	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", idx, idx+1)
 	args = append(args, limit, filter.Offset)
 
@@ -170,15 +195,60 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 	for rows.Next() {
 		var e domain.AuditEntry
 		var metaJSON []byte
-		if err := rows.Scan(&e.ID, &e.TenantID, &e.ActorType, &e.ActorID,
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.ActorType, &e.ActorID, &e.ActorName,
 			&e.Action, &e.ResourceType, &e.ResourceID, &e.ResourceLabel,
-			&metaJSON, &e.IPAddress, &e.CreatedAt); err != nil {
+			&metaJSON, &e.IPAddress, &e.RequestID, &e.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		_ = json.Unmarshal(metaJSON, &e.Metadata)
 		entries = append(entries, e)
 	}
 	return entries, total, rows.Err()
+}
+
+// FilterOptions returns the distinct actions and resource_types recorded for
+// a tenant. The audit page uses this to build filter dropdowns dynamically,
+// so new event types appear automatically without a UI release.
+func (l *Logger) FilterOptions(ctx context.Context, tenantID string) (actions, resourceTypes []string, err error) {
+	tx, err := l.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Cap at 500 to bound payload — a tenant shouldn't organically produce
+	// more distinct actions than that; if they do, the cap bias is toward
+	// the most recent rows.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT DISTINCT action FROM audit_log ORDER BY action LIMIT 500`)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			_ = rows.Close()
+			return nil, nil, err
+		}
+		actions = append(actions, s)
+	}
+	_ = rows.Close()
+
+	rows, err = tx.QueryContext(ctx,
+		`SELECT DISTINCT resource_type FROM audit_log ORDER BY resource_type LIMIT 500`)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			_ = rows.Close()
+			return nil, nil, err
+		}
+		resourceTypes = append(resourceTypes, s)
+	}
+	_ = rows.Close()
+	return actions, resourceTypes, nil
 }
 
 type QueryFilter struct {

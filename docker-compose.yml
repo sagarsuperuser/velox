@@ -26,5 +26,23 @@ services:
       timeout: 5s
       retries: 5
 
+  # Local SMTP catcher + web UI for viewing outbound emails. Point the app's
+  # SMTP_* env vars at localhost:1025 and browse delivered mail at
+  # http://localhost:8025. Nothing leaves your machine.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8025/api/v1/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
 volumes:
   pgdata:

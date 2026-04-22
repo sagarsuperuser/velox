@@ -1,4 +1,4 @@
-import { Fragment, useState, useMemo, useCallback, useEffect } from 'react'
+import { Fragment, useState, useMemo, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -20,6 +20,7 @@ import { InitialsAvatar } from '@/components/InitialsAvatar'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
+import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
@@ -282,7 +283,7 @@ function PolicyTab() {
                 <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-muted border-2 border-border border-dashed flex items-center justify-center shrink-0" />
                 <div className="flex-1 flex items-center gap-3">
                   <p className="text-sm text-muted-foreground">Wait</p>
-                  <Select value={String(graceDays)} onValueChange={v => setForm(f => ({ ...f, grace_period_days: parseInt(v) }))}>
+                  <Select value={String(graceDays)} onValueChange={v => setForm(f => ({ ...f, grace_period_days: parseInt(v ?? '0') }))}>
                     <SelectTrigger className="w-auto">
                       <SelectValue />
                     </SelectTrigger>
@@ -314,7 +315,7 @@ function PolicyTab() {
                         <span className="text-xs text-muted-foreground">after grace period</span>
                       )}
                       {i > 0 && (
-                        <Select value={String(gapDays[i - 1] ?? 3)} onValueChange={v => updateGap(i - 1, parseInt(v))}>
+                        <Select value={String(gapDays[i - 1] ?? 3)} onValueChange={v => updateGap(i - 1, parseInt(v ?? '0'))}>
                           <SelectTrigger className="w-auto">
                             <SelectValue />
                           </SelectTrigger>

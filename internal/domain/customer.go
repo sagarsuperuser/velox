@@ -1,6 +1,26 @@
 package domain
 
-import "time"
+import (
+	"time"
+)
+
+// CustomerTaxStatus drives the tax decision for a customer. Mirrors the
+// CHECK constraint on customer_billing_profiles.tax_status.
+type CustomerTaxStatus string
+
+const (
+	// TaxStatusStandard: regular taxable customer. Tax applied per provider rules.
+	TaxStatusStandard CustomerTaxStatus = "standard"
+	// TaxStatusExempt: customer is not taxable (reseller, non-profit,
+	// government entity with a certificate on file). Tax is zero;
+	// exempt_reason is recorded on the invoice for audit.
+	TaxStatusExempt CustomerTaxStatus = "exempt"
+	// TaxStatusReverseCharge: B2B buyer self-accounts for tax in their
+	// jurisdiction (EU VAT reverse charge, Indian GST RCM, etc.). Tax is
+	// zero on the seller's invoice; the PDF renders the legally required
+	// legend directing the buyer to self-assess.
+	TaxStatusReverseCharge CustomerTaxStatus = "reverse_charge"
+)
 
 type CustomerStatus string
 
@@ -41,11 +61,17 @@ type CustomerBillingProfile struct {
 	PostalCode        string               `json:"postal_code,omitempty"`
 	Country           string               `json:"country,omitempty"`
 	Currency          string               `json:"currency,omitempty"`
-	TaxExempt         bool                 `json:"tax_exempt"`
-	TaxID             string               `json:"tax_id"`
-	TaxIDType         string               `json:"tax_id_type"`
-	TaxOverrideRateBP *int64               `json:"tax_override_rate_bp,omitempty"` // Basis points
-	ProfileStatus     BillingProfileStatus `json:"profile_status"`
+	// TaxStatus drives tax-decision routing independent of the configured
+	// provider. 'standard' is the default; 'exempt' and 'reverse_charge' both
+	// zero the invoice tax but render different legends on the PDF (exempt
+	// shows the certificate reason; reverse charge directs the buyer to
+	// self-assess). Mirrors the CHECK constraint on
+	// customer_billing_profiles.tax_status.
+	TaxStatus       CustomerTaxStatus    `json:"tax_status"`
+	TaxExemptReason string                `json:"tax_exempt_reason,omitempty"`
+	TaxID           string                `json:"tax_id"`
+	TaxIDType       string                `json:"tax_id_type"`
+	ProfileStatus   BillingProfileStatus  `json:"profile_status"`
 	CreatedAt         time.Time            `json:"created_at"`
 	UpdatedAt         time.Time            `json:"updated_at"`
 }

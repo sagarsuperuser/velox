@@ -16,10 +16,15 @@ import (
 
 // CompanyInfo holds tenant company details for the PDF header.
 type CompanyInfo struct {
-	Name    string
-	Email   string
-	Phone   string
-	Address string
+	Name         string
+	Email        string
+	Phone        string
+	AddressLine1 string
+	AddressLine2 string
+	City         string
+	State        string
+	PostalCode   string
+	Country      string
 }
 
 // CreditNoteInfo holds credit note data for the totals section.
@@ -130,17 +135,29 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 
 	// ── Header ──
 	companyName := "Velox"
-	companyAddr := ""
+	var companyAddrLines []string
 	companyContact := ""
 	if len(company) > 0 && company[0].Name != "" {
-		companyName = company[0].Name
-		companyAddr = company[0].Address
-		parts := []string{}
-		if company[0].Email != "" {
-			parts = append(parts, company[0].Email)
+		c := company[0]
+		companyName = c.Name
+		if c.AddressLine1 != "" {
+			companyAddrLines = append(companyAddrLines, c.AddressLine1)
 		}
-		if company[0].Phone != "" {
-			parts = append(parts, company[0].Phone)
+		if c.AddressLine2 != "" {
+			companyAddrLines = append(companyAddrLines, c.AddressLine2)
+		}
+		if cityLine := formatCityStatePostal(c.City, c.State, c.PostalCode); cityLine != "" {
+			companyAddrLines = append(companyAddrLines, cityLine)
+		}
+		if c.Country != "" {
+			companyAddrLines = append(companyAddrLines, c.Country)
+		}
+		parts := []string{}
+		if c.Email != "" {
+			parts = append(parts, c.Email)
+		}
+		if c.Phone != "" {
+			parts = append(parts, c.Phone)
 		}
 		if len(parts) > 0 {
 			companyContact = strings.Join(parts, "  |  ")
@@ -156,14 +173,12 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 	rightAlignAt(margin, y, contentW, "INVOICE")
 	y += 24
 
-	if companyAddr != "" {
+	if len(companyAddrLines) > 0 {
 		setFont(false, 8)
 		setColor(100, 100, 100)
-		for _, line := range strings.Split(companyAddr, "\n") {
-			if line = strings.TrimSpace(line); line != "" {
-				textAt(margin, y, line)
-				y += 11
-			}
+		for _, line := range companyAddrLines {
+			textAt(margin, y, line)
+			y += 11
 		}
 	}
 	if companyContact != "" {
@@ -228,19 +243,7 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		textAt(rightX, by, billTo.AddressLine2)
 		by += 12
 	}
-	cityLine := ""
-	if billTo.City != "" {
-		cityLine = billTo.City
-	}
-	if billTo.State != "" {
-		if cityLine != "" {
-			cityLine += ", "
-		}
-		cityLine += billTo.State
-	}
-	if billTo.PostalCode != "" {
-		cityLine += " " + billTo.PostalCode
-	}
+	cityLine := formatCityStatePostal(billTo.City, billTo.State, billTo.PostalCode)
 	if cityLine != "" {
 		textAt(rightX, by, cityLine)
 		by += 12
@@ -338,6 +341,22 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		}
 		totalsRow(taxLabel, formatCents(inv.TaxAmountCents), false, 80, 80, 80, 40, 40, 40)
 
+		// Per-jurisdiction breakdown. Rendered indented under the aggregate
+		// Tax row when lines span multiple jurisdictions (EU cross-state,
+		// India CGST+SGST, US state+local). Single-jurisdiction invoices
+		// skip this — the aggregate row already tells the whole story.
+		jurisdictionAgg := aggregateTaxByJurisdiction(lineItems)
+		if len(jurisdictionAgg) > 1 {
+			setFont(false, 8)
+			setColor(120, 120, 120)
+			for _, row := range jurisdictionAgg {
+				textAt(totalsX+12, y, row.label)
+				rightAlignAt(totalsX+labelW, y, totalsW-labelW, formatCents(row.amount))
+				y += 12
+			}
+			y += 4
+		}
+
 		// Show customer's Tax ID below the tax line
 		if inv.TaxID != "" {
 			setFont(false, 7)
@@ -345,6 +364,10 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 			textAt(totalsX, y-12, inv.TaxID)
 			y += 2
 		}
+	} else if inv.TaxReverseCharge {
+		// Even with zero-amount tax, surface the reverse-charge row so the
+		// invoice reads as a deliberate tax treatment rather than a bug.
+		totalsRow("Tax (reverse charge)", formatCents(0), false, 80, 80, 80, 120, 120, 120)
 	}
 
 	// Total line
@@ -439,6 +462,25 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		}
 	}
 
+	// Tax treatment legend. Compliance-sensitive disclosure: reverse-charge
+	// invoices must state who accounts for the tax, and exempt invoices
+	// must carry the reason text (EU OSS, nonprofit certificate, etc.).
+	if inv.TaxReverseCharge || inv.TaxExemptReason != "" {
+		y += 8
+		setFont(true, 8)
+		setColor(80, 80, 80)
+		if inv.TaxReverseCharge {
+			textAt(margin, y, "Reverse charge — VAT to be accounted for by the recipient.")
+			y += 12
+		}
+		if inv.TaxExemptReason != "" {
+			setFont(false, 8)
+			setColor(100, 100, 100)
+			textAt(margin, y, "Tax-exempt: "+inv.TaxExemptReason)
+			y += 12
+		}
+	}
+
 	// ── Footer ──
 	y += 16
 	setFont(false, 9)
@@ -477,6 +519,26 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 	return buf.Bytes(), nil
 }
 
+// formatCityStatePostal joins "City, State Postal" with graceful handling
+// when any component is missing. Shared between the company "From" block
+// and the "Bill To" block for consistent formatting across the PDF.
+func formatCityStatePostal(city, state, postal string) string {
+	line := city
+	if state != "" {
+		if line != "" {
+			line += ", "
+		}
+		line += state
+	}
+	if postal != "" {
+		if line != "" {
+			line += " "
+		}
+		line += postal
+	}
+	return line
+}
+
 func formatCents(cents int64) string {
 	if cents == 0 {
 		return pdfCurrencySymbol + "0.00"
@@ -511,4 +573,41 @@ func formatNumber(n int64) string {
 		result = append(result, byte(c))
 	}
 	return string(result)
+}
+
+type jurisdictionTaxRow struct {
+	label  string
+	amount int64
+}
+
+// aggregateTaxByJurisdiction sums tax by (jurisdiction, rate_bp) across line
+// items so the PDF can render a multi-row breakdown when the invoice spans
+// more than one jurisdiction. Lines without a jurisdiction or without tax
+// are ignored. Results are sorted by label for deterministic output.
+func aggregateTaxByJurisdiction(lineItems []domain.InvoiceLineItem) []jurisdictionTaxRow {
+	type key struct {
+		jurisdiction string
+		rateBP       int64
+	}
+	agg := make(map[key]int64)
+	order := make([]key, 0)
+	for _, li := range lineItems {
+		if li.TaxAmountCents == 0 || li.TaxJurisdiction == "" {
+			continue
+		}
+		k := key{jurisdiction: li.TaxJurisdiction, rateBP: li.TaxRateBP}
+		if _, seen := agg[k]; !seen {
+			order = append(order, k)
+		}
+		agg[k] += li.TaxAmountCents
+	}
+	rows := make([]jurisdictionTaxRow, 0, len(order))
+	for _, k := range order {
+		label := k.jurisdiction
+		if k.rateBP > 0 {
+			label = fmt.Sprintf("%s (%.4g%%)", label, float64(k.rateBP)/100)
+		}
+		rows = append(rows, jurisdictionTaxRow{label: label, amount: agg[k]})
+	}
+	return rows
 }

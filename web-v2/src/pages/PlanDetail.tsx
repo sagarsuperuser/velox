@@ -5,10 +5,9 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, type Plan, type Meter, type Subscription, type RatingRule, type Customer } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, type Plan, type Meter, type RatingRule, type Customer } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
-import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
@@ -16,7 +15,6 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Separator } from '@/components/ui/separator'
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
@@ -58,12 +56,14 @@ export default function PlanDetailPage() {
 
   const { data: meters } = useQuery({
     queryKey: ['meters'],
-    queryFn: () => api.listMeters().then(r => r.data),
+    queryFn: () => api.listMeters(),
+    select: (res) => res.data,
   })
 
   const { data: ratingRules } = useQuery({
     queryKey: ['rating-rules'],
-    queryFn: () => api.listRatingRules().then(r => r.data),
+    queryFn: () => api.listRatingRules(),
+    select: (res) => res.data,
   })
 
   const { data: subsData } = useQuery({
@@ -72,15 +72,15 @@ export default function PlanDetailPage() {
     enabled: !!id,
   })
 
-  const { data: customerMap } = useQuery({
+  const { data: customersData } = useQuery({
     queryKey: ['customers-map'],
-    queryFn: async () => {
-      const res = await api.listCustomers()
-      const map: Record<string, Customer> = {}
-      res.data.forEach(c => { map[c.id] = c })
-      return map
-    },
+    queryFn: () => api.listCustomers(),
   })
+  const customerMap = useMemo(() => {
+    const map: Record<string, Customer> = {}
+    ;(customersData?.data ?? []).forEach(c => { map[c.id] = c })
+    return map
+  }, [customersData])
 
   const subscriptions = Array.isArray(subsData) ? subsData : []
   const allMeters = Array.isArray(meters) ? meters : []
@@ -516,7 +516,7 @@ function EditPlanDialog({ plan, onClose, onSaved }: {
 
           <div className="space-y-2">
             <Label>Status</Label>
-            <Select value={status} onValueChange={setStatus}>
+            <Select value={status} onValueChange={(v) => setStatus(v ?? '')}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>

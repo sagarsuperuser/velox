@@ -34,10 +34,6 @@ func SetupTestDB(t *testing.T) *postgres.DB {
 	adminURL := envOr("TEST_ADMIN_DATABASE_URL", defaultAdminDBURL)
 	appURL := envOr("TEST_DATABASE_URL", defaultAppDBURL)
 
-	// migrate.Up takes ownership of its *sql.DB and closes it on return
-	// (golang-migrate's postgres driver closes the db in Close()). So
-	// migrations run on a throwaway pool, and cleanup uses a fresh admin
-	// pool that lives for the test's lifetime.
 	runMigrations(t, adminURL)
 
 	adminPool := openPool(t, adminURL)
@@ -134,28 +130,22 @@ func envOr(key, fallback string) string {
 
 // runMigrations applies pending migrations. On failure, drops everything
 // and retries from scratch (safe because this is a test-only database).
-//
-// Each migrate.Up call runs on its own fresh pool because golang-migrate's
-// postgres driver closes the supplied *sql.DB in its Close(), and migrate.Up
-// defers that close. Reusing a pool across calls would hit "sql: database
-// is closed" on the second invocation.
+// migrate.Up manages its own pool internally so the DSN is all we need here.
 func runMigrations(t *testing.T, adminURL string) {
 	t.Helper()
 
-	pool1 := openPool(t, adminURL)
-	if err := migrate.Up(pool1); err == nil {
+	if err := migrate.Up(adminURL); err == nil {
 		return
 	}
 
 	// Dirty or incompatible state (e.g., schema_migrations records a version
 	// that no longer exists in the embedded FS — common after switching
-	// branches). Drop everything and retry on a fresh pool.
+	// branches). Drop everything and retry.
 	nukePool := openPool(t, adminURL)
 	dropAllTables(t, nukePool)
 	_ = nukePool.Close()
 
-	pool2 := openPool(t, adminURL)
-	if err := migrate.Up(pool2); err != nil {
+	if err := migrate.Up(adminURL); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
 }

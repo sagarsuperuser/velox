@@ -1,1246 +1,892 @@
-# Velox Manual E2E Test Plan
+# Velox Manual Test Runbook
 
-## Prerequisites
+A practical runbook for exercising Velox end-to-end. Flows are grouped into three
+tiers so you can pick the right subset for the situation you're in.
 
-### What you need installed
+## How to use this runbook
+
+| Tier | When | Time | What it covers |
+|------|------|------|----------------|
+| **Tier 1 — Smoke** | Every pre-merge + nightly | ~15 min | Infra + auth + create→bill→charge happy path |
+| **Tier 2 — Full Suite** | Before a release cut | ~2–3 hrs | Every shipping domain, one flow per feature |
+| **Tier 3 — Deep / Rare** | Major releases, infra changes, incident post-mortems | ~4 hrs | RLS, security headers, encryption at rest, rate limit, migrations, OTel, config validation |
+
+Each flow has a stable FLOW ID (A1, B2, …). Reference them in bug reports and PRs.
+The ID doesn't change when flows are reordered. New flows get the next free number
+in their section.
+
+Flow steps use `- [ ]` checkboxes. Copy the section into a scratch doc when running
+a tier — this file stays as the canonical source, not a progress tracker.
+
+---
+
+## Setup
+
+### Prerequisites
+
 - Go 1.25+
 - Docker & Docker Compose
 - Node.js 22+ and npm
 - [Stripe CLI](https://stripe.com/docs/stripe-cli) (`brew install stripe/stripe-cli/stripe`)
-- Stripe test API keys from https://dashboard.stripe.com/test/apikeys
+- A Stripe test account with keys from https://dashboard.stripe.com/test/apikeys
+  (credentials are configured **per-tenant in the dashboard**, not via env vars)
 
-### First-time setup
+### First-time config
+
 ```bash
 cp .env.example .env
-# Edit .env — fill in:
-#   STRIPE_SECRET_KEY=sk_test_...
-#   STRIPE_WEBHOOK_SECRET=whsec_...  (from `stripe listen` output below)
-#   VELOX_BOOTSTRAP_TOKEN=...        (generate with: openssl rand -hex 32)
+# Edit .env — the only required fields for local dev are:
+#   VELOX_BOOTSTRAP_TOKEN=...         (generate with: openssl rand -hex 32)
+#   VELOX_ENCRYPTION_KEY=...          (64 hex chars; openssl rand -hex 32)
 ```
 
+`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` are **not** env vars any more —
+each tenant enters their own in Settings → Payments after sign-in. The operator
+never holds any tenant's Stripe secrets.
+
 ### Start everything (4 terminals)
+
 ```bash
-# Terminal 1 — Infrastructure
-make up                             # Starts Postgres + Redis
+# Terminal 1 — Infrastructure (Postgres + Redis)
+make up
 
-# Terminal 2 — Backend API
-make dev                            # Runs migrations (3 total), starts server on :8080
-                                    # Log should show "using app database connection (RLS enforced)"
+# Terminal 2 — Backend API (runs migrations on boot via RUN_MIGRATIONS_ON_BOOT=true)
+make dev
+# Log should show "migrations: applied N, current version 35"
+# and "using app database connection (RLS enforced)"
 
-# Terminal 3 — Frontend (web-v2 with shadcn/ui)
-cd web-v2 && npm install            # First time only
-cd web-v2 && npm run dev            # Starts dev server on :5173
+# Terminal 3 — Frontend (web-v2)
+cd web-v2 && npm install        # first time only
+cd web-v2 && npm run dev        # http://localhost:5173
 
-# Terminal 4 — Stripe webhooks
-stripe listen --forward-to localhost:8080/v1/webhooks/stripe
-# Copy the "whsec_..." signing secret into your .env file
+# Terminal 4 — Stripe webhooks (skip until you've connected a Stripe account in the UI)
+# The endpoint_id is the vlx_spc_... returned from Settings → Payments → Connect.
+stripe listen --forward-to localhost:8080/v1/webhooks/stripe/<endpoint_id>
+# Copy the whsec_... secret back into Settings → Payments as the signing secret.
 ```
 
 ### Bootstrap (first run only)
+
 ```bash
-make bootstrap                      # Creates tenant + prints API key
+make bootstrap                  # Creates the first tenant + admin user + API key
 ```
-Then open http://localhost:5173, paste the API key, sign in.
+
+Open http://localhost:5173, sign in with the email+password printed by bootstrap.
+API keys are for programmatic access — the dashboard now uses a session cookie.
 
 ### Useful commands
-| Command | What it does |
-|---------|-------------|
-| `make dev` | Start backend (auto-migrates) |
-| `cd web-v2 && npm run dev` | Start frontend (shadcn/ui) |
-| `make test-unit` | Run all 26 test packages |
-| `make up` / `make down` | Start/stop Postgres + Redis |
-| `make migrate-status` | Show current migration version |
-| `docker compose down -v && make up` | Fresh DB (destroy + recreate) |
-| `make stats` | Show project stats |
 
-### Test Cards
+| Command | What it does |
+|---------|--------------|
+| `make dev` | Start backend (auto-migrates via `RUN_MIGRATIONS_ON_BOOT=true`) |
+| `make web-dev` | Start the frontend (also `cd web-v2 && npm run dev`) |
+| `make test-unit` | Run all 35 test packages (short mode, `-p 1`) |
+| `make test-integration` | Run full suite including integration tests |
+| `make up` / `make down` | Start / stop Postgres + Redis |
+| `make migrate` / `make migrate-status` | Apply migrations / show version |
+| `docker compose down -v && make up` | Destroy + recreate DB (nuclear reset) |
+| `make stats` | Go + TS lines, packages, test packages |
+
+### Test cards
+
 | Card | Behavior |
 |------|----------|
 | `4242 4242 4242 4242` | Always succeeds |
-| `4000 0000 0000 0341` | Attaches OK, declines on charge |
+| `4000 0000 0000 0341` | Attaches OK, declines on charge (dunning trigger) |
 | `4000 0000 0000 9995` | Always declines |
 
 ---
 
-## Phase 1: Infrastructure & Config
+# Tier 1 — Smoke (~15 min)
+
+One continuous flow: brings the stack up, signs in, exercises the core money path,
+signs out. Run this before every merge to main and as a nightly canary.
+
+## FLOW S1: End-to-end smoke
+
+### S1.1 Stack comes up clean
+- [ ] `make up` — Postgres + Redis containers start without errors
+- [ ] `make dev` — backend starts, logs show `migrations: applied N, current version 35`
+  and `using app database connection (RLS enforced)`
+- [ ] `curl http://localhost:8080/health` → `{"status":"ok"}`
+- [ ] `curl http://localhost:8080/health/ready` → 200 with `database: ok`, `scheduler: ok`
+- [ ] Frontend at http://localhost:5173 loads (white page is fine — not signed in yet)
+
+### S1.2 Bootstrap + sign in
+- [ ] `make bootstrap` if no tenants exist — note the email/password it prints
+- [ ] Sign in via UI at /login with that email+password
+- [ ] Verify: redirected to dashboard; sidebar shows your email in the footer
+- [ ] Verify: `document.cookie` in devtools shows NO `velox_session` (httpOnly), but
+  the session is clearly present (requests succeed, whoami returns your user)
+- [ ] Verify: top-bar Test/Live toggle shows "Test" active
+
+### S1.3 Tenant Stripe connection
+- [ ] Settings → Payments → paste `sk_test_...` + `pk_test_...` → Connect
+- [ ] Verify: `vlx_spc_...` endpoint id is displayed; copy it
+- [ ] Terminal 4: `stripe listen --forward-to localhost:8080/v1/webhooks/stripe/<vlx_spc_...>`
+- [ ] Paste the `whsec_...` from the CLI back into Settings → Payments
+- [ ] Verify: "Connected" status and Stripe account identifier shown
+
+### S1.4 Create the core graph
+- [ ] Pricing → create rating rule: key `api_calls`, flat, $0.01/call
+- [ ] Pricing → create meter: key `api_calls`, aggregation `sum`, link to rule
+- [ ] Pricing → create plan: code `starter`, $29/mo, attach `api_calls` meter
+- [ ] Customers → create: "Smoke Corp", `external_id=smoke_corp`, email any@any.test
+- [ ] Customer detail → Billing Profile → set address + `USD` + `10%` tax rate
+- [ ] Customer detail → Set Up Payment → test card `4242 4242 4242 4242`
+- [ ] Customer detail → New Subscription → Starter plan, calendar billing, start today
+
+### S1.5 Bill + charge
+- [ ] Usage → ingest 1,000 events for `api_calls` on `smoke_corp`
+- [ ] Dashboard → Trigger Billing
+- [ ] Verify: exactly 1 invoice generated; auto-finalized, `payment_status = succeeded`
+- [ ] Invoice detail → line items: base fee (prorated), usage ($10.00), tax (10%)
+- [ ] Verify: Stripe CLI terminal shows `payment_intent.succeeded`
+- [ ] Dashboard: MRR > $0, revenue chart updated, Recent Activity shows the invoice
+
+### S1.6 Sign out
+- [ ] Sidebar → Sign Out
+- [ ] Verify: redirect to /login; back-button still lands you on /login
+- [ ] Verify: `curl -b <stale_cookie> http://localhost:8080/v1/session/` → 401
+
+**If all of S1 passes, the core engine is healthy.**
 
 ---
 
-## FLOW 1: Config Validation
+# Tier 2 — Full Suite
 
-> **Note:** These tests use direct commands (not `make dev`) because we need to control specific env vars.
-### 1.1 Missing Stripe Key
-```bash
-DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
-  go run ./cmd/velox
-```
-- [ ] Verify: JSON log with `"level":"WARN","msg":"config validation","warning":"STRIPE_SECRET_KEY is not set — payment processing will fail"`
-- [ ] Verify: also warns about STRIPE_WEBHOOK_SECRET
-- [ ] Verify: server still starts (warnings, not fatal)
-
-### 1.2 Invalid Stripe Key Prefix
-```bash
-DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
-  STRIPE_SECRET_KEY="bad_key_123" \
-  go run ./cmd/velox
-```
-- [ ] Verify: warns "does not start with 'sk_' — may be invalid"
-
-### 1.3 Production Without Redis
-```bash
-DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
-  STRIPE_SECRET_KEY="sk_test_fake" \
-  STRIPE_WEBHOOK_SECRET="whsec_fake" \
-  APP_ENV="production" \
-  go run ./cmd/velox
-```
-- [ ] Verify: warns "REDIS_URL is not set — rate limiting will fail open"
-- [ ] Verify: warns about VELOX_ENCRYPTION_KEY in production
-
-### 1.4 Invalid Encryption Key
-```bash
-DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
-  VELOX_ENCRYPTION_KEY="tooshort" \
-  go run ./cmd/velox
-```
-- [ ] Verify: warns "VELOX_ENCRYPTION_KEY must be exactly 64 hex characters"
-
-### 1.5 All Valid (no warnings)
-```bash
-make dev
-```
-- [ ] Verify: no WARN-level config validation logs (all env vars set correctly via .env)
-- [ ] Verify: server starts cleanly with INFO logs only
+One flow per shipping feature, organized by domain. You do not need to run these
+in order — pick the domain the change touched.
 
 ---
 
-## FLOW 2: Health Checks
+## Auth & Session
 
-### 2.1 Liveness
-- [ ] `GET /health` > verify: `{"status": "ok"}`
+Velox dashboard auth is email+password with an httpOnly session cookie issued by
+`/v1/auth/login`. Invites and password resets are token-based emails delivered
+via the email outbox (no plaintext tokens in the DB — only sha256 hashes).
 
-### 2.2 Readiness (Healthy)
-- [ ] `GET /health/ready` > verify: `{"status": "ok", "checks": {"api": "ok", "database": "ok", "scheduler": "ok"}}`
+## FLOW A1: Sign-in + whoami
 
-### 2.3 Database Down
-- [ ] Stop postgres
-- [ ] `GET /health/ready` > verify: 503, `{"status": "degraded", "checks": {"database": "error: ..."}}`
-- [ ] `GET /health` > verify: still returns 200 (liveness != readiness)
-- [ ] Restart postgres
+- [ ] POST /v1/auth/login `{"email","password"}` with valid creds → 200
+  - Response: `{ user_id, email, tenant_id, livemode, expires_at }`
+  - Response sets `Set-Cookie: velox_session=...; HttpOnly; SameSite=Lax; Path=/`
+- [ ] GET /v1/session/ with the cookie → 200 `{ user_id, email, tenant_id, livemode }`
+- [ ] POST /v1/auth/login with wrong password → 401 `"invalid email or password"`
+  - Verify: no user enumeration — response body is identical for unknown emails
+- [ ] POST /v1/auth/login for a disabled account → 403 `"account disabled"`
+- [ ] POST /v1/auth/login for a user with no tenant membership → 403 with
+  `"account has no tenant membership — contact your administrator"`
+- [ ] POST /v1/auth/logout with the cookie → 204; session row is revoked
+- [ ] GET /v1/session/ with the revoked cookie → 401
 
-### 2.4 Scheduler Stalled
-- [ ] Wait for 2x scheduler interval with scheduler stopped
-- [ ] `GET /health/ready` > verify: scheduler check shows "degraded" or "no run within expected interval"
+## FLOW A2: Password reset
 
----
+- [ ] POST /v1/auth/password-reset-request `{"email":"you@known"}` → 202
+- [ ] POST /v1/auth/password-reset-request `{"email":"nobody@unknown.test"}` → 202
+  (same response to avoid enumeration; no email sent for unknown address)
+- [ ] `SELECT payload->>'reset_url' FROM email_outbox ORDER BY created_at DESC LIMIT 1;`
+  → extract the raw token from the URL
+- [ ] POST /v1/auth/password-reset-confirm `{"token":"<raw>","password":"newpass123"}`
+  → 200; any active sessions for this user are revoked
+- [ ] Re-use the same token → 404 (tokens are single-use)
+- [ ] Sign in with the new password → 200
+- [ ] Expired token (`UPDATE password_reset_tokens SET expires_at = NOW() - INTERVAL '1 hour' WHERE ...`)
+  → 404 on confirm
 
-## FLOW 3: Migration Management (CLI)
+## FLOW A3: Invite a new user
 
-> **Note:** Use `make` commands (they load `.env` automatically). Direct `go run` requires passing `DATABASE_URL` manually.
+- [ ] Sign in as owner
+- [ ] Members → Invite member → email `newbie@fresh.test` → send
+- [ ] Verify: invitation appears in "Pending invitations", status `pending`
+- [ ] `SELECT payload FROM email_outbox ORDER BY created_at DESC LIMIT 1;` — inspect:
+  - `to`, `inviter_email`, `tenant_name`, `invite_url` (contains the raw token)
+- [ ] GET /v1/auth/invite/{token} → 200 `{ email, tenant_name, needs_new_account: true, ... }`
+- [ ] Open `invite_url` in incognito → AcceptInvite page shows workspace name + email
+- [ ] Submit with display_name + password (≥8 chars) + matching confirm
+- [ ] Verify: redirected to dashboard as the new user; session cookie set
+- [ ] Members list now shows 2 active members, 1 accepted invitation
+- [ ] Re-use the same token → 404 (single-use)
 
-### 3.1 Status
-```bash
-make migrate-status
-```
-- [ ] Verify: shows `version: 28, dirty: false` (confirm against `ls internal/platform/migrate/sql/*.up.sql | wc -l` — bump this doc when a new migration lands)
+## FLOW A4: Invite an existing user
 
-### 3.2 Rollback (Staging Only — careful!)
-```bash
-make migrate-status                                     # Note current version N
-DATABASE_URL="postgres://velox:velox@localhost:5432/velox?sslmode=disable" \
-  go run ./cmd/velox migrate rollback
-make migrate-status                                     # Verify: version N-1
-make migrate                                            # Re-apply
-make migrate-status                                     # Verify: version N again
-```
-- [ ] Verify: rollback reverts one migration
-- [ ] Verify: re-running `make migrate` re-applies cleanly
+- [ ] Create a second tenant (via bootstrap or a second `make bootstrap` run)
+- [ ] Sign in as owner of Tenant A
+- [ ] Invite the email of the Tenant B user
+- [ ] Open the invite URL in incognito
+- [ ] Verify: preview returns `needs_new_account: false`; form shows only a password field
+  with copy "We found an existing account for <email>"
+- [ ] Submit with the wrong password → 401 `"wrong password for this account"`
+- [ ] Submit with the correct password → 200; new session cookie issued for Tenant A
+- [ ] Verify: user now has memberships in both tenants; sign-in primary-tenant logic
+  still picks Tenant B (the original) unless they switch
 
-### 3.3 Fresh DB
-```bash
-docker compose down -v && make up
-make dev                                                # Migrations run on boot
-make migrate-status                                     # Verify: version matches latest file number
-```
-- [ ] Verify: clean start with all tables created
+## FLOW A5: Member management
 
----
+- [ ] As owner: GET /v1/members/ → returns owner + pending invitations
+- [ ] Revoke a pending invite → 204; list shows it gone (or status `revoked` in DB)
+- [ ] Try to open the revoked invite's URL → 404
+- [ ] Remove a non-owner member → 204; any active sessions for that user are revoked
+- [ ] Try to remove yourself → 409 `"you cannot remove yourself from the workspace — transfer ownership first"`
+- [ ] As the only owner, try to remove yourself (or a DB-level last-owner case) → 409
+  `"cannot remove the last owner of the workspace"`
 
-## Phase 2: Auth & Security
+## FLOW A6: Session cookie lifecycle
 
----
+- [ ] After login, inspect `Set-Cookie`: `HttpOnly`, `SameSite=Lax`, `Path=/`,
+  `Max-Age` matches `SESSION_TTL` (default 30 days)
+- [ ] Cookie domain: absent in local dev (host-only); in staging/prod verify the
+  cookie domain matches the dashboard origin
+- [ ] Verify the session DB row: `SELECT id, user_id, expires_at, revoked_at FROM sessions WHERE id = encode(sha256('<cookie_value>'::bytea),'hex');`
+- [ ] Revoke via /v1/auth/logout → next authenticated request returns 401
+- [ ] Expire a session manually (`UPDATE sessions SET expires_at = NOW() - INTERVAL '1h' WHERE id = ...`) → 401
 
-## FLOW 4: API Key Permissions
+## FLOW A7: Livemode toggle
 
-- [ ] Secret key: full access to all endpoints
-- [ ] Publishable key: read-only (can't create plans, can read customers)
-- [ ] Revoked key: 401 on any request
-- [ ] Create key > verify raw key shown once with copy button
-- [ ] Verify: key type description shown in modal
-
----
-
-## FLOW 5: API Key Expiration
-
-### 5.1 UI Expiration Support
-- [ ] API Keys page > Create API Key > verify expiration presets: No expiration, 30 days, 90 days, 1 year, Custom
-- [ ] Select "Custom" > verify calendar date picker appears (same branded calendar as rest of app)
-- [ ] Create key with 30-day expiry > verify expiry date shown on key card
-- [ ] Verify: keys expiring within 7 days show yellow "Expires in Xd" badge
-- [ ] Verify: expired keys grouped in collapsed "expired keys" section (like revoked)
-
-### 5.2 Expired Key Rejection
-- [ ] Create an API key with `expires_at` set to 1 minute from now
-- [ ] Use the key immediately > verify 200 OK
-- [ ] Wait for expiry (or manually update DB: `UPDATE api_keys SET expires_at = NOW() - INTERVAL '1 hour' WHERE ...`)
-- [ ] Use the expired key > verify 401 Unauthorized
-- [ ] Verify error message says "api key expired"
-- [ ] Try logging in with expired key on Login page > verify: "This API key has expired" error
-
----
-
-## FLOW 6: Multi-tenant RLS Isolation
-
-- [ ] Bootstrap creates Tenant A with API key A
-- [ ] Create a customer "Alpha Corp" using key A
-- [ ] Create a second tenant (Tenant B) with API key B
-- [ ] Using key B, list customers > verify Alpha Corp is NOT visible
-- [ ] Using key B, try `GET /v1/customers/{alpha_corp_id}` > verify 404
-- [ ] Using key B, create customer "Beta Corp"
-- [ ] Using key A, list customers > verify Beta Corp is NOT visible
-- [ ] Repeat for invoices, subscriptions, credits — cross-tenant reads must fail
+- [ ] Sign in — Test/Live toggle shows "Test" active
+- [ ] Click → PATCH /v1/session/ `{"livemode":true}` → 200; toggle shows "Live" with green dot
+- [ ] Refresh page → toggle state persists (read from session)
+- [ ] Verify: API calls made while live send `X-Livemode: true` semantics server-side
+  (e.g., list customers returns live-mode rows only)
+- [ ] Toggle back; new state sticks across page reloads
 
 ---
 
-## FLOW 7: Bootstrap Lockdown
+## API Keys
 
-`VELOX_BOOTSTRAP_TOKEN` is required in ALL environments. Without it, the endpoint is disabled.
+## FLOW K1: Permissions
 
-### 7.1 No Token Configured
-- [ ] Start server without `VELOX_BOOTSTRAP_TOKEN`
-- [ ] `POST /v1/bootstrap` > verify: 403 `"bootstrap disabled — set VELOX_BOOTSTRAP_TOKEN env var to enable"`
+- [ ] Secret key: full access to create/read/update on every resource
+- [ ] Publishable key: read-only — POST to /v1/plans → 403
+- [ ] Revoked key: any request → 401 `"api key revoked"`
+- [ ] API Keys page → Create → verify raw key shown once with copy button and the
+  "You won't be able to see this again" warning
 
-### 7.2 Wrong Token
-- [ ] Start server with `VELOX_BOOTSTRAP_TOKEN=my-secret`
-- [ ] `POST /v1/bootstrap` with `{"token":"wrong"}` > verify: 403 `"invalid bootstrap token"`
+## FLOW K2: Expiration
 
-### 7.3 Already Bootstrapped
-- [ ] `POST /v1/bootstrap` with correct token after tenants exist > verify: 409 `"bootstrap already completed — tenants exist"`
-
-Note: `make bootstrap` (CLI) always works and creates additional tenants — it's for local dev. The HTTP endpoint is the one that locks down.
-
----
-
-## FLOW 8: Rate Limiting (Redis)
-
-> **Architecture:** Rate limiter runs AFTER auth middleware (per-tenant buckets, not per-IP). 100 req/min per tenant via Redis GCRA. Unauthenticated requests and public endpoints (`/health`, `/metrics`, `/v1/bootstrap`) are NOT rate limited.
-
-### 8.1 Basic Rate Limit
-- [ ] Send 100+ concurrent requests (use Go test or parallel curl — sequential curl is too slow to exhaust GCRA)
-- [ ] Verify: first 100 return 200, remaining return 429
-- [ ] Verify: response headers present: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
-- [ ] Verify: `Retry-After` header on 429 responses
-- [ ] Wait ~10 seconds > send 20 more > verify: ~16 allowed (GCRA smooth refill at 1.67/sec)
-
-### 8.2 Per-Tenant Isolation
-- [ ] Exhaust rate limit for Tenant A (100 requests)
-- [ ] Confirm Tenant A blocked (429)
-- [ ] Verify: Tenant B requests still succeed (separate Redis buckets keyed by tenant_id)
-
-### 8.3 Fail-Open
-- [ ] Stop Redis (`docker compose stop redis`)
-- [ ] Verify: API requests still succeed (no 429s, all pass through)
-- [ ] Check logs for `"rate_limiter: redis error, failing open"`
-- [ ] Restart Redis (`docker compose start redis`) > verify: rate limiting resumes
-
-### 8.4 Health/Metrics Bypass
-- [ ] Exhaust rate limit for a tenant
-- [ ] Verify: `/health`, `/health/ready`, `/metrics` still return 200 (outside rate-limited route group)
+- [ ] Create key → expiration presets: No expiration, 30 days, 90 days, 1 year, Custom
+- [ ] Select Custom → calendar picker uses the same branded component as rest of app
+- [ ] Create a key with `expires_at = now + 1 min` — verify 200 until expiry
+- [ ] `UPDATE api_keys SET expires_at = NOW() - INTERVAL '1 hour' WHERE ...` → 401 `"api key expired"`
+- [ ] Keys expiring within 7 days show yellow "Expires in Xd" badge
+- [ ] Expired keys grouped into a collapsed "Expired keys" section
 
 ---
 
-## FLOW 9: Security Headers + Metrics Auth
+## Billing Engine
 
-### 9.1 Security Headers
-- [ ] `curl -I http://localhost:8080/v1/customers`
-- [ ] Verify: `X-Content-Type-Options: nosniff`
-- [ ] Verify: `X-Frame-Options: DENY`
-- [ ] Verify: `Cache-Control: no-store`
-- [ ] Verify: `Referrer-Policy: strict-origin-when-cross-origin`
-- [ ] In staging/production (APP_ENV != local): verify `Strict-Transport-Security` header present
+## FLOW B1: Billing model sanity (arrears + proration)
 
-### 9.2 Metrics Auth
-- [ ] Set `METRICS_TOKEN=secret123` env var, restart
-- [ ] `curl http://localhost:8080/metrics` > verify: 401 Unauthorized
-- [ ] `curl -H "Authorization: Bearer secret123" http://localhost:8080/metrics` > verify: 200 with Prometheus metrics
-- [ ] Unset `METRICS_TOKEN`, restart > verify: `/metrics` accessible without auth (dev mode)
+Billing is arrears — the engine bills **after** the period closes. Calendar
+billing aligns to the 1st of the month; first partial period is prorated.
 
----
+- [ ] New subscription starts mid-month — verify first `billing_period_end` = 1st of next month
+- [ ] Run billing before the period closes → 0 invoices generated
+- [ ] Advance `current_period_end` to yesterday, run billing → 1 invoice:
+  - Base fee prorated (e.g., `13/30 × $29 = $12.57`)
+  - Usage (full-period aggregation)
+  - Tax per the tenant's basis-point rate
+  - Due date = issued + net terms (from tenant settings)
+  - Invoice number uses tenant prefix
 
-## FLOW 10: PII Encryption at Rest
+## FLOW B2: Basis-point tax precision
 
-### 10.1 Enable Encryption
-- [ ] Set `VELOX_ENCRYPTION_KEY` (64 hex chars) and restart
-- [ ] Create a new customer with email and display name
+- [ ] Settings → tax rate `7.25%` → `tax_rate_bp = 725` in DB (no float column exists)
+- [ ] Run billing with a $100 subtotal → tax = $7.25 exactly
+- [ ] Invoice detail page displays `Tax (7.25%)`
+- [ ] 3 line items $33.33 + $33.33 + $33.34: per-line tax sums exactly to invoice total tax
 
-### 10.2 Verify Encryption
-```sql
-SELECT display_name, email FROM customers ORDER BY created_at DESC LIMIT 1;
-```
-- [ ] Verify: values start with `enc:` prefix (encrypted in DB)
-- [ ] Verify: API response returns decrypted plaintext (transparent to clients)
+## FLOW B3: Invoice idempotency
 
-### 10.3 Billing Profile Encryption
-- [ ] Create billing profile with legal_name, email, phone, tax_id
-```sql
-SELECT legal_name, email, phone, tax_id FROM customer_billing_profiles ORDER BY created_at DESC LIMIT 1;
-```
-- [ ] Verify: PII fields (legal_name, email, phone, tax_id) start with `enc:` prefix in DB
-- [ ] Verify: API returns decrypted values
+- [ ] Run billing, note the generated invoice
+- [ ] Run billing again immediately (same period) → no duplicate invoice
+- [ ] Server logs: `"invoice already exists for billing period (idempotent skip)"`
+- [ ] ```sql
+      SELECT COUNT(*) FROM invoices WHERE subscription_id = '<id>'
+        AND billing_period_start = '<start>' AND billing_period_end = '<end>'
+        AND status != 'voided';
+      ```
+  → exactly 1
 
-### 10.4 Backward Compatibility
-- [ ] Existing plaintext records (created before encryption key was set) should still read correctly
-- [ ] Verify: no `enc:` prefix > returned as-is (no decryption attempted)
+## FLOW B4: Auto-charge retry
 
----
+- [ ] Customer with decline-on-charge card (`4000 0000 0000 0341`)
+- [ ] Ingest usage, run billing → invoice has `auto_charge_pending = true`, `payment_status = pending`
+- [ ] Update the card to a working one via Stripe Checkout
+- [ ] Wait for next scheduler tick (or manually trigger) → `auto_charge_pending` clears,
+  `payment_status = succeeded`
 
-## FLOW 11: Webhook Replay Attack
+## FLOW B5: Idempotency-Key header
 
-- [ ] Capture a valid Stripe webhook payload + signature from stripe listen logs
-- [ ] Replay it 5 minutes later using curl with the same signature
-- [ ] Verify: rejected due to timestamp tolerance (>300s)
-- [ ] Replay with a modified payload but same signature > verify rejected (signature mismatch)
+- [ ] POST /v1/customers with `Idempotency-Key: test-123` → 201
+- [ ] Repeat same body + same key → same response, only one row created
+- [ ] Same key, different body → 409 (conflict — key already used with different payload)
+- [ ] New key → new customer created
 
----
+## FLOW B6: Subscription lifecycle
 
-## Phase 3: Core Happy Path
+- [ ] Create subscription with `trial_days = 7` → status active, trial end date shown;
+  billing during trial produces no invoice
+- [ ] Pause active subscription → confirmation dialog; billing skipped; usage not metered
+- [ ] Resume → active; billing runs at next period close
+- [ ] Cancel → confirmation dialog; status `canceled`; no future billing
 
----
+## FLOW B7: Plan change + proration
 
-## FLOW 12: Complete Happy Path
+- [ ] Active sub on Starter; create Enterprise plan ($99/mo)
+- [ ] Change to Enterprise "Apply immediately" → proration invoice generated, toast confirms $XX.XX
+- [ ] Change back to Starter immediately → downgrade credits customer balance; toast confirms
+- [ ] Change plan without "immediately" → no proration; plan changes at next period boundary
 
-### 12.1 Setup
-- [ ] Settings: company "Demo Corp", prefix "DEMO", net terms 15, USD, tax rate 10% (enter 10.00 in UI, stored as 1000 basis points)
-- [ ] Create rating rule: key `api_calls`, flat, $0.01/call
-- [ ] Create meter: key `api_calls`, aggregation sum, link rule
-- [ ] Create plan: code `starter`, $29/mo, attach api_calls meter
-- [ ] Create customer: "Alpha Inc", external_id `alpha_inc`, email
-- [ ] Set up billing profile with address, tax_id, tax_id_type
-- [ ] Set up payment method (4242 card)
-- [ ] Create subscription: calendar billing, start immediately
-- [ ] Verify: first period = today → 1st of next month (prorated partial month)
+## FLOW B8: Usage caps
 
-### 12.2 Usage + Billing
-> **Note:** Billing is arrears — the engine bills AFTER the period closes. For testing, wait until the period ends or use the billing API trigger.
+- [ ] Sub with `usage_cap_units = 5000`, `overage_action = block`, ingest 8,000
+- [ ] Run billing → usage capped at 5,000 (proportional across meters)
+- [ ] Change `overage_action = charge`, ingest another 8,000, run billing → full 8,000 billed
 
-- [ ] Ingest 10,000 API calls (within the billing period)
-- [ ] Click "Run Billing" (or wait for scheduler)
-- [ ] Verify: invoice auto-finalized, auto-charged via Stripe webhook
-- [ ] Verify: base fee is prorated if first partial period (e.g., 13/30 × $29 = $12.57)
-- [ ] Verify: usage = 10,000 × $0.01 = $100
-- [ ] Verify: tax = 10% of subtotal (basis points: 1000bp)
-- [ ] Verify: PDF correct (FROM/BILL TO/amounts/tax)
-- [ ] Verify: invoice number uses "DEMO" prefix
-- [ ] Verify: due date = issued + 15 days
-- [ ] Verify: sidebar badge updates (Invoices count changes)
+## FLOW B9: Customer price overrides
 
-### 12.3 Billing Cycle
-- [ ] Subscription detail: billing period advanced to next full month (e.g., May 1 → Jun 1)
-- [ ] Subscription timeline shows checkmarks for completed milestones
-- [ ] Dashboard: MRR shows $29, revenue chart updated, 1 paid invoice
+- [ ] POST /v1/price-overrides `{ customer_id, rating_rule_id, flat_amount_cents }`
+- [ ] Ingest usage for that customer, run billing → invoice uses override price
+- [ ] Same usage for another customer → invoice uses default rule price
 
----
+## FLOW B10: Manual tax with cross-border zero-rating
 
-## FLOW 13: Basis-Point Tax Precision
+Tests Velox's tenant-side fallback when Stripe Tax is off. See Tier 3 X7 for the
+Stripe-Tax-enabled path.
 
-> **Architecture:** All tax rates are stored as basis points (integers). UI displays as percentage, backend uses `tax_rate_bp`. No float fields exist — removed in migration 0003.
+- [ ] Settings → `tax_home_country = "IN"`, `tax_rate_bp = 1800`, `tax_name = "IGST"`
+- [ ] Invalid country codes ("INDIA", "in ", "XX") rejected with ISO-3166 validation error
+- [ ] Empty `tax_home_country` is accepted (legacy tenants)
+- [ ] Domestic customer (`country = "IN"`): $100 subtotal → tax = $18, `tax_name = "IGST"`, PDF shows `IGST (18.00%)`
+- [ ] Export customer (`country = "US"`): $100 subtotal → tax = $0, `tax_name = "IGST (zero-rated export)"`, PDF shows the annotation
+- [ ] Customer with no country: normal 18% applies (can't prove export)
+- [ ] Export customer with `tax_exempt = true`: tax = $0, `tax_name = ""` (exempt overrides export annotation)
+- [ ] Clear `tax_home_country`: US customer now charged 18% (no home country → can't zero-rate)
 
-### 13.1 Fractional Tax Rate
-- [ ] Settings: enter tax rate 7.25% in the UI (stored as `tax_rate_bp = 725`)
-- [ ] Run billing for a $100 subtotal
-- [ ] Verify: tax = $7.25 exactly (725 cents)
-- [ ] Verify: `tax_rate_bp = 725` in the invoice record (no `tax_rate` float column exists)
-- [ ] Verify: invoice detail page shows "Tax (7.25%)"
+## FLOW B11: Tax-ID format validation
 
-### 13.2 Per-Line Rounding
-- [ ] Run billing with 3 line items: $33.33, $33.33, $33.34
-- [ ] Verify: per-line taxes sum exactly to invoice total tax
-- [ ] Verify: no off-by-one-cent discrepancy
+`UpsertBillingProfile` normalizes (trim + uppercase) and format-validates `tax_id`
+against `tax_id_type`. Known kinds: GSTIN, EU VAT, AU ABN. Unknown kinds pass through.
+
+- [ ] `gstin` + `27aaepm1234c1z5` → saved as `27AAEPM1234C1Z5`
+- [ ] `in_gst` / `in_gstin` aliases accepted
+- [ ] `vat` + `DE123456789` → accepted
+- [ ] `abn` + `51824753556` → accepted
+- [ ] Malformed: `gstin` + `27INVALID` → 422 `"invalid GSTIN format: expected 15-char code like 27AAEPM1234C1Z5"`
+- [ ] Malformed: `vat` + `12` → 422 `"invalid EU VAT format"`
+- [ ] Malformed: `abn` + `123` → 422 `"invalid ABN format: expected 11 digits"`
+- [ ] Unknown kind: `br_cnpj` + `12.345.678/0001-90` → accepted as-is
+- [ ] Empty `tax_id` → always accepted regardless of kind
 
 ---
 
-## FLOW 14: Invoice Idempotency
+## Invoices
 
-### 14.1 Double Billing Prevention
-- [ ] Run billing for a subscription
-- [ ] Note the billing period (start/end) on the generated invoice
-- [ ] Run billing again immediately (same period)
-- [ ] Verify: NO duplicate invoice created
-- [ ] Verify: logs show "invoice already exists for billing period (idempotent skip)"
+## FLOW I1: Multiple meters on one plan
 
-### 14.2 Verify Unique Constraint
-```sql
-SELECT COUNT(*) FROM invoices
-WHERE subscription_id = '{sub_id}'
-  AND billing_period_start = '{start}'
-  AND billing_period_end = '{end}'
-  AND status != 'voided';
-```
-- [ ] Verify: exactly 1 row
+- [ ] Add `storage_gb` rule ($0.10/GB) + meter (aggregation `max`), attach to plan
+- [ ] Ingest 2000 API calls + 50 GB storage, run billing
+- [ ] Invoice has 3 line items: base ($29) + API ($20) + storage ($5)
 
----
+## FLOW I2: Negative usage (corrections)
 
-## FLOW 15: Auto-Charge Retry
+- [ ] Ingest 1000 events, then ingest -200 (correction) for same meter
+- [ ] Usage Events page shows -200 in red
+- [ ] Meter breakdown shows net 800
+- [ ] Run billing → billed for 800, not 1000
 
-### 15.1 Setup
-- [ ] Create customer with a card that declines on charge (4000 0000 0000 0341)
-- [ ] Create subscription, ingest usage, run billing
+## FLOW I3: Manual line items
 
-### 15.2 Verify Pending Flag
-```sql
-SELECT id, auto_charge_pending, payment_status FROM invoices ORDER BY created_at DESC LIMIT 1;
-```
-- [ ] Verify: `auto_charge_pending = true`, `payment_status = 'pending'`
+- [ ] POST /v1/invoices → create draft invoice
+- [ ] Invoice detail → Add Line Item: "Setup fee", Add-On, qty 1, $250
+- [ ] Add "Consulting", qty 2, $150 → total $550
+- [ ] Finalize → auto-charges via Stripe
 
-### 15.3 Retry on Next Scheduler Tick
-- [ ] Update customer's card to a working one (via Stripe dashboard or checkout)
-- [ ] Wait for next scheduler tick (or trigger manually)
-- [ ] Verify: `auto_charge_pending` cleared to `false` after successful charge
-- [ ] Verify: invoice `payment_status = 'succeeded'`
+## FLOW I4: Void invoice
 
----
-
-## FLOW 16: Idempotency Key Behavior
-
-### 16.1 Duplicate Prevention
-- [ ] `POST /v1/customers` with `Idempotency-Key: test-123` header
-- [ ] Repeat exact same request with same `Idempotency-Key: test-123`
-- [ ] Verify: second response is identical to first (cached)
-- [ ] Verify: only one customer actually created
-
-### 16.2 Different Key = Different Request
-- [ ] `POST /v1/customers` with `Idempotency-Key: test-456` and different body
-- [ ] Verify: new customer created (different idempotency key)
-
----
-
-## Phase 4: Subscription Lifecycle
-
----
-
-## FLOW 17: Subscription Lifecycle
-
-> **Billing model:** Arrears — invoices are generated at the END of the billing period, not the start. Calendar billing aligns to the 1st of the month; the first partial period is prorated.
-
-### 17.1 Trial
-- [ ] Create subscription with trial_days = 7
-- [ ] Verify: status active, trial end date shown
-- [ ] Verify: billing period starts AFTER trial ends (aligned to 1st of next month for calendar billing)
-- [ ] Run billing during trial > verify: no invoice (trial active)
-
-### 17.2 Pause with Confirmation
-- [ ] Pause active subscription
-- [ ] Verify: confirmation dialog shown (billing stops, usage not metered)
-- [ ] Verify: status = paused
-- [ ] Run billing > verify: no invoice generated
-
-### 17.3 Resume + Cancel
-- [ ] Resume > verify active
-- [ ] Cancel > confirmation dialog > verify canceled
-
----
-
-## FLOW 18: Plan Change + Proration
-
-### 18.1 Upgrade (immediate)
-- [ ] Create second plan: "Enterprise", $99/mo
-- [ ] Active subscription > Change Plan > Enterprise > "Apply immediately"
-- [ ] Verify: toast shows "Proration invoice created for $XX.XX"
-- [ ] Verify: proration invoice appears in Invoices list
-- [ ] Verify: subscription now on Enterprise plan
-
-### 18.2 Downgrade (immediate)
-- [ ] Change plan back to Starter, immediate
-- [ ] Verify: toast shows "$XX.XX credited to customer balance"
-- [ ] Verify: credit balance increased
-
-### 18.3 Change at Period End
-- [ ] Change plan without "immediately" checked
-- [ ] Verify: no proration, plan changes at next billing
-
----
-
-## FLOW 19: Usage Caps
-
-### 19.1 Setup
-- [ ] Create subscription with usage_cap_units = 5000, overage_action = "block"
-- [ ] Ingest 8000 events
-
-### 19.2 Billing with Cap
-- [ ] Run billing
-- [ ] Verify: usage capped at 5000 (proportionally scaled across meters)
-- [ ] Verify: invoice reflects capped usage, not full 8000
-
-### 19.3 Overage = Charge
-- [ ] Change subscription overage_action to "charge"
-- [ ] Ingest 8000 more, run billing
-- [ ] Verify: full 8000 billed (cap not enforced for "charge" mode)
-
----
-
-## FLOW 20: Customer Price Overrides
-
-### 20.1 Create Override
-- [ ] `POST /v1/price-overrides` with customer_id, rating_rule_id, custom flat_amount_cents
-- [ ] Verify: override saved
-
-### 20.2 Billing with Override
-- [ ] Ingest usage for the customer with the override
-- [ ] Run billing
-- [ ] Verify: invoice uses the override price, NOT the default rule price
-- [ ] Verify: line item shows custom amount
-
-### 20.3 Second Customer (No Override)
-- [ ] Ingest same usage for a different customer
-- [ ] Run billing
-- [ ] Verify: invoice uses default rule price
-
----
-
-## Phase 5: Billing Features
-
----
-
-## FLOW 21: Credits (Grant, Apply, Expire)
-
-### 21.1 Grant with Expiry
-- [ ] Credits page > Grant Credits to Alpha Inc
-- [ ] Amount: $50, description: "Welcome credit", expires in 30 days
-- [ ] Verify: balance = $50
-- [ ] Verify: ledger shows "Expires" column with date
-
-### 21.2 Apply Credits to Invoice
-- [ ] Ingest 5,000 API calls, run billing
-- [ ] Verify: credits applied, amount_due reduced
-- [ ] Verify: Stripe charged only the remaining amount
-- [ ] Verify: ledger shows "Applied to invoice DEMO-XXXX" with negative amount
-
-### 21.3 Credits > Invoice Amount
-- [ ] Grant $500 credits
-- [ ] Generate invoice for $79
-- [ ] Verify: credits applied = $79, amount_due = $0, balance = $421
-- [ ] Verify: Stripe NOT charged
-
-### 21.4 Credit Deduction
-- [ ] Credits page > Deduct $20 from Alpha Inc
-- [ ] Verify: confirmation dialog shown
-- [ ] Verify: balance reduced, ledger shows deduction entry
-
----
-
-## FLOW 22: Credit Notes
-
-### 22.1 On Unpaid Invoice (reduces amount due)
-- [ ] Open finalized unpaid invoice > "Issue Credit"
-- [ ] Quick-pick "Billing error", amount $20
-- [ ] Verify: blue preview banner shows "Invoice amount due will be reduced by $20.00"
-- [ ] Issue > verify amount_due reduced
-- [ ] Verify: CN page stat cards update
-
-### 22.2 On Paid Invoice -- Credit type
-- [ ] Open paid invoice > "Issue Credit"
-- [ ] Amount $15, reason "Service disruption", type "Credit to balance"
-- [ ] Verify: preview shows "will be added to customer's credit balance"
-- [ ] Verify: customer credit balance increased by $15
-- [ ] Verify: invoice detail shows CN in "Post-payment adjustments"
-
-### 22.3 On Paid Invoice -- Refund type
-- [ ] Same paid invoice > "Issue Credit"
-- [ ] Amount $10, type "Refund to payment method"
-- [ ] Verify: Stripe refund processed (check Stripe CLI)
-- [ ] Verify: CN listing shows "Refunded" badge
-- [ ] Verify: credit balance NOT changed
-
-### 22.4 CN Exceeding Limits
-- [ ] Try CN for more than amount_due on unpaid invoice > verify error
-- [ ] Try CN for more than amount_paid on paid invoice > verify error
-
-### 22.5 CN Page Quality
-- [ ] Verify: stat cards (Total Credited, Refunded to Card, Applied to Balance, Issued)
-- [ ] Verify: tab filters (All/Draft/Issued/Voided) with counts
-- [ ] Verify: search works (by number, customer, reason)
-- [ ] Verify: draft CNs show Issue + Void buttons, issued CNs do not
-
----
-
-## FLOW 23: Coupons + Plan Restrictions
-
-### 23.1 Create Restricted Coupon
-- [ ] Coupons > Create > code "PRO20", 20% off, restrict to Enterprise plan only
-- [ ] Verify: plan checkboxes shown, Enterprise checked
-
-### 23.2 Redeem
-- [ ] Via API: redeem PRO20 for a Starter subscription
-- [ ] Verify: error "coupon is not valid for this plan"
-- [ ] Redeem PRO20 for Enterprise subscription > verify: discount applied
-
-### 23.3 Copy Code
-- [ ] Verify: copy button on coupon code works
-- [ ] Verify: toast "Code copied"
-
----
-
-## FLOW 24: Stripe Tax Integration
-
-> **Account limitation:** `V1TaxCalculations.Create` is gated by the home country of your Stripe account. India-registered accounts currently return `"Stripe Tax isn't yet supported for your country"` in both live and test mode — the block is account-level, not key-level. To exercise this flow end-to-end, use a separate Stripe account registered in a supported country (US, GB, EU, AU, etc.). For India-based launches, use Flow 24b (Phase 1-lite manual tax with cross-border zero-rating) instead.
-
-### 24.1 Enable Stripe Tax
-- [ ] Enable feature flag: `PUT /v1/feature-flags/billing.stripe_tax` with `{"enabled": true}`
-- [ ] Ensure customer has a billing profile with full address (country, state, postal code)
-
-### 24.2 Billing with Stripe Tax
-- [ ] Ingest usage, run billing
-- [ ] Verify: invoice tax is calculated by Stripe (check `tax_name` field -- should show jurisdiction name like "CA Sales Tax")
-- [ ] Verify: per-line-item tax amounts populated
-
-### 24.3 Fallback on Stripe Error
-- [ ] Temporarily set an invalid Stripe key
-- [ ] Run billing > verify: invoice still generated with zero tax (graceful fallback)
-- [ ] Check logs for "tax calculation failed" warning
-- [ ] Verify: Prometheus counter `velox_tax_fallback_total{reason="api_error"}` incremented (see Flow 24d)
-- [ ] Restore valid key
-
-### 24.4 Tax-Exempt Customer
-- [ ] Set customer billing profile `tax_exempt: true`
-- [ ] Run billing > verify: zero tax regardless of Stripe Tax or manual rate
-
----
-
-## FLOW 24b: Cross-Border Zero-Rated Export (Phase 1-lite Manual Tax)
-
-> **What this tests:** Velox's tenant-side tax fallback when Stripe Tax is unavailable. When `tenant_settings.tax_home_country` is set and the customer's billing country differs, the billing engine zero-rates the tax line and stamps `tax_name = "<original> (zero-rated export)"` for the audit trail. Matches IGST treatment of exports under LUT for Indian tenants, plus equivalent export rules in other jurisdictions.
-
-### 24b.1 Setup
-- [ ] Settings: set `tax_home_country = "IN"`, `tax_rate_bp = 1800`, `tax_name = "IGST"` (18%)
-- [ ] Verify: invalid country ("INDIA", "in ", "XX") is rejected with "must be an ISO-3166 alpha-2 country code"
-- [ ] Verify: empty string is accepted (legacy tenants not forced to migrate)
-- [ ] Feature flag `billing.stripe_tax` stays OFF for this flow (Phase 1-lite is Stripe-Tax-agnostic)
-
-### 24b.2 Domestic Customer — Full IGST
-- [ ] Create customer with billing profile country = `"IN"`
-- [ ] Run billing on a $100 subtotal
-- [ ] Verify: `tax_amount_cents = 1800`, `tax_rate_bp = 1800`, `tax_name = "IGST"`
-- [ ] Verify: invoice PDF shows "IGST (18.00%) ₹18.00" (no export annotation)
-
-### 24b.3 Export Customer — Zero-Rated
-- [ ] Create a second customer with billing profile country = `"US"`
-- [ ] Run billing on a $100 subtotal
-- [ ] Verify: `tax_amount_cents = 0`, `tax_rate_bp = 0`, `tax_name = "IGST (zero-rated export)"`
-- [ ] Verify: per-line-item taxes also zero, `total_amount_cents = subtotal`
-- [ ] Verify: invoice PDF shows "IGST (zero-rated export) $0.00"
-- [ ] Verify: `tax_country` still stamped as `"US"` (customer destination, not blank)
-
-### 24b.4 Missing Customer Country — No Zero-Rating
-- [ ] Create customer whose billing profile has no country set
-- [ ] Run billing > verify: normal IGST applies (can't prove export without a destination country, so we don't zero-rate)
-
-### 24b.5 Exempt Overrides Export Annotation
-- [ ] Set export customer's `tax_exempt = true`
-- [ ] Run billing > verify: `tax_amount_cents = 0`, `tax_name = ""` (blank, NOT annotated as "zero-rated export" — exempt is a stronger signal)
-
-### 24b.6 Home Country Unset — No Zero-Rating
-- [ ] Settings: clear `tax_home_country` (set to empty string)
-- [ ] Run billing for the US customer again > verify: normal 18% applies (no home country → can't distinguish export)
-
----
-
-## FLOW 24c: Tax-ID Format Validation
-
-> **What this tests:** `UpsertBillingProfile` normalizes (trim + uppercase) and format-validates the tax ID against `tax_id_type`. GSTIN, EU VAT, and AU ABN are explicitly supported. Unknown kinds pass through untouched so jurisdictions we haven't added support for aren't rejected.
-
-### 24c.1 Valid Formats Accepted
-- [ ] Customer > Billing Profile with `tax_id_type = "gstin"`, `tax_id = "27aaepm1234c1z5"` → verify saved as `"27AAEPM1234C1Z5"` (normalized uppercase)
-- [ ] Same with `tax_id_type = "in_gst"` or `"in_gstin"` (aliases) → accepted
-- [ ] `tax_id_type = "vat"`, `tax_id = "DE123456789"` → accepted
-- [ ] `tax_id_type = "abn"`, `tax_id = "51824753556"` → accepted
-
-### 24c.2 Malformed Rejected
-- [ ] `tax_id_type = "gstin"`, `tax_id = "27INVALID"` → 422 with body message "invalid GSTIN format: expected 15-char code like 27AAEPM1234C1Z5"
-- [ ] `tax_id_type = "vat"`, `tax_id = "12"` → 422 "invalid EU VAT format"
-- [ ] `tax_id_type = "abn"`, `tax_id = "123"` → 422 "invalid ABN format: expected 11 digits"
-- [ ] Verify: billing profile NOT saved when validation fails
-
-### 24c.3 Unknown Kinds Pass Through
-- [ ] `tax_id_type = "br_cnpj"`, `tax_id = "12.345.678/0001-90"` → accepted as-is (no validation for unsupported jurisdictions)
-- [ ] `tax_id_type = ""`, `tax_id = "anything"` → accepted (no kind → no validation)
-
-### 24c.4 Empty Tax ID Always Valid
-- [ ] `tax_id_type = "gstin"`, `tax_id = ""` → accepted (presence is a separate concern from format)
-
----
-
-## FLOW 24d: Tax Fallback Metrics
-
-> **What this tests:** `velox_tax_fallback_total{reason}` Prometheus counter, emitted every time `StripeCalculator` falls through to `ManualCalculator`. Operators alert on sustained non-zero values to catch Stripe Tax going dark before invoices silently switch to the tenant flat rate.
-
-### 24d.1 Scrape Endpoint
-- [ ] `curl -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep velox_tax_fallback_total`
-- [ ] Verify: counter is registered (shows HELP + TYPE lines even if values are zero)
-
-### 24d.2 Reason = `no_country`
-- [ ] Enable `billing.stripe_tax`, configure a valid Stripe key
-- [ ] Run billing for a customer whose billing profile has NO country set
-- [ ] Scrape metrics > verify `velox_tax_fallback_total{reason="no_country"}` incremented
-
-### 24d.3 Reason = `no_client_for_mode`
-- [ ] Configure ONLY `STRIPE_SECRET_KEY` (live-only) but run a tenant provisioned in test livemode — or vice versa
-- [ ] Run billing > verify `velox_tax_fallback_total{reason="no_client_for_mode"}` incremented
-
-### 24d.4 Reason = `api_error`
-- [ ] Set an invalid `STRIPE_SECRET_KEY` (or disconnect network)
-- [ ] Run billing with a fully-addressed customer > verify `velox_tax_fallback_total{reason="api_error"}` incremented
-- [ ] Restore valid key
-
-### 24d.5 Happy Path — No Increment
-- [ ] With a valid key + fully-addressed customer, run billing
-- [ ] Verify: counter values unchanged between before and after (Stripe Tax path did not fall back)
-
----
-
-## FLOW 25: Multiple Meters on One Plan
-
-- [ ] Create second rule: `storage_gb`, $0.10/GB
-- [ ] Create second meter: `storage_gb`, aggregation max
-- [ ] Attach to plan
-- [ ] Ingest: 2000 API calls + 50 GB storage
-- [ ] Run billing
-- [ ] Verify 3 line items: base ($29) + API (2000 x $0.02) + storage (50 x $0.10)
-
----
-
-## FLOW 26: Negative Usage (Corrections)
-
-- [ ] Ingest 1000 events for a meter
-- [ ] Ingest -200 events (correction) for same meter
-- [ ] Verify: UsageEvents page shows -200 in red text
-- [ ] Verify: meter breakdown shows net 800
-- [ ] Run billing > verify: billed for 800, not 1000
-
----
-
-## FLOW 27: Manual Line Items
-
-- [ ] Create a draft invoice (via API: POST /v1/invoices)
-- [ ] Invoice detail > "Add Line Item"
-- [ ] Description: "Setup fee", type: Add-On, qty: 1, price: $250
-- [ ] Verify: line item added, invoice total updated
-- [ ] Add another: "Consulting", qty: 2, price: $150
-- [ ] Verify: total = $250 + $300 = $550
-- [ ] Finalize > verify auto-charges
-
----
-
-## FLOW 28: Large Batch Usage Ingestion
-
-- [ ] POST /v1/usage-events/batch with 1000 events (script or curl)
-- [ ] Verify: response shows `accepted: 1000, rejected: 0`
-- [ ] Verify: usage events page shows correct total
-- [ ] Include some duplicate idempotency keys > verify duplicates rejected, rest accepted
-- [ ] Run billing > verify: usage correctly aggregated
-
----
-
-## Phase 6: Invoice Operations
-
----
-
-## FLOW 29: Void Invoice
-
-- [ ] Void a finalized invoice with credits applied
-- [ ] Verify: credits reversed (balance restored)
+- [ ] Void a finalized invoice that has credits applied
+- [ ] Verify: credits reversed, balance restored
 - [ ] Verify: Stripe PaymentIntent canceled
-- [ ] Verify: dunning run resolved (if active)
-- [ ] Verify: audit log shows "Voided invoice DEMO-XXXX"
+- [ ] Verify: active dunning run (if any) is resolved
+- [ ] Audit log shows `Voided invoice <number>`
+
+## FLOW I5: Collect + payment timeline
+
+- [ ] Finalized unpaid invoice for a customer with a payment method
+- [ ] POST /v1/invoices/{id}/collect → Stripe PaymentIntent created, payment_status updates
+- [ ] GET /v1/invoices/{id}/payment-timeline → all attempts with ts, amount, status, PI id
+- [ ] For a failed-then-succeeded invoice, both attempts are shown in order
+
+## FLOW I6: Email + PDF preview
+
+- [ ] Invoice detail → Email → send to any address
+- [ ] Verify: email queued in `email_outbox`, PDF attached; SMTP logs (or Mailtrap) show delivery
+- [ ] Invoice detail → Preview PDF → renders in overlay iframe; close via X or backdrop
+
+## FLOW I7: Zero-amount invoice
+
+- [ ] Plan with `base_amount_cents = 0`, no meters → subscription → run billing
+- [ ] Verify behavior: either no invoice generated, or $0 invoice auto-marked paid (no Stripe charge)
+
+## FLOW I8: Currency consistency
+
+- [ ] Default currency USD, create some invoices
+- [ ] Change tenant `default_currency` to EUR → NEW invoices in EUR, existing unchanged
+- [ ] Customer with `billing_profile.currency = GBP` → their invoices in GBP regardless of tenant default
+
+## FLOW I9: Credit note on voided invoice
+
+- [ ] Void an invoice, then try to issue a credit note → error `"cannot issue credit note on voided invoice"`
+- [ ] CN is NOT created
 
 ---
 
-## FLOW 30: Invoice Collect + Payment Timeline
+## Dunning
 
-### 30.1 Manual Collect
-- [ ] Create a finalized unpaid invoice for a customer with a payment method
-- [ ] `POST /v1/invoices/{id}/collect`
-- [ ] Verify: Stripe PaymentIntent created, invoice payment_status updates
+## FLOW D1: Retry cycle + escalation
 
-### 30.2 Payment Timeline
-- [ ] `GET /v1/invoices/{id}/payment-timeline`
-- [ ] Verify: shows all payment attempts with timestamps, amounts, status, Stripe PI IDs
-- [ ] For a failed-then-succeeded invoice: verify both attempts shown in order
+- [ ] Customer with declining card → subscription → usage → run billing → dunning run created
+- [ ] Dunning page: stat cards (Active, Escalated, Recovered, At Risk $), tab filters with counts
+- [ ] Run shows state `Active`, "No retries yet", `next_action_at` scheduled
+- [ ] Sidebar Dunning badge shows count
+- [ ] Fast-forward `next_action_at` in DB, wait for scheduler → attempt count increments
+- [ ] After max retries → state `Escalated`
 
----
+## FLOW D2: Resolution modes
 
-## FLOW 31: Invoice Email + PDF Preview
+- [ ] Click "Resolve" on an active run → "Payment recovered" → invoice marked paid
+- [ ] On another run, "Manually resolved" → run resolved without touching the invoice
 
-### 31.1 Send from UI
-- [ ] Invoice detail > "Email" button
-- [ ] Enter email address > send
-- [ ] Verify: email sent (check SMTP logs or Mailtrap)
-- [ ] Verify: PDF attached
+## FLOW D3: Per-customer override
 
-### 31.2 PDF Preview
-- [ ] Invoice detail > "Preview PDF"
-- [ ] Verify: PDF renders in overlay iframe
-- [ ] Verify: close via X button or backdrop click
+- [ ] Customer detail → Dunning Override → Configure → max_retries 5, grace 7 days
+- [ ] Verify displayed in properties card; takes effect on next failure
+- [ ] Reset to Default → override removed
 
----
+## FLOW D4: Self-service payment update (token)
 
-## FLOW 32: Zero-Amount Invoice
-
-- [ ] Create a plan with base_amount_cents = 0 and no meters
-- [ ] Create subscription, run billing
-- [ ] Verify: what happens? Either no invoice generated (preferred) or $0 invoice created
-- [ ] If $0 invoice created: verify it's auto-marked as paid (no Stripe charge attempted)
-
----
-
-## FLOW 33: Currency Consistency
-
-- [ ] Create invoices in USD (default currency)
-- [ ] Change tenant default_currency to EUR in Settings
-- [ ] Run billing for same subscription
-- [ ] Verify: NEW invoices use EUR
-- [ ] Verify: EXISTING invoices still show USD (not retroactively changed)
-- [ ] Verify: customer billing profile currency overrides tenant default
+- [ ] Trigger a payment failure
+- [ ] Server logs: `"payment update email"` with URL `http://localhost:5173/update-payment?token=vlx_pt_...`
+- [ ] Open the URL in incognito (NOT logged in)
+- [ ] Verify: page loads without login, shows customer name + invoice + amount; "Secured by Stripe"
+- [ ] Click "Update Payment Method" → Stripe Checkout (setup mode); enter good card; complete
+- [ ] Verify: redirected back; Stripe fires `checkout.session.completed`; customer PM updated
+- [ ] Re-open the same URL → "Link expired or invalid" (single-use)
+- [ ] Random token → same error
+- [ ] No token → "No payment update token provided"
+- [ ] Manually expire a token and re-open → same error
 
 ---
 
-## FLOW 34: Credit Note on Voided Invoice
+## Credits & Credit Notes
 
-- [ ] Void an invoice
-- [ ] Try to issue a credit note on the voided invoice
-- [ ] Verify: error "cannot issue credit note on voided invoice" or similar
-- [ ] Verify: credit note is NOT created
+## FLOW C1: Credits (grant, apply, expire, deduct)
 
----
+- [ ] Credits → Grant $50 to a customer, description "Welcome credit", expires 30d
+- [ ] Balance = $50, ledger shows Expires column
+- [ ] Ingest usage → run billing → credits applied, amount_due reduced, Stripe charged only the remainder
+- [ ] Ledger: `Applied to invoice <number>` with negative amount
+- [ ] Grant $500, generate $79 invoice → credits applied $79, amount_due $0, balance $421, Stripe NOT charged
+- [ ] Deduct $20 → confirmation dialog → balance reduced, ledger entry created
 
-## Phase 7: Payment Recovery
+## FLOW C2: Credit notes
 
----
+- [ ] Unpaid invoice → Issue Credit → "Billing error" $20 → preview "will reduce amount due by $20"
+- [ ] Issue → amount_due reduced; CN page stat cards update
+- [ ] Paid invoice → Issue Credit → $15 type "Credit to balance" → customer credit balance +$15;
+  invoice detail shows CN in "Post-payment adjustments"
+- [ ] Paid invoice → Issue Credit → $10 type "Refund to payment method" → Stripe refund processed;
+  CN badge "Refunded"; credit balance unchanged
+- [ ] CN > amount_due on unpaid → error
+- [ ] CN > amount_paid on paid → error
+- [ ] CN page: stat cards (Total Credited, Refunded, Applied to Balance, Issued); tab filters with counts;
+  search by number/customer/reason; draft CNs show Issue + Void, issued CNs don't
 
-## FLOW 35: Dunning (Payment Recovery)
+## FLOW C3: Coupons + plan restrictions
 
-### 35.1 Setup
-- [ ] Create customer "Bad Card Corp" with card 4000 0000 0000 0341
-- [ ] Create subscription, ingest usage, run billing
-- [ ] Verify: payment fails, dunning run created
-
-### 35.2 Dunning Page
-- [ ] Verify: stat cards (Active, Escalated, Recovered, At Risk amount)
-- [ ] Verify: tab filters (All/Active/Escalated/Recovered) with counts
-- [ ] Verify: run shows state "Active", progress "No retries yet"
-- [ ] Verify: Next Retry shows scheduled date
-- [ ] Verify: sidebar Dunning badge shows count
-
-### 35.3 Retry Cycle
-- [ ] Fast-forward `next_action_at` in DB, wait for scheduler
-- [ ] Verify: attempt count increments
-- [ ] After max retries: state = "Escalated"
-
-### 35.4 Resolution
-- [ ] Click "Resolve" on active run
-- [ ] Select "Payment recovered" > verify invoice marked paid
-- [ ] Select "Manually resolved" on another > verify run resolved
-
-### 35.5 Payment Update Email
-- [ ] After payment failure, check server logs for payment update email
-- [ ] Verify: email contains token-based URL (not plain invoice_id/customer_id)
-- [ ] Verify: email says "This link will expire in 24 hours"
-- [ ] See Flow 36 for full token flow testing
-
-### 35.6 Per-Customer Dunning Override
-- [ ] Customer detail > Dunning Override > Configure
-- [ ] Set max retries = 5, grace period = 7 days
-- [ ] Verify: saved and displayed in properties card
-- [ ] Reset to Default > verify removed
+- [ ] Create `PRO20`, 20% off, restricted to Enterprise
+- [ ] Redeem for Starter sub → error `"coupon is not valid for this plan"`
+- [ ] Redeem for Enterprise sub → discount applied
+- [ ] Copy code button works; toast "Code copied"
 
 ---
 
-## FLOW 36: Self-Service Payment Update (Token Flow)
+## Webhooks
 
-### 36.1 Token Generation on Payment Failure
-- [ ] Trigger a payment failure (bad card customer)
-- [ ] Check server logs: should see "payment update email" with token URL
-- [ ] Verify: URL format is `http://localhost:5173/update-payment?token=vlx_pt_...`
+## FLOW W1: Stripe signature verification
 
-### 36.2 Customer Landing Page (No Login Required)
-- [ ] Open an incognito/private browser window (NOT logged in)
-- [ ] Paste the token URL
-- [ ] Verify: page loads WITHOUT login -- shows customer name, invoice number, amount due
-- [ ] Verify: "Secured by Stripe" text at bottom
-- [ ] Verify: "Update Payment Method" button visible
+- [ ] Valid webhook payload + signature within 300s → 200, event processed
+- [ ] Replay the same payload 5+ min later → rejected (timestamp tolerance exceeded)
+- [ ] Modify payload but keep original signature → rejected (signature mismatch)
 
-### 36.3 Stripe Checkout Flow
-- [ ] Click "Update Payment Method"
-- [ ] Verify: redirected to Stripe Checkout (setup mode)
-- [ ] Enter good card (4242...) > complete
-- [ ] Verify: redirected back to update-payment page
-- [ ] Verify: Stripe webhook fires `checkout.session.completed`
-- [ ] Verify: customer payment method updated in Velox
+## FLOW W2: Outbound webhook secret rotation
 
-### 36.4 Token Security
-- [ ] Open the same token URL again after completing checkout
-- [ ] Verify: "Link expired or invalid" error (token was marked as used)
-- [ ] Try a random token: `/update-payment?token=vlx_pt_fake123`
-- [ ] Verify: "Link expired or invalid" error
-- [ ] Try with no token: `/update-payment`
-- [ ] Verify: "No payment update token provided" error
+- [ ] Webhooks → Endpoints → Rotate Secret on an endpoint → new `whsec_...` shown in modal
+- [ ] Old secret fails signature verification
+- [ ] New secret succeeds
 
-### 36.5 Token Expiry
-```sql
--- Manually expire a token for testing:
-UPDATE payment_update_tokens SET expires_at = NOW() - INTERVAL '1 hour' WHERE id = (SELECT id FROM payment_update_tokens ORDER BY created_at DESC LIMIT 1);
-```
-- [ ] Open the token URL
-- [ ] Verify: "Link expired or invalid" error
+## FLOW W3: Delivery stats
+
+- [ ] Webhooks → Endpoints → Success Rate column
+- [ ] Green ≥95%, amber 70–94%, red <70%
+- [ ] Replay a failed event → success rate updates
 
 ---
 
-## Phase 8: Customer Management
+## Customers & Portal
+
+## FLOW CU1: Settings + billing profile
+
+- [ ] Settings: change company name → save → "Saved" indicator; navigating away with unsaved changes prompts
+- [ ] Change currency → NEW invoices use it; existing invoices unchanged
+- [ ] Customer detail → edit billing profile (address, tax ID) → PDF reflects updated bill-to
+
+## FLOW CU2: Customer portal API
+
+- [ ] GET /v1/customer-portal/{customer_id}/overview → active subs, recent invoices, credit balance
+- [ ] GET /v1/customer-portal/{customer_id}/subscriptions → only that customer's subs
+- [ ] GET /v1/customer-portal/{customer_id}/invoices → only that customer's invoices
+
+## FLOW CU3: GDPR export + erasure
+
+- [ ] GET /v1/customers/{id}/export → includes customer, profile, invoices, subs, credit ledger, balance
+- [ ] Stripe IDs redacted (last 4 visible); payment method details redacted
+- [ ] Try delete on customer with active subs → `"customer has active subscriptions; cancel them before deletion"`
+- [ ] Cancel sub, POST /v1/customers/{id}/delete-data → display_name → "Deleted Customer", email cleared,
+  profile PII anonymized, status `archived`, invoices preserved, audit log entry created
+- [ ] Export endpoint for deleted customer returns anonymized data
+
+## FLOW CU4: Archival cascade
+
+- [ ] Customer detail → Archive → confirmation dialog → amber banner "…data is read-only"
+- [ ] All action buttons hidden (Edit, Set Up Billing, Configure, Set Up Payment, Add)
+- [ ] "Restore Customer" visible in the banner; customer badge `archived`
+- [ ] Run billing → no invoices for the archived customer's subs; existing invoices still readable;
+  credit balance still visible
+- [ ] Restore → banner disappears, actions reappear, badge `active`
+- [ ] Customers list → Archived tab → shows archived rows (or empty + Clear filter)
 
 ---
 
-## FLOW 37: Settings + Billing Profile
+## Platform
 
-- [ ] Settings page: change company name, save
-- [ ] Verify: "Saved" indicator, unsaved changes warning on navigation
-- [ ] Change currency > verify invoices use new currency
-- [ ] Customer detail > edit billing profile (address, tax ID)
-- [ ] Verify: PDF shows updated bill-to info
+## FLOW P1: Feature flags
 
----
+- [ ] GET /v1/feature-flags → seeded flags returned (auto_charge, tax_basis_points, webhooks.enabled,
+  dunning.enabled, credits.auto_apply, billing.stripe_tax) with key / enabled / description / timestamps
+- [ ] PUT /v1/feature-flags/webhooks.enabled `{"enabled":false}` → flag disabled globally;
+  trigger an event → NOT delivered; re-enable → delivery resumes
+- [ ] PUT /v1/feature-flags/dunning.enabled/overrides/{tenant_id} `{"enabled":false}` → disabled for tenant only
+- [ ] DELETE .../overrides/{tenant_id} → tenant falls back to global
+- [ ] Cache TTL: toggles reflect within 30s
 
-## FLOW 38: Customer Portal API
+## FLOW P2: Audit log
 
-- [ ] `GET /v1/customer-portal/{customer_id}/overview`
-- [ ] Verify: returns active subscriptions, recent invoices, credit balance
-- [ ] `GET /v1/customer-portal/{customer_id}/subscriptions`
-- [ ] Verify: returns customer's subscriptions only
-- [ ] `GET /v1/customer-portal/{customer_id}/invoices`
-- [ ] Verify: returns customer's invoices only
+- [ ] Perform several actions (create customer, grant credits, void invoice, change plan)
+- [ ] Audit Log page: all logged
+- [ ] Stat cards: Total, Today, Unique Actors, Destructive Actions
+- [ ] Destructive actions have red left border
+- [ ] Expand a row → metadata (amounts, IDs); "View" link navigates to the resource
+- [ ] Filters: resource type, action, date range (server-side)
+- [ ] Export CSV → all entries exported
 
----
+## FLOW P3: Usage summary API
 
-## FLOW 39: GDPR Data Export + Deletion
+- [ ] Ingest events for multiple meters for a customer
+- [ ] GET /v1/usage-summary/{customer_id}?from=YYYY-MM-DD&to=YYYY-MM-DD
+- [ ] Aggregated totals per meter; quantities match ingestion
 
-### 39.1 Data Export (Right to Portability)
-- [ ] `GET /v1/customers/{id}/export`
-- [ ] Verify: response includes customer record, billing profile, invoices, subscriptions, credit ledger, credit balance
-- [ ] Verify: Stripe IDs are redacted (only last 4 chars visible)
-- [ ] Verify: payment method details redacted (card_last4 visible, full IDs hidden)
+## FLOW P4: Empty billing cycle
 
-### 39.2 Data Deletion (Right to Erasure)
-- [ ] Try deleting a customer with active subscriptions
-- [ ] Verify: error "customer has active subscriptions; cancel them before deletion"
-- [ ] Cancel the subscription first, then retry
-- [ ] `POST /v1/customers/{id}/delete-data`
-- [ ] Verify: customer display_name changed to "Deleted Customer"
-- [ ] Verify: customer email cleared
-- [ ] Verify: billing profile PII anonymized (name, email, phone, address, tax IDs)
-- [ ] Verify: customer status set to "archived"
-- [ ] Verify: invoices still exist (financial records preserved for compliance)
-- [ ] Verify: audit log entry created for deletion
-- [ ] Verify: export endpoint for deleted customer returns anonymized data
+- [ ] No subs due (all already billed, or none exist)
+- [ ] Trigger billing → "0 invoice(s) generated", clean exit, no errors, dashboard stats unchanged
 
----
+## FLOW P5: Health checks
 
-## FLOW 40: Customer Archival Cascade
+- [ ] GET /health → 200 `{"status":"ok"}`
+- [ ] GET /health/ready → 200 with checks `{api, database, scheduler: ok}`
+- [ ] Stop Postgres → GET /health/ready → 503 `degraded` with `database: error:...`;
+  GET /health still 200 (liveness ≠ readiness)
+- [ ] Scheduler stalled (kill its goroutine or wait past 2× interval) → readiness shows scheduler degraded
 
-### 40.1 Archive from UI
-- [ ] Customer detail > click "Archive" button (only visible when active)
-- [ ] Verify: confirmation dialog appears with warning
-- [ ] Confirm > verify: amber banner "This customer has been archived. All data is read-only."
-- [ ] Verify: all action buttons hidden (Edit, Set Up Billing, Configure, Set Up Payment, + Add)
-- [ ] Verify: "Restore Customer" button visible in the banner
-- [ ] Verify: customer badge shows "archived" (gray)
+## FLOW P6: Tax fallback metrics
 
-### 40.2 Billing stops
-- [ ] Run billing > verify: no invoice generated for archived customer's subscriptions
-- [ ] Verify: existing invoices still accessible (read-only)
-- [ ] Verify: credits balance still visible
+Counter `velox_tax_fallback_total{reason}` increments every time `StripeCalculator`
+falls through to `ManualCalculator`. Operators alert on sustained non-zero values.
 
-### 40.3 Restore
-- [ ] Click "Restore Customer" in the banner
-- [ ] Verify: banner disappears, action buttons reappear
-- [ ] Verify: customer status back to "active"
-
-### 40.4 List filter
-- [ ] Customers list > click "Archived" tab
-- [ ] Verify: shows archived customers (or "No archived customers" + Clear filter)
-- [ ] Verify: tab stays visible even with zero results (can switch back to "All")
+- [ ] `curl -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep velox_tax_fallback_total`
+  → counter registered (HELP + TYPE lines)
+- [ ] Reason `no_country`: billing.stripe_tax on + customer with no country → counter `reason="no_country"` +1
+- [ ] Reason `no_client_for_mode`: connected tenant in one mode only, bill in the other mode → +1
+- [ ] Reason `api_error`: invalid Stripe key + fully-addressed customer → +1; restore key
+- [ ] Happy path: valid key + addressed customer → counter unchanged
 
 ---
 
-## Phase 9: Platform Features
+## UI / UX
+
+## FLOW U1: Dashboard
+
+- [ ] 4 KPI cards: MRR (sparkline + trend %), Active Customers, Failed Payments (red if >0), Revenue 30d
+- [ ] Revenue bar chart (compact, no axes, link to Analytics)
+- [ ] Recent Activity: last 5 invoices with status dot, badge, amount, relative time — clicking navigates to detail
+- [ ] Get Started checklist: numbered, checkmarks as steps complete; disappears when all 4 done
+- [ ] Trigger Billing button shows result after run
+- [ ] No overlap with Analytics (no period selector, no detailed charts here)
+
+## FLOW U2: Analytics page
+
+- [ ] Revenue trend area chart with period tabs (30d / 90d / 12mo); switching updates data
+- [ ] X-axis dates, Y-axis amounts, hover tooltips
+- [ ] Payment Success Rate donut with center percentage
+- [ ] Invoice Summary bar chart (Paid/Open/Failed/Dunning)
+- [ ] Customer Stats card (Active, Subs, Dunning, Open Invoices)
+- [ ] Financial Summary card (MRR, Total Revenue, Outstanding AR, Avg Invoice, Credit Balance)
+
+## FLOW U3: Usage Events page
+
+- [ ] Stat cards: Total Events, Total Units, Active Meters, Active Customers
+- [ ] Meter breakdown with horizontal bars
+- [ ] Filter by customer → breakdown updates
+- [ ] Filter by date range
+- [ ] Export CSV
+
+## FLOW U4: Cmd+K command palette
+
+- [ ] Cmd+K (Mac) / Ctrl+K → palette opens with navigation items
+- [ ] Type "inv" → Invoices nav filtered, matching invoices listed
+- [ ] Arrow keys → highlight moves; Enter → navigate; click result → same
+- [ ] Type a customer name → customer appears; click → navigate + close
+- [ ] Esc closes; works from any page
+
+## FLOW U5: Dark mode
+
+- [ ] Toggle in sidebar footer → UI switches (sidebar, cards, tables, modals, forms, charts)
+- [ ] Badges and status colors still distinguishable
+- [ ] Refresh → persists (localStorage `velox-theme`)
+- [ ] Toggle back → clean switch
+- [ ] Delete `velox-theme` → follows system preference
+
+## FLOW U6: Responsive
+
+- [ ] Tablet width (768px): tables scroll horizontally with fade indicator
+- [ ] Sidebar collapses to hamburger; open/close via Menu/X
+- [ ] Stat cards stack to 2-col grid
+- [ ] Modals don't overflow
+
+## FLOW U7: Edge cases
+
+| Case | Expected |
+|------|----------|
+| Zero usage | Base fee only invoice |
+| Meter without rating rule | Usage silently skipped |
+| Duplicate idempotency key (same body) | Cached response, one row |
+| Duplicate idempotency key (different body) | 409 Conflict |
+| Invalid `external_customer_id` on ingest | `"customer not found"` error |
+| Invalid `event_name` on ingest | `"meter not found"` error |
+| Void already voided invoice | Error message |
+| Finalize non-draft invoice | Error message |
+| Duplicate subscription code | Humanized error |
+| Cancel canceled subscription | Error message |
+| Revoke current session's API key | Warning dialog about logout |
+| Create subscription for archived customer | Allowed (backend permits) |
+| Esc from modal with form data | "Unsaved changes" confirmation |
 
 ---
 
-## FLOW 41: Feature Flags
+# Tier 3 — Deep / Rare
 
-### 41.1 List Flags
-- [ ] `GET /v1/feature-flags`
-- [ ] Verify: all seeded flags returned (billing.auto_charge, billing.tax_basis_points, webhooks.enabled, dunning.enabled, credits.auto_apply, billing.stripe_tax)
-- [ ] Verify: each flag has key, enabled, description, timestamps
+Run before major releases, after infra changes (RLS, encryption, rate limiter,
+migrations), or when investigating an incident. These flows exercise properties
+that are easy to miss in day-to-day work.
 
-### 41.2 Toggle Global Flag
-- [ ] `PUT /v1/feature-flags/webhooks.enabled` with `{"enabled": false}`
-- [ ] Verify: flag disabled globally
-- [ ] Trigger a webhook event > verify: NOT delivered
-- [ ] Re-enable > verify: delivery resumes
+## FLOW X1: Multi-tenant RLS isolation
 
-### 41.3 Per-Tenant Override
-- [ ] `PUT /v1/feature-flags/dunning.enabled/overrides/{tenant_id}` with `{"enabled": false}`
-- [ ] Verify: dunning disabled for this tenant only
-- [ ] `DELETE /v1/feature-flags/dunning.enabled/overrides/{tenant_id}`
-- [ ] Verify: tenant falls back to global setting
+- [ ] Bootstrap Tenant A with API key A; create customer "Alpha Corp" with key A
+- [ ] Bootstrap Tenant B with API key B; list customers with key B → Alpha Corp NOT visible
+- [ ] GET /v1/customers/{alpha_id} with key B → 404
+- [ ] Create "Beta Corp" with key B; list with key A → Beta Corp NOT visible
+- [ ] Repeat for invoices, subscriptions, credits — cross-tenant reads must 404
 
-### 41.4 Cache Behavior
-- [ ] Toggle a flag, immediately check `IsEnabled` -- verify change reflects within 30s
+## FLOW X2: Bootstrap lockdown
 
----
+- [ ] Start server without `VELOX_BOOTSTRAP_TOKEN` → POST /v1/bootstrap → 403
+  `"bootstrap disabled — set VELOX_BOOTSTRAP_TOKEN env var to enable"`
+- [ ] Start with `VELOX_BOOTSTRAP_TOKEN=my-secret`, POST `{"token":"wrong"}` → 403 `"invalid bootstrap token"`
+- [ ] Correct token after tenants already exist → 409 `"bootstrap already completed — tenants exist"`
 
-## FLOW 42: Webhook Secret Rotation
+`make bootstrap` (CLI) always works and creates additional tenants — only the
+HTTP endpoint is guarded.
 
-- [ ] Webhooks > Endpoints tab > click "Rotate Secret" on an endpoint
-- [ ] Verify: new secret shown in modal (whsec_...)
-- [ ] Verify: old secret no longer works for signature verification
-- [ ] Verify: new secret works
+## FLOW X3: Rate limiting
 
----
+Rate limiter runs AFTER auth middleware — per-tenant GCRA buckets in Redis at
+100 req/min. Unauthenticated + public endpoints (`/health`, `/metrics`,
+`/v1/bootstrap`) are NOT rate limited.
 
-## FLOW 43: Webhook Delivery Stats
+- [ ] Send 100+ concurrent requests (Go test or parallel curl; sequential curl is too slow)
+- [ ] First 100 → 200, rest → 429 with `Retry-After`; headers include `X-RateLimit-Limit/Remaining/Reset`
+- [ ] Wait ~10s, send 20 more → ~16 allowed (GCRA smooth refill at 1.67/sec)
+- [ ] Exhaust Tenant A → Tenant B still succeeds (separate buckets keyed by tenant_id)
+- [ ] Stop Redis → requests still succeed; logs `"rate_limiter: redis error, failing open"`
+  (in `APP_ENV=production`, fails closed instead)
+- [ ] Restart Redis → rate limiting resumes
+- [ ] Under rate limit: `/health`, `/health/ready`, `/metrics` still return 200
 
-- [ ] Webhooks > Endpoints tab
-- [ ] Verify: "Success Rate" column shows percentage
-- [ ] Color: green (>=95%), amber (70-94%), red (<70%)
-- [ ] Replay a failed event > verify success rate updates
+## FLOW X4: Security headers + metrics auth
 
----
+- [ ] `curl -I http://localhost:8080/v1/customers`
+  - `X-Content-Type-Options: nosniff`
+  - `X-Frame-Options: DENY`
+  - `Cache-Control: no-store`
+  - `Referrer-Policy: strict-origin-when-cross-origin`
+- [ ] In staging/prod (`APP_ENV != local`): `Strict-Transport-Security` present
+- [ ] Set `METRICS_TOKEN=secret123`, restart → GET /metrics → 401
+- [ ] `curl -H "Authorization: Bearer secret123" /metrics` → 200, Prometheus output
+- [ ] Unset `METRICS_TOKEN`, restart → /metrics accessible unauth (dev mode only)
 
-## FLOW 44: Usage Summary
+## FLOW X5: PII encryption at rest
 
-- [ ] Ingest events across multiple meters for a customer
-- [ ] `GET /v1/usage-summary/{customer_id}?from=2026-04-01&to=2026-04-30`
-- [ ] Verify: aggregated totals per meter for the period
-- [ ] Verify: quantities match what was ingested
+- [ ] Set `VELOX_ENCRYPTION_KEY` (64 hex chars), restart
+- [ ] Create customer with email + display_name
+- [ ] `SELECT display_name, email FROM customers ORDER BY created_at DESC LIMIT 1;`
+  → values prefixed `enc:`; API responses show decrypted plaintext
+- [ ] Create billing profile with legal_name, email, phone, tax_id
+- [ ] `SELECT legal_name, email, phone, tax_id FROM customer_billing_profiles ORDER BY created_at DESC LIMIT 1;`
+  → all 4 fields prefixed `enc:`; API responses show decrypted values
+- [ ] Pre-encryption plaintext rows still read correctly (no `enc:` prefix → returned as-is)
 
----
+## FLOW X6: Webhook replay attack
 
-## FLOW 45: Audit Log
+- [ ] Capture a real Stripe webhook payload + `Stripe-Signature` from `stripe listen` logs
+- [ ] Replay via curl 5+ min later → rejected (timestamp tolerance >300s)
+- [ ] Replay with modified payload + same signature → rejected (signature mismatch)
 
-- [ ] Perform several actions: create customer, grant credits, void invoice, change plan
-- [ ] Audit Log page > verify all actions logged
-- [ ] Verify: stat cards (Total, Today, Unique Actors, Destructive Actions)
-- [ ] Verify: destructive actions (void, cancel) have red left border
-- [ ] Click a row > verify expandable detail with metadata (amounts, IDs)
-- [ ] Click "View" link > navigates to the actual resource
-- [ ] Filter by resource type "Invoice" > verify filtered
-- [ ] Filter by action "void" > verify filtered
-- [ ] Date range filter > verify server-side filtering
-- [ ] Export CSV > verify all entries exported
+## FLOW X7: Stripe Tax integration
 
----
+Requires a Stripe account home country that supports `V1TaxCalculations.Create`
+(US/GB/EU/AU/…). India-registered accounts are account-level blocked (not
+key-level) and return `"Stripe Tax isn't yet supported for your country"` — use
+FLOW B10 for those tenants.
 
-## FLOW 46: Empty Billing Cycle
+- [ ] PUT /v1/feature-flags/billing.stripe_tax `{"enabled": true}`
+- [ ] Customer with full address (country, state, postal code) in billing profile
+- [ ] Run billing → invoice tax calculated by Stripe; `tax_name` shows jurisdiction
+  (e.g. "CA Sales Tax"); per-line-item tax amounts populated
+- [ ] Set invalid Stripe key → billing still generates invoice with $0 tax (graceful fallback);
+  logs warn "tax calculation failed"; counter `velox_tax_fallback_total{reason="api_error"}` +1
+- [ ] Restore key; flip customer `tax_exempt = true` → $0 tax regardless of setting
 
-- [ ] Ensure no subscriptions are due for billing (either no subscriptions, or all already billed)
-- [ ] Click "Run Billing" or wait for scheduler
-- [ ] Verify: "0 invoice(s) generated" -- clean exit, no errors
-- [ ] Verify: no error logs in server output
-- [ ] Verify: dashboard stats unchanged
+## FLOW X8: Migration rollback
 
----
+- [ ] `make migrate-status` → note version N
+- [ ] `go run ./cmd/velox migrate rollback` → version N-1
+- [ ] `make migrate` → back to N
+- [ ] `docker compose down -v && make up && make dev` → fresh DB migrates to latest version;
+  `make migrate-status` matches `ls internal/platform/migrate/sql/*.up.sql | wc -l`
 
-## Phase 10: Observability
+## FLOW X9: Config validation
 
----
+Direct `go run ./cmd/velox` lets you control env vars individually. The
+validator emits warnings for non-fatal issues and errors for fatal ones.
 
-## FLOW 47: OpenTelemetry Tracing
+- [ ] No `VELOX_ENCRYPTION_KEY` in production: fatal — `"VELOX_ENCRYPTION_KEY is required in production"`
+- [ ] `VELOX_ENCRYPTION_KEY` not exactly 64 hex chars: fatal — exact length in message
+- [ ] `VELOX_ENCRYPTION_KEY` not valid hex: fatal — `"not valid hex"`
+- [ ] `APP_ENV=production` without `REDIS_URL`: warning — `"REDIS_URL is not set — rate limiting will fail open"`
+- [ ] `APP_ENV="foo"` (unrecognized): warning listing expected values
+- [ ] `PORT="not-a-port"`: warning
+- [ ] `DB_MAX_IDLE_CONNS > DB_MAX_OPEN_CONNS`: warning
+- [ ] All valid (`make dev` with a good `.env`): zero WARN-level config logs
 
-### 47.1 Enable Tracing
+Stripe is no longer validated at boot (per-tenant credentials in DB).
+
+## FLOW X10: OpenTelemetry tracing
+
 ```bash
 docker run -d --name jaeger -p 16686:16686 -p 4318:4318 jaegertracing/jaeger:2
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 ```
 
-### 47.2 Verify Traces
-- [ ] Make several API requests (create customer, ingest usage, run billing)
-- [ ] Open Jaeger UI at `http://localhost:16686`
-- [ ] Verify: traces appear for service "velox"
-- [ ] Verify: HTTP spans show method + path (e.g., `POST /v1/customers`)
-- [ ] Verify: billing.RunCycle span with `batch_size` attribute
-- [ ] Verify: billing.BillSubscription spans with `subscription_id`, `tenant_id` attributes
-- [ ] Verify: trace context propagated (parent-child relationship between HTTP > billing spans)
+- [ ] Hit several endpoints (create customer, ingest usage, run billing)
+- [ ] Jaeger UI at http://localhost:16686, service `velox`
+- [ ] HTTP spans: method + path (e.g. `POST /v1/customers`)
+- [ ] `billing.RunCycle` span with `batch_size` attribute
+- [ ] `billing.BillSubscription` spans with `subscription_id`, `tenant_id`
+- [ ] Parent-child relationship: HTTP span → billing span
+
+## FLOW X11: Large batch usage ingestion
+
+- [ ] POST /v1/usage-events/batch with 1,000 events
+- [ ] Response `{accepted: 1000, rejected: 0}`; Usage Events page total matches
+- [ ] Include duplicate idempotency keys → duplicates rejected, rest accepted
+- [ ] Run billing → aggregated correctly
 
 ---
 
-## Phase 11: UI/UX
+# Diagnostics
 
----
+Common failure modes and where to look first.
 
-## FLOW 48: Dashboard Quality
+## Server won't start
 
-- [ ] Verify: 4 KPI cards — MRR (with sparkline + trend %), Active Customers, Failed Payments (red if >0), Revenue 30d
-- [ ] Verify: revenue bar chart (compact, no axes, link to Analytics)
-- [ ] Verify: "Recent Activity" — last 5 invoices with status dot, badge, amount, relative time
-- [ ] Verify: clicking an invoice row navigates to invoice detail
-- [ ] Verify: Get Started checklist shows progress (numbered steps, checkmarks when done)
-- [ ] Verify: Get Started disappears when all 4 steps complete
-- [ ] Verify: "Trigger Billing" button in header, shows result after run
-- [ ] Verify: no overlap with Analytics page (Dashboard has no period selector, no detailed charts)
+- `VELOX_ENCRYPTION_KEY` rejected → see FLOW X9; must be exactly 64 hex chars
+- Postgres unreachable → `docker compose ps`; `docker compose logs postgres`; `make up`
+- Port 8080 in use → `lsof -i :8080` → kill the stale process
+- Migration dirty → `SELECT * FROM schema_migrations;` — `dirty=true` means a prior
+  run failed partway. Resolve the underlying SQL error, then
+  `go run ./cmd/velox migrate force <version>` to clear the dirty flag before
+  re-running `make migrate`
 
----
+## Session cookie not set after login
 
-## FLOW 48b: Analytics Page
+- CORS: `CORS_ALLOWED_ORIGINS` must include the frontend origin; browser fetch must use
+  `credentials: 'include'` (it does — check `web-v2/src/lib/api.ts`)
+- SameSite mismatch: cookie is `SameSite=Lax`; cross-site POSTs won't attach it
+- Check `sessions` table: row exists but `revoked_at` is set → user was force-logged-out
+  (e.g., removed from workspace)
 
-- [ ] Navigate to Analytics (sidebar or Dashboard "View analytics →" link)
-- [ ] Verify: revenue trend area chart with period tabs (30 days / 90 days / 12 months)
-- [ ] Switch periods > verify: chart data updates
-- [ ] Verify: chart has X-axis dates, Y-axis amounts, hover tooltips
-- [ ] Verify: Payment Success Rate donut with percentage in center
-- [ ] Verify: Invoice Summary bar chart (Paid/Open/Failed/Dunning)
-- [ ] Verify: Customer Stats card (Active Customers, Subscriptions, Dunning, Open Invoices)
-- [ ] Verify: Financial Summary card (MRR, Total Revenue, Outstanding AR, Avg Invoice, Credit Balance)
-- [ ] Verify: no overlap with Dashboard (Analytics has charts + details, Dashboard has activity + KPIs)
+## Invoice didn't generate
 
----
+- Subscription not due → billing period end is in the future. Advance it in DB for testing
+- Already billed → see FLOW B3; logs say `"invoice already exists for billing period"`
+- Subscription paused / customer archived → no billing
+- Trial active → no billing until trial ends (FLOW B6)
+- Feature flag `billing.auto_charge` off → invoice generated but not charged
 
-## FLOW 49: Usage Events Page Quality
+## Stripe Tax returning errors
 
-- [ ] Verify: stat cards (Total Events, Total Units, Active Meters, Active Customers)
-- [ ] Verify: meter breakdown with horizontal bars
-- [ ] Filter by customer > verify breakdown updates
-- [ ] Filter by date range > verify
-- [ ] Export CSV
+- Unsupported home country → FLOW X7 disclaimer; fall back to FLOW B10 manual tax
+- Missing customer address → counter `velox_tax_fallback_total{reason="no_country"}` +1 (FLOW P6)
+- Tenant in mode without connected Stripe → `{reason="no_client_for_mode"}`
+- Invalid/expired Stripe key → `{reason="api_error"}`
 
----
+## Rate limit not triggering
 
-## FLOW 50: Cmd+K Command Palette
+- Redis not connected → `redis-cli ping`; check `REDIS_URL`; server logs
+  `"rate_limiter: redis error, failing open"`
+- Testing with sequential curl — GCRA refills too fast; use parallel (FLOW X3)
+- Endpoint is public (`/health`, `/metrics`, `/v1/bootstrap`) — intentionally not limited
 
-- [ ] Press Cmd+K (Mac) or Ctrl+K (Windows)
-- [ ] Verify: palette opens with navigation items visible
-- [ ] Type "inv" > verify: Invoices nav item filtered, any matching invoices shown
-- [ ] Arrow down to select a result > verify highlight moves
-- [ ] Press Enter > verify: navigated to selected page
-- [ ] Open again, type customer name > verify: customer appears in results
-- [ ] Click a result > verify: navigates and closes palette
-- [ ] Press Escape > verify: palette closes
-- [ ] Verify: palette works from any page
+## PII not encrypted in DB
 
----
+- `VELOX_ENCRYPTION_KEY` wasn't set when the row was created → pre-encryption rows
+  stay plaintext (backward compat, FLOW X5). New rows post-key-set are encrypted
+- Wrong field — only customer display_name/email and billing profile
+  legal_name/email/phone/tax_id are encrypted (see `cipher.EncryptString` call sites)
 
-## FLOW 51: Dark Mode
+## Invite email never arrives
 
-- [ ] Click the dark mode toggle (Sun/Moon icon in sidebar footer)
-- [ ] Verify: entire UI switches to dark theme
-- [ ] Verify: sidebar, cards, tables, modals, forms all dark
-- [ ] Verify: charts (revenue chart) readable in dark mode
-- [ ] Verify: badges and status colors still distinguishable
-- [ ] Refresh page > verify: dark mode persists (localStorage)
-- [ ] Toggle back to light > verify: clean switch
-- [ ] Delete localStorage 'velox-theme' > verify: follows system preference
+- `email_outbox` row exists but no dispatch → SMTP config missing; check `EMAIL_*` env vars
+  and dispatcher logs. In local dev without SMTP, the row stays in `pending` — pull
+  `invite_url` from `payload` directly (FLOW A3)
+- Token in URL but preview returns 404 → token expired, revoked, or already accepted;
+  all 4 collapse to the same 404 to resist enumeration
 
----
+## Webhook signature fails
 
-## FLOW 52: Responsive / Mobile
-
-- [ ] Open UI on tablet width (768px)
-- [ ] Verify: tables scroll horizontally with fade indicator
-- [ ] Verify: sidebar collapses to hamburger menu
-- [ ] Verify: stat cards stack to 2-column grid
-- [ ] Verify: modals don't overflow screen
-
----
-
-## Phase 12: Edge Cases
-
----
-
-## FLOW 53: Edge Cases
-
-| Test | Expected |
-|------|----------|
-| Zero usage | Base fee only invoice |
-| Meter without rating rule | Usage silently skipped |
-| Duplicate idempotency key | 409 Conflict |
-| Invalid external_customer_id | "customer not found" error |
-| Invalid event_name | "meter not found" error |
-| Void already voided invoice | Error message |
-| Finalize non-draft invoice | Error message |
-| Duplicate subscription code | Humanized error |
-| Cancel canceled subscription | Error message |
-| Revoke current session key | Warning dialog about logout |
-| Create subscription for archived customer | Should work (backend allows) |
-| Escape from modal with form data | "Unsaved changes" confirmation |
-
----
-
-## Test Results
-
-| # | Flow | Status | Notes |
-|---|------|--------|-------|
-| 1 | Config Validation | | |
-| 2 | Health Checks | | |
-| 3 | Migration Management (CLI) | | |
-| 4 | API Key Permissions | | |
-| 5 | Expired API Key Rejection | | |
-| 6 | Multi-tenant RLS Isolation | | |
-| 7 | Bootstrap Lockdown | | |
-| 8 | Rate Limiting (Redis) | | |
-| 9 | Security Headers + Metrics Auth | | |
-| 10 | PII Encryption at Rest | | |
-| 11 | Webhook Replay Attack | | |
-| 12 | Complete Happy Path | | |
-| 13 | Basis-Point Tax Precision | | |
-| 14 | Invoice Idempotency | | |
-| 15 | Auto-Charge Retry | | |
-| 16 | Idempotency Key Behavior | | |
-| 17 | Subscription Lifecycle | | |
-| 18 | Plan Change + Proration | | |
-| 19 | Usage Caps | | |
-| 20 | Customer Price Overrides | | |
-| 21 | Credits (Grant, Apply, Expire) | | |
-| 22 | Credit Notes | | |
-| 23 | Coupons + Plan Restrictions | | |
-| 24 | Stripe Tax Integration | | |
-| 24b | Cross-Border Zero-Rated Export | | |
-| 24c | Tax-ID Format Validation | | |
-| 24d | Tax Fallback Metrics | | |
-| 25 | Multiple Meters | | |
-| 26 | Negative Usage (Corrections) | | |
-| 27 | Manual Line Items | | |
-| 28 | Large Batch Usage Ingestion | | |
-| 29 | Void Invoice | | |
-| 30 | Invoice Collect + Payment Timeline | | |
-| 31 | Invoice Email + PDF Preview | | |
-| 32 | Zero-Amount Invoice | | |
-| 33 | Currency Consistency | | |
-| 34 | Credit Note on Voided Invoice | | |
-| 35 | Dunning (Payment Recovery) | | |
-| 36 | Self-Service Payment Update (Token) | | |
-| 37 | Settings + Billing Profile | | |
-| 38 | Customer Portal API | | |
-| 39 | GDPR Data Export + Deletion | | |
-| 40 | Customer Archival Cascade | | |
-| 41 | Feature Flags | | |
-| 42 | Webhook Secret Rotation | | |
-| 43 | Webhook Delivery Stats | | |
-| 44 | Usage Summary | | |
-| 45 | Audit Log | | |
-| 46 | Empty Billing Cycle | | |
-| 47 | OpenTelemetry Tracing | | |
-| 48 | Dashboard Quality | | |
-| 48b | Analytics Page | | |
-| 49 | Usage Events Page Quality | | |
-| 50 | Cmd+K Command Palette | | |
-| 51 | Dark Mode | | |
-| 52 | Responsive / Mobile | | |
-| 53 | Edge Cases | | |
+- Wrong `whsec_...` pasted into Settings → Payments after `stripe listen` restarted
+  (CLI rotates the secret each run)
+- Clock skew > 5 min between Stripe and local → webhook rejected (FLOW X6)
+- Using `/v1/webhooks/stripe` (no endpoint id) — must be `/v1/webhooks/stripe/<vlx_spc_...>`

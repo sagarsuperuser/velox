@@ -1,0 +1,1 @@
+ALTER TABLE stripe_provider_credentials DROP COLUMN secret_key_prefix;

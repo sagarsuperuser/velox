@@ -2137,10 +2137,26 @@ components:
           type: integer
           description: Default tax rate in basis points
           example: 1850
+        tax_home_country:
+          type: string
+          description: ISO-3166 alpha-2 tax jurisdiction; seeds from company_country on first save
+          example: US
         company_name:
           type: string
-        company_address:
+        company_address_line1:
           type: string
+        company_address_line2:
+          type: string
+        company_city:
+          type: string
+        company_state:
+          type: string
+        company_postal_code:
+          type: string
+        company_country:
+          type: string
+          description: ISO-3166 alpha-2 registered-business country
+          example: US
         company_email:
           type: string
         company_phone:

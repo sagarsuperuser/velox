@@ -39,7 +39,8 @@ type Engine struct {
 	paymentSetups PaymentSetupReader
 	charger       InvoiceCharger
 	profiles      BillingProfileReader
-	taxCalc       tax.Calculator
+	taxProviders  TaxProviderResolver
+	taxCalcStore  TaxCalculationWriter
 	coupons       CouponApplier
 	clock         clock.Clock
 	testClocks    TestClockReader
@@ -140,10 +141,55 @@ func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingRe
 	return e
 }
 
-// SetTaxCalculator sets the tax calculator used during billing.
-// When nil, the engine falls back to inline manual tax logic for backward compatibility.
-func (e *Engine) SetTaxCalculator(c tax.Calculator) {
-	e.taxCalc = c
+// TaxProviderResolver returns the Provider implementation for a given
+// tenant's settings. Injected into the engine so billing doesn't need to
+// know about Stripe keys or the tenant's provider choice directly.
+type TaxProviderResolver interface {
+	Resolve(ctx context.Context, ts domain.TenantSettings) (tax.Provider, error)
+}
+
+// TaxCalculationWriter persists a provider calculation to the
+// tax_calculations audit table. Separate interface so engine tests can
+// skip persistence without wiring a full postgres store.
+type TaxCalculationWriter interface {
+	Record(ctx context.Context, tenantID, invoiceID string, req tax.Request, res *tax.Result) (string, error)
+}
+
+// SetTaxProviderResolver wires the per-tenant tax provider resolver. When
+// nil, the engine skips tax calculation entirely and invoices carry zero
+// tax (same behaviour as tax_provider='none').
+func (e *Engine) SetTaxProviderResolver(r TaxProviderResolver) {
+	e.taxProviders = r
+}
+
+// SetTaxCalculationStore wires the audit-trail writer for tax calculations.
+// Optional — engine still works without it, but nothing is persisted to
+// tax_calculations and post-hoc audit is limited to whatever Stripe keeps.
+func (e *Engine) SetTaxCalculationStore(s TaxCalculationWriter) {
+	e.taxCalcStore = s
+}
+
+// CommitTax resolves the tenant's tax provider and commits the named
+// calculation to a tax_transaction. Used after invoice finalize to
+// finalize Stripe Tax reporting. Returns nil when no resolver is wired
+// or the tenant's settings can't be loaded — the invoice still exists,
+// so the caller should log but not unwind.
+func (e *Engine) CommitTax(ctx context.Context, tenantID, invoiceID, calculationID string) error {
+	if e.taxProviders == nil || e.settings == nil {
+		return nil
+	}
+	ts, err := e.settings.Get(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("load tenant settings: %w", err)
+	}
+	provider, err := e.taxProviders.Resolve(ctx, ts)
+	if err != nil {
+		return fmt.Errorf("resolve provider: %w", err)
+	}
+	if provider == nil {
+		return nil
+	}
+	return provider.Commit(ctx, invoiceID, calculationID)
 }
 
 // SetCouponApplier sets the coupon service used during billing. When nil, the
@@ -187,112 +233,122 @@ func (e *Engine) effectiveNow(ctx context.Context, sub domain.Subscription) time
 
 // TaxApplication is the invoice-level tax summary returned by
 // ApplyTaxToLineItems. The line items passed in are mutated in place with
-// per-line TaxRateBP, TaxAmountCents, and TotalAmountCents so caller-side sums
-// reconcile to TaxAmountCents.
+// per-line TaxRateBP, TaxAmountCents, Jurisdiction, TaxCode, and
+// TotalAmountCents so caller-side sums reconcile to TaxAmountCents.
 //
 // SubtotalCents and DiscountCents are the net (ex-tax) values the caller
 // should persist to invoice.SubtotalCents / invoice.DiscountCents. In
 // tax-exclusive mode they equal the caller's input. In tax-inclusive mode
-// (tenant_settings.tax_inclusive=true) the caller passes gross values and
-// the engine back-calculates net here; downstream invoice arithmetic remains
-// SubtotalCents - DiscountCents + TaxAmountCents = customer total.
+// the provider carves tax out of the gross line amounts and the engine
+// rewrites lineItems[i].AmountCents to the net value so the invariant
+// SubtotalCents - DiscountCents + TaxAmountCents = customer payment holds.
+//
+// TaxProvider / TaxCalculationID / TaxReverseCharge / TaxExemptReason are
+// the durable audit snapshot stamped onto the invoice header.
 type TaxApplication struct {
-	TaxAmountCents int64
-	TaxRateBP      int64
-	TaxName        string
-	TaxCountry     string
-	TaxID          string
-	SubtotalCents  int64
-	DiscountCents  int64
+	TaxAmountCents    int64
+	TaxRateBP         int64
+	TaxName           string
+	TaxCountry        string
+	TaxID             string
+	SubtotalCents     int64
+	DiscountCents     int64
+	TaxProvider       string
+	TaxCalculationID  string
+	TaxReverseCharge  bool
+	TaxExemptReason   string
 }
 
-// ApplyTaxToLineItems resolves the tenant + customer tax configuration and
-// computes tax against the post-discount subtotal. Shared by the main billing
-// path (RunCycle) and subscription proration so both invoice shapes carry the
-// same tax fields — previously proration invoices were silently tax-free.
+// ApplyTaxToLineItems resolves the tenant's configured tax provider, calls
+// Calculate, and stamps the per-line + invoice-level results back onto the
+// supplied domain types. Shared by the main billing path and proration so
+// every invoice shape carries the same audit snapshot.
 //
-// Behaviour:
-//   - Tenant-level rate/name come from tenant_settings; customer billing profile
-//     overrides rate (bp.TaxOverrideRateBP) and zeroes it for tax_exempt customers.
-//   - If a tax.Calculator is wired it's consulted with per-line inputs whose
-//     AmountCents already reflects each line's proportional share of the
-//     invoice-level discount; calculator errors produce a warning and fall
-//     through to zero tax (same behaviour as the original inline path).
-//   - Otherwise, the inline math uses banker's rounding and corrects the last
-//     line for any ±1¢ rounding drift so line-level tax sums match the
-//     invoice-level total.
+// Flow:
+//  1. Load tenant settings + customer billing profile.
+//  2. Resolve the Provider (NoneProvider / ManualProvider / StripeTaxProvider).
+//  3. Build a tax.Request from the line items, billing profile, and plan-level
+//     tax codes collected by the caller via InvoiceLineItem.TaxCode.
+//  4. Call Provider.Calculate; on error warn and fall through to zero tax so
+//     billing is never blocked by a tax backend outage.
+//  5. Mutate line items in place with the per-line results. In inclusive
+//     mode the provider returns carved net amounts; the engine rewrites
+//     AmountCents to that net value so Subtotal - Discount + Tax == gross.
+//  6. Persist the calculation to tax_calculations for durable audit.
 //
-// Safe to call with subtotal-discount <= 0 — returns zero tax and leaves line
-// items untouched.
+// Safe to call with subtotal-discount <= 0 — returns zero tax and leaves
+// line items untouched.
 func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, currency string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (TaxApplication, error) {
-	var app TaxApplication
-	// Default: caller's inputs flow through unchanged. The inclusive branch
-	// below overwrites these with net (back-calculated) values.
-	app.SubtotalCents = subtotal
-	app.DiscountCents = discount
-
-	var inclusive bool
-	var homeCountry string
-	if e.settings != nil {
-		if ts, err := e.settings.Get(ctx, tenantID); err == nil {
-			app.TaxRateBP = ts.TaxRateBP
-			app.TaxName = ts.TaxName
-			inclusive = ts.TaxInclusive
-			homeCountry = ts.TaxHomeCountry
-		}
+	app := TaxApplication{
+		SubtotalCents: subtotal,
+		DiscountCents: discount,
 	}
 
-	var customerAddr tax.CustomerAddress
-	var zeroRatedExport bool
-	if e.profiles != nil && customerID != "" {
-		if bp, err := e.profiles.GetBillingProfile(ctx, tenantID, customerID); err == nil {
-			customerAddr = tax.CustomerAddress{
-				Line1:      bp.AddressLine1,
-				City:       bp.City,
-				State:      bp.State,
-				PostalCode: bp.PostalCode,
-				Country:    bp.Country,
-			}
-			if bp.TaxExempt {
-				app.TaxRateBP = 0
-				app.TaxName = ""
-			} else {
-				if bp.TaxOverrideRateBP != nil {
-					app.TaxRateBP = *bp.TaxOverrideRateBP
-				}
-				app.TaxCountry = bp.Country
-				app.TaxID = bp.TaxID
-
-				// Cross-border zero-rating. When the tenant has declared a home
-				// country, supply to a customer in a different country is treated
-				// as an export and zero-rated. This matches Indian GST export
-				// handling (zero-rated under LUT) and is generally correct for
-				// VAT/GST regimes that put cross-border B2B supply out of scope.
-				// Wins over TaxOverrideRateBP because export rating is a legal
-				// classification, not a customer preference.
-				if homeCountry != "" && bp.Country != "" && bp.Country != homeCountry {
-					zeroRatedExport = true
-					app.TaxRateBP = 0
-					if app.TaxName != "" {
-						app.TaxName = app.TaxName + " (zero-rated export)"
-					} else {
-						app.TaxName = "Zero-rated export"
-					}
-				}
-			}
-		}
-	}
-
-	discountedSubtotal := subtotal - discount
-	if discountedSubtotal <= 0 {
+	if e.taxProviders == nil || e.settings == nil {
 		return app, nil
 	}
+	ts, err := e.settings.Get(ctx, tenantID)
+	if err != nil {
+		slog.Warn("tax: failed to load tenant settings, proceeding with zero tax",
+			"error", err, "tenant_id", tenantID)
+		return app, nil
+	}
+	app.TaxName = ts.TaxName
 
-	// When cross-border export applies, short-circuit before the calculator
-	// or inline math — either would otherwise re-derive tax from the
-	// destination jurisdiction and overwrite our explicit zero-rating.
-	// Stamp each line's TotalAmountCents so downstream sums still balance.
-	if zeroRatedExport {
+	provider, err := e.taxProviders.Resolve(ctx, ts)
+	if err != nil || provider == nil {
+		slog.Warn("tax: failed to resolve provider, proceeding with zero tax",
+			"error", err, "tenant_id", tenantID, "provider", ts.TaxProvider)
+		for i := range lineItems {
+			lineItems[i].TaxRateBP = 0
+			lineItems[i].TaxAmountCents = 0
+			lineItems[i].TotalAmountCents = lineItems[i].AmountCents
+		}
+		return app, nil
+	}
+	app.TaxProvider = provider.Name()
+
+	var profile domain.CustomerBillingProfile
+	if e.profiles != nil && customerID != "" {
+		if bp, err := e.profiles.GetBillingProfile(ctx, tenantID, customerID); err == nil {
+			profile = bp
+			app.TaxCountry = bp.Country
+			app.TaxID = bp.TaxID
+		}
+	}
+
+	req := tax.Request{
+		Currency: currency,
+		CustomerAddress: tax.Address{
+			Line1:      profile.AddressLine1,
+			Line2:      profile.AddressLine2,
+			City:       profile.City,
+			State:      profile.State,
+			PostalCode: profile.PostalCode,
+			Country:    profile.Country,
+		},
+		CustomerTaxID:        profile.TaxID,
+		CustomerTaxIDType:    profile.TaxIDType,
+		CustomerStatus:       profile.TaxStatus,
+		CustomerExemptReason: profile.TaxExemptReason,
+		TaxInclusive:         ts.TaxInclusive,
+		DiscountCents:        discount,
+		DefaultTaxCode:       ts.DefaultProductTaxCode,
+		LineItems:            make([]tax.RequestLine, len(lineItems)),
+	}
+	for i, li := range lineItems {
+		req.LineItems[i] = tax.RequestLine{
+			Ref:         fmt.Sprintf("line_%d", i),
+			AmountCents: li.AmountCents,
+			Quantity:    li.Quantity,
+			TaxCode:     li.TaxCode,
+		}
+	}
+
+	res, err := provider.Calculate(ctx, req)
+	if err != nil {
+		slog.Warn("tax: provider calculation failed, proceeding with zero tax",
+			"error", err, "tenant_id", tenantID, "provider", provider.Name())
 		for i := range lineItems {
 			lineItems[i].TaxRateBP = 0
 			lineItems[i].TaxAmountCents = 0
@@ -301,114 +357,59 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 		return app, nil
 	}
 
-	if e.taxCalc != nil {
-		taxInputs := make([]tax.LineItemInput, len(lineItems))
-		for i, li := range lineItems {
-			taxable := li.AmountCents
-			if subtotal > 0 && discount > 0 {
-				taxable = max(li.AmountCents-money.RoundHalfToEven(li.AmountCents*discount, subtotal), 0)
-			}
-			taxInputs[i] = tax.LineItemInput{
-				AmountCents: taxable,
-				Description: li.Description,
-				Quantity:    li.Quantity,
-			}
-		}
-		taxResult, taxErr := e.taxCalc.CalculateTax(ctx, currency, customerAddr, taxInputs)
-		if taxErr != nil {
-			slog.Warn("tax calculation failed, proceeding with zero tax",
-				"error", taxErr, "tenant_id", tenantID, "customer_id", customerID)
-			return app, nil
-		}
-		if taxResult != nil && taxResult.TotalTaxAmountCents > 0 {
-			app.TaxAmountCents = taxResult.TotalTaxAmountCents
-			app.TaxRateBP = taxResult.TaxRateBP
-			if taxResult.TaxName != "" {
-				app.TaxName = taxResult.TaxName
-			}
-			if taxResult.TaxCountry != "" {
-				app.TaxCountry = taxResult.TaxCountry
-			}
-			for _, lt := range taxResult.LineItemTaxes {
-				if lt.Index >= 0 && lt.Index < len(lineItems) {
-					lineItems[lt.Index].TaxRateBP = lt.TaxRateBP
-					lineItems[lt.Index].TaxAmountCents = lt.TaxAmountCents
-					lineItems[lt.Index].TotalAmountCents = lineItems[lt.Index].AmountCents + lt.TaxAmountCents
-				}
-			}
-		}
-		return app, nil
+	app.TaxAmountCents = res.TotalTaxCents
+	app.TaxRateBP = res.EffectiveRateBP
+	if res.TaxName != "" {
+		app.TaxName = res.TaxName
 	}
-
-	if app.TaxRateBP <= 0 {
-		return app, nil
+	if res.TaxCountry != "" {
+		app.TaxCountry = res.TaxCountry
 	}
+	app.TaxCalculationID = res.CalculationID
+	app.TaxReverseCharge = res.ReverseCharge
+	app.TaxExemptReason = res.ExemptReason
 
-	if inclusive {
-		// Tax-inclusive: caller's subtotal / discount / line.AmountCents are
-		// gross (tax-included sticker prices). Back-calculate the net
-		// equivalents so the stored invoice is { SubtotalCents (net) -
-		// DiscountCents (net) + TaxAmountCents } == customer payment (gross).
-		denom := int64(10000 + app.TaxRateBP)
-		netDiscounted := money.RoundHalfToEven(discountedSubtotal*10000, denom)
-		app.TaxAmountCents = discountedSubtotal - netDiscounted
-
-		var lineTaxSum int64
-		var lineNetUndiscSum int64
-		for i := range lineItems {
-			lineGross := lineItems[i].AmountCents
-			lineGrossDisc := lineGross
-			if subtotal > 0 && discount > 0 {
-				d := money.RoundHalfToEven(lineGross*discount, subtotal)
-				lineGrossDisc = max(lineGross-d, 0)
-			}
-			lineNetUndisc := money.RoundHalfToEven(lineGross*10000, denom)
-			lineNetDisc := money.RoundHalfToEven(lineGrossDisc*10000, denom)
-			lineTax := lineGrossDisc - lineNetDisc
-
-			lineItems[i].AmountCents = lineNetUndisc
-			lineItems[i].TaxRateBP = app.TaxRateBP
-			lineItems[i].TaxAmountCents = lineTax
-			lineItems[i].TotalAmountCents = lineNetUndisc + lineTax
-			lineTaxSum += lineTax
-			lineNetUndiscSum += lineNetUndisc
-		}
-		// Same ±1¢ reconciliation pattern as the exclusive path: last line
-		// absorbs any per-line rounding drift so line-level sums match
-		// invoice-level totals exactly.
-		if len(lineItems) > 0 && lineTaxSum != app.TaxAmountCents {
-			diff := app.TaxAmountCents - lineTaxSum
-			last := &lineItems[len(lineItems)-1]
-			last.TaxAmountCents += diff
-			last.TotalAmountCents += diff
-		}
-		// Subtotal/discount in net units so the caller's invariant
-		// Subtotal - Discount + Tax = customer paid (= discountedSubtotal gross).
-		app.SubtotalCents = lineNetUndiscSum
-		app.DiscountCents = lineNetUndiscSum + app.TaxAmountCents - discountedSubtotal
-		return app, nil
-	}
-
-	app.TaxAmountCents = money.RoundHalfToEven(discountedSubtotal*int64(app.TaxRateBP), 10000)
-
-	var lineTaxSum int64
+	// Apply per-line results. Index-aligned with lineItems because the
+	// Request was built in the same order; Result.Lines[i] corresponds to
+	// lineItems[i].
+	var netSubtotalSum int64
 	for i := range lineItems {
-		taxable := lineItems[i].AmountCents
-		if subtotal > 0 && discount > 0 {
-			taxable = max(lineItems[i].AmountCents-money.RoundHalfToEven(lineItems[i].AmountCents*discount, subtotal), 0)
+		if i >= len(res.Lines) {
+			break
 		}
-		lineTax := money.RoundHalfToEven(taxable*int64(app.TaxRateBP), 10000)
-		lineItems[i].TaxRateBP = app.TaxRateBP
-		lineItems[i].TaxAmountCents = lineTax
-		lineItems[i].TotalAmountCents = lineItems[i].AmountCents + lineTax
-		lineTaxSum += lineTax
+		rl := res.Lines[i]
+		net := rl.NetAmountCents
+		if net == 0 {
+			net = lineItems[i].AmountCents
+		}
+		lineItems[i].AmountCents = net
+		lineItems[i].TaxRateBP = rl.TaxRateBP
+		lineItems[i].TaxAmountCents = rl.TaxAmountCents
+		lineItems[i].TaxJurisdiction = rl.Jurisdiction
+		lineItems[i].TaxCode = rl.TaxCode
+		lineItems[i].TotalAmountCents = net + rl.TaxAmountCents
+		netSubtotalSum += net
 	}
-	if len(lineItems) > 0 && lineTaxSum != app.TaxAmountCents {
-		diff := app.TaxAmountCents - lineTaxSum
-		last := &lineItems[len(lineItems)-1]
-		last.TaxAmountCents += diff
-		last.TotalAmountCents += diff
+
+	// Inclusive mode: the provider returned net line amounts; rewrite
+	// subtotal/discount to net units so the invoice invariant holds.
+	if ts.TaxInclusive && netSubtotalSum != subtotal {
+		app.SubtotalCents = netSubtotalSum
+		// Gross paid == subtotal - discount, which after tax carve-out is
+		// netSubtotalSum - netDiscount + tax. Solve for netDiscount.
+		gross := subtotal - discount
+		app.DiscountCents = max(netSubtotalSum+res.TotalTaxCents-gross, 0)
 	}
+
+	if e.taxCalcStore != nil {
+		if _, err := e.taxCalcStore.Record(ctx, tenantID, "", req, res); err != nil {
+			// Persistence failure doesn't block the invoice — log it. The
+			// billing engine's correctness does not depend on the audit row.
+			slog.Warn("tax: failed to persist tax_calculations row",
+				"error", err, "tenant_id", tenantID, "provider", provider.Name())
+		}
+	}
+
 	return app, nil
 }
 
@@ -836,6 +837,10 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		TaxCountry:         taxCountry,
 		TaxID:              taxID,
 		TaxAmountCents:     taxAmountCents,
+		TaxProvider:        taxApp.TaxProvider,
+		TaxCalculationID:   taxApp.TaxCalculationID,
+		TaxReverseCharge:   taxApp.TaxReverseCharge,
+		TaxExemptReason:    taxApp.TaxExemptReason,
 		TotalAmountCents:   totalWithTax,
 		AmountDueCents:     totalWithTax,
 		BillingPeriodStart: periodStart,
@@ -863,6 +868,23 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			return false, nil
 		}
 		return false, fmt.Errorf("create invoice: %w", err)
+	}
+
+	// Stripe Tax: once the invoice is durably persisted, commit the
+	// tax_calculation into a tax_transaction so Stripe can report the
+	// liability. Failures here don't unwind the invoice — the calculation
+	// row survives as an audit trail and we surface the failure via logs
+	// + metrics for the tenant to reconcile. Manual/none providers have
+	// Commit as a no-op so this path is safe to call unconditionally.
+	if inv.TaxProvider != "" && inv.TaxCalculationID != "" {
+		if err := e.CommitTax(ctx, sub.TenantID, inv.ID, inv.TaxCalculationID); err != nil {
+			slog.Warn("tax: commit failed after invoice creation",
+				"error", err,
+				"tenant_id", sub.TenantID,
+				"invoice_id", inv.ID,
+				"provider", inv.TaxProvider,
+				"tax_calculation_id", inv.TaxCalculationID)
+		}
 	}
 
 	// Advance periods_applied on every redemption that contributed to the

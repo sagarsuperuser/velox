@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   api,
@@ -9,11 +9,9 @@ import {
   getCurrencySymbol,
   getActiveCurrency,
   type Meter,
-  type Plan,
   type RatingRule,
 } from '@/lib/api'
 import { Layout } from '@/components/Layout'
-import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
@@ -46,15 +44,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import {
-  Form,
-  FormControl,
-  FormDescription,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Plus, Trash2, Loader2, Package, Gauge, Calculator } from 'lucide-react'
@@ -407,7 +396,7 @@ function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreat
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Pricing Model</Label>
-              <Select value={mode} onValueChange={setMode}>
+              <Select value={mode} onValueChange={(v) => setMode(v ?? '')}>
                 <SelectTrigger className="w-full mt-1">
                   <SelectValue />
                 </SelectTrigger>
@@ -561,7 +550,7 @@ function CreateMeterDialog({ onClose, onCreated, rules }: { onClose: () => void;
             </div>
             <div>
               <Label>Aggregation</Label>
-              <Select value={form.aggregation} onValueChange={v => setForm(f => ({ ...f, aggregation: v }))}>
+              <Select value={form.aggregation} onValueChange={v => setForm(f => ({ ...f, aggregation: v ?? '' }))}>
                 <SelectTrigger className="w-full mt-1">
                   <SelectValue />
                 </SelectTrigger>
@@ -578,7 +567,7 @@ function CreateMeterDialog({ onClose, onCreated, rules }: { onClose: () => void;
           {rules.length > 0 && (
             <div>
               <Label>Rating Rule</Label>
-              <Select value={form.rating_rule_version_id} onValueChange={v => setForm(f => ({ ...f, rating_rule_version_id: v }))}>
+              <Select value={form.rating_rule_version_id} onValueChange={v => setForm(f => ({ ...f, rating_rule_version_id: v ?? '' }))}>
                 <SelectTrigger className="w-full mt-1">
                   <SelectValue placeholder="None (assign later)">
                     {(value: string) => {
@@ -660,7 +649,7 @@ function CreatePlanDialog({ onClose, onCreated, meters }: { onClose: () => void;
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Billing Interval</Label>
-              <Select value={interval} onValueChange={setInterval}>
+              <Select value={interval} onValueChange={(v) => setInterval(v ?? '')}>
                 <SelectTrigger className="w-full mt-1">
                   <SelectValue />
                 </SelectTrigger>
