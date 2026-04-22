@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
 // InvoiceReader reads invoice data for credit note validation.
@@ -26,6 +27,16 @@ type Refunder interface {
 // CreditGranter adds credits to a customer's balance.
 type CreditGranter interface {
 	Grant(ctx context.Context, tenantID string, input CreditGrantInput) error
+}
+
+// TaxReverser issues a reversal of the invoice's committed tax transaction.
+// Called from Issue when the invoice has a non-empty TaxTransactionID. The
+// implementation (billing.Engine.ReverseTax) resolves the tenant's tax
+// provider and forwards the ReversalRequest. Optional — when nil, Issue
+// proceeds without reversing upstream tax (suitable for tenants on
+// none/manual providers, or for tests).
+type TaxReverser interface {
+	ReverseTax(ctx context.Context, tenantID string, req tax.ReversalRequest) (*tax.ReversalResult, error)
 }
 
 // NumberGenerator generates sequential credit note numbers.
@@ -46,6 +57,7 @@ type Service struct {
 	refunder Refunder
 	credits  CreditGranter
 	numbers  NumberGenerator
+	taxRev   TaxReverser
 }
 
 func NewService(store Store, invoices InvoiceReader, refunder Refunder, credits ...CreditGranter) *Service {
@@ -59,6 +71,13 @@ func NewService(store Store, invoices InvoiceReader, refunder Refunder, credits 
 // SetNumberGenerator sets the sequential number generator (breaks circular dep).
 func (s *Service) SetNumberGenerator(ng NumberGenerator) {
 	s.numbers = ng
+}
+
+// SetTaxReverser wires the billing engine (or test stub) that issues
+// upstream tax reversals when a credit note is issued. Optional — when
+// unset, Issue skips the reversal step and logs.
+func (s *Service) SetTaxReverser(tr TaxReverser) {
+	s.taxRev = tr
 }
 
 type CreateInput struct {
@@ -108,7 +127,11 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		return domain.CreditNote{}, errs.InvalidState("can only create credit notes for finalized or paid invoices")
 	}
 
-	// Calculate totals
+	// Calculate totals. Line amounts are interpreted as tax-inclusive
+	// (gross) so the caller's sum matches the invoice's gross total the
+	// caps below use as the ceiling. The tax portion is back-solved from
+	// the invoice's tax ratio (see proportional tax block below) so a CN
+	// that refunds half the invoice also reverses half the tax.
 	var subtotal int64
 	for _, line := range input.Lines {
 		subtotal += line.Quantity * line.UnitAmountCents
@@ -136,6 +159,19 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	// For unpaid invoices, credit note cannot exceed current amount_due
 	if inv.Status == domain.InvoiceFinalized && subtotal > inv.AmountDueCents {
 		return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount (%.2f) exceeds amount due (%.2f)", float64(subtotal)/100, float64(inv.AmountDueCents)/100))
+	}
+
+	// Break out proportional tax from the gross subtotal. The invoice's
+	// tax_amount / total_amount ratio tells us what fraction of the gross
+	// was tax; apply the same ratio to the CN's gross subtotal so a
+	// partial credit reverses the same fraction of tax the invoice
+	// originally collected. Zero-tax invoices (tax_amount==0 or no
+	// provider) produce zero tax on the CN, preserving legacy behaviour.
+	var taxAmount, netSubtotal int64
+	netSubtotal = subtotal
+	if inv.TotalAmountCents > 0 && inv.TaxAmountCents > 0 {
+		taxAmount = inv.TaxAmountCents * subtotal / inv.TotalAmountCents
+		netSubtotal = subtotal - taxAmount
 	}
 
 	// For refund-type CNs on paid invoices, cannot refund more than was actually paid via Stripe
@@ -187,7 +223,8 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		CreditNoteNumber:  cnNumber,
 		Status:            domain.CreditNoteDraft,
 		Reason:            strings.TrimSpace(input.Reason),
-		SubtotalCents:     subtotal,
+		SubtotalCents:     netSubtotal,
+		TaxAmountCents:    taxAmount,
 		TotalCents:        subtotal,
 		RefundAmountCents: refundAmount,
 		CreditAmountCents: creditAmount,
@@ -373,6 +410,50 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 	if cn.RefundStatus != domain.RefundNone {
 		if err := s.store.UpdateRefundStatus(ctx, tenantID, id, cn.RefundStatus, cn.StripeRefundID); err != nil {
 			slog.Warn("failed to update refund status", "credit_note_id", cn.ID, "error", err)
+		}
+	}
+
+	// Reverse the invoice's upstream tax liability so the tenant's Stripe
+	// Tax reports (or equivalent provider dashboard) reflect the reduced
+	// revenue. Industry standard: EU VAT Directive Art. 90, UK VATA 1994,
+	// India CGST §34 all require output-tax reduction when a credit note
+	// is issued. Preconditions:
+	//   - taxRev wired (skipped in narrow tests and for tenants with no
+	//     provider configured)
+	//   - invoice has a committed upstream transaction (inv.TaxTransactionID
+	//     non-empty — none/manual providers and legacy invoices leave it
+	//     empty and silently opt out)
+	//   - this CN has not already been reversed (idempotency guard against
+	//     retried Issue calls; Stripe also enforces reference uniqueness
+	//     on the CN id but the local check avoids the round-trip)
+	// Mode is partial with the CN's gross total as the flat amount so
+	// multi-CN invoices reverse exactly the slice each CN credits,
+	// leaving residual liability on the original transaction for any
+	// uncredited portion. Failures are logged but do not unwind the CN —
+	// the refund/credit side has already committed and the CN is an
+	// accounting document; operators reconcile any stuck reversals
+	// manually.
+	if s.taxRev != nil && inv.TaxTransactionID != "" && cn.TaxTransactionID == "" && cn.TotalCents > 0 {
+		res, err := s.taxRev.ReverseTax(ctx, tenantID, tax.ReversalRequest{
+			OriginalTransactionID: inv.TaxTransactionID,
+			CreditNoteID:          cn.ID,
+			InvoiceID:             cn.InvoiceID,
+			Mode:                  tax.ReversalModePartial,
+			GrossAmountCents:      cn.TotalCents,
+		})
+		if err != nil {
+			slog.Warn("tax reversal failed, credit note will be issued without upstream reversal",
+				"credit_note_id", cn.ID,
+				"invoice_id", cn.InvoiceID,
+				"tax_transaction_id", inv.TaxTransactionID,
+				"error", err)
+		} else if res != nil && res.TransactionID != "" {
+			if err := s.store.SetTaxTransaction(ctx, tenantID, id, res.TransactionID); err != nil {
+				slog.Warn("tax reversal succeeded upstream but local persist failed",
+					"credit_note_id", cn.ID,
+					"reversal_transaction_id", res.TransactionID,
+					"error", err)
+			}
 		}
 	}
 

@@ -213,6 +213,31 @@ func (e *Engine) CommitTax(ctx context.Context, tenantID, invoiceID, calculation
 	return nil
 }
 
+// ReverseTax resolves the tenant's tax provider and issues a reversal
+// against a previously committed tax_transaction. Called from the credit
+// note issue path after the refund / credit-grant / invoice-reduction
+// side-effects have succeeded. Returns an empty ReversalResult when no
+// resolver is wired, no provider is configured, or the provider has no
+// durable upstream state (none, manual) — the caller treats an empty
+// TransactionID as "nothing to record" and proceeds.
+func (e *Engine) ReverseTax(ctx context.Context, tenantID string, req tax.ReversalRequest) (*tax.ReversalResult, error) {
+	if e.taxProviders == nil || e.settings == nil {
+		return &tax.ReversalResult{}, nil
+	}
+	ts, err := e.settings.Get(ctx, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("load tenant settings: %w", err)
+	}
+	provider, err := e.taxProviders.Resolve(ctx, ts)
+	if err != nil {
+		return nil, fmt.Errorf("resolve provider: %w", err)
+	}
+	if provider == nil {
+		return &tax.ReversalResult{}, nil
+	}
+	return provider.Reverse(ctx, req)
+}
+
 // SetCouponApplier sets the coupon service used during billing. When nil, the
 // engine skips coupon resolution entirely and invoice discount_cents remains 0.
 func (e *Engine) SetCouponApplier(c CouponApplier) {

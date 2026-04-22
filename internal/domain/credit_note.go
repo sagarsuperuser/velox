@@ -37,6 +37,12 @@ type CreditNote struct {
 	VoidedAt          *time.Time       `json:"voided_at,omitempty"`
 	RefundStatus      RefundStatus     `json:"refund_status"`
 	StripeRefundID    string           `json:"stripe_refund_id,omitempty"`
+	// TaxTransactionID is the upstream reversal transaction id returned
+	// by the tax provider (Stripe: tx_xxx for the negative tax_transaction)
+	// when Issue succeeds. Empty while the credit note is draft, or when
+	// the invoice has no upstream tax state to reverse (manual/none
+	// provider, or legacy invoice pre-dating invoice.tax_transaction_id).
+	TaxTransactionID string         `json:"tax_transaction_id,omitempty"`
 	Metadata          map[string]any   `json:"metadata,omitempty"`
 	CreatedAt         time.Time        `json:"created_at"`
 	UpdatedAt         time.Time        `json:"updated_at"`
