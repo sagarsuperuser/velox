@@ -71,10 +71,34 @@ function resourceLink(entry: AuditEntry): string | null {
 function formatActorName(entry: AuditEntry): string {
   if (entry.actor_type === 'system') return 'System'
   if (entry.actor_type === 'api_key') {
+    // Prefer the key's human-readable name (resolved server-side via api_keys
+    // join). Falls back to a truncated key id for rows written before the
+    // name was set, or for keys that have since been deleted.
+    if (entry.actor_name) return entry.actor_name
     return entry.actor_id.startsWith('vlx_') ? `Key ${entry.actor_id.slice(0, 16)}...` : 'API Key'
   }
   return entry.actor_type
 }
+
+function prettyLabel(value: string): string {
+  return value
+    .replace(/[_.]/g, ' ')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+}
+
+// Fallbacks for an empty tenant: without any audit rows the /filters endpoint
+// returns [], leaving the dropdowns blank. These lists give a new tenant the
+// common vocabulary (it's a hint, not a contract — merged with whatever the
+// server returns).
+const DEFAULT_RESOURCE_TYPES = [
+  'customer', 'subscription', 'invoice', 'plan', 'meter',
+  'credit', 'credit_note', 'api_key', 'billing', 'billing_profile',
+]
+const DEFAULT_ACTIONS = [
+  'create', 'update', 'delete', 'activate', 'cancel', 'pause', 'resume',
+  'finalize', 'void', 'run', 'grant', 'revoke',
+]
 
 function formatMetadata(meta: Record<string, unknown> | undefined): { label: string; value: string }[] {
   if (!meta) return []
@@ -123,6 +147,11 @@ export default function AuditLogPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [filterOptions, setFilterOptions] = useState<{ actions: string[]; resourceTypes: string[] }>({
+    actions: DEFAULT_ACTIONS,
+    resourceTypes: DEFAULT_RESOURCE_TYPES,
+  })
+  const [exporting, setExporting] = useState(false)
   const [urlState, setUrlState] = useUrlState({
     resource_type: '',
     action: '',
@@ -162,29 +191,75 @@ export default function AuditLogPage() {
 
   useEffect(() => { loadEntries() }, [loadEntries])
 
+  // Populate filter dropdowns from what's actually recorded for this tenant.
+  // Fall back to defaults on error or empty — keeps the UI usable for new
+  // tenants whose audit log hasn't been populated yet.
+  useEffect(() => {
+    let cancelled = false
+    api.getAuditFilters()
+      .then(res => {
+        if (cancelled) return
+        setFilterOptions({
+          actions: res.actions.length ? res.actions : DEFAULT_ACTIONS,
+          resourceTypes: res.resource_types.length ? res.resource_types : DEFAULT_RESOURCE_TYPES,
+        })
+      })
+      .catch(() => { /* keep defaults */ })
+    return () => { cancelled = true }
+  }, [])
+
   const totalPages = Math.ceil(total / PAGE_SIZE)
   const groups = groupByDate(entries)
 
-  const handleExport = () => {
-    const exportParams = new URLSearchParams()
-    if (resourceType) exportParams.set('resource_type', resourceType)
-    if (action) exportParams.set('action', action)
-    if (resourceIdFilter) exportParams.set('resource_id', resourceIdFilter)
-    if (actorFilter) exportParams.set('actor_id', actorFilter)
-    if (dateFrom) exportParams.set('date_from', dateFrom)
-    if (dateTo) exportParams.set('date_to', dateTo)
-    const qs = exportParams.toString()
-    api.listAuditLog(qs || undefined).then(res => {
-      const rows = (res.data || []).map(e => [
+  // Export walks pages of 100 until either exhausted or the safety cap is
+  // reached. A fixed cap (50k) keeps the browser from OOMing on a massive
+  // tenant; beyond that, a server-side streaming export should take over.
+  const EXPORT_PAGE_SIZE = 100
+  const EXPORT_MAX_ROWS = 50_000
+
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const filters = new URLSearchParams()
+      if (resourceType) filters.set('resource_type', resourceType)
+      if (action) filters.set('action', action)
+      if (resourceIdFilter) filters.set('resource_id', resourceIdFilter)
+      if (actorFilter) filters.set('actor_id', actorFilter)
+      if (dateFrom) filters.set('date_from', dateFrom)
+      if (dateTo) filters.set('date_to', dateTo)
+
+      const all: AuditEntry[] = []
+      let offset = 0
+      while (all.length < EXPORT_MAX_ROWS) {
+        const params = new URLSearchParams(filters)
+        params.set('limit', String(EXPORT_PAGE_SIZE))
+        params.set('offset', String(offset))
+        const res = await api.listAuditLog(params.toString())
+        const batch = res.data || []
+        all.push(...batch)
+        if (batch.length < EXPORT_PAGE_SIZE) break
+        offset += EXPORT_PAGE_SIZE
+      }
+
+      const rows = all.slice(0, EXPORT_MAX_ROWS).map(e => [
         formatActorName(e),
+        e.actor_id,
         e.action,
         e.resource_type,
         e.resource_id,
         e.resource_label || '',
+        e.ip_address || '',
+        e.request_id || '',
         formatDateTime(e.created_at),
       ])
-      downloadCSV('audit-log.csv', ['Actor', 'Action', 'Resource Type', 'Resource ID', 'Resource Label', 'Date'], rows)
-    })
+      downloadCSV(
+        'audit-log.csv',
+        ['Actor', 'Actor ID', 'Action', 'Resource Type', 'Resource ID', 'Resource Label', 'IP', 'Request ID', 'Date'],
+        rows,
+      )
+    } finally {
+      setExporting(false)
+    }
   }
 
   const selectClass = "flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -200,8 +275,8 @@ export default function AuditLogPage() {
           <p className="text-sm text-muted-foreground mt-1">Review all changes and actions{total > 0 ? ` · ${total} total` : ''}</p>
         </div>
         {entries.length > 0 && (
-          <Button variant="outline" size="sm" onClick={handleExport}>
-            <Download size={16} className="mr-2" /> Export
+          <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
+            <Download size={16} className="mr-2" /> {exporting ? 'Exporting…' : 'Export'}
           </Button>
         )}
       </div>
@@ -214,16 +289,9 @@ export default function AuditLogPage() {
           className={cn(selectClass, 'w-44')}
         >
           <option value="">All resources</option>
-          <option value="customer">Customer</option>
-          <option value="subscription">Subscription</option>
-          <option value="invoice">Invoice</option>
-          <option value="plan">Plan</option>
-          <option value="meter">Meter</option>
-          <option value="credit">Credit</option>
-          <option value="credit_note">Credit Note</option>
-          <option value="api_key">API Key</option>
-          <option value="billing">Billing</option>
-          <option value="billing_profile">Billing Profile</option>
+          {filterOptions.resourceTypes.map(rt => (
+            <option key={rt} value={rt}>{prettyLabel(rt)}</option>
+          ))}
         </select>
         <select
           value={action}
@@ -231,22 +299,9 @@ export default function AuditLogPage() {
           className={cn(selectClass, 'w-44')}
         >
           <option value="">All actions</option>
-          <option value="create">Create</option>
-          <option value="update">Update</option>
-          <option value="delete">Delete</option>
-          <option value="activate">Activate</option>
-          <option value="cancel">Cancel</option>
-          <option value="pause">Pause</option>
-          <option value="resume">Resume</option>
-          <option value="finalize">Finalize</option>
-          <option value="void">Void</option>
-          <option value="run">Billing Run</option>
-          <option value="grant">Grant Credits</option>
-          <option value="credit.adjustment">Credit Adjustment</option>
-          <option value="credit.deduction">Credit Deduction</option>
-          <option value="credit_note.issued">Credit Note Issued</option>
-          <option value="subscription.plan_changed">Plan Changed</option>
-          <option value="revoke">Revoke</option>
+          {filterOptions.actions.map(a => (
+            <option key={a} value={a}>{prettyLabel(a)}</option>
+          ))}
         </select>
         <Input
           value={actorFilter}

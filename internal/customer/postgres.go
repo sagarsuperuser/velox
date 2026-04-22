@@ -362,11 +362,14 @@ func (s *PostgresStore) UpsertBillingProfile(ctx context.Context, tenantID strin
 	defer postgres.Rollback(tx)
 
 	now := time.Now().UTC()
-	var overrideBP sql.NullInt64
+	status := string(bp.TaxStatus)
+	if status == "" {
+		status = "standard"
+	}
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO customer_billing_profiles (customer_id, tenant_id, legal_name, email, phone,
 			address_line1, address_line2, city, state, postal_code, country, currency,
-			tax_exempt, tax_id, tax_id_type, tax_override_rate_bp,
+			tax_status, tax_exempt_reason, tax_id, tax_id_type,
 			profile_status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $18)
 		ON CONFLICT (tenant_id, customer_id) DO UPDATE SET
@@ -374,33 +377,30 @@ func (s *PostgresStore) UpsertBillingProfile(ctx context.Context, tenantID strin
 			address_line1 = EXCLUDED.address_line1, address_line2 = EXCLUDED.address_line2,
 			city = EXCLUDED.city, state = EXCLUDED.state, postal_code = EXCLUDED.postal_code,
 			country = EXCLUDED.country, currency = EXCLUDED.currency,
-			tax_exempt = EXCLUDED.tax_exempt,
+			tax_status = EXCLUDED.tax_status,
+			tax_exempt_reason = EXCLUDED.tax_exempt_reason,
 			tax_id = EXCLUDED.tax_id, tax_id_type = EXCLUDED.tax_id_type,
-			tax_override_rate_bp = EXCLUDED.tax_override_rate_bp,
 			profile_status = EXCLUDED.profile_status, updated_at = EXCLUDED.updated_at
 		RETURNING customer_id, tenant_id, COALESCE(legal_name,''), COALESCE(email,''), COALESCE(phone,''),
 			COALESCE(address_line1,''), COALESCE(address_line2,''), COALESCE(city,''), COALESCE(state,''),
 			COALESCE(postal_code,''), COALESCE(country,''), COALESCE(currency,''),
-			tax_exempt, COALESCE(tax_id,''), COALESCE(tax_id_type,''), tax_override_rate_bp,
+			tax_status, COALESCE(tax_exempt_reason,''),
+			COALESCE(tax_id,''), COALESCE(tax_id_type,''),
 			profile_status, created_at, updated_at
 	`, bp.CustomerID, tenantID, postgres.NullableString(enc.LegalName), postgres.NullableString(enc.Email),
 		postgres.NullableString(enc.Phone), postgres.NullableString(bp.AddressLine1),
 		postgres.NullableString(bp.AddressLine2), postgres.NullableString(bp.City),
 		postgres.NullableString(bp.State), postgres.NullableString(bp.PostalCode),
 		postgres.NullableString(bp.Country), postgres.NullableString(bp.Currency),
-		bp.TaxExempt, enc.TaxID, bp.TaxIDType, bp.TaxOverrideRateBP,
+		status, bp.TaxExemptReason, enc.TaxID, bp.TaxIDType,
 		bp.ProfileStatus, now,
 	).Scan(
 		&bp.CustomerID, &bp.TenantID, &bp.LegalName, &bp.Email, &bp.Phone,
 		&bp.AddressLine1, &bp.AddressLine2, &bp.City, &bp.State, &bp.PostalCode,
-		&bp.Country, &bp.Currency, &bp.TaxExempt,
-		&bp.TaxID, &bp.TaxIDType, &overrideBP,
+		&bp.Country, &bp.Currency, &bp.TaxStatus, &bp.TaxExemptReason,
+		&bp.TaxID, &bp.TaxIDType,
 		&bp.ProfileStatus, &bp.CreatedAt, &bp.UpdatedAt,
 	)
-	if overrideBP.Valid {
-		v := overrideBP.Int64
-		bp.TaxOverrideRateBP = &v
-	}
 	if err != nil {
 		return domain.CustomerBillingProfile{}, err
 	}
@@ -424,25 +424,21 @@ func (s *PostgresStore) GetBillingProfile(ctx context.Context, tenantID, custome
 	defer postgres.Rollback(tx)
 
 	var bp domain.CustomerBillingProfile
-	var overrideBP sql.NullInt64
 	err = tx.QueryRowContext(ctx, `
 		SELECT customer_id, tenant_id, COALESCE(legal_name,''), COALESCE(email,''), COALESCE(phone,''),
 			COALESCE(address_line1,''), COALESCE(address_line2,''), COALESCE(city,''), COALESCE(state,''),
 			COALESCE(postal_code,''), COALESCE(country,''), COALESCE(currency,''),
-			tax_exempt, COALESCE(tax_id,''), COALESCE(tax_id_type,''), tax_override_rate_bp,
+			tax_status, COALESCE(tax_exempt_reason,''),
+			COALESCE(tax_id,''), COALESCE(tax_id_type,''),
 			profile_status, created_at, updated_at
 		FROM customer_billing_profiles WHERE customer_id = $1
 	`, customerID).Scan(
 		&bp.CustomerID, &bp.TenantID, &bp.LegalName, &bp.Email, &bp.Phone,
 		&bp.AddressLine1, &bp.AddressLine2, &bp.City, &bp.State, &bp.PostalCode,
-		&bp.Country, &bp.Currency, &bp.TaxExempt,
-		&bp.TaxID, &bp.TaxIDType, &overrideBP,
+		&bp.Country, &bp.Currency, &bp.TaxStatus, &bp.TaxExemptReason,
+		&bp.TaxID, &bp.TaxIDType,
 		&bp.ProfileStatus, &bp.CreatedAt, &bp.UpdatedAt,
 	)
-	if overrideBP.Valid {
-		v := overrideBP.Int64
-		bp.TaxOverrideRateBP = &v
-	}
 	if err == sql.ErrNoRows {
 		return domain.CustomerBillingProfile{}, errs.ErrNotFound
 	}

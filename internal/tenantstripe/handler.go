@@ -31,6 +31,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/", h.connect)
 	r.Get("/", h.list)
 	r.Delete("/{mode}", h.delete)
+	r.Patch("/{mode}/webhook", h.setWebhook)
 	return r
 }
 
@@ -72,6 +73,40 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		creds = []domain.StripeProviderCredentials{}
 	}
 	respond.JSON(w, r, http.StatusOK, map[string]any{"data": creds})
+}
+
+func (h *Handler) setWebhook(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	if tenantID == "" {
+		respond.Unauthorized(w, r, "missing tenant context")
+		return
+	}
+
+	mode := chi.URLParam(r, "mode")
+	livemode, ok := parseMode(mode)
+	if !ok {
+		respond.BadRequest(w, r, `mode must be "test" or "live"`)
+		return
+	}
+
+	var in struct {
+		WebhookSecret string `json:"webhook_secret"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	creds, err := h.svc.SetWebhookSecret(r.Context(), tenantID, livemode, in.WebhookSecret)
+	if err != nil {
+		if errors.Is(err, errs.ErrNotFound) {
+			respond.NotFound(w, r, "stripe_credentials")
+			return
+		}
+		respond.FromError(w, r, err, "stripe_credentials")
+		return
+	}
+	respond.JSON(w, r, http.StatusOK, creds)
 }
 
 func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {

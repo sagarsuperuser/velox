@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -93,59 +92,23 @@ func serve() {
 
 	if cfg.Migrate {
 		if cfg.Env == "production" {
-			// Warn, don't refuse — operator may have intentionally opted in. But
-			// the recommended production pattern is a dedicated migration step
-			// (Kubernetes Job, CI step, deploy hook) so rolling replicas don't
-			// race on DDL and startup probes aren't blocked by long migrations.
-			slog.Warn("RUN_MIGRATIONS_ON_BOOT=true in production environment — prefer a dedicated migration Job ahead of the app rollout; in-process migrations complicate rolling deploys and startup probes")
+			slog.Warn("RUN_MIGRATIONS_ON_BOOT=true in production — prefer a dedicated migration Job before rollout")
 		}
-		// Migrations need DDL privileges — use DATABASE_URL (superuser) if
-		// APP_DATABASE_URL is set (meaning DATABASE_URL is the admin connection).
-		migrationPool := pool
-		if appURL := strings.TrimSpace(os.Getenv("APP_DATABASE_URL")); appURL != "" {
-			// DATABASE_URL is already the superuser connection — use it for migrations
-			slog.Info("running migrations with admin connection")
-		}
-		if err := migrate.Up(migrationPool); err != nil {
+		if err := migrate.Up(cfg.DB.URL); err != nil {
 			slog.Error("run migrations", "error", err)
 			os.Exit(1)
 		}
 	}
 
-	// Defense-in-depth: refuse to start if the schema doesn't match what this
-	// binary expects. Catches "migration Job didn't run", "deploy rolled the
-	// app before migrations finished", "dirty migration from a prior failed
-	// attempt". Runs whether or not we just applied migrations ourselves — a
-	// successful boot here is our guarantee that every subsequent query has
-	// the schema it was compiled against.
+	// Refuse to start if schema is behind what this binary expects — catches
+	// missed migration Jobs, races during rolling deploys, and dirty migrations.
 	if err := migrate.CheckSchemaReady(pool); err != nil {
 		slog.Error("schema check failed", "error", err)
 		os.Exit(1)
 	}
 
-	// Use a non-superuser connection for the app so RLS policies are enforced.
-	// APP_DATABASE_URL takes priority; otherwise auto-derive from DATABASE_URL
-	// by replacing the credentials with velox_app/velox_app.
-	appPool := pool
-	appURL := strings.TrimSpace(os.Getenv("APP_DATABASE_URL"))
-	if appURL == "" {
-		appURL = deriveAppURL(cfg.DB.URL)
-	}
-	if appURL != "" && appURL != cfg.DB.URL {
-		appCfg := cfg.DB
-		appCfg.URL = appURL
-		appPool, err = config.OpenPostgres(appCfg)
-		if err != nil {
-			slog.Warn("could not open app database connection, falling back to admin connection",
-				"error", err)
-			appPool = pool
-		} else {
-			defer func() { _ = appPool.Close() }()
-			slog.Info("using app database connection (RLS enforced)")
-		}
-	} else {
-		slog.Warn("running with admin database connection — RLS policies will NOT be enforced. Set APP_DATABASE_URL or create the velox_app role.")
-	}
+	appPool, closeAppPool := openAppPool(cfg, pool)
+	defer closeAppPool()
 
 	db := postgres.NewDB(appPool, cfg.DB.QueryTimeout)
 
@@ -263,26 +226,19 @@ func serve() {
 	}
 }
 
-// openDB loads only the database config (skips Stripe/Redis/encryption
-// validation that's irrelevant for migrate commands).
-func openDB() *sql.DB {
+// loadDSN loads just the database URL for migrate subcommands. Skips
+// Stripe/Redis/encryption validation that's irrelevant for migrate work.
+func loadDSN() string {
 	cfg, err := config.LoadDBOnly()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
 	}
-	pool, err := config.OpenPostgres(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "open database: %v\n", err)
-		os.Exit(1)
-	}
-	return pool
+	return cfg.URL
 }
 
 func runMigrate() {
-	pool := openDB()
-	defer func() { _ = pool.Close() }()
-	if err := migrate.Up(pool); err != nil {
+	if err := migrate.Up(loadDSN()); err != nil {
 		fmt.Fprintf(os.Stderr, "migration failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -290,15 +246,12 @@ func runMigrate() {
 }
 
 func runMigrateStatus() {
-	pool := openDB()
-	defer func() { _ = pool.Close() }()
-	m, err := migrate.New(pool)
+	v, dirty, err := migrate.Status(loadDSN())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status failed: %v\n", err)
 		os.Exit(1)
 	}
-	v, dirty, err := m.Version()
-	if err != nil {
+	if v == 0 {
 		fmt.Println("no migrations applied")
 		return
 	}
@@ -306,18 +259,11 @@ func runMigrateStatus() {
 }
 
 func runMigrateRollback(_ string) {
-	pool := openDB()
-	defer func() { _ = pool.Close() }()
-	m, err := migrate.New(pool)
+	v, err := migrate.Rollback(loadDSN(), 1)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rollback failed: %v\n", err)
 		os.Exit(1)
 	}
-	if err := m.Steps(-1); err != nil {
-		fmt.Fprintf(os.Stderr, "rollback failed: %v\n", err)
-		os.Exit(1)
-	}
-	v, _, _ := m.Version()
 	fmt.Printf("rolled back to version %d\n", v)
 }
 
@@ -338,6 +284,7 @@ Environment:
   PORT                      HTTP port (default: 8080)
   APP_ENV                   Environment: local, staging, production (default: local)
   RUN_MIGRATIONS_ON_BOOT    Run migrations on server start (default: false)
+  STRIPE_WEBHOOK_SECRET     Stripe webhook signing secret
   VELOX_BOOTSTRAP_TOKEN     Token for POST /v1/bootstrap endpoint
   PAYMENT_UPDATE_URL        Base URL for payment update page (e.g. https://app.example.com/update-payment)
   VELOX_ENCRYPTION_KEY      64-char hex key for PII encryption at rest
@@ -353,4 +300,31 @@ func deriveAppURL(adminURL string) string {
 	}
 	u.User = neturl.UserPassword("velox_app", "velox_app")
 	return u.String()
+}
+
+// openAppPool returns the non-superuser connection used for request-time
+// queries (where RLS must be enforced). The app-role URL is derived from
+// DATABASE_URL by swapping its credentials with velox_app/velox_app — so
+// operators only configure one URL, and the velox_app role must exist in
+// the database. If derivation fails, or the app-role pool can't be opened,
+// falls back to the admin pool with a loud warning — RLS NOT enforced in
+// that mode. The returned cleanup is a noop when falling back.
+func openAppPool(cfg config.Config, adminPool *sql.DB) (*sql.DB, func()) {
+	noop := func() {}
+
+	appURL := deriveAppURL(cfg.DB.URL)
+	if appURL == "" || appURL == cfg.DB.URL {
+		slog.Warn("running with admin database connection — RLS NOT enforced. Create the velox_app role.")
+		return adminPool, noop
+	}
+
+	appCfg := cfg.DB
+	appCfg.URL = appURL
+	appPool, err := config.OpenPostgres(appCfg)
+	if err != nil {
+		slog.Warn("could not open app database connection, falling back to admin", "error", err)
+		return adminPool, noop
+	}
+	slog.Info("using app database connection (RLS enforced)")
+	return appPool, func() { _ = appPool.Close() }
 }

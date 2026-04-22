@@ -52,16 +52,17 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 		return p
 	}
 
-	// New MRR per bucket
+	// New MRR per bucket: items of subs activated in this bucket.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT to_char(date_trunc($1, s.activated_at), $2) AS d,
 		       COALESCE(SUM(
-		           CASE WHEN p.billing_interval = 'yearly' THEN p.base_amount_cents / 12
-		                ELSE p.base_amount_cents
+		           CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * si.quantity
+		                ELSE p.base_amount_cents * si.quantity
 		           END
 		       ), 0)
 		FROM subscriptions s
-		JOIN plans p ON p.id = s.plan_id
+		JOIN subscription_items si ON si.subscription_id = s.id
+		JOIN plans p ON p.id = si.plan_id
 		WHERE s.activated_at >= $3 AND s.activated_at < $4
 		GROUP BY 1
 	`, period.Trunc, dateFmt, period.Start, period.End)
@@ -83,16 +84,17 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = rows.Close()
 
-	// Churned MRR per bucket
+	// Churned MRR per bucket: items of subs canceled in this bucket.
 	rows, err = tx.QueryContext(ctx, `
 		SELECT to_char(date_trunc($1, s.canceled_at), $2) AS d,
 		       COALESCE(SUM(
-		           CASE WHEN p.billing_interval = 'yearly' THEN p.base_amount_cents / 12
-		                ELSE p.base_amount_cents
+		           CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * si.quantity
+		                ELSE p.base_amount_cents * si.quantity
 		           END
 		       ), 0)
 		FROM subscriptions s
-		JOIN plans p ON p.id = s.plan_id
+		JOIN subscription_items si ON si.subscription_id = s.id
+		JOIN plans p ON p.id = si.plan_id
 		WHERE s.canceled_at >= $3 AND s.canceled_at < $4
 		GROUP BY 1
 	`, period.Trunc, dateFmt, period.Start, period.End)
@@ -114,33 +116,42 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = rows.Close()
 
-	// Expansion / contraction per bucket from plan changes
+	// Expansion / Contraction per bucket: plan or quantity events in this
+	// bucket, for subs active throughout the period (activated before start,
+	// not canceled before end) to avoid double-counting against New / Churned.
 	rows, err = tx.QueryContext(ctx, `
-		SELECT to_char(date_trunc($1, s.plan_changed_at), $2) AS d,
-		       CASE WHEN pnew.billing_interval = 'yearly' THEN pnew.base_amount_cents / 12 ELSE pnew.base_amount_cents END AS new_mrr,
-		       CASE WHEN pold.billing_interval = 'yearly' THEN pold.base_amount_cents / 12 ELSE pold.base_amount_cents END AS old_mrr
-		FROM subscriptions s
-		JOIN plans pnew ON pnew.id = s.plan_id
-		JOIN plans pold ON pold.id = s.previous_plan_id
-		WHERE s.plan_changed_at IS NOT NULL
-		  AND s.plan_changed_at >= $3 AND s.plan_changed_at < $4
+		SELECT to_char(date_trunc($1, c.changed_at), $2) AS d,
+		       (
+		           (CASE WHEN pto.billing_interval = 'yearly' THEN pto.base_amount_cents / 12
+		                 ELSE pto.base_amount_cents END) * c.to_quantity
+		         - (CASE WHEN pfrom.billing_interval = 'yearly' THEN pfrom.base_amount_cents / 12
+		                 ELSE pfrom.base_amount_cents END) * c.from_quantity
+		       ) AS delta
+		FROM subscription_item_changes c
+		JOIN subscriptions s ON s.id = c.subscription_id
+		JOIN plans pfrom ON pfrom.id = c.from_plan_id
+		JOIN plans pto ON pto.id = c.to_plan_id
+		WHERE c.change_type IN ('plan', 'quantity')
+		  AND c.changed_at >= $3 AND c.changed_at < $4
+		  AND s.activated_at IS NOT NULL
+		  AND s.activated_at < $3
+		  AND (s.canceled_at IS NULL OR s.canceled_at >= $4)
 	`, period.Trunc, dateFmt, period.Start, period.End)
 	if err != nil {
-		slog.Error("analytics mrr-movement: plan-change query", "error", err)
+		slog.Error("analytics mrr-movement: change-events query", "error", err)
 		respond.InternalError(w, r)
 		return
 	}
 	for rows.Next() {
 		var d string
-		var newMRR, oldMRR int64
-		if err := rows.Scan(&d, &newMRR, &oldMRR); err != nil {
+		var delta int64
+		if err := rows.Scan(&d, &delta); err != nil {
 			_ = rows.Close()
-			slog.Error("analytics mrr-movement: plan-change scan", "error", err)
+			slog.Error("analytics mrr-movement: change-events scan", "error", err)
 			respond.InternalError(w, r)
 			return
 		}
 		p := touch(d)
-		delta := newMRR - oldMRR
 		if delta > 0 {
 			p.Expansion += delta
 		} else {

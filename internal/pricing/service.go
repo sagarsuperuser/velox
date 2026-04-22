@@ -227,6 +227,7 @@ type CreatePlanInput struct {
 	BaseAmountCents int64                  `json:"base_amount_cents"`
 	MeterIDs        []string               `json:"meter_ids"`
 	Status          string                 `json:"status,omitempty"`
+	TaxCode         string                 `json:"tax_code,omitempty"`
 }
 
 func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreatePlanInput) (domain.Plan, error) {
@@ -259,6 +260,11 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 		return domain.Plan{}, errs.Invalid("base_amount_cents", "base fee must be 0 or more")
 	}
 
+	taxCode := strings.TrimSpace(input.TaxCode)
+	if err := domain.ValidateStripeTaxCode("tax_code", taxCode); err != nil {
+		return domain.Plan{}, err
+	}
+
 	if input.MeterIDs == nil {
 		input.MeterIDs = []string{}
 	}
@@ -272,6 +278,7 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 		Status:          domain.PlanActive,
 		BaseAmountCents: input.BaseAmountCents,
 		MeterIDs:        input.MeterIDs,
+		TaxCode:         taxCode,
 	})
 }
 
@@ -302,6 +309,11 @@ func (s *Service) UpdatePlan(ctx context.Context, tenantID, id string, input Cre
 	if input.Status != "" {
 		existing.Status = domain.PlanStatus(input.Status)
 	}
+	taxCode := strings.TrimSpace(input.TaxCode)
+	if err := domain.ValidateStripeTaxCode("tax_code", taxCode); err != nil {
+		return domain.Plan{}, err
+	}
+	existing.TaxCode = taxCode
 
 	return s.store.UpdatePlan(ctx, tenantID, existing)
 }

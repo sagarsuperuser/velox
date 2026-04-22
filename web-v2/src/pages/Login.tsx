@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { setApiKey } from '@/lib/api'
+import { Link, useNavigate } from 'react-router-dom'
+import { useAuth } from '@/contexts/AuthContext'
+import { ApiError } from '@/lib/api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -9,41 +10,39 @@ import { Loader2, Eye, EyeOff } from 'lucide-react'
 import { VeloxLogo } from '@/components/VeloxLogo'
 
 export default function LoginPage() {
-  const [key, setKey] = useState('')
-  const [showKey, setShowKey] = useState(false)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
+  const { login } = useAuth()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
 
-    if (!key.startsWith('vlx_')) {
-      setError('API key must start with vlx_')
+    if (!email.trim() || !password) {
+      setError('Email and password are required')
       return
     }
 
-    setApiKey(key)
     setLoading(true)
-
     try {
-      const res = await fetch('/v1/customers', {
-        headers: { Authorization: `Bearer ${key}` },
-      })
-      if (res.status === 401) {
-        const body = await res.json().catch(() => null)
-        const msg = body?.message || ''
-        if (msg.includes('expired')) {
-          setError('This API key has expired. Please use a valid key.')
+      await login(email.trim(), password)
+      navigate('/', { replace: true })
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 401) {
+          setError('Invalid email or password')
+        } else if (err.status === 403) {
+          setError(err.message || 'Account disabled')
         } else {
-          setError('Invalid API key')
+          setError(err.message)
         }
-        return
+      } else {
+        setError('Cannot connect to Velox API')
       }
-      navigate('/')
-    } catch {
-      setError('Cannot connect to Velox API')
     } finally {
       setLoading(false)
     }
@@ -60,20 +59,46 @@ export default function LoginPage() {
         <CardContent className="p-6">
           <form onSubmit={handleSubmit} noValidate className="space-y-4">
             <div className="space-y-1.5">
-              <Label htmlFor="api-key">API Key</Label>
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@company.com"
+                autoComplete="email"
+                autoFocus
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="password">Password</Label>
+                <Link
+                  to="/forgot-password"
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Forgot password?
+                </Link>
+              </div>
               <div className="relative">
                 <Input
-                  id="api-key"
-                  type={showKey ? 'text' : 'password'}
-                  value={key}
-                  onChange={e => setKey(e.target.value)}
-                  placeholder="vlx_secret_..."
-                  autoFocus
+                  id="password"
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="Enter your password"
+                  autoComplete="current-password"
                   className="pr-10"
                 />
-                <button type="button" tabIndex={-1} onClick={() => setShowKey(!showKey)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
-                  {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowPassword(!showPassword)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
             </div>

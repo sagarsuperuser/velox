@@ -1,14 +1,12 @@
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { api, formatCents, formatDateTime, type Meter, type Plan, type RatingRule } from '@/lib/api'
+import { api, formatCents, formatDateTime } from '@/lib/api'
 import { Layout } from '@/components/Layout'
-import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Separator } from '@/components/ui/separator'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'

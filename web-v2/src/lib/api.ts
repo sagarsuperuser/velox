@@ -1,17 +1,4 @@
 const API_BASE = '/v1'
-const API_KEY_STORAGE = 'velox_api_key'
-
-export function getApiKey(): string | null {
-  return localStorage.getItem(API_KEY_STORAGE)
-}
-
-export function setApiKey(key: string) {
-  localStorage.setItem(API_KEY_STORAGE, key)
-}
-
-export function clearApiKey() {
-  localStorage.removeItem(API_KEY_STORAGE)
-}
 
 // ApiError carries the structured pieces of a Velox error envelope so callers
 // can route the message to the right UI surface. `field` identifies the single
@@ -51,18 +38,19 @@ function humanizeError(msg: string): string {
   return msg
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const apiKey = getApiKey()
+// apiRequest is the shared fetch wrapper for all Velox API calls. Session
+// cookies ride automatically via `credentials: 'include'` (httpOnly, set by
+// POST /v1/auth/login). No Authorization header — the dashboard is session
+// authed, not API-key authed.
+export async function apiRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-  }
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`
   }
 
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
+    credentials: 'include',
     body: body ? JSON.stringify(body) : undefined,
   })
 
@@ -80,91 +68,97 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     })
   }
 
+  // 204 No Content / 205 Reset Content have no body — parsing as JSON would
+  // throw SyntaxError and trip the caller's onError. Callers that use
+  // apiRequest<void> expect undefined here.
+  if (res.status === 204 || res.status === 205) {
+    return undefined as T
+  }
   return res.json()
 }
 
 export const api = {
   // Customers
   listCustomers: (params?: string) =>
-    request<{ data: Customer[]; total: number }>('GET', `/customers${params ? '?' + params : ''}`),
+    apiRequest<{ data: Customer[]; total: number }>('GET', `/customers${params ? '?' + params : ''}`),
   getCustomer: (id: string) =>
-    request<Customer>('GET', `/customers/${id}`),
+    apiRequest<Customer>('GET', `/customers/${id}`),
   createCustomer: (data: { external_id: string; display_name: string; email?: string }) =>
-    request<Customer>('POST', '/customers', data),
+    apiRequest<Customer>('POST', '/customers', data),
 
   // Subscriptions
   listSubscriptions: (params?: string) =>
-    request<{ data: Subscription[]; total: number }>('GET', `/subscriptions${params ? '?' + params : ''}`),
+    apiRequest<{ data: Subscription[]; total: number }>('GET', `/subscriptions${params ? '?' + params : ''}`),
   createSubscription: (data: { code: string; display_name: string; customer_id: string; items: { plan_id: string; quantity?: number }[]; start_now?: boolean; billing_time?: string; trial_days?: number; usage_cap_units?: number | null; overage_action?: string }) =>
-    request<Subscription>('POST', '/subscriptions', data),
+    apiRequest<Subscription>('POST', '/subscriptions', data),
 
   // Pricing
   listMeters: () =>
-    request<{ data: Meter[] }>('GET', '/meters'),
+    apiRequest<{ data: Meter[] }>('GET', '/meters'),
   getMeter: (id: string) =>
-    request<Meter>('GET', `/meters/${id}`),
+    apiRequest<Meter>('GET', `/meters/${id}`),
   createMeter: (data: { key: string; name: string; unit?: string; aggregation?: string; rating_rule_version_id?: string }) =>
-    request<Meter>('POST', '/meters', data),
+    apiRequest<Meter>('POST', '/meters', data),
   listPlans: () =>
-    request<{ data: Plan[] }>('GET', '/plans'),
+    apiRequest<{ data: Plan[] }>('GET', '/plans'),
   getPlan: (id: string) =>
-    request<Plan>('GET', `/plans/${id}`),
+    apiRequest<Plan>('GET', `/plans/${id}`),
   createPlan: (data: { code: string; name: string; currency: string; billing_interval: string; base_amount_cents: number; meter_ids?: string[] }) =>
-    request<Plan>('POST', '/plans', data),
+    apiRequest<Plan>('POST', '/plans', data),
   updatePlan: (id: string, data: Partial<{ name: string; status: string; base_amount_cents: number; meter_ids: string[] }>) =>
-    request<Plan>('PATCH', `/plans/${id}`, data),
+    apiRequest<Plan>('PATCH', `/plans/${id}`, data),
   listRatingRules: () =>
-    request<{ data: RatingRule[] }>('GET', '/rating-rules'),
+    apiRequest<{ data: RatingRule[] }>('GET', '/rating-rules'),
   getRatingRule: (id: string) =>
-    request<RatingRule>('GET', `/rating-rules/${id}`),
+    apiRequest<RatingRule>('GET', `/rating-rules/${id}`),
   createRatingRule: (data: { rule_key: string; name: string; mode: string; currency: string; flat_amount_cents?: number; graduated_tiers?: { up_to: number; unit_amount_cents: number }[]; package_size?: number; package_amount_cents?: number }) =>
-    request<RatingRule>('POST', '/rating-rules', data),
+    apiRequest<RatingRule>('POST', '/rating-rules', data),
 
   // Invoices
   listInvoices: (params?: string) =>
-    request<{ data: Invoice[]; total: number }>('GET', `/invoices${params ? '?' + params : ''}`),
+    apiRequest<{ data: Invoice[]; total: number }>('GET', `/invoices${params ? '?' + params : ''}`),
   getInvoice: (id: string) =>
-    request<{ invoice: Invoice; line_items: LineItem[] }>('GET', `/invoices/${id}`),
+    apiRequest<{ invoice: Invoice; line_items: LineItem[] }>('GET', `/invoices/${id}`),
   finalizeInvoice: (id: string) =>
-    request<Invoice>('POST', `/invoices/${id}/finalize`),
+    apiRequest<Invoice>('POST', `/invoices/${id}/finalize`),
   voidInvoice: (id: string) =>
-    request<Invoice>('POST', `/invoices/${id}/void`),
+    apiRequest<Invoice>('POST', `/invoices/${id}/void`),
   collectPayment: (id: string) =>
-    request<Invoice>('POST', `/invoices/${id}/collect`),
+    apiRequest<Invoice>('POST', `/invoices/${id}/collect`),
   sendInvoiceEmail: (invoiceId: string, email: string) =>
-    request<{ status: string }>('POST', `/invoices/${invoiceId}/send`, { email }),
+    apiRequest<{ status: string }>('POST', `/invoices/${invoiceId}/send`, { email }),
   getPaymentTimeline: (invoiceId: string) =>
-    request<{ events: TimelineEvent[] }>('GET', `/invoices/${invoiceId}/payment-timeline`),
+    apiRequest<{ events: TimelineEvent[] }>('GET', `/invoices/${invoiceId}/payment-timeline`),
 
   // Payment setup
   setupPayment: (data: { customer_id: string; customer_name: string; email: string; address_line1?: string; address_city?: string; address_state?: string; address_postal_code?: string; address_country?: string }) =>
-    request<{ session_id: string; url: string; stripe_customer_id: string }>('POST', '/checkout/setup', data),
+    apiRequest<{ session_id: string; url: string; stripe_customer_id: string }>('POST', '/checkout/setup', data),
   getPaymentStatus: (customerId: string) =>
-    request<PaymentSetup>('GET', `/checkout/status/${customerId}`),
+    apiRequest<PaymentSetup>('GET', `/checkout/status/${customerId}`),
 
   // Credits
   listBalances: () =>
-    request<{ data: CreditBalance[] }>('GET', '/credits/balances'),
+    apiRequest<{ data: CreditBalance[] }>('GET', '/credits/balances'),
   getBalance: (customerId: string) =>
-    request<CreditBalance>('GET', `/credits/balance/${customerId}`),
+    apiRequest<CreditBalance>('GET', `/credits/balance/${customerId}`),
   grantCredits: (data: { customer_id: string; amount_cents: number; description: string; expires_at?: string }) =>
-    request<CreditLedgerEntry>('POST', '/credits/grant', data),
+    apiRequest<CreditLedgerEntry>('POST', '/credits/grant', data),
   adjustCredits: (data: { customer_id: string; amount_cents: number; description: string }) =>
-    request<CreditLedgerEntry>('POST', '/credits/adjust', data),
+    apiRequest<CreditLedgerEntry>('POST', '/credits/adjust', data),
   listLedger: (customerId: string, params?: { entry_type?: string; limit?: number; offset?: number }) => {
     const qs = new URLSearchParams()
     if (params?.entry_type) qs.set('entry_type', params.entry_type)
     if (params?.limit) qs.set('limit', String(params.limit))
     if (params?.offset) qs.set('offset', String(params.offset))
     const q = qs.toString()
-    return request<{ data: CreditLedgerEntry[] }>('GET', `/credits/ledger/${customerId}${q ? '?' + q : ''}`)
+    return apiRequest<{ data: CreditLedgerEntry[] }>('GET', `/credits/ledger/${customerId}${q ? '?' + q : ''}`)
   },
 
   // Customer portal
   customerOverview: (customerId: string) =>
-    request<CustomerOverview>('GET', `/customer-portal/${customerId}/overview`),
+    apiRequest<CustomerOverview>('GET', `/customer-portal/${customerId}/overview`),
   updatePaymentMethod: (customerId: string, returnUrl?: string) =>
-    request<{ url: string }>('POST', `/payment-portal/${customerId}/update-payment-method`, returnUrl ? { return_url: returnUrl } : {}),
+    apiRequest<{ url: string }>('POST', `/payment-portal/${customerId}/update-payment-method`, returnUrl ? { return_url: returnUrl } : {}),
 
   // Usage
   usageSummary: (customerId: string, from?: string, to?: string) => {
@@ -172,116 +166,122 @@ export const api = {
     if (from) params.set('from', from)
     if (to) params.set('to', to)
     const qs = params.toString()
-    return request<UsageSummary>('GET', `/usage-summary/${customerId}${qs ? '?' + qs : ''}`)
+    return apiRequest<UsageSummary>('GET', `/usage-summary/${customerId}${qs ? '?' + qs : ''}`)
   },
   listUsageEvents: (params?: string) =>
-    request<{ data: UsageEvent[]; total: number }>('GET', `/usage-events${params ? '?' + params : ''}`),
+    apiRequest<{ data: UsageEvent[]; total: number }>('GET', `/usage-events${params ? '?' + params : ''}`),
 
   // Customer updates
   updateCustomer: (id: string, data: { display_name?: string; email?: string }) =>
-    request<Customer>('PATCH', `/customers/${id}`, data),
+    apiRequest<Customer>('PATCH', `/customers/${id}`, data),
 
   // Subscription detail
   getSubscription: (id: string) =>
-    request<Subscription>('GET', `/subscriptions/${id}`),
+    apiRequest<Subscription>('GET', `/subscriptions/${id}`),
   activateSubscription: (id: string) =>
-    request<Subscription>('POST', `/subscriptions/${id}/activate`),
+    apiRequest<Subscription>('POST', `/subscriptions/${id}/activate`),
   pauseSubscription: (id: string) =>
-    request<Subscription>('POST', `/subscriptions/${id}/pause`),
+    apiRequest<Subscription>('POST', `/subscriptions/${id}/pause`),
   resumeSubscription: (id: string) =>
-    request<Subscription>('POST', `/subscriptions/${id}/resume`),
+    apiRequest<Subscription>('POST', `/subscriptions/${id}/resume`),
   cancelSubscription: (id: string) =>
-    request<Subscription>('POST', `/subscriptions/${id}/cancel`),
+    apiRequest<Subscription>('POST', `/subscriptions/${id}/cancel`),
   // Item CRUD. PATCH body is either `{quantity}` or `{new_plan_id, immediate}`,
   // never both — mirrors the backend's UpdateItemInput guard.
   addSubscriptionItem: (id: string, data: { plan_id: string; quantity?: number }) =>
-    request<SubscriptionItem>('POST', `/subscriptions/${id}/items`, data),
+    apiRequest<SubscriptionItem>('POST', `/subscriptions/${id}/items`, data),
   updateSubscriptionItem: (id: string, itemID: string, data: { quantity?: number; new_plan_id?: string; immediate?: boolean }) =>
-    request<ItemChangeResult>('PATCH', `/subscriptions/${id}/items/${itemID}`, data),
+    apiRequest<ItemChangeResult>('PATCH', `/subscriptions/${id}/items/${itemID}`, data),
   removeSubscriptionItem: (id: string, itemID: string) =>
-    request<{ status: string }>('DELETE', `/subscriptions/${id}/items/${itemID}`),
+    apiRequest<{ status: string }>('DELETE', `/subscriptions/${id}/items/${itemID}`),
   cancelPendingItemChange: (id: string, itemID: string) =>
-    request<SubscriptionItem>('DELETE', `/subscriptions/${id}/items/${itemID}/pending-change`),
+    apiRequest<SubscriptionItem>('DELETE', `/subscriptions/${id}/items/${itemID}/pending-change`),
   invoicePreview: (subscriptionId: string) =>
-    request<InvoicePreview>('GET', `/billing/preview/${subscriptionId}`),
+    apiRequest<InvoicePreview>('GET', `/billing/preview/${subscriptionId}`),
 
   // Billing profile
   getBillingProfile: (customerId: string) =>
-    request<BillingProfile>('GET', `/customers/${customerId}/billing-profile`),
+    apiRequest<BillingProfile>('GET', `/customers/${customerId}/billing-profile`),
   upsertBillingProfile: (customerId: string, data: Partial<BillingProfile>) =>
-    request<BillingProfile>('PUT', `/customers/${customerId}/billing-profile`, data),
+    apiRequest<BillingProfile>('PUT', `/customers/${customerId}/billing-profile`, data),
 
   // Settings
   getSettings: () =>
-    request<TenantSettings>('GET', '/settings'),
+    apiRequest<TenantSettings>('GET', '/settings'),
   updateSettings: (data: Partial<TenantSettings>) =>
-    request<TenantSettings>('PUT', '/settings', data),
+    apiRequest<TenantSettings>('PUT', '/settings', data),
 
   // Dunning
-  getDunningPolicy: () => request<DunningPolicy>('GET', '/dunning/policy'),
-  upsertDunningPolicy: (data: Partial<DunningPolicy>) => request<DunningPolicy>('PUT', '/dunning/policy', data),
-  listDunningRuns: (params?: string) => request<{ data: DunningRun[]; total: number }>('GET', `/dunning/runs${params ? '?' + params : ''}`),
-  getDunningRun: (id: string) => request<{ run: DunningRun; events: DunningEvent[] }>('GET', `/dunning/runs/${id}`),
-  resolveDunningRun: (id: string, resolution: string) => request<DunningRun>('POST', `/dunning/runs/${id}/resolve`, { resolution }),
-  getCustomerDunningOverride: (customerId: string) => request<CustomerDunningOverride>('GET', `/dunning/customers/${customerId}/override`),
-  upsertCustomerDunningOverride: (customerId: string, data: Partial<CustomerDunningOverride>) => request<CustomerDunningOverride>('PUT', `/dunning/customers/${customerId}/override`, data),
-  deleteCustomerDunningOverride: (customerId: string) => request<{ status: string }>('DELETE', `/dunning/customers/${customerId}/override`),
+  getDunningPolicy: () => apiRequest<DunningPolicy>('GET', '/dunning/policy'),
+  upsertDunningPolicy: (data: Partial<DunningPolicy>) => apiRequest<DunningPolicy>('PUT', '/dunning/policy', data),
+  listDunningRuns: (params?: string) => apiRequest<{ data: DunningRun[]; total: number }>('GET', `/dunning/runs${params ? '?' + params : ''}`),
+  getDunningRun: (id: string) => apiRequest<{ run: DunningRun; events: DunningEvent[] }>('GET', `/dunning/runs/${id}`),
+  resolveDunningRun: (id: string, resolution: string) => apiRequest<DunningRun>('POST', `/dunning/runs/${id}/resolve`, { resolution }),
+  getCustomerDunningOverride: (customerId: string) => apiRequest<CustomerDunningOverride>('GET', `/dunning/customers/${customerId}/override`),
+  upsertCustomerDunningOverride: (customerId: string, data: Partial<CustomerDunningOverride>) => apiRequest<CustomerDunningOverride>('PUT', `/dunning/customers/${customerId}/override`, data),
+  deleteCustomerDunningOverride: (customerId: string) => apiRequest<{ status: string }>('DELETE', `/dunning/customers/${customerId}/override`),
 
   // Credit Notes
-  listCreditNotes: (params?: string) => request<{ data: CreditNote[] }>('GET', `/credit-notes${params ? '?' + params : ''}`),
-  createCreditNote: (data: { invoice_id: string; reason: string; refund_type?: string; auto_issue?: boolean; lines: { description: string; quantity: number; unit_amount_cents: number }[] }) => request<CreditNote>('POST', '/credit-notes', data),
-  issueCreditNote: (id: string) => request<CreditNote>('POST', `/credit-notes/${id}/issue`),
-  voidCreditNote: (id: string) => request<CreditNote>('POST', `/credit-notes/${id}/void`),
+  listCreditNotes: (params?: string) => apiRequest<{ data: CreditNote[] }>('GET', `/credit-notes${params ? '?' + params : ''}`),
+  createCreditNote: (data: { invoice_id: string; reason: string; refund_type?: string; auto_issue?: boolean; lines: { description: string; quantity: number; unit_amount_cents: number }[] }) => apiRequest<CreditNote>('POST', '/credit-notes', data),
+  issueCreditNote: (id: string) => apiRequest<CreditNote>('POST', `/credit-notes/${id}/issue`),
+  voidCreditNote: (id: string) => apiRequest<CreditNote>('POST', `/credit-notes/${id}/void`),
 
   // Coupons
-  listCoupons: () => request<{ data: Coupon[] }>('GET', '/coupons'),
-  getCoupon: (id: string) => request<Coupon>('GET', `/coupons/${id}`),
+  listCoupons: () => apiRequest<{ data: Coupon[] }>('GET', '/coupons'),
+  getCoupon: (id: string) => apiRequest<Coupon>('GET', `/coupons/${id}`),
   createCoupon: (data: { code: string; name: string; type: string; amount_off?: number; percent_off?: number; currency?: string; max_redemptions?: number | null; expires_at?: string; plan_ids?: string[] }) =>
-    request<Coupon>('POST', '/coupons', data),
-  deactivateCoupon: (id: string) => request<{ status: string }>('POST', `/coupons/${id}/deactivate`),
+    apiRequest<Coupon>('POST', '/coupons', data),
+  deactivateCoupon: (id: string) => apiRequest<{ status: string }>('POST', `/coupons/${id}/deactivate`),
   redeemCoupon: (data: { code: string; customer_id: string; subtotal_cents: number; subscription_id?: string; invoice_id?: string; plan_id?: string }) =>
-    request<CouponRedemption>('POST', '/coupons/redeem', data),
-  listCouponRedemptions: (id: string) => request<{ data: CouponRedemption[] }>('GET', `/coupons/${id}/redemptions`),
+    apiRequest<CouponRedemption>('POST', '/coupons/redeem', data),
+  listCouponRedemptions: (id: string) => apiRequest<{ data: CouponRedemption[] }>('GET', `/coupons/${id}/redemptions`),
 
   // Audit Log
-  listAuditLog: (params?: string) => request<{ data: AuditEntry[]; total: number }>('GET', `/audit-log${params ? '?' + params : ''}`),
-  getAuditFilters: () => request<AuditFilterOptions>('GET', '/audit-log/filters'),
+  listAuditLog: (params?: string) => apiRequest<{ data: AuditEntry[]; total: number }>('GET', `/audit-log${params ? '?' + params : ''}`),
+  getAuditFilters: () => apiRequest<AuditFilterOptions>('GET', '/audit-log/filters'),
 
   // Webhooks
-  listWebhookEndpoints: () => request<{ data: WebhookEndpoint[] }>('GET', '/webhook-endpoints/endpoints'),
-  createWebhookEndpoint: (data: { url: string; description?: string; events?: string[] }) => request<{ endpoint: WebhookEndpoint; secret: string }>('POST', '/webhook-endpoints/endpoints', data),
-  deleteWebhookEndpoint: (id: string) => request<{ status: string }>('DELETE', `/webhook-endpoints/endpoints/${id}`),
-  rotateWebhookSecret: (id: string) => request<{ secret: string }>('POST', `/webhook-endpoints/endpoints/${id}/rotate-secret`),
-  getWebhookEndpointStats: () => request<{ data: { endpoint_id: string; total_deliveries: number; succeeded: number; failed: number; success_rate: number }[] }>('GET', '/webhook-endpoints/endpoints/stats'),
-  listWebhookEvents: () => request<{ data: WebhookEvent[] }>('GET', '/webhook-endpoints/events'),
-  replayWebhookEvent: (id: string) => request<{ status: string }>('POST', `/webhook-endpoints/events/${id}/replay`),
+  listWebhookEndpoints: () => apiRequest<{ data: WebhookEndpoint[] }>('GET', '/webhook-endpoints/endpoints'),
+  createWebhookEndpoint: (data: { url: string; description?: string; events?: string[] }) => apiRequest<{ endpoint: WebhookEndpoint; secret: string }>('POST', '/webhook-endpoints/endpoints', data),
+  deleteWebhookEndpoint: (id: string) => apiRequest<{ status: string }>('DELETE', `/webhook-endpoints/endpoints/${id}`),
+  rotateWebhookSecret: (id: string) => apiRequest<{ secret: string }>('POST', `/webhook-endpoints/endpoints/${id}/rotate-secret`),
+  getWebhookEndpointStats: () => apiRequest<{ data: { endpoint_id: string; total_deliveries: number; succeeded: number; failed: number; success_rate: number }[] }>('GET', '/webhook-endpoints/endpoints/stats'),
+  listWebhookEvents: () => apiRequest<{ data: WebhookEvent[] }>('GET', '/webhook-endpoints/events'),
+  replayWebhookEvent: (id: string) => apiRequest<{ status: string }>('POST', `/webhook-endpoints/events/${id}/replay`),
 
   // Analytics
   addInvoiceLineItem: (invoiceId: string, data: { description: string; line_type: string; quantity: number; unit_amount_cents: number }) =>
-    request<LineItem>('POST', `/invoices/${invoiceId}/line-items`, data),
+    apiRequest<LineItem>('POST', `/invoices/${invoiceId}/line-items`, data),
 
   getAnalyticsOverview: (period?: string) =>
-    request<AnalyticsOverview>('GET', `/analytics/overview${period ? `?period=${period}` : ''}`),
+    apiRequest<AnalyticsOverview>('GET', `/analytics/overview${period ? `?period=${period}` : ''}`),
   getRevenueChart: (period: string) =>
-    request<{ period: string; data: RevenueDataPoint[] }>('GET', `/analytics/revenue-chart?period=${period}`),
+    apiRequest<{ period: string; data: RevenueDataPoint[] }>('GET', `/analytics/revenue-chart?period=${period}`),
   getMRRMovement: (period: string) =>
-    request<MRRMovementResponse>('GET', `/analytics/mrr-movement?period=${period}`),
+    apiRequest<MRRMovementResponse>('GET', `/analytics/mrr-movement?period=${period}`),
   getUsageAnalytics: (period: string) =>
-    request<UsageAnalyticsResponse>('GET', `/analytics/usage?period=${period}`),
+    apiRequest<UsageAnalyticsResponse>('GET', `/analytics/usage?period=${period}`),
 
   // API Keys
-  listApiKeys: () => request<{ data: ApiKeyInfo[] }>('GET', '/api-keys'),
-  createApiKey: (data: { name: string; key_type: string; expires_at?: string }) => request<{ key: ApiKeyInfo; raw_key: string }>('POST', '/api-keys', data),
-  revokeApiKey: (id: string) => request<ApiKeyInfo>('DELETE', `/api-keys/${id}`),
+  listApiKeys: () => apiRequest<{ data: ApiKeyInfo[] }>('GET', '/api-keys'),
+  createApiKey: (data: { name: string; key_type: string; expires_at?: string }) => apiRequest<{ key: ApiKeyInfo; raw_key: string }>('POST', '/api-keys', data),
+  revokeApiKey: (id: string) => apiRequest<ApiKeyInfo>('DELETE', `/api-keys/${id}`),
 
   // Stripe credentials (per-tenant). Secrets post once here; the server keeps
   // them encrypted and only returns last4 + verify status. Deleting a row
   // revokes that mode entirely.
-  listStripeCredentials: () => request<{ data: StripeProviderCredentials[] }>('GET', '/settings/stripe'),
+  listStripeCredentials: () => apiRequest<{ data: StripeProviderCredentials[] }>('GET', '/settings/stripe'),
   connectStripe: (data: { livemode: boolean; secret_key: string; publishable_key: string; webhook_secret?: string }) =>
-    request<StripeProviderCredentials>('POST', '/settings/stripe', data),
+    apiRequest<StripeProviderCredentials>('POST', '/settings/stripe', data),
   deleteStripeCredentials: (mode: 'live' | 'test') =>
-    request<void>('DELETE', `/settings/stripe/${mode}`),
+    apiRequest<void>('DELETE', `/settings/stripe/${mode}`),
+  // Second half of two-step setup: tenant connects API keys first, registers
+  // the webhook endpoint in Stripe, then returns with the whsec_ secret.
+  // Updates only the webhook secret on an existing row — no re-verify of the
+  // API key, no need to re-paste secret/publishable.
+  setStripeWebhookSecret: (mode: 'live' | 'test', webhook_secret: string) =>
+    apiRequest<StripeProviderCredentials>('PATCH', `/settings/stripe/${mode}/webhook`, { webhook_secret }),
 }
 
 // Types
@@ -359,6 +359,10 @@ export interface Invoice {
   tax_name: string
   tax_country?: string
   tax_id?: string
+  tax_provider?: string
+  tax_calculation_id?: string
+  tax_reverse_charge?: boolean
+  tax_exempt_reason?: string
   total_amount_cents: number
   amount_due_cents: number
   amount_paid_cents: number
@@ -382,6 +386,10 @@ export interface LineItem {
   unit_amount_cents: number
   amount_cents: number
   total_amount_cents: number
+  tax_amount_cents?: number
+  tax_rate_bp?: number
+  tax_jurisdiction?: string
+  tax_code?: string
   currency: string
   pricing_mode?: string
 }
@@ -455,6 +463,7 @@ export interface Plan {
   status: string
   base_amount_cents: number
   meter_ids: string[]
+  tax_code?: string
   created_at: string
 }
 
@@ -488,6 +497,8 @@ export interface UsageSummary {
   total_events: number
 }
 
+export type CustomerTaxStatus = 'standard' | 'exempt' | 'reverse_charge'
+
 export interface BillingProfile {
   customer_id: string
   legal_name: string
@@ -500,10 +511,10 @@ export interface BillingProfile {
   postal_code: string
   country: string
   currency: string
-  tax_exempt: boolean
+  tax_status: CustomerTaxStatus
+  tax_exempt_reason: string
   tax_id: string
   tax_id_type: string
-  tax_override_rate_bp?: number | null
   profile_status: string
 }
 
@@ -514,15 +525,24 @@ export interface TenantSettings {
   invoice_prefix: string
   invoice_next_seq: number
   net_payment_terms: number
-  tax_provider: 'none' | 'manual'
+  tax_provider: 'none' | 'manual' | 'stripe_tax'
   tax_rate_bp: number
   tax_name: string
   tax_inclusive: boolean
+  default_product_tax_code: string
   company_name: string
-  company_address: string
+  company_address_line1: string
+  company_address_line2: string
+  company_city: string
+  company_state: string
+  company_postal_code: string
+  company_country: string
   company_email: string
   company_phone: string
   logo_url: string
+  tax_id: string
+  support_url: string
+  invoice_footer: string
 }
 
 export interface StripeProviderCredentials {
@@ -531,6 +551,7 @@ export interface StripeProviderCredentials {
   livemode: boolean
   stripe_account_id?: string
   stripe_account_name?: string
+  secret_key_prefix?: string
   secret_key_last4: string
   publishable_key: string
   webhook_secret_last4?: string
@@ -731,6 +752,7 @@ export interface MRRMovementPoint {
   contraction: number
   churned: number
   net: number
+  [k: string]: unknown
 }
 
 export interface MRRMovementResponse {
@@ -743,12 +765,14 @@ export interface RevenueDataPoint {
   date: string
   revenue_cents: number
   invoice_count: number
+  [k: string]: unknown
 }
 
 export interface UsagePoint {
   date: string
   events: number
   quantity: number
+  [k: string]: unknown
 }
 
 export interface TopMeterUsage {
@@ -767,13 +791,8 @@ export interface UsageAnalyticsResponse {
 }
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {
-  const apiKey = getApiKey()
-  const headers: Record<string, string> = {}
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`
-  }
   const res = await fetch(`${API_BASE}/invoices/${invoiceId}/pdf`, {
-    headers,
+    credentials: 'include',
   })
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)

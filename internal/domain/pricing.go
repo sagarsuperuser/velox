@@ -81,9 +81,13 @@ type Plan struct {
 	BillingInterval BillingInterval `json:"billing_interval"`
 	Status          PlanStatus      `json:"status"`
 	BaseAmountCents int64           `json:"base_amount_cents"`
-	MeterIDs        []string        `json:"meter_ids"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	// TaxCode optionally overrides the tenant's default_product_tax_code for
+	// this plan. Only consulted by the stripe_tax provider. Empty falls
+	// back to tenant_settings.default_product_tax_code.
+	TaxCode   string    `json:"tax_code,omitempty"`
+	MeterIDs  []string  `json:"meter_ids"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 var ErrInvalidPricingConfig = errors.New("invalid pricing config")

@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	chimw "github.com/go-chi/chi/v5/middleware"
+
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
@@ -105,6 +108,13 @@ func auditLogWith(writer auditWriter, settings AuditSettingsLookup) func(http.Ha
 				return
 			}
 
+			// Seed the request ctx with audit bookkeeping so handlers that make
+			// explicit audit.Logger.Log calls can suppress our catch-all write
+			// (MarkHandled), and so both write paths see the same client IP.
+			ctx := audit.WithRequestState(r.Context())
+			ctx = audit.WithClientIP(ctx, audit.ExtractClientIP(r))
+			r = r.WithContext(ctx)
+
 			buf := newBufferedResponse()
 			next.ServeHTTP(buf, r)
 
@@ -117,6 +127,13 @@ func auditLogWith(writer auditWriter, settings AuditSettingsLookup) func(http.Ha
 
 			tenantID := auth.TenantID(r.Context())
 			if tenantID == "" {
+				buf.flushTo(w)
+				return
+			}
+
+			// If a handler already wrote an explicit audit row for this
+			// request, don't duplicate it here.
+			if audit.WasHandled(r.Context()) {
 				buf.flushTo(w)
 				return
 			}
@@ -224,11 +241,11 @@ func parseAuditPath(method, path string) (action, resourceType, resourceID strin
 	if len(parts) == 2 {
 		switch parts[1] {
 		case "run":
-			return "run", parts[0], "" // "run billing"
+			return "run", canonicalResourceType(parts[0]), ""
 		case "grant":
-			return "grant", parts[0], ""
+			return "grant", canonicalResourceType(parts[0]), ""
 		case "adjust":
-			return "adjust", parts[0], ""
+			return "adjust", canonicalResourceType(parts[0]), ""
 		}
 	}
 
@@ -240,10 +257,12 @@ func parseAuditPath(method, path string) (action, resourceType, resourceID strin
 		case "activate", "cancel", "pause", "resume", "finalize", "void", "issue", "resolve", "replay", "run", "grant", "adjust", "rotate":
 			action = lastPart
 			resourceID = parts[1]
+			resourceType = canonicalResourceType(resourceType)
 			return
 		case "change-plan":
 			action = "change_plan"
 			resourceID = parts[1]
+			resourceType = canonicalResourceType(resourceType)
 			return
 		case "billing-profile":
 			action = "update"
@@ -267,25 +286,31 @@ func parseAuditPath(method, path string) (action, resourceType, resourceID strin
 		resourceID = parts[1]
 	}
 
-	// Singularize resource type
-	resourceType = strings.TrimSuffix(resourceType, "s")
-	if resourceType == "rating-rule" {
-		resourceType = "rating_rule"
-	}
-	if resourceType == "usage-event" {
-		resourceType = "usage_event"
-	}
-	if resourceType == "credit-note" {
-		resourceType = "credit_note"
-	}
-	if resourceType == "api-key" {
-		resourceType = "api_key"
-	}
-	if resourceType == "webhook-endpoint" {
-		resourceType = "webhook_endpoint"
-	}
-
+	resourceType = canonicalResourceType(resourceType)
 	return
+}
+
+// canonicalResourceType normalizes the leading URL path segment to the
+// singular/snake-case form used by handler-emitted audit rows (and by the
+// UI's filter vocabulary). Must be applied in every parseAuditPath branch —
+// the previous "return early without normalizing" path let action-style URLs
+// (/cancel, /pause, …) record resource_type as "subscriptions" (plural),
+// which the UI filter never matched.
+func canonicalResourceType(s string) string {
+	s = strings.TrimSuffix(s, "s")
+	switch s {
+	case "rating-rule":
+		return "rating_rule"
+	case "usage-event":
+		return "usage_event"
+	case "credit-note":
+		return "credit_note"
+	case "api-key":
+		return "api_key"
+	case "webhook-endpoint":
+		return "webhook_endpoint"
+	}
+	return s
 }
 
 // writeAudit persists an audit entry synchronously. Returns nil on success
@@ -311,13 +336,28 @@ func writeAudit(parentCtx context.Context, db *postgres.DB, tenantID, actorID, a
 		actorID = "system"
 	}
 
+	ipAddress := audit.ClientIP(parentCtx)
+	requestID := chimw.GetReqID(parentCtx)
+
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO audit_log (id, tenant_id, actor_type, actor_id, action,
-			resource_type, resource_id, resource_label, metadata, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, resourceLabel, metaJSON, time.Now().UTC()); err != nil {
+			resource_type, resource_id, resource_label, metadata, ip_address,
+			request_id, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, resourceLabel, metaJSON,
+		nullIfEmpty(ipAddress), nullIfEmpty(requestID), time.Now().UTC()); err != nil {
 		return err
 	}
 
 	return tx.Commit()
+}
+
+// nullIfEmpty keeps optional text columns as SQL NULL rather than "" — lets
+// COUNT(ip_address IS NOT NULL) be meaningful and avoids treating a blank
+// header value as a recorded IP.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

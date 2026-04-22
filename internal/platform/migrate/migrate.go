@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	mpg "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgconn"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 //go:embed sql/*.sql
@@ -24,9 +26,36 @@ var sqlFS embed.FS
 // {version}_{name}.{up|down}.sql — e.g., "0003_tax_cleanup.up.sql".
 var migrationFilenamePattern = regexp.MustCompile(`^(\d+)_.*\.up\.sql$`)
 
-// New creates a golang-migrate instance from embedded SQL files.
-// Used by CLI subcommands (status, rollback) and by Up.
-func New(db *sql.DB) (*migrate.Migrate, error) {
+// openMigrationPool opens a dedicated short-lived *sql.DB for one migration
+// command. Migrations are single-threaded, so a 1-connection pool is enough.
+//
+// A dedicated pool is required because golang-migrate's postgres driver
+// closes the underlying *sql.DB inside its Close() — passing the app's
+// shared pool would leave it unusable for every subsequent operation (e.g.,
+// CheckSchemaReady, serving requests). This helper keeps that close
+// side-effect scoped to a pool the caller never sees.
+func openMigrationPool(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open migration db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping migration db: %w", err)
+	}
+	return db, nil
+}
+
+// newMigrator creates a golang-migrate instance from embedded SQL files.
+// Internal helper — callers outside this package should use Up, Status,
+// or Rollback so they don't have to reason about the driver's Close()
+// side-effect on the supplied *sql.DB.
+func newMigrator(db *sql.DB) (*migrate.Migrate, error) {
 	subFS, err := fs.Sub(sqlFS, "sql")
 	if err != nil {
 		return nil, fmt.Errorf("sub fs: %w", err)
@@ -47,7 +76,8 @@ func New(db *sql.DB) (*migrate.Migrate, error) {
 	return migrate.NewWithInstance("iofs", source, "postgres", driver)
 }
 
-// Up applies all pending migrations.
+// Up applies all pending migrations using a dedicated short-lived connection
+// pool. The caller's app pool (if any) is untouched — only the DSN is needed.
 //
 // Concurrency: golang-migrate's postgres driver takes an internal
 // pg_advisory_lock (keyed on db+schema) before applying. Multiple replicas
@@ -63,12 +93,18 @@ func New(db *sql.DB) (*migrate.Migrate, error) {
 // advisory locks ignore client-side context cancellation). App replicas
 // should instead call CheckSchemaReady at startup to refuse to serve with
 // an outdated schema.
-func Up(db *sql.DB) error {
-	m, err := New(db)
+func Up(dsn string) error {
+	db, err := openMigrationPool(dsn)
 	if err != nil {
 		return err
 	}
-	defer closeMigrator(m)
+
+	m, err := newMigrator(db)
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
+	defer closeMigrator(m) // closes db via the postgres driver
 
 	start := time.Now()
 	err = m.Up()
@@ -86,6 +122,45 @@ func Up(db *sql.DB) error {
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 	return nil
+}
+
+// Status reports the current database migration version. Returns (0, false,
+// nil) for a fresh database with no schema_migrations table. Opens and closes
+// its own short-lived connection pool.
+func Status(dsn string) (uint, bool, error) {
+	db, err := openMigrationPool(dsn)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = db.Close() }()
+
+	return DatabaseVersion(db)
+}
+
+// Rollback rolls back the last `steps` migrations and returns the new
+// database version. Opens and closes its own short-lived connection pool.
+func Rollback(dsn string, steps int) (uint, error) {
+	if steps <= 0 {
+		return 0, fmt.Errorf("rollback steps must be positive, got %d", steps)
+	}
+
+	db, err := openMigrationPool(dsn)
+	if err != nil {
+		return 0, err
+	}
+
+	m, err := newMigrator(db)
+	if err != nil {
+		_ = db.Close()
+		return 0, err
+	}
+	defer closeMigrator(m)
+
+	if err := m.Steps(-steps); err != nil {
+		return 0, fmt.Errorf("rollback %d step(s): %w", steps, err)
+	}
+	v, _, _ := m.Version()
+	return v, nil
 }
 
 // EmbeddedLatestVersion returns the highest migration version packaged into

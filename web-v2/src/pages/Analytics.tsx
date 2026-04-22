@@ -179,8 +179,8 @@ export default function AnalyticsPage() {
                       <XAxis dataKey="date" tickFormatter={formatShortDate} tick={{ fontSize: 11, fill: theme.tick }} axisLine={false} tickLine={false} />
                       <YAxis tickFormatter={formatCompactAmount} tick={{ fontSize: 11, fill: theme.tick }} axisLine={false} tickLine={false} width={55} />
                       <Tooltip
-                        formatter={(value: number) => [formatCents(value), 'Revenue']}
-                        labelFormatter={formatShortDate}
+                        formatter={(value) => [formatCents(Number(value)), 'Revenue']}
+                        labelFormatter={(label) => formatShortDate(String(label))}
                         contentStyle={tooltipStyle(theme)}
                         itemStyle={{ color: theme.tooltipText }}
                         cursor={{ fill: theme.grid }}
@@ -231,8 +231,8 @@ export default function AnalyticsPage() {
                       <YAxis tickFormatter={formatCompactAmount} tick={{ fontSize: 11, fill: theme.tick }} axisLine={false} tickLine={false} width={55} />
                       <ReferenceLine y={0} stroke={theme.tick} strokeWidth={1} />
                       <Tooltip
-                        formatter={(value: number, name: string) => [formatCents(Math.abs(value)), name]}
-                        labelFormatter={formatShortDate}
+                        formatter={(value, name) => [formatCents(Math.abs(Number(value))), String(name)]}
+                        labelFormatter={(label) => formatShortDate(String(label))}
                         contentStyle={tooltipStyle(theme)}
                         itemStyle={{ color: theme.tooltipText }}
                         cursor={{ fill: theme.grid }}
@@ -340,8 +340,8 @@ export default function AnalyticsPage() {
                           <XAxis dataKey="date" tickFormatter={formatShortDate} tick={{ fontSize: 11, fill: theme.tick }} axisLine={false} tickLine={false} />
                           <YAxis tickFormatter={formatCount} tick={{ fontSize: 11, fill: theme.tick }} axisLine={false} tickLine={false} width={45} />
                           <Tooltip
-                            formatter={(value: number) => [formatCount(value), 'Events']}
-                            labelFormatter={formatShortDate}
+                            formatter={(value) => [formatCount(Number(value)), 'Events']}
+                            labelFormatter={(label) => formatShortDate(String(label))}
                             contentStyle={tooltipStyle(theme)}
                             itemStyle={{ color: theme.tooltipText }}
                             cursor={{ fill: theme.grid }}

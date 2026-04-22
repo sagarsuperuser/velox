@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type Customer, type Subscription, type CreditNote, type TimelineEvent, type TenantSettings } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type TenantSettings } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Layout } from '@/components/Layout'
@@ -46,8 +46,38 @@ const LINE_TYPE_LABELS: Record<string, string> = {
   tax: 'Tax',
 }
 
+function formatCompanyAddressLines(s?: TenantSettings | null): string[] {
+  if (!s) return []
+  const lines: string[] = []
+  if (s.company_address_line1) lines.push(s.company_address_line1)
+  if (s.company_address_line2) lines.push(s.company_address_line2)
+  const cityStatePostal = [s.company_city, s.company_state].filter(Boolean).join(', ')
+    + (s.company_postal_code ? ` ${s.company_postal_code}` : '')
+  if (cityStatePostal.trim()) lines.push(cityStatePostal.trim())
+  if (s.company_country) lines.push(s.company_country)
+  return lines
+}
+
 function formatLineType(raw: string): string {
   return LINE_TYPE_LABELS[raw] || raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
+// aggregateTaxByJurisdiction rolls up per-line-item tax amounts into a single
+// row per jurisdiction, preserving insertion order so the UI is deterministic
+// when two jurisdictions have identical contributions. Mirrors the PDF
+// breakdown so invoice totals match between web view and PDF.
+function aggregateTaxByJurisdiction(items: LineItem[]): { label: string; amount: number }[] {
+  const order: string[] = []
+  const totals = new Map<string, number>()
+  for (const item of items) {
+    const amount = item.tax_amount_cents || 0
+    if (amount <= 0) continue
+    const label = item.tax_jurisdiction || ''
+    if (!label) continue
+    if (!totals.has(label)) order.push(label)
+    totals.set(label, (totals.get(label) || 0) + amount)
+  }
+  return order.map(label => ({ label, amount: totals.get(label) || 0 }))
 }
 
 const emailSchema = z.object({
@@ -267,9 +297,9 @@ export default function InvoiceDetailPage() {
               <p className="text-2xl font-bold tracking-tight text-foreground">
                 {settings?.company_name || 'VELOX'}
               </p>
-              {settings?.company_address && (
-                <p className="text-sm text-muted-foreground mt-1 whitespace-pre-line">{settings.company_address}</p>
-              )}
+              {formatCompanyAddressLines(settings).map((line, i) => (
+                <p key={i} className="text-sm text-muted-foreground mt-1">{line}</p>
+              ))}
             </div>
             <div className="text-right">
               <p className="text-sm font-medium uppercase tracking-widest text-muted-foreground">Invoice</p>
@@ -300,9 +330,9 @@ export default function InvoiceDetailPage() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">From</p>
               <p className="text-sm font-medium text-foreground">{settings?.company_name || 'Your Company'}</p>
-              {settings?.company_address && (
-                <p className="text-sm text-muted-foreground mt-0.5 whitespace-pre-line">{settings.company_address}</p>
-              )}
+              {formatCompanyAddressLines(settings).map((line, i) => (
+                <p key={i} className="text-sm text-muted-foreground mt-0.5">{line}</p>
+              ))}
               {settings?.company_email && (
                 <p className="text-sm text-muted-foreground mt-0.5">{settings.company_email}</p>
               )}
@@ -409,11 +439,39 @@ export default function InvoiceDetailPage() {
                 </div>
               )}
 
-              {/* Tax */}
+              {/* Tax — three states: standard (amount), reverse charge (legend row), exempt (legend row) */}
               {invoice.tax_amount_cents > 0 && (
-                <div className={cn('flex justify-between text-sm', invoice.status === 'voided' && 'text-muted-foreground')}>
-                  <span>{invoice.tax_name || 'Tax'}{invoice.tax_rate_bp > 0 ? ` (${(invoice.tax_rate_bp / 100).toFixed(2)}%)` : ''}</span>
-                  <span className="font-mono tabular-nums">{formatCents(invoice.tax_amount_cents, invoice.currency)}</span>
+                <>
+                  <div className={cn('flex justify-between text-sm', invoice.status === 'voided' && 'text-muted-foreground')}>
+                    <span>{invoice.tax_name || 'Tax'}{invoice.tax_rate_bp > 0 ? ` (${(invoice.tax_rate_bp / 100).toFixed(2)}%)` : ''}</span>
+                    <span className="font-mono tabular-nums">{formatCents(invoice.tax_amount_cents, invoice.currency)}</span>
+                  </div>
+                  {(() => {
+                    const jurisdictionRows = aggregateTaxByJurisdiction(lineItems)
+                    if (jurisdictionRows.length < 2) return null
+                    return (
+                      <div className="pl-4 space-y-0.5">
+                        {jurisdictionRows.map(row => (
+                          <div key={row.label} className="flex justify-between text-xs text-muted-foreground">
+                            <span>{row.label}</span>
+                            <span className="font-mono tabular-nums">{formatCents(row.amount, invoice.currency)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })()}
+                </>
+              )}
+              {invoice.tax_reverse_charge && invoice.tax_amount_cents === 0 && (
+                <div className={cn('flex justify-between text-sm text-muted-foreground', invoice.status === 'voided' && 'opacity-60')}>
+                  <span>Tax (reverse charge)</span>
+                  <span className="font-mono tabular-nums">{formatCents(0, invoice.currency)}</span>
+                </div>
+              )}
+              {invoice.tax_exempt_reason && invoice.tax_amount_cents === 0 && !invoice.tax_reverse_charge && (
+                <div className={cn('flex justify-between text-sm text-muted-foreground', invoice.status === 'voided' && 'opacity-60')}>
+                  <span>Tax (exempt)</span>
+                  <span className="font-mono tabular-nums">{formatCents(0, invoice.currency)}</span>
                 </div>
               )}
 
@@ -500,13 +558,32 @@ export default function InvoiceDetailPage() {
             </div>
           </div>
 
+          {/* Tax treatment legend — shown when invoice carries a non-standard tax disposition */}
+          {(invoice.tax_reverse_charge || invoice.tax_exempt_reason) && (
+            <div className="mt-6 pt-4 border-t border-dashed border-border space-y-1.5 text-xs text-muted-foreground">
+              {invoice.tax_reverse_charge && (
+                <p><span className="font-medium text-foreground">Reverse charge</span> — VAT to be accounted for by the recipient in their jurisdiction.</p>
+              )}
+              {invoice.tax_exempt_reason && !invoice.tax_reverse_charge && (
+                <p><span className="font-medium text-foreground">Tax-exempt</span> — {invoice.tax_exempt_reason}</p>
+              )}
+            </div>
+          )}
+
           {/* ID footer */}
           <div className="mt-8 pt-4 border-t border-dashed border-border flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <span className="font-mono">{invoice.id}</span>
               <CopyButton text={invoice.id} />
             </div>
-            <span className="text-xs text-muted-foreground uppercase">{invoice.currency}</span>
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              {invoice.tax_provider && invoice.tax_provider !== 'none' && (
+                <span className="uppercase">
+                  Tax: {invoice.tax_provider === 'stripe_tax' ? 'Stripe Tax' : invoice.tax_provider}
+                </span>
+              )}
+              <span className="uppercase">{invoice.currency}</span>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -723,7 +800,7 @@ function AddLineItemDialog({ invoiceId, onClose, onAdded }: {
           </div>
           <div className="space-y-2">
             <Label>Type</Label>
-            <Select value={lineType} onValueChange={setLineType}>
+            <Select value={lineType} onValueChange={(v) => setLineType(v ?? '')}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
@@ -859,7 +936,7 @@ function IssueCreditDialog({ invoice, onClose, onCreated }: {
           </div>
           <div className="space-y-2">
             <Label>Type</Label>
-            <Select value={type} onValueChange={setType}>
+            <Select value={type} onValueChange={(v) => setType(v ?? '')}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>

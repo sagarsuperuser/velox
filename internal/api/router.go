@@ -25,6 +25,8 @@ import (
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/customerportal"
+	"github.com/sagarsuperuser/velox/internal/dashauth"
+	"github.com/sagarsuperuser/velox/internal/dashmembers"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
@@ -37,11 +39,14 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/pricing"
+	"github.com/sagarsuperuser/velox/internal/session"
 	"github.com/sagarsuperuser/velox/internal/subscription"
+	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
 	"github.com/sagarsuperuser/velox/internal/tenantstripe"
 	"github.com/sagarsuperuser/velox/internal/testclock"
 	"github.com/sagarsuperuser/velox/internal/usage"
+	"github.com/sagarsuperuser/velox/internal/user"
 	"github.com/sagarsuperuser/velox/internal/webhook"
 
 	"github.com/stripe/stripe-go/v82"
@@ -107,7 +112,8 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	authH := auth.NewHandler(authSvc)
 
 	// Domain handlers
-	tenantH := tenant.NewHandler(tenant.NewService(tenant.NewPostgresStore(db)))
+	tenantSvc := tenant.NewService(tenant.NewPostgresStore(db))
+	tenantH := tenant.NewHandler(tenantSvc)
 	customerStore := customer.NewPostgresStore(db)
 
 	// PII + webhook-secret encryption at rest — AES-256-GCM via VELOX_ENCRYPTION_KEY.
@@ -275,22 +281,23 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	emailOutboxStore := email.NewOutboxStore(db)
 	emailOutboxEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_EMAIL_OUTBOX_ENABLED"))) != "false"
 
-	// Any one of the five domain email interfaces; all are satisfied by
+	// Any one of the six domain email interfaces; all are satisfied by
 	// both *email.Sender and *email.OutboxSender, so we pick once and wire
 	// the same value everywhere.
 	var (
-		invoiceEmail   invoice.EmailSender
-		dunningEmail   dunning.EmailNotifier
-		receiptEmail   payment.EmailReceipt
-		paymentUpdate  payment.EmailPaymentUpdate
-		magicLinkEmail customerportal.MagicLinkEmailSender
+		invoiceEmail       invoice.EmailSender
+		dunningEmail       dunning.EmailNotifier
+		receiptEmail       payment.EmailReceipt
+		paymentUpdate      payment.EmailPaymentUpdate
+		magicLinkEmail     customerportal.MagicLinkEmailSender
+		passwordResetEmail dashauth.EmailNotifier
 	)
 	if emailOutboxEnabled {
 		outboxSender := email.NewOutboxSender(emailOutboxStore)
-		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail = outboxSender, outboxSender, outboxSender, outboxSender, outboxSender
+		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail, passwordResetEmail = outboxSender, outboxSender, outboxSender, outboxSender, outboxSender, outboxSender
 		slog.Info("email outbox enabled — producers will enqueue emails via email_outbox")
 	} else {
-		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail = emailSender, emailSender, emailSender, emailSender, emailSender
+		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail, passwordResetEmail = emailSender, emailSender, emailSender, emailSender, emailSender, emailSender
 		slog.Warn("email outbox DISABLED — using direct-SMTP path (set VELOX_EMAIL_OUTBOX_ENABLED=true to re-enable)")
 	}
 	invoiceH.SetEmailSender(invoiceEmail)
@@ -328,11 +335,18 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	engine.SetEventDispatcher(eventDispatcher)
 	testClockSvc.SetBillingRunner(engine)
 
-	// Tax calculator: Stripe Tax wiring took operator-level sk_*/sk_test_
-	// env vars that no longer exist after the per-tenant credential refactor.
-	// Re-wiring it against stripe_provider_credentials is a separate step;
-	// for now the engine's inline manual path handles tax via settingsStore
-	// without a registered Calculator.
+	// Tax: per-tenant provider resolution (none|manual|stripe_tax) + durable
+	// audit trail in tax_calculations. Resolver reads tenant_settings and
+	// hands back the concrete Provider; the store persists request/response
+	// payloads so we can reconstruct tax decisions after Stripe's 24h
+	// calculation expiry window.
+	engine.SetTaxProviderResolver(tax.NewResolver(stripeClients))
+	engine.SetTaxCalculationStore(tax.NewPostgresStore(db))
+
+	// Invoice finalize commits the upstream Stripe Tax calculation into a
+	// tax_transaction so the tenant's Stripe Tax reports reflect the final
+	// invoice. Manual/none providers receive the call but no-op.
+	invoiceSvc.SetTaxCommitter(engine)
 
 	// Coupon discount applier: billing engine consults redemptions at finalize time.
 	engine.SetCouponApplier(couponSvc)
@@ -414,6 +428,24 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// (tests, webhook) keep their own signatures.
 	stripeAdapter.SetPaymentMethodAttacher(paymentMethodsSvc)
 
+	// Dashboard (email+password) auth — embedded user + session services
+	// backing the UI login flow. Deliberately separate from API-key auth
+	// (which protects /v1/* for machine traffic); session cookies only
+	// authenticate the /v1/auth and /v1/session surface plus whichever
+	// UI-facing endpoints mount session.Middleware. Password-reset emails
+	// flow through the same outbox/SMTP selector as every other domain email.
+	userSvc := user.NewService(user.NewPostgresStore(db))
+	sessionSvc := session.NewService(session.NewPostgresStore(db))
+	dashauthH := dashauth.NewHandler(
+		userSvc,
+		sessionSvc,
+		tenantNameLookup{svc: tenantSvc},
+		passwordResetEmail,
+		strings.TrimSpace(os.Getenv("VELOX_DASHBOARD_PASSWORD_RESET_URL")),
+		strings.TrimSpace(os.Getenv("VELOX_DASHBOARD_INVITE_URL")),
+		dashauth.DefaultCookieConfig(),
+	)
+
 	// GDPR data export + deletion — wired into customer handler
 	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, auditLogger)
 	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
@@ -491,6 +523,30 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	bootstrapH := tenant.NewBootstrapHandler(db)
 	r.Mount("/v1/bootstrap", bootstrapH.Routes())
 
+	// Dashboard auth — email+password login, logout, password reset. Public
+	// because the caller is pre-session; rate-limited to slow credential
+	// stuffing. /v1/session is the session-scoped counterpart (whoami, mode
+	// toggle) and requires the cookie issued by /v1/auth/login.
+	r.Route("/v1/auth", func(r chi.Router) {
+		r.Use(rateLimiter.Middleware())
+		r.Mount("/", dashauthH.Routes())
+	})
+	r.Route("/v1/session", func(r chi.Router) {
+		r.Use(session.Middleware(sessionSvc))
+		r.Use(rateLimiter.Middleware())
+		r.Mount("/", dashauthH.SessionRoutes())
+	})
+
+	// Members management — session-scoped. Lists active members + pending
+	// invitations, issues new invitations (dashauth dispatches the email),
+	// and handles revoke + remove with last-owner / self-removal guards.
+	membersH := dashmembers.NewHandler(userSvc, dashauthH)
+	r.Route("/v1/members", func(r chi.Router) {
+		r.Use(session.Middleware(sessionSvc))
+		r.Use(rateLimiter.Middleware())
+		r.Mount("/", membersH.Routes())
+	})
+
 	// Stripe webhooks — no API key auth (verified by signature)
 	r.Mount("/v1/webhooks", webhookH.Routes())
 
@@ -517,9 +573,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Mount("/", tenantH.Routes())
 	})
 
-	// Tenant-scoped routes
+	// Tenant-scoped routes — accept either dashboard session cookie OR
+	// Authorization: Bearer API key. Session takes precedence when the cookie
+	// is present; external integrations (no cookie) fall through to API-key
+	// auth. Both paths set the same ctx keys so handlers don't branch.
 	r.Route("/v1", func(r chi.Router) {
-		r.Use(auth.Middleware(authSvc))
+		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
 		r.Use(rateLimiter.Middleware()) // After auth so tenant ID is available for bucket key
 		r.Use(mw.Idempotency(db))
 		r.Use(mw.AuditLog(db, settingsStore))
@@ -650,4 +709,20 @@ func requestLogger(next http.Handler) http.Handler {
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+// tenantNameLookup adapts tenant.Service to dashauth.TenantLookup. Kept
+// local to router.go because it's pure composition plumbing — dashauth
+// only needs the display name, not the full tenant surface, so the
+// narrow interface lives in dashauth and the adapter lives here.
+type tenantNameLookup struct {
+	svc *tenant.Service
+}
+
+func (t tenantNameLookup) Name(ctx context.Context, tenantID string) (string, error) {
+	v, err := t.svc.Get(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	return v.Name, nil
 }

@@ -29,7 +29,8 @@ const invCols = `id, tenant_id, customer_id, subscription_id, invoice_number, st
 	COALESCE(stripe_payment_intent_id,''), COALESCE(last_payment_error,''),
 	payment_overdue, auto_charge_pending, net_payment_term_days, COALESCE(memo,''), COALESCE(footer,''),
 	metadata, created_at, updated_at, source_plan_changed_at, COALESCE(source_subscription_item_id,''),
-	COALESCE(source_change_type,'')`
+	COALESCE(source_change_type,''),
+	tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -52,8 +53,9 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 			total_amount_cents, amount_due_cents, amount_paid_cents, credits_applied_cents,
 			billing_period_start, billing_period_end, issued_at, due_at,
 			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
-			source_plan_changed_at, source_subscription_item_id, source_change_type)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30)
+			source_plan_changed_at, source_subscription_item_id, source_change_type,
+			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30,$31,$32,$33,$34)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, inv.SubscriptionID, inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -67,6 +69,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 		postgres.NullableTime(inv.SourcePlanChangedAt),
 		postgres.NullableString(inv.SourceSubscriptionItemID),
 		postgres.NullableString(string(inv.SourceChangeType)),
+		inv.TaxProvider, inv.TaxCalculationID, inv.TaxReverseCharge, inv.TaxExemptReason,
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
@@ -386,24 +389,26 @@ func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, ite
 		INSERT INTO invoice_line_items (id, invoice_id, tenant_id, line_type, meter_id,
 			description, quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
 			total_amount_cents, currency, pricing_mode, rating_rule_version_id,
-			billing_period_start, billing_period_end, metadata, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+			billing_period_start, billing_period_end, metadata, created_at,
+			tax_jurisdiction, tax_code)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		RETURNING id, invoice_id, tenant_id, line_type, COALESCE(meter_id,''), description,
 			quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
 			COALESCE(rating_rule_version_id,''), billing_period_start, billing_period_end,
-			metadata, created_at
+			metadata, created_at, tax_jurisdiction, tax_code
 	`, id, item.InvoiceID, tenantID, item.LineType, postgres.NullableString(item.MeterID),
 		item.Description, item.Quantity, item.UnitAmountCents, item.AmountCents,
 		item.TaxRateBP, item.TaxAmountCents, item.TotalAmountCents, item.Currency,
 		postgres.NullableString(item.PricingMode), postgres.NullableString(item.RatingRuleVersionID),
 		postgres.NullableTime(item.BillingPeriodStart), postgres.NullableTime(item.BillingPeriodEnd),
-		metaJSON, now,
+		metaJSON, now, item.TaxJurisdiction, item.TaxCode,
 	).Scan(&item.ID, &item.InvoiceID, &item.TenantID, &item.LineType, &item.MeterID,
 		&item.Description, &item.Quantity, &item.UnitAmountCents, &item.AmountCents,
 		&item.TaxRateBP, &item.TaxAmountCents, &item.TotalAmountCents, &item.Currency,
 		&item.PricingMode, &item.RatingRuleVersionID,
-		&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt)
+		&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt,
+		&item.TaxJurisdiction, &item.TaxCode)
 
 	if err != nil {
 		return domain.InvoiceLineItem{}, err
@@ -427,7 +432,7 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 			quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
 			COALESCE(rating_rule_version_id,''), billing_period_start, billing_period_end,
-			metadata, created_at
+			metadata, created_at, tax_jurisdiction, tax_code
 		FROM invoice_line_items WHERE invoice_id = $1
 		ORDER BY created_at ASC
 	`, invoiceID)
@@ -444,7 +449,8 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 			&item.MeterID, &item.Description, &item.Quantity, &item.UnitAmountCents,
 			&item.AmountCents, &item.TaxRateBP, &item.TaxAmountCents, &item.TotalAmountCents,
 			&item.Currency, &item.PricingMode, &item.RatingRuleVersionID,
-			&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt); err != nil {
+			&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt,
+			&item.TaxJurisdiction, &item.TaxCode); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(metaJSON, &item.Metadata)
@@ -534,24 +540,26 @@ func (s *PostgresStore) AddLineItemAtomic(
 		INSERT INTO invoice_line_items (id, invoice_id, tenant_id, line_type, meter_id,
 			description, quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
 			total_amount_cents, currency, pricing_mode, rating_rule_version_id,
-			billing_period_start, billing_period_end, metadata, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+			billing_period_start, billing_period_end, metadata, created_at,
+			tax_jurisdiction, tax_code)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		RETURNING id, invoice_id, tenant_id, line_type, COALESCE(meter_id,''), description,
 			quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
 			COALESCE(rating_rule_version_id,''), billing_period_start, billing_period_end,
-			metadata, created_at
+			metadata, created_at, tax_jurisdiction, tax_code
 	`, itemID, invoiceID, tenantID, item.LineType, postgres.NullableString(item.MeterID),
 		item.Description, item.Quantity, item.UnitAmountCents, item.AmountCents,
 		item.TaxRateBP, item.TaxAmountCents, item.TotalAmountCents, currency,
 		postgres.NullableString(item.PricingMode), postgres.NullableString(item.RatingRuleVersionID),
 		postgres.NullableTime(item.BillingPeriodStart), postgres.NullableTime(item.BillingPeriodEnd),
-		metaJSON, now,
+		metaJSON, now, item.TaxJurisdiction, item.TaxCode,
 	).Scan(&item.ID, &item.InvoiceID, &item.TenantID, &item.LineType, &item.MeterID,
 		&item.Description, &item.Quantity, &item.UnitAmountCents, &item.AmountCents,
 		&item.TaxRateBP, &item.TaxAmountCents, &item.TotalAmountCents, &item.Currency,
 		&item.PricingMode, &item.RatingRuleVersionID,
-		&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt)
+		&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt,
+		&item.TaxJurisdiction, &item.TaxCode)
 	if err != nil {
 		return domain.InvoiceLineItem{}, domain.Invoice{}, err
 	}
@@ -612,8 +620,9 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 			total_amount_cents, amount_due_cents, amount_paid_cents, credits_applied_cents,
 			billing_period_start, billing_period_end, issued_at, due_at,
 			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
-			source_plan_changed_at, source_subscription_item_id, source_change_type)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31)
+			source_plan_changed_at, source_subscription_item_id, source_change_type,
+			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, inv.SubscriptionID, inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -628,6 +637,7 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 		postgres.NullableTime(inv.SourcePlanChangedAt),
 		postgres.NullableString(inv.SourceSubscriptionItemID),
 		postgres.NullableString(string(inv.SourceChangeType)),
+		inv.TaxProvider, inv.TaxCalculationID, inv.TaxReverseCharge, inv.TaxExemptReason,
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
@@ -650,15 +660,16 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 			INSERT INTO invoice_line_items (id, invoice_id, tenant_id, line_type, meter_id,
 				description, quantity, unit_amount_cents, amount_cents, tax_rate_bp,
 				tax_amount_cents, total_amount_cents, currency, pricing_mode,
-				rating_rule_version_id, billing_period_start, billing_period_end, metadata, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+				rating_rule_version_id, billing_period_start, billing_period_end, metadata, created_at,
+				tax_jurisdiction, tax_code)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		`, itemID, inv.ID, tenantID, items[i].LineType, postgres.NullableString(items[i].MeterID),
 			items[i].Description, items[i].Quantity, items[i].UnitAmountCents, items[i].AmountCents,
 			items[i].TaxRateBP, items[i].TaxAmountCents, items[i].TotalAmountCents,
 			items[i].Currency, postgres.NullableString(items[i].PricingMode),
 			postgres.NullableString(items[i].RatingRuleVersionID),
 			postgres.NullableTime(items[i].BillingPeriodStart), postgres.NullableTime(items[i].BillingPeriodEnd),
-			itemMetaJSON, now,
+			itemMetaJSON, now, items[i].TaxJurisdiction, items[i].TaxCode,
 		)
 		if err != nil {
 			return domain.Invoice{}, fmt.Errorf("create line item %d: %w", i, err)
@@ -780,6 +791,7 @@ func scanInvDest(inv *domain.Invoice) []any {
 		&inv.PaymentOverdue, &inv.AutoChargePending, &inv.NetPaymentTermDays, &inv.Memo, &inv.Footer,
 		&metaJSON, &inv.CreatedAt, &inv.UpdatedAt, &inv.SourcePlanChangedAt,
 		&inv.SourceSubscriptionItemID, (*string)(&inv.SourceChangeType),
+		&inv.TaxProvider, &inv.TaxCalculationID, &inv.TaxReverseCharge, &inv.TaxExemptReason,
 	}
 }
 

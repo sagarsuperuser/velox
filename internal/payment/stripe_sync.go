@@ -7,6 +7,7 @@ import (
 	"github.com/stripe/stripe-go/v82"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
 // StripeBillingSync syncs billing profile data to Stripe customer objects.
@@ -53,6 +54,18 @@ func (s *StripeBillingSync) SyncBillingProfile(ctx context.Context, stripeCustom
 			PostalCode: stripe.String(bp.PostalCode),
 			Country:    stripe.String(bp.Country),
 		}
+	}
+
+	// Tax exempt status — Stripe's customer object accepts {none, exempt,
+	// reverse}. Mirror our CustomerTaxStatus so Stripe Tax calculations
+	// honor the tenant's classification when the customer is referenced.
+	switch bp.TaxStatus {
+	case tax.StatusExempt:
+		params.TaxExempt = stripe.String(string(stripe.CustomerTaxExemptExempt))
+	case tax.StatusReverseCharge:
+		params.TaxExempt = stripe.String(string(stripe.CustomerTaxExemptReverse))
+	case tax.StatusStandard, "":
+		params.TaxExempt = stripe.String(string(stripe.CustomerTaxExemptNone))
 	}
 
 	_, err := sc.V1Customers.Update(ctx, stripeCustomerID, params)

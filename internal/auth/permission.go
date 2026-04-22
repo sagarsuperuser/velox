@@ -41,6 +41,7 @@ const (
 	KeyTypePlatform    KeyType = "platform"    // vlx_platform_ — tenant management
 	KeyTypeSecret      KeyType = "secret"      // vlx_secret_   — full tenant access
 	KeyTypePublishable KeyType = "publishable" // vlx_pub_      — restricted tenant access
+	KeyTypeSession     KeyType = "session"     // dashboard cookie session — role-scoped access
 )
 
 // TypePrefix returns the type-only prefix (e.g. "vlx_secret_"). Used when
@@ -101,6 +102,27 @@ var keyPermissions = map[KeyType]map[Permission]bool{
 		PermUsageRead:        true,
 		PermSubscriptionRead: true,
 		PermInvoiceRead:      true,
+	},
+	// Dashboard sessions inherit the full secret-key permission set today —
+	// every logged-in user is an owner per the bootstrap flow, and there are
+	// no non-owner roles yet. When invites + role-scoped permissions land,
+	// this map gets replaced by a per-role lookup driven by user_tenants.role.
+	KeyTypeSession: {
+		PermCustomerRead:      true,
+		PermCustomerWrite:     true,
+		PermPricingRead:       true,
+		PermPricingWrite:      true,
+		PermSubscriptionRead:  true,
+		PermSubscriptionWrite: true,
+		PermUsageRead:         true,
+		PermUsageWrite:        true,
+		PermInvoiceRead:       true,
+		PermInvoiceWrite:      true,
+		PermDunningRead:       true,
+		PermDunningWrite:      true,
+		PermAPIKeyRead:        true,
+		PermAPIKeyWrite:       true,
+		PermTestClockWrite:    true,
 	},
 }
 

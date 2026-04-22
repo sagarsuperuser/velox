@@ -118,6 +118,48 @@ Please update your payment method to avoid service interruption.
 	return s.send(tenantID, to, subject, body, "", nil)
 }
 
+// SendPasswordReset sends a dashboard password-reset link. The URL embeds
+// the raw reset token; the body calls out the one-hour lifetime so a late
+// click fails obviously. Body intentionally does not reveal that someone
+// requested a reset — a preview frame from an email scanner should not
+// leak "this account is under password-reset attempt".
+func (s *Sender) SendPasswordReset(tenantID, to, displayName, resetURL string) error {
+	subject := "Reset your Velox password"
+	body := fmt.Sprintf(`Hi %s,
+
+We received a request to reset the password on your Velox account. Use the link below within the next hour to choose a new one:
+
+%s
+
+If you didn't request this, you can safely ignore this email — your current password keeps working, and nobody can sign in without the link.
+
+— Velox
+`, displayName, resetURL)
+
+	return s.send(tenantID, to, subject, body, "", nil)
+}
+
+// SendMemberInvite sends a dashboard team-invite link. The URL carries the
+// raw invite token. Body states the inviter and tenant name so the
+// recipient can confirm the context; 72h lifetime is mentioned so a late
+// click fails obviously. No "someone invited you for reason X" copy — the
+// content is already visible from the preview page behind the link.
+func (s *Sender) SendMemberInvite(tenantID, to, inviterEmail, tenantName, acceptURL string) error {
+	subject := fmt.Sprintf("You've been invited to %s on Velox", tenantName)
+	body := fmt.Sprintf(`Hi,
+
+%s invited you to join %s on Velox. Click the link below within the next 72 hours to set up your account:
+
+%s
+
+If you weren't expecting this invitation, you can safely ignore this email.
+
+— Velox
+`, inviterEmail, tenantName, acceptURL)
+
+	return s.send(tenantID, to, subject, body, "", nil)
+}
+
 // SendPortalMagicLink sends a one-time-use customer-portal login link. The
 // URL already embeds the raw magic token; the email body intentionally
 // keeps the lifetime visible ("expires in 15 minutes") so a customer who
