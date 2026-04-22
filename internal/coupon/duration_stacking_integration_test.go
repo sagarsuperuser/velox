@@ -101,7 +101,7 @@ func TestCoupon_DurationAndStacking_E2E(t *testing.T) {
 
 	// Cycles 1..3: both coupons still eligible, both stackable → combine.
 	for cycle := 1; cycle <= 3; cycle++ {
-		got, err := svc.ApplyToInvoice(ctx, tenant, subStack, []string{"plan_x"}, 10000)
+		got, err := svc.ApplyToInvoice(ctx, tenant, subStack, "", []string{"plan_x"}, 10000)
 		if err != nil {
 			t.Fatalf("cycle %d ApplyToInvoice: %v", cycle, err)
 		}
@@ -138,7 +138,7 @@ func TestCoupon_DurationAndStacking_E2E(t *testing.T) {
 	}
 
 	// Cycle 4: repeating is exhausted; only the $5 forever applies.
-	got, err := svc.ApplyToInvoice(ctx, tenant, subStack, []string{"plan_x"}, 10000)
+	got, err := svc.ApplyToInvoice(ctx, tenant, subStack, "", []string{"plan_x"}, 10000)
 	if err != nil {
 		t.Fatalf("cycle 4 ApplyToInvoice: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestCoupon_DurationAndStacking_E2E(t *testing.T) {
 		CouponID: sfCpn.ID, CustomerID: "cust_mixed", SubscriptionID: subMixed,
 	})
 
-	got, err = svc.ApplyToInvoice(ctx, tenant, subMixed, []string{"plan_y"}, 10000)
+	got, err = svc.ApplyToInvoice(ctx, tenant, subMixed, "", []string{"plan_y"}, 10000)
 	if err != nil {
 		t.Fatalf("mixed ApplyToInvoice: %v", err)
 	}

@@ -3,6 +3,7 @@ package coupon
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"regexp"
 	"slices"
@@ -142,6 +143,12 @@ type RedeemInput struct {
 	InvoiceID      string `json:"invoice_id,omitempty"`
 	PlanID         string `json:"plan_id,omitempty"`
 	SubtotalCents  int64  `json:"subtotal_cents"`
+	// Currency is the ISO-4217 code of the target invoice/subscription.
+	// Optional; when provided, a fixed_amount coupon with a different
+	// currency is rejected here (front-loads the error to redemption time
+	// rather than letting it surface silently at invoice time). Ignored for
+	// percentage coupons since they are currency-agnostic.
+	Currency string `json:"currency,omitempty"`
 }
 
 func (s *Service) Redeem(ctx context.Context, tenantID string, input RedeemInput) (domain.CouponRedemption, error) {
@@ -175,6 +182,14 @@ func (s *Service) Redeem(ctx context.Context, tenantID string, input RedeemInput
 
 	if len(cpn.PlanIDs) > 0 && input.PlanID != "" && !slices.Contains(cpn.PlanIDs, input.PlanID) {
 		return domain.CouponRedemption{}, errs.Invalid("plan_id", "coupon is not valid for this plan")
+	}
+
+	if cpn.Type == domain.CouponTypeFixedAmount && input.Currency != "" {
+		if !strings.EqualFold(cpn.Currency, input.Currency) {
+			return domain.CouponRedemption{}, errs.Invalid("currency",
+				fmt.Sprintf("coupon currency %s does not match target currency %s",
+					strings.ToUpper(cpn.Currency), strings.ToUpper(input.Currency)))
+		}
 	}
 
 	discount := CalculateDiscount(cpn, input.SubtotalCents)
@@ -223,7 +238,13 @@ func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string
 // matches Stripe's model for multi-item subscriptions where a coupon for
 // "Plan A" discounts the invoice so long as Plan A is present, regardless
 // of whatever other plans share the subscription.
-func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error) {
+//
+// invoiceCurrency is the currency the invoice will settle in. Fixed-amount
+// coupons whose stored currency differs are skipped (with a warning) rather
+// than applied — a USD-denominated amount_off would otherwise be silently
+// applied to an EUR invoice as if the cents were interchangeable. Percentage
+// coupons are currency-agnostic and pass through regardless.
+func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error) {
 	if subscriptionID == "" || subtotalCents <= 0 {
 		return domain.CouponDiscountResult{}, nil
 	}
@@ -264,6 +285,15 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID s
 			continue
 		}
 		if !durationHasPeriodLeft(cpn, r) {
+			continue
+		}
+		if cpn.Type == domain.CouponTypeFixedAmount && invoiceCurrency != "" &&
+			!strings.EqualFold(cpn.Currency, invoiceCurrency) {
+			slog.Warn("coupon: currency mismatch — skipping fixed-amount coupon",
+				"coupon_id", cpn.ID,
+				"coupon_currency", cpn.Currency,
+				"invoice_currency", invoiceCurrency,
+				"subscription_id", subscriptionID)
 			continue
 		}
 		pool = append(pool, eligible{coupon: cpn, redemption: r})
