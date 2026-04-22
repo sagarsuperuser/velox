@@ -30,7 +30,8 @@ const invCols = `id, tenant_id, customer_id, subscription_id, invoice_number, st
 	payment_overdue, auto_charge_pending, net_payment_term_days, COALESCE(memo,''), COALESCE(footer,''),
 	metadata, created_at, updated_at, source_plan_changed_at, COALESCE(source_subscription_item_id,''),
 	COALESCE(source_change_type,''),
-	tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
+	tax_provider, tax_calculation_id, COALESCE(tax_transaction_id,''),
+	tax_reverse_charge, tax_exempt_reason,
 	tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
@@ -711,6 +712,25 @@ func (s *PostgresStore) SetAutoChargePending(ctx context.Context, tenantID, id s
 	return tx.Commit()
 }
 
+// SetTaxTransaction persists the upstream tax_transaction reference
+// (Stripe: tx_xxx) after a successful CommitTax. Required by the credit
+// note reversal path, which keys the reversal on the original
+// transaction id.
+func (s *PostgresStore) SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	_, err = tx.ExecContext(ctx, `UPDATE invoices SET tax_transaction_id = $1, updated_at = $2 WHERE id = $3`,
+		taxTransactionID, time.Now().UTC(), id)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ListAutoChargePending returns invoices that need auto-charge retry.
 func (s *PostgresStore) ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
@@ -804,7 +824,8 @@ func scanInvDest(inv *domain.Invoice) []any {
 		&inv.PaymentOverdue, &inv.AutoChargePending, &inv.NetPaymentTermDays, &inv.Memo, &inv.Footer,
 		&metaJSON, &inv.CreatedAt, &inv.UpdatedAt, &inv.SourcePlanChangedAt,
 		&inv.SourceSubscriptionItemID, (*string)(&inv.SourceChangeType),
-		&inv.TaxProvider, &inv.TaxCalculationID, &inv.TaxReverseCharge, &inv.TaxExemptReason,
+		&inv.TaxProvider, &inv.TaxCalculationID, &inv.TaxTransactionID,
+		&inv.TaxReverseCharge, &inv.TaxExemptReason,
 		(*string)(&inv.TaxStatus), &inv.TaxDeferredAt, &inv.TaxRetryCount, &inv.TaxPendingReason,
 	}
 }

@@ -124,6 +124,10 @@ func (a *invoiceStoreAdapter) ListAutoChargePending(ctx context.Context, limit i
 	return a.store.ListAutoChargePending(ctx, limit)
 }
 
+func (a *invoiceStoreAdapter) SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error {
+	return a.store.SetTaxTransaction(ctx, tenantID, id, taxTransactionID)
+}
+
 // TestFullBillingCycle_E2E tests the complete flow against real Postgres:
 // tenant → customer → meter → rating rule → plan → subscription → usage → billing engine → invoice
 func TestFullBillingCycle_E2E(t *testing.T) {

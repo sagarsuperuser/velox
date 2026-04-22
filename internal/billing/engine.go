@@ -128,6 +128,10 @@ type InvoiceWriter interface {
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
 	ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error)
+	// SetTaxTransaction persists the upstream provider's tax_transaction
+	// reference (Stripe: tx_xxx) after CommitTax succeeds. Required for
+	// later reversal when a credit note is issued against the invoice.
+	SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error
 }
 
 func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader, paymentSetups PaymentSetupReader, charger InvoiceCharger, clk clock.Clock, profiles ...BillingProfileReader) *Engine {
@@ -174,6 +178,12 @@ func (e *Engine) SetTaxCalculationStore(s TaxCalculationWriter) {
 // finalize Stripe Tax reporting. Returns nil when no resolver is wired
 // or the tenant's settings can't be loaded — the invoice still exists,
 // so the caller should log but not unwind.
+//
+// On success, the returned upstream transaction id (Stripe: tx_xxx) is
+// persisted onto the invoice so a later credit note can issue a tax
+// reversal against it. Persistence failures are logged but non-fatal —
+// the tax is still committed upstream and the calculation row + Stripe
+// dashboard let an operator reconcile manually.
 func (e *Engine) CommitTax(ctx context.Context, tenantID, invoiceID, calculationID string) error {
 	if e.taxProviders == nil || e.settings == nil {
 		return nil
@@ -189,7 +199,18 @@ func (e *Engine) CommitTax(ctx context.Context, tenantID, invoiceID, calculation
 	if provider == nil {
 		return nil
 	}
-	return provider.Commit(ctx, invoiceID, calculationID)
+	txID, err := provider.Commit(ctx, calculationID, invoiceID)
+	if err != nil {
+		return err
+	}
+	if txID != "" {
+		if err := e.invoices.SetTaxTransaction(ctx, tenantID, invoiceID, txID); err != nil {
+			slog.Warn("tax: commit succeeded but persisting tax_transaction_id failed",
+				"error", err, "tenant_id", tenantID, "invoice_id", invoiceID,
+				"tax_transaction_id", txID)
+		}
+	}
+	return nil
 }
 
 // SetCouponApplier sets the coupon service used during billing. When nil, the

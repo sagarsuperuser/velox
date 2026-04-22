@@ -65,6 +65,13 @@ type Invoice struct {
 	// by Commit to create a tax_transaction at finalize time.
 	TaxProvider       string `json:"tax_provider,omitempty"`
 	TaxCalculationID  string `json:"tax_calculation_id,omitempty"`
+	// TaxTransactionID is the committed upstream transaction reference
+	// (Stripe Tax: tx_xxx), captured at finalize time. Durable upstream
+	// record of the tax decision and the handle the provider needs for
+	// a later reversal when a credit note is issued against this invoice.
+	// Empty for providers without durable state (none, manual) and for
+	// invoices whose finalize has not committed tax yet.
+	TaxTransactionID  string `json:"tax_transaction_id,omitempty"`
 	TaxReverseCharge  bool   `json:"tax_reverse_charge,omitempty"`
 	TaxExemptReason   string `json:"tax_exempt_reason,omitempty"`
 	// TaxStatus gates finalize: only invoices with TaxStatus=ok are

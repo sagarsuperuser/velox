@@ -29,8 +29,12 @@ type Provider interface {
 	// Commit finalizes the calculation referenced by calcRef against the
 	// named invoice (for providers that have a durable state — Stripe Tax
 	// records a tax_transaction; none/manual are no-ops). Called from the
-	// invoice finalize path.
-	Commit(ctx context.Context, calcRef, invoiceID string) error
+	// invoice finalize path. The returned transactionID is the upstream
+	// provider's durable reference (e.g. Stripe Tax tx_xxx) which the
+	// caller persists onto the invoice so a later credit note can reverse
+	// the tax against the same transaction. Empty for providers without
+	// durable state.
+	Commit(ctx context.Context, calcRef, invoiceID string) (transactionID string, err error)
 }
 
 // CustomerTaxStatus is re-exported from domain so provider callers can keep
