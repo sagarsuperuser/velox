@@ -44,6 +44,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.C
 			status, reason, subtotal_cents, tax_amount_cents, total_cents,
 			refund_amount_cents, credit_amount_cents, currency,
 			issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
+			COALESCE(tax_transaction_id,''),
 			metadata, created_at, updated_at
 	`, id, tenantID, cn.InvoiceID, cn.CustomerID, cn.CreditNoteNumber,
 		cn.Status, cn.Reason, cn.SubtotalCents, cn.TaxAmountCents, cn.TotalCents,
@@ -53,6 +54,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.C
 		&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
 		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.Currency,
 		&cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
+		&cn.TaxTransactionID,
 		&metaJSON, &cn.CreatedAt, &cn.UpdatedAt)
 	if err != nil {
 		return domain.CreditNote{}, err
@@ -78,12 +80,14 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cr
 			status, reason, subtotal_cents, tax_amount_cents, total_cents,
 			refund_amount_cents, credit_amount_cents, currency,
 			issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
+			COALESCE(tax_transaction_id,''),
 			metadata, created_at, updated_at
 		FROM credit_notes WHERE id = $1
 	`, id).Scan(&cn.ID, &cn.TenantID, &cn.InvoiceID, &cn.CustomerID, &cn.CreditNoteNumber,
 		&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
 		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.Currency,
 		&cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
+		&cn.TaxTransactionID,
 		&metaJSON, &cn.CreatedAt, &cn.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return domain.CreditNote{}, errs.ErrNotFound
@@ -111,6 +115,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 		status, reason, subtotal_cents, tax_amount_cents, total_cents,
 		refund_amount_cents, credit_amount_cents, currency,
 		issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
+		COALESCE(tax_transaction_id,''),
 		metadata, created_at, updated_at
 		FROM credit_notes`
 	args := []any{}
@@ -153,6 +158,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 			&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
 			&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.Currency,
 			&cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
+			&cn.TaxTransactionID,
 			&metaJSON, &cn.CreatedAt, &cn.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -190,6 +196,26 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 		return domain.CreditNote{}, err
 	}
 	return s.Get(ctx, tenantID, id)
+}
+
+// SetTaxTransaction persists the upstream reversal transaction id (Stripe:
+// tx_xxx) returned by the tax provider at Issue time. Idempotency guard:
+// the credit note service checks for a non-empty value before calling
+// Provider.Reverse so a retried Issue does not create duplicate reversals.
+func (s *PostgresStore) SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE credit_notes SET tax_transaction_id = $1, updated_at = $2 WHERE id = $3`,
+		taxTransactionID, time.Now().UTC(), id)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PostgresStore) UpdateRefundStatus(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error {

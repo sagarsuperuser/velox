@@ -12,6 +12,9 @@ type Store interface {
 	List(ctx context.Context, filter ListFilter) ([]domain.CreditNote, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error)
 	UpdateRefundStatus(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error
+	// SetTaxTransaction persists the reversal transaction id returned by
+	// the tax provider at Issue time.
+	SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error
 	CreateLineItem(ctx context.Context, tenantID string, item domain.CreditNoteLineItem) (domain.CreditNoteLineItem, error)
 	ListLineItems(ctx context.Context, tenantID, creditNoteID string) ([]domain.CreditNoteLineItem, error)
 }

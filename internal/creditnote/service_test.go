@@ -81,6 +81,16 @@ func (m *memStore) UpdateRefundStatus(_ context.Context, tenantID, id string, st
 	return nil
 }
 
+func (m *memStore) SetTaxTransaction(_ context.Context, tenantID, id, taxTransactionID string) error {
+	cn, ok := m.notes[id]
+	if !ok || cn.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	cn.TaxTransactionID = taxTransactionID
+	m.notes[id] = cn
+	return nil
+}
+
 func (m *memStore) CreateLineItem(_ context.Context, tenantID string, item domain.CreditNoteLineItem) (domain.CreditNoteLineItem, error) {
 	item.ID = fmt.Sprintf("vlx_cnli_%d", len(m.lineItems[item.CreditNoteID])+1)
 	item.TenantID = tenantID
