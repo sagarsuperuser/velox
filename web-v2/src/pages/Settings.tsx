@@ -729,9 +729,9 @@ export default function SettingsPage() {
                       <p className="text-xs text-blue-800 dark:text-blue-300 flex items-start gap-2">
                         <AlertCircle size={14} className="shrink-0 mt-0.5" />
                         <span>
-                          Stripe Tax calls your Stripe account's Tax API per invoice. Transient errors fall back to the manual rate
-                          so billing never stalls. Stripe Tax must be enabled in your Stripe dashboard; tax registrations control
-                          which jurisdictions collect tax.
+                          Tax is calculated per invoice via Stripe. If a calculation fails, the invoice stays in draft until it
+                          resolves. Requires Stripe Tax enabled in your Stripe dashboard; registrations control which
+                          jurisdictions collect tax.
                         </span>
                       </p>
                     </div>
