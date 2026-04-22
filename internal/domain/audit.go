@@ -49,6 +49,14 @@ type TenantSettings struct {
 	// providers (e.g. 'stripe_tax') will be added once their integrations are
 	// end-to-end verified.
 	TaxProvider string `json:"tax_provider"`
+	// TaxOnFailure controls what the engine does when the configured provider
+	// fails transiently. 'block' (default) defers the invoice to
+	// tax_status=pending and lets a retry worker try again — the safe choice
+	// for jurisdictions where the manual flat rate would be wrong.
+	// 'fallback_manual' preserves the legacy behaviour: silently apply the
+	// tenant-configured manual rate and proceed. Opt-in only; existing
+	// tenants are migrated to fallback_manual to avoid a silent policy flip.
+	TaxOnFailure string `json:"tax_on_failure,omitempty"`
 	// DefaultProductTaxCode is the Stripe product tax code applied when a
 	// plan doesn't carry its own. Defaults to txcd_10103001 (SaaS, business
 	// use) on first save; tenants override when their product mix diverges.

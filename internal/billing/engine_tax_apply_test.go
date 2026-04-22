@@ -258,9 +258,11 @@ func TestApplyTaxToLineItems_ProviderResultMapped(t *testing.T) {
 	}
 }
 
-func TestApplyTaxToLineItems_ProviderErrorZeroesTax(t *testing.T) {
-	// Provider errors → warn and fall through to zero tax. Billing must not
-	// block on a third-party outage.
+func TestApplyTaxToLineItems_ProviderErrorDefersInvoice(t *testing.T) {
+	// Provider errors surface under OnFailureBlock — the engine must defer
+	// the invoice (tax_status=pending) rather than silently charge the
+	// wrong tax. Zero-tax-fallback is the legacy fallback_manual policy
+	// and belongs to a different provider code path.
 	provider := &stubProvider{err: errors.New("stripe down")}
 	e := &Engine{
 		settings:     &taxSettings{provider: "stripe_tax"},
@@ -272,11 +274,20 @@ func TestApplyTaxToLineItems_ProviderErrorZeroesTax(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if r.TaxStatus != domain.InvoiceTaxPending {
+		t.Errorf("tax_status = %q, want pending", r.TaxStatus)
+	}
+	if r.TaxPendingReason == "" {
+		t.Error("tax_pending_reason should capture the provider error")
+	}
+	if r.TaxDeferredAt == nil {
+		t.Error("tax_deferred_at should be stamped when deferred")
+	}
 	if r.TaxAmountCents != 0 {
-		t.Errorf("got tax %d, want 0 on provider error", r.TaxAmountCents)
+		t.Errorf("got tax %d on deferred, want 0", r.TaxAmountCents)
 	}
 	if lineItems[0].TotalAmountCents != 10000 {
-		t.Errorf("line total = %d, want 10000 (falls through cleanly)", lineItems[0].TotalAmountCents)
+		t.Errorf("line total = %d, want 10000 when deferred", lineItems[0].TotalAmountCents)
 	}
 }
 

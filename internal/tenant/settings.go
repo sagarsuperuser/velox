@@ -90,7 +90,7 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 	err = tx.QueryRowContext(ctx, `
 		SELECT tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
 			net_payment_terms, tax_provider, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
-			COALESCE(default_product_tax_code,''),
+			COALESCE(default_product_tax_code,''), tax_on_failure,
 			COALESCE(company_name,''),
 			COALESCE(company_address_line1,''), COALESCE(company_address_line2,''),
 			COALESCE(company_city,''), COALESCE(company_state,''),
@@ -101,7 +101,7 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 		FROM tenant_settings WHERE tenant_id = $1
 	`, tenantID).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
 		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
-		&ts.DefaultProductTaxCode,
+		&ts.DefaultProductTaxCode, &ts.TaxOnFailure,
 		&ts.CompanyName,
 		&ts.CompanyAddressLine1, &ts.CompanyAddressLine2,
 		&ts.CompanyCity, &ts.CompanyState,
@@ -133,13 +133,14 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO tenant_settings (tenant_id, default_currency, timezone, invoice_prefix,
 			net_payment_terms, tax_provider, tax_rate_bp, tax_name, tax_inclusive, default_product_tax_code,
+			tax_on_failure,
 			company_name,
 			company_address_line1, company_address_line2, company_city, company_state,
 			company_postal_code, company_country,
 			company_email, company_phone,
 			logo_url, tax_id, support_url, invoice_footer,
 			audit_fail_closed, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$25)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$26)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			default_currency = EXCLUDED.default_currency, timezone = EXCLUDED.timezone,
 			invoice_prefix = EXCLUDED.invoice_prefix, net_payment_terms = EXCLUDED.net_payment_terms,
@@ -147,6 +148,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			tax_rate_bp = EXCLUDED.tax_rate_bp, tax_name = EXCLUDED.tax_name,
 			tax_inclusive = EXCLUDED.tax_inclusive,
 			default_product_tax_code = EXCLUDED.default_product_tax_code,
+			tax_on_failure = EXCLUDED.tax_on_failure,
 			company_name = EXCLUDED.company_name,
 			company_address_line1 = EXCLUDED.company_address_line1,
 			company_address_line2 = EXCLUDED.company_address_line2,
@@ -161,7 +163,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			updated_at = EXCLUDED.updated_at
 		RETURNING tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
 			net_payment_terms, tax_provider, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
-			COALESCE(default_product_tax_code,''),
+			COALESCE(default_product_tax_code,''), tax_on_failure,
 			COALESCE(company_name,''),
 			COALESCE(company_address_line1,''), COALESCE(company_address_line2,''),
 			COALESCE(company_city,''), COALESCE(company_state,''),
@@ -171,6 +173,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			audit_fail_closed, created_at, updated_at
 	`, ts.TenantID, ts.DefaultCurrency, ts.Timezone, ts.InvoicePrefix,
 		ts.NetPaymentTerms, ts.TaxProvider, ts.TaxRateBP, ts.TaxName, ts.TaxInclusive, ts.DefaultProductTaxCode,
+		ts.TaxOnFailure,
 		postgres.NullableString(ts.CompanyName),
 		postgres.NullableString(ts.CompanyAddressLine1), postgres.NullableString(ts.CompanyAddressLine2),
 		postgres.NullableString(ts.CompanyCity), postgres.NullableString(ts.CompanyState),
@@ -182,7 +185,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 		ts.AuditFailClosed, now,
 	).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
 		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
-		&ts.DefaultProductTaxCode,
+		&ts.DefaultProductTaxCode, &ts.TaxOnFailure,
 		&ts.CompanyName,
 		&ts.CompanyAddressLine1, &ts.CompanyAddressLine2,
 		&ts.CompanyCity, &ts.CompanyState,
@@ -307,6 +310,7 @@ func (h *SettingsHandler) get(w http.ResponseWriter, r *http.Request) {
 			InvoicePrefix:   "VLX",
 			NetPaymentTerms: 30,
 			TaxProvider:     "manual",
+			TaxOnFailure:    "block",
 		})
 		return
 	}
@@ -430,6 +434,14 @@ func validateSettings(ts *domain.TenantSettings) error {
 	case "none", "manual", "stripe_tax":
 	default:
 		return errs.Invalid("tax_provider", "must be 'none', 'manual', or 'stripe_tax'")
+	}
+	if ts.TaxOnFailure == "" {
+		ts.TaxOnFailure = "block"
+	}
+	switch ts.TaxOnFailure {
+	case "block", "fallback_manual":
+	default:
+		return errs.Invalid("tax_on_failure", "must be 'block' or 'fallback_manual'")
 	}
 	if ts.TaxRateBP < 0 || ts.TaxRateBP > 10000 {
 		return errs.Invalid("tax_rate_bp", "must be between 0 and 10000 (e.g. 1850 for 18.50%)")
