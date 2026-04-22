@@ -87,7 +87,22 @@ type Request struct {
 	// DefaultTaxCode is the tenant's fallback product tax code used when a
 	// line's TaxCode is empty (e.g. "txcd_10103001" for SaaS business).
 	DefaultTaxCode string
+
+	// OnFailure selects the provider's behaviour when a transient error
+	// prevents a real calculation (Stripe API outage, missing credentials,
+	// missing customer country). "block" makes the provider return the error
+	// unchanged so the engine can defer the invoice for later retry.
+	// "fallback_manual" (or empty, for backwards compatibility) keeps the
+	// legacy behaviour of silently substituting the configured manual rate.
+	OnFailure string
 }
+
+// Failure-policy values copied onto Request.OnFailure. Kept as constants so
+// callers don't misspell the string literals.
+const (
+	OnFailureBlock          = "block"
+	OnFailureFallbackManual = "fallback_manual"
+)
 
 // RequestLine is one line item passed to the provider for taxation.
 type RequestLine struct {

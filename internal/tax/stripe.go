@@ -15,26 +15,33 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
-// stripeTaxFallbacks counts every time StripeTaxProvider falls through to its
-// ManualProvider fallback, labeled by reason. Operators alert on this to
-// catch Stripe Tax becoming silently unusable (unsupported country, API
-// outage, missing keys) so invoices don't drift to the flat manual rate
-// unnoticed.
-var stripeTaxFallbacks *prometheus.CounterVec
+// stripeTaxOutcomes counts non-happy-path outcomes from StripeTaxProvider
+// by outcome class and reason. Operators alert on it to catch Stripe Tax
+// becoming silently unusable — either the legacy fallback path ("fallback")
+// or the new defer path ("deferred") triggered by the block-and-retry
+// policy on the tenant.
+//
+// Labels:
+//   outcome ∈ {fallback, deferred}
+//   reason  ∈ {no_country, no_client_for_mode, api_error}
+//
+// Happy-path calculations (successful Stripe Tax calls, exempt, reverse-charge)
+// are not counted here — this vector is intentionally a failure-mode signal.
+var stripeTaxOutcomes *prometheus.CounterVec
 
 func init() {
 	c := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "velox_tax_fallback_total",
-		Help: "Count of Stripe tax provider fallbacks to manual, by reason.",
-	}, []string{"reason"})
+		Name: "velox_tax_outcome_total",
+		Help: "Count of non-happy Stripe tax outcomes, by outcome (fallback|deferred) and reason.",
+	}, []string{"outcome", "reason"})
 	if err := prometheus.DefaultRegisterer.Register(c); err != nil {
 		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
-			stripeTaxFallbacks = are.ExistingCollector.(*prometheus.CounterVec)
+			stripeTaxOutcomes = are.ExistingCollector.(*prometheus.CounterVec)
 		} else {
 			panic(err)
 		}
 	} else {
-		stripeTaxFallbacks = c
+		stripeTaxOutcomes = c
 	}
 }
 
@@ -95,18 +102,14 @@ func (p *StripeTaxProvider) Calculate(ctx context.Context, req Request) (*Result
 
 	// Stripe Tax needs at minimum a country to resolve jurisdiction.
 	if req.CustomerAddress.Country == "" {
-		slog.Warn("stripe tax: no customer country, falling back to manual")
-		stripeTaxFallbacks.WithLabelValues("no_country").Inc()
-		return p.fallback.Calculate(ctx, req)
+		return p.handleFailure(ctx, req, "no_country",
+			fmt.Errorf("stripe tax: customer has no country on billing profile"))
 	}
 
 	client := p.clientForCtx(ctx)
 	if client == nil {
-		slog.Warn("stripe tax: no client configured for mode, falling back to manual",
-			"livemode", postgres.Livemode(ctx),
-		)
-		stripeTaxFallbacks.WithLabelValues("no_client_for_mode").Inc()
-		return p.fallback.Calculate(ctx, req)
+		return p.handleFailure(ctx, req, "no_client_for_mode",
+			fmt.Errorf("stripe tax: no client configured for livemode=%v", postgres.Livemode(ctx)))
 	}
 
 	params := p.buildParams(req)
@@ -118,11 +121,7 @@ func (p *StripeTaxProvider) Calculate(ctx context.Context, req Request) (*Result
 
 	calc, err := client.V1TaxCalculations.Create(ctx, params)
 	if err != nil {
-		slog.Warn("stripe tax API error, falling back to manual",
-			"error", err,
-		)
-		stripeTaxFallbacks.WithLabelValues("api_error").Inc()
-		return p.fallback.Calculate(ctx, req)
+		return p.handleFailure(ctx, req, "api_error", fmt.Errorf("stripe tax: %w", err))
 	}
 
 	result, err := p.mapResult(calc, req)
@@ -132,6 +131,29 @@ func (p *StripeTaxProvider) Calculate(ctx context.Context, req Request) (*Result
 	result.RequestRaw = reqRaw
 	result.ResponseRaw, _ = json.Marshal(calc)
 	return result, nil
+}
+
+// handleFailure applies the tenant's configured failure policy. When
+// OnFailure == "block" the error propagates so the engine can defer the
+// invoice to tax_status=pending and schedule a retry. Otherwise (the
+// legacy fallback_manual / empty policy) the internal ManualProvider
+// produces a result transparently — callers opted into availability over
+// jurisdictional accuracy.
+func (p *StripeTaxProvider) handleFailure(ctx context.Context, req Request, reason string, failErr error) (*Result, error) {
+	if req.OnFailure == OnFailureBlock {
+		slog.Warn("stripe tax failed, deferring per block policy",
+			"reason", reason, "error", failErr,
+			"livemode", postgres.Livemode(ctx),
+		)
+		stripeTaxOutcomes.WithLabelValues("deferred", reason).Inc()
+		return nil, failErr
+	}
+	slog.Warn("stripe tax failed, falling back to manual",
+		"reason", reason, "error", failErr,
+		"livemode", postgres.Livemode(ctx),
+	)
+	stripeTaxOutcomes.WithLabelValues("fallback", reason).Inc()
+	return p.fallback.Calculate(ctx, req)
 }
 
 // Commit creates a tax_transaction from an earlier calculation. Called at

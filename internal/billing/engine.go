@@ -245,6 +245,11 @@ func (e *Engine) effectiveNow(ctx context.Context, sub domain.Subscription) time
 //
 // TaxProvider / TaxCalculationID / TaxReverseCharge / TaxExemptReason are
 // the durable audit snapshot stamped onto the invoice header.
+//
+// TaxStatus signals whether the calculation succeeded (ok) or was deferred
+// because the provider failed under a block-on-failure policy (pending).
+// Pending invoices are persisted without tax amounts and are blocked from
+// finalize until a retry worker completes the calculation.
 type TaxApplication struct {
 	TaxAmountCents    int64
 	TaxRateBP         int64
@@ -257,6 +262,20 @@ type TaxApplication struct {
 	TaxCalculationID  string
 	TaxReverseCharge  bool
 	TaxExemptReason   string
+	TaxStatus         domain.InvoiceTaxStatus
+	TaxDeferredAt     *time.Time
+	TaxPendingReason  string
+}
+
+// truncateReason clips a provider error string to a sensible length before
+// stuffing it into invoices.tax_pending_reason. Full provider payloads are
+// persisted to tax_calculations for audit — this column is a human-readable
+// hint for the dashboard banner.
+func truncateReason(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }
 
 // ApplyTaxToLineItems resolves the tenant's configured tax provider, calls
@@ -282,6 +301,7 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 	app := TaxApplication{
 		SubtotalCents: subtotal,
 		DiscountCents: discount,
+		TaxStatus:     domain.InvoiceTaxOK,
 	}
 
 	if e.taxProviders == nil || e.settings == nil {
@@ -317,6 +337,11 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 		}
 	}
 
+	onFailure := ts.TaxOnFailure
+	if onFailure == "" {
+		onFailure = tax.OnFailureBlock
+	}
+
 	req := tax.Request{
 		Currency: currency,
 		CustomerAddress: tax.Address{
@@ -334,6 +359,7 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 		TaxInclusive:         ts.TaxInclusive,
 		DiscountCents:        discount,
 		DefaultTaxCode:       ts.DefaultProductTaxCode,
+		OnFailure:            onFailure,
 		LineItems:            make([]tax.RequestLine, len(lineItems)),
 	}
 	for i, li := range lineItems {
@@ -347,12 +373,33 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 
 	res, err := provider.Calculate(ctx, req)
 	if err != nil {
-		slog.Warn("tax: provider calculation failed, proceeding with zero tax",
+		// Under OnFailureBlock policy the provider surfaces the error so we
+		// can defer the invoice rather than silently charging the wrong tax.
+		// The invoice is persisted with tax_status=pending + zero tax lines;
+		// a background retry worker will re-run calculation and lift the
+		// block when Stripe returns. Finalize is guarded downstream.
+		slog.Warn("tax: provider calculation failed, deferring invoice",
 			"error", err, "tenant_id", tenantID, "provider", provider.Name())
 		for i := range lineItems {
 			lineItems[i].TaxRateBP = 0
 			lineItems[i].TaxAmountCents = 0
 			lineItems[i].TotalAmountCents = lineItems[i].AmountCents
+		}
+		app.TaxStatus = domain.InvoiceTaxPending
+		app.TaxPendingReason = truncateReason(err.Error(), 500)
+		deferredAt := time.Now().UTC()
+		if e.clock != nil {
+			deferredAt = e.clock.Now()
+		}
+		app.TaxDeferredAt = &deferredAt
+		// Persist the failed attempt so operators can see why. Uses a nil
+		// result — the store's RecordFromResult handles that by marking the
+		// provider "none" with the marshaled request as audit material.
+		if e.taxCalcStore != nil {
+			if _, perr := e.taxCalcStore.Record(ctx, tenantID, "", req, nil); perr != nil {
+				slog.Warn("tax: failed to persist deferred tax_calculations row",
+					"error", perr, "tenant_id", tenantID)
+			}
 		}
 		return app, nil
 	}
@@ -819,6 +866,15 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxAmountCents
 	dueAt := now.AddDate(0, 0, netDays)
 
+	// When tax was deferred the invoice must stay in draft: a finalized
+	// invoice implies the amounts (including tax) are authoritative, which
+	// they are not until the retry worker completes the calculation. The
+	// retry worker lifts the block and transitions draft → finalized.
+	invStatus := domain.InvoiceFinalized
+	if taxApp.TaxStatus == domain.InvoiceTaxPending {
+		invStatus = domain.InvoiceDraft
+	}
+
 	// ATOMIC: Create invoice + all line items in a single transaction.
 	// This prevents orphaned invoices with missing line items on partial failure.
 	// The unique index on (tenant_id, subscription_id, billing_period_start, billing_period_end)
@@ -827,7 +883,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		CustomerID:         sub.CustomerID,
 		SubscriptionID:     sub.ID,
 		InvoiceNumber:      invoiceNumber,
-		Status:             domain.InvoiceFinalized,
+		Status:             invStatus,
 		PaymentStatus:      domain.PaymentPending,
 		Currency:           invoiceCurrency,
 		SubtotalCents:      taxApp.SubtotalCents,
@@ -841,6 +897,9 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		TaxCalculationID:   taxApp.TaxCalculationID,
 		TaxReverseCharge:   taxApp.TaxReverseCharge,
 		TaxExemptReason:    taxApp.TaxExemptReason,
+		TaxStatus:          taxApp.TaxStatus,
+		TaxDeferredAt:      taxApp.TaxDeferredAt,
+		TaxPendingReason:   taxApp.TaxPendingReason,
 		TotalAmountCents:   totalWithTax,
 		AmountDueCents:     totalWithTax,
 		BillingPeriodStart: periodStart,

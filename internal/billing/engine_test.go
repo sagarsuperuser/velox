@@ -971,15 +971,13 @@ func TestRunCycle_OneSubFailsOthersContinue(t *testing.T) {
 	}
 }
 
-// TestRunCycle_TaxProviderErrorProducesInvoiceWithZeroTax asserts end-to-end
-// that a tax provider failure during RunCycle does NOT block invoice
-// generation. The invoice is issued with zero tax and a warning is logged;
-// revenue reconciliation is the tenant's responsibility in this scenario
-// (documented in docs/ops/tax-calculation.md).
-func TestRunCycle_TaxProviderErrorProducesInvoiceWithZeroTax(t *testing.T) {
+// TestRunCycle_TaxProviderErrorDefersInvoice asserts end-to-end that a tax
+// provider failure during RunCycle produces a draft invoice with
+// tax_status=pending rather than a finalized invoice with wrong tax.
+// Finalize is guarded downstream; the retry worker is responsible for
+// completing the calculation and transitioning draft → finalized.
+func TestRunCycle_TaxProviderErrorDefersInvoice(t *testing.T) {
 	engine, _, _, _, invoices := setupEngine()
-	// Installed provider always errors — mimics Stripe outage when the
-	// fallback ManualProvider is either absent or also failing.
 	engine.SetTaxProviderResolver(stubResolver(&stubProvider{err: fmt.Errorf("stripe down")}))
 
 	count, runErrs := engine.RunCycle(context.Background(), 50)
@@ -991,10 +989,16 @@ func TestRunCycle_TaxProviderErrorProducesInvoiceWithZeroTax(t *testing.T) {
 	}
 	inv := invoices.invoices[0]
 	if inv.TaxAmountCents != 0 {
-		t.Errorf("got tax %d, want 0 when calculator errors", inv.TaxAmountCents)
+		t.Errorf("got tax %d, want 0 when calculation deferred", inv.TaxAmountCents)
 	}
-	if inv.Status != domain.InvoiceFinalized {
-		t.Errorf("invoice should still finalize, got status %q", inv.Status)
+	if inv.Status != domain.InvoiceDraft {
+		t.Errorf("deferred invoice must stay in draft, got status %q", inv.Status)
+	}
+	if inv.TaxStatus != domain.InvoiceTaxPending {
+		t.Errorf("tax_status = %q, want pending", inv.TaxStatus)
+	}
+	if inv.TaxPendingReason == "" {
+		t.Error("tax_pending_reason should capture the provider error")
 	}
 }
 
