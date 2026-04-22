@@ -2,6 +2,8 @@ package coupon
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"fmt"
 	"log/slog"
 	"math"
@@ -25,6 +27,9 @@ func NewService(store Store) *Service {
 }
 
 type CreateInput struct {
+	// Code is the human-facing coupon code. Leave empty to auto-generate a
+	// random one — the enterprise private-coupon flow typically picks the
+	// auto-generate path so the AE can share an unguessable one-off link.
 	Code            string                `json:"code"`
 	Name            string                `json:"name"`
 	Type            domain.CouponType     `json:"type"`
@@ -37,12 +42,23 @@ type CreateInput struct {
 	Duration        domain.CouponDuration `json:"duration,omitempty"`
 	DurationPeriods *int                  `json:"duration_periods,omitempty"`
 	Stackable       bool                  `json:"stackable"`
+	// CustomerID, when set, marks this as a private coupon redeemable only
+	// by the named customer. Empty (the default) creates a public coupon.
+	CustomerID string `json:"customer_id,omitempty"`
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Coupon, error) {
 	code := strings.TrimSpace(strings.ToUpper(input.Code))
 	if code == "" {
-		return domain.Coupon{}, errs.Required("code")
+		// Auto-generated codes are the expected path for private coupons:
+		// they're unguessable and don't collide with the human-chosen code
+		// space ("LAUNCH20"). Public coupons can still opt into this too
+		// when the operator doesn't care about branding.
+		generated, err := generateCouponCode()
+		if err != nil {
+			return domain.Coupon{}, fmt.Errorf("generate coupon code: %w", err)
+		}
+		code = generated
 	}
 	if !codeRegexp.MatchString(code) {
 		return domain.Coupon{}, errs.Invalid("code", "must be 3-50 alphanumeric characters or dashes")
@@ -120,8 +136,26 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		Duration:        duration,
 		DurationPeriods: input.DurationPeriods,
 		Stackable:       input.Stackable,
+		CustomerID:      strings.TrimSpace(input.CustomerID),
 		Active:          true,
 	})
+}
+
+// generateCouponCode returns a cryptographically-random code in the format
+// CPN-XXXX-XXXX using Crockford-safe base32 (no I/L/O/U) so codes read and
+// type cleanly on the phone. 40 bits of entropy — enough that guessing
+// another tenant's private coupon is computationally infeasible within a
+// rate-limited surface, and short enough to paste into a sales email.
+func generateCouponCode() (string, error) {
+	var b [5]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	// Crockford alphabet keeps the codes human-transcribable. base32.StdEncoding
+	// would include I/O which look like 1/0 and produce support tickets.
+	enc := base32.NewEncoding("0123456789ABCDEFGHJKMNPQRSTVWXYZ").WithPadding(base32.NoPadding)
+	s := enc.EncodeToString(b[:])
+	return "CPN-" + s[:4] + "-" + s[4:], nil
 }
 
 func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Coupon, error) {
@@ -178,6 +212,15 @@ func (s *Service) Redeem(ctx context.Context, tenantID string, input RedeemInput
 
 	if cpn.MaxRedemptions != nil && cpn.TimesRedeemed >= *cpn.MaxRedemptions {
 		return domain.CouponRedemption{}, errs.InvalidState("coupon has reached maximum redemptions")
+	}
+
+	// Private coupon: reject any attempt to redeem against a customer other
+	// than the one the coupon was issued to. The error is intentionally the
+	// same "coupon not found" shape as GetByCode would have returned to
+	// avoid leaking which codes exist but aren't yours — the enterprise
+	// flow assumes private codes are effectively secrets.
+	if cpn.CustomerID != "" && cpn.CustomerID != input.CustomerID {
+		return domain.CouponRedemption{}, errs.Invalid("code", "coupon not found")
 	}
 
 	if len(cpn.PlanIDs) > 0 && input.PlanID != "" && !slices.Contains(cpn.PlanIDs, input.PlanID) {

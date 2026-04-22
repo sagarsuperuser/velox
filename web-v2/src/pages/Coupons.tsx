@@ -55,11 +55,13 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Power, Eye, Copy, Search, Loader2, Ticket } from 'lucide-react'
+import { Plus, Power, Eye, Copy, Search, Loader2, Ticket, Sparkles, Lock } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 
+// Code is optional — the server auto-generates a CPN-XXXX-XXXX code when
+// empty, which is the default path for enterprise private coupons.
 const createCouponSchema = z.object({
-  code: z.string().min(1, 'Code is required'),
+  code: z.string(),
   name: z.string().min(1, 'Name is required'),
   type: z.enum(['percentage', 'fixed_amount']),
   discountValue: z.string().min(1, 'Discount value is required').refine(v => parseFloat(v) >= 0.01, 'Must be at least 0.01'),
@@ -67,6 +69,7 @@ const createCouponSchema = z.object({
   maxRedemptions: z.string(),
   expiresAt: z.string(),
   planIds: z.array(z.string()),
+  customerId: z.string(),
 })
 
 type CreateCouponData = z.infer<typeof createCouponSchema>
@@ -257,6 +260,13 @@ export default function CouponsPage() {
                       <TableCell>
                         <div className="flex items-center gap-1.5">
                           <span className="text-sm font-mono font-medium text-foreground truncate max-w-[140px]" title={c.code}>{c.code}</span>
+                          {c.customer_id && (
+                            <Lock
+                              size={12}
+                              className="text-muted-foreground shrink-0"
+                              aria-label="Private coupon"
+                            />
+                          )}
                           <button
                             onClick={() => { navigator.clipboard.writeText(c.code); toast.success('Code copied') }}
                             className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
@@ -371,15 +381,18 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
   open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void
 }) {
   const [plans, setPlans] = useState<{ id: string; name: string; code: string }[]>([])
+  const [customers, setCustomers] = useState<{ id: string; display_name: string; email?: string }[]>([])
+  const [isPrivate, setIsPrivate] = useState(false)
 
   const form = useForm<CreateCouponData>({
     resolver: zodResolver(createCouponSchema),
-    defaultValues: { code: '', name: '', type: 'percentage', discountValue: '', currency: 'USD', maxRedemptions: '', expiresAt: '', planIds: [] },
+    defaultValues: { code: '', name: '', type: 'percentage', discountValue: '', currency: 'USD', maxRedemptions: '', expiresAt: '', planIds: [], customerId: '' },
   })
 
   useEffect(() => {
     if (open) {
       api.listPlans().then(res => setPlans(res.data || [])).catch(() => {})
+      api.listCustomers().then(res => setCustomers(res.data || [])).catch(() => {})
     }
   }, [open])
 
@@ -389,7 +402,7 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
   const createMutation = useMutation({
     mutationFn: async (data: CreateCouponData) => {
       const payload: Parameters<typeof api.createCoupon>[0] = {
-        code: data.code,
+        code: data.code.trim(),
         name: data.name,
         type: data.type,
         ...(data.type === 'percentage'
@@ -398,11 +411,13 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
         ...(data.maxRedemptions ? { max_redemptions: parseInt(data.maxRedemptions, 10) } : {}),
         ...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
         ...(data.planIds.length > 0 ? { plan_ids: data.planIds } : {}),
+        ...(isPrivate && data.customerId ? { customer_id: data.customerId } : {}),
       }
       return api.createCoupon(payload)
     },
     onSuccess: () => {
       form.reset()
+      setIsPrivate(false)
       onCreated()
     },
     onError: (err) => {
@@ -416,6 +431,7 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
         max_redemptions: 'maxRedemptions',
         expires_at: 'expiresAt',
         plan_ids: 'planIds',
+        customer_id: 'customerId',
       })
     },
   })
@@ -443,15 +459,28 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
               name="code"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Code</FormLabel>
+                  <FormLabel>Code <span className="text-muted-foreground font-normal">(optional)</span></FormLabel>
                   <FormControl>
-                    <Input
-                      placeholder="LAUNCH20"
-                      {...field}
-                      onChange={e => field.onChange(e.target.value.toUpperCase())}
-                    />
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Leave blank to auto-generate"
+                        {...field}
+                        onChange={e => field.onChange(e.target.value.toUpperCase())}
+                      />
+                      {field.value && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => field.onChange('')}
+                          title="Clear — auto-generate a random code on create"
+                        >
+                          <Sparkles size={14} />
+                        </Button>
+                      )}
+                    </div>
                   </FormControl>
-                  <FormDescription>3-50 characters, alphanumeric and dashes</FormDescription>
+                  <FormDescription>Leave blank and we&apos;ll generate an unguessable code (recommended for private coupons)</FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -587,6 +616,56 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
                 <p className="text-xs text-muted-foreground mt-1">Leave all unchecked for no restriction</p>
               </div>
             )}
+
+            {/* Private coupon — enterprise-negotiated single-customer discounts */}
+            <div className="border border-border rounded-lg p-3 bg-muted/30">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <Checkbox
+                  checked={isPrivate}
+                  onCheckedChange={(checked) => {
+                    setIsPrivate(!!checked)
+                    if (!checked) form.setValue('customerId', '')
+                  }}
+                  className="mt-0.5"
+                />
+                <div className="flex-1">
+                  <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                    <Lock size={13} />
+                    Private coupon
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Restrict to a single customer. Only that customer can redeem this code.
+                  </p>
+                </div>
+              </label>
+
+              {isPrivate && (
+                <FormField
+                  control={form.control}
+                  name="customerId"
+                  render={({ field }) => (
+                    <FormItem className="mt-3 ml-7">
+                      <FormLabel>Customer</FormLabel>
+                      <FormControl>
+                        <select
+                          value={field.value}
+                          onChange={field.onChange}
+                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        >
+                          <option value="">Select a customer...</option>
+                          {customers.map(c => (
+                            <option key={c.id} value={c.id}>
+                              {c.display_name}{c.email ? ` — ${c.email}` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+            </div>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

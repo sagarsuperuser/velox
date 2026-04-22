@@ -25,7 +25,8 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 // threaded through four copy-pasted queries.
 const couponColumns = `id, tenant_id, code, name, type, amount_off, percent_off,
 	currency, max_redemptions, times_redeemed, expires_at, plan_ids,
-	duration, duration_periods, stackable, active, created_at`
+	duration, duration_periods, stackable, active,
+	COALESCE(customer_id, ''), created_at`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Coupon) (domain.Coupon, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -49,13 +50,13 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Co
 		INSERT INTO coupons (id, tenant_id, code, name, type, amount_off, percent_off,
 			currency, max_redemptions, times_redeemed, expires_at, plan_ids,
 			duration, duration_periods, stackable,
-			active, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)
+			active, customer_id, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18)
 		RETURNING `+couponColumns,
 		c.ID, tenantID, c.Code, c.Name, c.Type, c.AmountOff, c.PercentOff,
 		c.Currency, c.MaxRedemptions, 0, postgres.NullableTime(c.ExpiresAt),
 		planIDs, c.Duration, c.DurationPeriods, c.Stackable,
-		c.Active, now,
+		c.Active, postgres.NullableString(c.CustomerID), now,
 	).Scan(scanDest(&c)...)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
@@ -317,7 +318,7 @@ func scanDest(c *domain.Coupon) []any {
 		&c.Currency, &c.MaxRedemptions, &c.TimesRedeemed, &c.ExpiresAt,
 		(*postgres.StringArray)(&c.PlanIDs),
 		&c.Duration, &c.DurationPeriods, &c.Stackable,
-		&c.Active, &c.CreatedAt,
+		&c.Active, &c.CustomerID, &c.CreatedAt,
 	}
 }
 
