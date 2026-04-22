@@ -52,7 +52,7 @@ type ProrationCreditGranter interface {
 // item set (any match ⇒ eligible), matching how Stripe treats coupons on
 // multi-item subscriptions.
 type ProrationCouponApplier interface {
-	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
+	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
 	MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
 }
 
@@ -840,7 +840,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		var discountCents int64
 		var appliedRedemptionIDs []string
 		if h.coupons != nil {
-			d, err := h.coupons.ApplyToInvoice(ctx, tenantID, sub.ID, planIDsFromItems(sub.Items), proratedCents)
+			d, err := h.coupons.ApplyToInvoice(ctx, tenantID, sub.ID, effectivePlan.Currency, planIDsFromItems(sub.Items), proratedCents)
 			if err != nil {
 				slog.WarnContext(ctx, "coupon apply failed on proration, proceeding without discount",
 					"error", err, "subscription_id", sub.ID)
