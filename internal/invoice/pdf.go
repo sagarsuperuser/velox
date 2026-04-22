@@ -3,15 +3,13 @@ package invoice
 import (
 	"bytes"
 	"fmt"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/signintech/gopdf"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/pdffonts"
 )
 
 // CompanyInfo holds tenant company details for the PDF header.
@@ -60,12 +58,6 @@ var currencySymbols = map[string]string{
 
 var pdfCurrencySymbol = "$"
 
-// getFontDir returns the absolute path to the fonts directory.
-func getFontDir() string {
-	_, filename, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(filename), "fonts")
-}
-
 func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo BillToInfo, creditNotes []CreditNoteInfo, company ...CompanyInfo) ([]byte, error) {
 	// Set currency symbol
 	if sym, ok := currencySymbols[strings.ToUpper(inv.Currency)]; ok {
@@ -80,21 +72,8 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
 	pdf.AddPage()
 
-	// Load Unicode fonts
-	fontDir := getFontDir()
-	regularFont := filepath.Join(fontDir, "NotoSans-Regular.ttf")
-	boldFont := filepath.Join(fontDir, "NotoSans-Bold.ttf")
-
-	// Check if font files exist
-	if _, err := os.Stat(regularFont); err != nil {
-		return nil, fmt.Errorf("font file not found: %s", regularFont)
-	}
-
-	if err := pdf.AddTTFFont("noto", regularFont); err != nil {
-		return nil, fmt.Errorf("load regular font: %w", err)
-	}
-	if err := pdf.AddTTFFont("noto-bold", boldFont); err != nil {
-		return nil, fmt.Errorf("load bold font: %w", err)
+	if err := pdffonts.RegisterNotoSans(pdf); err != nil {
+		return nil, err
 	}
 
 	// Helper functions

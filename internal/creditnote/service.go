@@ -350,6 +350,20 @@ func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.CreditNo
 	return s.store.Get(ctx, tenantID, id)
 }
 
+// GetWithLineItems fetches a credit note and its line items in one call.
+// Used by the PDF download handler and any UI view that needs both.
+func (s *Service) GetWithLineItems(ctx context.Context, tenantID, id string) (domain.CreditNote, []domain.CreditNoteLineItem, error) {
+	cn, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.CreditNote{}, nil, err
+	}
+	items, err := s.store.ListLineItems(ctx, tenantID, id)
+	if err != nil {
+		return domain.CreditNote{}, nil, err
+	}
+	return cn, items, nil
+}
+
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.CreditNote, error) {
 	return s.store.List(ctx, filter)
 }
