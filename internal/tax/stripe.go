@@ -180,6 +180,47 @@ func (p *StripeTaxProvider) Commit(ctx context.Context, calcRef, invoiceID strin
 	return txn.ID, nil
 }
 
+// Reverse issues a reversal against a previously committed tax
+// transaction. Called from the credit note issue path. The reference is
+// derived from the credit note id so a retried issue does not create
+// duplicate reversals — Stripe enforces reference uniqueness across all
+// transactions in the account.
+func (p *StripeTaxProvider) Reverse(ctx context.Context, req ReversalRequest) (*ReversalResult, error) {
+	if req.OriginalTransactionID == "" {
+		return nil, fmt.Errorf("stripe tax: reverse: original transaction id required")
+	}
+	if req.CreditNoteID == "" {
+		return nil, fmt.Errorf("stripe tax: reverse: credit note id required")
+	}
+	client := p.clientForCtx(ctx)
+	if client == nil {
+		return nil, fmt.Errorf("stripe tax: reverse: no client for context (livemode=%t)",
+			postgres.Livemode(ctx))
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = ReversalModeFull
+	}
+	params := &stripe.TaxTransactionCreateReversalParams{
+		OriginalTransaction: stripe.String(req.OriginalTransactionID),
+		Reference:           stripe.String(req.CreditNoteID),
+		Mode:                stripe.String(string(mode)),
+	}
+	if mode == ReversalModePartial {
+		if req.GrossAmountCents <= 0 {
+			return nil, fmt.Errorf("stripe tax: reverse: partial mode requires positive gross amount")
+		}
+		// Stripe requires the amount in negative smallest-currency units.
+		params.FlatAmount = stripe.Int64(-req.GrossAmountCents)
+	}
+	txn, err := client.V1TaxTransactions.CreateReversal(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("stripe tax: reverse transaction %s for credit note %s: %w",
+			req.OriginalTransactionID, req.CreditNoteID, err)
+	}
+	return &ReversalResult{TransactionID: txn.ID}, nil
+}
+
 func (p *StripeTaxProvider) buildParams(req Request) *stripe.TaxCalculationCreateParams {
 	taxBehavior := "exclusive"
 	if req.TaxInclusive {

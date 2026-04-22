@@ -23,3 +23,10 @@ func (*NoneProvider) Calculate(_ context.Context, req Request) (*Result, error) 
 }
 
 func (*NoneProvider) Commit(_ context.Context, _, _ string) (string, error) { return "", nil }
+
+// Reverse is a no-op — the none provider has no tax liability to reverse.
+// Returns an empty ReversalResult so the credit note flow treats it as
+// "nothing to record" without special-casing provider names.
+func (*NoneProvider) Reverse(_ context.Context, _ ReversalRequest) (*ReversalResult, error) {
+	return &ReversalResult{}, nil
+}

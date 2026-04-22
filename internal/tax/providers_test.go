@@ -49,6 +49,19 @@ func TestNoneProvider(t *testing.T) {
 	if txID != "" {
 		t.Errorf("NoneProvider.Commit should return empty transaction id, got %q", txID)
 	}
+
+	// Reverse must also be a no-op that returns an empty ReversalResult so
+	// the credit note flow can call it without provider-type branching.
+	rev, err := p.Reverse(context.Background(), ReversalRequest{
+		OriginalTransactionID: "tx_xxx", CreditNoteID: "cn_1",
+		Mode: ReversalModeFull,
+	})
+	if err != nil {
+		t.Errorf("Reverse: unexpected error: %v", err)
+	}
+	if rev == nil || rev.TransactionID != "" {
+		t.Errorf("NoneProvider.Reverse should return empty result, got %+v", rev)
+	}
 }
 
 // TestManualProvider_Exclusive covers the default flat-rate exclusive path:
@@ -136,6 +149,25 @@ func TestManualProvider_ZeroRate(t *testing.T) {
 	}
 	if len(res.Breakdowns) != 0 {
 		t.Errorf("Breakdowns = %+v, want empty", res.Breakdowns)
+	}
+}
+
+// TestManualProvider_ReverseIsNoOp: manual providers have no upstream
+// tax_transaction to reverse, so Reverse must return an empty result
+// with no error — the credit note flow should treat that as a no-op
+// without special-casing provider names.
+func TestManualProvider_ReverseIsNoOp(t *testing.T) {
+	p := NewManualProvider(1800, "GST")
+
+	rev, err := p.Reverse(context.Background(), ReversalRequest{
+		OriginalTransactionID: "tx_xxx", CreditNoteID: "cn_1",
+		Mode: ReversalModeFull,
+	})
+	if err != nil {
+		t.Fatalf("Reverse: unexpected error: %v", err)
+	}
+	if rev == nil || rev.TransactionID != "" {
+		t.Errorf("ManualProvider.Reverse should return empty result, got %+v", rev)
 	}
 }
 
