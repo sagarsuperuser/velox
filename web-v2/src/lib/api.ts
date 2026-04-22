@@ -230,7 +230,7 @@ export const api = {
   // Coupons
   listCoupons: () => apiRequest<{ data: Coupon[] }>('GET', '/coupons'),
   getCoupon: (id: string) => apiRequest<Coupon>('GET', `/coupons/${id}`),
-  createCoupon: (data: { code: string; name: string; type: string; amount_off?: number; percent_off?: number; currency?: string; max_redemptions?: number | null; expires_at?: string; plan_ids?: string[] }) =>
+  createCoupon: (data: { code: string; name: string; type: string; amount_off?: number; percent_off?: number; currency?: string; max_redemptions?: number | null; expires_at?: string; plan_ids?: string[]; customer_id?: string }) =>
     apiRequest<Coupon>('POST', '/coupons', data),
   deactivateCoupon: (id: string) => apiRequest<{ status: string }>('POST', `/coupons/${id}/deactivate`),
   redeemCoupon: (data: { code: string; customer_id: string; subtotal_cents: number; subscription_id?: string; invoice_id?: string; plan_id?: string }) =>
@@ -648,6 +648,7 @@ export interface Coupon {
   expires_at?: string
   plan_ids?: string[]
   active: boolean
+  customer_id?: string
   created_at: string
 }
 
