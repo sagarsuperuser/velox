@@ -39,7 +39,11 @@ type Coupon struct {
 	DurationPeriods *int           `json:"duration_periods,omitempty"` // Required when Duration==repeating
 	Stackable       bool           `json:"stackable"`
 	Active          bool           `json:"active"`
-	CreatedAt       time.Time      `json:"created_at"`
+	// CustomerID, when non-empty, scopes the coupon to a single customer.
+	// Enterprise-negotiated private discounts use this so customer A's
+	// one-off terms can't be redeemed by customer B. Empty means public.
+	CustomerID string    `json:"customer_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type CouponRedemption struct {

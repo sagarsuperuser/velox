@@ -324,20 +324,56 @@ func TestCalculateDiscount_UnknownType(t *testing.T) {
 // Create — validation tests
 // ---------------------------------------------------------------------------
 
-func TestCreate_EmptyCodeRejected(t *testing.T) {
+// Empty code now auto-generates (enterprise private-coupon flow) — the
+// returned code must pass the same format regexp that user-supplied codes
+// are validated against, so the two paths are interchangeable downstream.
+func TestCreate_EmptyCodeAutoGenerates(t *testing.T) {
 	svc := NewService(newMockStore())
-	_, err := svc.Create(context.Background(), "t1", CreateInput{
+	cpn, err := svc.Create(context.Background(), "t1", CreateInput{
 		Code: "", Name: "Test", Type: domain.CouponTypePercentage, PercentOff: 10,
 	})
-	assertErrContains(t, err, "code is required")
+	if err != nil {
+		t.Fatalf("empty code should auto-generate, got error: %v", err)
+	}
+	if cpn.Code == "" {
+		t.Fatal("generated code is empty")
+	}
+	if !codeRegexp.MatchString(cpn.Code) {
+		t.Errorf("generated code %q doesn't match coupon code format", cpn.Code)
+	}
 }
 
-func TestCreate_WhitespaceOnlyCodeRejected(t *testing.T) {
+func TestCreate_WhitespaceOnlyCodeAutoGenerates(t *testing.T) {
 	svc := NewService(newMockStore())
-	_, err := svc.Create(context.Background(), "t1", CreateInput{
+	cpn, err := svc.Create(context.Background(), "t1", CreateInput{
 		Code: "   ", Name: "Test", Type: domain.CouponTypePercentage, PercentOff: 10,
 	})
-	assertErrContains(t, err, "code is required")
+	if err != nil {
+		t.Fatalf("whitespace code should auto-generate, got error: %v", err)
+	}
+	if cpn.Code == "" || cpn.Code == "   " {
+		t.Errorf("whitespace should auto-generate, got %q", cpn.Code)
+	}
+}
+
+// generateCouponCode collision-risk sanity: producing many codes should
+// never collide in a reasonable sample. 40 bits of entropy = 2^40 space,
+// so 1000 draws is comfortably below the birthday-collision range.
+func TestGenerateCouponCode_Uniqueness(t *testing.T) {
+	seen := make(map[string]struct{}, 1000)
+	for i := range 1000 {
+		code, err := generateCouponCode()
+		if err != nil {
+			t.Fatalf("generateCouponCode: %v", err)
+		}
+		if _, dup := seen[code]; dup {
+			t.Fatalf("duplicate code generated after %d draws: %s", i, code)
+		}
+		seen[code] = struct{}{}
+		if !codeRegexp.MatchString(code) {
+			t.Errorf("generated code %q rejected by codeRegexp", code)
+		}
+	}
 }
 
 func TestCreate_InvalidCodeFormatRejected(t *testing.T) {
@@ -771,6 +807,69 @@ func TestRedeem_PercentageIgnoresCurrency(t *testing.T) {
 	}
 	if red.DiscountCents != 1000 {
 		t.Errorf("expected discount 1000, got %d", red.DiscountCents)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Redeem — private (customer-scoped) coupon tests
+// ---------------------------------------------------------------------------
+
+// A private coupon (CustomerID set) redeems normally for the named customer.
+func TestRedeem_PrivateCouponAcceptsTargetCustomer(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "ACME-DEAL", Name: "Acme Enterprise", Type: domain.CouponTypePercentage,
+		PercentOff: 30, Active: true, CustomerID: "cust_acme",
+	})
+	svc := NewService(store)
+
+	red, err := svc.Redeem(context.Background(), "t1", RedeemInput{
+		Code: "ACME-DEAL", CustomerID: "cust_acme", SubtotalCents: 10000,
+	})
+	if err != nil {
+		t.Fatalf("target customer should redeem cleanly, got: %v", err)
+	}
+	if red.DiscountCents != 3000 {
+		t.Errorf("expected discount 3000, got %d", red.DiscountCents)
+	}
+}
+
+// The other-customer path is the core of this feature — a private coupon
+// must be unusable by anyone it wasn't issued to. Error shape mirrors
+// "coupon not found" on purpose so the endpoint doesn't leak that a code
+// exists but isn't yours.
+func TestRedeem_PrivateCouponRejectsOtherCustomer(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "ACME-DEAL", Name: "Acme Enterprise", Type: domain.CouponTypePercentage,
+		PercentOff: 30, Active: true, CustomerID: "cust_acme",
+	})
+	svc := NewService(store)
+
+	_, err := svc.Redeem(context.Background(), "t1", RedeemInput{
+		Code: "ACME-DEAL", CustomerID: "cust_other", SubtotalCents: 10000,
+	})
+	assertErrContains(t, err, "coupon not found")
+}
+
+// Regression: CustomerID == "" is the public-coupon case and must not
+// restrict anyone. A stray "private-by-accident" blocker here would
+// silently break every public coupon.
+func TestRedeem_PublicCouponAcceptsAnyCustomer(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "LAUNCH20", Name: "Launch", Type: domain.CouponTypePercentage,
+		PercentOff: 20, Active: true, // CustomerID intentionally empty
+	})
+	svc := NewService(store)
+
+	for _, cust := range []string{"cust_1", "cust_2", "cust_3"} {
+		_, err := svc.Redeem(context.Background(), "t1", RedeemInput{
+			Code: "LAUNCH20", CustomerID: cust, SubtotalCents: 10000,
+		})
+		if err != nil {
+			t.Errorf("public coupon rejected %s: %v", cust, err)
+		}
 	}
 }
 
