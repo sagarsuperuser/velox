@@ -76,6 +76,9 @@ func (s *stubProvider) Calculate(_ context.Context, _ tax.Request) (*tax.Result,
 	return s.result, s.err
 }
 func (*stubProvider) Commit(_ context.Context, _, _ string) (string, error) { return "", nil }
+func (*stubProvider) Reverse(_ context.Context, _ tax.ReversalRequest) (*tax.ReversalResult, error) {
+	return &tax.ReversalResult{}, nil
+}
 
 func stubResolver(p tax.Provider) TaxProviderResolver {
 	return resolverFunc(func(_ context.Context, _ domain.TenantSettings) (tax.Provider, error) {

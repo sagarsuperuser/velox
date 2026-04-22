@@ -35,6 +35,55 @@ type Provider interface {
 	// the tax against the same transaction. Empty for providers without
 	// durable state.
 	Commit(ctx context.Context, calcRef, invoiceID string) (transactionID string, err error)
+
+	// Reverse issues a reversal against a previously committed tax
+	// transaction. Called from the credit note issue path. Providers
+	// without durable upstream state (none, manual) return an empty
+	// ReversalResult with no error so the credit note flow can ignore
+	// the outcome without branching on provider name.
+	Reverse(ctx context.Context, req ReversalRequest) (*ReversalResult, error)
+}
+
+// ReversalMode selects full-vs-partial reversal semantics. Full reverses
+// the entire original transaction and ignores the amount field; partial
+// reverses exactly the supplied gross amount and leaves residual liability
+// on the original transaction equal to (original_total - gross_amount).
+type ReversalMode string
+
+const (
+	ReversalModeFull    ReversalMode = "full"
+	ReversalModePartial ReversalMode = "partial"
+)
+
+// ReversalRequest is the input to Provider.Reverse.
+type ReversalRequest struct {
+	// OriginalTransactionID is the upstream tax_transaction id produced
+	// by the earlier Commit (Stripe: tx_xxx). Required.
+	OriginalTransactionID string
+
+	// CreditNoteID is used to build a unique upstream reference for the
+	// reversal so retries are idempotent. Stripe requires the reference
+	// be globally unique across all tax_transactions in the account.
+	CreditNoteID string
+
+	// InvoiceID is for log/audit context only — the reversal targets the
+	// transaction id above, not the invoice.
+	InvoiceID string
+
+	// Mode chooses full or partial. For full, GrossAmountCents is ignored.
+	Mode ReversalMode
+
+	// GrossAmountCents is the refund total INCLUDING tax, in positive
+	// smallest-currency units. The provider handles sign conversion when
+	// calling upstream. Only meaningful when Mode == ReversalModePartial.
+	GrossAmountCents int64
+}
+
+// ReversalResult is the output of Provider.Reverse. TransactionID is the
+// reversal's upstream id (Stripe: tx_xxx for the negative transaction),
+// empty for providers without durable state.
+type ReversalResult struct {
+	TransactionID string
 }
 
 // CustomerTaxStatus is re-exported from domain so provider callers can keep
