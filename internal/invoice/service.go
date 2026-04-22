@@ -116,6 +116,16 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 	if inv.Status != domain.InvoiceDraft {
 		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf("can only finalize draft invoices, current status: %s", inv.Status))
 	}
+	// Block finalize while tax is unresolved. Sending an invoice with
+	// wrong or missing tax creates compliance exposure; we defer until the
+	// retry worker lifts the block (TaxStatus=ok) or an operator resolves
+	// a failed calculation manually.
+	switch inv.TaxStatus {
+	case domain.InvoiceTaxPending:
+		return domain.Invoice{}, errs.InvalidState("tax calculation pending — retry in progress, finalize blocked")
+	case domain.InvoiceTaxFailed:
+		return domain.Invoice{}, errs.InvalidState("tax calculation failed after retries — operator intervention required")
+	}
 	finalized, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceFinalized)
 	if err != nil {
 		return domain.Invoice{}, err

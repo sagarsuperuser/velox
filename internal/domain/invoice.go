@@ -25,6 +25,23 @@ const (
 	PaymentUnknown InvoicePaymentStatus = "unknown"
 )
 
+// InvoiceTaxStatus tracks whether tax has been successfully calculated for
+// an invoice. The happy path is ok: calculation succeeded (including
+// zero-tax outcomes from none/manual/exempt/reverse-charge). Pending means
+// calculation failed transiently and a retry worker will try again.
+// Failed means retries have been exhausted — operators resolve manually.
+//
+// Invoices in pending or failed are blocked from finalize: sending a wrong
+// tax amount creates audit/compliance exposure, so we defer rather than
+// silently fall back to an incorrect rate.
+type InvoiceTaxStatus string
+
+const (
+	InvoiceTaxOK      InvoiceTaxStatus = "ok"
+	InvoiceTaxPending InvoiceTaxStatus = "pending"
+	InvoiceTaxFailed  InvoiceTaxStatus = "failed"
+)
+
 type Invoice struct {
 	ID                    string               `json:"id"`
 	TenantID              string               `json:"tenant_id,omitempty"`
@@ -50,6 +67,13 @@ type Invoice struct {
 	TaxCalculationID  string `json:"tax_calculation_id,omitempty"`
 	TaxReverseCharge  bool   `json:"tax_reverse_charge,omitempty"`
 	TaxExemptReason   string `json:"tax_exempt_reason,omitempty"`
+	// TaxStatus gates finalize: only invoices with TaxStatus=ok are
+	// finalizable. Pending/failed invoices carry no committed tax yet and
+	// are either awaiting retry or awaiting operator intervention.
+	TaxStatus         InvoiceTaxStatus `json:"tax_status,omitempty"`
+	TaxDeferredAt     *time.Time       `json:"tax_deferred_at,omitempty"`
+	TaxRetryCount     int              `json:"tax_retry_count,omitempty"`
+	TaxPendingReason  string           `json:"tax_pending_reason,omitempty"`
 	TotalAmountCents      int64                `json:"total_amount_cents"`
 	AmountDueCents        int64                `json:"amount_due_cents"`
 	AmountPaidCents       int64                `json:"amount_paid_cents"`
