@@ -159,24 +159,25 @@ func (p *StripeTaxProvider) handleFailure(ctx context.Context, req Request, reas
 // Commit creates a tax_transaction from an earlier calculation. Called at
 // invoice finalize time. Idempotent via the invoice-scoped reference so a
 // retried finalize does not create duplicate transactions.
-func (p *StripeTaxProvider) Commit(ctx context.Context, calcRef, invoiceID string) error {
+func (p *StripeTaxProvider) Commit(ctx context.Context, calcRef, invoiceID string) (string, error) {
 	if calcRef == "" {
-		return nil
+		return "", nil
 	}
 	client := p.clientForCtx(ctx)
 	if client == nil {
 		// No client for mode — the calculation was a fallback result that
 		// has no Stripe calc_id to commit. No-op, consistent with manual.
-		return nil
+		return "", nil
 	}
 	params := &stripe.TaxTransactionCreateFromCalculationParams{
 		Calculation: stripe.String(calcRef),
 		Reference:   stripe.String(invoiceID),
 	}
-	if _, err := client.V1TaxTransactions.CreateFromCalculation(ctx, params); err != nil {
-		return fmt.Errorf("stripe tax: commit calculation %s for invoice %s: %w", calcRef, invoiceID, err)
+	txn, err := client.V1TaxTransactions.CreateFromCalculation(ctx, params)
+	if err != nil {
+		return "", fmt.Errorf("stripe tax: commit calculation %s for invoice %s: %w", calcRef, invoiceID, err)
 	}
-	return nil
+	return txn.ID, nil
 }
 
 func (p *StripeTaxProvider) buildParams(req Request) *stripe.TaxCalculationCreateParams {

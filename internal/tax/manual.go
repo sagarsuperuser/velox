@@ -182,4 +182,4 @@ func (m *ManualProvider) wrap(totalTax int64, lines []ResultLine) *Result {
 	}
 }
 
-func (*ManualProvider) Commit(_ context.Context, _, _ string) error { return nil }
+func (*ManualProvider) Commit(_ context.Context, _, _ string) (string, error) { return "", nil }

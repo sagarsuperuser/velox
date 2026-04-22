@@ -42,8 +42,12 @@ func TestNoneProvider(t *testing.T) {
 			t.Errorf("line %d tax = %d, want 0", i, l.TaxAmountCents)
 		}
 	}
-	if err := p.Commit(context.Background(), "inv_1", "calc_1"); err != nil {
+	txID, err := p.Commit(context.Background(), "calc_1", "inv_1")
+	if err != nil {
 		t.Errorf("Commit: unexpected error: %v", err)
+	}
+	if txID != "" {
+		t.Errorf("NoneProvider.Commit should return empty transaction id, got %q", txID)
 	}
 }
 

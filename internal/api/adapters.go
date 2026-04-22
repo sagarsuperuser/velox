@@ -55,6 +55,10 @@ func (a *invoiceWriterAdapter) ListAutoChargePending(ctx context.Context, limit 
 	return a.store.ListAutoChargePending(ctx, limit)
 }
 
+func (a *invoiceWriterAdapter) SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error {
+	return a.store.SetTaxTransaction(ctx, tenantID, id, taxTransactionID)
+}
+
 // creditGrantAdapter bridges credit.Service → creditnote.CreditGranter.
 type creditGrantAdapter struct {
 	svc *credit.Service
