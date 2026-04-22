@@ -803,6 +803,22 @@ export async function downloadPDF(invoiceId: string, invoiceNumber: string) {
   URL.revokeObjectURL(url)
 }
 
+export async function downloadCreditNotePDF(creditNoteId: string, creditNoteNumber: string) {
+  const res = await fetch(`${API_BASE}/credit-notes/${creditNoteId}/pdf`, {
+    credentials: 'include',
+  })
+  if (!res.ok) {
+    throw new Error(`Failed to download credit note PDF (${res.status})`)
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${creditNoteNumber || creditNoteId}.pdf`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: '$', EUR: '€', GBP: '£', JPY: '¥', CNY: '¥',
   INR: '₹', BRL: 'R$', CAD: 'CA$', AUD: 'A$', CHF: 'CHF ',

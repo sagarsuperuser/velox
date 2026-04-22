@@ -174,7 +174,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	stripeRefunder := payment.NewStripeRefunder(stripeClients)
 	creditNoteSvc := creditnote.NewService(creditNoteStore, invoiceStore, stripeRefunder, &creditGrantAdapter{svc: creditSvc})
 	creditNoteSvc.SetNumberGenerator(settingsStore)
-	creditNoteH := creditnote.NewHandler(creditNoteSvc)
+	creditNoteH := creditnote.NewHandler(creditNoteSvc, creditnote.HandlerDeps{
+		Customers: customerStore,
+		Settings:  settingsStore,
+		Invoices:  invoiceStore,
+	})
 	webhookOutStore := webhook.NewPostgresStore(db)
 	if sharedEnc != nil {
 		webhookOutStore.SetEncryptor(sharedEnc)

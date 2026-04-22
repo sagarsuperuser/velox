@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol } from '@/lib/api'
+import { api, downloadCreditNotePDF, formatCents, formatDate, formatDateTime, getCurrencySymbol } from '@/lib/api'
 import type { CreditNote, Invoice, Customer } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
@@ -405,6 +405,22 @@ export default function CreditNotesPage() {
                                   Void
                                 </Button>
                               </div>
+                            )}
+                            {note.status === 'issued' && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="ml-3"
+                                onClick={async () => {
+                                  try {
+                                    await downloadCreditNotePDF(note.id, note.credit_note_number)
+                                  } catch (err) {
+                                    toast.error(err instanceof Error ? err.message : 'Failed to download PDF')
+                                  }
+                                }}
+                              >
+                                <Download size={14} className="mr-1.5" /> PDF
+                              </Button>
                             )}
                           </div>
                         </TableCell>
