@@ -22,4 +22,4 @@ func (*NoneProvider) Calculate(_ context.Context, req Request) (*Result, error) 
 	return &Result{Provider: "none", Lines: lines}, nil
 }
 
-func (*NoneProvider) Commit(_ context.Context, _, _ string) error { return nil }
+func (*NoneProvider) Commit(_ context.Context, _, _ string) (string, error) { return "", nil }

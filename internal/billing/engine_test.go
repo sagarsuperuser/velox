@@ -286,6 +286,16 @@ func (m *mockInvoices) ListAutoChargePending(_ context.Context, limit int) ([]do
 	return result, nil
 }
 
+func (m *mockInvoices) SetTaxTransaction(_ context.Context, _, id string, taxTransactionID string) error {
+	for i, inv := range m.invoices {
+		if inv.ID == id {
+			m.invoices[i].TaxTransactionID = taxTransactionID
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

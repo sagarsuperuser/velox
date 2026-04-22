@@ -75,7 +75,7 @@ func (*stubProvider) Name() string { return "stub" }
 func (s *stubProvider) Calculate(_ context.Context, _ tax.Request) (*tax.Result, error) {
 	return s.result, s.err
 }
-func (*stubProvider) Commit(_ context.Context, _, _ string) error { return nil }
+func (*stubProvider) Commit(_ context.Context, _, _ string) (string, error) { return "", nil }
 
 func stubResolver(p tax.Provider) TaxProviderResolver {
 	return resolverFunc(func(_ context.Context, _ domain.TenantSettings) (tax.Provider, error) {
