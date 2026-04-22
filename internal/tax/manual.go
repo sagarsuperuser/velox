@@ -183,3 +183,10 @@ func (m *ManualProvider) wrap(totalTax int64, lines []ResultLine) *Result {
 }
 
 func (*ManualProvider) Commit(_ context.Context, _, _ string) (string, error) { return "", nil }
+
+// Reverse is a no-op — manual providers have no upstream tax_transaction
+// to reverse. The credit note flow treats an empty ReversalResult.
+// TransactionID as "nothing to record" and proceeds.
+func (*ManualProvider) Reverse(_ context.Context, _ ReversalRequest) (*ReversalResult, error) {
+	return &ReversalResult{}, nil
+}
