@@ -1,15 +1,18 @@
+import type { CSSProperties } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 
 interface SkeletonProps {
   className?: string
+  style?: CSSProperties
 }
 
 // Shimmer block — used as a primitive by the larger skeletons below.
-export function SkeletonBlock({ className }: SkeletonProps) {
+export function SkeletonBlock({ className, style }: SkeletonProps) {
   return (
     <div
       aria-hidden
+      style={style}
       className={cn(
         'relative overflow-hidden bg-muted/70 rounded',
         'before:absolute before:inset-0 before:-translate-x-full',
@@ -43,7 +46,7 @@ export function ChartCardSkeleton({ height = 280 }: { height?: number }) {
           <SkeletonBlock className="h-4 w-32" />
           <SkeletonBlock className="h-8 w-48" />
         </div>
-        <SkeletonBlock className="w-full" style={{ height } as React.CSSProperties} />
+        <SkeletonBlock className="w-full" style={{ height }} />
       </CardContent>
     </Card>
   )

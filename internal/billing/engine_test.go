@@ -971,16 +971,16 @@ func TestRunCycle_OneSubFailsOthersContinue(t *testing.T) {
 	}
 }
 
-// TestRunCycle_TaxCalculatorErrorProducesInvoiceWithZeroTax asserts end-to-end
-// that a tax calculator failure during RunCycle does NOT block invoice
+// TestRunCycle_TaxProviderErrorProducesInvoiceWithZeroTax asserts end-to-end
+// that a tax provider failure during RunCycle does NOT block invoice
 // generation. The invoice is issued with zero tax and a warning is logged;
 // revenue reconciliation is the tenant's responsibility in this scenario
 // (documented in docs/ops/tax-calculation.md).
-func TestRunCycle_TaxCalculatorErrorProducesInvoiceWithZeroTax(t *testing.T) {
+func TestRunCycle_TaxProviderErrorProducesInvoiceWithZeroTax(t *testing.T) {
 	engine, _, _, _, invoices := setupEngine()
-	// Installed calculator always errors — mimics Stripe outage when the
-	// fallback ManualCalculator is either absent or also failing.
-	engine.SetTaxCalculator(&stubCalculator{err: fmt.Errorf("stripe down")})
+	// Installed provider always errors — mimics Stripe outage when the
+	// fallback ManualProvider is either absent or also failing.
+	engine.SetTaxProviderResolver(stubResolver(&stubProvider{err: fmt.Errorf("stripe down")}))
 
 	count, runErrs := engine.RunCycle(context.Background(), 50)
 	if len(runErrs) > 0 {

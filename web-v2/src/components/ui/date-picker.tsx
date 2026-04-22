@@ -16,16 +16,21 @@ interface DatePickerProps {
 export function DatePicker({ value, onChange, placeholder = 'Pick a date', className, minDate }: DatePickerProps) {
   const [open, setOpen] = React.useState(false)
   const [dropUp, setDropUp] = React.useState(false)
+  const [alignRight, setAlignRight] = React.useState(false)
   const ref = React.useRef<HTMLDivElement>(null)
 
   const selectedDate = value ? new Date(value + 'T00:00:00') : undefined
 
-  // Determine if calendar should open upward
+  // Determine if calendar should open upward and/or right-align.
+  // Popover is ~300px wide; right-align when the trigger is close enough to
+  // the viewport's right edge that a left-anchored popover would clip.
   React.useEffect(() => {
     if (!open || !ref.current) return
     const rect = ref.current.getBoundingClientRect()
     const spaceBelow = window.innerHeight - rect.bottom
+    const spaceRight = window.innerWidth - rect.left
     setDropUp(spaceBelow < 380)
+    setAlignRight(spaceRight < 300)
   }, [open])
 
   // Close on outside click
@@ -82,7 +87,8 @@ export function DatePicker({ value, onChange, placeholder = 'Pick a date', class
       {open && (
         <div className={cn(
           'absolute z-50 rounded-lg border border-border bg-popover p-3 shadow-lg animate-in fade-in-0 zoom-in-95',
-          dropUp ? 'bottom-full mb-1' : 'top-full mt-1'
+          dropUp ? 'bottom-full mb-1' : 'top-full mt-1',
+          alignRight ? 'right-0' : 'left-0'
         )}>
           <DayPicker
             mode="single"

@@ -3,6 +3,7 @@ package invoice
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -17,10 +18,21 @@ type InvoiceNumberer interface {
 	NextInvoiceNumber(ctx context.Context, tenantID string) (string, error)
 }
 
+// TaxCommitter finalizes an upstream tax calculation into a tax_transaction
+// (Stripe Tax) at invoice finalize time. Optional: when nil, finalize proceeds
+// without a tax commit — fine for manual/none providers or when the invoice
+// has no CalculationID. Failures here do NOT block finalize; they only get
+// logged, because invoice finalize must remain idempotent and a transient
+// Stripe error shouldn't leave the invoice stuck in draft.
+type TaxCommitter interface {
+	CommitTax(ctx context.Context, tenantID, invoiceID, calculationID string) error
+}
+
 type Service struct {
-	store    Store
-	clock    clock.Clock
-	numberer InvoiceNumberer
+	store        Store
+	clock        clock.Clock
+	numberer     InvoiceNumberer
+	taxCommitter TaxCommitter
 }
 
 func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service {
@@ -28,6 +40,12 @@ func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service
 		clk = clock.Real()
 	}
 	return &Service{store: store, clock: clk, numberer: numberer}
+}
+
+// SetTaxCommitter wires the upstream tax-transaction committer. Called from
+// router.go with the billing engine so finalize can commit Stripe tax calcs.
+func (s *Service) SetTaxCommitter(tc TaxCommitter) {
+	s.taxCommitter = tc
 }
 
 type CreateInput struct {
@@ -98,7 +116,22 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 	if inv.Status != domain.InvoiceDraft {
 		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf("can only finalize draft invoices, current status: %s", inv.Status))
 	}
-	return s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceFinalized)
+	finalized, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceFinalized)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	// Commit Stripe Tax calculation to a tax_transaction at finalize. Missing
+	// calculation id = manual/none provider — skip silently. Commit failure
+	// does not unwind finalize: the invoice is already authoritative; we log
+	// and continue so the customer-facing state stays consistent.
+	if s.taxCommitter != nil && finalized.TaxCalculationID != "" {
+		if err := s.taxCommitter.CommitTax(ctx, tenantID, finalized.ID, finalized.TaxCalculationID); err != nil {
+			slog.Warn("invoice: tax commit failed at finalize",
+				"error", err, "tenant_id", tenantID, "invoice_id", finalized.ID,
+				"tax_provider", finalized.TaxProvider, "calculation_id", finalized.TaxCalculationID)
+		}
+	}
+	return finalized, nil
 }
 
 func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice, error) {

@@ -114,6 +114,26 @@ func (s *Service) Delete(ctx context.Context, tenantID string, livemode bool) er
 	return s.store.Delete(ctx, tenantID, livemode)
 }
 
+// SetWebhookSecret completes the second half of the two-step BYOS setup
+// (connect API keys → register endpoint in Stripe → paste whsec_ here) without
+// forcing the tenant to re-enter API keys. Stripe isn't re-probed: the key was
+// already verified on Connect, and the new secret is HMAC-validated per
+// incoming webhook rather than at save time. Returns errs.ErrNotFound if the
+// tenant hasn't connected API keys yet — caller must finish Connect first.
+func (s *Service) SetWebhookSecret(ctx context.Context, tenantID string, livemode bool, secret string) (domain.StripeProviderCredentials, error) {
+	if tenantID == "" {
+		return domain.StripeProviderCredentials{}, errs.Required("tenant_id")
+	}
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return domain.StripeProviderCredentials{}, errs.Required("webhook_secret")
+	}
+	if !strings.HasPrefix(secret, "whsec_") {
+		return domain.StripeProviderCredentials{}, errs.Invalid("webhook_secret", `must start with "whsec_"`)
+	}
+	return s.store.SetWebhookSecret(ctx, tenantID, livemode, secret)
+}
+
 // GetPlaintext returns the decrypted keys for a (tenant, mode) — used by the
 // client resolver and webhook verifier. Not wired to any HTTP route.
 func (s *Service) GetPlaintext(ctx context.Context, tenantID string, livemode bool) (PlaintextSecrets, error) {

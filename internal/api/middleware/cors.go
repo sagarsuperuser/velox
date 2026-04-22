@@ -26,6 +26,13 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 
 			if allowAll || originSet[strings.ToLower(origin)] {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
+				// Required when the browser sends cookies (session auth). With
+				// credentials=true the spec forbids the "*" wildcard, so we
+				// always echo the specific origin above.
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				// Vary on Origin so intermediaries don't cache a response
+				// generated for one origin and serve it to a different one.
+				w.Header().Add("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, Idempotency-Key")
 				w.Header().Set("Access-Control-Expose-Headers", "Velox-Version, Velox-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After")

@@ -286,15 +286,15 @@ func (s *PostgresStore) CreatePlan(ctx context.Context, tenantID string, p domai
 
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO plans (id, tenant_id, code, name, description, currency, billing_interval,
-			status, base_amount_cents, meter_ids, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
+			status, base_amount_cents, meter_ids, created_at, updated_at, tax_code)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12)
 		RETURNING id, tenant_id, code, name, COALESCE(description,''), currency, billing_interval,
-			status, base_amount_cents, meter_ids, created_at, updated_at
+			status, base_amount_cents, meter_ids, created_at, updated_at, tax_code
 	`, id, tenantID, p.Code, p.Name, postgres.NullableString(p.Description),
-		p.Currency, p.BillingInterval, p.Status, p.BaseAmountCents, meterIDsJSON, now,
+		p.Currency, p.BillingInterval, p.Status, p.BaseAmountCents, meterIDsJSON, now, p.TaxCode,
 	).Scan(&p.ID, &p.TenantID, &p.Code, &p.Name, &p.Description, &p.Currency,
 		&p.BillingInterval, &p.Status, &p.BaseAmountCents, &meterIDsJSON,
-		&p.CreatedAt, &p.UpdatedAt)
+		&p.CreatedAt, &p.UpdatedAt, &p.TaxCode)
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
@@ -318,7 +318,7 @@ func (s *PostgresStore) GetPlan(ctx context.Context, tenantID, id string) (domai
 
 	return scanPlan(tx.QueryRowContext(ctx, `
 		SELECT id, tenant_id, code, name, COALESCE(description,''), currency, billing_interval,
-			status, base_amount_cents, meter_ids, created_at, updated_at
+			status, base_amount_cents, meter_ids, created_at, updated_at, tax_code
 		FROM plans WHERE id = $1
 	`, id))
 }
@@ -332,7 +332,7 @@ func (s *PostgresStore) ListPlans(ctx context.Context, tenantID string) ([]domai
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, tenant_id, code, name, COALESCE(description,''), currency, billing_interval,
-			status, base_amount_cents, meter_ids, created_at, updated_at
+			status, base_amount_cents, meter_ids, created_at, updated_at, tax_code
 		FROM plans ORDER BY created_at DESC LIMIT 500
 	`)
 	if err != nil {
@@ -363,15 +363,15 @@ func (s *PostgresStore) UpdatePlan(ctx context.Context, tenantID string, p domai
 
 	err = tx.QueryRowContext(ctx, `
 		UPDATE plans SET name = $1, description = $2, status = $3, base_amount_cents = $4,
-			meter_ids = $5, updated_at = $6
-		WHERE id = $7
+			meter_ids = $5, updated_at = $6, tax_code = $7
+		WHERE id = $8
 		RETURNING id, tenant_id, code, name, COALESCE(description,''), currency, billing_interval,
-			status, base_amount_cents, meter_ids, created_at, updated_at
+			status, base_amount_cents, meter_ids, created_at, updated_at, tax_code
 	`, p.Name, postgres.NullableString(p.Description), p.Status, p.BaseAmountCents,
-		meterIDsJSON, now, p.ID,
+		meterIDsJSON, now, p.TaxCode, p.ID,
 	).Scan(&p.ID, &p.TenantID, &p.Code, &p.Name, &p.Description, &p.Currency,
 		&p.BillingInterval, &p.Status, &p.BaseAmountCents, &meterIDsJSON,
-		&p.CreatedAt, &p.UpdatedAt)
+		&p.CreatedAt, &p.UpdatedAt, &p.TaxCode)
 
 	if err == sql.ErrNoRows {
 		return domain.Plan{}, errs.ErrNotFound
@@ -420,7 +420,7 @@ func scanPlan(row rowScanner) (domain.Plan, error) {
 	var meterIDsJSON []byte
 	err := row.Scan(&p.ID, &p.TenantID, &p.Code, &p.Name, &p.Description, &p.Currency,
 		&p.BillingInterval, &p.Status, &p.BaseAmountCents, &meterIDsJSON,
-		&p.CreatedAt, &p.UpdatedAt)
+		&p.CreatedAt, &p.UpdatedAt, &p.TaxCode)
 	if err == sql.ErrNoRows {
 		return domain.Plan{}, errs.ErrNotFound
 	}

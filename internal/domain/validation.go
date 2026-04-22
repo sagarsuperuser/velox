@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -38,6 +39,23 @@ func ValidateCurrency(currency string) error {
 	}
 	if !validCurrencies[upper] {
 		return errs.Invalid("currency", "invalid currency code: "+upper)
+	}
+	return nil
+}
+
+// stripeTaxCodeFormat matches a Stripe product tax code: "txcd_" followed by
+// 8 digits (e.g. txcd_10103001 for SaaS business use). The full catalog is
+// maintained by Stripe; we only enforce the format to catch typos.
+var stripeTaxCodeFormat = regexp.MustCompile(`^txcd_[0-9]{8}$`)
+
+// ValidateStripeTaxCode checks a Stripe product tax code format. Empty is
+// allowed — callers supply a default when the field is optional.
+func ValidateStripeTaxCode(field, code string) error {
+	if code == "" {
+		return nil
+	}
+	if !stripeTaxCodeFormat.MatchString(code) {
+		return errs.Invalid(field, "must be a Stripe product tax code like 'txcd_10103001'")
 	}
 	return nil
 }

@@ -397,6 +397,18 @@ func (f *fakeDeliverer) SendPortalMagicLink(tenantID, to, name, url string) erro
 	f.lastUpdateURL = url
 	return nil
 }
+func (f *fakeDeliverer) SendPasswordReset(tenantID, to, name, url string) error {
+	f.calls++
+	f.lastType, f.lastTenant, f.lastTo, f.lastName = email.TypePasswordReset, tenantID, to, name
+	f.lastUpdateURL = url
+	return nil
+}
+func (f *fakeDeliverer) SendMemberInvite(tenantID, to, inviter, tenantName, url string) error {
+	f.calls++
+	f.lastType, f.lastTenant, f.lastTo, f.lastName = email.TypeMemberInvite, tenantID, to, inviter
+	f.lastUpdateURL = url
+	return nil
+}
 
 // callDeliverer mirrors the dispatcher's payload decode + switch. The
 // dispatcher's handle method is unexported; re-implementing the decode here

@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -6,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, setActiveCurrency, formatCents, type StripeProviderCredentials } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
+import { useAuth } from '@/contexts/AuthContext'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -14,13 +17,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent } from '@/components/ui/card'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -33,21 +29,49 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Combobox } from '@/components/Combobox'
+import {
+  COUNTRIES,
+  COUNTRY_NAME,
+  CURRENCIES as GEO_CURRENCIES,
+  CURRENCY_BY_CODE,
+  TIMEZONES,
+  timezoneOption,
+  normalizeTimezone,
+  DEFAULT_TAX_NAME_BY_COUNTRY,
+  TYPICAL_TAX_RATE_BY_COUNTRY,
+  statesForCountry,
+  stateLabelForCountry,
+  postalPlaceholderForCountry,
+} from '@/lib/geo'
 
-import { Building2, CreditCard, FileText, Receipt, Check, AlertCircle, Loader2, Trash2, Copy } from 'lucide-react'
+import { Building2, CreditCard, FileText, Receipt, Check, AlertCircle, Loader2, Trash2, Copy, ExternalLink, X } from 'lucide-react'
 
 const settingsSchema = z.object({
-  company_name: z.string(),
+  company_name: z.string().max(255, 'Must be at most 255 characters'),
   company_email: z.string().email('Invalid email address').or(z.literal('')),
   company_phone: z.string().regex(/^[\+\d\s\-\(\)]{7,20}$/, 'Invalid phone number').or(z.literal('')),
-  company_address: z.string(),
-  logo_url: z.string(),
-  invoice_prefix: z.string(),
+  company_address_line1: z.string().max(200, 'Must be at most 200 characters'),
+  company_address_line2: z.string().max(200, 'Must be at most 200 characters'),
+  company_city: z.string().max(100, 'Must be at most 100 characters'),
+  company_state: z.string().max(100, 'Must be at most 100 characters'),
+  company_postal_code: z.string().max(20, 'Must be at most 20 characters'),
+  company_country: z.string().max(2, 'Must be an ISO-3166 alpha-2 code'),
+  logo_url: z.string().max(500, 'Must be at most 500 characters'),
+  tax_id: z.string().max(50, 'Must be at most 50 characters'),
+  support_url: z.string().regex(/^https?:\/\/.+/i, 'Must start with http:// or https://').or(z.literal('')),
+  invoice_footer: z.string().max(1000, 'Must be at most 1000 characters'),
+  invoice_prefix: z.string()
+    .max(20, 'Must be at most 20 characters')
+    .regex(/^[A-Z0-9-]*$/, 'Letters, numbers, and hyphens only'),
   net_payment_terms: z.number().min(0).max(365),
-  tax_provider: z.enum(['none', 'manual']),
+  tax_provider: z.enum(['none', 'manual', 'stripe_tax']),
   tax_rate_bp: z.number().min(0).max(10000),
-  tax_name: z.string(),
+  tax_name: z.string().max(50, 'Must be at most 50 characters'),
   tax_inclusive: z.boolean(),
+  default_product_tax_code: z.string()
+    .regex(/^(txcd_\d{8})?$/, 'Must be a Stripe tax code like txcd_10103001, or empty'),
   default_currency: z.string(),
   timezone: z.string(),
 })
@@ -62,40 +86,69 @@ type SettingsFormData = z.infer<typeof settingsSchema>
 // so production deployments that don't set the env var still render.
 const API_ORIGIN = import.meta.env.VITE_API_URL || window.location.origin
 
-const CURRENCIES = [
-  { value: 'USD', label: 'US Dollar', symbol: '$' },
-  { value: 'EUR', label: 'Euro', symbol: '\u20AC' },
-  { value: 'GBP', label: 'British Pound', symbol: '\u00A3' },
-  { value: 'INR', label: 'Indian Rupee', symbol: '\u20B9' },
-  { value: 'CAD', label: 'Canadian Dollar', symbol: 'CA$' },
-  { value: 'AUD', label: 'Australian Dollar', symbol: 'A$' },
-  { value: 'JPY', label: 'Japanese Yen', symbol: '\u00A5' },
-  { value: 'CHF', label: 'Swiss Franc', symbol: 'CHF' },
-  { value: 'SGD', label: 'Singapore Dollar', symbol: 'S$' },
-  { value: 'BRL', label: 'Brazilian Real', symbol: 'R$' },
-  { value: 'MXN', label: 'Mexican Peso', symbol: 'MX$' },
-  { value: 'KRW', label: 'Korean Won', symbol: '\u20A9' },
+// Common net-term presets. Covers 95% of real-world billing setups; the
+// custom field below handles everything else (e.g. Net 45, Net 90).
+const PAYMENT_TERM_PRESETS = [
+  { label: 'Due on receipt', value: 0 },
+  { label: 'Net 7', value: 7 },
+  { label: 'Net 15', value: 15 },
+  { label: 'Net 30', value: 30 },
+  { label: 'Net 60', value: 60 },
 ]
 
-const TIMEZONES = [
-  'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
-  'America/Toronto', 'America/Sao_Paulo', 'Europe/London', 'Europe/Paris', 'Europe/Berlin',
-  'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Dubai',
-  'Australia/Sydney', 'Pacific/Auckland',
-]
+// Render a small thumbnail of the logo URL so operators can verify the
+// link resolves before saving — catches typos, broken CDN paths, and
+// auth-gated URLs that won't render on invoice PDFs.
+function LogoPreview({ url }: { url: string }) {
+  const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading')
+  useEffect(() => { setStatus('loading') }, [url])
+  if (!url || !/^https?:\/\//i.test(url)) return null
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <div className="h-10 w-20 rounded-md border border-border bg-muted/30 flex items-center justify-center overflow-hidden">
+        {status === 'error' ? (
+          <AlertCircle size={14} className="text-destructive" aria-label="Failed to load" />
+        ) : (
+          <img
+            src={url}
+            alt="Logo preview"
+            className={cn(
+              'max-h-8 max-w-[72px] object-contain',
+              status === 'loading' && 'opacity-0',
+            )}
+            onLoad={() => setStatus('loaded')}
+            onError={() => setStatus('error')}
+          />
+        )}
+      </div>
+      <span className={cn(
+        'text-xs',
+        status === 'error' ? 'text-destructive' : 'text-muted-foreground',
+      )}>
+        {status === 'loaded' && 'Preview'}
+        {status === 'error' && "Couldn't load image"}
+        {status === 'loading' && 'Loading...'}
+      </span>
+    </div>
+  )
+}
 
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const formMethods = useForm<SettingsFormData>({
     resolver: zodResolver(settingsSchema),
     defaultValues: {
-      company_name: '', company_email: '', company_phone: '', company_address: '',
-      logo_url: '',
+      company_name: '', company_email: '', company_phone: '',
+      company_address_line1: '', company_address_line2: '',
+      company_city: '', company_state: '', company_postal_code: '', company_country: '',
+      logo_url: '', tax_id: '', support_url: '', invoice_footer: '',
       invoice_prefix: '', net_payment_terms: 0,
       tax_provider: 'manual', tax_rate_bp: 0, tax_name: '', tax_inclusive: false,
+      default_product_tax_code: '',
       default_currency: '', timezone: '',
     },
   })
@@ -117,12 +170,20 @@ export default function SettingsPage() {
     api.getSettings().then(s => {
       const f = {
         company_name: s.company_name || '', company_email: s.company_email || '',
-        company_phone: s.company_phone || '', company_address: s.company_address || '',
+        company_phone: s.company_phone || '',
+        company_address_line1: s.company_address_line1 || '',
+        company_address_line2: s.company_address_line2 || '',
+        company_city: s.company_city || '',
+        company_state: s.company_state || '',
+        company_postal_code: s.company_postal_code || '',
+        company_country: s.company_country || '',
         logo_url: s.logo_url || '',
+        tax_id: s.tax_id || '', support_url: s.support_url || '', invoice_footer: s.invoice_footer || '',
         invoice_prefix: s.invoice_prefix || '', net_payment_terms: s.net_payment_terms || 0,
-        tax_provider: (s.tax_provider as 'none' | 'manual') || 'manual',
+        tax_provider: (s.tax_provider as 'none' | 'manual' | 'stripe_tax') || 'manual',
         tax_rate_bp: s.tax_rate_bp || 0, tax_name: s.tax_name || '', tax_inclusive: s.tax_inclusive || false,
-        default_currency: s.default_currency || '', timezone: s.timezone || '',
+        default_product_tax_code: s.default_product_tax_code || '',
+        default_currency: s.default_currency || '', timezone: s.timezone ? normalizeTimezone(s.timezone) : '',
       }
       reset(f)
       setLoading(false)
@@ -137,21 +198,33 @@ export default function SettingsPage() {
       const updated = await api.updateSettings(data)
       const f = {
         company_name: updated.company_name || '', company_email: updated.company_email || '',
-        company_phone: updated.company_phone || '', company_address: updated.company_address || '',
+        company_phone: updated.company_phone || '',
+        company_address_line1: updated.company_address_line1 || '',
+        company_address_line2: updated.company_address_line2 || '',
+        company_city: updated.company_city || '',
+        company_state: updated.company_state || '',
+        company_postal_code: updated.company_postal_code || '',
+        company_country: updated.company_country || '',
         logo_url: updated.logo_url || '',
+        tax_id: updated.tax_id || '', support_url: updated.support_url || '', invoice_footer: updated.invoice_footer || '',
         invoice_prefix: updated.invoice_prefix || '', net_payment_terms: updated.net_payment_terms || 0,
-        tax_provider: (updated.tax_provider as 'none' | 'manual') || 'manual',
+        tax_provider: (updated.tax_provider as 'none' | 'manual' | 'stripe_tax') || 'manual',
         tax_rate_bp: updated.tax_rate_bp || 0, tax_name: updated.tax_name || '', tax_inclusive: updated.tax_inclusive || false,
-        default_currency: updated.default_currency || '', timezone: updated.timezone || '',
+        default_product_tax_code: updated.default_product_tax_code || '',
+        default_currency: updated.default_currency || '', timezone: updated.timezone ? normalizeTimezone(updated.timezone) : '',
       }
       reset(f)
       if (updated.default_currency) setActiveCurrency(updated.default_currency)
       toast.success('Settings saved')
     } catch (err) {
       applyApiError(formMethods, err, [
-        'company_name', 'company_email', 'company_phone', 'company_address', 'logo_url',
+        'company_name', 'company_email', 'company_phone',
+        'company_address_line1', 'company_address_line2', 'company_city',
+        'company_state', 'company_postal_code', 'company_country',
+        'logo_url',
+        'tax_id', 'support_url', 'invoice_footer',
         'invoice_prefix', 'net_payment_terms', 'tax_provider', 'tax_rate_bp', 'tax_name', 'tax_inclusive',
-        'default_currency', 'timezone',
+        'default_product_tax_code', 'default_currency', 'timezone',
       ], { toastTitle: 'Failed to save settings' })
     } finally { setSaving(false) }
   })
@@ -175,8 +248,38 @@ export default function SettingsPage() {
     </Layout>
   )
 
-  const currencyObj = CURRENCIES.find(c => c.value === form.default_currency)
+  const currencyObj = CURRENCY_BY_CODE[form.default_currency]
   const symbol = currencyObj?.symbol || '$'
+  const statesList = statesForCountry(form.company_country)
+  const stateLabel = stateLabelForCountry(form.company_country)
+  const postalPlaceholder = postalPlaceholderForCountry(form.company_country)
+  // Tax suggestions key off company_country — that's our single source of
+  // truth for the seller's jurisdiction (removed redundant tax_home_country).
+  const suggestedTaxName = form.company_country ? DEFAULT_TAX_NAME_BY_COUNTRY[form.company_country] : undefined
+  const typicalRate = form.company_country ? TYPICAL_TAX_RATE_BY_COUNTRY[form.company_country] : undefined
+
+  const tab = ((): 'business' | 'invoicing' | 'tax' | 'payments' => {
+    const q = searchParams.get('tab')
+    if (q === 'invoicing' || q === 'tax' || q === 'payments') return q
+    return 'business'
+  })()
+  const setTab = (t: string) => setSearchParams(t === 'business' ? {} : { tab: t })
+
+  const countryOptions = COUNTRIES.map(([code, name]) => ({
+    value: code,
+    label: name,
+    keywords: [code],
+  }))
+  const currencyOptions = GEO_CURRENCIES.map(c => ({
+    value: c.code,
+    label: `${c.label} (${c.code})`,
+    keywords: [c.code, c.symbol, c.label],
+    prefix: <span className="text-muted-foreground font-mono text-[11px] w-7 inline-block text-center">{c.symbol}</span>,
+  }))
+  const timezoneOptions = TIMEZONES.map(timezoneOption)
+  const stateOptions = statesList
+    ? statesList.map(([code, name]) => ({ value: code, label: name, keywords: [code] }))
+    : null
 
   return (
     <Layout>
@@ -192,240 +295,459 @@ export default function SettingsPage() {
         )}
       </div>
 
-      <div className="max-w-3xl mt-6 space-y-8">
+      <Tabs value={tab} onValueChange={setTab} className="mt-6">
+        <TabsList>
+          <TabsTrigger value="business"><Building2 size={14} /> Business</TabsTrigger>
+          <TabsTrigger value="invoicing"><FileText size={14} /> Invoicing</TabsTrigger>
+          <TabsTrigger value="tax"><Receipt size={14} /> Tax</TabsTrigger>
+          <TabsTrigger value="payments"><CreditCard size={14} /> Payments</TabsTrigger>
+        </TabsList>
 
-        {/* Business Details */}
-        <section>
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
-              <Building2 size={16} className="text-primary" />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-foreground">Business Details</h2>
-              <p className="text-xs text-muted-foreground">Appears on invoices and customer-facing documents</p>
-            </div>
-          </div>
-          <Card>
-            <CardContent className="p-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <div>
-                  <Label>Business Name</Label>
-                  <Input type="text" placeholder="Acme Inc." maxLength={255}
-                    {...register('company_name')} className="mt-1" />
-                  <p className="text-xs text-muted-foreground mt-1">Displayed on invoice headers</p>
-                </div>
-                <div>
-                  <Label>Email</Label>
-                  <Input type="email" placeholder="billing@acme.com" maxLength={254}
-                    {...register('company_email')}
-                    className={cn('mt-1', formErrors.company_email && 'border-destructive')} />
-                  {formErrors.company_email && <p className="text-xs text-destructive mt-1">{formErrors.company_email.message}</p>}
-                  <p className="text-xs text-muted-foreground mt-1">Reply-to address on invoice emails</p>
-                </div>
-                <div>
-                  <Label>Phone</Label>
-                  <Input type="tel" placeholder="+1 (555) 123-4567" maxLength={20}
-                    {...register('company_phone')}
-                    className={cn('mt-1', formErrors.company_phone && 'border-destructive')} />
-                  {formErrors.company_phone && <p className="text-xs text-destructive mt-1">{formErrors.company_phone.message}</p>}
-                </div>
-                <div>
-                  <Label>Logo URL</Label>
-                  <Input type="url" placeholder="https://acme.com/logo.png" maxLength={500}
-                    {...register('logo_url')} className="mt-1" />
-                  <p className="text-xs text-muted-foreground mt-1">Used on invoice PDFs</p>
-                </div>
-                <div className="md:col-span-2">
-                  <Label>Address</Label>
-                  <Textarea
-                    {...register('company_address')}
-                    className="mt-1" rows={2}
-                    placeholder={"123 Main St\nSan Francisco, CA 94105"} maxLength={500} />
-                  <p className="text-xs text-muted-foreground mt-1">Shown in the "From" section on invoice PDFs</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </section>
+        <div className="max-w-3xl mt-6 pb-24">
 
-        {/* Invoice & Billing */}
-        <section>
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center">
-              <FileText size={16} className="text-blue-600 dark:text-blue-400" />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-foreground">Invoice & Billing</h2>
-              <p className="text-xs text-muted-foreground">Currency, invoice numbering, and payment terms</p>
-            </div>
-          </div>
-          <Card>
-            <CardContent className="p-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <div>
-                  <Label>Currency</Label>
-                  <Select value={form.default_currency} onValueChange={v => setValue('default_currency', v, { shouldDirty: true })}>
-                    <SelectTrigger className="w-full mt-1">
-                      <SelectValue placeholder="Select currency..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CURRENCIES.map(c => (
-                        <SelectItem key={c.value} value={c.value}>{c.symbol} {c.label} ({c.value})</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground mt-1">Used across all invoices, plans, and charges</p>
+          {/* Business: identity + address */}
+          <TabsContent value="business" className="space-y-6">
+            <Card>
+              <CardContent className="p-6">
+                <div className="mb-5">
+                  <h2 className="text-sm font-semibold text-foreground">Business info</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Shown on invoices and customer-facing emails</p>
                 </div>
-                <div>
-                  <Label>Timezone</Label>
-                  <Select value={form.timezone} onValueChange={v => setValue('timezone', v, { shouldDirty: true })}>
-                    <SelectTrigger className="w-full mt-1">
-                      <SelectValue placeholder="Select timezone..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {TIMEZONES.map(tz => (
-                        <SelectItem key={tz} value={tz}>{tz.replace(/_/g, ' ')}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground mt-1">Used for billing cycle boundaries and reports</p>
-                </div>
-                <div>
-                  <Label>Invoice Prefix</Label>
-                  <Input type="text" maxLength={20}
-                    {...register('invoice_prefix', {
-                      onChange: (e) => { e.target.value = e.target.value.toUpperCase() },
-                    })}
-                    className="mt-1 font-mono uppercase" placeholder="INV" />
-                  {form.invoice_prefix && (
-                    <p className="text-xs text-muted-foreground mt-1 font-mono">Preview: {form.invoice_prefix}-000001</p>
-                  )}
-                </div>
-                <div>
-                  <Label>Payment Terms</Label>
-                  <div className="relative mt-1">
-                    <Input type="number" min={0} max={365}
-                      {...register('net_payment_terms', { valueAsNumber: true })}
-                      className="pr-16" />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">days</span>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div>
+                    <Label>Business name</Label>
+                    <Input type="text" placeholder="Acme Inc." maxLength={255}
+                      {...register('company_name')}
+                      className={cn('mt-1', formErrors.company_name && 'border-destructive')} />
+                    {formErrors.company_name
+                      ? <p className="text-xs text-destructive mt-1">{formErrors.company_name.message}</p>
+                      : <p className="text-xs text-muted-foreground mt-1">Displayed on invoice headers</p>}
                   </div>
-                  <p className="text-xs text-muted-foreground mt-1">Days after issue before payment is due</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </section>
-
-        {/* Tax */}
-        <section>
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
-              <Receipt size={16} className="text-amber-600 dark:text-amber-400" />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-foreground">Tax</h2>
-              <p className="text-xs text-muted-foreground">Select a tax backend. Per-customer overrides available on billing profiles.</p>
-            </div>
-          </div>
-          <Card>
-            <CardContent className="p-6">
-              <div>
-                <Label>Tax Provider</Label>
-                <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setValue('tax_provider', 'none', { shouldDirty: true })}
-                    className={cn(
-                      'text-left p-4 rounded-lg border transition-colors',
-                      form.tax_provider === 'none'
-                        ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                        : 'border-border hover:border-muted-foreground/50'
-                    )}
-                  >
-                    <div className="font-medium text-sm text-foreground">None</div>
-                    <div className="text-xs text-muted-foreground mt-1">Don't collect tax. Invoices ship with zero tax lines.</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setValue('tax_provider', 'manual', { shouldDirty: true })}
-                    className={cn(
-                      'text-left p-4 rounded-lg border transition-colors',
-                      form.tax_provider === 'manual'
-                        ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                        : 'border-border hover:border-muted-foreground/50'
-                    )}
-                  >
-                    <div className="font-medium text-sm text-foreground">Manual (flat rate)</div>
-                    <div className="text-xs text-muted-foreground mt-1">Single rate applied to customers in your home country. Exports zero-rated.</div>
-                  </button>
-                </div>
-              </div>
-
-              {form.tax_provider === 'manual' && (
-                <>
-                  <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <div>
-                      <Label>Tax Name</Label>
-                      <Input type="text" maxLength={50} placeholder="e.g. GST, VAT, Sales Tax"
-                        {...register('tax_name')} className="mt-1" />
-                      <p className="text-xs text-muted-foreground mt-1">Label shown on invoice line items</p>
-                    </div>
-                    <div>
-                      <Label>Tax Rate</Label>
-                      <div className="relative mt-1">
-                        <Input type="number" step="0.01" min={0} max={100}
-                          value={form.tax_rate_bp / 100}
-                          onChange={e => setValue('tax_rate_bp', Math.round(parseFloat(e.target.value || '0') * 100), { shouldDirty: true })}
-                          className="pr-8" placeholder="0" />
-                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">%</span>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1">Set to 0 to disable tax</p>
-                    </div>
+                  <div>
+                    <Label>Email</Label>
+                    <Input type="email" placeholder="billing@acme.com" maxLength={254}
+                      {...register('company_email')}
+                      className={cn('mt-1', formErrors.company_email && 'border-destructive')} />
+                    {formErrors.company_email
+                      ? <p className="text-xs text-destructive mt-1">{formErrors.company_email.message}</p>
+                      : <p className="text-xs text-muted-foreground mt-1">Reply-to address on invoice emails</p>}
                   </div>
-                  <div className="mt-5 flex items-start justify-between gap-4 p-4 rounded-lg border border-border bg-muted/30">
-                    <div>
-                      <Label className="font-medium text-foreground">Tax-inclusive pricing</Label>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        When on, plan and usage prices already include tax. Velox carves tax out of the sticker price.
-                        When off (default), tax is added on top of the subtotal.
-                      </p>
-                    </div>
-                    <Switch
-                      checked={form.tax_inclusive ?? false}
-                      onCheckedChange={(checked) => setValue('tax_inclusive', !!checked, { shouldDirty: true })}
-                      className="shrink-0 mt-0.5"
+                  <div>
+                    <Label>Phone</Label>
+                    <Input type="tel" placeholder="+1 (555) 123-4567" maxLength={20}
+                      {...register('company_phone')}
+                      className={cn('mt-1', formErrors.company_phone && 'border-destructive')} />
+                    {formErrors.company_phone && <p className="text-xs text-destructive mt-1">{formErrors.company_phone.message}</p>}
+                  </div>
+                  <div>
+                    <Label>Support URL</Label>
+                    <Input type="url" placeholder="https://acme.com/support" maxLength={500}
+                      {...register('support_url')}
+                      className={cn('mt-1', formErrors.support_url && 'border-destructive')} />
+                    {formErrors.support_url
+                      ? <p className="text-xs text-destructive mt-1">{formErrors.support_url.message}</p>
+                      : <p className="text-xs text-muted-foreground mt-1">Shown in invoice footers so customers can find help</p>}
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>Logo URL</Label>
+                    <Input type="url" placeholder="https://acme.com/logo.png" maxLength={500}
+                      {...register('logo_url')} className="mt-1" />
+                    {form.logo_url && /^https?:\/\//i.test(form.logo_url)
+                      ? <LogoPreview url={form.logo_url} />
+                      : <p className="text-xs text-muted-foreground mt-1">Rendered at the top of invoice PDFs</p>}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-6">
+                <div className="mb-5">
+                  <h2 className="text-sm font-semibold text-foreground">Address</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Appears in the "From" block on invoice PDFs</p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-6 gap-5">
+                  <div className="md:col-span-6">
+                    <Label>Country</Label>
+                    <Combobox
+                      value={form.company_country}
+                      onChange={v => setValue('company_country', v, { shouldDirty: true })}
+                      options={countryOptions}
+                      placeholder="Select country..."
+                      clearable
+                      className="mt-1"
                     />
+                    {formErrors.company_country && <p className="text-xs text-destructive mt-1">{formErrors.company_country.message}</p>}
                   </div>
-                  {form.tax_rate_bp > 0 && (
-                    <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 rounded-lg">
-                      <p className="text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
-                        <AlertCircle size={14} className="shrink-0 mt-0.5" />
-                        {form.tax_inclusive ? (
-                          <span>
-                            Example: {symbol}100.00 sticker price includes {form.tax_name || 'tax'} at {(form.tax_rate_bp / 100).toFixed(2)}%.
-                            Net subtotal = <strong>{formatCents(Math.round(10000 * 10000 / (10000 + form.tax_rate_bp)), form.default_currency || 'USD')}</strong>.
-                            Customer pays <strong>{formatCents(10000, form.default_currency || 'USD')}</strong>.
-                          </span>
+                  <div className="md:col-span-6">
+                    <Label>Address line 1</Label>
+                    <Input type="text" placeholder="123 Main Street" maxLength={200}
+                      {...register('company_address_line1')}
+                      className={cn('mt-1', formErrors.company_address_line1 && 'border-destructive')} />
+                    {formErrors.company_address_line1 && <p className="text-xs text-destructive mt-1">{formErrors.company_address_line1.message}</p>}
+                  </div>
+                  <div className="md:col-span-6">
+                    <Label>Address line 2 <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                    <Input type="text" placeholder="Suite, floor, etc." maxLength={200}
+                      {...register('company_address_line2')}
+                      className={cn('mt-1', formErrors.company_address_line2 && 'border-destructive')} />
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>City</Label>
+                    <Input type="text" placeholder="San Francisco" maxLength={100}
+                      {...register('company_city')}
+                      className={cn('mt-1', formErrors.company_city && 'border-destructive')} />
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>{stateLabel}</Label>
+                    {stateOptions ? (
+                      <Combobox
+                        value={form.company_state}
+                        onChange={v => setValue('company_state', v, { shouldDirty: true })}
+                        options={stateOptions}
+                        placeholder={`Select ${stateLabel.toLowerCase()}...`}
+                        clearable
+                        className="mt-1"
+                      />
+                    ) : (
+                      <Input type="text" maxLength={100}
+                        {...register('company_state')}
+                        className={cn('mt-1', formErrors.company_state && 'border-destructive')} />
+                    )}
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>Postal code</Label>
+                    <Input type="text" placeholder={postalPlaceholder} maxLength={20}
+                      {...register('company_postal_code')}
+                      className={cn('mt-1', formErrors.company_postal_code && 'border-destructive')} />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Invoicing: numbering, currency, locale, footer */}
+          <TabsContent value="invoicing" className="space-y-6">
+            <Card>
+              <CardContent className="p-6">
+                <div className="mb-5">
+                  <h2 className="text-sm font-semibold text-foreground">Invoicing</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Currency, numbering, payment terms, and footer</p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div>
+                    <Label>Default currency</Label>
+                    <Combobox
+                      value={form.default_currency}
+                      onChange={v => setValue('default_currency', v, { shouldDirty: true })}
+                      options={currencyOptions}
+                      placeholder="Select currency..."
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Used across invoices, plans, and charges</p>
+                  </div>
+                  <div>
+                    <Label>Timezone</Label>
+                    <Combobox
+                      value={form.timezone}
+                      onChange={v => setValue('timezone', v, { shouldDirty: true })}
+                      options={timezoneOptions}
+                      placeholder="Select timezone..."
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Billing cycle boundaries and reports</p>
+                  </div>
+                  <div>
+                    <Label>Invoice prefix</Label>
+                    <Input type="text" maxLength={20}
+                      {...register('invoice_prefix', {
+                        onChange: (e) => { e.target.value = e.target.value.toUpperCase() },
+                      })}
+                      className={cn('mt-1 font-mono uppercase', formErrors.invoice_prefix && 'border-destructive')}
+                      placeholder="INV" />
+                    {formErrors.invoice_prefix
+                      ? <p className="text-xs text-destructive mt-1">{formErrors.invoice_prefix.message}</p>
+                      : form.invoice_prefix
+                        ? <p className="text-xs text-muted-foreground mt-1 font-mono">Preview: {form.invoice_prefix}-000001</p>
+                        : <p className="text-xs text-muted-foreground mt-1">Letters, numbers, and hyphens only</p>}
+                  </div>
+                  <div>
+                    <Label>Payment terms</Label>
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {PAYMENT_TERM_PRESETS.map(p => {
+                        const active = form.net_payment_terms === p.value
+                        return (
+                          <button
+                            key={p.value}
+                            type="button"
+                            onClick={() => setValue('net_payment_terms', p.value, { shouldDirty: true })}
+                            className={cn(
+                              'px-2.5 py-1 rounded-md border text-xs font-medium transition-colors',
+                              active
+                                ? 'border-primary bg-primary/5 text-primary'
+                                : 'border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/50',
+                            )}
+                          >
+                            {p.label}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <div className="relative mt-2 max-w-[160px]">
+                      <Input type="number" min={0} max={365}
+                        {...register('net_payment_terms', { valueAsNumber: true })}
+                        className="pr-14" />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">days</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1.5">Days after issue before payment is due</p>
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>Invoice footer</Label>
+                    <Textarea
+                      {...register('invoice_footer')}
+                      rows={3}
+                      maxLength={1000}
+                      placeholder={"Thank you for your business.\nQuestions? billing@acme.com"}
+                      className={cn('mt-1', formErrors.invoice_footer && 'border-destructive')} />
+                    <div className="flex items-center justify-between mt-1">
+                      {formErrors.invoice_footer
+                        ? <p className="text-xs text-destructive">{formErrors.invoice_footer.message}</p>
+                        : <p className="text-xs text-muted-foreground">Default footer on every invoice. Per-invoice overrides take precedence.</p>}
+                      <p className="text-xs text-muted-foreground tabular-nums">{(form.invoice_footer || '').length}/1000</p>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Tax: tax ID, provider selection, rate (manual) or default tax code (stripe_tax) */}
+          <TabsContent value="tax" className="space-y-6">
+            <Card>
+              <CardContent className="p-6">
+                <div className="mb-5">
+                  <h2 className="text-sm font-semibold text-foreground">Your tax identity</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    The tax ID you print on invoices. The seller's jurisdiction is your business address (set in Business tab).
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div>
+                    <Label>Tax ID</Label>
+                    <Input type="text" placeholder="GB123456789 · 12-3456789 · 29ABCDE1234F1Z5" maxLength={50}
+                      {...register('tax_id')}
+                      className={cn('mt-1 font-mono', formErrors.tax_id && 'border-destructive')} />
+                    {formErrors.tax_id
+                      ? <p className="text-xs text-destructive mt-1">{formErrors.tax_id.message}</p>
+                      : <p className="text-xs text-muted-foreground mt-1">Your VAT, EIN, GSTIN, or ABN — required on B2B invoices in most jurisdictions</p>}
+                  </div>
+                  <div>
+                    <Label>Seller country</Label>
+                    <div className="mt-1 px-3 py-2 rounded-md border border-border bg-muted/30 text-sm text-muted-foreground">
+                      {form.company_country ? (COUNTRY_NAME[form.company_country] || form.company_country) : 'Set business address in Business tab'}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">Drives tax name/rate suggestions and cross-border VAT handling</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-6">
+                <div className="mb-5">
+                  <h2 className="text-sm font-semibold text-foreground">Tax calculation</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">How Velox adds tax to invoices</p>
+                </div>
+                <div>
+                  <Label>Tax provider</Label>
+                  <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setValue('tax_provider', 'none', { shouldDirty: true })}
+                      className={cn(
+                        'text-left p-4 rounded-lg border transition-colors',
+                        form.tax_provider === 'none'
+                          ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                          : 'border-border hover:border-muted-foreground/50'
+                      )}
+                    >
+                      <div className="font-medium text-sm text-foreground">None</div>
+                      <div className="text-xs text-muted-foreground mt-1">Don't collect tax. Invoices ship with zero tax lines.</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setValue('tax_provider', 'manual', { shouldDirty: true })}
+                      className={cn(
+                        'text-left p-4 rounded-lg border transition-colors',
+                        form.tax_provider === 'manual'
+                          ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                          : 'border-border hover:border-muted-foreground/50'
+                      )}
+                    >
+                      <div className="font-medium text-sm text-foreground">Manual (flat rate)</div>
+                      <div className="text-xs text-muted-foreground mt-1">Single rate applied to all customers. Simplest option.</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setValue('tax_provider', 'stripe_tax', { shouldDirty: true })}
+                      className={cn(
+                        'text-left p-4 rounded-lg border transition-colors',
+                        form.tax_provider === 'stripe_tax'
+                          ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                          : 'border-border hover:border-muted-foreground/50'
+                      )}
+                    >
+                      <div className="font-medium text-sm text-foreground flex items-center gap-2">
+                        Stripe Tax
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-semibold">AUTO</span>
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1">Jurisdiction-aware rates, reverse-charge, tax transactions. Requires Stripe in Payments tab.</div>
+                    </button>
+                  </div>
+                </div>
+
+                {form.tax_provider === 'manual' && (
+                  <>
+                    <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div>
+                        <Label>Tax name</Label>
+                        <Input type="text" maxLength={50} placeholder="e.g. GST, VAT, Sales Tax"
+                          {...register('tax_name')}
+                          className={cn('mt-1', formErrors.tax_name && 'border-destructive')} />
+                        {formErrors.tax_name ? (
+                          <p className="text-xs text-destructive mt-1">{formErrors.tax_name.message}</p>
+                        ) : suggestedTaxName && form.tax_name !== suggestedTaxName ? (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Common in {COUNTRY_NAME[form.company_country] || form.company_country}:{' '}
+                            <button
+                              type="button"
+                              className="underline underline-offset-2 hover:text-foreground"
+                              onClick={() => setValue('tax_name', suggestedTaxName, { shouldDirty: true })}
+                            >
+                              use "{suggestedTaxName}"
+                            </button>
+                          </p>
                         ) : (
-                          <span>
-                            Example: {symbol}100.00 subtotal {form.tax_name ? `+ ${form.tax_name} ` : '+ tax '}
-                            {(form.tax_rate_bp / 100).toFixed(2)}% = <strong>{formatCents(10000 + Math.round(10000 * form.tax_rate_bp / 10000), form.default_currency || 'USD')}</strong> total.
-                          </span>
+                          <p className="text-xs text-muted-foreground mt-1">Label shown on invoice line items</p>
                         )}
+                      </div>
+                      <div>
+                        <Label>Tax rate</Label>
+                        <div className="relative mt-1">
+                          <Input type="number" step="0.01" min={0} max={100}
+                            value={form.tax_rate_bp / 100}
+                            onChange={e => setValue('tax_rate_bp', Math.round(parseFloat(e.target.value || '0') * 100), { shouldDirty: true })}
+                            className="pr-8" placeholder="0" />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">%</span>
+                        </div>
+                        {typicalRate !== undefined && Math.abs((form.tax_rate_bp / 100) - typicalRate) > 0.01 ? (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Typical in {COUNTRY_NAME[form.company_country] || form.company_country}:{' '}
+                            <button
+                              type="button"
+                              className="underline underline-offset-2 hover:text-foreground"
+                              onClick={() => setValue('tax_rate_bp', Math.round(typicalRate * 100), { shouldDirty: true })}
+                            >
+                              use {typicalRate}%
+                            </button>
+                          </p>
+                        ) : (
+                          <p className="text-xs text-muted-foreground mt-1">Set to 0 to disable tax</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="mt-5 flex items-start justify-between gap-4 p-4 rounded-lg border border-border bg-muted/30">
+                      <div>
+                        <Label className="font-medium text-foreground">Tax-inclusive pricing</Label>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          When on, plan and usage prices already include tax. Velox carves tax out of the sticker price.
+                          When off (default), tax is added on top of the subtotal.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={form.tax_inclusive ?? false}
+                        onCheckedChange={(checked) => setValue('tax_inclusive', !!checked, { shouldDirty: true })}
+                        className="shrink-0 mt-0.5"
+                      />
+                    </div>
+                    {form.tax_rate_bp > 0 && (
+                      <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 rounded-lg">
+                        <p className="text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
+                          <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                          {form.tax_inclusive ? (
+                            <span>
+                              Example: {symbol}100.00 sticker price includes {form.tax_name || 'tax'} at {(form.tax_rate_bp / 100).toFixed(2)}%.
+                              Net subtotal = <strong>{formatCents(Math.round(10000 * 10000 / (10000 + form.tax_rate_bp)), form.default_currency || 'USD')}</strong>.
+                              Customer pays <strong>{formatCents(10000, form.default_currency || 'USD')}</strong>.
+                            </span>
+                          ) : (
+                            <span>
+                              Example: {symbol}100.00 subtotal {form.tax_name ? `+ ${form.tax_name} ` : '+ tax '}
+                              {(form.tax_rate_bp / 100).toFixed(2)}% = <strong>{formatCents(10000 + Math.round(10000 * form.tax_rate_bp / 10000), form.default_currency || 'USD')}</strong> total.
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {form.tax_provider === 'stripe_tax' && (
+                  <>
+                    <div className="mt-6">
+                      <Label>Default product tax code</Label>
+                      <Input type="text" placeholder="txcd_10103001" maxLength={13}
+                        {...register('default_product_tax_code')}
+                        className={cn('mt-1 font-mono', formErrors.default_product_tax_code && 'border-destructive')} />
+                      {formErrors.default_product_tax_code ? (
+                        <p className="text-xs text-destructive mt-1">{formErrors.default_product_tax_code.message}</p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Fallback Stripe tax code used when a plan doesn't specify one.{' '}
+                          <code className="font-mono">txcd_10103001</code> = SaaS business use.{' '}
+                          <a href="https://docs.stripe.com/tax/tax-codes" target="_blank" rel="noreferrer"
+                             className="underline underline-offset-2 hover:text-foreground inline-flex items-center gap-0.5">
+                            Stripe tax code reference<ExternalLink size={10} />
+                          </a>
+                        </p>
+                      )}
+                    </div>
+                    <div className="mt-5 flex items-start justify-between gap-4 p-4 rounded-lg border border-border bg-muted/30">
+                      <div>
+                        <Label className="font-medium text-foreground">Tax-inclusive pricing</Label>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          When on, plan prices already include tax. Stripe Tax carves tax out of the gross amount.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={form.tax_inclusive ?? false}
+                        onCheckedChange={(checked) => setValue('tax_inclusive', !!checked, { shouldDirty: true })}
+                        className="shrink-0 mt-0.5"
+                      />
+                    </div>
+                    <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20 rounded-lg">
+                      <p className="text-xs text-blue-800 dark:text-blue-300 flex items-start gap-2">
+                        <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                        <span>
+                          Stripe Tax calls your Stripe account's Tax API per invoice. Transient errors fall back to the manual rate
+                          so billing never stalls. Stripe Tax must be enabled in your Stripe dashboard; tax registrations control
+                          which jurisdictions collect tax.
+                        </span>
                       </p>
                     </div>
-                  )}
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </section>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-        {/* Payments — per-tenant Stripe credentials */}
-        <div className="pb-24">
-          <PaymentsSection />
+          {/* Payments: per-tenant Stripe credentials */}
+          <TabsContent value="payments">
+            <PaymentsSection />
+          </TabsContent>
+
         </div>
-      </div>
+      </Tabs>
 
       {/* Sticky save bar */}
       {hasChanges && (
@@ -450,17 +772,27 @@ export default function SettingsPage() {
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Payments — per-tenant Stripe credentials
+// ─────────────────────────────────────────────────────────────────────────
+//
+// One card for the mode the user is currently operating in (driven by the
+// global Test/Live header toggle), not two stacked cards — switching modes
+// is already a one-click header action. First-time setup is a two-step
+// checklist (API keys → webhook); once wired, the card collapses to a
+// summary row with a Manage button for rotates / disconnect.
+
 function PaymentsSection() {
   const queryClient = useQueryClient()
+  const { user } = useAuth()
+  const livemode = user?.livemode ?? false
   const { data, isLoading, error } = useQuery({
     queryKey: ['stripe-credentials'],
     queryFn: () => api.listStripeCredentials(),
   })
 
-  const byMode = (rows: StripeProviderCredentials[] | undefined, live: boolean) =>
-    rows?.find(r => r.livemode === live)
-
-  const rows = data?.data ?? []
+  const current = data?.data?.find(r => r.livemode === livemode)
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['stripe-credentials'] })
 
   return (
     <section>
@@ -468,9 +800,13 @@ function PaymentsSection() {
         <div className="w-8 h-8 rounded-lg bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center">
           <CreditCard size={16} className="text-violet-600 dark:text-violet-400" />
         </div>
-        <div>
+        <div className="flex-1 min-w-0">
           <h2 className="text-sm font-semibold text-foreground">Payments</h2>
-          <p className="text-xs text-muted-foreground">Connect your own Stripe account — Velox charges invoices through your keys, money flows straight to you.</p>
+          <p className="text-xs text-muted-foreground">
+            Connect your own Stripe account — Velox charges invoices through your keys, money flows straight to you.
+            Showing <span className="font-medium text-foreground">{livemode ? 'live' : 'test'}</span> credentials;
+            switch via the Test/Live toggle in the header.
+          </p>
         </div>
       </div>
 
@@ -479,18 +815,12 @@ function PaymentsSection() {
       ) : error ? (
         <Card><CardContent className="p-6"><p className="text-sm text-destructive">{error instanceof Error ? error.message : 'Failed to load Stripe credentials'}</p></CardContent></Card>
       ) : (
-        <div className="space-y-4">
-          <StripeModeCard
-            mode="test"
-            current={byMode(rows, false)}
-            onChanged={() => queryClient.invalidateQueries({ queryKey: ['stripe-credentials'] })}
-          />
-          <StripeModeCard
-            mode="live"
-            current={byMode(rows, true)}
-            onChanged={() => queryClient.invalidateQueries({ queryKey: ['stripe-credentials'] })}
-          />
-        </div>
+        <StripeCard
+          key={livemode ? 'live' : 'test'}
+          livemode={livemode}
+          current={current}
+          onChanged={invalidate}
+        />
       )}
     </section>
   )
@@ -499,30 +829,379 @@ function PaymentsSection() {
 // Prefix shape validated client-side before the request so operators see
 // field-level errors without waiting for the server. Mirrors the backend's
 // validateKeyShape — both must stay in sync.
+// API keys and webhook secret are rotated independently — matches Stripe /
+// Chargebee / Recurly UI. Webhook has its own form + PATCH endpoint.
 const stripeConnectSchema = z.object({
   secret_key: z.string().min(1, 'Secret key is required'),
   publishable_key: z.string().min(1, 'Publishable key is required'),
-  webhook_secret: z.string().optional(),
 })
 type StripeConnectForm = z.infer<typeof stripeConnectSchema>
 
-function StripeModeCard({ mode, current, onChanged }: {
-  mode: 'test' | 'live'
+const webhookSecretSchema = z.object({
+  webhook_secret: z.string().min(1, 'Webhook signing secret is required').startsWith('whsec_', 'Must start with whsec_'),
+})
+type WebhookSecretForm = z.infer<typeof webhookSecretSchema>
+
+// Mirrors the dispatcher in internal/payment/stripe.go and the timeline filter
+// in internal/invoice/handler.go. Keep in sync when backend adds new handlers —
+// events not in this list are dropped at the default case (harmless but wasted
+// round-trips from Stripe, and they won't surface on invoice timelines).
+const STRIPE_WEBHOOK_EVENTS: { name: string; purpose: string }[] = [
+  { name: 'payment_intent.succeeded', purpose: 'marks invoice paid' },
+  { name: 'payment_intent.payment_failed', purpose: 'triggers dunning retry' },
+  { name: 'payment_intent.canceled', purpose: 'shows on invoice timeline' },
+  { name: 'checkout.session.completed', purpose: 'completes Stripe Checkout returns' },
+  { name: 'setup_intent.succeeded', purpose: 'saves customer payment method' },
+  { name: 'setup_intent.setup_failed', purpose: 'logs setup errors' },
+]
+
+// StripeCard is the main orchestrator for a single mode. State machine,
+// from most → least common runtime path:
+//
+//   fullyConnected && !managing  → <ConnectedSummary/>  (collapsed row)
+//   fullyConnected &&  managing  → full card with step summaries + rotate/disconnect actions
+//   verified && webhookPending   → full card, step 1 summary, step 2 form
+//   failing                       → full card with error banner, step 1 form
+//   disconnected                  → full card, step 1 form, step 2 locked
+//
+// The `replacingKeys` / `replacingWebhook` booleans are inline editors
+// inside steps 1 / 2 when the operator chooses to rotate a single credential
+// from Manage mode — they swap the summary row for the matching form.
+function StripeCard({ livemode, current, onChanged }: {
+  livemode: boolean
   current: StripeProviderCredentials | undefined
   onChanged: () => void
 }) {
-  const livemode = mode === 'live'
-  const [editing, setEditing] = useState(false)
+  const [managing, setManaging] = useState(false)
+  const [replacingKeys, setReplacingKeys] = useState(false)
+  const [replacingWebhook, setReplacingWebhook] = useState(false)
+
   const connected = !!current
+  const failing = connected && !!current.last_verified_error
+  const verified = connected && !!current.verified_at && !current.last_verified_error
+  const fullyConnected = verified && !!current.has_webhook_secret
+  const webhookPending = verified && !current.has_webhook_secret
 
-  const connectedOk = connected && !!current?.verified_at && !current?.last_verified_error
-  const connectedFailing = connected && !!current?.last_verified_error
+  if (fullyConnected && !managing && current) {
+    return (
+      <ConnectedSummary
+        current={current}
+        livemode={livemode}
+        onManage={() => setManaging(true)}
+      />
+    )
+  }
 
+  const closeManage = () => {
+    setManaging(false)
+    setReplacingKeys(false)
+    setReplacingWebhook(false)
+  }
+
+  // Step 1 shows the form when not yet verified OR the operator is rotating.
+  const step1Mode: 'form' | 'summary' = !verified || replacingKeys ? 'form' : 'summary'
+
+  // Step 2 is locked behind step 1; otherwise shows setup (URL + paste form)
+  // when wiring is incomplete or the operator is rotating the webhook secret.
+  const step2Mode: 'locked' | 'setup' | 'summary' =
+    !verified ? 'locked'
+    : (!current?.has_webhook_secret || replacingWebhook) ? 'setup'
+    : 'summary'
+
+  return (
+    <Card>
+      <CardContent className="p-6 space-y-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-sm font-semibold text-foreground">
+                Stripe — {livemode ? 'live' : 'test'} mode
+              </h3>
+              <StatusBadge
+                connected={connected}
+                failing={failing}
+                fullyConnected={fullyConnected}
+                webhookPending={webhookPending}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {livemode
+                ? 'Production Stripe keys — real charges.'
+                : 'Safe to experiment — no real money moves.'}
+            </p>
+          </div>
+          {managing && (
+            <button
+              type="button"
+              onClick={closeManage}
+              aria-label="Close manage view"
+              className="h-7 w-7 shrink-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center transition-colors"
+            >
+              <X size={16} />
+            </button>
+          )}
+        </div>
+
+        {failing && current && (
+          <div className="p-3 rounded-lg bg-destructive/5 border border-destructive/20">
+            <p className="text-xs text-destructive flex items-start gap-2">
+              <AlertCircle size={12} className="shrink-0 mt-0.5" />
+              <span>
+                <strong>Stripe verification failed: </strong>
+                {current.last_verified_error}. Re-paste your API keys below with
+                the current values from your Stripe Dashboard.
+              </span>
+            </p>
+          </div>
+        )}
+
+        <StepRow
+          number={1}
+          title="Connect your Stripe API keys"
+          done={verified}
+          summary={verified && current ? (
+            <>
+              Verified as{' '}
+              <span className="font-medium text-foreground">
+                {current.stripe_account_name || current.stripe_account_id}
+              </span>
+            </>
+          ) : undefined}
+        >
+          {step1Mode === 'form' ? (
+            <>
+              {verified && managing && replacingKeys && (
+                <div className="flex items-center justify-between text-xs text-muted-foreground mb-3">
+                  <span>Paste the new keys you just rolled in Stripe.</span>
+                  <button
+                    type="button"
+                    className="underline underline-offset-2 hover:text-foreground"
+                    onClick={() => setReplacingKeys(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+              <ApiKeysForm
+                livemode={livemode}
+                connected={connected}
+                onSuccess={() => { setReplacingKeys(false); onChanged() }}
+              />
+            </>
+          ) : (
+            managing && current && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <ReadOnlyRow label="Stripe account" value={current.stripe_account_name || current.stripe_account_id || '—'} />
+                  <ReadOnlyRow
+                    label="Secret key"
+                    value={formatSecretKey(current.secret_key_prefix, current.secret_key_last4)}
+                    mono={!!current.secret_key_last4}
+                  />
+                  <ReadOnlyRow label="Publishable key" value={current.publishable_key || '—'} mono />
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setReplacingKeys(true)}>
+                  Rotate API keys
+                </Button>
+              </div>
+            )
+          )}
+        </StepRow>
+
+        <StepRow
+          number={2}
+          title="Deliver Stripe events to Velox"
+          done={fullyConnected}
+          locked={step2Mode === 'locked'}
+          summary={
+            fullyConnected && current
+              ? <>Signing secret <span className="font-mono text-foreground">whsec_••••{current.webhook_secret_last4 ?? ''}</span> active</>
+              : step2Mode === 'locked'
+                ? 'Unlocks after step 1'
+                : undefined
+          }
+        >
+          {step2Mode === 'setup' && current && (
+            <>
+              {managing && fullyConnected && replacingWebhook && (
+                <div className="flex items-center justify-between text-xs text-muted-foreground mb-3">
+                  <span>Paste the new signing secret from Stripe.</span>
+                  <button
+                    type="button"
+                    className="underline underline-offset-2 hover:text-foreground"
+                    onClick={() => setReplacingWebhook(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+              <WebhookSetup
+                current={current}
+                onSuccess={() => { setReplacingWebhook(false); onChanged() }}
+              />
+            </>
+          )}
+          {step2Mode === 'summary' && managing && current && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <ReadOnlyRow
+                  label="Signing secret"
+                  value={`whsec_••••••••${current.webhook_secret_last4 ?? ''}`}
+                  mono
+                />
+                <ReadOnlyRow label="Status" value="Verified" />
+              </div>
+              <WebhookUrlRow endpointId={current.id} />
+              <Button variant="outline" size="sm" onClick={() => setReplacingWebhook(true)}>
+                Replace webhook secret
+              </Button>
+            </div>
+          )}
+        </StepRow>
+
+        {managing && connected && (
+          <div className="pt-4 border-t border-border">
+            <DisconnectAction mode={livemode ? 'live' : 'test'} onDone={onChanged} />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// Collapsed "happy path" — one-line summary plus Manage button. Pops open
+// the full StripeCard (with step details + rotate/disconnect) on demand.
+function ConnectedSummary({ current, livemode, onManage }: {
+  current: StripeProviderCredentials
+  livemode: boolean
+  onManage: () => void
+}) {
+  return (
+    <Card>
+      <CardContent className="p-5 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="h-9 w-9 shrink-0 rounded-full bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center">
+            <Check size={16} className="text-emerald-600 dark:text-emerald-400" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-sm font-semibold text-foreground truncate">
+                Stripe {livemode ? 'live' : 'test'} mode connected
+              </p>
+              <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                Ready
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground truncate">
+              {current.stripe_account_name || current.stripe_account_id} ·{' '}
+              <span className="font-mono">whsec_••••{current.webhook_secret_last4 ?? ''}</span>
+            </p>
+          </div>
+        </div>
+        <Button variant="outline" size="sm" onClick={onManage} className="shrink-0">
+          Manage
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function StatusBadge({ connected, failing, fullyConnected, webhookPending }: {
+  connected: boolean
+  failing: boolean
+  fullyConnected: boolean
+  webhookPending: boolean
+}) {
+  if (failing) {
+    return (
+      <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-destructive/10 text-destructive flex items-center gap-1">
+        <AlertCircle size={10} /> Needs attention
+      </span>
+    )
+  }
+  if (fullyConnected) {
+    return (
+      <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400 flex items-center gap-1">
+        <Check size={10} /> Connected
+      </span>
+    )
+  }
+  if (webhookPending) {
+    return (
+      <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400 flex items-center gap-1">
+        <AlertCircle size={10} /> Webhook pending
+      </span>
+    )
+  }
+  if (connected) {
+    return (
+      <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+        In progress
+      </span>
+    )
+  }
+  return (
+    <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+      Not connected
+    </span>
+  )
+}
+
+// Numbered step row. Locked steps render muted and without children; done
+// steps render with a checkmark + one-line summary; active steps render
+// their children underneath the title.
+function StepRow({ number, title, done, locked, summary, children }: {
+  number: number
+  title: string
+  done?: boolean
+  locked?: boolean
+  summary?: ReactNode
+  children?: ReactNode
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <div
+        className={cn(
+          'h-6 w-6 shrink-0 rounded-full flex items-center justify-center text-xs font-medium mt-0.5',
+          done
+            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
+            : locked
+              ? 'bg-muted text-muted-foreground'
+              : 'bg-primary/10 text-primary ring-1 ring-primary/30',
+        )}
+      >
+        {done ? <Check size={12} /> : number}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className={cn('text-sm font-medium', locked ? 'text-muted-foreground' : 'text-foreground')}>
+          {title}
+        </p>
+        {summary && (
+          <p className="text-xs text-muted-foreground mt-0.5">{summary}</p>
+        )}
+        {!locked && children && (
+          <div className="mt-3">{children}</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Secret-key + publishable-key form. Used both for first-time connect and
+// for key rotation (mode switches based on `connected`). Rotations go through
+// a confirmation dialog because pasting new keys invalidates the old ones
+// the instant Stripe accepts them.
+function ApiKeysForm({ livemode, connected, onSuccess }: {
+  livemode: boolean
+  connected: boolean
+  onSuccess: () => void
+}) {
   const methods = useForm<StripeConnectForm>({
     resolver: zodResolver(stripeConnectSchema),
-    defaultValues: { secret_key: '', publishable_key: '', webhook_secret: '' },
+    defaultValues: { secret_key: '', publishable_key: '' },
   })
   const { register, handleSubmit, reset, formState: { errors } } = methods
+  const [pending, setPending] = useState<StripeConnectForm | null>(null)
 
   const connect = useMutation({
     mutationFn: (data: StripeConnectForm) => api.connectStripe({ ...data, livemode }),
@@ -530,193 +1209,300 @@ function StripeModeCard({ mode, current, onChanged }: {
       if (row.last_verified_error) {
         toast.error(`Saved, but Stripe verify failed: ${row.last_verified_error}`)
       } else {
-        toast.success(`Connected ${livemode ? 'live' : 'test'} mode${row.stripe_account_name ? ` as ${row.stripe_account_name}` : ''}`)
+        toast.success(
+          `${connected ? 'Rotated' : 'Connected'} ${livemode ? 'live' : 'test'} mode${
+            row.stripe_account_name ? ` as ${row.stripe_account_name}` : ''
+          }`,
+        )
       }
       reset()
-      setEditing(false)
-      onChanged()
+      onSuccess()
     },
     onError: (err) => {
-      applyApiError(methods, err, ['secret_key', 'publishable_key', 'webhook_secret'], {
+      applyApiError(methods, err, ['secret_key', 'publishable_key'], {
         toastTitle: 'Failed to connect Stripe',
       })
     },
   })
 
+  const onSubmit = handleSubmit((data) => {
+    if (connected) { setPending(data); return }
+    connect.mutate(data)
+  })
+
+  return (
+    <>
+      <form onSubmit={onSubmit} className="space-y-3">
+        <div>
+          <Label>Secret key</Label>
+          <Input
+            type="password"
+            autoComplete="off"
+            placeholder={livemode ? 'sk_live_...' : 'sk_test_...'}
+            {...register('secret_key')}
+            className={cn('mt-1 font-mono', errors.secret_key && 'border-destructive')}
+          />
+          {errors.secret_key && <p className="text-xs text-destructive mt-1">{errors.secret_key.message}</p>}
+          <p className="text-xs text-muted-foreground mt-1">
+            Find it at{' '}
+            <a
+              href={livemode ? 'https://dashboard.stripe.com/apikeys' : 'https://dashboard.stripe.com/test/apikeys'}
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2 hover:text-foreground inline-flex items-center gap-1"
+            >
+              dashboard.stripe.com/{livemode ? '' : 'test/'}apikeys
+              <ExternalLink size={10} />
+            </a>
+            . Restricted keys (rk_) are also accepted.
+          </p>
+        </div>
+        <div>
+          <Label>Publishable key</Label>
+          <Input
+            type="text"
+            autoComplete="off"
+            placeholder={livemode ? 'pk_live_...' : 'pk_test_...'}
+            {...register('publishable_key')}
+            className={cn('mt-1 font-mono', errors.publishable_key && 'border-destructive')}
+          />
+          {errors.publishable_key && <p className="text-xs text-destructive mt-1">{errors.publishable_key.message}</p>}
+        </div>
+        <div className="flex items-center gap-2 pt-1">
+          <Button type="submit" disabled={connect.isPending}>
+            {connect.isPending ? (
+              <><Loader2 size={14} className="animate-spin mr-2" /> Verifying with Stripe...</>
+            ) : connected ? (
+              'Rotate API keys'
+            ) : (
+              `Connect ${livemode ? 'live' : 'test'} mode`
+            )}
+          </Button>
+        </div>
+      </form>
+
+      <AlertDialog open={!!pending} onOpenChange={(v) => { if (!v) setPending(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rotate {livemode ? 'live' : 'test'} mode API keys?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The current secret and publishable keys will stop working as soon as the new ones are accepted.
+              Any in-flight charges or checkout scripts still using the old publishable key will fail until they reload.
+              Stripe best practice is to roll the key in your Stripe Dashboard and paste the new one here in the same session.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pending) connect.mutate(pending)
+                setPending(null)
+              }}
+            >
+              Rotate keys
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
+}
+
+// Step 2 body: shows the Velox webhook URL + event checklist, and a field
+// to paste the resulting whsec_ after the tenant registers the endpoint in
+// Stripe. Same component handles rotation from Manage mode (guarded by the
+// confirmation dialog because Stripe signs with the new secret immediately).
+function WebhookSetup({ current, onSuccess }: {
+  current: StripeProviderCredentials
+  onSuccess: () => void
+}) {
+  const methods = useForm<WebhookSecretForm>({
+    resolver: zodResolver(webhookSecretSchema),
+    defaultValues: { webhook_secret: '' },
+  })
+  const rotating = !!current.has_webhook_secret
+  const [pending, setPending] = useState<WebhookSecretForm | null>(null)
+
+  const save = useMutation({
+    mutationFn: (data: WebhookSecretForm) =>
+      api.setStripeWebhookSecret(current.livemode ? 'live' : 'test', data.webhook_secret),
+    onSuccess: () => {
+      toast.success(rotating ? 'Webhook secret replaced' : 'Webhook secret saved')
+      methods.reset()
+      onSuccess()
+    },
+    onError: (err) => {
+      applyApiError(methods, err, ['webhook_secret'], {
+        toastTitle: 'Failed to save webhook secret',
+      })
+    },
+  })
+
+  const onSubmit = methods.handleSubmit((data) => {
+    if (rotating) { setPending(data); return }
+    save.mutate(data)
+  })
+
+  return (
+    <div className="space-y-4">
+      <div className="p-3 rounded-lg border border-border bg-muted/30 space-y-2">
+        <p className="text-xs text-muted-foreground">
+          <strong className="text-foreground">A.</strong> In{' '}
+          <a
+            href={current.livemode ? 'https://dashboard.stripe.com/webhooks' : 'https://dashboard.stripe.com/test/webhooks'}
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2 hover:text-foreground inline-flex items-center gap-1"
+          >
+            Stripe Dashboard → Developers → Webhooks
+            <ExternalLink size={10} />
+          </a>
+          , click <em>Add endpoint</em> and paste this URL:
+        </p>
+        <WebhookUrlRow endpointId={current.id} />
+        <p className="text-xs text-muted-foreground pt-1">Subscribe to these events:</p>
+        <ul className="space-y-0.5 pl-1">
+          {STRIPE_WEBHOOK_EVENTS.map(e => (
+            <li key={e.name} className="flex items-baseline gap-2 text-xs">
+              <span className="text-muted-foreground/60">•</span>
+              <span className="min-w-0">
+                <code className="font-mono text-foreground/90">{e.name}</code>
+                <span className="text-muted-foreground"> — {e.purpose}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <form onSubmit={onSubmit} className="space-y-2">
+        <Label className="text-xs text-foreground">
+          <strong className="text-foreground">B.</strong> Paste the signing secret Stripe shows after saving the endpoint
+        </Label>
+        <Input
+          type="password"
+          autoComplete="off"
+          placeholder="whsec_..."
+          {...methods.register('webhook_secret')}
+          className={cn('font-mono', methods.formState.errors.webhook_secret && 'border-destructive')}
+        />
+        {methods.formState.errors.webhook_secret && (
+          <p className="text-xs text-destructive">{methods.formState.errors.webhook_secret.message}</p>
+        )}
+        <div className="flex items-center gap-2 pt-1">
+          <Button type="submit" size="sm" disabled={save.isPending}>
+            {save.isPending ? (
+              <><Loader2 size={14} className="animate-spin mr-2" /> Saving...</>
+            ) : rotating ? (
+              'Replace webhook secret'
+            ) : (
+              'Finish setup'
+            )}
+          </Button>
+        </div>
+      </form>
+
+      <AlertDialog open={!!pending} onOpenChange={(v) => { if (!v) setPending(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Replace webhook signing secret?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Stripe will sign webhook deliveries with the new secret immediately. Events still in
+              flight under the old secret will fail signature verification and retry on Stripe's schedule.
+              Roll the secret in Stripe Dashboard first, then paste the new one here.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pending) save.mutate(pending)
+                setPending(null)
+              }}
+            >
+              Replace secret
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  )
+}
+
+function DisconnectAction({ mode, onDone }: { mode: 'test' | 'live'; onDone: () => void }) {
   const remove = useMutation({
     mutationFn: () => api.deleteStripeCredentials(mode),
     onSuccess: () => {
       toast.success(`Disconnected ${mode} mode`)
-      onChanged()
+      onDone()
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : 'Failed to disconnect')
     },
   })
 
-  const onSubmit = handleSubmit((data) => connect.mutate(data))
-
-  const title = livemode ? 'Live mode' : 'Test mode'
-  const titleSub = livemode ? 'Production Stripe keys — real charges.' : 'Safe to experiment — no real money moves.'
-
   return (
-    <Card>
-      <CardContent className="p-6 space-y-4">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-              {connectedOk && (
-                <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400 flex items-center gap-1">
-                  <Check size={10} /> Connected
-                </span>
-              )}
-              {connectedFailing && (
-                <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400 flex items-center gap-1">
-                  <AlertCircle size={10} /> Needs attention
-                </span>
-              )}
-              {!connected && (
-                <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-                  Not connected
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5">{titleSub}</p>
-          </div>
-
-          {connected && !editing && (
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>Replace keys</Button>
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
-                    <Trash2 size={14} className="mr-1" /> Disconnect
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Disconnect {mode} mode?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Velox will stop charging new invoices through this Stripe account.
-                      Existing Stripe charges and refunds are unaffected. You can reconnect with new keys anytime.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => remove.mutate()}>Disconnect</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </div>
-          )}
-        </div>
-
-        {connected && !editing && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <ReadOnlyRow label="Stripe account" value={current?.stripe_account_name || current?.stripe_account_id || '—'} />
-            <ReadOnlyRow label="Secret key" value={current?.secret_key_last4 ? `•••• ${current.secret_key_last4}` : '—'} mono />
-            <ReadOnlyRow label="Publishable key" value={current?.publishable_key || '—'} mono />
-            <ReadOnlyRow
-              label="Webhook secret"
-              value={current?.has_webhook_secret ? `•••• ${current?.webhook_secret_last4 ?? ''}` : 'Not set'}
-              mono={current?.has_webhook_secret}
-            />
-            {current?.has_webhook_secret && <WebhookUrlRow endpointId={current.id} />}
-            {connectedFailing && (
-              <div className="md:col-span-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
-                <p className="text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
-                  <AlertCircle size={12} className="shrink-0 mt-0.5" />
-                  <span>Last Stripe verify failed: {current?.last_verified_error}</span>
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {(!connected || editing) && (
-          <form onSubmit={onSubmit} className="space-y-4">
-            <div>
-              <Label>Secret key</Label>
-              <Input
-                type="password"
-                autoComplete="off"
-                placeholder={livemode ? 'sk_live_...' : 'sk_test_...'}
-                {...register('secret_key')}
-                className={cn('mt-1 font-mono', errors.secret_key && 'border-destructive')}
-              />
-              {errors.secret_key && <p className="text-xs text-destructive mt-1">{errors.secret_key.message}</p>}
-              <p className="text-xs text-muted-foreground mt-1">
-                Find it at{' '}
-                <a
-                  href={livemode ? 'https://dashboard.stripe.com/apikeys' : 'https://dashboard.stripe.com/test/apikeys'}
-                  target="_blank" rel="noreferrer"
-                  className="underline underline-offset-2 hover:text-foreground"
-                >
-                  dashboard.stripe.com/{livemode ? '' : 'test/'}apikeys
-                </a>. Restricted keys (rk_) are also accepted.
-              </p>
-            </div>
-            <div>
-              <Label>Publishable key</Label>
-              <Input
-                type="text"
-                autoComplete="off"
-                placeholder={livemode ? 'pk_live_...' : 'pk_test_...'}
-                {...register('publishable_key')}
-                className={cn('mt-1 font-mono', errors.publishable_key && 'border-destructive')}
-              />
-              {errors.publishable_key && <p className="text-xs text-destructive mt-1">{errors.publishable_key.message}</p>}
-            </div>
-            <div>
-              <Label>Webhook signing secret <span className="text-muted-foreground font-normal">(optional)</span></Label>
-              <Input
-                type="password"
-                autoComplete="off"
-                placeholder="whsec_..."
-                {...register('webhook_secret')}
-                className={cn('mt-1 font-mono', errors.webhook_secret && 'border-destructive')}
-              />
-              {errors.webhook_secret && <p className="text-xs text-destructive mt-1">{errors.webhook_secret.message}</p>}
-              <p className="text-xs text-muted-foreground mt-1">
-                After saving the API keys, Velox shows a webhook URL below — paste it into Stripe Dashboard → Developers → Webhooks,
-                then return here with the <code className="font-mono">whsec_...</code> Stripe generates.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 pt-1">
-              <Button type="submit" disabled={connect.isPending}>
-                {connect.isPending
-                  ? <><Loader2 size={14} className="animate-spin mr-2" /> Verifying with Stripe...</>
-                  : (connected ? 'Save new keys' : `Connect ${mode} mode`)}
-              </Button>
-              {editing && (
-                <Button variant="ghost" type="button" onClick={() => { reset(); setEditing(false) }}>Cancel</Button>
-              )}
-            </div>
-          </form>
-        )}
-      </CardContent>
-    </Card>
+    <AlertDialog>
+      <AlertDialogTrigger render={<Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" />}>
+        <Trash2 size={14} className="mr-2" /> Disconnect {mode} mode
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Disconnect {mode} mode?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Velox will stop charging new invoices through this Stripe account.
+            Existing Stripe charges and refunds are unaffected. You can reconnect with new keys anytime.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => remove.mutate()}>Disconnect</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 
-function ReadOnlyRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+// Stripe-dashboard-style masked display: "sk_live_51ab••••••••wxyz".
+// Prefix (from DB) is the key type + a few account-identifying chars — lets
+// the tenant match what they see in their Stripe dashboard at a glance.
+// Falls back to "•••• {last4}" for rows created before 0033 (prefix empty).
+function formatSecretKey(prefix: string | undefined, last4: string | undefined): string {
+  if (!last4) return '—'
+  if (prefix) return `${prefix}••••••••${last4}`
+  return `•••• ${last4}`
+}
+
+function ReadOnlyRow({ label, value, mono, action }: {
+  label: string
+  value: string
+  mono?: boolean
+  action?: React.ReactNode
+}) {
   return (
     <div className="py-2.5 px-3 bg-muted rounded-lg">
-      <p className="text-xs text-muted-foreground mb-0.5">{label}</p>
-      <p className={cn('text-sm text-foreground break-all', mono && 'font-mono')}>{value}</p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-muted-foreground mb-0.5">{label}</p>
+          <p className={cn('text-sm text-foreground break-all', mono && 'font-mono')}>{value}</p>
+        </div>
+        {action && <div className="shrink-0">{action}</div>}
+      </div>
     </div>
   )
 }
 
+// Just the URL + copy. Event subscription list lives in WebhookSetup (only
+// relevant during setup/rotation, not when reviewing a connected integration).
 function WebhookUrlRow({ endpointId }: { endpointId: string }) {
   const url = `${API_ORIGIN}/v1/webhooks/stripe/${endpointId}`
   return (
-    <div className="md:col-span-2 py-2.5 px-3 bg-muted rounded-lg">
+    <div className="py-2.5 px-3 bg-background border border-border rounded-lg">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="text-xs text-muted-foreground mb-0.5">Stripe webhook URL</p>
-          <code className="text-sm font-mono text-foreground break-all">{url}</code>
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-0.5">
+            Webhook URL
+          </p>
+          <code className="text-xs font-mono text-foreground break-all">{url}</code>
         </div>
         <Button
           variant="ghost"
@@ -726,11 +1512,6 @@ function WebhookUrlRow({ endpointId }: { endpointId: string }) {
           <Copy size={14} />
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground mt-2">
-        Paste into Stripe Dashboard → Developers → Webhooks → Add endpoint. Events:{' '}
-        <code className="font-mono">payment_intent.succeeded</code>,{' '}
-        <code className="font-mono">payment_intent.payment_failed</code>.
-      </p>
     </div>
   )
 }

@@ -89,17 +89,26 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 	var ts domain.TenantSettings
 	err = tx.QueryRowContext(ctx, `
 		SELECT tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
-			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
-			COALESCE(tax_home_country,''),
-			COALESCE(company_name,''), COALESCE(company_address,''),
+			net_payment_terms, tax_provider, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
+			COALESCE(default_product_tax_code,''),
+			COALESCE(company_name,''),
+			COALESCE(company_address_line1,''), COALESCE(company_address_line2,''),
+			COALESCE(company_city,''), COALESCE(company_state,''),
+			COALESCE(company_postal_code,''), COALESCE(company_country,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
+			COALESCE(tax_id,''), COALESCE(support_url,''), COALESCE(invoice_footer,''),
 			audit_fail_closed, created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1
 	`, tenantID).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
-		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
-		&ts.TaxHomeCountry,
-		&ts.CompanyName, &ts.CompanyAddress,
-		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL, &ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
+		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
+		&ts.DefaultProductTaxCode,
+		&ts.CompanyName,
+		&ts.CompanyAddressLine1, &ts.CompanyAddressLine2,
+		&ts.CompanyCity, &ts.CompanyState,
+		&ts.CompanyPostalCode, &ts.CompanyCountry,
+		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL,
+		&ts.TaxID, &ts.SupportURL, &ts.InvoiceFooter,
+		&ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return domain.TenantSettings{}, errs.ErrNotFound
@@ -123,36 +132,64 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 	now := time.Now().UTC()
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO tenant_settings (tenant_id, default_currency, timezone, invoice_prefix,
-			net_payment_terms, tax_rate_bp, tax_name, tax_inclusive, tax_home_country,
-			company_name, company_address, company_email, company_phone,
-			logo_url, audit_fail_closed, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)
+			net_payment_terms, tax_provider, tax_rate_bp, tax_name, tax_inclusive, default_product_tax_code,
+			company_name,
+			company_address_line1, company_address_line2, company_city, company_state,
+			company_postal_code, company_country,
+			company_email, company_phone,
+			logo_url, tax_id, support_url, invoice_footer,
+			audit_fail_closed, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$25)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			default_currency = EXCLUDED.default_currency, timezone = EXCLUDED.timezone,
 			invoice_prefix = EXCLUDED.invoice_prefix, net_payment_terms = EXCLUDED.net_payment_terms,
+			tax_provider = EXCLUDED.tax_provider,
 			tax_rate_bp = EXCLUDED.tax_rate_bp, tax_name = EXCLUDED.tax_name,
-			tax_inclusive = EXCLUDED.tax_inclusive, tax_home_country = EXCLUDED.tax_home_country,
-			company_name = EXCLUDED.company_name, company_address = EXCLUDED.company_address,
+			tax_inclusive = EXCLUDED.tax_inclusive,
+			default_product_tax_code = EXCLUDED.default_product_tax_code,
+			company_name = EXCLUDED.company_name,
+			company_address_line1 = EXCLUDED.company_address_line1,
+			company_address_line2 = EXCLUDED.company_address_line2,
+			company_city = EXCLUDED.company_city, company_state = EXCLUDED.company_state,
+			company_postal_code = EXCLUDED.company_postal_code,
+			company_country = EXCLUDED.company_country,
 			company_email = EXCLUDED.company_email, company_phone = EXCLUDED.company_phone,
-			logo_url = EXCLUDED.logo_url, audit_fail_closed = EXCLUDED.audit_fail_closed,
+			logo_url = EXCLUDED.logo_url,
+			tax_id = EXCLUDED.tax_id, support_url = EXCLUDED.support_url,
+			invoice_footer = EXCLUDED.invoice_footer,
+			audit_fail_closed = EXCLUDED.audit_fail_closed,
 			updated_at = EXCLUDED.updated_at
 		RETURNING tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
-			net_payment_terms, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
-			COALESCE(tax_home_country,''),
-			COALESCE(company_name,''), COALESCE(company_address,''),
+			net_payment_terms, tax_provider, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
+			COALESCE(default_product_tax_code,''),
+			COALESCE(company_name,''),
+			COALESCE(company_address_line1,''), COALESCE(company_address_line2,''),
+			COALESCE(company_city,''), COALESCE(company_state,''),
+			COALESCE(company_postal_code,''), COALESCE(company_country,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
+			COALESCE(tax_id,''), COALESCE(support_url,''), COALESCE(invoice_footer,''),
 			audit_fail_closed, created_at, updated_at
 	`, ts.TenantID, ts.DefaultCurrency, ts.Timezone, ts.InvoicePrefix,
-		ts.NetPaymentTerms, ts.TaxRateBP, ts.TaxName, ts.TaxInclusive, ts.TaxHomeCountry,
+		ts.NetPaymentTerms, ts.TaxProvider, ts.TaxRateBP, ts.TaxName, ts.TaxInclusive, ts.DefaultProductTaxCode,
 		postgres.NullableString(ts.CompanyName),
-		postgres.NullableString(ts.CompanyAddress), postgres.NullableString(ts.CompanyEmail),
-		postgres.NullableString(ts.CompanyPhone), postgres.NullableString(ts.LogoURL),
+		postgres.NullableString(ts.CompanyAddressLine1), postgres.NullableString(ts.CompanyAddressLine2),
+		postgres.NullableString(ts.CompanyCity), postgres.NullableString(ts.CompanyState),
+		postgres.NullableString(ts.CompanyPostalCode), postgres.NullableString(ts.CompanyCountry),
+		postgres.NullableString(ts.CompanyEmail), postgres.NullableString(ts.CompanyPhone),
+		postgres.NullableString(ts.LogoURL),
+		postgres.NullableString(ts.TaxID), postgres.NullableString(ts.SupportURL),
+		postgres.NullableString(ts.InvoiceFooter),
 		ts.AuditFailClosed, now,
 	).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
-		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
-		&ts.TaxHomeCountry,
-		&ts.CompanyName, &ts.CompanyAddress,
-		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL, &ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
+		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
+		&ts.DefaultProductTaxCode,
+		&ts.CompanyName,
+		&ts.CompanyAddressLine1, &ts.CompanyAddressLine2,
+		&ts.CompanyCity, &ts.CompanyState,
+		&ts.CompanyPostalCode, &ts.CompanyCountry,
+		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL,
+		&ts.TaxID, &ts.SupportURL, &ts.InvoiceFooter,
+		&ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
 	if err != nil {
 		return domain.TenantSettings{}, err
 	}
@@ -269,6 +306,7 @@ func (h *SettingsHandler) get(w http.ResponseWriter, r *http.Request) {
 			Timezone:        "UTC",
 			InvoicePrefix:   "VLX",
 			NetPaymentTerms: 30,
+			TaxProvider:     "manual",
 		})
 		return
 	}
@@ -352,12 +390,60 @@ func validateSettings(ts *domain.TenantSettings) error {
 	if len(ts.CompanyName) > 255 {
 		return errs.Invalid("company_name", "must be at most 255 characters")
 	}
+	if len(ts.CompanyAddressLine1) > 200 {
+		return errs.Invalid("company_address_line1", "must be at most 200 characters")
+	}
+	if len(ts.CompanyAddressLine2) > 200 {
+		return errs.Invalid("company_address_line2", "must be at most 200 characters")
+	}
+	if len(ts.CompanyCity) > 100 {
+		return errs.Invalid("company_city", "must be at most 100 characters")
+	}
+	if len(ts.CompanyState) > 100 {
+		return errs.Invalid("company_state", "must be at most 100 characters")
+	}
+	if len(ts.CompanyPostalCode) > 20 {
+		return errs.Invalid("company_postal_code", "must be at most 20 characters")
+	}
+	ts.CompanyCountry = strings.ToUpper(strings.TrimSpace(ts.CompanyCountry))
+	if ts.CompanyCountry != "" && !iso3166Alpha2.MatchString(ts.CompanyCountry) {
+		return errs.Invalid("company_country", "must be an ISO-3166 alpha-2 country code (e.g. 'IN', 'US')")
+	}
+	if len(ts.TaxID) > 50 {
+		return errs.Invalid("tax_id", "must be at most 50 characters")
+	}
+	if url := strings.TrimSpace(ts.SupportURL); url != "" {
+		if len(url) > 500 {
+			return errs.Invalid("support_url", "must be at most 500 characters")
+		}
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			return errs.Invalid("support_url", "must start with http:// or https://")
+		}
+	}
+	if len(ts.InvoiceFooter) > 1000 {
+		return errs.Invalid("invoice_footer", "must be at most 1000 characters")
+	}
+	if ts.TaxProvider == "" {
+		ts.TaxProvider = "manual"
+	}
+	switch ts.TaxProvider {
+	case "none", "manual", "stripe_tax":
+	default:
+		return errs.Invalid("tax_provider", "must be 'none', 'manual', or 'stripe_tax'")
+	}
 	if ts.TaxRateBP < 0 || ts.TaxRateBP > 10000 {
 		return errs.Invalid("tax_rate_bp", "must be between 0 and 10000 (e.g. 1850 for 18.50%)")
 	}
-	ts.TaxHomeCountry = strings.ToUpper(strings.TrimSpace(ts.TaxHomeCountry))
-	if ts.TaxHomeCountry != "" && !iso3166Alpha2.MatchString(ts.TaxHomeCountry) {
-		return errs.Invalid("tax_home_country", "must be an ISO-3166 alpha-2 country code (e.g. 'IN', 'US')")
+	ts.DefaultProductTaxCode = strings.TrimSpace(ts.DefaultProductTaxCode)
+	if err := domain.ValidateStripeTaxCode("default_product_tax_code", ts.DefaultProductTaxCode); err != nil {
+		return err
+	}
+	// Seed a sensible default SaaS tax code when stripe_tax is selected and
+	// the tenant has not set their own. txcd_10103001 is Stripe's
+	// "Software as a Service (SaaS) – business use" classification — the
+	// right starting point for the overwhelming majority of Velox tenants.
+	if ts.TaxProvider == "stripe_tax" && ts.DefaultProductTaxCode == "" {
+		ts.DefaultProductTaxCode = "txcd_10103001"
 	}
 	return nil
 }

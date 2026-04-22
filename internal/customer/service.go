@@ -131,6 +131,18 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 	if err := tax.ValidateTaxID(bp.TaxIDType, bp.TaxID); err != nil {
 		return domain.CustomerBillingProfile{}, errs.Invalid("tax_id", err.Error())
 	}
+	// Default to standard tax status so zero-valued API requests behave
+	// predictably. The DB CHECK constraint mirrors this enum; validating
+	// here produces a clean 400 instead of a constraint error.
+	if bp.TaxStatus == "" {
+		bp.TaxStatus = tax.StatusStandard
+	}
+	switch bp.TaxStatus {
+	case tax.StatusStandard, tax.StatusExempt, tax.StatusReverseCharge:
+	default:
+		return domain.CustomerBillingProfile{}, errs.Invalid("tax_status", "must be 'standard', 'exempt', or 'reverse_charge'")
+	}
+	bp.TaxExemptReason = strings.TrimSpace(bp.TaxExemptReason)
 	if bp.ProfileStatus == "" {
 		bp.ProfileStatus = domain.BillingProfileIncomplete
 	}
