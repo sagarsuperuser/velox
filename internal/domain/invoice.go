@@ -138,6 +138,33 @@ const (
 	LineTypeTax      InvoiceLineItemType = "tax"
 )
 
+// InvoiceDiscountUpdate is the snapshot ApplyDiscountAtomic writes to a
+// draft invoice: the coupon discount plus the tax recompute that follows
+// from the new (subtotal - discount) base. Per-line tax fields travel
+// with the line items passed alongside. SubtotalCents is included
+// because tax-inclusive mode requires the caller to resolve the final net
+// subtotal before persistence.
+//
+// Lives in domain so invoice.Store (producer of the SQL) and the billing
+// engine (producer of the tax recompute) can agree on the shape without
+// importing each other.
+type InvoiceDiscountUpdate struct {
+	SubtotalCents    int64
+	DiscountCents    int64
+	TaxAmountCents   int64
+	TaxRateBP        int64
+	TaxName          string
+	TaxCountry       string
+	TaxID            string
+	TaxProvider      string
+	TaxCalculationID string
+	TaxReverseCharge bool
+	TaxExemptReason  string
+	TaxStatus        InvoiceTaxStatus
+	TaxDeferredAt    *time.Time
+	TaxPendingReason string
+}
+
 type InvoiceLineItem struct {
 	ID                  string              `json:"id"`
 	InvoiceID           string              `json:"invoice_id"`

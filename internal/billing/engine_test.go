@@ -296,6 +296,73 @@ func (m *mockInvoices) SetTaxTransaction(_ context.Context, _, id string, taxTra
 	return fmt.Errorf("not found")
 }
 
+func (m *mockInvoices) ListLineItems(_ context.Context, _, invoiceID string) ([]domain.InvoiceLineItem, error) {
+	var out []domain.InvoiceLineItem
+	for _, li := range m.lineItems {
+		if li.InvoiceID == invoiceID {
+			out = append(out, li)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockInvoices) ApplyDiscountAtomic(_ context.Context, tenantID, invoiceID string, update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
+	idx := -1
+	for i, inv := range m.invoices {
+		if inv.ID == invoiceID && inv.TenantID == tenantID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv := m.invoices[idx]
+	if inv.Status != domain.InvoiceDraft {
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf("invoice must be draft (current: %s)", inv.Status))
+	}
+	if inv.DiscountCents > 0 {
+		return domain.Invoice{}, errs.InvalidState("invoice already has a discount applied")
+	}
+	byID := make(map[string]domain.InvoiceLineItem, len(lineItems))
+	for _, li := range lineItems {
+		byID[li.ID] = li
+	}
+	for i, existing := range m.lineItems {
+		if existing.InvoiceID != invoiceID {
+			continue
+		}
+		if updated, ok := byID[existing.ID]; ok {
+			m.lineItems[i].AmountCents = updated.AmountCents
+			m.lineItems[i].TaxRateBP = updated.TaxRateBP
+			m.lineItems[i].TaxAmountCents = updated.TaxAmountCents
+			m.lineItems[i].TotalAmountCents = updated.TotalAmountCents
+		}
+	}
+	inv.SubtotalCents = update.SubtotalCents
+	inv.DiscountCents = update.DiscountCents
+	inv.TaxAmountCents = update.TaxAmountCents
+	inv.TaxRateBP = update.TaxRateBP
+	inv.TaxName = update.TaxName
+	inv.TaxCountry = update.TaxCountry
+	inv.TaxID = update.TaxID
+	inv.TaxProvider = update.TaxProvider
+	inv.TaxCalculationID = update.TaxCalculationID
+	inv.TaxReverseCharge = update.TaxReverseCharge
+	inv.TaxExemptReason = update.TaxExemptReason
+	inv.TaxStatus = update.TaxStatus
+	inv.TaxDeferredAt = update.TaxDeferredAt
+	inv.TaxPendingReason = update.TaxPendingReason
+	inv.TotalAmountCents = update.SubtotalCents - update.DiscountCents + update.TaxAmountCents
+	due := inv.TotalAmountCents - inv.AmountPaidCents - inv.CreditsAppliedCents
+	if due < 0 {
+		due = 0
+	}
+	inv.AmountDueCents = due
+	m.invoices[idx] = inv
+	return inv, nil
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1029,6 +1096,11 @@ type mockCouponApplier struct {
 	customerCalled          bool
 	markedRedemptions       []string
 	markedCustomerDiscounts []string
+	redeemReq               domain.CouponRedeemRequest
+	redeemResult            domain.CouponRedeemResult
+	redeemErr               error
+	voidedInvoices          []string
+	voidErr                 error
 }
 
 func (m *mockCouponApplier) ApplyToInvoice(_ context.Context, _, _, _, _ string, _ []string, _ int64) (domain.CouponDiscountResult, error) {
@@ -1049,6 +1121,32 @@ func (m *mockCouponApplier) MarkPeriodsApplied(_ context.Context, _ string, ids 
 func (m *mockCouponApplier) MarkCustomerDiscountPeriodsApplied(_ context.Context, _ string, ids []string) error {
 	m.markedCustomerDiscounts = append(m.markedCustomerDiscounts, ids...)
 	return nil
+}
+
+func (m *mockCouponApplier) RedeemForInvoice(_ context.Context, _ string, req domain.CouponRedeemRequest) (domain.CouponRedeemResult, error) {
+	m.redeemReq = req
+	if m.redeemErr != nil {
+		return domain.CouponRedeemResult{}, m.redeemErr
+	}
+	red := m.redeemResult
+	if red.Redemption.DiscountCents == 0 {
+		red.Redemption = domain.CouponRedemption{
+			ID:             fmt.Sprintf("vlx_cpr_%d", len(m.markedRedemptions)+1),
+			CustomerID:     req.CustomerID,
+			SubscriptionID: req.SubscriptionID,
+			InvoiceID:      req.InvoiceID,
+			DiscountCents:  req.SubtotalCents / 10, // default 10% so tests that don't script it still exercise the path
+		}
+	}
+	return red, nil
+}
+
+func (m *mockCouponApplier) VoidRedemptionsForInvoice(_ context.Context, _, invoiceID string) (int, error) {
+	m.voidedInvoices = append(m.voidedInvoices, invoiceID)
+	if m.voidErr != nil {
+		return 0, m.voidErr
+	}
+	return 1, nil
 }
 
 // Customer-scope coupon fires when the subscription produced no discount —
@@ -1165,3 +1263,251 @@ func TestRunCycle_NoPendingChangeNoAppliedEvent(t *testing.T) {
 		}
 	}
 }
+
+// seedDraftInvoice inserts a minimal draft invoice + one line item into the
+// mockInvoices store. Shared by the ApplyCouponToInvoice test cluster so each
+// case focuses on its own gate/assertion rather than seed plumbing.
+func seedDraftInvoice(m *mockInvoices, tenantID, invoiceID, customerID, subscriptionID string, subtotal int64) {
+	m.invoices = append(m.invoices, domain.Invoice{
+		ID:             invoiceID,
+		TenantID:       tenantID,
+		CustomerID:     customerID,
+		SubscriptionID: subscriptionID,
+		Status:         domain.InvoiceDraft,
+		Currency:       "USD",
+		SubtotalCents:  subtotal,
+		AmountDueCents: subtotal,
+	})
+	m.lineItems = append(m.lineItems, domain.InvoiceLineItem{
+		ID:               "li_1",
+		TenantID:         tenantID,
+		InvoiceID:        invoiceID,
+		Description:      "Base fee",
+		Quantity:         1,
+		UnitAmountCents:  subtotal,
+		AmountCents:      subtotal,
+		TotalAmountCents: subtotal,
+	})
+}
+
+// Happy path: draft invoice → coupon applied → subtotal held, discount set,
+// line items repriced, and MarkPeriodsApplied fires exactly once with the
+// new redemption id.
+func TestApplyCouponToInvoice_HappyPath(t *testing.T) {
+	engine, _, _, _, invoices := setupEngine()
+	seedDraftInvoice(invoices, "t1", "inv_1", "cus_1", "sub_1", 10_000)
+
+	applier := &mockCouponApplier{
+		redeemResult: domain.CouponRedeemResult{
+			Redemption: domain.CouponRedemption{ID: "cpr_1", DiscountCents: 2_000},
+		},
+	}
+	engine.SetCouponApplier(applier)
+
+	updated, err := engine.ApplyCouponToInvoice(context.Background(), "t1", "inv_1", "SAVE20", "idem-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated.DiscountCents != 2_000 {
+		t.Errorf("DiscountCents = %d, want 2000", updated.DiscountCents)
+	}
+	if updated.SubtotalCents != 10_000 {
+		t.Errorf("SubtotalCents = %d, want 10000 (must not mutate)", updated.SubtotalCents)
+	}
+	if updated.TotalAmountCents != 8_000 {
+		t.Errorf("TotalAmountCents = %d, want 8000", updated.TotalAmountCents)
+	}
+	if applier.redeemReq.Code != "SAVE20" {
+		t.Errorf("redeem code = %q, want SAVE20", applier.redeemReq.Code)
+	}
+	if applier.redeemReq.IdempotencyKey != "idem-1" {
+		t.Errorf("redeem idempotency key = %q, want idem-1", applier.redeemReq.IdempotencyKey)
+	}
+	if applier.redeemReq.SubtotalCents != 10_000 {
+		t.Errorf("redeem subtotal = %d, want 10000", applier.redeemReq.SubtotalCents)
+	}
+	// Subscription's plan set should flow through so the PlanIDs gate matches
+	// any item's plan.
+	if len(applier.redeemReq.PlanIDs) != 1 || applier.redeemReq.PlanIDs[0] != "pln_1" {
+		t.Errorf("redeem plan ids = %v, want [pln_1]", applier.redeemReq.PlanIDs)
+	}
+	if len(applier.markedRedemptions) != 1 || applier.markedRedemptions[0] != "cpr_1" {
+		t.Errorf("MarkPeriodsApplied ids = %v, want [cpr_1]", applier.markedRedemptions)
+	}
+	if len(applier.voidedInvoices) != 0 {
+		t.Errorf("void should not fire on happy path, got %v", applier.voidedInvoices)
+	}
+}
+
+// Finalized invoices (or any non-draft) must be rejected at the gate before
+// any redemption commits. Catches regressions where a misconfigured route
+// exposes this on a paid/voided invoice.
+func TestApplyCouponToInvoice_RejectsNonDraft(t *testing.T) {
+	engine, _, _, _, invoices := setupEngine()
+	seedDraftInvoice(invoices, "t1", "inv_1", "cus_1", "sub_1", 10_000)
+	invoices.invoices[0].Status = domain.InvoiceFinalized
+
+	applier := &mockCouponApplier{}
+	engine.SetCouponApplier(applier)
+
+	_, err := engine.ApplyCouponToInvoice(context.Background(), "t1", "inv_1", "SAVE20", "")
+	if err == nil {
+		t.Fatal("expected error on finalized invoice, got nil")
+	}
+	if applier.redeemReq.Code != "" {
+		t.Error("redeem must not fire when gate rejects")
+	}
+}
+
+// Re-applying a coupon to an invoice that already carries a discount is a
+// caller error — the operator flow should be "void the invoice and start
+// over," not silently stack discounts.
+func TestApplyCouponToInvoice_RejectsAlreadyDiscounted(t *testing.T) {
+	engine, _, _, _, invoices := setupEngine()
+	seedDraftInvoice(invoices, "t1", "inv_1", "cus_1", "sub_1", 10_000)
+	invoices.invoices[0].DiscountCents = 500
+
+	engine.SetCouponApplier(&mockCouponApplier{})
+
+	_, err := engine.ApplyCouponToInvoice(context.Background(), "t1", "inv_1", "SAVE20", "")
+	if err == nil {
+		t.Fatal("expected error on already-discounted invoice, got nil")
+	}
+}
+
+// Once the invoice has committed a Stripe tax_transaction we cannot recompute
+// tax safely — must reject and let operators void/re-issue.
+func TestApplyCouponToInvoice_RejectsTaxAlreadyCommitted(t *testing.T) {
+	engine, _, _, _, invoices := setupEngine()
+	seedDraftInvoice(invoices, "t1", "inv_1", "cus_1", "sub_1", 10_000)
+	invoices.invoices[0].TaxTransactionID = "txr_123"
+
+	engine.SetCouponApplier(&mockCouponApplier{})
+
+	_, err := engine.ApplyCouponToInvoice(context.Background(), "t1", "inv_1", "SAVE20", "")
+	if err == nil {
+		t.Fatal("expected error when tax already committed, got nil")
+	}
+}
+
+// Compensation: if the atomic discount persist fails after a fresh redeem,
+// the redemption must be voided so times_redeemed stays honest.
+func TestApplyCouponToInvoice_CompensatesOnPersistFailure(t *testing.T) {
+	engine, _, _, _, invoices := setupEngine()
+	seedDraftInvoice(invoices, "t1", "inv_1", "cus_1", "sub_1", 10_000)
+	// Setting DiscountCents after the gate would normally be impossible, but
+	// the memstore's ApplyDiscountAtomic rechecks it — so we flip the row
+	// between gate and persist via a second pre-seeded invoice trick. Easier:
+	// force the store to fail by pointing at a bogus invoice id that passes
+	// the gate (via the first GetInvoice) but fails the atomic apply. The
+	// simplest repro is to delete the line items before atomic runs. Use a
+	// dedicated mock wrapper instead of hacking memstore.
+	fm := &failingApplyInvoices{mockInvoices: invoices, failApply: true}
+	// Swap the engine's invoice writer — the setup gave us the memstore
+	// directly, so rewire.
+	engine.invoices = fm
+
+	applier := &mockCouponApplier{
+		redeemResult: domain.CouponRedeemResult{
+			Redemption: domain.CouponRedemption{ID: "cpr_1", DiscountCents: 2_000},
+		},
+	}
+	engine.SetCouponApplier(applier)
+
+	_, err := engine.ApplyCouponToInvoice(context.Background(), "t1", "inv_1", "SAVE20", "")
+	if err == nil {
+		t.Fatal("expected error when ApplyDiscountAtomic fails, got nil")
+	}
+	if len(applier.voidedInvoices) != 1 || applier.voidedInvoices[0] != "inv_1" {
+		t.Errorf("voidedInvoices = %v, want [inv_1] (must compensate on failure)", applier.voidedInvoices)
+	}
+	if len(applier.markedRedemptions) != 0 {
+		t.Errorf("MarkPeriodsApplied must not fire on failure path, got %v", applier.markedRedemptions)
+	}
+}
+
+// Replay path: a repeated request with the same Idempotency-Key must not
+// trigger the compensating void — the original call already persisted, so
+// re-voiding would corrupt times_redeemed.
+func TestApplyCouponToInvoice_ReplaySkipsCompensation(t *testing.T) {
+	engine, _, _, _, invoices := setupEngine()
+	seedDraftInvoice(invoices, "t1", "inv_1", "cus_1", "sub_1", 10_000)
+	fm := &failingApplyInvoices{mockInvoices: invoices, failApply: true}
+	engine.invoices = fm
+
+	applier := &mockCouponApplier{
+		redeemResult: domain.CouponRedeemResult{
+			Redemption: domain.CouponRedemption{ID: "cpr_1", DiscountCents: 2_000},
+			Replay:     true,
+		},
+	}
+	engine.SetCouponApplier(applier)
+
+	_, err := engine.ApplyCouponToInvoice(context.Background(), "t1", "inv_1", "SAVE20", "idem-dup")
+	if err == nil {
+		t.Fatal("expected error when ApplyDiscountAtomic fails, got nil")
+	}
+	if len(applier.voidedInvoices) != 0 {
+		t.Errorf("replay path must NOT void — the first call owns the redemption. got %v", applier.voidedInvoices)
+	}
+}
+
+// Defence-in-depth: a coupon that computes to zero discount is a bug — the
+// redemption must be rolled back so the coupon's usage counter stays honest,
+// and the caller gets a clear error instead of a no-op 200.
+func TestApplyCouponToInvoice_ZeroDiscountVoidsAndErrors(t *testing.T) {
+	engine, _, _, _, invoices := setupEngine()
+	seedDraftInvoice(invoices, "t1", "inv_1", "cus_1", "sub_1", 10_000)
+
+	applier := &mockCouponApplier{
+		redeemResult: domain.CouponRedeemResult{
+			Redemption: domain.CouponRedemption{ID: "cpr_1", DiscountCents: 0},
+		},
+	}
+	// mockCouponApplier defaults a 10% discount when DiscountCents is 0 to
+	// keep other tests concise, so route past that defaulting by letting
+	// the service produce 0 via an explicit value-but-zero result.
+	applier.redeemResult.Redemption.DiscountCents = 1
+	applier.redeemResult.Redemption.ID = "cpr_zero"
+	// Then override: the mock's "if DiscountCents == 0 default" only fires
+	// on zero; we want a genuine zero-path, so swap to a purpose-built mock.
+	zeroApplier := &zeroDiscountApplier{mockCouponApplier: applier}
+	engine.SetCouponApplier(zeroApplier)
+
+	_, err := engine.ApplyCouponToInvoice(context.Background(), "t1", "inv_1", "SAVE20", "")
+	if err == nil {
+		t.Fatal("expected error on zero-discount result, got nil")
+	}
+	if len(zeroApplier.voidedInvoices) != 1 {
+		t.Errorf("zero-discount path must void the bogus redemption, got %v", zeroApplier.voidedInvoices)
+	}
+}
+
+// failingApplyInvoices wraps mockInvoices and forces ApplyDiscountAtomic to
+// fail while leaving all the other reads (GetInvoice, ListLineItems) working.
+// Used by the compensation tests so the redeem → apply → void flow can fire
+// the compensating branch without fighting the memstore's gate rechecks.
+type failingApplyInvoices struct {
+	*mockInvoices
+	failApply bool
+}
+
+func (f *failingApplyInvoices) ApplyDiscountAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceDiscountUpdate, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	if f.failApply {
+		return domain.Invoice{}, fmt.Errorf("simulated db failure")
+	}
+	return f.mockInvoices.ApplyDiscountAtomic(ctx, tenantID, invoiceID, update, items)
+}
+
+// zeroDiscountApplier forces RedeemForInvoice to return DiscountCents=0 so the
+// engine's defence-in-depth branch can be exercised. The base mock applies a
+// 10% default for tests that don't script a value, which hides the zero path.
+type zeroDiscountApplier struct{ *mockCouponApplier }
+
+func (z *zeroDiscountApplier) RedeemForInvoice(_ context.Context, _ string, req domain.CouponRedeemRequest) (domain.CouponRedeemResult, error) {
+	z.redeemReq = req
+	return domain.CouponRedeemResult{
+		Redemption: domain.CouponRedemption{ID: "cpr_zero", DiscountCents: 0},
+	}, nil
+}
+
