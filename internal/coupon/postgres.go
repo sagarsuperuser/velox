@@ -169,10 +169,25 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string, filter ListFi
 	}
 
 	// Args track $1, $2, ... positions; conds is joined with AND.
-	args := make([]any, 0, 4)
-	conds := make([]string, 0, 3)
+	args := make([]any, 0, 6)
+	conds := make([]string, 0, 5)
 	if !filter.IncludeArchived {
 		conds = append(conds, `archived_at IS NULL`)
+	}
+	if filter.Type != "" {
+		args = append(args, filter.Type)
+		conds = append(conds, fmt.Sprintf(`type = $%d`, len(args)))
+	}
+	if filter.Duration != "" {
+		args = append(args, filter.Duration)
+		conds = append(conds, fmt.Sprintf(`duration = $%d`, len(args)))
+	}
+	if !filter.ExpiresBefore.IsZero() {
+		// Rows with NULL expires_at (never-expiring) fall out of this
+		// predicate naturally — Postgres treats NULL < anything as NULL
+		// (falsy). Matches the filter's "coupons about to lapse" intent.
+		args = append(args, filter.ExpiresBefore)
+		conds = append(conds, fmt.Sprintf(`expires_at < $%d`, len(args)))
 	}
 	if !filter.AfterCreatedAt.IsZero() && filter.AfterID != "" {
 		args = append(args, filter.AfterCreatedAt, filter.AfterID)

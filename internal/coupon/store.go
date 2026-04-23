@@ -27,6 +27,19 @@ type ListFilter struct {
 	// Limit caps the page size. Implementations clamp to [1, 100]; 0
 	// falls back to the default (25).
 	Limit int
+
+	// Type narrows the result to one coupon kind (percentage or
+	// fixed_amount). Empty matches all. Drives the "show me only
+	// percentage coupons" filter chip in the dashboard.
+	Type domain.CouponType
+	// Duration narrows by coupon duration (once / repeating / forever).
+	// Empty matches all.
+	Duration domain.CouponDuration
+	// ExpiresBefore, when non-zero, keeps only rows with an expires_at
+	// strictly earlier than the cutoff. Rows with a NULL expires_at
+	// (never-expiring coupons) are excluded — the filter is about
+	// "coupons that will lapse", so a NULL row can't satisfy it.
+	ExpiresBefore time.Time
 }
 
 // Store is the persistence surface the service depends on. Everything is
