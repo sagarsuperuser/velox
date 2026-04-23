@@ -105,6 +105,17 @@ const InvoiceDetailPage = lazy(() => import('@/pages/InvoiceDetail'))
 const SubscriptionDetailPage = lazy(() => import('@/pages/SubscriptionDetail'))
 const PlanDetailPage = lazy(() => import('@/pages/PlanDetail'))
 const MeterDetailPage = lazy(() => import('@/pages/MeterDetail'))
+const DocsPage = lazy(() => import('@/pages/Docs'))
+const DocsQuickstartPage = lazy(() => import('@/pages/DocsQuickstart'))
+const DocsWebhooksPage = lazy(() => import('@/pages/DocsWebhooks'))
+const DocsIdempotencyPage = lazy(() => import('@/pages/DocsIdempotency'))
+const DocsApiPage = lazy(() => import('@/pages/DocsApi'))
+const SecurityPage = lazy(() => import('@/pages/Security'))
+const StatusPage = lazy(() => import('@/pages/Status'))
+const ChangelogPage = lazy(() => import('@/pages/Changelog'))
+const TermsPage = lazy(() => import('@/pages/Terms'))
+const PrivacyPage = lazy(() => import('@/pages/Privacy'))
+const DPAPage = lazy(() => import('@/pages/DPA'))
 
 const App = () => (
   <ErrorBoundary>
@@ -149,6 +160,17 @@ const App = () => (
               <Route path="/update-payment" element={<UpdatePaymentPage />} />
               <Route path="/customer-portal" element={<CustomerPortalPage />} />
               <Route path="/customer-portal/login" element={<CustomerPortalLoginPage />} />
+              <Route path="/docs" element={<DocsPage />} />
+              <Route path="/docs/quickstart" element={<DocsQuickstartPage />} />
+              <Route path="/docs/webhooks" element={<DocsWebhooksPage />} />
+              <Route path="/docs/idempotency" element={<DocsIdempotencyPage />} />
+              <Route path="/docs/api" element={<DocsApiPage />} />
+              <Route path="/security" element={<SecurityPage />} />
+              <Route path="/status" element={<StatusPage />} />
+              <Route path="/changelog" element={<ChangelogPage />} />
+              <Route path="/terms" element={<TermsPage />} />
+              <Route path="/privacy" element={<PrivacyPage />} />
+              <Route path="/dpa" element={<DPAPage />} />
             </Routes>
           </Suspense>
         </BrowserRouter>
