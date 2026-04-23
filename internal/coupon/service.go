@@ -494,6 +494,16 @@ func translateGate(err error) error {
 	}
 }
 
+// VoidRedemptionsForInvoice is the hook the credit-note flow calls when an
+// invoice has been fully credited or refunded. Reverses the coupon usage
+// tied to that invoice: each redemption is marked voided, times_redeemed
+// on the coupon is decremented, and any periods_applied the billing engine
+// had already bumped is rolled back (floored at 0). Idempotent — a repeat
+// call voids nothing further.
+func (s *Service) VoidRedemptionsForInvoice(ctx context.Context, tenantID, invoiceID string) (int, error) {
+	return s.store.VoidRedemptionsForInvoice(ctx, tenantID, invoiceID)
+}
+
 func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string) ([]domain.CouponRedemption, error) {
 	return s.store.ListRedemptions(ctx, tenantID, couponID)
 }

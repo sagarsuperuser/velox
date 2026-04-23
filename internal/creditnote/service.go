@@ -39,6 +39,14 @@ type TaxReverser interface {
 	ReverseTax(ctx context.Context, tenantID string, req tax.ReversalRequest) (*tax.ReversalResult, error)
 }
 
+// CouponRedemptionVoider reverses coupon effects tied to an invoice when
+// the invoice is fully credited or refunded. Optional — when nil, Issue
+// skips coupon reversal (behaviour pre-FEAT-7). Wired in production to
+// coupon.Service.VoidRedemptionsForInvoice.
+type CouponRedemptionVoider interface {
+	VoidRedemptionsForInvoice(ctx context.Context, tenantID, invoiceID string) (int, error)
+}
+
 // NumberGenerator generates sequential credit note numbers.
 type NumberGenerator interface {
 	NextCreditNoteNumber(ctx context.Context, tenantID string) (string, error)
@@ -52,12 +60,13 @@ type CreditGrantInput struct {
 }
 
 type Service struct {
-	store    Store
-	invoices InvoiceReader
-	refunder Refunder
-	credits  CreditGranter
-	numbers  NumberGenerator
-	taxRev   TaxReverser
+	store         Store
+	invoices      InvoiceReader
+	refunder      Refunder
+	credits       CreditGranter
+	numbers       NumberGenerator
+	taxRev        TaxReverser
+	couponVoider  CouponRedemptionVoider
 }
 
 func NewService(store Store, invoices InvoiceReader, refunder Refunder, credits ...CreditGranter) *Service {
@@ -78,6 +87,14 @@ func (s *Service) SetNumberGenerator(ng NumberGenerator) {
 // unset, Issue skips the reversal step and logs.
 func (s *Service) SetTaxReverser(tr TaxReverser) {
 	s.taxRev = tr
+}
+
+// SetCouponRedemptionVoider wires coupon reversal on full-credit or
+// full-refund credit notes. Optional — when unset, Issue leaves coupon
+// redemptions alone (the legacy behaviour, which leaks "once" coupon
+// usage through refunds).
+func (s *Service) SetCouponRedemptionVoider(v CouponRedemptionVoider) {
+	s.couponVoider = v
 }
 
 type CreateInput struct {
@@ -468,6 +485,21 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 					"reversal_transaction_id", res.TransactionID,
 					"error", err)
 			}
+		}
+	}
+
+	// Void any coupon redemptions on the underlying invoice when the CN
+	// covers the full invoice total. Partial credits leave redemptions
+	// intact — the customer still earned the discount on the slice they
+	// paid. Threshold is >= so a CN that over-credits (shouldn't happen
+	// under the Create-time cap, but defensive) still triggers reversal.
+	if s.couponVoider != nil && inv.TotalAmountCents > 0 && cn.TotalCents >= inv.TotalAmountCents {
+		if n, err := s.couponVoider.VoidRedemptionsForInvoice(ctx, tenantID, cn.InvoiceID); err != nil {
+			slog.Warn("coupon redemption void failed — credit note still issued",
+				"credit_note_id", cn.ID, "invoice_id", cn.InvoiceID, "error", err)
+		} else if n > 0 {
+			slog.Info("coupon redemptions voided on full credit",
+				"credit_note_id", cn.ID, "invoice_id", cn.InvoiceID, "voided_count", n)
 		}
 	}
 
