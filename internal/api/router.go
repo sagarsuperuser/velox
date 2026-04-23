@@ -647,10 +647,14 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 
 	// Customer self-service surface — authenticated by a portal bearer
 	// token (vlx_cps_...) rather than a tenant API key. See customerportal
-	// package.
+	// package. Idempotency lives here because /me writes (setup-intent,
+	// setup-session, detach) hit Stripe through our service — a double
+	// click from a retry-happy mobile client must not create two payment
+	// methods for the same card.
 	r.Route("/v1/me", func(r chi.Router) {
 		r.Use(portalSvc.Middleware())
 		r.Use(rateLimiter.Middleware())
+		r.Use(mw.Idempotency(db))
 		r.Mount("/payment-methods", paymentMethodsH.Routes())
 	})
 
