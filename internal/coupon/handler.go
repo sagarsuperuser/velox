@@ -562,3 +562,167 @@ func (h *Handler) listRedemptions(w http.ResponseWriter, r *http.Request) {
 	}
 	respond.JSON(w, r, http.StatusOK, resp)
 }
+
+// CustomerAssignmentRoutes returns the sub-router for
+// /v1/customers/{id}/coupon. Kept separate from Routes() so it can mount
+// under a different base path with its own permission guards — attach
+// and revoke need PermCustomerWrite, get needs PermCustomerRead. The
+// route group is mounted from router.go alongside the /customers mount.
+func (h *Handler) CustomerAssignmentRoutes(requireRead, requireWrite func(http.Handler) http.Handler) chi.Router {
+	r := chi.NewRouter()
+	r.With(requireRead).Get("/", h.getCustomerAssignment)
+	r.With(requireWrite).Post("/", h.attachCustomerAssignment)
+	r.With(requireWrite).Delete("/", h.revokeCustomerAssignment)
+	return r
+}
+
+// customerAssignmentWire is the POST body — just the code and an
+// optional idempotency key. customer_id comes from the URL.
+type customerAssignmentWire struct {
+	Code           string `json:"code"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+// customerAssignmentResponse is what attach / get return. The coupon
+// snapshot is inlined so the dashboard can render "20% off, 3 months"
+// without a second round-trip to /v1/coupons/{id}.
+type customerAssignmentResponse struct {
+	ID             string        `json:"id"`
+	CouponID       string        `json:"coupon_id"`
+	CustomerID     string        `json:"customer_id"`
+	PeriodsApplied int           `json:"periods_applied"`
+	CreatedAt      time.Time     `json:"created_at"`
+	Coupon         domain.Coupon `json:"coupon"`
+}
+
+func newCustomerAssignmentResponse(res AssignmentResult) customerAssignmentResponse {
+	return customerAssignmentResponse{
+		ID:             res.Assignment.ID,
+		CouponID:       res.Assignment.CouponID,
+		CustomerID:     res.Assignment.CustomerID,
+		PeriodsApplied: res.Assignment.PeriodsApplied,
+		CreatedAt:      res.Assignment.CreatedAt,
+		Coupon:         res.Coupon,
+	}
+}
+
+func (h *Handler) attachCustomerAssignment(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	customerID := chi.URLParam(r, "id")
+	if customerID == "" {
+		respond.BadRequest(w, r, "customer id is required")
+		return
+	}
+
+	var wire customerAssignmentWire
+	if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+	if hdr := strings.TrimSpace(r.Header.Get("Idempotency-Key")); hdr != "" {
+		wire.IdempotencyKey = hdr
+	}
+
+	res, err := h.svc.AssignToCustomer(r.Context(), tenantID, AssignInput{
+		Code:           wire.Code,
+		CustomerID:     customerID,
+		IdempotencyKey: wire.IdempotencyKey,
+	})
+	if err != nil {
+		// Same classification as /coupons/redeem so the infra-error alert
+		// bucket stays honest: business-rule rejections (already-assigned,
+		// expired, archived) are domain codes, validation errors (missing
+		// code) are invalid_request, untyped errors page on-call.
+		outcome := errs.Code(err)
+		if outcome == "" {
+			if errors.Is(err, errs.ErrValidation) {
+				outcome = "invalid_request"
+			} else {
+				outcome = "error"
+			}
+		}
+		middleware.RecordCouponRedemption(outcome)
+		respond.FromError(w, r, err, "coupon")
+		return
+	}
+	if res.Replay {
+		middleware.RecordCouponRedemption("replay")
+	} else {
+		middleware.RecordCouponRedemption("success")
+	}
+
+	if !res.Replay {
+		if h.auditLogger != nil {
+			_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "customer_coupon_assignment", res.Assignment.ID, map[string]any{
+				"customer_id": customerID,
+				"coupon_id":   res.Assignment.CouponID,
+				"code":        res.Coupon.Code,
+			})
+		}
+		h.fireCouponEvent(r.Context(), tenantID, domain.EventCustomerCouponAttached, map[string]any{
+			"assignment_id": res.Assignment.ID,
+			"customer_id":   customerID,
+			"coupon_id":     res.Assignment.CouponID,
+			"code":          res.Coupon.Code,
+		})
+	}
+
+	resp := newCustomerAssignmentResponse(res)
+	if res.Replay {
+		w.Header().Set("Idempotent-Replay", "true")
+		respond.JSON(w, r, http.StatusOK, resp)
+		return
+	}
+	respond.JSON(w, r, http.StatusCreated, resp)
+}
+
+func (h *Handler) revokeCustomerAssignment(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	customerID := chi.URLParam(r, "id")
+	if customerID == "" {
+		respond.BadRequest(w, r, "customer id is required")
+		return
+	}
+
+	// Capture the active assignment first so the audit + webhook carry the
+	// coupon id even though the service's Revoke only returns error. A
+	// miss here just means "no active assignment" — service will 404.
+	existing, getErr := h.svc.GetCustomerAssignment(r.Context(), tenantID, customerID)
+
+	if err := h.svc.RevokeCustomerAssignment(r.Context(), tenantID, customerID); err != nil {
+		respond.FromError(w, r, err, "coupon_assignment")
+		return
+	}
+
+	if getErr == nil {
+		if h.auditLogger != nil {
+			_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRevoke, "customer_coupon_assignment", existing.Assignment.ID, map[string]any{
+				"customer_id": customerID,
+				"coupon_id":   existing.Assignment.CouponID,
+				"code":        existing.Coupon.Code,
+			})
+		}
+		h.fireCouponEvent(r.Context(), tenantID, domain.EventCustomerCouponRevoked, map[string]any{
+			"assignment_id": existing.Assignment.ID,
+			"customer_id":   customerID,
+			"coupon_id":     existing.Assignment.CouponID,
+			"code":          existing.Coupon.Code,
+		})
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) getCustomerAssignment(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	customerID := chi.URLParam(r, "id")
+	if customerID == "" {
+		respond.BadRequest(w, r, "customer id is required")
+		return
+	}
+	res, err := h.svc.GetCustomerAssignment(r.Context(), tenantID, customerID)
+	if err != nil {
+		respond.FromError(w, r, err, "coupon_assignment")
+		return
+	}
+	respond.JSON(w, r, http.StatusOK, newCustomerAssignmentResponse(res))
+}
