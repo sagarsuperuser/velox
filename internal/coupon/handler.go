@@ -175,9 +175,14 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusOK, newCouponPage(coupons, hasMore))
 }
 
-// buildListFilter parses ?limit and ?after into a seek-ready ListFilter.
-// An unparseable cursor is a client error — surface it as 400 so the UI
-// can reset pagination cleanly rather than silently returning page 1.
+// buildListFilter parses pagination + filter query params into a
+// ListFilter. Unknown/malformed values surface as 400 so the UI can
+// reset cleanly rather than silently returning an unfiltered page.
+// Supported filters:
+//
+//	?type=percentage|fixed_amount
+//	?duration=once|repeating|forever
+//	?expires_before=<RFC3339>
 func buildListFilter(r *http.Request, includeArchived bool) (ListFilter, error) {
 	p := middleware.ParsePageParams(r)
 	filter := ListFilter{
@@ -191,6 +196,31 @@ func buildListFilter(r *http.Request, includeArchived bool) (ListFilter, error) 
 		}
 		filter.AfterID = cur.ID
 		filter.AfterCreatedAt = cur.CreatedAt
+	}
+
+	q := r.URL.Query()
+	if v := q.Get("type"); v != "" {
+		t := domain.CouponType(v)
+		if t != domain.CouponTypePercentage && t != domain.CouponTypeFixedAmount {
+			return ListFilter{}, fmt.Errorf("invalid type: must be percentage or fixed_amount")
+		}
+		filter.Type = t
+	}
+	if v := q.Get("duration"); v != "" {
+		d := domain.CouponDuration(v)
+		if d != domain.CouponDurationOnce &&
+			d != domain.CouponDurationRepeating &&
+			d != domain.CouponDurationForever {
+			return ListFilter{}, fmt.Errorf("invalid duration: must be once, repeating, or forever")
+		}
+		filter.Duration = d
+	}
+	if v := q.Get("expires_before"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return ListFilter{}, fmt.Errorf("invalid expires_before: must be RFC3339 timestamp")
+		}
+		filter.ExpiresBefore = t
 	}
 	return filter, nil
 }

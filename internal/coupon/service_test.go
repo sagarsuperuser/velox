@@ -104,6 +104,19 @@ func (m *mockStore) List(_ context.Context, _ string, filter ListFilter) ([]doma
 		if !filter.IncludeArchived && c.ArchivedAt != nil {
 			continue
 		}
+		if filter.Type != "" && c.Type != filter.Type {
+			continue
+		}
+		if filter.Duration != "" && c.Duration != filter.Duration {
+			continue
+		}
+		if !filter.ExpiresBefore.IsZero() {
+			// NULL/never-expiring rows can't satisfy "expires before X",
+			// so drop them — same semantic as the SQL predicate.
+			if c.ExpiresAt == nil || !c.ExpiresAt.Before(filter.ExpiresBefore) {
+				continue
+			}
+		}
 		result = append(result, c)
 	}
 	// (created_at DESC, id DESC).
