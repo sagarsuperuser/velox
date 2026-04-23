@@ -1012,6 +1012,102 @@ func TestRunCycle_TaxProviderErrorDefersInvoice(t *testing.T) {
 	}
 }
 
+// mockCouponApplier captures which of ApplyToInvoice / ApplyToInvoiceForCustomer
+// the engine called so tests can assert Stripe's precedence rule:
+// subscription-scope beats customer-scope on the same invoice. Each call
+// returns the scripted CouponDiscountResult so tests can simulate "no
+// subscription coupon" (return zero) and trigger the fallback branch.
+type mockCouponApplier struct {
+	subResult         domain.CouponDiscountResult
+	subErr            error
+	customerResult    domain.CouponDiscountResult
+	customerErr       error
+	subCalled         bool
+	customerCalled    bool
+	markedRedemptions []string
+}
+
+func (m *mockCouponApplier) ApplyToInvoice(_ context.Context, _, _, _, _ string, _ []string, _ int64) (domain.CouponDiscountResult, error) {
+	m.subCalled = true
+	return m.subResult, m.subErr
+}
+
+func (m *mockCouponApplier) ApplyToInvoiceForCustomer(_ context.Context, _, _, _ string, _ []string, _ int64) (domain.CouponDiscountResult, error) {
+	m.customerCalled = true
+	return m.customerResult, m.customerErr
+}
+
+func (m *mockCouponApplier) MarkPeriodsApplied(_ context.Context, _ string, ids []string) error {
+	m.markedRedemptions = append(m.markedRedemptions, ids...)
+	return nil
+}
+
+// Customer-scope coupon fires when the subscription produced no discount —
+// the Stripe-style fallback. The engine must populate invoice.DiscountCents
+// and call MarkPeriodsApplied with the customer-scope redemption so the
+// assignment's periods_applied increments and duration-limited coupons
+// exhaust on schedule.
+func TestRunCycle_CustomerScopedCouponFiresWhenSubscriptionScopeZero(t *testing.T) {
+	engine, _, _, _, invoices := setupEngine()
+	applier := &mockCouponApplier{
+		subResult:      domain.CouponDiscountResult{},
+		customerResult: domain.CouponDiscountResult{Cents: 500, RedemptionIDs: []string{"red_cust"}},
+	}
+	engine.SetCouponApplier(applier)
+
+	count, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if count != 1 {
+		t.Fatalf("got %d invoices, want 1", count)
+	}
+	if !applier.subCalled {
+		t.Error("ApplyToInvoice should be called first (subscription scope)")
+	}
+	if !applier.customerCalled {
+		t.Error("ApplyToInvoiceForCustomer should be called as fallback")
+	}
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("got %d invoices, want 1", len(invoices.invoices))
+	}
+	if got := invoices.invoices[0].DiscountCents; got != 500 {
+		t.Errorf("DiscountCents = %d, want 500 (from customer-scope fallback)", got)
+	}
+	if len(applier.markedRedemptions) != 1 || applier.markedRedemptions[0] != "red_cust" {
+		t.Errorf("MarkPeriodsApplied redemption ids = %v, want [red_cust]", applier.markedRedemptions)
+	}
+}
+
+// Precedence rule: when the subscription already has an active coupon that
+// produces a discount, the customer-scope fallback must not run. Stripe
+// treats subscription.discount and customer.discount as mutually exclusive
+// on the same invoice — stacking the two would double-discount.
+func TestRunCycle_SubscriptionCouponBeatsCustomerScope(t *testing.T) {
+	engine, _, _, _, invoices := setupEngine()
+	applier := &mockCouponApplier{
+		subResult:      domain.CouponDiscountResult{Cents: 300, RedemptionIDs: []string{"red_sub"}},
+		customerResult: domain.CouponDiscountResult{Cents: 500, RedemptionIDs: []string{"red_cust"}},
+	}
+	engine.SetCouponApplier(applier)
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if !applier.subCalled {
+		t.Error("ApplyToInvoice should be called")
+	}
+	if applier.customerCalled {
+		t.Error("ApplyToInvoiceForCustomer must NOT run when subscription-scope won")
+	}
+	if got := invoices.invoices[0].DiscountCents; got != 300 {
+		t.Errorf("DiscountCents = %d, want 300 (subscription-scope)", got)
+	}
+	if len(applier.markedRedemptions) != 1 || applier.markedRedemptions[0] != "red_sub" {
+		t.Errorf("MarkPeriodsApplied redemption ids = %v, want [red_sub]", applier.markedRedemptions)
+	}
+}
+
 // TestRunCycle_NoPendingChangeNoAppliedEvent ensures the event is gated on an
 // actual swap — a subscription billing on its existing plan with no pending
 // change must not emit a spurious applied event.
