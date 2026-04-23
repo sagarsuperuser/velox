@@ -157,3 +157,38 @@ groups:
         annotations:
           summary: "No dunning runs processed in 2 hours"
           description: "Dunning processor may be stalled. Failed payments are not being retried."
+
+  # -----------------------------------------------------------------------
+  # Coupons
+  # -----------------------------------------------------------------------
+  - name: velox-coupons
+    rules:
+      - alert: CouponRedeemLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            rate(velox_http_request_duration_seconds_bucket{path="/v1/coupons/redeem"}[10m])
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          team: billing
+        annotations:
+          summary: "Coupon redeem p95 latency > 500ms"
+          description: "p95 = {{ $value | humanize }}s. Redeem is a transactional hot path — a regression here usually means contention on coupons / coupon_redemptions or a slow IdempotencyKey lookup."
+
+      - alert: CouponRedeemErrorRateHigh
+        # Ratio of non-success, non-validation redeem responses over 15m.
+        # "error" is the untyped DB/infra failure bucket; we ignore
+        # business-rule rejections (coupon_expired, coupon_min_amount_not_met,
+        # …) since those are working-as-intended user errors.
+        expr: |
+          rate(velox_coupon_redemptions_total{outcome="error"}[15m])
+          / (sum(rate(velox_coupon_redemptions_total[15m])) > 0)
+          > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          team: billing
+        annotations:
+          summary: "Coupon redeem infra error rate > 5%"
+          description: "{{ $value | humanizePercentage }} of redeem attempts are returning 5xx or untyped errors. Check DB connectivity and the coupon service logs."

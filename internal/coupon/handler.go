@@ -17,6 +17,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 // couponETag formats a coupon's version as a strong ETag header value.
@@ -450,8 +451,22 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) {
 
 	res, err := h.svc.RedeemDetail(r.Context(), tenantID, input)
 	if err != nil {
+		// Label by the stable domain code so operators can alert on a
+		// spike in a specific failure mode (e.g. coupon_expired climbing
+		// suggests someone just published a campaign with a stale code).
+		// Empty code → "error" so we don't lose the signal entirely.
+		outcome := errs.Code(err)
+		if outcome == "" {
+			outcome = "error"
+		}
+		middleware.RecordCouponRedemption(outcome)
 		respond.FromError(w, r, err, "coupon")
 		return
+	}
+	if !res.Replay {
+		middleware.RecordCouponRedemption("success")
+	} else {
+		middleware.RecordCouponRedemption("replay")
 	}
 
 	// Replays are the same business event fired twice; audit it once at the
