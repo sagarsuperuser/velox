@@ -13,6 +13,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
@@ -58,12 +59,18 @@ func parseIfMatch(header string) (*int, error) {
 }
 
 type Handler struct {
-	svc *Service
+	svc         *Service
+	auditLogger *audit.Logger
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
+
+// SetAuditLogger wires the audit writer. When nil (tests, or an assembly
+// path that forgot to inject one) the middleware's catch-all still records
+// basic create/update/archive rows — just with less metadata.
+func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
@@ -133,6 +140,19 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.FromError(w, r, err, "coupon")
 		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "coupon", cpn.ID, map[string]any{
+			"resource_label":  cpn.Code,
+			"type":            cpn.Type,
+			"amount_off":      cpn.AmountOff,
+			"percent_off_bp":  cpn.PercentOffBP,
+			"currency":        cpn.Currency,
+			"duration":        cpn.Duration,
+			"max_redemptions": cpn.MaxRedemptions,
+			"customer_id":     cpn.CustomerID,
+		})
 	}
 
 	setCouponETag(w, cpn)
@@ -293,6 +313,14 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "coupon", cpn.ID, map[string]any{
+			"resource_label":  cpn.Code,
+			"changed_fields": changedFields(wire),
+			"version":         cpn.Version,
+		})
+	}
+
 	setCouponETag(w, cpn)
 	respond.JSON(w, r, http.StatusOK, cpn)
 }
@@ -306,6 +334,10 @@ func (h *Handler) archive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionArchive, "coupon", id, nil)
+	}
+
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "archived"})
 }
 
@@ -316,6 +348,10 @@ func (h *Handler) unarchive(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Unarchive(r.Context(), tenantID, id); err != nil {
 		respond.FromError(w, r, err, "coupon")
 		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUnarchive, "coupon", id, nil)
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "active"})
@@ -359,6 +395,19 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Replays are the same business event fired twice; audit it once at the
+	// original redemption and not again on idempotent retries.
+	if h.auditLogger != nil && !res.Replay {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRedeem, "coupon", res.Redemption.CouponID, map[string]any{
+			"redemption_id":   res.Redemption.ID,
+			"customer_id":     res.Redemption.CustomerID,
+			"subscription_id": res.Redemption.SubscriptionID,
+			"invoice_id":      res.Redemption.InvoiceID,
+			"discount_cents":  res.Redemption.DiscountCents,
+			"periods_applied": res.Redemption.PeriodsApplied,
+		})
+	}
+
 	// Stripe convention: an idempotent replay returns 200 + the
 	// Idempotent-Replay: true response header. Callers can then tell a
 	// genuine retry-to-success apart from a true first-time create.
@@ -368,6 +417,29 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, r, http.StatusCreated, res.Redemption)
+}
+
+// changedFields returns the list of updateWire fields the client actually
+// sent, so the audit row captures the shape of the change instead of the
+// pre/post state (which would duplicate the stored coupon row).
+func changedFields(w updateWire) []string {
+	fields := []string{}
+	if w.Name != nil {
+		fields = append(fields, "name")
+	}
+	if w.MaxRedemptions != nil {
+		fields = append(fields, "max_redemptions")
+	}
+	if len(w.ExpiresAt) > 0 {
+		fields = append(fields, "expires_at")
+	}
+	if w.Restrictions != nil {
+		fields = append(fields, "restrictions")
+	}
+	if len(w.Metadata) > 0 {
+		fields = append(fields, "metadata")
+	}
+	return fields
 }
 
 func (h *Handler) listRedemptions(w http.ResponseWriter, r *http.Request) {
