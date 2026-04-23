@@ -43,11 +43,12 @@ func sortRedemptionsDesc(xs []domain.CouponRedemption) {
 // ---------------------------------------------------------------------------
 
 type mockStore struct {
-	coupons     map[string]domain.Coupon
-	byCode      map[string]domain.Coupon
-	redemptions []domain.CouponRedemption
-	nextID      int
-	createErr   error
+	coupons           map[string]domain.Coupon
+	byCode            map[string]domain.Coupon
+	redemptions       []domain.CouponRedemption
+	customerDiscounts []domain.CustomerDiscount
+	nextID            int
+	createErr         error
 }
 
 func newMockStore() *mockStore {
@@ -317,37 +318,114 @@ func (m *mockStore) VoidRedemptionsForInvoice(_ context.Context, _, invoiceID st
 	return voided, nil
 }
 
-func (m *mockStore) ListActiveCustomerAssignments(_ context.Context, _, customerID string) ([]domain.CouponRedemption, error) {
-	var out []domain.CouponRedemption
-	for _, r := range m.redemptions {
-		if r.CustomerID == customerID && r.SubscriptionID == "" && r.InvoiceID == "" && r.VoidedAt == nil {
-			out = append(out, r)
+// InsertCustomerDiscount mirrors the Postgres atomic path: idempotency
+// replay → gate check (archived/expired/max_redemptions/not_found) under
+// the coupon "row lock" → bump times_redeemed → insert discount. The
+// unique-partial-index semantics are simulated by scanning for an active
+// row and returning AlreadyExists with CodeAlreadyAssigned.
+func (m *mockStore) InsertCustomerDiscount(_ context.Context, _, code string, in InsertCustomerDiscountInput) (InsertCustomerDiscountResult, error) {
+	if in.IdempotencyKey != "" {
+		for _, d := range m.customerDiscounts {
+			if d.IdempotencyKey == in.IdempotencyKey {
+				c := m.coupons[d.CouponID]
+				return InsertCustomerDiscountResult{Discount: d, Coupon: c, Replay: true}, nil
+			}
 		}
 	}
-	return out, nil
+	c, ok := m.byCode[code]
+	if !ok {
+		return InsertCustomerDiscountResult{}, ErrCouponGate{Reason: GateNotFound}
+	}
+	if c.ArchivedAt != nil {
+		return InsertCustomerDiscountResult{}, ErrCouponGate{Reason: GateArchived}
+	}
+	now := time.Now().UTC()
+	if c.ExpiresAt != nil && !c.ExpiresAt.After(now) {
+		return InsertCustomerDiscountResult{}, ErrCouponGate{Reason: GateExpired}
+	}
+	if c.MaxRedemptions != nil && c.TimesRedeemed >= *c.MaxRedemptions {
+		return InsertCustomerDiscountResult{}, ErrCouponGate{Reason: GateMaxRedemptions}
+	}
+	for _, d := range m.customerDiscounts {
+		if d.CustomerID == in.CustomerID && d.RevokedAt == nil {
+			return InsertCustomerDiscountResult{}, errs.AlreadyExists("coupon_assignment",
+				"customer already has an active coupon assignment").WithCode(CodeAlreadyAssigned)
+		}
+	}
+	c.TimesRedeemed++
+	m.coupons[c.ID] = c
+	m.byCode[c.Code] = c
+
+	m.nextID++
+	d := domain.CustomerDiscount{
+		ID:             fmt.Sprintf("vlx_cud_%d", m.nextID),
+		CustomerID:     in.CustomerID,
+		CouponID:       c.ID,
+		IdempotencyKey: in.IdempotencyKey,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	m.customerDiscounts = append(m.customerDiscounts, d)
+	return InsertCustomerDiscountResult{Discount: d, Coupon: c, Replay: false}, nil
 }
 
-func (m *mockStore) VoidCustomerAssignment(_ context.Context, _, redemptionID string) error {
+func (m *mockStore) GetActiveCustomerDiscount(_ context.Context, _, customerID string) (domain.CustomerDiscount, error) {
+	for _, d := range m.customerDiscounts {
+		if d.CustomerID == customerID && d.RevokedAt == nil {
+			return d, nil
+		}
+	}
+	return domain.CustomerDiscount{}, errs.ErrNotFound
+}
+
+func (m *mockStore) GetCustomerDiscountByIdempotencyKey(_ context.Context, _, key string) (domain.CustomerDiscount, error) {
+	if key == "" {
+		return domain.CustomerDiscount{}, errs.ErrNotFound
+	}
+	for _, d := range m.customerDiscounts {
+		if d.IdempotencyKey == key {
+			return d, nil
+		}
+	}
+	return domain.CustomerDiscount{}, errs.ErrNotFound
+}
+
+func (m *mockStore) RevokeCustomerDiscount(_ context.Context, _, customerID string) (domain.CustomerDiscount, error) {
 	now := time.Now().UTC()
-	for i := range m.redemptions {
-		r := &m.redemptions[i]
-		if r.ID != redemptionID {
+	for i := range m.customerDiscounts {
+		d := &m.customerDiscounts[i]
+		if d.CustomerID != customerID || d.RevokedAt != nil {
 			continue
 		}
-		if r.SubscriptionID != "" || r.InvoiceID != "" || r.VoidedAt != nil {
-			return errs.ErrNotFound
-		}
-		r.VoidedAt = &now
-		if c, ok := m.coupons[r.CouponID]; ok {
+		d.RevokedAt = &now
+		d.UpdatedAt = now
+		if c, ok := m.coupons[d.CouponID]; ok {
 			if c.TimesRedeemed > 0 {
 				c.TimesRedeemed--
 			}
 			m.coupons[c.ID] = c
 			m.byCode[c.Code] = c
 		}
-		return nil
+		return *d, nil
 	}
-	return errs.ErrNotFound
+	return domain.CustomerDiscount{}, errs.ErrNotFound
+}
+
+func (m *mockStore) IncrementCustomerDiscountPeriodsApplied(_ context.Context, _ string, ids []string) error {
+	for _, id := range ids {
+		found := false
+		for i := range m.customerDiscounts {
+			if m.customerDiscounts[i].ID == id {
+				m.customerDiscounts[i].PeriodsApplied++
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("customer_discount %s not found", id)
+		}
+	}
+	return nil
 }
 
 func (m *mockStore) IncrementPeriodsApplied(_ context.Context, _ string, ids []string) error {
@@ -388,6 +466,18 @@ func (m *mockStore) seedCoupon(c domain.Coupon) {
 	}
 	m.coupons[c.ID] = c
 	m.byCode[c.Code] = c
+}
+
+// seedCustomerDiscount appends a CustomerDiscount with an auto-assigned
+// ID so tests can round-trip it through MarkCustomerDiscountPeriodsApplied.
+// Mirrors seedRedemption's "skip the atomic path, just plant a row" shape.
+func (m *mockStore) seedCustomerDiscount(d domain.CustomerDiscount) string {
+	if d.ID == "" {
+		m.nextID++
+		d.ID = fmt.Sprintf("vlx_cud_%d", m.nextID)
+	}
+	m.customerDiscounts = append(m.customerDiscounts, d)
+	return d.ID
 }
 
 // ---------------------------------------------------------------------------
@@ -2072,14 +2162,14 @@ func TestAssignToCustomer_Success(t *testing.T) {
 	if res.Replay {
 		t.Error("first attach Replay=true, expected false")
 	}
-	if res.Assignment.CustomerID != "cus_1" {
-		t.Errorf("CustomerID = %q, want cus_1", res.Assignment.CustomerID)
+	if res.Discount.CustomerID != "cus_1" {
+		t.Errorf("CustomerID = %q, want cus_1", res.Discount.CustomerID)
 	}
-	if res.Assignment.SubscriptionID != "" {
-		t.Errorf("SubscriptionID = %q, want empty (customer-scope)", res.Assignment.SubscriptionID)
+	if res.Discount.CouponID == "" {
+		t.Error("CouponID empty, want the attached coupon")
 	}
-	if res.Assignment.InvoiceID != "" {
-		t.Errorf("InvoiceID = %q, want empty (customer-scope)", res.Assignment.InvoiceID)
+	if res.Discount.RevokedAt != nil {
+		t.Errorf("RevokedAt = %v, want nil (live attachment)", res.Discount.RevokedAt)
 	}
 	if res.Coupon.TimesRedeemed != 1 {
 		t.Errorf("TimesRedeemed = %d, want 1", res.Coupon.TimesRedeemed)
@@ -2110,31 +2200,39 @@ func TestAssignToCustomer_RejectsDoubleAttach(t *testing.T) {
 	}
 }
 
-// Reattach AFTER the existing assignment has exhausted its duration must
-// succeed — that's the "durationHasPeriodLeft == false → ignore" escape
-// hatch that AssignToCustomer promises.
-func TestAssignToCustomer_ReattachAfterExhaustion(t *testing.T) {
+// Revoke-then-reattach: the cleanest path to swap a customer's standing
+// discount. The active partial unique index makes a direct overwrite
+// impossible (by design — revoke is an explicit operator action), and the
+// count rolls back on revoke so the fresh attach spends a new redemption
+// slot against max_redemptions.
+func TestAssignToCustomer_ReattachAfterRevoke(t *testing.T) {
 	store := newMockStore()
-	periods := 2
 	store.seedCoupon(domain.Coupon{
-		ID: "cpn_1", Code: "TWO", Name: "2mo", Type: domain.CouponTypePercentage,
-		PercentOffBP: 2000,
-		Duration:     domain.CouponDurationRepeating, DurationPeriods: &periods,
-	})
-	// Pre-existing exhausted assignment: periods_applied == duration_periods.
-	store.seedRedemption(domain.CouponRedemption{
-		CouponID: "cpn_1", CustomerID: "cus_1", PeriodsApplied: 2,
+		Code: "SWAP", Name: "10%", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000, Duration: domain.CouponDurationForever,
 	})
 	svc := NewService(store)
 
+	if _, err := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
+		Code: "SWAP", CustomerID: "cus_1",
+	}); err != nil {
+		t.Fatalf("first attach: %v", err)
+	}
+	if _, err := svc.RevokeCustomerAssignment(context.Background(), "t1", "cus_1"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
 	res, err := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
-		Code: "TWO", CustomerID: "cus_1",
+		Code: "SWAP", CustomerID: "cus_1",
 	})
 	if err != nil {
-		t.Fatalf("reattach after exhaustion: %v", err)
+		t.Fatalf("reattach after revoke: %v", err)
 	}
 	if res.Replay {
 		t.Error("Replay=true on fresh attach")
+	}
+	if res.Discount.RevokedAt != nil {
+		t.Error("fresh discount should have RevokedAt = nil")
 	}
 }
 
@@ -2209,8 +2307,8 @@ func TestAssignToCustomer_IdempotencyReplay(t *testing.T) {
 	if !second.Replay {
 		t.Error("Replay=false on idempotent retry")
 	}
-	if second.Assignment.ID != first.Assignment.ID {
-		t.Errorf("replay assignment ID = %q, want %q", second.Assignment.ID, first.Assignment.ID)
+	if second.Discount.ID != first.Discount.ID {
+		t.Errorf("replay assignment ID = %q, want %q", second.Discount.ID, first.Discount.ID)
 	}
 	cpn, _ := store.GetByCode(context.Background(), "t1", "IDEMP")
 	if cpn.TimesRedeemed != 1 {
@@ -2236,8 +2334,15 @@ func TestRevokeCustomerAssignment_Success(t *testing.T) {
 		t.Fatalf("pre-revoke TimesRedeemed = %d, want 1", cpn.TimesRedeemed)
 	}
 
-	if err := svc.RevokeCustomerAssignment(context.Background(), "t1", "cus_1"); err != nil {
+	revoked, err := svc.RevokeCustomerAssignment(context.Background(), "t1", "cus_1")
+	if err != nil {
 		t.Fatalf("revoke: %v", err)
+	}
+	if revoked.RevokedAt == nil {
+		t.Error("returned row must have RevokedAt set")
+	}
+	if revoked.CustomerID != "cus_1" {
+		t.Errorf("returned row CustomerID = %q, want cus_1", revoked.CustomerID)
 	}
 	// Counter rolls back so operators can re-attach the same coupon to
 	// another customer within a capped max-redemptions budget.
@@ -2247,14 +2352,14 @@ func TestRevokeCustomerAssignment_Success(t *testing.T) {
 	}
 
 	// Re-revoke → 404, matching the attach/detach state machine.
-	if err := svc.RevokeCustomerAssignment(context.Background(), "t1", "cus_1"); err == nil {
+	if _, err := svc.RevokeCustomerAssignment(context.Background(), "t1", "cus_1"); err == nil {
 		t.Error("expected re-revoke to fail with not-found")
 	}
 }
 
 func TestRevokeCustomerAssignment_NoActiveAssignment(t *testing.T) {
 	svc := NewService(newMockStore())
-	err := svc.RevokeCustomerAssignment(context.Background(), "t1", "cus_1")
+	_, err := svc.RevokeCustomerAssignment(context.Background(), "t1", "cus_1")
 	if !errors.Is(err, errs.ErrNotFound) {
 		t.Errorf("error = %v, want errs.ErrNotFound", err)
 	}
@@ -2275,8 +2380,8 @@ func TestGetCustomerAssignment_ReturnsActiveWithCoupon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Assignment.ID != attached.Assignment.ID {
-		t.Errorf("ID = %q, want %q", got.Assignment.ID, attached.Assignment.ID)
+	if got.Discount.ID != attached.Discount.ID {
+		t.Errorf("ID = %q, want %q", got.Discount.ID, attached.Discount.ID)
 	}
 	if got.Coupon.Code != "PEEK" {
 		t.Errorf("Coupon.Code = %q, want PEEK", got.Coupon.Code)
@@ -2302,7 +2407,7 @@ func TestApplyToInvoiceForCustomer_PercentageAppliesEveryInvoice(t *testing.T) {
 		Type: domain.CouponTypePercentage, PercentOffBP: 2000,
 		Duration: domain.CouponDurationForever,
 	})
-	store.seedRedemption(domain.CouponRedemption{
+	store.seedCustomerDiscount(domain.CustomerDiscount{
 		CouponID: "cpn_1", CustomerID: "cus_1",
 	})
 	svc := NewService(store)
@@ -2327,7 +2432,7 @@ func TestApplyToInvoiceForCustomer_DurationExhaustedSkipped(t *testing.T) {
 		PercentOffBP: 2000,
 		Duration:     domain.CouponDurationRepeating, DurationPeriods: &periods,
 	})
-	store.seedRedemption(domain.CouponRedemption{
+	store.seedCustomerDiscount(domain.CustomerDiscount{
 		CouponID: "cpn_1", CustomerID: "cus_1", PeriodsApplied: 2,
 	})
 	svc := NewService(store)
@@ -2348,7 +2453,7 @@ func TestApplyToInvoiceForCustomer_FixedAmountCurrencyMismatchSkipped(t *testing
 		Type: domain.CouponTypeFixedAmount, AmountOff: 500, Currency: "eur",
 		Duration: domain.CouponDurationForever,
 	})
-	store.seedRedemption(domain.CouponRedemption{
+	store.seedCustomerDiscount(domain.CustomerDiscount{
 		CouponID: "cpn_eur", CustomerID: "cus_1",
 	})
 	svc := NewService(store)
@@ -2362,22 +2467,17 @@ func TestApplyToInvoiceForCustomer_FixedAmountCurrencyMismatchSkipped(t *testing
 	}
 }
 
-func TestApplyToInvoiceForCustomer_PicksBestDiscount(t *testing.T) {
+// Only one active discount can exist per customer (partial unique index),
+// so the fallback just applies the singular active coupon — no "pick best"
+// selection like the pre-refactor overloaded-redemptions design needed.
+func TestApplyToInvoiceForCustomer_AppliesSingleActiveDiscount(t *testing.T) {
 	store := newMockStore()
-	store.seedCoupon(domain.Coupon{
-		ID: "cpn_small", Code: "FIVE", Name: "5% off",
-		Type: domain.CouponTypePercentage, PercentOffBP: 500,
-		Duration: domain.CouponDurationForever,
-	})
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_big", Code: "THIRTY", Name: "30% off",
 		Type: domain.CouponTypePercentage, PercentOffBP: 3000,
 		Duration: domain.CouponDurationForever,
 	})
-	// Simulate a pathological state: two active assignments on the same
-	// customer (service guards against this but the fallback picks best).
-	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_small", CustomerID: "cus_1"})
-	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_big", CustomerID: "cus_1"})
+	store.seedCustomerDiscount(domain.CustomerDiscount{CouponID: "cpn_big", CustomerID: "cus_1"})
 	svc := NewService(store)
 
 	got, err := svc.ApplyToInvoiceForCustomer(context.Background(), "t1", "cus_1", "usd", nil, 10000)
@@ -2385,7 +2485,10 @@ func TestApplyToInvoiceForCustomer_PicksBestDiscount(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 	if got.Cents != 3000 {
-		t.Errorf("Cents = %d, want 3000 (picks best)", got.Cents)
+		t.Errorf("Cents = %d, want 3000", got.Cents)
+	}
+	if len(got.RedemptionIDs) != 1 {
+		t.Errorf("RedemptionIDs len = %d, want 1", len(got.RedemptionIDs))
 	}
 }
 
@@ -2419,7 +2522,7 @@ func TestApplyToInvoiceForCustomer_PlanRestrictionSkipped(t *testing.T) {
 		Duration: domain.CouponDurationForever,
 		PlanIDs:  []string{"plan_a"},
 	})
-	store.seedRedemption(domain.CouponRedemption{
+	store.seedCustomerDiscount(domain.CustomerDiscount{
 		CouponID: "cpn_plan", CustomerID: "cus_1",
 	})
 	svc := NewService(store)

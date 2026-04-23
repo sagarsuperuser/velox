@@ -597,11 +597,11 @@ type customerAssignmentResponse struct {
 
 func newCustomerAssignmentResponse(res AssignmentResult) customerAssignmentResponse {
 	return customerAssignmentResponse{
-		ID:             res.Assignment.ID,
-		CouponID:       res.Assignment.CouponID,
-		CustomerID:     res.Assignment.CustomerID,
-		PeriodsApplied: res.Assignment.PeriodsApplied,
-		CreatedAt:      res.Assignment.CreatedAt,
+		ID:             res.Discount.ID,
+		CouponID:       res.Discount.CouponID,
+		CustomerID:     res.Discount.CustomerID,
+		PeriodsApplied: res.Discount.PeriodsApplied,
+		CreatedAt:      res.Discount.CreatedAt,
 		Coupon:         res.Coupon,
 	}
 }
@@ -653,16 +653,16 @@ func (h *Handler) attachCustomerAssignment(w http.ResponseWriter, r *http.Reques
 
 	if !res.Replay {
 		if h.auditLogger != nil {
-			_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "customer_coupon_assignment", res.Assignment.ID, map[string]any{
+			_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "customer_coupon_assignment", res.Discount.ID, map[string]any{
 				"customer_id": customerID,
-				"coupon_id":   res.Assignment.CouponID,
+				"coupon_id":   res.Discount.CouponID,
 				"code":        res.Coupon.Code,
 			})
 		}
 		h.fireCouponEvent(r.Context(), tenantID, domain.EventCustomerCouponAttached, map[string]any{
-			"assignment_id": res.Assignment.ID,
+			"assignment_id": res.Discount.ID,
 			"customer_id":   customerID,
-			"coupon_id":     res.Assignment.CouponID,
+			"coupon_id":     res.Discount.CouponID,
 			"code":          res.Coupon.Code,
 		})
 	}
@@ -684,31 +684,34 @@ func (h *Handler) revokeCustomerAssignment(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Capture the active assignment first so the audit + webhook carry the
-	// coupon id even though the service's Revoke only returns error. A
-	// miss here just means "no active assignment" — service will 404.
-	existing, getErr := h.svc.GetCustomerAssignment(r.Context(), tenantID, customerID)
-
-	if err := h.svc.RevokeCustomerAssignment(r.Context(), tenantID, customerID); err != nil {
+	// Service returns the voided row atomically, so we get the coupon id
+	// for the audit / webhook without a separate pre-revoke read.
+	revoked, err := h.svc.RevokeCustomerAssignment(r.Context(), tenantID, customerID)
+	if err != nil {
 		respond.FromError(w, r, err, "coupon_assignment")
 		return
 	}
 
-	if getErr == nil {
-		if h.auditLogger != nil {
-			_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRevoke, "customer_coupon_assignment", existing.Assignment.ID, map[string]any{
-				"customer_id": customerID,
-				"coupon_id":   existing.Assignment.CouponID,
-				"code":        existing.Coupon.Code,
-			})
-		}
-		h.fireCouponEvent(r.Context(), tenantID, domain.EventCustomerCouponRevoked, map[string]any{
-			"assignment_id": existing.Assignment.ID,
-			"customer_id":   customerID,
-			"coupon_id":     existing.Assignment.CouponID,
-			"code":          existing.Coupon.Code,
+	// Coupon snapshot for the webhook payload — best-effort; a missing
+	// coupon just means we emit without the code string.
+	var code string
+	if cpn, cpnErr := h.svc.Get(r.Context(), tenantID, revoked.CouponID); cpnErr == nil {
+		code = cpn.Code
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRevoke, "customer_coupon_assignment", revoked.ID, map[string]any{
+			"customer_id": customerID,
+			"coupon_id":   revoked.CouponID,
+			"code":        code,
 		})
 	}
+	h.fireCouponEvent(r.Context(), tenantID, domain.EventCustomerCouponRevoked, map[string]any{
+		"assignment_id": revoked.ID,
+		"customer_id":   customerID,
+		"coupon_id":     revoked.CouponID,
+		"code":          code,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
