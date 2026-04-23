@@ -22,6 +22,7 @@ import {
 import { Loader2, Archive, ArchiveRestore, Lock, Calculator } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
+import { CustomerCombobox } from '@/components/CustomerCombobox'
 
 // Mirrors couponStatus in Coupons.tsx. Duplicated (not extracted) so
 // the two pages can evolve independently — the list page may later
@@ -481,18 +482,8 @@ function CouponPreviewCard({
   const [result, setResult] = useState<{ discount: number; subtotal: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Customer list — for private coupons the customer is fixed, so we
-  // skip the full list and use the bound customer_id. For public coupons
-  // we show the dropdown so operators can try different customers (the
-  // preview checks first-time/per-customer restrictions, so which
-  // customer actually matters).
-  const { data: customersData } = useQuery({
-    queryKey: ['customers'],
-    queryFn: () => api.listCustomers(),
-    enabled: !coupon.customer_id,
-  })
-  const customers = customersData?.data ?? []
-
+  // Private coupons are bound to one customer, so the picker is hidden;
+  // for public coupons the CustomerCombobox handles its own fetch.
   const previewMutation = useMutation({
     mutationFn: async () => {
       const subtotalCents = Math.round(parseFloat(subtotal) * 100)
@@ -536,18 +527,12 @@ function CouponPreviewCard({
                 title="Private coupon — customer is fixed"
               />
             ) : (
-              <select
-                value={customerId}
-                onChange={e => setCustomerId(e.target.value)}
-                className="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <option value="">Select a customer...</option>
-                {customers.map(c => (
-                  <option key={c.id} value={c.id}>
-                    {c.display_name}{c.email ? ` — ${c.email}` : ''}
-                  </option>
-                ))}
-              </select>
+              <div className="mt-1">
+                <CustomerCombobox
+                  value={customerId}
+                  onChange={setCustomerId}
+                />
+              </div>
             )}
           </div>
           <div>
