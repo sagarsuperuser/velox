@@ -1,6 +1,7 @@
 package coupon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -61,6 +62,7 @@ func parseIfMatch(header string) (*int, error) {
 type Handler struct {
 	svc         *Service
 	auditLogger *audit.Logger
+	events      domain.EventDispatcher
 }
 
 func NewHandler(svc *Service) *Handler {
@@ -71,6 +73,53 @@ func NewHandler(svc *Service) *Handler {
 // path that forgot to inject one) the middleware's catch-all still records
 // basic create/update/archive rows — just with less metadata.
 func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
+
+// SetEventDispatcher wires the outbound webhook dispatcher. When nil the
+// handler still functions — events just aren't emitted, which is only the
+// right behavior in narrow unit tests.
+func (h *Handler) SetEventDispatcher(d domain.EventDispatcher) { h.events = d }
+
+// fireCouponEvent dispatches a coupon lifecycle event with a canonical
+// payload shape. Like the subscription equivalent, the call is synchronous:
+// the outbox insert must persist-before-return so a crash between
+// respond.JSON and event emission can't silently drop the event. A failed
+// dispatch is logged rather than bubbled — audit + logs are enough for
+// ops to notice, and failing the request after the mutation committed
+// would be worse than a missed webhook.
+func (h *Handler) fireCouponEvent(ctx context.Context, tenantID, eventType string, payload map[string]any) {
+	if h.events == nil {
+		return
+	}
+	if err := h.events.Dispatch(ctx, tenantID, eventType, payload); err != nil {
+		slog.ErrorContext(ctx, "coupon event dispatch failed",
+			"event_type", eventType, "tenant_id", tenantID, "error", err)
+	}
+}
+
+// couponEventPayload is the canonical shape used for coupon.created and
+// coupon.updated — all the fields a subscriber typically needs to sync their
+// mirror without a follow-up GET.
+func couponEventPayload(c domain.Coupon) map[string]any {
+	return map[string]any{
+		"coupon_id":        c.ID,
+		"code":             c.Code,
+		"name":             c.Name,
+		"type":             c.Type,
+		"amount_off":       c.AmountOff,
+		"percent_off_bp":   c.PercentOffBP,
+		"currency":         c.Currency,
+		"duration":         c.Duration,
+		"duration_periods": c.DurationPeriods,
+		"max_redemptions":  c.MaxRedemptions,
+		"times_redeemed":   c.TimesRedeemed,
+		"expires_at":       c.ExpiresAt,
+		"stackable":        c.Stackable,
+		"customer_id":      c.CustomerID,
+		"plan_ids":         c.PlanIDs,
+		"archived_at":      c.ArchivedAt,
+		"version":          c.Version,
+	}
+}
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
@@ -154,6 +203,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 			"customer_id":     cpn.CustomerID,
 		})
 	}
+	h.fireCouponEvent(r.Context(), tenantID, domain.EventCouponCreated, couponEventPayload(cpn))
 
 	setCouponETag(w, cpn)
 	respond.JSON(w, r, http.StatusCreated, cpn)
@@ -320,6 +370,9 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 			"version":         cpn.Version,
 		})
 	}
+	payload := couponEventPayload(cpn)
+	payload["changed_fields"] = changedFields(wire)
+	h.fireCouponEvent(r.Context(), tenantID, domain.EventCouponUpdated, payload)
 
 	setCouponETag(w, cpn)
 	respond.JSON(w, r, http.StatusOK, cpn)
@@ -337,6 +390,9 @@ func (h *Handler) archive(w http.ResponseWriter, r *http.Request) {
 	if h.auditLogger != nil {
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionArchive, "coupon", id, nil)
 	}
+	h.fireCouponEvent(r.Context(), tenantID, domain.EventCouponArchived, map[string]any{
+		"coupon_id": id,
+	})
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "archived"})
 }
@@ -353,6 +409,9 @@ func (h *Handler) unarchive(w http.ResponseWriter, r *http.Request) {
 	if h.auditLogger != nil {
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUnarchive, "coupon", id, nil)
 	}
+	h.fireCouponEvent(r.Context(), tenantID, domain.EventCouponUnarchived, map[string]any{
+		"coupon_id": id,
+	})
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "active"})
 }
@@ -397,8 +456,19 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) {
 
 	// Replays are the same business event fired twice; audit it once at the
 	// original redemption and not again on idempotent retries.
-	if h.auditLogger != nil && !res.Replay {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRedeem, "coupon", res.Redemption.CouponID, map[string]any{
+	if !res.Replay {
+		if h.auditLogger != nil {
+			_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRedeem, "coupon", res.Redemption.CouponID, map[string]any{
+				"redemption_id":   res.Redemption.ID,
+				"customer_id":     res.Redemption.CustomerID,
+				"subscription_id": res.Redemption.SubscriptionID,
+				"invoice_id":      res.Redemption.InvoiceID,
+				"discount_cents":  res.Redemption.DiscountCents,
+				"periods_applied": res.Redemption.PeriodsApplied,
+			})
+		}
+		h.fireCouponEvent(r.Context(), tenantID, domain.EventCouponRedeemed, map[string]any{
+			"coupon_id":       res.Redemption.CouponID,
 			"redemption_id":   res.Redemption.ID,
 			"customer_id":     res.Redemption.CustomerID,
 			"subscription_id": res.Redemption.SubscriptionID,
