@@ -807,7 +807,7 @@ func (s *Service) AssignToCustomer(ctx context.Context, tenantID string, input A
 	if err != nil {
 		return AssignmentResult{}, translateGate(err)
 	}
-	return AssignmentResult{Discount: result.Discount, Coupon: result.Coupon, Replay: result.Replay}, nil
+	return AssignmentResult(result), nil
 }
 
 // RevokeCustomerAssignment stamps revoked_at on the customer's active
