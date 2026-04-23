@@ -1096,76 +1096,215 @@ paths:
       tags: [Coupons]
       summary: Create a coupon
       operationId: createCoupon
+      description: |
+        Percentages are carried in basis points (5050 = 50.50%); the legacy
+        float `percent_off` is no longer accepted. Supply either `amount_off`
+        + `currency` (fixed-amount coupon) or `percent_off_bp` (percentage).
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [code, name, type]
-              properties:
-                code:
-                  type: string
-                  example: WELCOME20
-                name:
-                  type: string
-                type:
-                  type: string
-                  enum: [percentage, fixed_amount]
-                percent_off:
-                  type: number
-                  example: 20
-                amount_off:
-                  type: integer
-                  format: int64
-                currency:
-                  type: string
-                max_redemptions:
-                  type: integer
-                expires_at:
-                  type: string
-                  format: date-time
-                plan_ids:
-                  type: array
-                  items:
-                    type: string
+              $ref: '#/components/schemas/CouponCreateRequest'
       responses:
         '201':
           description: Coupon created
-    get:
-      tags: [Coupons]
-      summary: List coupons
-      operationId: listCoupons
-      responses:
-        '200':
-          description: List of coupons
-
-  /v1/coupons/{id}:
-    get:
-      tags: [Coupons]
-      summary: Get a coupon by ID
-      operationId: getCoupon
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Coupon
+          headers:
+            ETag:
+              schema: { type: string }
+              description: Strong ETag wrapping the version integer. Echo as `If-Match` on subsequent updates.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Coupon'
+        '409':
+          description: Code already taken
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '422':
+          description: Validation failed (unknown plan, currency mismatch, discount is zero, …)
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    get:
+      tags: [Coupons]
+      summary: List coupons
+      operationId: listCoupons
+      parameters:
+        - in: query
+          name: cursor
+          schema: { type: string }
+          description: Opaque pagination cursor returned as `next_cursor` on the previous page.
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - in: query
+          name: include_archived
+          schema: { type: boolean, default: false }
+          description: Surface archived rows. Default is the live set only.
+        - in: query
+          name: type
+          schema: { type: string, enum: [percentage, fixed_amount] }
+        - in: query
+          name: duration
+          schema: { type: string, enum: [once, repeating, forever] }
+        - in: query
+          name: expires_before
+          schema: { type: string, format: date-time }
+          description: Only return coupons expiring before the given RFC3339 timestamp.
+      responses:
+        '200':
+          description: Paginated list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Coupon' }
+                  has_more: { type: boolean }
+                  next_cursor: { type: string, nullable: true }
 
-  /v1/coupons/{id}/deactivate:
+  /v1/coupons/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceID'
+    get:
+      tags: [Coupons]
+      summary: Get a coupon
+      operationId: getCoupon
+      responses:
+        '200':
+          description: Coupon
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Coupon' }
+        '404':
+          description: Not found
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    patch:
+      tags: [Coupons]
+      summary: Update a coupon
+      operationId: updateCoupon
+      description: |
+        Only the fields explicitly present in the request body change. Send
+        a field as `null` to clear it (e.g. `"expires_at": null` removes the
+        expiry). Pass the ETag you last read in `If-Match` to guard against
+        concurrent edits — a mismatch returns 412 and you should re-GET
+        before retrying.
+      parameters:
+        - in: header
+          name: If-Match
+          schema: { type: string }
+          description: Quoted version integer (e.g. `"3"`). Optional; recommended for any write after a read.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CouponUpdateRequest' }
+      responses:
+        '200':
+          description: Coupon updated
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Coupon' }
+        '412':
+          description: If-Match version mismatch (coupon was modified by another writer)
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/coupons/{id}/archive:
     post:
       tags: [Coupons]
-      summary: Deactivate a coupon
-      description: Deactivated coupons cannot be redeemed but existing redemptions are preserved.
-      operationId: deactivateCoupon
+      summary: Archive a coupon
+      operationId: archiveCoupon
+      description: |
+        Archived coupons cannot be redeemed by new customers, but existing
+        redemptions continue to apply until they exhaust their duration — so
+        ongoing contracts aren't broken retroactively. Reversible via
+        `/unarchive`.
       parameters:
         - $ref: '#/components/parameters/ResourceID'
       responses:
+        '200': { description: Coupon archived }
+
+  /v1/coupons/{id}/unarchive:
+    post:
+      tags: [Coupons]
+      summary: Unarchive a coupon
+      operationId: unarchiveCoupon
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      responses:
+        '200': { description: Coupon unarchived }
+
+  /v1/coupons/preview:
+    post:
+      tags: [Coupons]
+      summary: Preview a coupon's discount
+      operationId: previewCoupon
+      description: |
+        Exercises every redeem gate except the atomic-persist step and
+        returns the discount that *would* apply. Useful for cart/checkout
+        flows that want to show the shortfall on a min-amount miss or the
+        discount before the user commits. Does not increment `times_redeemed`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CouponRedeemRequest' }
+      responses:
         '200':
-          description: Coupon deactivated
+          description: Preview result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  discount_cents: { type: integer, format: int64 }
+                  coupon: { $ref: '#/components/schemas/Coupon' }
+        '422':
+          description: Coupon failed a gate — see the domain `code` (coupon_expired, coupon_min_amount_not_met, …)
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /v1/coupons/redeem:
+    post:
+      tags: [Coupons]
+      summary: Redeem a coupon
+      operationId: redeemCoupon
+      description: |
+        Commits a redemption. Supply `Idempotency-Key` (header or body) so a
+        retried POST returns the original redemption row instead of creating
+        a duplicate; an idempotent replay returns 200 with the
+        `Idempotent-Replay: true` response header, a fresh commit returns 201.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          schema: { type: string }
+          description: Client-supplied retry token. Same key + same body → same row.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CouponRedeemRequest' }
+      responses:
+        '201':
+          description: New redemption committed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CouponRedemption' }
+        '200':
+          description: Idempotent replay of an earlier redemption
+          headers:
+            Idempotent-Replay:
+              schema: { type: string, enum: ['true'] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CouponRedemption' }
+        '422':
+          description: Coupon failed a gate (see domain `code`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   /v1/coupons/{id}/redemptions:
     get:
@@ -1174,9 +1313,15 @@ paths:
       operationId: listCouponRedemptions
       parameters:
         - $ref: '#/components/parameters/ResourceID'
+        - in: query
+          name: cursor
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
       responses:
         '200':
-          description: List of redemptions
+          description: Paginated list of redemptions
           content:
             application/json:
               schema:
@@ -1184,42 +1329,9 @@ paths:
                 properties:
                   data:
                     type: array
-                    items:
-                      $ref: '#/components/schemas/CouponRedemption'
-
-  /v1/coupons/redeem:
-    post:
-      tags: [Coupons]
-      summary: Redeem a coupon
-      operationId: redeemCoupon
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [code, customer_id, subtotal_cents]
-              properties:
-                code:
-                  type: string
-                customer_id:
-                  type: string
-                subscription_id:
-                  type: string
-                invoice_id:
-                  type: string
-                plan_id:
-                  type: string
-                subtotal_cents:
-                  type: integer
-                  format: int64
-      responses:
-        '200':
-          description: Redemption result
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CouponRedemption'
+                    items: { $ref: '#/components/schemas/CouponRedemption' }
+                  has_more: { type: boolean }
+                  next_cursor: { type: string, nullable: true }
 
   # --- Credit Notes ---
   /v1/credit-notes:
@@ -2073,47 +2185,163 @@ components:
     Coupon:
       type: object
       properties:
-        id:
-          type: string
+        id: { type: string }
         code:
           type: string
-        name:
-          type: string
+          description: Customer-facing, case-preserving identifier (e.g. `WELCOME20`). Unique per tenant.
+        name: { type: string }
         type:
           type: string
           enum: [percentage, fixed_amount]
-        percent_off:
-          type: number
         amount_off:
           type: integer
           format: int64
+          description: Cents off (fixed-amount coupons). Zero for percentage coupons.
+        percent_off_bp:
+          type: integer
+          description: Percentage discount in basis points. `5050` means 50.50%.
         currency:
           type: string
+          description: ISO-4217 currency for fixed-amount coupons. Empty for percentage.
         max_redemptions:
           type: integer
+          nullable: true
+          description: Global redemption cap. Null means unlimited.
         times_redeemed:
           type: integer
+          description: Count of successful non-voided redemptions.
         expires_at:
           type: string
           format: date-time
-        active:
+          nullable: true
+        plan_ids:
+          type: array
+          items: { type: string }
+          description: If non-empty, the coupon is redeemable only against these plans.
+        duration:
+          type: string
+          enum: [once, repeating, forever]
+          description: |
+            How the discount applies across billing cycles.
+              * `once` — one invoice only.
+              * `repeating` — the next `duration_periods` invoices.
+              * `forever` — every invoice while the coupon is attached.
+        duration_periods:
+          type: integer
+          nullable: true
+          description: Required for `repeating`; ignored otherwise.
+        stackable:
           type: boolean
+          description: |
+            When true, combines with other stackable coupons on the same invoice:
+            percentages sum (capped at 100%), amounts sum. When false, only the
+            best single coupon applies.
+        customer_id:
+          type: string
+          description: Non-empty marks the coupon as private — only this customer can redeem.
+        restrictions:
+          $ref: '#/components/schemas/CouponRestrictions'
+        metadata:
+          type: object
+          additionalProperties: true
+        archived_at:
+          type: string
+          format: date-time
+          nullable: true
+        version:
+          type: integer
+          description: Optimistic-concurrency token. Echoed in the `ETag` response header; send via `If-Match` on update.
         created_at:
           type: string
           format: date-time
 
+    CouponRestrictions:
+      type: object
+      properties:
+        min_amount_cents:
+          type: integer
+          format: int64
+          description: Smallest pre-discount subtotal the coupon applies to (e.g. "$10 off orders of $50+").
+        first_time_customer_only:
+          type: boolean
+          description: Blocks redemption for any customer who already has a prior invoice.
+        max_redemptions_per_customer:
+          type: integer
+          description: Per-customer cap. Zero means no per-customer limit.
+
+    CouponCreateRequest:
+      type: object
+      required: [code, name, type]
+      properties:
+        code: { type: string, example: WELCOME20 }
+        name: { type: string }
+        type: { type: string, enum: [percentage, fixed_amount] }
+        amount_off: { type: integer, format: int64 }
+        percent_off_bp: { type: integer, example: 2000, description: '2000 = 20%' }
+        currency: { type: string }
+        max_redemptions: { type: integer, nullable: true }
+        expires_at: { type: string, format: date-time }
+        plan_ids:
+          type: array
+          items: { type: string }
+        duration: { type: string, enum: [once, repeating, forever] }
+        duration_periods: { type: integer }
+        stackable: { type: boolean }
+        customer_id: { type: string }
+        restrictions: { $ref: '#/components/schemas/CouponRestrictions' }
+        metadata:
+          type: object
+          additionalProperties: true
+
+    CouponUpdateRequest:
+      type: object
+      description: |
+        Explicit-presence PATCH: only the fields you send are modified.
+        Sending `expires_at: null` clears the expiry; omitting it leaves it alone.
+      properties:
+        name: { type: string }
+        max_redemptions: { type: integer, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+        restrictions: { $ref: '#/components/schemas/CouponRestrictions' }
+        metadata:
+          type: object
+          additionalProperties: true
+
+    CouponRedeemRequest:
+      type: object
+      required: [code, customer_id, subtotal_cents]
+      properties:
+        code: { type: string }
+        customer_id: { type: string }
+        subscription_id: { type: string }
+        invoice_id: { type: string }
+        plan_id: { type: string, description: 'Required when the coupon is plan-gated.' }
+        currency: { type: string, description: 'Required for fixed-amount coupons — must match the coupon.' }
+        subtotal_cents: { type: integer, format: int64 }
+        idempotency_key:
+          type: string
+          description: Optional — header `Idempotency-Key` takes precedence when both are supplied.
+
     CouponRedemption:
       type: object
       properties:
-        id:
-          type: string
-        coupon_id:
-          type: string
-        customer_id:
-          type: string
+        id: { type: string }
+        coupon_id: { type: string }
+        customer_id: { type: string }
+        subscription_id: { type: string }
+        invoice_id: { type: string }
         discount_cents:
           type: integer
           format: int64
+        periods_applied:
+          type: integer
+          description: Count of billing cycles this redemption has discounted so far. Relevant for `repeating` / `forever`.
+        idempotency_key: { type: string }
+        voided_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when the underlying invoice is fully credited or refunded; a voided redemption no longer counts toward `times_redeemed`.
         created_at:
           type: string
           format: date-time
