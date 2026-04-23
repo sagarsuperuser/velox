@@ -14,6 +14,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/metadata"
 	"github.com/sagarsuperuser/velox/internal/platform/money"
 )
 
@@ -150,6 +151,10 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		return domain.Coupon{}, errs.Invalid("restrictions.max_redemptions_per_customer", "cannot be negative")
 	}
 
+	if err := metadata.Validate(input.Metadata); err != nil {
+		return domain.Coupon{}, err
+	}
+
 	return s.store.Create(ctx, tenantID, domain.Coupon{
 		Code:            code,
 		Name:            name,
@@ -259,6 +264,9 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, in UpdateInpu
 		existing.Restrictions = *in.Restrictions
 	}
 	if in.Metadata != nil {
+		if err := metadata.Validate(in.Metadata); err != nil {
+			return domain.Coupon{}, err
+		}
 		existing.Metadata = in.Metadata
 	}
 
