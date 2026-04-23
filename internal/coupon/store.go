@@ -51,10 +51,13 @@ type Store interface {
 	// rather than a full list because the only question is "how many".
 	CountRedemptionsByCustomer(ctx context.Context, tenantID, couponID, customerID string) (int, error)
 
-	// IncrementPeriodsApplied bumps periods_applied by 1 on a redemption. Called
-	// by the billing engine after an invoice that used the redemption commits,
-	// so duration-limited coupons (once / repeating) exhaust on schedule.
-	IncrementPeriodsApplied(ctx context.Context, tenantID, redemptionID string) error
+	// IncrementPeriodsApplied bumps periods_applied by 1 on each redemption in
+	// one transaction. Called by the billing engine after an invoice that used
+	// the redemptions commits, so duration-limited coupons (once / repeating)
+	// exhaust on schedule. Atomic: either all succeed or none do — avoids the
+	// half-bumped state the pre-batch per-id loop could produce on a mid-run
+	// failure.
+	IncrementPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
 }
 
 // RedeemAtomicInput carries everything the atomic redeem path needs. The

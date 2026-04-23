@@ -631,26 +631,21 @@ func durationHasPeriodLeft(c domain.Coupon, r domain.CouponRedemption) bool {
 // MarkPeriodsApplied advances the periods_applied counter on each
 // redemption by one. Callers invoke this after the invoice that consumed
 // the discount commits — doing it beforehand would burn a period of a
-// repeating coupon even if the invoice create rolled back. Per-redemption
-// failures are returned as a joined error but the loop continues so a
-// single bad row doesn't starve the others.
+// repeating coupon even if the invoice create rolled back. The store does
+// the bump in a single tx so partial application can't leave some
+// redemptions bumped and others not — the pre-batch loop here previously
+// swallowed all-but-the-first error, which hid exactly that case.
 func (s *Service) MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error {
-	if len(redemptionIDs) == 0 {
-		return nil
-	}
-	var errs_ []error
+	ids := redemptionIDs[:0:0]
 	for _, id := range redemptionIDs {
-		if id == "" {
-			continue
-		}
-		if err := s.store.IncrementPeriodsApplied(ctx, tenantID, id); err != nil {
-			errs_ = append(errs_, fmt.Errorf("redemption %s: %w", id, err))
+		if id != "" {
+			ids = append(ids, id)
 		}
 	}
-	if len(errs_) == 0 {
+	if len(ids) == 0 {
 		return nil
 	}
-	return errs_[0]
+	return s.store.IncrementPeriodsApplied(ctx, tenantID, ids)
 }
 
 // CalculateDiscount computes the discount amount in cents for a given
