@@ -55,7 +55,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Power, Eye, Copy, Search, Loader2, Ticket, Sparkles, Lock } from 'lucide-react'
+import { Plus, Archive, ArchiveRestore, Eye, Copy, Search, Loader2, Ticket, Sparkles, Lock } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 
 // Code is optional — the server auto-generates a CPN-XXXX-XXXX code when
@@ -75,14 +75,19 @@ const createCouponSchema = z.object({
 type CreateCouponData = z.infer<typeof createCouponSchema>
 
 function couponStatus(c: Coupon): string {
-  if (!c.active) return 'inactive'
+  if (c.archived_at) return 'archived'
   if (c.expires_at && new Date(c.expires_at) < new Date()) return 'expired'
   if (c.max_redemptions !== null && c.times_redeemed >= c.max_redemptions) return 'maxed'
   return 'active'
 }
 
 function formatDiscount(c: Coupon): string {
-  if (c.type === 'percentage') return `${c.percent_off}%`
+  if (c.type === 'percentage') {
+    // percent_off_bp is basis points: 5050 = 50.50%. Strip the trailing
+    // ".00" so the common-case integer percent reads cleanly.
+    const pct = c.percent_off_bp / 100
+    return Number.isInteger(pct) ? `${pct}%` : `${pct.toFixed(2)}%`
+  }
   return formatCents(c.amount_off, c.currency)
 }
 
@@ -91,44 +96,57 @@ function couponStatusVariant(status: string): 'success' | 'secondary' | 'danger'
     case 'active': return 'success'
     case 'expired': return 'secondary'
     case 'maxed': return 'warning'
-    case 'inactive': return 'danger'
+    case 'archived': return 'danger'
     default: return 'outline'
   }
 }
 
 export default function CouponsPage() {
   const [showCreate, setShowCreate] = useState(false)
-  const [deactivateId, setDeactivateId] = useState<string | null>(null)
+  const [archiveId, setArchiveId] = useState<string | null>(null)
   const [redemptionsCoupon, setRedemptionsCoupon] = useState<Coupon | null>(null)
   const [filterStatus, setFilterStatus] = useState('')
   const [search, setSearch] = useState('')
   const queryClient = useQueryClient()
 
+  // Include archived rows so the archived tab can show history. Status gates
+  // handle filtering on the client so the list stays a single round trip.
   const { data: couponsData, isLoading: loading, error: loadErrorObj, refetch } = useQuery({
     queryKey: ['coupons'],
-    queryFn: () => api.listCoupons(),
+    queryFn: () => api.listCoupons(true),
   })
 
   const coupons = couponsData?.data ?? []
   const loadError = loadErrorObj instanceof Error ? loadErrorObj.message : loadErrorObj ? String(loadErrorObj) : null
 
-  const deactivateMutation = useMutation({
-    mutationFn: (id: string) => api.deactivateCoupon(id),
+  const archiveMutation = useMutation({
+    mutationFn: (id: string) => api.archiveCoupon(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['coupons'] })
-      toast.success('Coupon deactivated')
-      setDeactivateId(null)
+      toast.success('Coupon archived')
+      setArchiveId(null)
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : 'Failed to deactivate')
+      toast.error(err instanceof Error ? err.message : 'Failed to archive')
+    },
+  })
+
+  const unarchiveMutation = useMutation({
+    mutationFn: (id: string) => api.unarchiveCoupon(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['coupons'] })
+      toast.success('Coupon restored')
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to restore')
     },
   })
 
   const stats = useMemo(() => {
     const active = coupons.filter(c => couponStatus(c) === 'active').length
     const expired = coupons.filter(c => couponStatus(c) === 'expired').length
-    const inactive = coupons.filter(c => couponStatus(c) === 'inactive').length
-    return { active, expired, inactive }
+    const archived = coupons.filter(c => couponStatus(c) === 'archived').length
+    return { active, expired, archived }
   }, [coupons])
 
   const filteredCoupons = useMemo(() => {
@@ -170,7 +188,7 @@ export default function CouponsPage() {
               { value: '', label: 'All', count: coupons.length },
               { value: 'active', label: 'Active', count: stats.active },
               { value: 'expired', label: 'Expired', count: stats.expired },
-              { value: 'inactive', label: 'Inactive', count: stats.inactive },
+              { value: 'archived', label: 'Archived', count: stats.archived },
             ].map(f => (
               <button
                 key={f.value}
@@ -309,15 +327,25 @@ export default function CouponsPage() {
                           >
                             <Eye size={16} />
                           </Button>
-                          {status === 'active' && (
+                          {status === 'archived' ? (
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() => setDeactivateId(c.id)}
-                              title="Deactivate"
+                              onClick={() => unarchiveMutation.mutate(c.id)}
+                              title="Restore"
+                              disabled={unarchiveMutation.isPending}
+                            >
+                              <ArchiveRestore size={16} />
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setArchiveId(c.id)}
+                              title="Archive"
                               className="text-destructive hover:text-destructive"
                             >
-                              <Power size={16} />
+                              <Archive size={16} />
                             </Button>
                           )}
                         </div>
@@ -342,22 +370,23 @@ export default function CouponsPage() {
         }}
       />
 
-      {/* Deactivate Confirm */}
-      <AlertDialog open={!!deactivateId} onOpenChange={(open) => { if (!open) setDeactivateId(null) }}>
+      {/* Archive Confirm */}
+      <AlertDialog open={!!archiveId} onOpenChange={(open) => { if (!open) setArchiveId(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Deactivate Coupon</AlertDialogTitle>
+            <AlertDialogTitle>Archive Coupon</AlertDialogTitle>
             <AlertDialogDescription>
-              This coupon will no longer be redeemable. Existing redemptions are not affected.
+              This coupon will stop accepting new redemptions. Existing redemptions continue
+              to apply until their duration is exhausted. You can restore it at any time.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => { if (deactivateId) deactivateMutation.mutate(deactivateId) }}
+              onClick={() => { if (archiveId) archiveMutation.mutate(archiveId) }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Deactivate
+              Archive
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -406,7 +435,7 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
         name: data.name,
         type: data.type,
         ...(data.type === 'percentage'
-          ? { percent_off: parseFloat(data.discountValue) }
+          ? { percent_off_bp: Math.round(parseFloat(data.discountValue) * 100) }
           : { amount_off: Math.round(parseFloat(data.discountValue) * 100), currency: data.currency }),
         ...(data.maxRedemptions ? { max_redemptions: parseInt(data.maxRedemptions, 10) } : {}),
         ...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
@@ -425,7 +454,7 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
         code: 'code',
         name: 'name',
         type: 'type',
-        percent_off: 'discountValue',
+        percent_off_bp: 'discountValue',
         amount_off: 'discountValue',
         currency: 'currency',
         max_redemptions: 'maxRedemptions',

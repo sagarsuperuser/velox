@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base32"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -26,34 +27,31 @@ func NewService(store Store) *Service {
 	return &Service{store: store}
 }
 
+// CreateInput is the validated wire format for POST /coupons.
+// PercentOffBP is the source of truth for percentage coupons; the
+// legacy percent_off (float) input is accepted on the handler side and
+// converted to BP before reaching the service.
 type CreateInput struct {
-	// Code is the human-facing coupon code. Leave empty to auto-generate a
-	// random one — the enterprise private-coupon flow typically picks the
-	// auto-generate path so the AE can share an unguessable one-off link.
-	Code            string                `json:"code"`
-	Name            string                `json:"name"`
-	Type            domain.CouponType     `json:"type"`
-	AmountOff       int64                 `json:"amount_off"`
-	PercentOff      float64               `json:"percent_off"`
-	Currency        string                `json:"currency"`
-	MaxRedemptions  *int                  `json:"max_redemptions"`
-	ExpiresAt       *time.Time            `json:"expires_at,omitempty"`
-	PlanIDs         []string              `json:"plan_ids,omitempty"`
-	Duration        domain.CouponDuration `json:"duration,omitempty"`
-	DurationPeriods *int                  `json:"duration_periods,omitempty"`
-	Stackable       bool                  `json:"stackable"`
-	// CustomerID, when set, marks this as a private coupon redeemable only
-	// by the named customer. Empty (the default) creates a public coupon.
-	CustomerID string `json:"customer_id,omitempty"`
+	Code            string                    `json:"code"`
+	Name            string                    `json:"name"`
+	Type            domain.CouponType         `json:"type"`
+	AmountOff       int64                     `json:"amount_off"`
+	PercentOffBP    int                       `json:"percent_off_bp"`
+	Currency        string                    `json:"currency"`
+	MaxRedemptions  *int                      `json:"max_redemptions"`
+	ExpiresAt       *time.Time                `json:"expires_at,omitempty"`
+	PlanIDs         []string                  `json:"plan_ids,omitempty"`
+	Duration        domain.CouponDuration     `json:"duration,omitempty"`
+	DurationPeriods *int                      `json:"duration_periods,omitempty"`
+	Stackable       bool                      `json:"stackable"`
+	CustomerID      string                    `json:"customer_id,omitempty"`
+	Restrictions    domain.CouponRestrictions `json:"restrictions"`
+	Metadata        []byte                    `json:"metadata,omitempty"`
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Coupon, error) {
 	code := strings.TrimSpace(strings.ToUpper(input.Code))
 	if code == "" {
-		// Auto-generated codes are the expected path for private coupons:
-		// they're unguessable and don't collide with the human-chosen code
-		// space ("LAUNCH20"). Public coupons can still opt into this too
-		// when the operator doesn't care about branding.
 		generated, err := generateCouponCode()
 		if err != nil {
 			return domain.Coupon{}, fmt.Errorf("generate coupon code: %w", err)
@@ -74,8 +72,11 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 
 	switch input.Type {
 	case domain.CouponTypePercentage:
-		if input.PercentOff <= 0 || input.PercentOff > 100 {
-			return domain.Coupon{}, errs.Invalid("percent_off", "must be between 0 and 100")
+		// BP range: 1 (0.01%) through 10000 (100%). Anything else is
+		// either a bug (negative), a rejected "free" coupon (0), or a
+		// nonsense value (>100%). Use fixed_amount if you want >= subtotal.
+		if input.PercentOffBP <= 0 || input.PercentOffBP > 10000 {
+			return domain.Coupon{}, errs.Invalid("percent_off_bp", "must be between 1 and 10000 (0.01% - 100%)")
 		}
 	case domain.CouponTypeFixedAmount:
 		if input.AmountOff <= 0 {
@@ -123,12 +124,20 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 			"must be 'once', 'repeating', or 'forever'")
 	}
 
+	// Restrictions validation — cheap sanity bounds, not exhaustive.
+	if input.Restrictions.MinAmountCents < 0 {
+		return domain.Coupon{}, errs.Invalid("restrictions.min_amount_cents", "cannot be negative")
+	}
+	if input.Restrictions.MaxRedemptionsPerCustomer < 0 {
+		return domain.Coupon{}, errs.Invalid("restrictions.max_redemptions_per_customer", "cannot be negative")
+	}
+
 	return s.store.Create(ctx, tenantID, domain.Coupon{
 		Code:            code,
 		Name:            name,
 		Type:            input.Type,
 		AmountOff:       input.AmountOff,
-		PercentOff:      input.PercentOff,
+		PercentOffBP:    input.PercentOffBP,
 		Currency:        input.Currency,
 		MaxRedemptions:  input.MaxRedemptions,
 		ExpiresAt:       input.ExpiresAt,
@@ -137,7 +146,8 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		DurationPeriods: input.DurationPeriods,
 		Stackable:       input.Stackable,
 		CustomerID:      strings.TrimSpace(input.CustomerID),
-		Active:          true,
+		Restrictions:    input.Restrictions,
+		Metadata:        input.Metadata,
 	})
 }
 
@@ -151,8 +161,6 @@ func generateCouponCode() (string, error) {
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
 	}
-	// Crockford alphabet keeps the codes human-transcribable. base32.StdEncoding
-	// would include I/O which look like 1/0 and produce support tickets.
 	enc := base32.NewEncoding("0123456789ABCDEFGHJKMNPQRSTVWXYZ").WithPadding(base32.NoPadding)
 	s := enc.EncodeToString(b[:])
 	return "CPN-" + s[:4] + "-" + s[4:], nil
@@ -162,12 +170,82 @@ func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Coupon, 
 	return s.store.Get(ctx, tenantID, id)
 }
 
-func (s *Service) List(ctx context.Context, tenantID string) ([]domain.Coupon, error) {
-	return s.store.List(ctx, tenantID)
+// List returns coupons scoped to the tenant. Archived rows are excluded
+// by default so the operator's day-to-day view is clean; pass
+// includeArchived=true for the audit/history view.
+func (s *Service) List(ctx context.Context, tenantID string, includeArchived bool) ([]domain.Coupon, error) {
+	return s.store.List(ctx, tenantID, includeArchived)
 }
 
-func (s *Service) Deactivate(ctx context.Context, tenantID, id string) error {
-	return s.store.Deactivate(ctx, tenantID, id)
+// UpdateInput is the set of mutable fields the PATCH endpoint accepts.
+// Immutable fields (type, code, amount_off, percent_off_bp, currency,
+// plan_ids, customer_id, duration, stackable) are frozen post-create so
+// redemption semantics under the same code stay consistent.
+type UpdateInput struct {
+	Name           *string                    `json:"name,omitempty"`
+	MaxRedemptions *int                       `json:"max_redemptions,omitempty"`
+	ExpiresAt      **time.Time                `json:"expires_at,omitempty"`
+	Restrictions   *domain.CouponRestrictions `json:"restrictions,omitempty"`
+	Metadata       []byte                     `json:"metadata,omitempty"`
+}
+
+func (s *Service) Update(ctx context.Context, tenantID, id string, in UpdateInput) (domain.Coupon, error) {
+	existing, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Coupon{}, err
+	}
+
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			return domain.Coupon{}, errs.Required("name")
+		}
+		if len(name) > 200 {
+			return domain.Coupon{}, errs.Invalid("name", "must be at most 200 characters")
+		}
+		existing.Name = name
+	}
+	if in.MaxRedemptions != nil {
+		if *in.MaxRedemptions < 1 {
+			return domain.Coupon{}, errs.Invalid("max_redemptions", "must be at least 1")
+		}
+		// Reducing below current times_redeemed would instantly render the
+		// coupon invalid — allowed because it's the explicit operator
+		// intent to cap further use.
+		mr := *in.MaxRedemptions
+		existing.MaxRedemptions = &mr
+	}
+	if in.ExpiresAt != nil {
+		// Double-pointer: outer nil = field absent; inner nil = explicit null.
+		existing.ExpiresAt = *in.ExpiresAt
+	}
+	if in.Restrictions != nil {
+		if in.Restrictions.MinAmountCents < 0 {
+			return domain.Coupon{}, errs.Invalid("restrictions.min_amount_cents", "cannot be negative")
+		}
+		if in.Restrictions.MaxRedemptionsPerCustomer < 0 {
+			return domain.Coupon{}, errs.Invalid("restrictions.max_redemptions_per_customer", "cannot be negative")
+		}
+		existing.Restrictions = *in.Restrictions
+	}
+	if in.Metadata != nil {
+		existing.Metadata = in.Metadata
+	}
+
+	return s.store.Update(ctx, tenantID, existing)
+}
+
+// Archive marks a coupon archived. The coupon stops accepting new
+// redemptions immediately, but existing redemptions continue to apply
+// to future invoices until they exhaust their own duration — ongoing
+// contracts aren't broken retroactively.
+func (s *Service) Archive(ctx context.Context, tenantID, id string) error {
+	return s.store.Archive(ctx, tenantID, id, time.Now().UTC())
+}
+
+// Unarchive restores an archived coupon. Idempotent on an already-live row.
+func (s *Service) Unarchive(ctx context.Context, tenantID, id string) error {
+	return s.store.Unarchive(ctx, tenantID, id)
 }
 
 type RedeemInput struct {
@@ -183,56 +261,53 @@ type RedeemInput struct {
 	// rather than letting it surface silently at invoice time). Ignored for
 	// percentage coupons since they are currency-agnostic.
 	Currency string `json:"currency,omitempty"`
+	// IdempotencyKey is the client-supplied retry token. When set, a
+	// repeat call with the same key returns the original redemption
+	// rather than creating a duplicate. Typically sourced from the
+	// Idempotency-Key HTTP header.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+// PreviewResult is the dry-run outcome of a Redeem call — validates the
+// gates and returns the discount cents without mutating state. Drives
+// the "show me the final price before I click Pay" UI.
+type PreviewResult struct {
+	DiscountCents int64         `json:"discount_cents"`
+	Coupon        domain.Coupon `json:"coupon"`
+}
+
+// Preview exercises every redeem gate except the atomic-persist step,
+// returning the computed discount. Useful for the cart-preview flow —
+// the caller shows the discount alongside the unaffected subtotal, and
+// commits via Redeem when the user confirms.
+//
+// Subtle: Preview uses the point-in-time snapshot of the coupon and can
+// therefore race Archive/Expire. The real Redeem path is the source of
+// truth; Preview is advisory.
+func (s *Service) Preview(ctx context.Context, tenantID string, input RedeemInput) (PreviewResult, error) {
+	cpn, err := s.validateRedeem(ctx, tenantID, &input)
+	if err != nil {
+		return PreviewResult{}, err
+	}
+	discount := CalculateDiscount(cpn, input.SubtotalCents)
+	if discount <= 0 {
+		return PreviewResult{}, errs.InvalidState("discount amount is zero")
+	}
+	return PreviewResult{DiscountCents: discount, Coupon: cpn}, nil
 }
 
 func (s *Service) Redeem(ctx context.Context, tenantID string, input RedeemInput) (domain.CouponRedemption, error) {
-	code := strings.TrimSpace(strings.ToUpper(input.Code))
-	if code == "" {
-		return domain.CouponRedemption{}, errs.Required("code")
-	}
-	if input.CustomerID == "" {
-		return domain.CouponRedemption{}, errs.Required("customer_id")
-	}
-	if input.SubtotalCents <= 0 {
-		return domain.CouponRedemption{}, errs.Invalid("subtotal_cents", "must be greater than 0")
-	}
-
-	cpn, err := s.store.GetByCode(ctx, tenantID, code)
-	if err != nil {
-		return domain.CouponRedemption{}, errs.Invalid("code", "coupon not found")
-	}
-
-	if !cpn.Active {
-		return domain.CouponRedemption{}, errs.InvalidState("coupon is not active")
-	}
-
-	if cpn.ExpiresAt != nil && cpn.ExpiresAt.Before(time.Now()) {
-		return domain.CouponRedemption{}, errs.InvalidState("coupon has expired")
-	}
-
-	if cpn.MaxRedemptions != nil && cpn.TimesRedeemed >= *cpn.MaxRedemptions {
-		return domain.CouponRedemption{}, errs.InvalidState("coupon has reached maximum redemptions")
-	}
-
-	// Private coupon: reject any attempt to redeem against a customer other
-	// than the one the coupon was issued to. The error is intentionally the
-	// same "coupon not found" shape as GetByCode would have returned to
-	// avoid leaking which codes exist but aren't yours — the enterprise
-	// flow assumes private codes are effectively secrets.
-	if cpn.CustomerID != "" && cpn.CustomerID != input.CustomerID {
-		return domain.CouponRedemption{}, errs.Invalid("code", "coupon not found")
-	}
-
-	if len(cpn.PlanIDs) > 0 && input.PlanID != "" && !slices.Contains(cpn.PlanIDs, input.PlanID) {
-		return domain.CouponRedemption{}, errs.Invalid("plan_id", "coupon is not valid for this plan")
-	}
-
-	if cpn.Type == domain.CouponTypeFixedAmount && input.Currency != "" {
-		if !strings.EqualFold(cpn.Currency, input.Currency) {
-			return domain.CouponRedemption{}, errs.Invalid("currency",
-				fmt.Sprintf("coupon currency %s does not match target currency %s",
-					strings.ToUpper(cpn.Currency), strings.ToUpper(input.Currency)))
+	// Fast-path for idempotency replay: look up by key before even
+	// loading the coupon. Saves the round trip on the common retry case.
+	if key := strings.TrimSpace(input.IdempotencyKey); key != "" {
+		if existing, err := s.store.GetRedemptionByIdempotencyKey(ctx, tenantID, key); err == nil {
+			return existing, nil
 		}
+	}
+
+	cpn, err := s.validateRedeem(ctx, tenantID, &input)
+	if err != nil {
+		return domain.CouponRedemption{}, err
 	}
 
 	discount := CalculateDiscount(cpn, input.SubtotalCents)
@@ -240,18 +315,123 @@ func (s *Service) Redeem(ctx context.Context, tenantID string, input RedeemInput
 		return domain.CouponRedemption{}, errs.InvalidState("discount amount is zero")
 	}
 
-	// Increment redemption count
-	if err := s.store.IncrementRedemptions(ctx, tenantID, cpn.ID); err != nil {
-		return domain.CouponRedemption{}, fmt.Errorf("increment redemptions: %w", err)
-	}
-
-	return s.store.CreateRedemption(ctx, tenantID, domain.CouponRedemption{
-		CouponID:       cpn.ID,
+	result, err := s.store.RedeemAtomic(ctx, tenantID, RedeemAtomicInput{
+		Code:           cpn.Code,
 		CustomerID:     input.CustomerID,
 		SubscriptionID: input.SubscriptionID,
 		InvoiceID:      input.InvoiceID,
 		DiscountCents:  discount,
+		IdempotencyKey: input.IdempotencyKey,
 	})
+	if err != nil {
+		return domain.CouponRedemption{}, translateGate(err)
+	}
+	return result.Redemption, nil
+}
+
+// validateRedeem is the stateless-or-near-stateless gate pass used by
+// both Preview and Redeem. It loads the coupon, normalises the code,
+// and checks everything we can check without committing a write. The
+// final max_redemptions / archived check happens again inside
+// RedeemAtomic under row lock — this pass is mostly about surfacing
+// friendly error messages before we take the lock.
+func (s *Service) validateRedeem(ctx context.Context, tenantID string, input *RedeemInput) (domain.Coupon, error) {
+	code := strings.TrimSpace(strings.ToUpper(input.Code))
+	if code == "" {
+		return domain.Coupon{}, errs.Required("code")
+	}
+	input.Code = code
+
+	if input.CustomerID == "" {
+		return domain.Coupon{}, errs.Required("customer_id")
+	}
+	if input.SubtotalCents <= 0 {
+		return domain.Coupon{}, errs.Invalid("subtotal_cents", "must be greater than 0")
+	}
+
+	cpn, err := s.store.GetByCode(ctx, tenantID, code)
+	if err != nil {
+		return domain.Coupon{}, errs.Invalid("code", "coupon not found")
+	}
+
+	if cpn.ArchivedAt != nil {
+		return domain.Coupon{}, errs.InvalidState("coupon is not active")
+	}
+
+	if cpn.ExpiresAt != nil && cpn.ExpiresAt.Before(time.Now()) {
+		return domain.Coupon{}, errs.InvalidState("coupon has expired")
+	}
+
+	if cpn.MaxRedemptions != nil && cpn.TimesRedeemed >= *cpn.MaxRedemptions {
+		return domain.Coupon{}, errs.InvalidState("coupon has reached maximum redemptions")
+	}
+
+	// Private coupon: the error shape mirrors "coupon not found" on
+	// purpose so the endpoint doesn't leak that a code exists but isn't
+	// yours — private codes are effectively secrets in the enterprise flow.
+	if cpn.CustomerID != "" && cpn.CustomerID != input.CustomerID {
+		return domain.Coupon{}, errs.Invalid("code", "coupon not found")
+	}
+
+	if len(cpn.PlanIDs) > 0 && input.PlanID != "" && !slices.Contains(cpn.PlanIDs, input.PlanID) {
+		return domain.Coupon{}, errs.Invalid("plan_id", "coupon is not valid for this plan")
+	}
+
+	if cpn.Type == domain.CouponTypeFixedAmount && input.Currency != "" {
+		if !strings.EqualFold(cpn.Currency, input.Currency) {
+			return domain.Coupon{}, errs.Invalid("currency",
+				fmt.Sprintf("coupon currency %s does not match target currency %s",
+					strings.ToUpper(cpn.Currency), strings.ToUpper(input.Currency)))
+		}
+	}
+
+	// Restrictions — checked here because they're cheap. The expensive
+	// one (per-customer count) only runs when the restriction is set.
+	if !cpn.Restrictions.IsZero() {
+		if cpn.Restrictions.MinAmountCents > 0 && input.SubtotalCents < cpn.Restrictions.MinAmountCents {
+			return domain.Coupon{}, errs.Invalid("subtotal_cents",
+				fmt.Sprintf("coupon requires a minimum order of %d cents", cpn.Restrictions.MinAmountCents))
+		}
+		if cpn.Restrictions.MaxRedemptionsPerCustomer > 0 {
+			n, err := s.store.CountRedemptionsByCustomer(ctx, tenantID, cpn.ID, input.CustomerID)
+			if err != nil {
+				return domain.Coupon{}, fmt.Errorf("count customer redemptions: %w", err)
+			}
+			if n >= cpn.Restrictions.MaxRedemptionsPerCustomer {
+				return domain.Coupon{}, errs.InvalidState("coupon has reached per-customer redemption limit")
+			}
+		}
+		// FirstTimeCustomerOnly is the one we can't verify cheaply here
+		// without a customer-invoice lookup that crosses a domain
+		// boundary. It's still documented as a restriction — the
+		// subscription/billing side is responsible for enforcing it
+		// before attaching the coupon. Skipped at redeem-time for now.
+	}
+
+	return cpn, nil
+}
+
+// translateGate converts store-layer gate errors into the
+// service-layer DomainError shape. Keeps the "coupon not active / has
+// expired / maximum redemptions" user-facing strings stable with the
+// pre-refactor behaviour so existing API clients don't see new messages.
+func translateGate(err error) error {
+	var gate ErrCouponGate
+	if !errors.As(err, &gate) {
+		return err
+	}
+	switch gate.Reason {
+	case GateArchived:
+		return errs.InvalidState("coupon is not active")
+	case GateExpired:
+		return errs.InvalidState("coupon has expired")
+	case GateMaxRedemptions:
+		return errs.InvalidState("coupon has reached maximum redemptions")
+	case GateNotFound:
+		return errs.Invalid("code", "coupon not found")
+	default:
+		return err
+	}
 }
 
 func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string) ([]domain.CouponRedemption, error) {
@@ -260,14 +440,13 @@ func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string
 
 // ApplyToInvoice computes the coupon discount for an invoice on the given
 // subscription. It walks active redemptions, filters by eligibility
-// (coupon still active, not expired, plan match, and duration not yet
+// (coupon not archived, not expired, plan match, and duration not yet
 // exhausted), then either picks the best single coupon or combines
 // stackable coupons — whichever policy is correct for the mix.
 //
 // Stacking rules:
 //   - If any eligible coupon is non-stackable, only the single largest
-//     discount wins (pre-FEAT-6 "best one" behaviour, preserved so
-//     operators who haven't opted into stacking see no behaviour change).
+//     discount wins.
 //   - If every eligible coupon is stackable, percent_offs sum (capped at
 //     100%) and fixed amount_offs sum, each applied to the gross subtotal;
 //     the combined discount is clamped to the subtotal.
@@ -275,17 +454,13 @@ func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string
 // Side-effect-free: no store writes. The caller (billing engine) owns the
 // "mark applied" step so a failed invoice create doesn't burn a period of
 // a repeating coupon.
+//
 // ApplyToInvoice takes the full set of plan_ids on the target subscription
 // (one per item) rather than a single plan_id. A coupon whose PlanIDs gate
-// references any plan the subscription currently carries is eligible — this
-// matches Stripe's model for multi-item subscriptions where a coupon for
-// "Plan A" discounts the invoice so long as Plan A is present, regardless
-// of whatever other plans share the subscription.
+// references any plan the subscription currently carries is eligible.
 //
 // invoiceCurrency is the currency the invoice will settle in. Fixed-amount
-// coupons whose stored currency differs are skipped (with a warning) rather
-// than applied — a USD-denominated amount_off would otherwise be silently
-// applied to an EUR invoice as if the cents were interchangeable. Percentage
+// coupons whose stored currency differs are skipped (with a warning). Percentage
 // coupons are currency-agnostic and pass through regardless.
 func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error) {
 	if subscriptionID == "" || subtotalCents <= 0 {
@@ -302,8 +477,6 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 
 	now := time.Now()
 
-	// eligible bundles each surviving coupon with its redemption so the
-	// stacking step can refer back to both without a second store lookup.
 	type eligible struct {
 		coupon     domain.Coupon
 		redemption domain.CouponRedemption
@@ -313,12 +486,9 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 	for _, r := range redemptions {
 		cpn, err := s.store.Get(ctx, tenantID, r.CouponID)
 		if err != nil {
-			// Stale redemption row whose coupon has been deleted or is
-			// behind an RLS boundary — skip silently so one bad row can't
-			// block billing. Logging happens at the billing engine layer.
 			continue
 		}
-		if !cpn.Active {
+		if cpn.ArchivedAt != nil {
 			continue
 		}
 		if cpn.ExpiresAt != nil && cpn.ExpiresAt.Before(now) {
@@ -346,10 +516,6 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 		return domain.CouponDiscountResult{}, nil
 	}
 
-	// If any eligible coupon is non-stackable, fall back to "best single
-	// wins". Mixing a non-stackable with stackables is ambiguous and
-	// trying to combine them would surprise operators who set
-	// stackable=false specifically to prevent compounding.
 	anyNonStackable := slices.ContainsFunc(pool, func(e eligible) bool { return !e.coupon.Stackable })
 	if anyNonStackable {
 		var bestIdx int
@@ -371,22 +537,20 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 	}
 
 	// All stackable — combine percent_offs (capped 100%) and amount_offs.
-	// We intentionally apply percent and fixed against the gross subtotal
-	// in parallel rather than sequentially; predictability beats the
-	// marginal accuracy gain of compounding order, and matches operator
-	// expectations ("I stacked 10% + $5 off $100 → I save $15").
-	var percentSum float64
+	var percentBPSum int
 	var fixedSum int64
 	for _, e := range pool {
 		switch e.coupon.Type {
 		case domain.CouponTypePercentage:
-			percentSum += e.coupon.PercentOff
+			percentBPSum += e.coupon.PercentOffBP
 		case domain.CouponTypeFixedAmount:
 			fixedSum += e.coupon.AmountOff
 		}
 	}
-	percentSum = min(percentSum, 100)
-	percentCents := int64(math.RoundToEven(float64(subtotalCents) * percentSum / 100))
+	if percentBPSum > 10000 {
+		percentBPSum = 10000
+	}
+	percentCents := int64(math.RoundToEven(float64(subtotalCents) * float64(percentBPSum) / 10000))
 	total := min(percentCents+fixedSum, subtotalCents)
 	if total <= 0 {
 		return domain.CouponDiscountResult{}, nil
@@ -399,7 +563,6 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 	return domain.CouponDiscountResult{Cents: total, RedemptionIDs: ids}, nil
 }
 
-// durationHasPeriodLeft reports whether the redemption still has at least
 // anyPlanMatches returns true if any plan_id in itemPlans appears in the
 // coupon's allowed PlanIDs gate. Used to evaluate coupon eligibility against
 // the full item set of a multi-item subscription — a coupon for "Plan A"
@@ -413,6 +576,7 @@ func anyPlanMatches(couponPlans, itemPlans []string) bool {
 	return false
 }
 
+// durationHasPeriodLeft reports whether the redemption still has at least
 // one billing period to apply against under the coupon's duration rule.
 // Forever always returns true; once exhausts after the first application;
 // repeating exhausts once periods_applied reaches duration_periods.
@@ -422,14 +586,10 @@ func durationHasPeriodLeft(c domain.Coupon, r domain.CouponRedemption) bool {
 		return r.PeriodsApplied < 1
 	case domain.CouponDurationRepeating:
 		if c.DurationPeriods == nil {
-			// Misconfigured: treat as exhausted rather than forever so a
-			// bad row doesn't silently grant a never-ending discount.
 			return false
 		}
 		return r.PeriodsApplied < *c.DurationPeriods
 	case domain.CouponDurationForever, "":
-		// Empty duration is legacy pre-migration data; treat as forever
-		// to preserve the old behaviour where no duration column existed.
 		return true
 	default:
 		return false
@@ -458,13 +618,13 @@ func (s *Service) MarkPeriodsApplied(ctx context.Context, tenantID string, redem
 	if len(errs_) == 0 {
 		return nil
 	}
-	// Return the first error — the others are logged-or-equivalent at
-	// this layer since we've already committed the invoice and there's
-	// nothing to undo.
 	return errs_[0]
 }
 
-// CalculateDiscount computes the discount amount in cents for a given coupon and subtotal.
+// CalculateDiscount computes the discount amount in cents for a given
+// coupon and subtotal. Uses banker's rounding for percentage discounts to
+// match established Velox money math — repeated small discounts don't
+// systematically favour one side.
 func CalculateDiscount(c domain.Coupon, subtotalCents int64) int64 {
 	if subtotalCents <= 0 {
 		return 0
@@ -472,7 +632,8 @@ func CalculateDiscount(c domain.Coupon, subtotalCents int64) int64 {
 
 	switch c.Type {
 	case domain.CouponTypePercentage:
-		discount := int64(math.RoundToEven(float64(subtotalCents) * c.PercentOff / 100))
+		// percent_off_bp is basis points: 5050 = 50.50%.
+		discount := int64(math.RoundToEven(float64(subtotalCents) * float64(c.PercentOffBP) / 10000))
 		if discount > subtotalCents {
 			return subtotalCents
 		}

@@ -1,6 +1,11 @@
 package domain
 
-import "time"
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
+	"time"
+)
 
 type CouponType string
 
@@ -21,40 +26,122 @@ const (
 	CouponDurationForever   CouponDuration = "forever"
 )
 
+// CouponRestrictions is the long-tail of coupon eligibility gates kept
+// out of the hot-path column list. New restrictions land here without a
+// migration. Zero values mean "no restriction" so omitempty round-trips
+// cleanly through the JSONB bag.
+type CouponRestrictions struct {
+	// MinAmountCents is the smallest subtotal (pre-discount) the coupon
+	// applies to. Aimed at the "$10 off orders of $50+" shape.
+	MinAmountCents int64 `json:"min_amount_cents,omitempty"`
+	// FirstTimeCustomerOnly blocks redemption for a customer who already
+	// has any prior invoice. Matches the standard acquisition-discount
+	// pattern across Stripe/Chargebee/Recurly.
+	FirstTimeCustomerOnly bool `json:"first_time_customer_only,omitempty"`
+	// MaxRedemptionsPerCustomer caps per-customer usage. 0 means no cap
+	// (global MaxRedemptions still applies). Guards against a single
+	// customer draining a public promo intended for breadth.
+	MaxRedemptionsPerCustomer int `json:"max_redemptions_per_customer,omitempty"`
+}
+
+// Scan reads a JSONB column into the struct. NULL / empty maps to the
+// zero value so rows written before the column existed are still legal.
+func (r *CouponRestrictions) Scan(src any) error {
+	if src == nil {
+		*r = CouponRestrictions{}
+		return nil
+	}
+	b, ok := src.([]byte)
+	if !ok {
+		return fmt.Errorf("CouponRestrictions.Scan: expected []byte, got %T", src)
+	}
+	if len(b) == 0 {
+		*r = CouponRestrictions{}
+		return nil
+	}
+	return json.Unmarshal(b, r)
+}
+
+// Value serialises the struct for INSERT. Zero values round-trip as `{}`
+// rather than nulls so the DB-level NOT NULL constraint is satisfied.
+func (r CouponRestrictions) Value() (driver.Value, error) {
+	return json.Marshal(r)
+}
+
+// IsZero reports whether every gate is at its zero value. Lets the
+// service layer skip restrictions evaluation when nothing has been set,
+// saving a redemptions-count query on the common public-coupon path.
+func (r CouponRestrictions) IsZero() bool {
+	return r.MinAmountCents == 0 &&
+		!r.FirstTimeCustomerOnly &&
+		r.MaxRedemptionsPerCustomer == 0
+}
+
 type Coupon struct {
-	ID              string         `json:"id"`
-	TenantID        string         `json:"tenant_id,omitempty"`
-	Code            string         `json:"code"`
-	Name            string         `json:"name"`
-	Type            CouponType     `json:"type"`
-	AmountOff       int64          `json:"amount_off"`
-	PercentOff      float64        `json:"percent_off"`    // Deprecated: use PercentOffBP
-	PercentOffBP    int            `json:"percent_off_bp"` // Basis points (5050 = 50.50%)
-	Currency        string         `json:"currency"`
-	MaxRedemptions  *int           `json:"max_redemptions"`
-	TimesRedeemed   int            `json:"times_redeemed"`
-	ExpiresAt       *time.Time     `json:"expires_at,omitempty"`
-	PlanIDs         []string       `json:"plan_ids,omitempty"` // If set, coupon only applies to these plans
+	ID             string     `json:"id"`
+	TenantID       string     `json:"tenant_id,omitempty"`
+	Code           string     `json:"code"`
+	Name           string     `json:"name"`
+	Type           CouponType `json:"type"`
+	AmountOff      int64      `json:"amount_off"`
+	PercentOffBP   int        `json:"percent_off_bp"` // Basis points: 5050 = 50.50%
+	Currency       string     `json:"currency"`
+	MaxRedemptions *int       `json:"max_redemptions"`
+	TimesRedeemed  int        `json:"times_redeemed"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	// PlanIDs gate the coupon to specific plans. Empty means any plan.
+	PlanIDs         []string       `json:"plan_ids,omitempty"`
 	Duration        CouponDuration `json:"duration"`
-	DurationPeriods *int           `json:"duration_periods,omitempty"` // Required when Duration==repeating
+	DurationPeriods *int           `json:"duration_periods,omitempty"`
 	Stackable       bool           `json:"stackable"`
-	Active          bool           `json:"active"`
-	// CustomerID, when non-empty, scopes the coupon to a single customer.
-	// Enterprise-negotiated private discounts use this so customer A's
-	// one-off terms can't be redeemed by customer B. Empty means public.
-	CustomerID string    `json:"customer_id,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	// CustomerID, when non-empty, scopes the coupon to a single customer
+	// (the enterprise-negotiated private-discount flow).
+	CustomerID string `json:"customer_id,omitempty"`
+	// Restrictions is the extensible bag of long-tail gates — min order
+	// amount, first-time-only, per-customer caps. See CouponRestrictions.
+	Restrictions CouponRestrictions `json:"restrictions"`
+	// Metadata is a tenant-controlled key/value bag, unopinionated. Stored
+	// as raw JSONB bytes so the app code doesn't force a shape.
+	Metadata []byte `json:"metadata,omitempty"`
+	// ArchivedAt marks a user-initiated soft-delete. A non-nil value is
+	// terminal for new redemptions; existing redemptions continue to
+	// apply until they exhaust their own duration so ongoing contracts
+	// aren't broken retroactively.
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// Valid reports whether the coupon can accept new redemptions right now.
+// Replaces the old "active" boolean: combines archived state, expiry,
+// and the max-redemptions gate into the single question that actually
+// matters at the point of redeem.
+func (c Coupon) Valid() bool {
+	if c.ArchivedAt != nil {
+		return false
+	}
+	if c.ExpiresAt != nil && !c.ExpiresAt.After(time.Now()) {
+		return false
+	}
+	if c.MaxRedemptions != nil && c.TimesRedeemed >= *c.MaxRedemptions {
+		return false
+	}
+	return true
 }
 
 type CouponRedemption struct {
-	ID             string    `json:"id"`
-	TenantID       string    `json:"tenant_id,omitempty"`
-	CouponID       string    `json:"coupon_id"`
-	CustomerID     string    `json:"customer_id"`
-	SubscriptionID string    `json:"subscription_id,omitempty"`
-	InvoiceID      string    `json:"invoice_id,omitempty"`
-	DiscountCents  int64     `json:"discount_cents"`
-	PeriodsApplied int       `json:"periods_applied"`
+	ID             string `json:"id"`
+	TenantID       string `json:"tenant_id,omitempty"`
+	CouponID       string `json:"coupon_id"`
+	CustomerID     string `json:"customer_id"`
+	SubscriptionID string `json:"subscription_id,omitempty"`
+	InvoiceID      string `json:"invoice_id,omitempty"`
+	DiscountCents  int64  `json:"discount_cents"`
+	PeriodsApplied int    `json:"periods_applied"`
+	// IdempotencyKey ties the redemption to a client-supplied retry
+	// token. Partial UNIQUE (tenant_id, idempotency_key) in the DB
+	// guarantees that replaying the same key returns the same row
+	// rather than creating a second redemption.
+	IdempotencyKey string    `json:"idempotency_key,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 

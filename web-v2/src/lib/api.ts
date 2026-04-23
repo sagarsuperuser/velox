@@ -228,12 +228,18 @@ export const api = {
   voidCreditNote: (id: string) => apiRequest<CreditNote>('POST', `/credit-notes/${id}/void`),
 
   // Coupons
-  listCoupons: () => apiRequest<{ data: Coupon[] }>('GET', '/coupons'),
+  listCoupons: (includeArchived?: boolean) =>
+    apiRequest<{ data: Coupon[] }>('GET', includeArchived ? '/coupons?include_archived=true' : '/coupons'),
   getCoupon: (id: string) => apiRequest<Coupon>('GET', `/coupons/${id}`),
-  createCoupon: (data: { code: string; name: string; type: string; amount_off?: number; percent_off?: number; currency?: string; max_redemptions?: number | null; expires_at?: string; plan_ids?: string[]; customer_id?: string }) =>
+  createCoupon: (data: { code: string; name: string; type: string; amount_off?: number; percent_off_bp?: number; currency?: string; max_redemptions?: number | null; expires_at?: string; plan_ids?: string[]; customer_id?: string; stackable?: boolean; duration?: 'once' | 'repeating' | 'forever'; duration_periods?: number; restrictions?: { min_amount_cents?: number; first_time_customer_only?: boolean; max_redemptions_per_customer?: number } }) =>
     apiRequest<Coupon>('POST', '/coupons', data),
-  deactivateCoupon: (id: string) => apiRequest<{ status: string }>('POST', `/coupons/${id}/deactivate`),
-  redeemCoupon: (data: { code: string; customer_id: string; subtotal_cents: number; subscription_id?: string; invoice_id?: string; plan_id?: string }) =>
+  updateCoupon: (id: string, data: { name?: string; max_redemptions?: number | null; expires_at?: string | null; restrictions?: { min_amount_cents?: number; first_time_customer_only?: boolean; max_redemptions_per_customer?: number } }) =>
+    apiRequest<Coupon>('PATCH', `/coupons/${id}`, data),
+  archiveCoupon: (id: string) => apiRequest<{ status: string }>('POST', `/coupons/${id}/archive`),
+  unarchiveCoupon: (id: string) => apiRequest<{ status: string }>('POST', `/coupons/${id}/unarchive`),
+  previewCoupon: (data: { code: string; customer_id: string; subtotal_cents: number; subscription_id?: string; plan_id?: string; currency?: string }) =>
+    apiRequest<{ discount_cents: number; coupon: Coupon }>('POST', '/coupons/preview', data),
+  redeemCoupon: (data: { code: string; customer_id: string; subtotal_cents: number; subscription_id?: string; invoice_id?: string; plan_id?: string; currency?: string; idempotency_key?: string }) =>
     apiRequest<CouponRedemption>('POST', '/coupons/redeem', data),
   listCouponRedemptions: (id: string) => apiRequest<{ data: CouponRedemption[] }>('GET', `/coupons/${id}/redemptions`),
 
@@ -635,20 +641,31 @@ export interface CreditNote {
   created_at: string
 }
 
+export interface CouponRestrictions {
+  min_amount_cents?: number
+  first_time_customer_only?: boolean
+  max_redemptions_per_customer?: number
+}
+
 export interface Coupon {
   id: string
   code: string
   name: string
   type: 'percentage' | 'fixed_amount'
   amount_off: number
-  percent_off: number
+  percent_off_bp: number
   currency: string
   max_redemptions: number | null
   times_redeemed: number
   expires_at?: string
   plan_ids?: string[]
-  active: boolean
+  archived_at?: string | null
   customer_id?: string
+  stackable?: boolean
+  duration?: 'once' | 'repeating' | 'forever'
+  duration_periods?: number | null
+  restrictions?: CouponRestrictions
+  metadata?: Record<string, unknown>
   created_at: string
 }
 
@@ -659,6 +676,7 @@ export interface CouponRedemption {
   subscription_id: string
   invoice_id: string
   discount_cents: number
+  idempotency_key?: string
   created_at: string
 }
 
