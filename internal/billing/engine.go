@@ -75,8 +75,17 @@ type CouponApplier interface {
 	// all), the engine consults the customer's standing assignment so the
 	// operator's "apply this coupon to all future invoices" action takes
 	// effect. Subscription-scope wins when both exist (Stripe's rule).
+	// RedemptionIDs carries customer_discounts row IDs (distinct from the
+	// coupon_redemptions IDs returned by ApplyToInvoice) — the engine
+	// routes them to MarkCustomerDiscountPeriodsApplied after commit.
 	ApplyToInvoiceForCustomer(ctx context.Context, tenantID, customerID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
 	MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
+	// MarkCustomerDiscountPeriodsApplied advances the periods_applied
+	// counter on each customer_discounts row. Kept separate from
+	// MarkPeriodsApplied so the two tables stay their own sources of
+	// truth — duration exhaustion on the customer-scope side doesn't
+	// reach into coupon_redemptions, and vice versa.
+	MarkCustomerDiscountPeriodsApplied(ctx context.Context, tenantID string, ids []string) error
 }
 
 // BillingProfileReader reads customer billing profiles for tax exemption checks.
@@ -889,12 +898,17 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	// aren't taxed on money they didn't actually pay. A zero result here is
 	// the happy no-coupon path; a non-zero result is clamped to subtotal by
 	// the coupon service before reaching us, so no negative-total risk.
-	// appliedRedemptionIDs carries FEAT-6 state across the invoice-create
-	// boundary: we must only advance periods_applied AFTER the invoice is
-	// durably persisted, otherwise a create failure would burn a period of
-	// a repeating coupon that the customer never actually got.
+	//
+	// appliedRedemptionIDs (subscription-scope) and appliedCustomerDiscountIDs
+	// (customer-scope) carry state across the invoice-create boundary: we
+	// must only advance periods_applied AFTER the invoice is durably
+	// persisted, otherwise a create failure would burn a period of a
+	// repeating coupon that the customer never actually got. The two lists
+	// feed separate writer methods because customer_discounts is its own
+	// table — see CouponApplier.MarkCustomerDiscountPeriodsApplied.
 	var discountCents int64
 	var appliedRedemptionIDs []string
+	var appliedCustomerDiscountIDs []string
 	if e.coupons != nil && subtotal > 0 {
 		if sub.ID != "" {
 			d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, sub.CustomerID, invoiceCurrency, planIDs, subtotal)
@@ -917,7 +931,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 					"error", err, "customer_id", sub.CustomerID)
 			} else {
 				discountCents = d.Cents
-				appliedRedemptionIDs = d.RedemptionIDs
+				appliedCustomerDiscountIDs = d.RedemptionIDs
 			}
 		}
 	}
@@ -1026,6 +1040,14 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			slog.Warn("coupon mark-periods-applied failed",
 				"invoice_id", inv.ID,
 				"subscription_id", sub.ID,
+				"error", err)
+		}
+	}
+	if e.coupons != nil && len(appliedCustomerDiscountIDs) > 0 {
+		if err := e.coupons.MarkCustomerDiscountPeriodsApplied(ctx, sub.TenantID, appliedCustomerDiscountIDs); err != nil {
+			slog.Warn("customer-discount mark-periods-applied failed",
+				"invoice_id", inv.ID,
+				"customer_id", sub.CustomerID,
 				"error", err)
 		}
 	}

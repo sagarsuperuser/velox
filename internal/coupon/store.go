@@ -124,21 +124,62 @@ type Store interface {
 	// further and return 0.
 	VoidRedemptionsForInvoice(ctx context.Context, tenantID, invoiceID string) (int, error)
 
-	// ListActiveCustomerAssignments returns live customer-scoped
-	// assignments: redemption rows with subscription_id IS NULL AND
-	// invoice_id IS NULL AND voided_at IS NULL. At most one active row per
-	// customer is expected under normal operation — the service layer
-	// rejects a second attach while the first still has periods left.
-	// ApplyToInvoiceForCustomer re-reads this on every invoice generation,
-	// which is why 0046 adds the partial index on (tenant_id, customer_id).
-	ListActiveCustomerAssignments(ctx context.Context, tenantID, customerID string) ([]domain.CouponRedemption, error)
+	// InsertCustomerDiscount inserts a new customer_discounts row and bumps
+	// coupon.times_redeemed by one in the same transaction. Two failure
+	// modes the caller must handle:
+	//
+	//   - ErrCouponGate (GateArchived/GateExpired/GateMaxRedemptions/GateNotFound)
+	//     when the coupon fails a live-state gate under the row lock.
+	//   - errs.AlreadyExists with CodeAlreadyAssigned when the unique partial
+	//     index (tenant_id, customer_id) WHERE revoked_at IS NULL catches a
+	//     concurrent double-attach.
+	//
+	// Idempotency-key replay: when a committed row with the same
+	// (tenant_id, idempotency_key) exists, the store returns that row with
+	// replay=true rather than creating a duplicate. Mirrors the RedeemAtomic
+	// contract so the HTTP layer can set Idempotent-Replay: true uniformly.
+	InsertCustomerDiscount(ctx context.Context, tenantID, code string, in InsertCustomerDiscountInput) (InsertCustomerDiscountResult, error)
 
-	// VoidCustomerAssignment marks a single customer-scoped assignment
-	// voided and rolls back its coupon.times_redeemed in the same tx.
-	// Mirrors VoidRedemptionsForInvoice but scopes by redemption id since
-	// revocation is operator-initiated, not invoice-driven. Returns
-	// errs.ErrNotFound if the row doesn't exist or is already voided.
-	VoidCustomerAssignment(ctx context.Context, tenantID, redemptionID string) error
+	// GetActiveCustomerDiscount returns the single live (revoked_at IS NULL)
+	// discount row for a customer, or errs.ErrNotFound if none. The partial
+	// unique index guarantees at most one match.
+	GetActiveCustomerDiscount(ctx context.Context, tenantID, customerID string) (domain.CustomerDiscount, error)
+
+	// GetCustomerDiscountByIdempotencyKey returns an existing discount row by
+	// its idempotency key — fast-path for replay before loading the coupon
+	// on AssignToCustomer. Returns errs.ErrNotFound if no row matches.
+	GetCustomerDiscountByIdempotencyKey(ctx context.Context, tenantID, key string) (domain.CustomerDiscount, error)
+
+	// RevokeCustomerDiscount stamps revoked_at on the customer's active row
+	// and rolls back coupon.times_redeemed in the same tx. Returns the
+	// voided row so the handler can emit the audit / webhook without a
+	// pre-revoke read. errs.ErrNotFound when nothing is active.
+	RevokeCustomerDiscount(ctx context.Context, tenantID, customerID string) (domain.CustomerDiscount, error)
+
+	// IncrementCustomerDiscountPeriodsApplied advances the periods_applied
+	// counter on each id by one in a single tx. Called by the billing engine
+	// after the invoice that consumed the customer-scope discount commits,
+	// so duration-limited coupons (once / repeating) exhaust on schedule.
+	IncrementCustomerDiscountPeriodsApplied(ctx context.Context, tenantID string, ids []string) error
+}
+
+// InsertCustomerDiscountInput carries the fields the atomic insert path needs.
+// Kept as a struct so future additions (metadata, schedule window) don't widen
+// the method signature. Coupon resolution (by code) happens inside the store
+// tx under row lock so a concurrent archive racing the caller can't produce a
+// false-positive attachment.
+type InsertCustomerDiscountInput struct {
+	CustomerID     string
+	IdempotencyKey string
+}
+
+// InsertCustomerDiscountResult returns the inserted (or replayed) row with
+// the coupon snapshot as it looked post-increment. Replay=true means the
+// idempotency key matched an existing row and no new insert happened.
+type InsertCustomerDiscountResult struct {
+	Discount domain.CustomerDiscount
+	Coupon   domain.Coupon
+	Replay   bool
 }
 
 // RedeemAtomicInput carries everything the atomic redeem path needs. The

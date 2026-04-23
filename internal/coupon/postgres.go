@@ -643,71 +643,196 @@ func (s *PostgresStore) VoidRedemptionsForInvoice(ctx context.Context, tenantID,
 	return total, nil
 }
 
-// ListActiveCustomerAssignments reads the rows that represent a
-// customer-scoped coupon attachment — subscription_id / invoice_id both
-// NULL, voided_at NULL. The partial index idx_coupon_redemptions_active_customer
-// (migration 0046) serves this exact WHERE clause.
-func (s *PostgresStore) ListActiveCustomerAssignments(ctx context.Context, tenantID, customerID string) ([]domain.CouponRedemption, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer postgres.Rollback(tx)
+// customerDiscountCols is the single source of truth for
+// customer_discounts SELECT lists. Idempotency key and revoked_at are
+// nullable so reads COALESCE to empty / the pointer shape.
+const customerDiscountCols = `id, tenant_id, customer_id, coupon_id,
+	periods_applied, COALESCE(idempotency_key,''), metadata, revoked_at,
+	created_at, updated_at`
 
-	rows, err := tx.QueryContext(ctx, `
-		SELECT `+redemptionCols+`
-		FROM coupon_redemptions
-		WHERE customer_id = $1
-		  AND subscription_id IS NULL
-		  AND invoice_id IS NULL
-		  AND voided_at IS NULL
-		ORDER BY created_at ASC
-	`, customerID)
-	if err != nil {
-		return nil, err
+func scanCustomerDiscountDest(d *domain.CustomerDiscount) []any {
+	return []any{
+		&d.ID, &d.TenantID, &d.CustomerID, &d.CouponID,
+		&d.PeriodsApplied, &d.IdempotencyKey, &d.Metadata, &d.RevokedAt,
+		&d.CreatedAt, &d.UpdatedAt,
 	}
-	defer func() { _ = rows.Close() }()
-
-	var out []domain.CouponRedemption
-	for rows.Next() {
-		var r domain.CouponRedemption
-		if err := rows.Scan(scanRedemptionDest(&r)...); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
 }
 
-// VoidCustomerAssignment marks the given customer-scoped redemption
-// voided and rolls back coupon.times_redeemed in the same tx. Only
-// targets assignment rows (both subscription_id and invoice_id NULL) —
-// by scoping the WHERE we prevent accidental void of a subscription or
-// invoice-attached redemption via the same endpoint. Returns
-// errs.ErrNotFound when no matching active row exists (already revoked,
-// wrong id, or the redemption is scoped elsewhere).
-func (s *PostgresStore) VoidCustomerAssignment(ctx context.Context, tenantID, redemptionID string) error {
+// customerDiscountActiveUniqueIndex is the partial unique index that
+// enforces "at most one live discount per customer" at the DB layer.
+// Kept as a const so the unique-violation translation below can't drift
+// from the migration.
+const customerDiscountActiveUniqueIndex = "idx_customer_discounts_active"
+
+// customerDiscountIdempotencyIndex is the partial unique index on
+// (tenant_id, idempotency_key) for replay detection.
+const customerDiscountIdempotencyIndex = "idx_customer_discounts_idempotency"
+
+// InsertCustomerDiscount is the atomic attach path: lock the coupon row,
+// validate live-state gates, bump coupon.times_redeemed, insert the
+// customer_discounts row. Three failure modes:
+//
+//   - ErrCouponGate for archived / expired / max / not-found. The DB has
+//     already rolled back.
+//   - errs.AlreadyExists with CodeAlreadyAssigned when the partial unique
+//     index catches a concurrent second attach. Translated here so the
+//     service layer can stay unaware of the index name.
+//   - Idempotency-key collision → return the existing row with Replay=true
+//     rather than erroring (mirrors RedeemAtomic's behaviour).
+func (s *PostgresStore) InsertCustomerDiscount(ctx context.Context, tenantID, code string, in InsertCustomerDiscountInput) (InsertCustomerDiscountResult, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
-		return err
+		return InsertCustomerDiscountResult{}, err
 	}
 	defer postgres.Rollback(tx)
 
-	var couponID string
+	var c domain.Coupon
 	err = tx.QueryRowContext(ctx, `
-		UPDATE coupon_redemptions
-		SET voided_at = now()
-		WHERE id = $1
-		  AND subscription_id IS NULL
-		  AND invoice_id IS NULL
-		  AND voided_at IS NULL
-		RETURNING coupon_id
-	`, redemptionID).Scan(&couponID)
+		SELECT `+couponColumns+` FROM coupons WHERE code = $1 FOR UPDATE
+	`, code).Scan(scanDest(&c)...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return errs.ErrNotFound
+			return InsertCustomerDiscountResult{}, ErrCouponGate{Reason: GateNotFound}
 		}
-		return err
+		return InsertCustomerDiscountResult{}, err
+	}
+
+	now := time.Now()
+	if c.ArchivedAt != nil {
+		return InsertCustomerDiscountResult{}, ErrCouponGate{Reason: GateArchived}
+	}
+	if c.ExpiresAt != nil && !c.ExpiresAt.After(now) {
+		return InsertCustomerDiscountResult{}, ErrCouponGate{Reason: GateExpired}
+	}
+	if c.MaxRedemptions != nil && c.TimesRedeemed >= *c.MaxRedemptions {
+		return InsertCustomerDiscountResult{}, ErrCouponGate{Reason: GateMaxRedemptions}
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE coupons SET times_redeemed = times_redeemed + 1, updated_at = now()
+		WHERE id = $1
+	`, c.ID)
+	if err != nil {
+		return InsertCustomerDiscountResult{}, err
+	}
+	c.TimesRedeemed++
+
+	var d domain.CustomerDiscount
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO customer_discounts (
+			tenant_id, customer_id, coupon_id, idempotency_key, created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $5)
+		RETURNING `+customerDiscountCols,
+		tenantID, in.CustomerID, c.ID,
+		postgres.NullableString(in.IdempotencyKey), now.UTC(),
+	).Scan(scanCustomerDiscountDest(&d)...)
+	if err != nil {
+		if postgres.IsUniqueViolation(err) {
+			constraint := postgres.UniqueViolationConstraint(err)
+			switch constraint {
+			case customerDiscountIdempotencyIndex:
+				// Replay: return the committed row from its own tx so we
+				// don't race the reader against our rolled-back writer.
+				_ = tx.Rollback()
+				return s.replayCustomerDiscountByIdempotencyKey(ctx, tenantID, in.IdempotencyKey)
+			case customerDiscountActiveUniqueIndex:
+				return InsertCustomerDiscountResult{}, errs.AlreadyExists("coupon_assignment",
+					"customer already has an active coupon assignment").WithCode(CodeAlreadyAssigned)
+			}
+		}
+		return InsertCustomerDiscountResult{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return InsertCustomerDiscountResult{}, err
+	}
+	return InsertCustomerDiscountResult{Discount: d, Coupon: c, Replay: false}, nil
+}
+
+func (s *PostgresStore) replayCustomerDiscountByIdempotencyKey(ctx context.Context, tenantID, key string) (InsertCustomerDiscountResult, error) {
+	d, err := s.GetCustomerDiscountByIdempotencyKey(ctx, tenantID, key)
+	if err != nil {
+		return InsertCustomerDiscountResult{}, fmt.Errorf("idempotency replay lookup: %w", err)
+	}
+	c, err := s.Get(ctx, tenantID, d.CouponID)
+	if err != nil {
+		return InsertCustomerDiscountResult{}, fmt.Errorf("idempotency replay coupon lookup: %w", err)
+	}
+	return InsertCustomerDiscountResult{Discount: d, Coupon: c, Replay: true}, nil
+}
+
+func (s *PostgresStore) GetCustomerDiscountByIdempotencyKey(ctx context.Context, tenantID, key string) (domain.CustomerDiscount, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.CustomerDiscount{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var d domain.CustomerDiscount
+	err = tx.QueryRowContext(ctx, `
+		SELECT `+customerDiscountCols+`
+		FROM customer_discounts
+		WHERE idempotency_key = $1
+	`, key).Scan(scanCustomerDiscountDest(&d)...)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.CustomerDiscount{}, errs.ErrNotFound
+		}
+		return domain.CustomerDiscount{}, err
+	}
+	return d, nil
+}
+
+// GetActiveCustomerDiscount returns the (at most one) live row for a
+// customer. The partial unique index guarantees no duplicates so this is
+// always a single-row query.
+func (s *PostgresStore) GetActiveCustomerDiscount(ctx context.Context, tenantID, customerID string) (domain.CustomerDiscount, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.CustomerDiscount{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var d domain.CustomerDiscount
+	err = tx.QueryRowContext(ctx, `
+		SELECT `+customerDiscountCols+`
+		FROM customer_discounts
+		WHERE customer_id = $1 AND revoked_at IS NULL
+	`, customerID).Scan(scanCustomerDiscountDest(&d)...)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.CustomerDiscount{}, errs.ErrNotFound
+		}
+		return domain.CustomerDiscount{}, err
+	}
+	return d, nil
+}
+
+// RevokeCustomerDiscount stamps revoked_at on the live row and rolls back
+// coupon.times_redeemed in the same tx. Returns the voided row so callers
+// can emit audit + webhook events without a second read. errs.ErrNotFound
+// when no active assignment exists.
+func (s *PostgresStore) RevokeCustomerDiscount(ctx context.Context, tenantID, customerID string) (domain.CustomerDiscount, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.CustomerDiscount{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var d domain.CustomerDiscount
+	err = tx.QueryRowContext(ctx, `
+		UPDATE customer_discounts
+		SET revoked_at = now(), updated_at = now()
+		WHERE customer_id = $1 AND revoked_at IS NULL
+		RETURNING `+customerDiscountCols,
+		customerID,
+	).Scan(scanCustomerDiscountDest(&d)...)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.CustomerDiscount{}, errs.ErrNotFound
+		}
+		return domain.CustomerDiscount{}, err
 	}
 
 	_, err = tx.ExecContext(ctx, `
@@ -715,11 +840,45 @@ func (s *PostgresStore) VoidCustomerAssignment(ctx context.Context, tenantID, re
 		SET times_redeemed = GREATEST(times_redeemed - 1, 0),
 		    updated_at = now()
 		WHERE id = $1
-	`, couponID)
+	`, d.CouponID)
+	if err != nil {
+		return domain.CustomerDiscount{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.CustomerDiscount{}, err
+	}
+	return d, nil
+}
+
+// IncrementCustomerDiscountPeriodsApplied bumps periods_applied by one on
+// each id in a single UPDATE. Returns errs.ErrNotFound if any id is
+// missing so partial application surfaces loudly — the engine's only
+// caller invokes this once per (invoice, discount) after an invoice
+// commits, so a missing row indicates a bug upstream.
+func (s *PostgresStore) IncrementCustomerDiscountPeriodsApplied(ctx context.Context, tenantID string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return err
 	}
+	defer postgres.Rollback(tx)
 
+	res, err := tx.ExecContext(ctx, `
+		UPDATE customer_discounts
+		SET periods_applied = periods_applied + 1,
+		    updated_at = now()
+		WHERE id = ANY($1)
+	`, postgres.StringArray(ids))
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if int(n) != len(ids) {
+		return errs.ErrNotFound
+	}
 	return tx.Commit()
 }
 

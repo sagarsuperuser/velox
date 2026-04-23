@@ -705,15 +705,14 @@ type AssignInput struct {
 	IdempotencyKey string
 }
 
-// AssignmentResult wraps the redemption row that represents the
-// attachment with the coupon snapshot. Handlers use the coupon fields to
-// surface the human-readable description ("20% off, 3 months"); the
-// redemption's PeriodsApplied drives the "applied to N invoices so far"
-// UI without a second round-trip.
+// AssignmentResult wraps the customer_discounts row with the coupon
+// snapshot. Handlers use the coupon fields to surface the human-readable
+// description ("20% off, 3 months"); the row's PeriodsApplied drives the
+// "applied to N invoices so far" UI without a second round-trip.
 type AssignmentResult struct {
-	Assignment domain.CouponRedemption
-	Coupon     domain.Coupon
-	Replay     bool
+	Discount domain.CustomerDiscount
+	Coupon   domain.Coupon
+	Replay   bool
 }
 
 // AssignToCustomer attaches a coupon to a customer so the billing engine
@@ -724,25 +723,23 @@ type AssignmentResult struct {
 // vary, and fixed-amount coupons apply their stored AmountOff each cycle.
 //
 // Contract:
-//   - At most one active assignment per customer. A second attach while
-//     the first still has periods left returns CodeAlreadyAssigned so
-//     callers can choose to revoke-and-reattach explicitly. Exhausted
-//     assignments (durationHasPeriodLeft == false) are invisible to this
-//     check — the caller can reattach after exhaustion.
-//   - The underlying redemption row has subscription_id = NULL and
-//     invoice_id = NULL. These are the sentinels that
-//     ApplyToInvoiceForCustomer scans for on every invoice generation.
+//   - At most one active assignment per customer. A concurrent double-attach
+//     loses on the DB partial unique index and surfaces as
+//     CodeAlreadyAssigned — no pre-check/insert TOCTOU window.
+//   - Revoked assignments (revoked_at set) are filtered from the unique
+//     index, so a customer whose prior discount exhausted or was revoked
+//     can attach a new coupon immediately.
 //   - IdempotencyKey follows the same replay semantics as Redeem: a
 //     repeat call with the same key returns the original row with
 //     Replay = true.
 func (s *Service) AssignToCustomer(ctx context.Context, tenantID string, input AssignInput) (AssignmentResult, error) {
 	if key := strings.TrimSpace(input.IdempotencyKey); key != "" {
-		if existing, err := s.store.GetRedemptionByIdempotencyKey(ctx, tenantID, key); err == nil {
+		if existing, err := s.store.GetCustomerDiscountByIdempotencyKey(ctx, tenantID, key); err == nil {
 			cpn, lookupErr := s.store.Get(ctx, tenantID, existing.CouponID)
 			if lookupErr != nil {
 				return AssignmentResult{}, fmt.Errorf("idempotency replay coupon lookup: %w", lookupErr)
 			}
-			return AssignmentResult{Assignment: existing, Coupon: cpn, Replay: true}, nil
+			return AssignmentResult{Discount: existing, Coupon: cpn, Replay: true}, nil
 		}
 	}
 
@@ -754,213 +751,142 @@ func (s *Service) AssignToCustomer(ctx context.Context, tenantID string, input A
 		return AssignmentResult{}, errs.Required("customer_id")
 	}
 
+	// Private-coupon customer-id mismatch surfaces as "not found" before we
+	// take the row lock, so the endpoint can't be used to probe for codes.
+	// The atomic insert re-runs archived/expired/max under lock, so we
+	// don't duplicate those gates here.
 	cpn, err := s.store.GetByCode(ctx, tenantID, code)
 	if err != nil {
 		return AssignmentResult{}, errs.Invalid("code", "coupon not found").WithCode(CodeNotFound)
 	}
-	if cpn.ArchivedAt != nil {
-		return AssignmentResult{}, errs.InvalidState("coupon is not active").WithCode(CodeArchived)
-	}
-	if cpn.ExpiresAt != nil && cpn.ExpiresAt.Before(time.Now()) {
-		return AssignmentResult{}, errs.InvalidState("coupon has expired").WithCode(CodeExpired)
-	}
-	if cpn.MaxRedemptions != nil && cpn.TimesRedeemed >= *cpn.MaxRedemptions {
-		return AssignmentResult{}, errs.InvalidState("coupon has reached maximum redemptions").WithCode(CodeMaxed)
-	}
-	// Private coupon scoped to a different customer → hide behind
-	// "not found" so the endpoint can't be used to probe for codes.
 	if cpn.CustomerID != "" && cpn.CustomerID != input.CustomerID {
 		return AssignmentResult{}, errs.Invalid("code", "coupon not found").WithCode(CodeNotFound)
 	}
 
-	// Reject a second attach while the first is still active.
-	existing, err := s.store.ListActiveCustomerAssignments(ctx, tenantID, input.CustomerID)
-	if err != nil {
-		return AssignmentResult{}, fmt.Errorf("list active assignments: %w", err)
-	}
-	for _, r := range existing {
-		ec, lookupErr := s.store.Get(ctx, tenantID, r.CouponID)
-		if lookupErr != nil {
-			continue
-		}
-		if durationHasPeriodLeft(ec, r) {
-			return AssignmentResult{}, errs.InvalidState("customer already has an active coupon assignment").WithCode(CodeAlreadyAssigned)
-		}
-	}
-
-	// Atomic insert — bumps coupon.times_redeemed and creates the row
-	// with subscription_id = NULL and invoice_id = NULL. Discount cents
-	// stored here is a placeholder (0) because the real per-invoice
-	// discount is computed at invoice generation time.
-	result, err := s.store.RedeemAtomic(ctx, tenantID, RedeemAtomicInput{
-		Code:           cpn.Code,
+	result, err := s.store.InsertCustomerDiscount(ctx, tenantID, code, InsertCustomerDiscountInput{
 		CustomerID:     input.CustomerID,
-		SubscriptionID: "",
-		InvoiceID:      "",
-		DiscountCents:  0,
 		IdempotencyKey: input.IdempotencyKey,
 	})
 	if err != nil {
 		return AssignmentResult{}, translateGate(err)
 	}
-	return AssignmentResult{Assignment: result.Redemption, Coupon: result.Coupon, Replay: result.Replay}, nil
+	return AssignmentResult{Discount: result.Discount, Coupon: result.Coupon, Replay: result.Replay}, nil
 }
 
-// RevokeCustomerAssignment voids the customer's active assignment. Returns
-// errs.ErrNotFound when no active assignment exists — callers surface 404.
-// Not idempotent on repeat: a second revoke on an already-voided row is a
-// 404, matching the "attach then detach" state machine exactly.
-func (s *Service) RevokeCustomerAssignment(ctx context.Context, tenantID, customerID string) error {
+// RevokeCustomerAssignment stamps revoked_at on the customer's active
+// assignment and rolls back coupon.times_redeemed in the same tx. Returns
+// the voided row so the handler can audit + emit webhook without a second
+// read. errs.ErrNotFound when no active assignment exists — callers
+// surface 404. Not idempotent on repeat: a second revoke on an
+// already-voided row is a 404, matching the "attach then detach" state
+// machine exactly.
+func (s *Service) RevokeCustomerAssignment(ctx context.Context, tenantID, customerID string) (domain.CustomerDiscount, error) {
 	if customerID == "" {
-		return errs.Required("customer_id")
+		return domain.CustomerDiscount{}, errs.Required("customer_id")
 	}
-	rows, err := s.store.ListActiveCustomerAssignments(ctx, tenantID, customerID)
-	if err != nil {
-		return fmt.Errorf("list active assignments: %w", err)
-	}
-	if len(rows) == 0 {
-		return errs.ErrNotFound
-	}
-	// Void every active row — in practice there is at most one, but if
-	// more exist (race during a botched attach) we revoke all so the
-	// customer ends in a clean no-discount state.
-	for _, r := range rows {
-		if err := s.store.VoidCustomerAssignment(ctx, tenantID, r.ID); err != nil {
-			if errors.Is(err, errs.ErrNotFound) {
-				continue
-			}
-			return err
-		}
-	}
-	return nil
+	return s.store.RevokeCustomerDiscount(ctx, tenantID, customerID)
 }
 
 // GetCustomerAssignment returns the single active customer-scoped
-// assignment with its coupon snapshot, or errs.ErrNotFound if none. If
-// multiple active rows exist (shouldn't, but defensive) returns the
-// first by created_at — the same row AttachToCustomer's re-attach check
-// reads.
+// assignment with its coupon snapshot, or errs.ErrNotFound if none.
 func (s *Service) GetCustomerAssignment(ctx context.Context, tenantID, customerID string) (AssignmentResult, error) {
-	rows, err := s.store.ListActiveCustomerAssignments(ctx, tenantID, customerID)
+	d, err := s.store.GetActiveCustomerDiscount(ctx, tenantID, customerID)
 	if err != nil {
 		return AssignmentResult{}, err
 	}
-	if len(rows) == 0 {
-		return AssignmentResult{}, errs.ErrNotFound
-	}
-	r := rows[0]
-	cpn, err := s.store.Get(ctx, tenantID, r.CouponID)
+	cpn, err := s.store.Get(ctx, tenantID, d.CouponID)
 	if err != nil {
 		return AssignmentResult{}, fmt.Errorf("load coupon: %w", err)
 	}
-	return AssignmentResult{Assignment: r, Coupon: cpn}, nil
+	return AssignmentResult{Discount: d, Coupon: cpn}, nil
 }
 
-// ApplyToInvoiceForCustomer mirrors ApplyToInvoice but sources from the
-// customer-scoped assignment pool. The billing engine calls this after
-// ApplyToInvoice returns zero cents — subscription-attached coupons
-// always win over customer-level assignments on the same invoice
-// (matches Stripe's precedence rule: subscription.discount beats
-// customer.discount).
+// ApplyToInvoiceForCustomer is the customer-scoped fallback for the
+// billing engine: when no subscription coupon applies (or the invoice has
+// no subscription at all), consult the customer's standing assignment so
+// the operator's "apply this coupon to all future invoices" action takes
+// effect. Stripe's precedence rule — subscription.discount beats
+// customer.discount on the same invoice — is enforced by the engine, not
+// here: this method simply returns the discount if there is an active
+// assignment with an eligible coupon.
 //
 // Same gate set as ApplyToInvoice: archived / expired / plan match /
 // currency match (fixed-amount only) / durationHasPeriodLeft. The
-// returned RedemptionIDs are fed to IncrementPeriodsApplied after the
-// invoice commits so duration-limited assignments exhaust on schedule.
+// returned RedemptionIDs are the customer_discounts.id (not coupon
+// redemption IDs) — the engine tracks the scope and routes to
+// MarkCustomerDiscountPeriodsApplied after the invoice commits.
 func (s *Service) ApplyToInvoiceForCustomer(ctx context.Context, tenantID, customerID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error) {
 	if customerID == "" || subtotalCents <= 0 {
 		return domain.CouponDiscountResult{}, nil
 	}
 
-	redemptions, err := s.store.ListActiveCustomerAssignments(ctx, tenantID, customerID)
+	d, err := s.store.GetActiveCustomerDiscount(ctx, tenantID, customerID)
 	if err != nil {
-		return domain.CouponDiscountResult{}, fmt.Errorf("list customer assignments: %w", err)
-	}
-	if len(redemptions) == 0 {
-		return domain.CouponDiscountResult{}, nil
+		if errors.Is(err, errs.ErrNotFound) {
+			return domain.CouponDiscountResult{}, nil
+		}
+		return domain.CouponDiscountResult{}, fmt.Errorf("load customer discount: %w", err)
 	}
 
-	couponIDs := make([]string, 0, len(redemptions))
-	seen := make(map[string]struct{}, len(redemptions))
-	for _, r := range redemptions {
-		if _, ok := seen[r.CouponID]; ok {
-			continue
-		}
-		seen[r.CouponID] = struct{}{}
-		couponIDs = append(couponIDs, r.CouponID)
-	}
-	coupons, err := s.store.GetByIDs(ctx, tenantID, couponIDs)
+	cpn, err := s.store.Get(ctx, tenantID, d.CouponID)
 	if err != nil {
-		return domain.CouponDiscountResult{}, fmt.Errorf("load coupons: %w", err)
+		if errors.Is(err, errs.ErrNotFound) {
+			return domain.CouponDiscountResult{}, nil
+		}
+		return domain.CouponDiscountResult{}, fmt.Errorf("load coupon: %w", err)
 	}
 
 	now := time.Now()
-
-	type eligible struct {
-		coupon     domain.Coupon
-		redemption domain.CouponRedemption
+	if cpn.CustomerID != "" && cpn.CustomerID != customerID {
+		return domain.CouponDiscountResult{}, nil
 	}
-	var pool []eligible
-
-	for _, r := range redemptions {
-		cpn, ok := coupons[r.CouponID]
-		if !ok {
-			continue
-		}
-		if cpn.CustomerID != "" && cpn.CustomerID != customerID {
-			// Private coupon assigned to the wrong customer — shouldn't
-			// happen (AssignToCustomer rejects it) but defensive.
-			continue
-		}
-		if cpn.ArchivedAt != nil {
-			continue
-		}
-		if cpn.ExpiresAt != nil && cpn.ExpiresAt.Before(now) {
-			continue
-		}
-		if len(cpn.PlanIDs) > 0 && len(planIDs) > 0 && !anyPlanMatches(cpn.PlanIDs, planIDs) {
-			continue
-		}
-		if !durationHasPeriodLeft(cpn, r) {
-			continue
-		}
-		if cpn.Type == domain.CouponTypeFixedAmount && invoiceCurrency != "" &&
-			!strings.EqualFold(cpn.Currency, invoiceCurrency) {
-			slog.Warn("coupon: currency mismatch — skipping customer-scoped fixed-amount coupon",
-				"coupon_id", cpn.ID,
-				"coupon_currency", cpn.Currency,
-				"invoice_currency", invoiceCurrency,
-				"customer_id", customerID)
-			continue
-		}
-		pool = append(pool, eligible{coupon: cpn, redemption: r})
+	if cpn.ArchivedAt != nil {
+		return domain.CouponDiscountResult{}, nil
 	}
-
-	if len(pool) == 0 {
+	if cpn.ExpiresAt != nil && cpn.ExpiresAt.Before(now) {
+		return domain.CouponDiscountResult{}, nil
+	}
+	if len(cpn.PlanIDs) > 0 && len(planIDs) > 0 && !anyPlanMatches(cpn.PlanIDs, planIDs) {
+		return domain.CouponDiscountResult{}, nil
+	}
+	if !durationHasPeriodLeftForDiscount(cpn, d) {
+		return domain.CouponDiscountResult{}, nil
+	}
+	if cpn.Type == domain.CouponTypeFixedAmount && invoiceCurrency != "" &&
+		!strings.EqualFold(cpn.Currency, invoiceCurrency) {
+		slog.Warn("coupon: currency mismatch — skipping customer-scoped fixed-amount coupon",
+			"coupon_id", cpn.ID,
+			"coupon_currency", cpn.Currency,
+			"invoice_currency", invoiceCurrency,
+			"customer_id", customerID)
 		return domain.CouponDiscountResult{}, nil
 	}
 
-	// Customer-scope: only one active assignment in practice, so the
-	// stackable question is moot. Pick the best single discount —
-	// matches the non-stackable branch in ApplyToInvoice. If operators
-	// ever assign multiple customer-scoped coupons (e.g., stacked
-	// promos), this branch handles that gracefully.
-	var bestIdx int
-	var bestCents int64
-	for i, e := range pool {
-		d := CalculateDiscount(e.coupon, subtotalCents)
-		if d > bestCents {
-			bestCents = d
-			bestIdx = i
-		}
-	}
-	if bestCents == 0 {
+	cents := CalculateDiscount(cpn, subtotalCents)
+	if cents <= 0 {
 		return domain.CouponDiscountResult{}, nil
 	}
 	return domain.CouponDiscountResult{
-		Cents:         bestCents,
-		RedemptionIDs: []string{pool[bestIdx].redemption.ID},
+		Cents:         cents,
+		RedemptionIDs: []string{d.ID},
 	}, nil
+}
+
+// MarkCustomerDiscountPeriodsApplied advances periods_applied on each
+// customer_discounts row by one. Callers invoke this after the invoice
+// that consumed the discount commits — the same durability rule as
+// MarkPeriodsApplied for subscription-scope redemptions.
+func (s *Service) MarkCustomerDiscountPeriodsApplied(ctx context.Context, tenantID string, ids []string) error {
+	kept := ids[:0:0]
+	for _, id := range ids {
+		if id != "" {
+			kept = append(kept, id)
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return s.store.IncrementCustomerDiscountPeriodsApplied(ctx, tenantID, kept)
 }
 
 // anyPlanMatches returns true if any plan_id in itemPlans appears in the
@@ -981,14 +907,25 @@ func anyPlanMatches(couponPlans, itemPlans []string) bool {
 // Forever always returns true; once exhausts after the first application;
 // repeating exhausts once periods_applied reaches duration_periods.
 func durationHasPeriodLeft(c domain.Coupon, r domain.CouponRedemption) bool {
+	return durationHasPeriodLeftFor(c, r.PeriodsApplied)
+}
+
+// durationHasPeriodLeftForDiscount is the customer-scope analogue: the
+// periods_applied counter lives on the CustomerDiscount row instead of a
+// CouponRedemption row. Same rule applies.
+func durationHasPeriodLeftForDiscount(c domain.Coupon, d domain.CustomerDiscount) bool {
+	return durationHasPeriodLeftFor(c, d.PeriodsApplied)
+}
+
+func durationHasPeriodLeftFor(c domain.Coupon, periodsApplied int) bool {
 	switch c.Duration {
 	case domain.CouponDurationOnce:
-		return r.PeriodsApplied < 1
+		return periodsApplied < 1
 	case domain.CouponDurationRepeating:
 		if c.DurationPeriods == nil {
 			return false
 		}
-		return r.PeriodsApplied < *c.DurationPeriods
+		return periodsApplied < *c.DurationPeriods
 	case domain.CouponDurationForever, "":
 		return true
 	default:
