@@ -98,6 +98,7 @@ export default function InvoiceDetailPage() {
   const [showEmailModal, setShowEmailModal] = useState(false)
   const [showCreditModal, setShowCreditModal] = useState(false)
   const [showAddLineItem, setShowAddLineItem] = useState(false)
+  const [showApplyCoupon, setShowApplyCoupon] = useState(false)
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null)
 
   useEffect(() => {
@@ -230,6 +231,11 @@ export default function InvoiceDetailPage() {
               <Button variant="outline" size="sm" onClick={() => setShowAddLineItem(true)} disabled={acting}>
                 Add Line Item
               </Button>
+              {invoice.discount_cents === 0 && !invoice.tax_transaction_id && (
+                <Button variant="outline" size="sm" onClick={() => setShowApplyCoupon(true)} disabled={acting}>
+                  Apply Coupon
+                </Button>
+              )}
               <Button size="sm" onClick={() => finalizeMutation.mutate()} disabled={acting}>
                 Finalize
               </Button>
@@ -735,6 +741,18 @@ export default function InvoiceDetailPage() {
         />
       )}
 
+      {/* Apply Coupon Modal */}
+      {showApplyCoupon && (
+        <ApplyCouponDialog
+          invoiceId={invoice.id}
+          invoiceNumber={invoice.invoice_number}
+          subtotalCents={invoice.subtotal_cents}
+          currency={invoice.currency}
+          onClose={() => setShowApplyCoupon(false)}
+          onApplied={() => { setShowApplyCoupon(false); toast.success('Coupon applied'); invalidateAll() }}
+        />
+      )}
+
       {/* PDF Preview */}
       {pdfPreviewUrl && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => { URL.revokeObjectURL(pdfPreviewUrl); setPdfPreviewUrl(null) }}>
@@ -952,6 +970,86 @@ function IssueCreditDialog({ invoice, onClose, onCreated }: {
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting ? <><Loader2 size={14} className="animate-spin mr-2" />Creating...</> : 'Create Credit Note'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ApplyCouponDialog prompts for a coupon code and applies it to a draft
+// invoice. A fresh idempotency key is generated per open so the operator's
+// retries after a transient failure don't double-redeem; a fresh key on
+// every open deliberately lets the operator re-try a different code if the
+// first one was rejected.
+function ApplyCouponDialog({ invoiceId, invoiceNumber, subtotalCents, currency, onClose, onApplied }: {
+  invoiceId: string
+  invoiceNumber: string
+  subtotalCents: number
+  currency: string
+  onClose: () => void
+  onApplied: () => void
+}) {
+  const [code, setCode] = useState('')
+  const [codeError, setCodeError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [idemKey] = useState(() => crypto.randomUUID())
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const trimmed = code.trim().toUpperCase()
+    if (!trimmed) { setCodeError('Coupon code is required'); return }
+    setSaving(true)
+    setCodeError('')
+    try {
+      await api.applyInvoiceCoupon(invoiceId, { code: trimmed, idempotency_key: idemKey })
+      onApplied()
+    } catch (err) {
+      setCodeError(err instanceof Error ? err.message : 'Failed to apply coupon')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Apply Coupon</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} noValidate className="space-y-4">
+          <div>
+            <Label>Invoice</Label>
+            <p className="text-sm text-muted-foreground font-mono mt-1">{invoiceNumber}</p>
+          </div>
+          <div>
+            <Label>Subtotal</Label>
+            <p className="text-sm text-muted-foreground mt-1">
+              {formatCents(subtotalCents, currency)}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="coupon-code">Coupon Code</Label>
+            <Input
+              id="coupon-code"
+              value={code}
+              onChange={e => { setCode(e.target.value); setCodeError('') }}
+              placeholder="e.g. SAVE20"
+              autoComplete="off"
+              autoCapitalize="characters"
+              maxLength={100}
+              autoFocus
+            />
+            {codeError && <p className="text-xs text-destructive">{codeError}</p>}
+            <p className="text-xs text-muted-foreground">
+              Discount and tax recompute atomically against the new subtotal.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={saving}>
+              {saving ? <><Loader2 size={14} className="animate-spin mr-2" />Applying...</> : 'Apply Coupon'}
             </Button>
           </DialogFooter>
         </form>
