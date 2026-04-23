@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -155,7 +156,13 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	// Default is the live-set only — matches the common operator query.
 	includeArchived := r.URL.Query().Get("include_archived") == "true"
 
-	coupons, err := h.svc.List(r.Context(), tenantID, includeArchived)
+	filter, err := buildListFilter(r, includeArchived)
+	if err != nil {
+		respond.BadRequest(w, r, err.Error())
+		return
+	}
+
+	coupons, hasMore, err := h.svc.List(r.Context(), tenantID, filter)
 	if err != nil {
 		respond.InternalError(w, r)
 		slog.ErrorContext(r.Context(), "list coupons", "error", err)
@@ -165,7 +172,39 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		coupons = []domain.Coupon{}
 	}
 
-	respond.JSON(w, r, http.StatusOK, map[string]any{"data": coupons})
+	respond.JSON(w, r, http.StatusOK, newCouponPage(coupons, hasMore))
+}
+
+// buildListFilter parses ?limit and ?after into a seek-ready ListFilter.
+// An unparseable cursor is a client error — surface it as 400 so the UI
+// can reset pagination cleanly rather than silently returning page 1.
+func buildListFilter(r *http.Request, includeArchived bool) (ListFilter, error) {
+	p := middleware.ParsePageParams(r)
+	filter := ListFilter{
+		IncludeArchived: includeArchived,
+		Limit:           p.Limit,
+	}
+	if p.Cursor != "" {
+		cur, err := middleware.DecodeCursor(p.Cursor)
+		if err != nil {
+			return ListFilter{}, fmt.Errorf("invalid cursor")
+		}
+		filter.AfterID = cur.ID
+		filter.AfterCreatedAt = cur.CreatedAt
+	}
+	return filter, nil
+}
+
+// newCouponPage renders a paginated coupon response in Stripe's shape.
+// next_cursor is derived from the tail row only when hasMore is true so
+// clients never chase a phantom page past the last row.
+func newCouponPage(coupons []domain.Coupon, hasMore bool) middleware.PageResponse {
+	resp := middleware.PageResponse{Data: coupons, HasMore: hasMore}
+	if hasMore && len(coupons) > 0 {
+		last := coupons[len(coupons)-1]
+		resp.NextCursor = middleware.EncodeCursor(last.ID, last.CreatedAt)
+	}
+	return resp
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
@@ -315,7 +354,13 @@ func (h *Handler) listRedemptions(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	couponID := chi.URLParam(r, "id")
 
-	redemptions, err := h.svc.ListRedemptions(r.Context(), tenantID, couponID)
+	filter, err := buildListFilter(r, false)
+	if err != nil {
+		respond.BadRequest(w, r, err.Error())
+		return
+	}
+
+	redemptions, hasMore, err := h.svc.ListRedemptions(r.Context(), tenantID, couponID, filter)
 	if err != nil {
 		respond.InternalError(w, r)
 		slog.ErrorContext(r.Context(), "list coupon redemptions", "error", err)
@@ -325,5 +370,10 @@ func (h *Handler) listRedemptions(w http.ResponseWriter, r *http.Request) {
 		redemptions = []domain.CouponRedemption{}
 	}
 
-	respond.JSON(w, r, http.StatusOK, map[string]any{"data": redemptions})
+	resp := middleware.PageResponse{Data: redemptions, HasMore: hasMore}
+	if hasMore && len(redemptions) > 0 {
+		last := redemptions[len(redemptions)-1]
+		resp.NextCursor = middleware.EncodeCursor(last.ID, last.CreatedAt)
+	}
+	respond.JSON(w, r, http.StatusOK, resp)
 }
