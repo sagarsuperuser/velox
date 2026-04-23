@@ -116,10 +116,10 @@ type Request struct {
 	Currency string
 
 	// Customer fields from the buyer's billing profile.
-	CustomerAddress     Address
-	CustomerTaxID       string
-	CustomerTaxIDType   string
-	CustomerStatus      CustomerTaxStatus
+	CustomerAddress      Address
+	CustomerTaxID        string
+	CustomerTaxIDType    string
+	CustomerStatus       CustomerTaxStatus
 	CustomerExemptReason string // copied onto the invoice audit snapshot when Status == exempt
 
 	// TaxInclusive flips the interpretation of line amounts: when true,

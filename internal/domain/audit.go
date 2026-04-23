@@ -20,18 +20,18 @@ type AuditEntry struct {
 
 // Well-known audit actions.
 const (
-	AuditActionCreate   = "create"
-	AuditActionUpdate   = "update"
-	AuditActionDelete   = "delete"
-	AuditActionActivate = "activate"
-	AuditActionCancel   = "cancel"
-	AuditActionPause    = "pause"
-	AuditActionResume   = "resume"
-	AuditActionFinalize = "finalize"
-	AuditActionVoid     = "void"
-	AuditActionRevoke   = "revoke"
-	AuditActionGrant    = "grant"
-	AuditActionRefund   = "refund"
+	AuditActionCreate    = "create"
+	AuditActionUpdate    = "update"
+	AuditActionDelete    = "delete"
+	AuditActionActivate  = "activate"
+	AuditActionCancel    = "cancel"
+	AuditActionPause     = "pause"
+	AuditActionResume    = "resume"
+	AuditActionFinalize  = "finalize"
+	AuditActionVoid      = "void"
+	AuditActionRevoke    = "revoke"
+	AuditActionGrant     = "grant"
+	AuditActionRefund    = "refund"
 	AuditActionArchive   = "archive"
 	AuditActionUnarchive = "unarchive"
 	AuditActionRedeem    = "redeem"
@@ -65,7 +65,7 @@ type TenantSettings struct {
 	// use) on first save; tenants override when their product mix diverges.
 	// Only consulted by the stripe_tax provider; manual/none ignore it.
 	DefaultProductTaxCode string `json:"default_product_tax_code,omitempty"`
-	CompanyName string `json:"company_name,omitempty"`
+	CompanyName           string `json:"company_name,omitempty"`
 	// Structured registered-business address. Printed in the invoice "From"
 	// block and used to seed tax_home_country on first save. Flat fields
 	// mirror the billing_profile.Address shape on the customer side for

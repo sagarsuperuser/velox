@@ -442,7 +442,7 @@ func TestLogin_Success_IssuesCookieAndReturnsSessionResp(t *testing.T) {
 	resp := postJSON(t, h.public.URL+"/login", map[string]string{
 		"email": "owner@example.com", "password": "password123",
 	}, nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d want 200", resp.StatusCode)
 	}
@@ -480,7 +480,7 @@ func TestLogin_WrongPassword_Returns401(t *testing.T) {
 	resp := postJSON(t, h.public.URL+"/login", map[string]string{
 		"email": "owner@example.com", "password": "nottheone",
 	}, nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status=%d want 401", resp.StatusCode)
 	}
@@ -495,7 +495,7 @@ func TestLogin_UnknownEmail_Returns401(t *testing.T) {
 	resp := postJSON(t, h.public.URL+"/login", map[string]string{
 		"email": "nobody@example.com", "password": "password123",
 	}, nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status=%d want 401", resp.StatusCode)
 	}
@@ -511,7 +511,7 @@ func TestLogin_NoMembership_Returns403(t *testing.T) {
 	resp := postJSON(t, h.public.URL+"/login", map[string]string{
 		"email": "orphan@example.com", "password": "password123",
 	}, nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status=%d want 403", resp.StatusCode)
 	}
@@ -524,14 +524,14 @@ func TestWhoami_WithValidCookie_ReturnsUser(t *testing.T) {
 	loginResp := postJSON(t, h.public.URL+"/login", map[string]string{
 		"email": "owner@example.com", "password": "password123",
 	}, nil)
-	loginResp.Body.Close()
+	_ = loginResp.Body.Close()
 	cookie := findCookie(loginResp, session.CookieName)
 	if cookie == nil {
 		t.Fatal("login did not issue a cookie")
 	}
 
 	resp := getWithCookie(t, h.scoped.URL+"/", cookie)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("whoami status=%d want 200", resp.StatusCode)
 	}
@@ -553,7 +553,7 @@ func TestWhoami_WithValidCookie_ReturnsUser(t *testing.T) {
 func TestWhoami_NoCookie_Returns401(t *testing.T) {
 	h := newHarness(t)
 	resp := getWithCookie(t, h.scoped.URL+"/", nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status=%d want 401", resp.StatusCode)
 	}
@@ -566,11 +566,11 @@ func TestLogout_RevokesAndClearsCookie(t *testing.T) {
 	loginResp := postJSON(t, h.public.URL+"/login", map[string]string{
 		"email": "owner@example.com", "password": "password123",
 	}, nil)
-	loginResp.Body.Close()
+	_ = loginResp.Body.Close()
 	cookie := findCookie(loginResp, session.CookieName)
 
 	logoutResp := postJSON(t, h.public.URL+"/logout", nil, cookie)
-	logoutResp.Body.Close()
+	_ = logoutResp.Body.Close()
 	if logoutResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("logout status=%d want 204", logoutResp.StatusCode)
 	}
@@ -581,7 +581,7 @@ func TestLogout_RevokesAndClearsCookie(t *testing.T) {
 
 	// Follow-up whoami with the original cookie must now fail.
 	whoami := getWithCookie(t, h.scoped.URL+"/", cookie)
-	whoami.Body.Close()
+	_ = whoami.Body.Close()
 	if whoami.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("whoami after logout: status=%d want 401", whoami.StatusCode)
 	}
@@ -594,7 +594,7 @@ func TestPatchSession_TogglesLivemode(t *testing.T) {
 	loginResp := postJSON(t, h.public.URL+"/login", map[string]string{
 		"email": "owner@example.com", "password": "password123",
 	}, nil)
-	loginResp.Body.Close()
+	_ = loginResp.Body.Close()
 	cookie := findCookie(loginResp, session.CookieName)
 
 	// Flip to live mode.
@@ -606,14 +606,14 @@ func TestPatchSession_TogglesLivemode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("patch: %v", err)
 	}
-	defer patchResp.Body.Close()
+	defer func() { _ = patchResp.Body.Close() }()
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("patch status=%d want 200", patchResp.StatusCode)
 	}
 
 	// whoami should now report livemode=true.
 	resp := getWithCookie(t, h.scoped.URL+"/", cookie)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var body map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body["livemode"] != true {
@@ -629,14 +629,14 @@ func TestPasswordReset_HappyPath_RevokesExistingSessions(t *testing.T) {
 	loginResp := postJSON(t, h.public.URL+"/login", map[string]string{
 		"email": "owner@example.com", "password": "password123",
 	}, nil)
-	loginResp.Body.Close()
+	_ = loginResp.Body.Close()
 	oldCookie := findCookie(loginResp, session.CookieName)
 
 	// Request reset.
 	resp := postJSON(t, h.public.URL+"/password-reset-request", map[string]string{
 		"email": "owner@example.com",
 	}, nil)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("reset request status=%d want 202", resp.StatusCode)
 	}
@@ -658,7 +658,7 @@ func TestPasswordReset_HappyPath_RevokesExistingSessions(t *testing.T) {
 	confirm := postJSON(t, h.public.URL+"/password-reset-confirm", map[string]string{
 		"token": rawToken, "password": "newsecret99",
 	}, nil)
-	confirm.Body.Close()
+	_ = confirm.Body.Close()
 	if confirm.StatusCode != http.StatusNoContent {
 		t.Fatalf("reset confirm status=%d want 204", confirm.StatusCode)
 	}
@@ -676,14 +676,14 @@ func TestPasswordReset_HappyPath_RevokesExistingSessions(t *testing.T) {
 	bad := postJSON(t, h.public.URL+"/login", map[string]string{
 		"email": "owner@example.com", "password": "password123",
 	}, nil)
-	bad.Body.Close()
+	_ = bad.Body.Close()
 	if bad.StatusCode != http.StatusUnauthorized {
 		t.Errorf("old password still works, status=%d", bad.StatusCode)
 	}
 	good := postJSON(t, h.public.URL+"/login", map[string]string{
 		"email": "owner@example.com", "password": "newsecret99",
 	}, nil)
-	good.Body.Close()
+	_ = good.Body.Close()
 	if good.StatusCode != http.StatusOK {
 		t.Errorf("new password rejected, status=%d", good.StatusCode)
 	}
@@ -694,7 +694,7 @@ func TestPasswordReset_UnknownEmail_Returns202_NoEmail(t *testing.T) {
 	resp := postJSON(t, h.public.URL+"/password-reset-request", map[string]string{
 		"email": "ghost@example.com",
 	}, nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status=%d want 202 (enumeration-resistant)", resp.StatusCode)
 	}
@@ -709,7 +709,7 @@ func TestPasswordReset_InvalidToken_Returns401(t *testing.T) {
 	resp := postJSON(t, h.public.URL+"/password-reset-confirm", map[string]string{
 		"token": "not-a-real-token", "password": "newpassword99",
 	}, nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status=%d want 401", resp.StatusCode)
 	}

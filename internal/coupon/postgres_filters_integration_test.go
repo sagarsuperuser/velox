@@ -130,5 +130,5 @@ func TestCoupon_ListFilters_E2E(t *testing.T) {
 	})
 }
 
-func ptr(i int) *int              { return &i }
+func ptr(i int) *int                 { return &i }
 func ptrTime(t time.Time) *time.Time { return &t }

@@ -43,9 +43,9 @@ type CreditNote struct {
 	// the invoice has no upstream tax state to reverse (manual/none
 	// provider, or legacy invoice pre-dating invoice.tax_transaction_id).
 	TaxTransactionID string         `json:"tax_transaction_id,omitempty"`
-	Metadata          map[string]any   `json:"metadata,omitempty"`
-	CreatedAt         time.Time        `json:"created_at"`
-	UpdatedAt         time.Time        `json:"updated_at"`
+	Metadata         map[string]any `json:"metadata,omitempty"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 }
 
 type CreditNoteLineItem struct {

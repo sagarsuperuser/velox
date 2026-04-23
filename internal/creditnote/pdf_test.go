@@ -192,9 +192,7 @@ func TestSettlementLines(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Currency symbol is used by formatCents; reset to USD
-			cnPDFCurrencySymbol = "$"
-			got := settlementLines(tc.cn)
+			got := settlementLines(tc.cn, "$")
 			if len(got) != tc.wantAll {
 				t.Fatalf("lines: got %d, want %d (%v)", len(got), tc.wantAll, got)
 			}

@@ -303,12 +303,12 @@ func (h *Handler) whoami(w http.ResponseWriter, r *http.Request) {
 // --- invite acceptance -----------------------------------------------------
 
 type invitePreviewResp struct {
-	Email            string `json:"email"`
-	TenantID         string `json:"tenant_id"`
-	TenantName       string `json:"tenant_name"`
-	NeedsNewAccount  bool   `json:"needs_new_account"`
-	InvitedByEmail   string `json:"invited_by_email,omitempty"`
-	ExpiresAt        string `json:"expires_at"`
+	Email           string `json:"email"`
+	TenantID        string `json:"tenant_id"`
+	TenantName      string `json:"tenant_name"`
+	NeedsNewAccount bool   `json:"needs_new_account"`
+	InvitedByEmail  string `json:"invited_by_email,omitempty"`
+	ExpiresAt       string `json:"expires_at"`
 }
 
 // invitePreview is the pre-accept read. The UI uses it to decide between

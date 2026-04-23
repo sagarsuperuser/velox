@@ -99,7 +99,7 @@ func countAppliedMigrations(dsn string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// The golang-migrate schema_migrations table holds exactly one row (the
 	// current version). To count applied steps we enumerate the embedded
@@ -131,7 +131,7 @@ func createScratchDB(t *testing.T, adminURL, name string) {
 	if err != nil {
 		t.Fatalf("open admin: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// DROP-then-CREATE so a leaked scratch DB from a previous run doesn't
 	// fail the test with "database already exists".
@@ -150,7 +150,7 @@ func dropScratchDB(t *testing.T, adminURL, name string) {
 		t.Logf("open admin for cleanup: %v", err)
 		return
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if _, err := db.Exec(fmt.Sprintf(`DROP DATABASE IF EXISTS %s`, quoteIdent(name))); err != nil {
 		t.Logf("drop scratch db: %v", err)

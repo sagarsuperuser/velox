@@ -22,8 +22,9 @@ import (
 // policy on the tenant.
 //
 // Labels:
-//   outcome ∈ {fallback, deferred}
-//   reason  ∈ {no_country, no_client_for_mode, api_error}
+//
+//	outcome ∈ {fallback, deferred}
+//	reason  ∈ {no_country, no_client_for_mode, api_error}
 //
 // Happy-path calculations (successful Stripe Tax calls, exempt, reverse-charge)
 // are not counted here — this vector is intentionally a failure-mode signal.

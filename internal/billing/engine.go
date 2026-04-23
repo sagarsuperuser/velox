@@ -297,20 +297,20 @@ func (e *Engine) effectiveNow(ctx context.Context, sub domain.Subscription) time
 // Pending invoices are persisted without tax amounts and are blocked from
 // finalize until a retry worker completes the calculation.
 type TaxApplication struct {
-	TaxAmountCents    int64
-	TaxRateBP         int64
-	TaxName           string
-	TaxCountry        string
-	TaxID             string
-	SubtotalCents     int64
-	DiscountCents     int64
-	TaxProvider       string
-	TaxCalculationID  string
-	TaxReverseCharge  bool
-	TaxExemptReason   string
-	TaxStatus         domain.InvoiceTaxStatus
-	TaxDeferredAt     *time.Time
-	TaxPendingReason  string
+	TaxAmountCents   int64
+	TaxRateBP        int64
+	TaxName          string
+	TaxCountry       string
+	TaxID            string
+	SubtotalCents    int64
+	DiscountCents    int64
+	TaxProvider      string
+	TaxCalculationID string
+	TaxReverseCharge bool
+	TaxExemptReason  string
+	TaxStatus        domain.InvoiceTaxStatus
+	TaxDeferredAt    *time.Time
+	TaxPendingReason string
 }
 
 // truncateReason clips a provider error string to a sensible length before

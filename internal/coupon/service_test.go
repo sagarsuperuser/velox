@@ -1306,12 +1306,11 @@ func TestApplyToInvoice_PercentageCoupon(t *testing.T) {
 	svc := NewService(store)
 
 	store.seedCoupon(domain.Coupon{
-		ID:         "cpn_pct",
-		Code:       "SAVE10",
-		Name:       "10% off",
-		Type:       domain.CouponTypePercentage,
+		ID:           "cpn_pct",
+		Code:         "SAVE10",
+		Name:         "10% off",
+		Type:         domain.CouponTypePercentage,
 		PercentOffBP: 1000,
-		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_pct",
@@ -1341,7 +1340,6 @@ func TestApplyToInvoice_FixedAmountCoupon(t *testing.T) {
 		Type:      domain.CouponTypeFixedAmount,
 		AmountOff: 500,
 		Currency:  "USD",
-		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_fix",
@@ -1374,7 +1372,6 @@ func TestApplyToInvoice_SkipsFixedAmountCouponWithCurrencyMismatch(t *testing.T)
 		Type:      domain.CouponTypeFixedAmount,
 		AmountOff: 500,
 		Currency:  "USD",
-		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_usd",
@@ -1402,12 +1399,11 @@ func TestApplyToInvoice_AppliesPercentageRegardlessOfInvoiceCurrency(t *testing.
 	svc := NewService(store)
 
 	store.seedCoupon(domain.Coupon{
-		ID:         "cpn_pct",
-		Code:       "SAVE10",
-		Name:       "10% off",
-		Type:       domain.CouponTypePercentage,
+		ID:           "cpn_pct",
+		Code:         "SAVE10",
+		Name:         "10% off",
+		Type:         domain.CouponTypePercentage,
 		PercentOffBP: 1000,
-		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_pct",
@@ -1439,7 +1435,6 @@ func TestApplyToInvoice_ClampsToSubtotal(t *testing.T) {
 		Type:      domain.CouponTypeFixedAmount,
 		AmountOff: 5000,
 		Currency:  "USD",
-		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_big",
@@ -1462,13 +1457,13 @@ func TestApplyToInvoice_ExpiredCouponIgnored(t *testing.T) {
 
 	past := time.Now().Add(-1 * time.Hour)
 	store.seedCoupon(domain.Coupon{
-		ID:         "cpn_old",
-		Code:       "OLDCODE",
-		Name:       "10% off",
-		Type:       domain.CouponTypePercentage,
+		ID:           "cpn_old",
+		Code:         "OLDCODE",
+		Name:         "10% off",
+		Type:         domain.CouponTypePercentage,
 		PercentOffBP: 1000,
-		
-		ExpiresAt:  &past,
+
+		ExpiresAt: &past,
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_old",
@@ -1490,12 +1485,12 @@ func TestApplyToInvoice_InactiveCouponIgnored(t *testing.T) {
 	svc := NewService(store)
 
 	store.seedCoupon(domain.Coupon{
-		ID:         "cpn_off",
-		Code:       "OFFCODE",
-		Name:       "10% off",
-		Type:       domain.CouponTypePercentage,
+		ID:           "cpn_off",
+		Code:         "OFFCODE",
+		Name:         "10% off",
+		Type:         domain.CouponTypePercentage,
 		PercentOffBP: 1000,
-		ArchivedAt: &pastTime,
+		ArchivedAt:   &pastTime,
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_off",
@@ -1517,13 +1512,12 @@ func TestApplyToInvoice_PlanRestriction(t *testing.T) {
 	svc := NewService(store)
 
 	store.seedCoupon(domain.Coupon{
-		ID:         "cpn_planA",
-		Code:       "PLANA10",
-		Name:       "10% off plan A",
-		Type:       domain.CouponTypePercentage,
+		ID:           "cpn_planA",
+		Code:         "PLANA10",
+		Name:         "10% off plan A",
+		Type:         domain.CouponTypePercentage,
 		PercentOffBP: 1000,
-		PlanIDs:    []string{"plan_A"},
-		
+		PlanIDs:      []string{"plan_A"},
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_planA",
@@ -1677,20 +1671,18 @@ func TestApplyToInvoice_MultipleCouponsTakesLargest(t *testing.T) {
 	svc := NewService(store)
 
 	store.seedCoupon(domain.Coupon{
-		ID:         "cpn_small",
-		Code:       "SMALL5",
-		Name:       "5% off",
-		Type:       domain.CouponTypePercentage,
+		ID:           "cpn_small",
+		Code:         "SMALL5",
+		Name:         "5% off",
+		Type:         domain.CouponTypePercentage,
 		PercentOffBP: 500,
-		
 	})
 	store.seedCoupon(domain.Coupon{
-		ID:         "cpn_big",
-		Code:       "BIG20",
-		Name:       "20% off",
-		Type:       domain.CouponTypePercentage,
+		ID:           "cpn_big",
+		Code:         "BIG20",
+		Name:         "20% off",
+		Type:         domain.CouponTypePercentage,
 		PercentOffBP: 2000,
-		
 	})
 	store.redemptions = append(store.redemptions,
 		domain.CouponRedemption{CouponID: "cpn_small", SubscriptionID: "sub_1"},
@@ -1760,7 +1752,6 @@ func TestApplyToInvoice_DurationRepeating_ExhaustsAfterNPeriods(t *testing.T) {
 		ID: "cpn_rep", Code: "REP10", Name: "10% for 3 months",
 		Type: domain.CouponTypePercentage, PercentOffBP: 1000,
 		Duration: domain.CouponDurationRepeating, DurationPeriods: &three,
-		
 	})
 	store.seedRedemption(domain.CouponRedemption{
 		CouponID: "cpn_rep", SubscriptionID: "sub_1",

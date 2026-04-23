@@ -12,10 +12,10 @@ import (
 type contextKey string
 
 const (
-	tenantIDKey contextKey = "tenant_id"
-	apiKeyIDKey contextKey = "api_key_id"
-	keyTypeKey  contextKey = "key_type"
-	userIDKey   contextKey = "user_id"
+	tenantIDKey  contextKey = "tenant_id"
+	apiKeyIDKey  contextKey = "api_key_id"
+	keyTypeKey   contextKey = "key_type"
+	userIDKey    contextKey = "user_id"
 	sessionIDKey contextKey = "session_id"
 )
 
