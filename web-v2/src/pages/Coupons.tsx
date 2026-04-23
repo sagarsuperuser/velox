@@ -120,6 +120,7 @@ function couponStatusVariant(status: string): 'success' | 'secondary' | 'danger'
 export default function CouponsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [archiveId, setArchiveId] = useState<string | null>(null)
+  const [unarchiveId, setUnarchiveId] = useState<string | null>(null)
   const [redemptionsCoupon, setRedemptionsCoupon] = useState<Coupon | null>(null)
   // URL-backed filter state so refresh, back-button, and shared links all
   // land on the same view. `replace: true` on every write so typing into
@@ -172,6 +173,7 @@ export default function CouponsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['coupons'] })
       toast.success('Coupon restored')
+      setUnarchiveId(null)
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : 'Failed to restore')
@@ -381,9 +383,8 @@ export default function CouponsPage() {
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() => unarchiveMutation.mutate(c.id)}
+                              onClick={() => setUnarchiveId(c.id)}
                               title="Restore"
-                              disabled={unarchiveMutation.isPending}
                             >
                               <ArchiveRestore size={16} />
                             </Button>
@@ -437,6 +438,32 @@ export default function CouponsPage() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Archive
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Restore Confirm — symmetric with Archive so operators can't
+          restore by accident. If the coupon has an expires_at in the
+          past or is at max_redemptions the service will still enforce
+          those gates, but the confirmation surfaces that before the
+          round trip. */}
+      <AlertDialog open={!!unarchiveId} onOpenChange={(open) => { if (!open) setUnarchiveId(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restore Coupon</AlertDialogTitle>
+            <AlertDialogDescription>
+              This coupon will start accepting new redemptions again. If it has an
+              expiry date in the past or has reached its max redemptions, restoring
+              it won't make it usable — you'd need to extend or raise those first.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { if (unarchiveId) unarchiveMutation.mutate(unarchiveId) }}
+            >
+              Restore
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
