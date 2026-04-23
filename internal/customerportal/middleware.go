@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
@@ -54,6 +55,12 @@ func (s *Service) Middleware() func(http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, tenantIDKey, sess.TenantID)
 			ctx = context.WithValue(ctx, customerIDKey, sess.CustomerID)
 			ctx = context.WithValue(ctx, sessionIDKey, sess.ID)
+			// Also expose the tenant via the platform auth ctx key so
+			// cross-cutting middleware (Idempotency, AuditLog, rate
+			// limiter) can scope their lookups without having to branch
+			// on "portal vs api-key" — the shared key is the contract
+			// every tenant-scoped middleware reads from.
+			ctx = auth.WithTenantID(ctx, sess.TenantID)
 			ctx = postgres.WithLivemode(ctx, sess.Livemode)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
