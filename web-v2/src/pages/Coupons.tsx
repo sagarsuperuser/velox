@@ -10,6 +10,7 @@ import type { Coupon, CouponRedemption } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
+import { CustomerCombobox } from '@/components/CustomerCombobox'
 import { cn } from '@/lib/utils'
 import { DatePicker } from '@/components/ui/date-picker'
 
@@ -439,7 +440,6 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
   open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void
 }) {
   const [plans, setPlans] = useState<{ id: string; name: string; code: string }[]>([])
-  const [customers, setCustomers] = useState<{ id: string; display_name: string; email?: string }[]>([])
   const [isPrivate, setIsPrivate] = useState(false)
 
   const form = useForm<CreateCouponData>({
@@ -456,7 +456,6 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
   useEffect(() => {
     if (open) {
       api.listPlans().then(res => setPlans(res.data || [])).catch(() => {})
-      api.listCustomers().then(res => setCustomers(res.data || [])).catch(() => {})
     }
   }, [open])
 
@@ -872,18 +871,10 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
                     <FormItem className="mt-3 ml-7">
                       <FormLabel>Customer</FormLabel>
                       <FormControl>
-                        <select
+                        <CustomerCombobox
                           value={field.value}
                           onChange={field.onChange}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        >
-                          <option value="">Select a customer...</option>
-                          {customers.map(c => (
-                            <option key={c.id} value={c.id}>
-                              {c.display_name}{c.email ? ` — ${c.email}` : ''}
-                            </option>
-                          ))}
-                        </select>
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
