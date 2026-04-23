@@ -1,3 +1,5 @@
+import { setLastRequestId } from './lastRequestId'
+
 const API_BASE = '/v1'
 
 // ApiError carries the structured pieces of a Velox error envelope so callers
@@ -54,6 +56,11 @@ export async function apiRequest<T>(method: string, path: string, body?: unknown
     body: body ? JSON.stringify(body) : undefined,
   })
 
+  // Record every observed request_id so "Report an issue" carries the most
+  // recent trace handle even when the user's last request succeeded.
+  const headerRequestId = res.headers.get('Velox-Request-Id') || ''
+  if (headerRequestId) setLastRequestId(headerRequestId)
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: { message: res.statusText } }))
     // Stripe-style envelope: { error: { type, code, message, param, request_id } }
@@ -61,10 +68,15 @@ export async function apiRequest<T>(method: string, path: string, body?: unknown
     // string-shape errors ({ error: "..." }) fall back to the raw message.
     const detail = typeof err.error === 'object' ? err.error : null
     const raw = typeof err.error === 'string' ? err.error : (detail?.message || `HTTP ${res.status}`)
+    const requestId = detail?.request_id || headerRequestId || undefined
+    if (requestId) setLastRequestId(requestId)
     throw new ApiError(humanizeError(raw), res.status, {
       field: detail?.param || undefined,
       code: detail?.code || undefined,
-      requestId: detail?.request_id || undefined,
+      // Prefer request_id from the Stripe-style envelope; fall back to the
+      // Velox-Request-Id header so errors that bypass the JSON writer (502s,
+      // plain-text proxy errors) still carry a traceable ID to the toast.
+      requestId,
     })
   }
 
@@ -563,6 +575,7 @@ export interface TenantSettings {
   company_email: string
   company_phone: string
   logo_url: string
+  brand_color: string
   tax_id: string
   support_url: string
   invoice_footer: string

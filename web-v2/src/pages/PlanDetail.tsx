@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Plan, type Meter, type RatingRule, type Customer } from '@/lib/api'
-import { applyApiError } from '@/lib/formErrors'
+import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { statusBadgeVariant } from '@/lib/status'
 
@@ -121,7 +121,7 @@ export default function PlanDetailPage() {
       setShowAttachMeter(false)
       toast.success('Meter attached')
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to attach meter')
+      showApiError(err, 'Failed to attach meter')
     }
   }
 
@@ -130,7 +130,7 @@ export default function PlanDetailPage() {
       await updatePlanMutation.mutateAsync({ meter_ids: (plan?.meter_ids || []).filter(mid => mid !== meterId) })
       toast.success('Meter detached')
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to detach meter')
+      showApiError(err, 'Failed to detach meter')
     }
   }
 

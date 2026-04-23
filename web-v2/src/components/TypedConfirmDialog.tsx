@@ -1,0 +1,98 @@
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+
+export interface TypedConfirmDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  description?: ReactNode
+  /** Word the user must type verbatim to enable the confirm button. Matching is case-insensitive so caps lock doesn't trap the user. */
+  confirmWord: string
+  confirmLabel: string
+  onConfirm: () => void
+  loading?: boolean
+}
+
+/**
+ * Destructive-action confirmation that requires the user to type a specific
+ * word before the confirm button enables. Use for truly irreversible financial
+ * or state-changing actions (void invoice, cancel subscription, delete webhook
+ * endpoint). For reversible actions (pause, archive) prefer a plain AlertDialog.
+ */
+export function TypedConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  confirmWord,
+  confirmLabel,
+  onConfirm,
+  loading = false,
+}: TypedConfirmDialogProps) {
+  const [typed, setTyped] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!open) setTyped('')
+  }, [open])
+
+  const matches = typed.trim().toUpperCase() === confirmWord.toUpperCase()
+
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          {description && <AlertDialogDescription>{description}</AlertDialogDescription>}
+        </AlertDialogHeader>
+
+        <div className="space-y-2">
+          <Label htmlFor="typed-confirm-input" className="text-sm">
+            Type{' '}
+            <span className="font-mono font-semibold text-foreground">{confirmWord}</span>{' '}
+            to confirm
+          </Label>
+          <Input
+            id="typed-confirm-input"
+            ref={inputRef}
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={confirmWord}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            disabled={loading}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && matches && !loading) {
+                e.preventDefault()
+                onConfirm()
+              }
+            }}
+          />
+        </div>
+
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={loading}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={onConfirm}
+            disabled={!matches || loading}
+          >
+            {confirmLabel}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}

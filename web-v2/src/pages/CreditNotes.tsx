@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, downloadCreditNotePDF, formatCents, formatDate, formatDateTime, getCurrencySymbol } from '@/lib/api'
 import type { CreditNote, Invoice, Customer } from '@/lib/api'
-import { applyApiError } from '@/lib/formErrors'
+import { applyApiError, showApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
@@ -37,6 +37,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { TypedConfirmDialog } from '@/components/TypedConfirmDialog'
 import {
   Table,
   TableBody,
@@ -155,7 +156,7 @@ export default function CreditNotesPage() {
       queryClient.invalidateQueries({ queryKey: ['credit-notes'] })
       toast.success('Credit note issued')
     },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to issue'),
+    onError: (err) => showApiError(err, 'Failed to issue'),
   })
 
   const voidMutation = useMutation({
@@ -164,7 +165,7 @@ export default function CreditNotesPage() {
       queryClient.invalidateQueries({ queryKey: ['credit-notes'] })
       toast.success('Credit note voided')
     },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to void'),
+    onError: (err) => showApiError(err, 'Failed to void'),
   })
 
   // Stats
@@ -415,7 +416,7 @@ export default function CreditNotesPage() {
                                   try {
                                     await downloadCreditNotePDF(note.id, note.credit_note_number)
                                   } catch (err) {
-                                    toast.error(err instanceof Error ? err.message : 'Failed to download PDF')
+                                    showApiError(err, 'Failed to download PDF')
                                   }
                                 }}
                               >
@@ -514,25 +515,16 @@ export default function CreditNotesPage() {
       </AlertDialog>
 
       {/* Void Confirm */}
-      <AlertDialog open={confirmVoid !== null} onOpenChange={(open) => { if (!open) setConfirmVoid(null) }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Void Credit Note</AlertDialogTitle>
-            <AlertDialogDescription>
-              Void this draft credit note? This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => { if (confirmVoid) voidMutation.mutate(confirmVoid); setConfirmVoid(null) }}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Void
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <TypedConfirmDialog
+        open={confirmVoid !== null}
+        onOpenChange={(open) => { if (!open) setConfirmVoid(null) }}
+        title="Void Credit Note"
+        description="Voiding this credit note reverses its effect permanently. This action cannot be undone."
+        confirmWord="VOID"
+        confirmLabel="Void Credit Note"
+        onConfirm={() => { if (confirmVoid) voidMutation.mutate(confirmVoid); setConfirmVoid(null) }}
+        loading={voidMutation.isPending}
+      />
     </Layout>
   )
 }

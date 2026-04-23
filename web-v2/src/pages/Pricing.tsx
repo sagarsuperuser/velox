@@ -12,6 +12,7 @@ import {
   type RatingRule,
 } from '@/lib/api'
 import { Layout } from '@/components/Layout'
+import { showApiError } from '@/lib/formErrors'
 import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
@@ -369,7 +370,7 @@ function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreat
       await api.createRatingRule(payload as Parameters<typeof api.createRatingRule>[0])
       onCreated()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create rating rule')
+      showApiError(err, 'Failed to create rating rule')
     } finally {
       setSaving(false)
     }
@@ -514,7 +515,7 @@ function CreateMeterDialog({ onClose, onCreated, rules }: { onClose: () => void;
       await api.createMeter(form)
       onCreated()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create meter')
+      showApiError(err, 'Failed to create meter')
     } finally {
       setSaving(false)
     }
@@ -621,7 +622,7 @@ function CreatePlanDialog({ onClose, onCreated, meters }: { onClose: () => void;
       })
       onCreated()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create plan')
+      showApiError(err, 'Failed to create plan')
     } finally {
       setSaving(false)
     }

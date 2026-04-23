@@ -10,7 +10,7 @@ import { Layout } from '@/components/Layout'
 import { useAuth } from '@/contexts/AuthContext'
 import { membersApi, type MemberView, type InvitationView } from '@/lib/members'
 import { formatDate, formatRelativeTime } from '@/lib/api'
-import { applyApiError } from '@/lib/formErrors'
+import { applyApiError, showApiError } from '@/lib/formErrors'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -81,7 +81,7 @@ export default function MembersPage() {
       setRemoveTarget(null)
       invalidate()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove member')
+      showApiError(err, 'Failed to remove member')
     }
   }
 
@@ -93,7 +93,7 @@ export default function MembersPage() {
       setRevokeTarget(null)
       invalidate()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to revoke invitation')
+      showApiError(err, 'Failed to revoke invitation')
     }
   }
 
