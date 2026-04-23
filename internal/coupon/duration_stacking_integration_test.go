@@ -54,7 +54,7 @@ func TestCoupon_DurationAndStacking_E2E(t *testing.T) {
 		Code:            "REP3MO10",
 		Name:            "10% for 3 months",
 		Type:            domain.CouponTypePercentage,
-		PercentOff:      10,
+		PercentOffBP:    1000,
 		Duration:        domain.CouponDurationRepeating,
 		DurationPeriods: &three,
 		Stackable:       true,
@@ -75,29 +75,30 @@ func TestCoupon_DurationAndStacking_E2E(t *testing.T) {
 		t.Fatalf("create forever coupon: %v", err)
 	}
 
-	// Attach both coupons to sub_stack. CreateRedemption writes the row
-	// with periods_applied=0 (schema default) — that's what ApplyToInvoice
-	// reads back through ListRedemptionsBySubscription.
+	// Attach both coupons to sub_stack via the public Redeem path — the new
+	// RedeemAtomic flow writes the row with periods_applied=0 (schema
+	// default), which is what ApplyToInvoice reads back through
+	// ListRedemptionsBySubscription.
 	subStack := "sub_stack_" + tenant
-	repRed, err := store.CreateRedemption(ctx, tenant, domain.CouponRedemption{
-		CouponID:       repCpn.ID,
+	repRed, err := svc.Redeem(ctx, tenant, coupon.RedeemInput{
+		Code:           repCpn.Code,
 		CustomerID:     "cust_stack",
 		SubscriptionID: subStack,
-		DiscountCents:  1000,
+		SubtotalCents:  10000,
 	})
 	if err != nil {
-		t.Fatalf("create rep redemption: %v", err)
+		t.Fatalf("redeem repeating coupon: %v", err)
 	}
-	forRed, err := store.CreateRedemption(ctx, tenant, domain.CouponRedemption{
-		CouponID:       forCpn.ID,
+	_, err = svc.Redeem(ctx, tenant, coupon.RedeemInput{
+		Code:           forCpn.Code,
 		CustomerID:     "cust_stack",
 		SubscriptionID: subStack,
-		DiscountCents:  500,
+		SubtotalCents:  10000,
+		Currency:       "USD",
 	})
 	if err != nil {
-		t.Fatalf("create forever redemption: %v", err)
+		t.Fatalf("redeem forever coupon: %v", err)
 	}
-	_ = forRed
 
 	// Cycles 1..3: both coupons still eligible, both stackable → combine.
 	for cycle := 1; cycle <= 3; cycle++ {
@@ -153,23 +154,23 @@ func TestCoupon_DurationAndStacking_E2E(t *testing.T) {
 	// Scenario 2: non-stackable present → best single wins
 	// ----------------------------------------------------------------------
 	nsCpn, err := svc.Create(ctx, tenant, coupon.CreateInput{
-		Code:       "BIG20",
-		Name:       "20% off",
-		Type:       domain.CouponTypePercentage,
-		PercentOff: 20,
-		Duration:   domain.CouponDurationForever,
-		Stackable:  false,
+		Code:         "BIG20",
+		Name:         "20% off",
+		Type:         domain.CouponTypePercentage,
+		PercentOffBP: 2000,
+		Duration:     domain.CouponDurationForever,
+		Stackable:    false,
 	})
 	if err != nil {
 		t.Fatalf("create non-stackable coupon: %v", err)
 	}
 	sCpn, err := svc.Create(ctx, tenant, coupon.CreateInput{
-		Code:       "SMALL5",
-		Name:       "5% off",
-		Type:       domain.CouponTypePercentage,
-		PercentOff: 5,
-		Duration:   domain.CouponDurationForever,
-		Stackable:  true,
+		Code:         "SMALL5",
+		Name:         "5% off",
+		Type:         domain.CouponTypePercentage,
+		PercentOffBP: 500,
+		Duration:     domain.CouponDurationForever,
+		Stackable:    true,
 	})
 	if err != nil {
 		t.Fatalf("create small stackable coupon: %v", err)
@@ -188,18 +189,34 @@ func TestCoupon_DurationAndStacking_E2E(t *testing.T) {
 	}
 
 	subMixed := "sub_mixed_" + tenant
-	_, _ = store.CreateRedemption(ctx, tenant, domain.CouponRedemption{
-		CouponID: sCpn.ID, CustomerID: "cust_mixed", SubscriptionID: subMixed,
-	})
-	bigRed, err := store.CreateRedemption(ctx, tenant, domain.CouponRedemption{
-		CouponID: nsCpn.ID, CustomerID: "cust_mixed", SubscriptionID: subMixed,
+	_, err = svc.Redeem(ctx, tenant, coupon.RedeemInput{
+		Code:           sCpn.Code,
+		CustomerID:     "cust_mixed",
+		SubscriptionID: subMixed,
+		SubtotalCents:  10000,
 	})
 	if err != nil {
-		t.Fatalf("create big redemption: %v", err)
+		t.Fatalf("redeem small stackable: %v", err)
 	}
-	_, _ = store.CreateRedemption(ctx, tenant, domain.CouponRedemption{
-		CouponID: sfCpn.ID, CustomerID: "cust_mixed", SubscriptionID: subMixed,
+	bigRed, err := svc.Redeem(ctx, tenant, coupon.RedeemInput{
+		Code:           nsCpn.Code,
+		CustomerID:     "cust_mixed",
+		SubscriptionID: subMixed,
+		SubtotalCents:  10000,
 	})
+	if err != nil {
+		t.Fatalf("redeem big non-stackable: %v", err)
+	}
+	_, err = svc.Redeem(ctx, tenant, coupon.RedeemInput{
+		Code:           sfCpn.Code,
+		CustomerID:     "cust_mixed",
+		SubscriptionID: subMixed,
+		SubtotalCents:  10000,
+		Currency:       "USD",
+	})
+	if err != nil {
+		t.Fatalf("redeem small fixed: %v", err)
+	}
 
 	got, err = svc.ApplyToInvoice(ctx, tenant, subMixed, "", []string{"plan_y"}, 10000)
 	if err != nil {
@@ -222,11 +239,10 @@ func TestCoupon_DurationAndStacking_E2E(t *testing.T) {
 	// runs. If the CHECK is missing the INSERT succeeds and this test
 	// flips from pass to fail.
 	_, err = db.Pool.ExecContext(ctx, `
-		INSERT INTO coupons (id, tenant_id, code, name, type, amount_off, percent_off,
-			currency, times_redeemed, active, duration, duration_periods, stackable,
-			plan_ids)
-		VALUES ('cpn_bad_' || $1, $1, 'BADREP', 'bad', 'percentage', 0, 10, '', 0,
-			true, 'repeating', NULL, false, '{}')
+		INSERT INTO coupons (id, tenant_id, code, name, type, amount_off, percent_off_bp,
+			currency, times_redeemed, duration, duration_periods, stackable, plan_ids)
+		VALUES ('cpn_bad_' || $1, $1, 'BADREP', 'bad', 'percentage', 0, 1000, '', 0,
+			'repeating', NULL, false, '{}')
 	`, tenant)
 	if err == nil {
 		t.Error("expected DB CHECK constraint to reject repeating coupon with NULL duration_periods")

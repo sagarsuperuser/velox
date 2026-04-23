@@ -32,11 +32,11 @@ func TestCoupon_PrivateCoupon_E2E(t *testing.T) {
 	// Create with an explicit customer_id and an empty code (exercises both
 	// the private-coupon and auto-generation paths on the wire).
 	cpn, err := svc.Create(ctx, tenant, coupon.CreateInput{
-		Code:       "", // triggers auto-generation
-		Name:       "Acme Enterprise Deal",
-		Type:       domain.CouponTypePercentage,
-		PercentOff: 30,
-		CustomerID: "cust_acme",
+		Code:         "", // triggers auto-generation
+		Name:         "Acme Enterprise Deal",
+		Type:         domain.CouponTypePercentage,
+		PercentOffBP: 3000,
+		CustomerID:   "cust_acme",
 	})
 	if err != nil {
 		t.Fatalf("create private coupon: %v", err)
@@ -78,10 +78,10 @@ func TestCoupon_PrivateCoupon_E2E(t *testing.T) {
 	// Public coupons continue to work (regression guard for the CustomerID=""
 	// path after migration).
 	pub, err := svc.Create(ctx, tenant, coupon.CreateInput{
-		Code:       "PUBLIC20",
-		Name:       "Public 20",
-		Type:       domain.CouponTypePercentage,
-		PercentOff: 20,
+		Code:         "PUBLIC20",
+		Name:         "Public 20",
+		Type:         domain.CouponTypePercentage,
+		PercentOffBP: 2000,
 	})
 	if err != nil {
 		t.Fatalf("create public coupon: %v", err)

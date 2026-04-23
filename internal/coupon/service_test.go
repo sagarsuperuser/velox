@@ -11,6 +11,10 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
+// pastTime is a fixed timestamp in the past used to simulate archived /
+// expired coupons in the seed helpers.
+var pastTime = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // ---------------------------------------------------------------------------
 // In-memory mock store
 // ---------------------------------------------------------------------------
@@ -58,9 +62,12 @@ func (m *mockStore) GetByCode(_ context.Context, _, code string) (domain.Coupon,
 	return c, nil
 }
 
-func (m *mockStore) List(_ context.Context, _ string) ([]domain.Coupon, error) {
+func (m *mockStore) List(_ context.Context, _ string, includeArchived bool) ([]domain.Coupon, error) {
 	var result []domain.Coupon
 	for _, c := range m.coupons {
+		if !includeArchived && c.ArchivedAt != nil {
+			continue
+		}
 		result = append(result, c)
 	}
 	return result, nil
@@ -72,34 +79,84 @@ func (m *mockStore) Update(_ context.Context, _ string, c domain.Coupon) (domain
 	return c, nil
 }
 
-func (m *mockStore) Deactivate(_ context.Context, _, id string) error {
+func (m *mockStore) Archive(_ context.Context, _, id string, at time.Time) error {
 	c, ok := m.coupons[id]
 	if !ok {
 		return fmt.Errorf("not found")
 	}
-	c.Active = false
+	if c.ArchivedAt == nil {
+		t := at
+		c.ArchivedAt = &t
+	}
 	m.coupons[id] = c
 	m.byCode[c.Code] = c
 	return nil
 }
 
-func (m *mockStore) IncrementRedemptions(_ context.Context, _, id string) error {
+func (m *mockStore) Unarchive(_ context.Context, _, id string) error {
 	c, ok := m.coupons[id]
 	if !ok {
 		return fmt.Errorf("not found")
+	}
+	c.ArchivedAt = nil
+	m.coupons[id] = c
+	m.byCode[c.Code] = c
+	return nil
+}
+
+// RedeemAtomic in the mock mirrors the Postgres path closely: a single
+// "tx" loads the coupon, re-checks the gates under lock, increments the
+// counter, and appends a redemption. Idempotency replay returns an
+// existing redemption with Replay=true.
+func (m *mockStore) RedeemAtomic(_ context.Context, _ string, in RedeemAtomicInput) (RedeemAtomicResult, error) {
+	if in.IdempotencyKey != "" {
+		for _, r := range m.redemptions {
+			if r.IdempotencyKey == in.IdempotencyKey {
+				c := m.coupons[r.CouponID]
+				return RedeemAtomicResult{Coupon: c, Redemption: r, Replay: true}, nil
+			}
+		}
+	}
+	c, ok := m.byCode[in.Code]
+	if !ok {
+		return RedeemAtomicResult{}, ErrCouponGate{Reason: GateNotFound}
+	}
+	if c.ArchivedAt != nil {
+		return RedeemAtomicResult{}, ErrCouponGate{Reason: GateArchived}
+	}
+	now := time.Now()
+	if c.ExpiresAt != nil && !c.ExpiresAt.After(now) {
+		return RedeemAtomicResult{}, ErrCouponGate{Reason: GateExpired}
+	}
+	if c.MaxRedemptions != nil && c.TimesRedeemed >= *c.MaxRedemptions {
+		return RedeemAtomicResult{}, ErrCouponGate{Reason: GateMaxRedemptions}
 	}
 	c.TimesRedeemed++
-	m.coupons[id] = c
+	m.coupons[c.ID] = c
 	m.byCode[c.Code] = c
-	return nil
+
+	m.nextID++
+	r := domain.CouponRedemption{
+		ID:             fmt.Sprintf("red_%d", m.nextID),
+		CouponID:       c.ID,
+		CustomerID:     in.CustomerID,
+		SubscriptionID: in.SubscriptionID,
+		InvoiceID:      in.InvoiceID,
+		DiscountCents:  in.DiscountCents,
+		IdempotencyKey: in.IdempotencyKey,
+		CreatedAt:      now.UTC(),
+	}
+	m.redemptions = append(m.redemptions, r)
+	return RedeemAtomicResult{Coupon: c, Redemption: r, Replay: false}, nil
 }
 
-func (m *mockStore) CreateRedemption(_ context.Context, _ string, r domain.CouponRedemption) (domain.CouponRedemption, error) {
-	m.nextID++
-	r.ID = fmt.Sprintf("red_%d", m.nextID)
-	r.CreatedAt = time.Now().UTC()
-	m.redemptions = append(m.redemptions, r)
-	return r, nil
+func (m *mockStore) GetRedemptionByIdempotencyKey(_ context.Context, _, key string) (domain.CouponRedemption, error) {
+	for _, r := range m.redemptions {
+		if r.IdempotencyKey == key {
+			return r, nil
+		}
+	}
+	return domain.CouponRedemption{}, fmt.Errorf("not found")
 }
 
 func (m *mockStore) ListRedemptions(_ context.Context, _, _ string) ([]domain.CouponRedemption, error) {
@@ -114,6 +171,16 @@ func (m *mockStore) ListRedemptionsBySubscription(_ context.Context, _, subscrip
 		}
 	}
 	return out, nil
+}
+
+func (m *mockStore) CountRedemptionsByCustomer(_ context.Context, _, couponID, customerID string) (int, error) {
+	var n int
+	for _, r := range m.redemptions {
+		if r.CouponID == couponID && r.CustomerID == customerID {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *mockStore) IncrementPeriodsApplied(_ context.Context, _, redemptionID string) error {
@@ -238,7 +305,7 @@ func TestCalculateDiscount_Percentage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := domain.Coupon{Type: domain.CouponTypePercentage, PercentOff: tt.pct}
+			c := domain.Coupon{Type: domain.CouponTypePercentage, PercentOffBP: int(tt.pct * 100)}
 			got := CalculateDiscount(c, tt.subtotal)
 			if got != tt.wantDisc {
 				raw := float64(tt.subtotal) * tt.pct / 100
@@ -313,7 +380,7 @@ func TestCalculateDiscount_FixedAmount(t *testing.T) {
 }
 
 func TestCalculateDiscount_UnknownType(t *testing.T) {
-	c := domain.Coupon{Type: "bogus", PercentOff: 50, AmountOff: 1000}
+	c := domain.Coupon{Type: "bogus", PercentOffBP: 5000, AmountOff: 1000}
 	got := CalculateDiscount(c, 10000)
 	if got != 0 {
 		t.Errorf("unknown coupon type should return 0 discount, got %d", got)
@@ -330,7 +397,7 @@ func TestCalculateDiscount_UnknownType(t *testing.T) {
 func TestCreate_EmptyCodeAutoGenerates(t *testing.T) {
 	svc := NewService(newMockStore())
 	cpn, err := svc.Create(context.Background(), "t1", CreateInput{
-		Code: "", Name: "Test", Type: domain.CouponTypePercentage, PercentOff: 10,
+		Code: "", Name: "Test", Type: domain.CouponTypePercentage, PercentOffBP: 1000,
 	})
 	if err != nil {
 		t.Fatalf("empty code should auto-generate, got error: %v", err)
@@ -346,7 +413,7 @@ func TestCreate_EmptyCodeAutoGenerates(t *testing.T) {
 func TestCreate_WhitespaceOnlyCodeAutoGenerates(t *testing.T) {
 	svc := NewService(newMockStore())
 	cpn, err := svc.Create(context.Background(), "t1", CreateInput{
-		Code: "   ", Name: "Test", Type: domain.CouponTypePercentage, PercentOff: 10,
+		Code: "   ", Name: "Test", Type: domain.CouponTypePercentage, PercentOffBP: 1000,
 	})
 	if err != nil {
 		t.Fatalf("whitespace code should auto-generate, got error: %v", err)
@@ -391,7 +458,7 @@ func TestCreate_InvalidCodeFormatRejected(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := NewService(newMockStore())
 			_, err := svc.Create(context.Background(), "t1", CreateInput{
-				Code: tt.code, Name: "Test", Type: domain.CouponTypePercentage, PercentOff: 10,
+				Code: tt.code, Name: "Test", Type: domain.CouponTypePercentage, PercentOffBP: 1000,
 			})
 			assertErrContains(t, err, "code must be")
 		})
@@ -412,7 +479,7 @@ func TestCreate_ValidCodeFormats(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := NewService(newMockStore())
 			got, err := svc.Create(context.Background(), "t1", CreateInput{
-				Code: tt.code, Name: "Test", Type: domain.CouponTypePercentage, PercentOff: 10,
+				Code: tt.code, Name: "Test", Type: domain.CouponTypePercentage, PercentOffBP: 1000,
 			})
 			if err != nil {
 				t.Fatalf("expected no error, got: %v", err)
@@ -428,7 +495,7 @@ func TestCreate_ValidCodeFormats(t *testing.T) {
 func TestCreate_NameRequired(t *testing.T) {
 	svc := NewService(newMockStore())
 	_, err := svc.Create(context.Background(), "t1", CreateInput{
-		Code: "SAVE50", Name: "", Type: domain.CouponTypePercentage, PercentOff: 10,
+		Code: "SAVE50", Name: "", Type: domain.CouponTypePercentage, PercentOffBP: 1000,
 	})
 	assertErrContains(t, err, "name is required")
 }
@@ -440,7 +507,7 @@ func TestCreate_NameTooLong(t *testing.T) {
 		longName[i] = 'A'
 	}
 	_, err := svc.Create(context.Background(), "t1", CreateInput{
-		Code: "SAVE50", Name: string(longName), Type: domain.CouponTypePercentage, PercentOff: 10,
+		Code: "SAVE50", Name: string(longName), Type: domain.CouponTypePercentage, PercentOffBP: 1000,
 	})
 	assertErrContains(t, err, "name must be at most 200")
 }
@@ -451,9 +518,9 @@ func TestCreate_PercentageValidation(t *testing.T) {
 		pct     float64
 		wantErr string
 	}{
-		{"zero percent", 0, "percent_off must be between 0 and 100"},
-		{"negative percent", -5, "percent_off must be between 0 and 100"},
-		{"over 100 percent", 101, "percent_off must be between 0 and 100"},
+		{"zero percent", 0, "percent_off_bp must be between 1 and 10000"},
+		{"negative percent", -5, "percent_off_bp must be between 1 and 10000"},
+		{"over 100 percent", 101, "percent_off_bp must be between 1 and 10000"},
 		{"valid 1%", 1, ""},
 		{"valid 100%", 100, ""},
 		{"valid 50.5%", 50.5, ""},
@@ -462,7 +529,7 @@ func TestCreate_PercentageValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := NewService(newMockStore())
 			_, err := svc.Create(context.Background(), "t1", CreateInput{
-				Code: "TEST10", Name: "Test", Type: domain.CouponTypePercentage, PercentOff: tt.pct,
+				Code: "TEST10", Name: "Test", Type: domain.CouponTypePercentage, PercentOffBP: int(tt.pct * 100),
 			})
 			if tt.wantErr == "" {
 				if err != nil {
@@ -520,14 +587,14 @@ func TestCreate_MaxRedemptionsMustBePositive(t *testing.T) {
 	zero := 0
 	_, err := svc.Create(context.Background(), "t1", CreateInput{
 		Code: "TEST10", Name: "Test", Type: domain.CouponTypePercentage,
-		PercentOff: 10, MaxRedemptions: &zero,
+		PercentOffBP: 1000, MaxRedemptions: &zero,
 	})
 	assertErrContains(t, err, "max_redemptions must be at least 1")
 
 	negative := -1
 	_, err = svc.Create(context.Background(), "t1", CreateInput{
 		Code: "TEST11", Name: "Test", Type: domain.CouponTypePercentage,
-		PercentOff: 10, MaxRedemptions: &negative,
+		PercentOffBP: 1000, MaxRedemptions: &negative,
 	})
 	assertErrContains(t, err, "max_redemptions must be at least 1")
 }
@@ -537,7 +604,7 @@ func TestCreate_MaxRedemptionsValidWhenOne(t *testing.T) {
 	one := 1
 	_, err := svc.Create(context.Background(), "t1", CreateInput{
 		Code: "ONETIME", Name: "One-time", Type: domain.CouponTypePercentage,
-		PercentOff: 10, MaxRedemptions: &one,
+		PercentOffBP: 1000, MaxRedemptions: &one,
 	})
 	if err != nil {
 		t.Fatalf("max_redemptions=1 should be valid, got: %v", err)
@@ -549,7 +616,7 @@ func TestCreate_ExpiresAtMustBeInFuture(t *testing.T) {
 	past := time.Now().Add(-1 * time.Hour)
 	_, err := svc.Create(context.Background(), "t1", CreateInput{
 		Code: "TEST10", Name: "Test", Type: domain.CouponTypePercentage,
-		PercentOff: 10, ExpiresAt: &past,
+		PercentOffBP: 1000, ExpiresAt: &past,
 	})
 	assertErrContains(t, err, "expires_at must be in the future")
 }
@@ -559,7 +626,7 @@ func TestCreate_ExpiresAtInFutureAccepted(t *testing.T) {
 	future := time.Now().Add(24 * time.Hour)
 	_, err := svc.Create(context.Background(), "t1", CreateInput{
 		Code: "TEST10", Name: "Test", Type: domain.CouponTypePercentage,
-		PercentOff: 10, ExpiresAt: &future,
+		PercentOffBP: 1000, ExpiresAt: &future,
 	})
 	if err != nil {
 		t.Fatalf("future expires_at should be valid, got: %v", err)
@@ -611,7 +678,7 @@ func TestRedeem_InactiveCouponRejected(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "INACTIVE", Name: "Dead", Type: domain.CouponTypePercentage,
-		PercentOff: 10, Active: false,
+		PercentOffBP: 1000, ArchivedAt: &pastTime,
 	})
 	svc := NewService(store)
 	_, err := svc.Redeem(context.Background(), "t1", RedeemInput{
@@ -625,7 +692,7 @@ func TestRedeem_ExpiredCouponRejected(t *testing.T) {
 	past := time.Now().Add(-1 * time.Hour)
 	store.seedCoupon(domain.Coupon{
 		Code: "EXPIRED", Name: "Old", Type: domain.CouponTypePercentage,
-		PercentOff: 10, Active: true, ExpiresAt: &past,
+		PercentOffBP: 1000, ExpiresAt: &past,
 	})
 	svc := NewService(store)
 	_, err := svc.Redeem(context.Background(), "t1", RedeemInput{
@@ -639,7 +706,7 @@ func TestRedeem_MaxRedemptionsReached(t *testing.T) {
 	maxR := 3
 	store.seedCoupon(domain.Coupon{
 		Code: "LIMITED", Name: "Limited", Type: domain.CouponTypePercentage,
-		PercentOff: 10, Active: true, MaxRedemptions: &maxR, TimesRedeemed: 3,
+		PercentOffBP: 1000, MaxRedemptions: &maxR, TimesRedeemed: 3,
 	})
 	svc := NewService(store)
 	_, err := svc.Redeem(context.Background(), "t1", RedeemInput{
@@ -652,7 +719,7 @@ func TestRedeem_PlanIDRestriction(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "PLANONLY", Name: "Plan-restricted", Type: domain.CouponTypePercentage,
-		PercentOff: 20, Active: true, PlanIDs: []string{"plan_pro", "plan_enterprise"},
+		PercentOffBP: 2000, PlanIDs: []string{"plan_pro", "plan_enterprise"},
 	})
 	svc := NewService(store)
 
@@ -678,7 +745,7 @@ func TestRedeem_SuccessfulPercentage(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "SAVE25", Name: "25% Off", Type: domain.CouponTypePercentage,
-		PercentOff: 25, Active: true,
+		PercentOffBP: 2500,
 	})
 	svc := NewService(store)
 
@@ -706,7 +773,7 @@ func TestRedeem_SuccessfulFixedAmount(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "FLAT500", Name: "$5 Off", Type: domain.CouponTypeFixedAmount,
-		AmountOff: 500, Active: true,
+		AmountOff: 500,
 	})
 	svc := NewService(store)
 
@@ -726,7 +793,7 @@ func TestRedeem_ZeroDiscountRejected(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "TINY", Name: "Tiny", Type: domain.CouponTypePercentage,
-		PercentOff: 0.1, Active: true,
+		PercentOffBP: 10,
 	})
 	svc := NewService(store)
 
@@ -740,7 +807,7 @@ func TestRedeem_CodeIsCaseInsensitive(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "SAVE50", Name: "50% Off", Type: domain.CouponTypePercentage,
-		PercentOff: 50, Active: true,
+		PercentOffBP: 5000,
 	})
 	svc := NewService(store)
 
@@ -760,7 +827,7 @@ func TestRedeem_FixedAmountCurrencyMismatchRejected(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "FLAT5USD", Name: "$5 Off", Type: domain.CouponTypeFixedAmount,
-		AmountOff: 500, Currency: "USD", Active: true,
+		AmountOff: 500, Currency: "USD",
 	})
 	svc := NewService(store)
 
@@ -774,7 +841,7 @@ func TestRedeem_FixedAmountCurrencyMatchAccepted(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "FLAT5USD", Name: "$5 Off", Type: domain.CouponTypeFixedAmount,
-		AmountOff: 500, Currency: "USD", Active: true,
+		AmountOff: 500, Currency: "USD",
 	})
 	svc := NewService(store)
 
@@ -794,7 +861,7 @@ func TestRedeem_PercentageIgnoresCurrency(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "SAVE10", Name: "10% Off", Type: domain.CouponTypePercentage,
-		PercentOff: 10, Active: true,
+		PercentOffBP: 1000,
 	})
 	svc := NewService(store)
 
@@ -819,7 +886,7 @@ func TestRedeem_PrivateCouponAcceptsTargetCustomer(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "ACME-DEAL", Name: "Acme Enterprise", Type: domain.CouponTypePercentage,
-		PercentOff: 30, Active: true, CustomerID: "cust_acme",
+		PercentOffBP: 3000, CustomerID: "cust_acme",
 	})
 	svc := NewService(store)
 
@@ -842,7 +909,7 @@ func TestRedeem_PrivateCouponRejectsOtherCustomer(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "ACME-DEAL", Name: "Acme Enterprise", Type: domain.CouponTypePercentage,
-		PercentOff: 30, Active: true, CustomerID: "cust_acme",
+		PercentOffBP: 3000, CustomerID: "cust_acme",
 	})
 	svc := NewService(store)
 
@@ -859,7 +926,7 @@ func TestRedeem_PublicCouponAcceptsAnyCustomer(t *testing.T) {
 	store := newMockStore()
 	store.seedCoupon(domain.Coupon{
 		Code: "LAUNCH20", Name: "Launch", Type: domain.CouponTypePercentage,
-		PercentOff: 20, Active: true, // CustomerID intentionally empty
+		PercentOffBP: 2000, // CustomerID intentionally empty
 	})
 	svc := NewService(store)
 
@@ -921,8 +988,8 @@ func TestApplyToInvoice_PercentageCoupon(t *testing.T) {
 		Code:       "SAVE10",
 		Name:       "10% off",
 		Type:       domain.CouponTypePercentage,
-		PercentOff: 10,
-		Active:     true,
+		PercentOffBP: 1000,
+		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_pct",
@@ -952,7 +1019,7 @@ func TestApplyToInvoice_FixedAmountCoupon(t *testing.T) {
 		Type:      domain.CouponTypeFixedAmount,
 		AmountOff: 500,
 		Currency:  "USD",
-		Active:    true,
+		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_fix",
@@ -985,7 +1052,7 @@ func TestApplyToInvoice_SkipsFixedAmountCouponWithCurrencyMismatch(t *testing.T)
 		Type:      domain.CouponTypeFixedAmount,
 		AmountOff: 500,
 		Currency:  "USD",
-		Active:    true,
+		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_usd",
@@ -1017,8 +1084,8 @@ func TestApplyToInvoice_AppliesPercentageRegardlessOfInvoiceCurrency(t *testing.
 		Code:       "SAVE10",
 		Name:       "10% off",
 		Type:       domain.CouponTypePercentage,
-		PercentOff: 10,
-		Active:     true,
+		PercentOffBP: 1000,
+		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_pct",
@@ -1050,7 +1117,7 @@ func TestApplyToInvoice_ClampsToSubtotal(t *testing.T) {
 		Type:      domain.CouponTypeFixedAmount,
 		AmountOff: 5000,
 		Currency:  "USD",
-		Active:    true,
+		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_big",
@@ -1077,8 +1144,8 @@ func TestApplyToInvoice_ExpiredCouponIgnored(t *testing.T) {
 		Code:       "OLDCODE",
 		Name:       "10% off",
 		Type:       domain.CouponTypePercentage,
-		PercentOff: 10,
-		Active:     true,
+		PercentOffBP: 1000,
+		
 		ExpiresAt:  &past,
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
@@ -1105,8 +1172,8 @@ func TestApplyToInvoice_InactiveCouponIgnored(t *testing.T) {
 		Code:       "OFFCODE",
 		Name:       "10% off",
 		Type:       domain.CouponTypePercentage,
-		PercentOff: 10,
-		Active:     false,
+		PercentOffBP: 1000,
+		ArchivedAt: &pastTime,
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_off",
@@ -1132,9 +1199,9 @@ func TestApplyToInvoice_PlanRestriction(t *testing.T) {
 		Code:       "PLANA10",
 		Name:       "10% off plan A",
 		Type:       domain.CouponTypePercentage,
-		PercentOff: 10,
+		PercentOffBP: 1000,
 		PlanIDs:    []string{"plan_A"},
-		Active:     true,
+		
 	})
 	store.redemptions = append(store.redemptions, domain.CouponRedemption{
 		CouponID:       "cpn_planA",
@@ -1199,16 +1266,16 @@ func TestApplyToInvoice_MultipleCouponsTakesLargest(t *testing.T) {
 		Code:       "SMALL5",
 		Name:       "5% off",
 		Type:       domain.CouponTypePercentage,
-		PercentOff: 5,
-		Active:     true,
+		PercentOffBP: 500,
+		
 	})
 	store.seedCoupon(domain.Coupon{
 		ID:         "cpn_big",
 		Code:       "BIG20",
 		Name:       "20% off",
 		Type:       domain.CouponTypePercentage,
-		PercentOff: 20,
-		Active:     true,
+		PercentOffBP: 2000,
+		
 	})
 	store.redemptions = append(store.redemptions,
 		domain.CouponRedemption{CouponID: "cpn_small", SubscriptionID: "sub_1"},
@@ -1236,8 +1303,8 @@ func TestApplyToInvoice_DurationOnce_ExhaustsAfterFirst(t *testing.T) {
 
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_once", Code: "ONCE10", Name: "10% once",
-		Type: domain.CouponTypePercentage, PercentOff: 10,
-		Duration: domain.CouponDurationOnce, Active: true,
+		Type: domain.CouponTypePercentage, PercentOffBP: 1000,
+		Duration: domain.CouponDurationOnce,
 	})
 	redID := store.seedRedemption(domain.CouponRedemption{
 		CouponID: "cpn_once", SubscriptionID: "sub_1",
@@ -1276,9 +1343,9 @@ func TestApplyToInvoice_DurationRepeating_ExhaustsAfterNPeriods(t *testing.T) {
 	three := 3
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_rep", Code: "REP10", Name: "10% for 3 months",
-		Type: domain.CouponTypePercentage, PercentOff: 10,
+		Type: domain.CouponTypePercentage, PercentOffBP: 1000,
 		Duration: domain.CouponDurationRepeating, DurationPeriods: &three,
-		Active: true,
+		
 	})
 	store.seedRedemption(domain.CouponRedemption{
 		CouponID: "cpn_rep", SubscriptionID: "sub_1",
@@ -1316,8 +1383,8 @@ func TestApplyToInvoice_DurationForever_NeverExhausts(t *testing.T) {
 
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_forever", Code: "FOREVER10", Name: "10% forever",
-		Type: domain.CouponTypePercentage, PercentOff: 10,
-		Duration: domain.CouponDurationForever, Active: true,
+		Type: domain.CouponTypePercentage, PercentOffBP: 1000,
+		Duration: domain.CouponDurationForever,
 	})
 	redID := store.seedRedemption(domain.CouponRedemption{
 		CouponID: "cpn_forever", SubscriptionID: "sub_1",
@@ -1345,13 +1412,13 @@ func TestApplyToInvoice_StackablePercentAndFixed(t *testing.T) {
 
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_pct", Code: "PCT10", Type: domain.CouponTypePercentage,
-		PercentOff: 10, Duration: domain.CouponDurationForever,
-		Stackable: true, Active: true,
+		PercentOffBP: 1000, Duration: domain.CouponDurationForever,
+		Stackable: true,
 	})
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_fix", Code: "FIX500", Type: domain.CouponTypeFixedAmount,
 		AmountOff: 500, Currency: "USD", Duration: domain.CouponDurationForever,
-		Stackable: true, Active: true,
+		Stackable: true,
 	})
 	id1 := store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_pct", SubscriptionID: "sub_1"})
 	id2 := store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_fix", SubscriptionID: "sub_1"})
@@ -1379,13 +1446,13 @@ func TestApplyToInvoice_StackablePercentCappedAt100(t *testing.T) {
 
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_a", Code: "HALF_A", Type: domain.CouponTypePercentage,
-		PercentOff: 60, Duration: domain.CouponDurationForever,
-		Stackable: true, Active: true,
+		PercentOffBP: 6000, Duration: domain.CouponDurationForever,
+		Stackable: true,
 	})
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_b", Code: "HALF_B", Type: domain.CouponTypePercentage,
-		PercentOff: 60, Duration: domain.CouponDurationForever,
-		Stackable: true, Active: true,
+		PercentOffBP: 6000, Duration: domain.CouponDurationForever,
+		Stackable: true,
 	})
 	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_a", SubscriptionID: "sub_1"})
 	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_b", SubscriptionID: "sub_1"})
@@ -1407,12 +1474,12 @@ func TestApplyToInvoice_StackableClampedToSubtotal(t *testing.T) {
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_50", Code: "FIX50", Type: domain.CouponTypeFixedAmount,
 		AmountOff: 5000, Currency: "USD", Duration: domain.CouponDurationForever,
-		Stackable: true, Active: true,
+		Stackable: true,
 	})
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_80", Code: "FIX80", Type: domain.CouponTypeFixedAmount,
 		AmountOff: 8000, Currency: "USD", Duration: domain.CouponDurationForever,
-		Stackable: true, Active: true,
+		Stackable: true,
 	})
 	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_50", SubscriptionID: "sub_1"})
 	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_80", SubscriptionID: "sub_1"})
@@ -1437,18 +1504,18 @@ func TestApplyToInvoice_NonStackableOverridesStackable(t *testing.T) {
 
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_5p_s", Code: "SMALL_S", Type: domain.CouponTypePercentage,
-		PercentOff: 5, Duration: domain.CouponDurationForever,
-		Stackable: true, Active: true,
+		PercentOffBP: 500, Duration: domain.CouponDurationForever,
+		Stackable: true,
 	})
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_20p_ns", Code: "BIG_NS", Type: domain.CouponTypePercentage,
-		PercentOff: 20, Duration: domain.CouponDurationForever,
-		Stackable: false, Active: true,
+		PercentOffBP: 2000, Duration: domain.CouponDurationForever,
+		Stackable: false,
 	})
 	store.seedCoupon(domain.Coupon{
 		ID: "cpn_3f_s", Code: "FIX3_S", Type: domain.CouponTypeFixedAmount,
 		AmountOff: 300, Currency: "USD", Duration: domain.CouponDurationForever,
-		Stackable: true, Active: true,
+		Stackable: true,
 	})
 	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_5p_s", SubscriptionID: "sub_1"})
 	bigID := store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_20p_ns", SubscriptionID: "sub_1"})
@@ -1475,7 +1542,7 @@ func TestCreate_DurationDefaultsToForever(t *testing.T) {
 	svc := NewService(store)
 
 	got, err := svc.Create(context.Background(), "t1", CreateInput{
-		Code: "SAVE10", Name: "10%", Type: domain.CouponTypePercentage, PercentOff: 10,
+		Code: "SAVE10", Name: "10%", Type: domain.CouponTypePercentage, PercentOffBP: 1000,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1489,14 +1556,14 @@ func TestCreate_RepeatingRequiresPositivePeriods(t *testing.T) {
 	svc := NewService(newMockStore())
 	_, err := svc.Create(context.Background(), "t1", CreateInput{
 		Code: "REP10", Name: "10%", Type: domain.CouponTypePercentage,
-		PercentOff: 10, Duration: domain.CouponDurationRepeating,
+		PercentOffBP: 1000, Duration: domain.CouponDurationRepeating,
 	})
 	assertErrContains(t, err, "duration_periods")
 
 	zero := 0
 	_, err = svc.Create(context.Background(), "t1", CreateInput{
 		Code: "REP10B", Name: "10%", Type: domain.CouponTypePercentage,
-		PercentOff: 10, Duration: domain.CouponDurationRepeating, DurationPeriods: &zero,
+		PercentOffBP: 1000, Duration: domain.CouponDurationRepeating, DurationPeriods: &zero,
 	})
 	assertErrContains(t, err, "duration_periods")
 }
@@ -1509,13 +1576,13 @@ func TestCreate_OnceAndForeverRejectDurationPeriods(t *testing.T) {
 
 	_, err := svc.Create(context.Background(), "t1", CreateInput{
 		Code: "ONCE10", Name: "10%", Type: domain.CouponTypePercentage,
-		PercentOff: 10, Duration: domain.CouponDurationOnce, DurationPeriods: &n,
+		PercentOffBP: 1000, Duration: domain.CouponDurationOnce, DurationPeriods: &n,
 	})
 	assertErrContains(t, err, "duration_periods")
 
 	_, err = svc.Create(context.Background(), "t1", CreateInput{
 		Code: "FOR10", Name: "10%", Type: domain.CouponTypePercentage,
-		PercentOff: 10, Duration: domain.CouponDurationForever, DurationPeriods: &n,
+		PercentOffBP: 1000, Duration: domain.CouponDurationForever, DurationPeriods: &n,
 	})
 	assertErrContains(t, err, "duration_periods")
 }
@@ -1524,7 +1591,7 @@ func TestCreate_InvalidDurationRejected(t *testing.T) {
 	svc := NewService(newMockStore())
 	_, err := svc.Create(context.Background(), "t1", CreateInput{
 		Code: "TEST10", Name: "10%", Type: domain.CouponTypePercentage,
-		PercentOff: 10, Duration: "bogus",
+		PercentOffBP: 1000, Duration: "bogus",
 	})
 	assertErrContains(t, err, "duration")
 }
