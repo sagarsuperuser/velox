@@ -164,3 +164,27 @@ type CouponDiscountResult struct {
 	Cents         int64    `json:"cents"`
 	RedemptionIDs []string `json:"redemption_ids,omitempty"`
 }
+
+// CustomerDiscount is the operator-initiated attachment of a coupon to a
+// customer. The billing engine consults the single active row per customer
+// on every invoice generation and recomputes the discount against that
+// invoice's actual subtotal, so a percentage coupon stays honest as
+// subtotals vary month to month.
+//
+// Distinct from CouponRedemption — this is the standing attachment, not a
+// per-invoice application record. Mirrors Stripe's customer.discount
+// object. A revoked_at stamp terminates the assignment; the partial unique
+// index on (tenant_id, customer_id) WHERE revoked_at IS NULL means the
+// customer can then re-attach a different coupon without collision.
+type CustomerDiscount struct {
+	ID             string     `json:"id"`
+	TenantID       string     `json:"tenant_id,omitempty"`
+	CustomerID     string     `json:"customer_id"`
+	CouponID       string     `json:"coupon_id"`
+	PeriodsApplied int        `json:"periods_applied"`
+	IdempotencyKey string     `json:"idempotency_key,omitempty"`
+	Metadata       []byte     `json:"metadata,omitempty"`
+	RevokedAt      *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
