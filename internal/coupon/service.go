@@ -20,11 +20,29 @@ import (
 var codeRegexp = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9\-]{1,48}[A-Za-z0-9]$`)
 
 type Service struct {
-	store Store
+	store           Store
+	customerHistory CustomerHistoryLookup
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
+}
+
+// CustomerHistoryLookup answers the "has this customer ever paid" question the
+// first_time_customer_only restriction depends on. Defined as an interface here
+// so the coupon package stays insulated from the invoice package per the
+// zero-cross-domain rule — production wires up an invoice-backed impl, tests
+// pass a stub.
+type CustomerHistoryLookup interface {
+	HasSucceededInvoice(ctx context.Context, tenantID, customerID string) (bool, error)
+}
+
+// SetCustomerHistoryLookup wires the lookup the service consults when
+// evaluating first_time_customer_only. Unset on a newly-constructed service
+// so tests that don't exercise the restriction don't need to stub anything;
+// production must call this during assembly.
+func (s *Service) SetCustomerHistoryLookup(h CustomerHistoryLookup) {
+	s.customerHistory = h
 }
 
 // CreateInput is the validated wire format for POST /coupons.
@@ -433,11 +451,21 @@ func (s *Service) validateRedeem(ctx context.Context, tenantID string, input *Re
 				return domain.Coupon{}, errs.InvalidState("coupon has reached per-customer redemption limit")
 			}
 		}
-		// FirstTimeCustomerOnly is the one we can't verify cheaply here
-		// without a customer-invoice lookup that crosses a domain
-		// boundary. It's still documented as a restriction — the
-		// subscription/billing side is responsible for enforcing it
-		// before attaching the coupon. Skipped at redeem-time for now.
+		if cpn.Restrictions.FirstTimeCustomerOnly {
+			if s.customerHistory == nil {
+				slog.WarnContext(ctx,
+					"coupon: first_time_customer_only set but no customer history lookup wired — skipping",
+					"coupon_id", cpn.ID)
+			} else {
+				hasPaid, err := s.customerHistory.HasSucceededInvoice(ctx, tenantID, input.CustomerID)
+				if err != nil {
+					return domain.Coupon{}, fmt.Errorf("check prior payments: %w", err)
+				}
+				if hasPaid {
+					return domain.Coupon{}, errs.InvalidState("coupon limited to first-time customers")
+				}
+			}
+		}
 	}
 
 	return cpn, nil

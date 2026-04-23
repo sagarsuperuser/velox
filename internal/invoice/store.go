@@ -36,6 +36,12 @@ type Store interface {
 	// when two clients append lines concurrently. Returns the inserted line
 	// item and the updated invoice.
 	AddLineItemAtomic(ctx context.Context, tenantID, invoiceID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, domain.Invoice, error)
+
+	// HasSucceededInvoice reports whether the customer has any invoice with
+	// payment_status = 'succeeded'. Backs the coupon first_time_customer_only
+	// restriction — existence-only so the query can use LIMIT 1 instead of
+	// paging full history.
+	HasSucceededInvoice(ctx context.Context, tenantID, customerID string) (bool, error)
 }
 
 type ListFilter struct {
