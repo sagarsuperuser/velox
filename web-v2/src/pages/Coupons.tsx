@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -121,8 +121,28 @@ export default function CouponsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [archiveId, setArchiveId] = useState<string | null>(null)
   const [redemptionsCoupon, setRedemptionsCoupon] = useState<Coupon | null>(null)
-  const [filterStatus, setFilterStatus] = useState('')
-  const [search, setSearch] = useState('')
+  // URL-backed filter state so refresh, back-button, and shared links all
+  // land on the same view. `replace: true` on every write so typing into
+  // the search box doesn't flood browser history.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const filterStatus = searchParams.get('status') ?? ''
+  const search = searchParams.get('q') ?? ''
+  const setFilterStatus = (value: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (value) next.set('status', value)
+      else next.delete('status')
+      return next
+    }, { replace: true })
+  }
+  const setSearch = (value: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (value) next.set('q', value)
+      else next.delete('q')
+      return next
+    }, { replace: true })
+  }
   const queryClient = useQueryClient()
 
   // Include archived rows so the archived tab can show history. Status gates
