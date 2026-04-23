@@ -57,7 +57,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Archive, ArchiveRestore, Eye, Copy, Search, Loader2, Ticket, Sparkles, Lock, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
+import { Plus, Archive, ArchiveRestore, Eye, Copy, CopyPlus, Search, Loader2, Ticket, Sparkles, Lock, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 
 // Code is optional — the server auto-generates a CPN-XXXX-XXXX code when
@@ -234,6 +234,60 @@ export default function CouponsPage() {
 
   const coupons = couponsData?.data ?? []
   const loadError = loadErrorObj instanceof Error ? loadErrorObj.message : loadErrorObj ? String(loadErrorObj) : null
+
+  // Duplicate flow. ?duplicate=<id> lets operators clone a coupon as a
+  // template — useful for seasonal rerolls (black-friday → cyber-monday)
+  // and enterprise private deals that share shape. Source is derived
+  // from the already-loaded list so no second round trip; the URL
+  // survives refresh, so the dialog can re-seed after reload.
+  const duplicateId = searchParams.get('duplicate')
+  const clearDuplicateParam = () => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('duplicate')
+      return next
+    }, { replace: true })
+  }
+  const duplicateSource = useMemo(() => {
+    if (!duplicateId) return null
+    return coupons.find(c => c.id === duplicateId) ?? null
+  }, [duplicateId, coupons])
+  // Blank code so the server auto-generates (new campaigns shouldn't
+  // collide on an existing code). Expiry + max_redemptions clear too —
+  // the whole point of duplicating is to seed a new campaign, not
+  // inherit the old window. Everything else copies so the operator
+  // can hit Create and get a semantically identical coupon.
+  const duplicateInitialValues = useMemo<Partial<CreateCouponData> | undefined>(() => {
+    if (!duplicateSource) return undefined
+    const c = duplicateSource
+    const discountValue = c.type === 'percentage'
+      ? (c.percent_off_bp / 100).toString()
+      : (c.amount_off / 100).toFixed(2)
+    return {
+      code: '',
+      name: c.name ? `${c.name} (copy)` : '',
+      type: c.type,
+      discountValue,
+      currency: c.currency || 'USD',
+      maxRedemptions: '',
+      expiresAt: '',
+      planIds: c.plan_ids ?? [],
+      customerId: c.customer_id ?? '',
+      duration: c.duration ?? 'once',
+      durationPeriods: c.duration_periods ? String(c.duration_periods) : '',
+      stackable: c.stackable ?? false,
+      minAmount: c.restrictions?.min_amount_cents
+        ? (c.restrictions.min_amount_cents / 100).toFixed(2)
+        : '',
+      firstTimeCustomerOnly: c.restrictions?.first_time_customer_only ?? false,
+      maxRedemptionsPerCustomer: c.restrictions?.max_redemptions_per_customer
+        ? String(c.restrictions.max_redemptions_per_customer)
+        : '',
+    }
+  }, [duplicateSource])
+  useEffect(() => {
+    if (duplicateInitialValues) setShowCreate(true)
+  }, [duplicateInitialValues])
 
   const archiveMutation = useMutation({
     mutationFn: (id: string) => api.archiveCoupon(id),
@@ -471,6 +525,18 @@ export default function CouponsPage() {
                           >
                             <Eye size={16} />
                           </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setSearchParams(prev => {
+                              const next = new URLSearchParams(prev)
+                              next.set('duplicate', c.id)
+                              return next
+                            }, { replace: true })}
+                            title="Duplicate"
+                          >
+                            <CopyPlus size={16} />
+                          </Button>
                           {status === 'archived' ? (
                             <Button
                               variant="ghost"
@@ -505,9 +571,14 @@ export default function CouponsPage() {
       {/* Create Coupon Dialog */}
       <CreateCouponDialog
         open={showCreate}
-        onOpenChange={setShowCreate}
+        initialValues={duplicateInitialValues}
+        onOpenChange={(open) => {
+          setShowCreate(open)
+          if (!open && duplicateId) clearDuplicateParam()
+        }}
         onCreated={() => {
           setShowCreate(false)
+          if (duplicateId) clearDuplicateParam()
           queryClient.invalidateQueries({ queryKey: ['coupons'] })
           toast.success('Coupon created')
         }}
@@ -575,8 +646,9 @@ export default function CouponsPage() {
 
 // --- Create Coupon Dialog ---
 
-function CreateCouponDialog({ open, onOpenChange, onCreated }: {
+function CreateCouponDialog({ open, onOpenChange, onCreated, initialValues }: {
   open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void
+  initialValues?: Partial<CreateCouponData>
 }) {
   const [plans, setPlans] = useState<{ id: string; name: string; code: string }[]>([])
   const [isPrivate, setIsPrivate] = useState(false)
@@ -596,6 +668,24 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
     if (open) {
       api.listPlans().then(res => setPlans(res.data || [])).catch(() => {})
     }
+  }, [open])
+
+  // Duplicate flow — seed the form with values from the source coupon
+  // on the open transition only. Keyed on [open] so re-renders in the
+  // parent don't re-seed and trample user edits mid-session.
+  useEffect(() => {
+    if (open && initialValues) {
+      form.reset({
+        code: '', name: '', type: 'percentage', discountValue: '',
+        currency: 'USD', maxRedemptions: '', expiresAt: '',
+        planIds: [], customerId: '',
+        duration: 'once', durationPeriods: '', stackable: false,
+        minAmount: '', firstTimeCustomerOnly: false, maxRedemptionsPerCustomer: '',
+        ...initialValues,
+      })
+      setIsPrivate(!!initialValues.customerId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   const type = form.watch('type')
@@ -674,7 +764,7 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
   return (
     <Dialog open={open} onOpenChange={(o) => {
       onOpenChange(o)
-      if (!o) { form.reset() }
+      if (!o) { form.reset(); setIsPrivate(false) }
     }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>

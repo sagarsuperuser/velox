@@ -19,7 +19,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 
-import { Loader2, Archive, ArchiveRestore, Lock, Calculator } from 'lucide-react'
+import { Loader2, Archive, ArchiveRestore, Lock, Calculator, CopyPlus } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 import { CustomerCombobox } from '@/components/CustomerCombobox'
@@ -237,6 +237,14 @@ export default function CouponDetailPage() {
         </div>
         <div className="flex items-center gap-3">
           <Badge variant={statusVariant(status)}>{statusLabel(status)}</Badge>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate(`/coupons?duplicate=${coupon.id}`)}
+          >
+            <CopyPlus size={14} className="mr-1.5" />
+            Duplicate
+          </Button>
           {isArchived ? (
             <Button variant="outline" size="sm" onClick={() => setUnarchiveOpen(true)}>
               <ArchiveRestore size={14} className="mr-1.5" />
