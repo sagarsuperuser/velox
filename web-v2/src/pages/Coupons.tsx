@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -291,7 +292,13 @@ export default function CouponsPage() {
                     <TableRow key={c.id}>
                       <TableCell>
                         <div className="flex items-center gap-1.5">
-                          <span className="text-sm font-mono font-medium text-foreground truncate max-w-[140px]" title={c.code}>{c.code}</span>
+                          <Link
+                            to={`/coupons/${c.id}`}
+                            className="text-sm font-mono font-medium text-foreground hover:text-primary hover:underline truncate max-w-[140px]"
+                            title={c.code}
+                          >
+                            {c.code}
+                          </Link>
                           {c.customer_id && (
                             <Lock
                               size={12}
@@ -300,7 +307,7 @@ export default function CouponsPage() {
                             />
                           )}
                           <button
-                            onClick={() => { navigator.clipboard.writeText(c.code); toast.success('Code copied') }}
+                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(c.code); toast.success('Code copied') }}
                             className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                             title="Copy code"
                           >
@@ -308,7 +315,15 @@ export default function CouponsPage() {
                           </button>
                         </div>
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground truncate max-w-[160px]" title={c.name || ''}>{c.name || '\u2014'}</TableCell>
+                      <TableCell>
+                        <Link
+                          to={`/coupons/${c.id}`}
+                          className="text-sm text-muted-foreground hover:text-foreground truncate max-w-[160px] block"
+                          title={c.name || ''}
+                        >
+                          {c.name || '\u2014'}
+                        </Link>
+                      </TableCell>
                       <TableCell>
                         <Badge variant="info">{c.type === 'percentage' ? 'Percentage' : 'Fixed'}</Badge>
                       </TableCell>
