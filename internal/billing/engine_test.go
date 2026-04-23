@@ -1510,4 +1510,3 @@ func (z *zeroDiscountApplier) RedeemForInvoice(_ context.Context, _ string, req 
 		Redemption: domain.CouponRedemption{ID: "cpr_zero", DiscountCents: 0},
 	}, nil
 }
-
