@@ -1,0 +1,22 @@
+# Velox — Audit log write alerts
+#
+# Metrics source: internal/api/middleware/metrics.go (RecordAuditWriteError).
+#
+# Audit write failures page immediately because fail-closed tenants see 503s
+# and fail-open tenants accumulate a compliance gap. There is no severity
+# below "page" here.
+groups:
+  - name: velox_audit
+    interval: 30s
+    rules:
+      - alert: VeloxAuditWriteErrors
+        expr: increase(velox_audit_write_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: page
+          service: velox
+          domain: audit
+        annotations:
+          summary: "Velox audit log writes failing"
+          description: "Per-tenant audit INSERTs failed in the last 5m. {{ $labels.tenant_id }} affected. SOC-2 fail-closed tenants return 503; fail-open tenants accrue a gap."
+          runbook: docs/ops/runbook.md#playbook-veloxauditwriteerrors

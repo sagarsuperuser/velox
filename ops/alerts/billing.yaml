@@ -1,0 +1,45 @@
+# Velox — Billing engine alerts
+#
+# Metrics source: internal/api/middleware/metrics.go (RecordBillingCycle*,
+# RecordBillingCycleError, RecordBillingCycleDuration).
+groups:
+  - name: velox_billing
+    interval: 30s
+    rules:
+      - alert: VeloxBillingCycleFailing
+        expr: rate(velox_billing_cycle_errors_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: page
+          service: velox
+          domain: billing
+        annotations:
+          summary: "Velox billing cycles returning errors"
+          description: "Billing runs have errored continuously for 15m. Invoices may not be generating."
+          runbook: docs/ops/runbook.md#playbook-veloxbillingcyclefailing
+
+      - alert: VeloxBillingCycleSlow
+        expr: |
+          histogram_quantile(
+            0.95,
+            rate(velox_billing_cycle_duration_seconds_bucket[1h])
+          ) > 60
+        for: 30m
+        labels:
+          severity: ticket
+          service: velox
+          domain: billing
+        annotations:
+          summary: "Velox billing cycle p95 duration >60s"
+          description: "p95 cycle duration is {{ $value | humanizeDuration }}. A cycle that outgrows its interval eventually overlaps with the next scheduler tick."
+
+      - alert: VeloxNoInvoicesGenerated
+        expr: rate(velox_invoices_generated_total[1h]) == 0
+        for: 2h
+        labels:
+          severity: info
+          service: velox
+          domain: billing
+        annotations:
+          summary: "No Velox invoices generated in 2h (business hours only)"
+          description: "Throughput dropped to zero. Expected during quiet periods; investigate if sustained during active hours."
