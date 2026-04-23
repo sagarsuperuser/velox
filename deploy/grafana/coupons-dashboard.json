@@ -72,7 +72,7 @@
     {
       "id": 3,
       "title": "Redeem outcomes (stacked)",
-      "description": "Each series is a domain outcome code. 'success' / 'replay' are the healthy paths. Business-rule rejections (coupon_expired, coupon_min_amount_not_met, …) are expected and not alerted on. 'error' is the infra / unknown bucket — rises here are a page.",
+      "description": "Each series is a domain outcome code. 'success' / 'replay' are the healthy paths. Business-rule rejections (coupon_expired, coupon_min_amount_not_met, …) and 'invalid_request' (bad caller input) are expected and not alerted on. 'error' is the infra / unknown bucket — rises here are a page.",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
