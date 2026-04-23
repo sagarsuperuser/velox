@@ -89,4 +89,5 @@ const (
 	EventCouponRedeemed                     = "coupon.redeemed"
 	EventCustomerCouponAttached             = "customer.coupon.attached"
 	EventCustomerCouponRevoked              = "customer.coupon.revoked"
+	EventInvoiceCouponApplied               = "invoice.coupon.applied"
 )

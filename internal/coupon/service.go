@@ -398,6 +398,43 @@ func (s *Service) RedeemDetail(ctx context.Context, tenantID string, input Redee
 	return RedeemResult{Redemption: result.Redemption, Replay: result.Replay}, nil
 }
 
+// RedeemForInvoice is the engine-facing entry point for committing a
+// coupon redemption against an already-issued draft invoice. It delegates
+// to the existing RedeemDetail pipeline but accepts a plan set rather
+// than a single plan id — an invoice's subscription can carry items on
+// multiple plans, and a coupon with PlanIDs restriction must match any
+// one of them.
+//
+// Returns the domain-shape redemption + replay flag so the billing engine
+// doesn't need to import the coupon-package Result type. Errors propagate
+// verbatim (invalid code, expired, archived, max redemptions, etc.).
+func (s *Service) RedeemForInvoice(ctx context.Context, tenantID string, req domain.CouponRedeemRequest) (domain.CouponRedeemResult, error) {
+	if len(req.PlanIDs) > 0 {
+		code := strings.TrimSpace(strings.ToUpper(req.Code))
+		if code != "" {
+			if cpn, err := s.store.GetByCode(ctx, tenantID, code); err == nil {
+				if len(cpn.PlanIDs) > 0 && !anyPlanMatches(cpn.PlanIDs, req.PlanIDs) {
+					return domain.CouponRedeemResult{}, errs.Invalid("plan_id",
+						"coupon is not valid for this subscription's plans").WithCode(CodePlanMismatch)
+				}
+			}
+		}
+	}
+	res, err := s.RedeemDetail(ctx, tenantID, RedeemInput{
+		Code:           req.Code,
+		CustomerID:     req.CustomerID,
+		SubscriptionID: req.SubscriptionID,
+		InvoiceID:      req.InvoiceID,
+		SubtotalCents:  req.SubtotalCents,
+		Currency:       req.Currency,
+		IdempotencyKey: req.IdempotencyKey,
+	})
+	if err != nil {
+		return domain.CouponRedeemResult{}, err
+	}
+	return domain.CouponRedeemResult{Redemption: res.Redemption, Replay: res.Replay}, nil
+}
+
 // validateRedeem is the stateless-or-near-stateless gate pass used by
 // both Preview and Redeem. It loads the coupon, normalises the code,
 // and checks everything we can check without committing a write. The

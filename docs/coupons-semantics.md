@@ -134,6 +134,68 @@ currency before calling `/v1/coupons/redeem`.
 `internal/coupon/service.go` `validateRedeem` (redeem-time gate),
 `ApplyToInvoice` (engine-time skip).
 
+## 4. Applying a coupon to an already-issued draft invoice
+
+The billing engine applies coupons automatically during `RunCycle` — the
+subscription-scope coupon wins; the customer-scope coupon falls back; tax
+recomputes against `subtotal − discount`. For the less common case where
+an operator needs to apply a code to an already-issued draft (e.g., a
+retention gesture on an invoice that generated before the coupon was
+attached), use `POST /v1/invoices/{id}/apply-coupon`.
+
+### Gate conditions
+
+The endpoint rejects before any redemption commits when:
+
+- the invoice is not `draft` (finalized/paid/voided invoices are
+  immutable — void and re-issue if needed),
+- `discount_cents > 0` (stacking two coupons is intentionally disallowed
+  — different coupons have different redeem semantics, and combining
+  them silently is a reconciliation landmine),
+- `tax_transaction_id != ""` (the tenant's Stripe Tax account already
+  committed the calculation upstream; recomputing tax here would
+  desync our record from Stripe's),
+- `subtotal_cents <= 0` (nothing to discount).
+
+### Orchestration
+
+The engine runs the same sequence as an automatic redemption:
+
+1. Redeem (same gates: code, plan, currency, usage, dates, customer
+   history). PlanIDs check is any-one-of across the subscription's
+   plans, so multi-item subscriptions don't fail the gate just because
+   one item is on an unrestricted plan.
+2. Recompute tax against `subtotal − discount` via the tenant's
+   configured tax provider.
+3. Atomically write the new discount, new tax amount, and repriced
+   line items in one transaction.
+4. Advance `periods_applied` on the committed redemption — same
+   counter that `once` and `repeating` coupons burn during normal
+   billing.
+
+If step 3 fails after step 1 committed a fresh redemption, the engine
+compensates by voiding the redemption so `times_redeemed` stays
+honest. Replays (same `Idempotency-Key`) skip the compensation
+because the first call already owns the side effects.
+
+### Idempotency
+
+Pass `Idempotency-Key` to make retries safe. The underlying coupon
+redeem uses the same key-scoping as `/v1/coupons/redeem`, so a
+repeated request returns the original redemption without burning
+another slot.
+
+### Emitted effects
+
+- `invoice.coupon.applied` webhook event carries the updated invoice.
+- Audit log entry action `apply_coupon` references the invoice and
+  redemption.
+
+**Code references:**
+`internal/billing/engine.go` `ApplyCouponToInvoice`,
+`internal/invoice/service.go` `ApplyCoupon`,
+`internal/invoice/handler.go` `applyCoupon`.
+
 ## Quick reference
 
 | Scenario | Outcome |
@@ -143,3 +205,6 @@ currency before calling `/v1/coupons/redeem`.
 | Tax on discounted invoice | Tax computed on `subtotal − discount` |
 | Percentage coupon against any-currency invoice | Applies |
 | Fixed-amount coupon, currency mismatch | 422 `coupon_currency_mismatch` at redeem; silently skipped at billing |
+| Apply coupon to finalized/voided/paid invoice | Rejected at gate; no redemption committed |
+| Apply coupon to already-discounted invoice | Rejected at gate; stacking disallowed |
+| Apply to draft after tax_transaction committed | Rejected at gate; must void invoice and re-issue |

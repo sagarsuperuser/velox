@@ -35,6 +35,7 @@ const (
 	AuditActionArchive   = "archive"
 	AuditActionUnarchive = "unarchive"
 	AuditActionRedeem    = "redeem"
+	AuditActionApplyCoupon = "apply_coupon"
 )
 
 type TenantSettings struct {
