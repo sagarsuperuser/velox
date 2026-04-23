@@ -60,6 +60,11 @@ import { EmptyState } from '@/components/EmptyState'
 
 // Code is optional — the server auto-generates a CPN-XXXX-XXXX code when
 // empty, which is the default path for enterprise private coupons.
+//
+// Duration + stackable + restrictions landed in v2 to match Stripe's
+// coupon surface. durationPeriods is only sent when duration === repeating;
+// the refine below enforces that together rather than scattering the
+// invariant across onSubmit.
 const createCouponSchema = z.object({
   code: z.string(),
   name: z.string().min(1, 'Name is required'),
@@ -70,7 +75,16 @@ const createCouponSchema = z.object({
   expiresAt: z.string(),
   planIds: z.array(z.string()),
   customerId: z.string(),
-})
+  duration: z.enum(['once', 'repeating', 'forever']),
+  durationPeriods: z.string(),
+  stackable: z.boolean(),
+  minAmount: z.string(),
+  firstTimeCustomerOnly: z.boolean(),
+  maxRedemptionsPerCustomer: z.string(),
+}).refine(
+  (d) => d.duration !== 'repeating' || (d.durationPeriods && parseInt(d.durationPeriods, 10) >= 1),
+  { message: 'Duration periods is required for repeating coupons', path: ['durationPeriods'] },
+)
 
 type CreateCouponData = z.infer<typeof createCouponSchema>
 
@@ -415,7 +429,13 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
 
   const form = useForm<CreateCouponData>({
     resolver: zodResolver(createCouponSchema),
-    defaultValues: { code: '', name: '', type: 'percentage', discountValue: '', currency: 'USD', maxRedemptions: '', expiresAt: '', planIds: [], customerId: '' },
+    defaultValues: {
+      code: '', name: '', type: 'percentage', discountValue: '',
+      currency: 'USD', maxRedemptions: '', expiresAt: '',
+      planIds: [], customerId: '',
+      duration: 'once', durationPeriods: '', stackable: false,
+      minAmount: '', firstTimeCustomerOnly: false, maxRedemptionsPerCustomer: '',
+    },
   })
 
   useEffect(() => {
@@ -427,9 +447,25 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
 
   const type = form.watch('type')
   const planIds = form.watch('planIds')
+  const duration = form.watch('duration')
 
   const createMutation = useMutation({
     mutationFn: async (data: CreateCouponData) => {
+      // Only include restrictions when at least one sub-field is set. An
+      // all-defaults restrictions object would still round-trip through
+      // the API harmlessly, but keeping the payload minimal makes server
+      // logs cleaner and prevents confusion when diffing coupons.
+      const restrictions: NonNullable<Parameters<typeof api.createCoupon>[0]['restrictions']> = {}
+      if (data.minAmount) {
+        restrictions.min_amount_cents = Math.round(parseFloat(data.minAmount) * 100)
+      }
+      if (data.firstTimeCustomerOnly) {
+        restrictions.first_time_customer_only = true
+      }
+      if (data.maxRedemptionsPerCustomer) {
+        restrictions.max_redemptions_per_customer = parseInt(data.maxRedemptionsPerCustomer, 10)
+      }
+
       const payload: Parameters<typeof api.createCoupon>[0] = {
         code: data.code.trim(),
         name: data.name,
@@ -441,6 +477,12 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
         ...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
         ...(data.planIds.length > 0 ? { plan_ids: data.planIds } : {}),
         ...(isPrivate && data.customerId ? { customer_id: data.customerId } : {}),
+        duration: data.duration,
+        ...(data.duration === 'repeating' && data.durationPeriods
+          ? { duration_periods: parseInt(data.durationPeriods, 10) }
+          : {}),
+        ...(data.stackable ? { stackable: true } : {}),
+        ...(Object.keys(restrictions).length > 0 ? { restrictions } : {}),
       }
       return api.createCoupon(payload)
     },
@@ -461,6 +503,12 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
         expires_at: 'expiresAt',
         plan_ids: 'planIds',
         customer_id: 'customerId',
+        duration: 'duration',
+        duration_periods: 'durationPeriods',
+        stackable: 'stackable',
+        'restrictions.min_amount_cents': 'minAmount',
+        'restrictions.first_time_customer_only': 'firstTimeCustomerOnly',
+        'restrictions.max_redemptions_per_customer': 'maxRedemptionsPerCustomer',
       })
     },
   })
@@ -621,6 +669,139 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
                 </FormItem>
               )}
             />
+
+            {/* Duration — controls how many billing cycles the discount
+                applies for. Defaults to "once" so the simplest coupon
+                (launch discount on first invoice only) requires zero
+                extra clicks. "repeating" reveals the periods input. */}
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <FormField
+                  control={form.control}
+                  name="duration"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Duration</FormLabel>
+                      <FormControl>
+                        <select
+                          value={field.value}
+                          onChange={field.onChange}
+                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        >
+                          <option value="once">Once — applied to one invoice</option>
+                          <option value="repeating">Repeating — applied for N billing cycles</option>
+                          <option value="forever">Forever — applied to every invoice</option>
+                        </select>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+              {duration === 'repeating' && (
+                <div className="w-32">
+                  <FormField
+                    control={form.control}
+                    name="durationPeriods"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Periods</FormLabel>
+                        <FormControl>
+                          <Input type="number" min="1" step="1" placeholder="3" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Stackable — opt-in. The default (false) matches Stripe: a
+                single coupon per invoice unless explicitly marked
+                stackable. Flipping this on for an existing code is a
+                write-lock decision, not a UI toggle, so it lives with
+                the create form rather than inline on the row. */}
+            <div className="border border-border rounded-lg p-3 bg-muted/30">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <FormField
+                  control={form.control}
+                  name="stackable"
+                  render={({ field }) => (
+                    <Checkbox
+                      checked={field.value}
+                      onCheckedChange={(checked) => field.onChange(!!checked)}
+                      className="mt-0.5"
+                    />
+                  )}
+                />
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-foreground">Stackable</div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Allow this coupon to combine with other redemptions on the same invoice.
+                    By default only one coupon applies per invoice.
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            {/* Restrictions — all optional. Grouped behind a simple
+                section header rather than a collapse because the fields
+                are short and operators need them visible to compare
+                against policy. */}
+            <div>
+              <Label className="text-sm font-medium">Restrictions</Label>
+              <p className="text-xs text-muted-foreground mt-0.5 mb-2">
+                Optional — leave empty for no restriction.
+              </p>
+              <div className="space-y-3">
+                <FormField
+                  control={form.control}
+                  name="minAmount"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-xs text-muted-foreground">Minimum purchase</FormLabel>
+                      <FormControl>
+                        <Input type="number" min="0" step="0.01" placeholder="e.g. 50.00" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="maxRedemptionsPerCustomer"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-xs text-muted-foreground">Max redemptions per customer</FormLabel>
+                      <FormControl>
+                        <Input type="number" min="1" step="1" placeholder="e.g. 1" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="firstTimeCustomerOnly"
+                  render={({ field }) => (
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={(checked) => field.onChange(!!checked)}
+                        className="mt-0.5"
+                      />
+                      <div className="flex-1">
+                        <div className="text-sm text-foreground">First-time customers only</div>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Redeemable only on a customer&apos;s very first invoice.
+                        </p>
+                      </div>
+                    </label>
+                  )}
+                />
+              </div>
+            </div>
 
             {plans.length > 0 && (
               <div>
