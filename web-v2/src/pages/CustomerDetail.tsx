@@ -5,7 +5,7 @@ import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, type Customer, type BillingProfile, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, type Customer, type BillingProfile, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride, type CustomerCouponAssignment } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
@@ -29,7 +29,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 
-import { Loader2, Pencil, CreditCard, Archive, Wand2 } from 'lucide-react'
+import { Loader2, Pencil, CreditCard, Archive, Wand2, Ticket } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 import { Combobox } from '@/components/Combobox'
@@ -74,6 +74,7 @@ export default function CustomerDetailPage() {
   const [showEditBilling, setShowEditBilling] = useState(false)
   const [showCreateSub, setShowCreateSub] = useState(false)
   const [showDunningOverride, setShowDunningOverride] = useState(false)
+  const [showAssignCoupon, setShowAssignCoupon] = useState(false)
   const [settingUpPayment, setSettingUpPayment] = useState(false)
 
   const { data: customer, isLoading, error: loadError, refetch } = useQuery({
@@ -144,6 +145,14 @@ export default function CustomerDetailPage() {
     enabled: !!id,
   })
 
+  // 404 on the GET = "no active assignment", so swallow it into null and
+  // let the card render the empty state.
+  const { data: activeCoupon } = useQuery({
+    queryKey: ['customer-coupon', id],
+    queryFn: () => api.getCustomerCoupon(id!).catch(() => null),
+    enabled: !!id,
+  })
+
   const isArchived = customer?.status === 'archived'
 
   const invalidateAll = () => {
@@ -155,6 +164,7 @@ export default function CustomerDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['customer-usage', id] })
     queryClient.invalidateQueries({ queryKey: ['customer-payment-status', id] })
     queryClient.invalidateQueries({ queryKey: ['customer-dunning-override', id] })
+    queryClient.invalidateQueries({ queryKey: ['customer-coupon', id] })
     queryClient.invalidateQueries({ queryKey: ['customers'] })
   }
 
@@ -524,6 +534,87 @@ export default function CustomerDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Active Discount — applies to every future invoice until revoked
+          or the coupon's duration exhausts. Fires only when the subscription
+          has no active coupon on the same invoice (Stripe's precedence rule).
+          404 from the API collapses to activeCoupon === null. */}
+      <Card className="mt-6">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm">Active Discount</CardTitle>
+            {!isArchived && !activeCoupon && (
+              <Button variant="outline" size="sm" onClick={() => setShowAssignCoupon(true)}>
+                <Ticket size={14} className="mr-1.5" />
+                Apply Coupon
+              </Button>
+            )}
+            {!isArchived && activeCoupon && (
+              <AlertDialog>
+                <AlertDialogTrigger render={<Button variant="outline" size="sm" className="text-destructive hover:text-destructive" />}>
+                  Revoke
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Revoke {activeCoupon.coupon.code}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This customer's next invoice will bill at full price unless another coupon is assigned.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      onClick={() => {
+                        api.revokeCustomerCoupon(id!).then(() => {
+                          toast.success('Discount revoked')
+                          queryClient.invalidateQueries({ queryKey: ['customer-coupon', id] })
+                        }).catch((err: Error) => toast.error(err.message))
+                      }}
+                    >
+                      Revoke Discount
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {activeCoupon ? (
+            <div className="divide-y divide-border">
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground">Coupon</span>
+                <Link to={`/coupons/${activeCoupon.coupon.id}`} className="text-sm font-mono text-primary hover:underline">
+                  {activeCoupon.coupon.code}
+                </Link>
+              </div>
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground">Discount</span>
+                <span className="text-sm font-medium text-foreground">
+                  {activeCoupon.coupon.type === 'percentage'
+                    ? `${Number.isInteger(activeCoupon.coupon.percent_off_bp / 100) ? activeCoupon.coupon.percent_off_bp / 100 : (activeCoupon.coupon.percent_off_bp / 100).toFixed(2)}%`
+                    : formatCents(activeCoupon.coupon.amount_off, activeCoupon.coupon.currency)} off
+                </span>
+              </div>
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground">Duration</span>
+                <span className="text-sm text-foreground">
+                  {activeCoupon.coupon.duration === 'once' && 'One invoice'}
+                  {activeCoupon.coupon.duration === 'forever' && 'Every invoice'}
+                  {activeCoupon.coupon.duration === 'repeating' && `${activeCoupon.coupon.duration_periods} invoice${activeCoupon.coupon.duration_periods === 1 ? '' : 's'} (${activeCoupon.periods_applied} applied)`}
+                </span>
+              </div>
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground">Assigned</span>
+                <span className="text-sm text-foreground">{formatDateTime(activeCoupon.created_at)}</span>
+              </div>
+            </div>
+          ) : (
+            <p className="px-6 py-6 text-sm text-muted-foreground text-center">No active discount</p>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Usage This Period */}
       <Card className="mt-6">
         <CardHeader>
@@ -737,7 +828,72 @@ export default function CustomerDetailPage() {
           }}
         />
       )}
+
+      {/* Assign Coupon Dialog */}
+      {showAssignCoupon && id && (
+        <AssignCouponDialog
+          customerId={id}
+          onClose={() => setShowAssignCoupon(false)}
+          onAssigned={() => {
+            setShowAssignCoupon(false)
+            queryClient.invalidateQueries({ queryKey: ['customer-coupon', id] })
+            toast.success('Discount applied')
+          }}
+        />
+      )}
     </Layout>
+  )
+}
+
+/* ─── Assign Coupon ───────────────────────────────────────────── */
+
+const assignCouponSchema = z.object({
+  code: z.string().min(1, 'Coupon code is required').max(64, 'Code is too long'),
+})
+type AssignCouponData = z.infer<typeof assignCouponSchema>
+
+function AssignCouponDialog({ customerId, onClose, onAssigned }: {
+  customerId: string; onClose: () => void; onAssigned: (a: CustomerCouponAssignment) => void
+}) {
+  const form = useForm<AssignCouponData>({
+    resolver: zodResolver(assignCouponSchema),
+    defaultValues: { code: '' },
+  })
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = form
+
+  const onSubmit = handleSubmit(async (data) => {
+    try {
+      const assignment = await api.assignCustomerCoupon(customerId, { code: data.code.trim().toUpperCase() })
+      onAssigned(assignment)
+    } catch (err) {
+      applyApiError(form, err, ['code'], { toastTitle: 'Failed to apply coupon' })
+    }
+  })
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Apply Coupon</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={onSubmit} noValidate className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="code">Coupon Code</Label>
+            <Input id="code" placeholder="SAVE20" autoFocus maxLength={64} {...register('code')} />
+            {errors.code && <p className="text-xs text-destructive">{errors.code.message}</p>}
+            <p className="text-xs text-muted-foreground">
+              This discount will apply to every future invoice until revoked or the coupon's duration exhausts.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={isSubmitting}>
+              {isSubmitting ? <><Loader2 size={14} className="animate-spin mr-2" />Applying...</> : 'Apply'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 
