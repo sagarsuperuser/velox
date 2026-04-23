@@ -117,6 +117,10 @@ function couponStatusVariant(status: string): 'success' | 'secondary' | 'danger'
   }
 }
 
+function couponStatusLabel(status: string): string {
+  return status.charAt(0).toUpperCase() + status.slice(1)
+}
+
 function SortHeader({ label, column, sortKey, sortDir, onToggle }: {
   label: string
   column: SortKey
@@ -409,11 +413,13 @@ export default function CouponsPage() {
                             {c.code}
                           </Link>
                           {c.customer_id && (
-                            <Lock
-                              size={12}
-                              className="text-muted-foreground shrink-0"
+                            <span
+                              className="inline-flex items-center shrink-0"
+                              title="Private — redeemable by one customer only"
                               aria-label="Private coupon"
-                            />
+                            >
+                              <Lock size={12} className="text-muted-foreground" />
+                            </span>
                           )}
                           <button
                             onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(c.code); toast.success('Code copied') }}
@@ -434,7 +440,7 @@ export default function CouponsPage() {
                         </Link>
                       </TableCell>
                       <TableCell>
-                        <Badge variant="info">{c.type === 'percentage' ? 'Percentage' : 'Fixed'}</Badge>
+                        <Badge variant="info">{c.type === 'percentage' ? 'Percentage' : 'Fixed amount'}</Badge>
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-mono text-sm">
                         {formatDiscount(c)}
@@ -449,11 +455,11 @@ export default function CouponsPage() {
                             <ExpiryBadge expiresAt={c.expires_at} warningDays={7} />
                           </div>
                         ) : (
-                          'Never'
+                          <span className="text-muted-foreground/70">No expiry</span>
                         )}
                       </TableCell>
                       <TableCell>
-                        <Badge variant={couponStatusVariant(status)}>{status}</Badge>
+                        <Badge variant={couponStatusVariant(status)}>{couponStatusLabel(status)}</Badge>
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
@@ -1094,7 +1100,7 @@ function RedemptionsDialog({ coupon, open, onOpenChange }: {
         </DialogHeader>
 
         <div className="flex items-center gap-3 mb-3">
-          <Badge variant="outline">{coupon.type === 'percentage' ? 'Percentage' : 'Fixed'}</Badge>
+          <Badge variant="outline">{coupon.type === 'percentage' ? 'Percentage' : 'Fixed amount'}</Badge>
           <span className="text-sm text-foreground font-medium">{formatDiscount(coupon)}</span>
           <span className="text-sm text-muted-foreground">{coupon.times_redeemed} redemption{coupon.times_redeemed !== 1 ? 's' : ''}</span>
         </div>

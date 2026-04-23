@@ -36,6 +36,10 @@ function couponStatus(c: Coupon): string {
   return 'active'
 }
 
+function statusLabel(status: string): string {
+  return status.charAt(0).toUpperCase() + status.slice(1)
+}
+
 function statusVariant(status: string): 'success' | 'secondary' | 'danger' | 'warning' | 'outline' {
   switch (status) {
     case 'active': return 'success'
@@ -232,7 +236,7 @@ export default function CouponDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <Badge variant={statusVariant(status)}>{status}</Badge>
+          <Badge variant={statusVariant(status)}>{statusLabel(status)}</Badge>
           {isArchived ? (
             <Button variant="outline" size="sm" onClick={() => setUnarchiveOpen(true)}>
               <ArchiveRestore size={14} className="mr-1.5" />
@@ -277,7 +281,7 @@ export default function CouponDetailPage() {
                     <ExpiryBadge expiresAt={coupon.expires_at} warningDays={7} />
                   </span>
                 ) : (
-                  <span className="text-muted-foreground text-base font-normal">Never</span>
+                  <span className="text-muted-foreground text-base font-normal">No expiry</span>
                 )}
               </p>
             </div>
@@ -318,7 +322,7 @@ export default function CouponDetailPage() {
               </Badge>
             </PropRow>
             <PropRow label="Status">
-              <Badge variant={statusVariant(status)}>{status}</Badge>
+              <Badge variant={statusVariant(status)}>{statusLabel(status)}</Badge>
             </PropRow>
             <PropRow label="Created">
               <span className="text-sm text-foreground">{formatDateTime(coupon.created_at)}</span>
