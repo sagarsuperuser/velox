@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -651,14 +652,23 @@ func (h *Handler) applyCoupon(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	var body struct {
-		Code string `json:"code"`
+		Code           string `json:"code"`
+		IdempotencyKey string `json:"idempotency_key,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
-	idemKey := r.Header.Get("Idempotency-Key")
+	// Header wins over body so CLI/API clients can set the key the standard
+	// way while the dashboard keeps a single body-only request shape (its
+	// apiRequest helper doesn't support custom headers). Matches the
+	// /customers/{id}/coupon pattern so two adjacent coupon endpoints don't
+	// diverge on request conventions.
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idemKey == "" {
+		idemKey = strings.TrimSpace(body.IdempotencyKey)
+	}
 	inv, err := h.svc.ApplyCoupon(r.Context(), tenantID, id, body.Code, idemKey)
 	if errors.Is(err, errs.ErrNotFound) {
 		respond.NotFound(w, r, "invoice")
