@@ -7,6 +7,28 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
 
+// ListFilter is the input to every paginated coupon query. Zero values
+// are meaningful: empty AfterID + zero AfterCreatedAt means "first
+// page"; Limit ≤ 0 defaults to 25 inside the store. The seek position
+// is the composite (created_at, id) of the last row the caller saw —
+// both fields are required together since id alone isn't unique by
+// time under concurrent inserts at the same instant.
+type ListFilter struct {
+	// IncludeArchived surfaces archived rows for the audit view. Default
+	// false keeps the operator's day-to-day list clean. Ignored by
+	// ListRedemptions (redemptions have no archived concept).
+	IncludeArchived bool
+	// AfterID and AfterCreatedAt together seek past the previous page.
+	// Both must be set to enable the seek — providing only one is a
+	// programming error and callers should pass either the zero values
+	// or both from the previous page's last row.
+	AfterID        string
+	AfterCreatedAt time.Time
+	// Limit caps the page size. Implementations clamp to [1, 100]; 0
+	// falls back to the default (25).
+	Limit int
+}
+
 // Store is the persistence surface the service depends on. Everything is
 // per-tenant; implementations must scope their queries with RLS.
 type Store interface {
@@ -21,7 +43,12 @@ type Store interface {
 	// it to resolve the coupons for a redemption set and simply drops
 	// redemptions whose coupon has been deleted.
 	GetByIDs(ctx context.Context, tenantID string, ids []string) (map[string]domain.Coupon, error)
-	List(ctx context.Context, tenantID string, includeArchived bool) ([]domain.Coupon, error)
+	// List returns a page of coupons ordered by created_at DESC, id DESC.
+	// The second return is hasMore — true when the page was filled to
+	// filter.Limit. The service layer (not the store) assembles the
+	// next-cursor from the last item so callers don't need to peek
+	// inside Coupon.
+	List(ctx context.Context, tenantID string, filter ListFilter) ([]domain.Coupon, bool, error)
 
 	// Update patches mutable fields (name, max_redemptions, expires_at,
 	// metadata). Immutable fields (type, code, amount/percent, plan_ids,
@@ -52,7 +79,13 @@ type Store interface {
 	// repeated requests without even loading the coupon.
 	GetRedemptionByIdempotencyKey(ctx context.Context, tenantID, key string) (domain.CouponRedemption, error)
 
-	ListRedemptions(ctx context.Context, tenantID, couponID string) ([]domain.CouponRedemption, error)
+	// ListRedemptions returns a page of redemptions for one coupon,
+	// ordered by created_at DESC, id DESC. Shares the ListFilter shape
+	// with List so the handler layer can reuse ParsePageParams.
+	// IncludeArchived is ignored — redemptions don't carry the archived
+	// concept (voided is the analogue, and voided rows are still shown
+	// for audit).
+	ListRedemptions(ctx context.Context, tenantID, couponID string, filter ListFilter) ([]domain.CouponRedemption, bool, error)
 	ListRedemptionsBySubscription(ctx context.Context, tenantID, subscriptionID string) ([]domain.CouponRedemption, error)
 	// CountRedemptionsByCustomer returns how many times a coupon has been
 	// redeemed by a specific customer. Drives the

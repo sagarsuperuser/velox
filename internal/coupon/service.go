@@ -188,11 +188,17 @@ func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Coupon, 
 	return s.store.Get(ctx, tenantID, id)
 }
 
-// List returns coupons scoped to the tenant. Archived rows are excluded
-// by default so the operator's day-to-day view is clean; pass
-// includeArchived=true for the audit/history view.
-func (s *Service) List(ctx context.Context, tenantID string, includeArchived bool) ([]domain.Coupon, error) {
-	return s.store.List(ctx, tenantID, includeArchived)
+// List returns a page of coupons scoped to the tenant. Archived rows are
+// excluded unless filter.IncludeArchived is set. Seek-method pagination:
+// AfterID + AfterCreatedAt define the tail of the previous page, and the
+// boolean result is hasMore so the handler can mint a next-cursor. The
+// service normalises Limit into [1, 100] with a 25 default; the store
+// relies on that invariant.
+func (s *Service) List(ctx context.Context, tenantID string, filter ListFilter) ([]domain.Coupon, bool, error) {
+	if filter.Limit <= 0 || filter.Limit > 100 {
+		filter.Limit = 25
+	}
+	return s.store.List(ctx, tenantID, filter)
 }
 
 // UpdateInput is the set of mutable fields the PATCH endpoint accepts.
@@ -510,8 +516,14 @@ func (s *Service) VoidRedemptionsForInvoice(ctx context.Context, tenantID, invoi
 	return s.store.VoidRedemptionsForInvoice(ctx, tenantID, invoiceID)
 }
 
-func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string) ([]domain.CouponRedemption, error) {
-	return s.store.ListRedemptions(ctx, tenantID, couponID)
+// ListRedemptions returns a page of redemptions for one coupon. Same
+// seek + Limit contract as List. IncludeArchived is ignored (redemptions
+// don't carry that concept; voided rows are still shown for audit).
+func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string, filter ListFilter) ([]domain.CouponRedemption, bool, error) {
+	if filter.Limit <= 0 || filter.Limit > 100 {
+		filter.Limit = 25
+	}
+	return s.store.ListRedemptions(ctx, tenantID, couponID, filter)
 }
 
 // ApplyToInvoice computes the coupon discount for an invoice on the given

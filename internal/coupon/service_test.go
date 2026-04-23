@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"testing"
 	"time"
 
@@ -14,6 +15,27 @@ import (
 // pastTime is a fixed timestamp in the past used to simulate archived /
 // expired coupons in the seed helpers.
 var pastTime = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// sortCouponsDesc orders in place by (created_at DESC, id DESC) — the
+// same ordering the Postgres store emits so tests match production.
+func sortCouponsDesc(xs []domain.Coupon) {
+	sort.SliceStable(xs, func(i, j int) bool {
+		if !xs[i].CreatedAt.Equal(xs[j].CreatedAt) {
+			return xs[i].CreatedAt.After(xs[j].CreatedAt)
+		}
+		return xs[i].ID > xs[j].ID
+	})
+}
+
+// sortRedemptionsDesc orders in place by (created_at DESC, id DESC).
+func sortRedemptionsDesc(xs []domain.CouponRedemption) {
+	sort.SliceStable(xs, func(i, j int) bool {
+		if !xs[i].CreatedAt.Equal(xs[j].CreatedAt) {
+			return xs[i].CreatedAt.After(xs[j].CreatedAt)
+		}
+		return xs[i].ID > xs[j].ID
+	})
+}
 
 // ---------------------------------------------------------------------------
 // In-memory mock store
@@ -73,15 +95,39 @@ func (m *mockStore) GetByIDs(_ context.Context, _ string, ids []string) (map[str
 	return out, nil
 }
 
-func (m *mockStore) List(_ context.Context, _ string, includeArchived bool) ([]domain.Coupon, error) {
+// List in the mock returns a stable ordering (created_at DESC, id DESC) so
+// pagination tests can assert specific pages. Applies IncludeArchived +
+// seek + Limit just like the Postgres path.
+func (m *mockStore) List(_ context.Context, _ string, filter ListFilter) ([]domain.Coupon, bool, error) {
 	var result []domain.Coupon
 	for _, c := range m.coupons {
-		if !includeArchived && c.ArchivedAt != nil {
+		if !filter.IncludeArchived && c.ArchivedAt != nil {
 			continue
 		}
 		result = append(result, c)
 	}
-	return result, nil
+	// (created_at DESC, id DESC).
+	sortCouponsDesc(result)
+	// Seek: drop everything at or past the cursor.
+	if !filter.AfterCreatedAt.IsZero() && filter.AfterID != "" {
+		filtered := result[:0]
+		for _, c := range result {
+			if c.CreatedAt.Before(filter.AfterCreatedAt) ||
+				(c.CreatedAt.Equal(filter.AfterCreatedAt) && c.ID < filter.AfterID) {
+				filtered = append(filtered, c)
+			}
+		}
+		result = filtered
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	hasMore := len(result) > limit
+	if hasMore {
+		result = result[:limit]
+	}
+	return result, hasMore, nil
 }
 
 func (m *mockStore) Update(_ context.Context, _ string, c domain.Coupon, ifMatch *int) (domain.Coupon, error) {
@@ -180,8 +226,34 @@ func (m *mockStore) GetRedemptionByIdempotencyKey(_ context.Context, _, key stri
 	return domain.CouponRedemption{}, fmt.Errorf("not found")
 }
 
-func (m *mockStore) ListRedemptions(_ context.Context, _, _ string) ([]domain.CouponRedemption, error) {
-	return m.redemptions, nil
+func (m *mockStore) ListRedemptions(_ context.Context, _, couponID string, filter ListFilter) ([]domain.CouponRedemption, bool, error) {
+	var result []domain.CouponRedemption
+	for _, r := range m.redemptions {
+		if r.CouponID != couponID {
+			continue
+		}
+		result = append(result, r)
+	}
+	sortRedemptionsDesc(result)
+	if !filter.AfterCreatedAt.IsZero() && filter.AfterID != "" {
+		filtered := result[:0]
+		for _, r := range result {
+			if r.CreatedAt.Before(filter.AfterCreatedAt) ||
+				(r.CreatedAt.Equal(filter.AfterCreatedAt) && r.ID < filter.AfterID) {
+				filtered = append(filtered, r)
+			}
+		}
+		result = filtered
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	hasMore := len(result) > limit
+	if hasMore {
+		result = result[:limit]
+	}
+	return result, hasMore, nil
 }
 
 func (m *mockStore) ListRedemptionsBySubscription(_ context.Context, _, subscriptionID string) ([]domain.CouponRedemption, error) {

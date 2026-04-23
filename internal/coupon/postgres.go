@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -150,35 +151,70 @@ func (s *PostgresStore) GetByCode(ctx context.Context, tenantID, code string) (d
 	`, code))
 }
 
-func (s *PostgresStore) List(ctx context.Context, tenantID string, includeArchived bool) ([]domain.Coupon, error) {
+// List pages coupons ordered by (created_at DESC, id DESC). Uses the
+// seek method rather than OFFSET so cursor stability holds under
+// concurrent inserts — an OFFSET-based cursor would skip or duplicate
+// rows whenever new coupons land at the head. Fetches limit+1 to decide
+// hasMore without a separate COUNT query.
+func (s *PostgresStore) List(ctx context.Context, tenantID string, filter ListFilter) ([]domain.Coupon, bool, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer postgres.Rollback(tx)
 
-	q := `SELECT ` + couponColumns + ` FROM coupons`
-	if !includeArchived {
-		q += ` WHERE archived_at IS NULL`
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 25
 	}
-	q += ` ORDER BY created_at DESC LIMIT 500`
 
-	rows, err := tx.QueryContext(ctx, q)
+	// Args track $1, $2, ... positions; conds is joined with AND.
+	args := make([]any, 0, 4)
+	conds := make([]string, 0, 3)
+	if !filter.IncludeArchived {
+		conds = append(conds, `archived_at IS NULL`)
+	}
+	if !filter.AfterCreatedAt.IsZero() && filter.AfterID != "" {
+		args = append(args, filter.AfterCreatedAt, filter.AfterID)
+		conds = append(conds,
+			fmt.Sprintf(`(created_at, id) < ($%d, $%d)`, len(args)-1, len(args)))
+	}
+	args = append(args, limit+1)
+	limitPos := len(args)
+
+	q := `SELECT ` + couponColumns + ` FROM coupons`
+	if len(conds) > 0 {
+		q += ` WHERE ` + joinAnd(conds)
+	}
+	q += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, limitPos)
+
+	rows, err := tx.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	var coupons []domain.Coupon
+	coupons := make([]domain.Coupon, 0, limit)
 	for rows.Next() {
 		c, err := scanCouponRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		coupons = append(coupons, c)
 	}
-	return coupons, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(coupons) > limit
+	if hasMore {
+		coupons = coupons[:limit]
+	}
+	return coupons, hasMore, nil
 }
+
+// joinAnd concatenates SQL predicates with " AND " — cheap helper that
+// keeps the call site readable.
+func joinAnd(parts []string) string { return strings.Join(parts, " AND ") }
 
 // Update applies the mutable-field changes in c and bumps version by 1.
 // When ifMatch is non-nil, the UPDATE is gated on the row's current
@@ -433,32 +469,56 @@ func (s *PostgresStore) GetRedemptionByIdempotencyKey(ctx context.Context, tenan
 	return r, nil
 }
 
-func (s *PostgresStore) ListRedemptions(ctx context.Context, tenantID, couponID string) ([]domain.CouponRedemption, error) {
+// ListRedemptions pages redemptions for a coupon using the same seek
+// pattern as List. IncludeArchived is ignored; voided rows are part of
+// the audit feed and still returned.
+func (s *PostgresStore) ListRedemptions(ctx context.Context, tenantID, couponID string, filter ListFilter) ([]domain.CouponRedemption, bool, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer postgres.Rollback(tx)
 
-	rows, err := tx.QueryContext(ctx, `
-		SELECT `+redemptionCols+`
-		FROM coupon_redemptions WHERE coupon_id = $1
-		ORDER BY created_at DESC LIMIT 1000
-	`, couponID)
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+
+	args := []any{couponID}
+	conds := []string{`coupon_id = $1`}
+	if !filter.AfterCreatedAt.IsZero() && filter.AfterID != "" {
+		args = append(args, filter.AfterCreatedAt, filter.AfterID)
+		conds = append(conds,
+			fmt.Sprintf(`(created_at, id) < ($%d, $%d)`, len(args)-1, len(args)))
+	}
+	args = append(args, limit+1)
+	limitPos := len(args)
+
+	q := `SELECT ` + redemptionCols + ` FROM coupon_redemptions WHERE ` + joinAnd(conds) +
+		fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, limitPos)
+
+	rows, err := tx.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	var redemptions []domain.CouponRedemption
+	redemptions := make([]domain.CouponRedemption, 0, limit)
 	for rows.Next() {
 		var r domain.CouponRedemption
 		if err := rows.Scan(scanRedemptionDest(&r)...); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		redemptions = append(redemptions, r)
 	}
-	return redemptions, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(redemptions) > limit
+	if hasMore {
+		redemptions = redemptions[:limit]
+	}
+	return redemptions, hasMore, nil
 }
 
 // ListRedemptionsBySubscription returns only live (non-voided) redemptions.
