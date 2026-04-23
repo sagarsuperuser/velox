@@ -433,12 +433,18 @@ func (s *PostgresStore) CountRedemptionsByCustomer(ctx context.Context, tenantID
 	return n, err
 }
 
-// IncrementPeriodsApplied advances the redemption's counter by one. Not
-// guarded against double-increment because the billing engine is the only
-// caller and it invokes this once per (invoice, redemption) after a
-// successful invoice create — duplicate calls would indicate a bug
-// upstream, not a race worth encoding here.
-func (s *PostgresStore) IncrementPeriodsApplied(ctx context.Context, tenantID, redemptionID string) error {
+// IncrementPeriodsApplied advances each redemption's counter by one in a
+// single UPDATE. Not guarded against double-increment because the billing
+// engine is the only caller and it invokes this once per (invoice,
+// redemption) after a successful invoice create — duplicate calls would
+// indicate a bug upstream, not a race worth encoding here. Returns
+// ErrNotFound if any id is missing so partial application surfaces loudly
+// instead of being silently dropped.
+func (s *PostgresStore) IncrementPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error {
+	if len(redemptionIDs) == 0 {
+		return nil
+	}
+
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return err
@@ -448,13 +454,13 @@ func (s *PostgresStore) IncrementPeriodsApplied(ctx context.Context, tenantID, r
 	res, err := tx.ExecContext(ctx, `
 		UPDATE coupon_redemptions
 		SET periods_applied = periods_applied + 1
-		WHERE id = $1
-	`, redemptionID)
+		WHERE id = ANY($1)
+	`, postgres.StringArray(redemptionIDs))
 	if err != nil {
 		return err
 	}
 	n, _ := res.RowsAffected()
-	if n == 0 {
+	if int(n) != len(redemptionIDs) {
 		return errs.ErrNotFound
 	}
 	return tx.Commit()

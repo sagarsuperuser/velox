@@ -183,14 +183,21 @@ func (m *mockStore) CountRedemptionsByCustomer(_ context.Context, _, couponID, c
 	return n, nil
 }
 
-func (m *mockStore) IncrementPeriodsApplied(_ context.Context, _, redemptionID string) error {
-	for i := range m.redemptions {
-		if m.redemptions[i].ID == redemptionID {
-			m.redemptions[i].PeriodsApplied++
-			return nil
+func (m *mockStore) IncrementPeriodsApplied(_ context.Context, _ string, ids []string) error {
+	for _, id := range ids {
+		found := false
+		for i := range m.redemptions {
+			if m.redemptions[i].ID == id {
+				m.redemptions[i].PeriodsApplied++
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("redemption %s not found", id)
 		}
 	}
-	return fmt.Errorf("redemption %s not found", redemptionID)
+	return nil
 }
 
 // seedRedemption appends a redemption with an auto-assigned ID so tests
