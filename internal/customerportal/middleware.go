@@ -87,6 +87,17 @@ func SessionID(ctx context.Context) string {
 	return v
 }
 
+// WithTestIdentity seeds portal-session ctx keys for tests. Production
+// requests must route through Middleware(), which validates the bearer
+// token; this helper exists so downstream handlers (portalapi) can be
+// exercised in isolation.
+func WithTestIdentity(ctx context.Context, tenantID, customerID string) context.Context {
+	ctx = context.WithValue(ctx, tenantIDKey, tenantID)
+	ctx = context.WithValue(ctx, customerIDKey, customerID)
+	ctx = context.WithValue(ctx, sessionIDKey, "sess_test")
+	return ctx
+}
+
 func extractBearer(r *http.Request) string {
 	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {

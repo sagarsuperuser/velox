@@ -83,6 +83,21 @@ func TestE2E_TestModeIsolation(t *testing.T) {
 		}
 	})
 
+	// Direct cross-key probes by ID. List endpoints are scoped by RLS, but
+	// we also need to prove that a caller who *knows or guesses* the other
+	// mode's resource ID cannot sidestep isolation with a fetch-by-id. These
+	// must 404, not 200. If a future change loses the livemode predicate in
+	// an RLS policy, this is the test that catches it.
+	t.Run("test key probing live customer ID → 404", func(t *testing.T) {
+		resp := doGet(t, ts, "/v1/customers/"+liveCustID, testAuth)
+		assertStatus(t, resp, 404)
+	})
+
+	t.Run("live key probing test customer ID → 404", func(t *testing.T) {
+		resp := doGet(t, ts, "/v1/customers/"+testCustID, liveAuth)
+		assertStatus(t, resp, 404)
+	})
+
 	// --- webhook endpoints ---
 	var liveEPID, testEPID string
 

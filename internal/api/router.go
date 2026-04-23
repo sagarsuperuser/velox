@@ -38,6 +38,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/portalapi"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/session"
 	"github.com/sagarsuperuser/velox/internal/subscription"
@@ -667,11 +668,20 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// setup-session, detach) hit Stripe through our service — a double
 	// click from a retry-happy mobile client must not create two payment
 	// methods for the same card.
+	portalAPI := portalapi.New(portalapi.Deps{
+		Invoices:      invoiceSvc,
+		Subscriptions: subSvc,
+		Customers:     customerStore,
+		Settings:      settingsStore,
+		CreditNotes:   &creditNoteListerAdapter{svc: creditNoteSvc},
+		Events:        eventDispatcher,
+	})
 	r.Route("/v1/me", func(r chi.Router) {
 		r.Use(portalSvc.Middleware())
 		r.Use(rateLimiter.Middleware())
 		r.Use(mw.Idempotency(db))
 		r.Mount("/payment-methods", paymentMethodsH.Routes())
+		r.Mount("/", portalAPI.Routes())
 	})
 
 	s.router = r
