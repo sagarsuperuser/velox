@@ -80,6 +80,38 @@ func ValidationField(w http.ResponseWriter, r *http.Request, field, message stri
 	errorField(w, r, http.StatusUnprocessableEntity, "invalid_request_error", "validation_error", field, message)
 }
 
+// ValidationCoded writes a 422 response with a domain-specific error code
+// in the envelope's Code slot, the offending field (optional) in Param, and
+// the message. Use when the caller has a stable code (e.g. "coupon_expired")
+// that API integrators will switch on.
+//
+// An empty code falls back to "validation_error" so the envelope is never
+// missing a code.
+func ValidationCoded(w http.ResponseWriter, r *http.Request, field, code, message string) {
+	if code == "" {
+		code = "validation_error"
+	}
+	errorField(w, r, http.StatusUnprocessableEntity, "invalid_request_error", code, field, message)
+}
+
+// ConflictCoded is the 409 analogue of ValidationCoded — same code+field
+// plumbing, different status. Default code is "already_exists".
+func ConflictCoded(w http.ResponseWriter, r *http.Request, field, code, message string) {
+	if code == "" {
+		code = "already_exists"
+	}
+	errorField(w, r, http.StatusConflict, "invalid_request_error", code, field, message)
+}
+
+// NotFoundCoded is the 404 analogue — message is built by the caller since
+// domain-specific 404s often have more context than "<resource> not found".
+func NotFoundCoded(w http.ResponseWriter, r *http.Request, code, message string) {
+	if code == "" {
+		code = "not_found"
+	}
+	Error(w, r, http.StatusNotFound, "invalid_request_error", code, message)
+}
+
 // PreconditionFailed writes a 412 response. The canonical use is optimistic
 // concurrency: the caller sent If-Match with the ETag they last saw and a
 // concurrent writer has since bumped the version. The client should GET the

@@ -28,6 +28,19 @@ func (e *DomainError) Error() string {
 
 func (e *DomainError) Unwrap() error { return e.Cause }
 
+// WithCode attaches a stable, machine-readable error code to a DomainError.
+// Used to add domain-specific codes (e.g. "coupon_expired") on top of the
+// generic Kind routing. Safe to chain onto any constructor:
+//
+//	return errs.InvalidState("coupon has expired").WithCode(coupon.CodeExpired)
+//
+// Promised codes are part of the public API — integrators switch on them.
+// Change the code string only when the underlying failure semantics change.
+func (e *DomainError) WithCode(code string) *DomainError {
+	e.Code = code
+	return e
+}
+
 // Is lets errors.Is match against this error's Kind sentinel. This is how
 // respond.FromError routes DomainError{Kind: ErrValidation} to a 422 response
 // without the caller needing to wrap manually.

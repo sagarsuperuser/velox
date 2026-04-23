@@ -27,44 +27,41 @@ func FromError(w http.ResponseWriter, r *http.Request, err error, resource strin
 	// Pull the offending field (if any) off a DomainError in the chain. Empty
 	// when the error came from a legacy fmt.Errorf site or a sentinel wrap.
 	field := errs.Field(err)
+	// Stable, domain-specific error code (e.g. "coupon_expired"). When
+	// non-empty, we plumb it into the envelope's Code slot instead of the
+	// generic category ("validation_error", "already_exists"). Integrators
+	// switch on the domain code for differential UX.
+	code := errs.Code(err)
 
 	switch {
 	case errors.Is(err, errs.ErrNotFound):
-		NotFound(w, r, resource)
+		if code != "" {
+			NotFoundCoded(w, r, code, err.Error())
+		} else {
+			NotFound(w, r, resource)
+		}
 
 	case errors.Is(err, errs.ErrAlreadyExists):
-		if field != "" {
-			ConflictField(w, r, field, err.Error())
-		} else {
-			Conflict(w, r, err.Error())
-		}
+		ConflictCoded(w, r, field, code, err.Error())
 
 	case errors.Is(err, errs.ErrDuplicateKey):
-		if field != "" {
-			ConflictField(w, r, field, err.Error())
-		} else {
-			Conflict(w, r, err.Error())
-		}
+		ConflictCoded(w, r, field, code, err.Error())
 
 	case errors.Is(err, errs.ErrPreconditionFailed):
-		PreconditionFailed(w, r, err.Error())
+		if code != "" {
+			errorField(w, r, http.StatusPreconditionFailed, "invalid_request_error", code, "", err.Error())
+		} else {
+			PreconditionFailed(w, r, err.Error())
+		}
 
 	case errors.Is(err, errs.ErrInvalidState), errors.Is(err, errs.ErrValidation):
-		if field != "" {
-			ValidationField(w, r, field, err.Error())
-		} else {
-			Validation(w, r, err.Error())
-		}
+		ValidationCoded(w, r, field, code, err.Error())
 
 	default:
 		// DomainError with an explicit code — treat as validation (these are
 		// business-rule rejections like billing_setup_incomplete).
-		if errs.Code(err) != "" {
-			if field != "" {
-				ValidationField(w, r, field, err.Error())
-			} else {
-				Validation(w, r, err.Error())
-			}
+		if code != "" {
+			ValidationCoded(w, r, field, code, err.Error())
 			return
 		}
 

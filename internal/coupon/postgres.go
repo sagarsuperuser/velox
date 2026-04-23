@@ -83,7 +83,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Co
 	).Scan(scanDest(&c)...)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			return domain.Coupon{}, errs.AlreadyExists("code", fmt.Sprintf("coupon code %q already exists", c.Code))
+			return domain.Coupon{}, errs.AlreadyExists("code", fmt.Sprintf("coupon code %q already exists", c.Code)).WithCode(CodeCodeTaken)
 		}
 		return domain.Coupon{}, err
 	}
@@ -289,7 +289,7 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Co
 		}
 		return domain.Coupon{}, errs.PreconditionFailed(
 			fmt.Sprintf("coupon version mismatch (have %d, expected %d) — refetch and retry",
-				currentVersion, *ifMatch))
+				currentVersion, *ifMatch)).WithCode(CodeVersionConflict)
 	}
 
 	if err := tx.Commit(); err != nil {
