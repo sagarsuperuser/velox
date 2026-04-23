@@ -627,6 +627,116 @@ func (s *PostgresStore) AddLineItemAtomic(
 	return item, inv, nil
 }
 
+// ApplyDiscountAtomic stamps a coupon discount (and the recomputed tax
+// snapshot) onto a draft invoice in a single transaction. The gate
+// re-check lives inside the tx — the caller's outer validate-then-write
+// pattern would race a concurrent finalize or a parallel apply-coupon
+// attempt; taking FOR UPDATE and re-asserting status=draft,
+// discount_cents=0, tax_transaction_id IS NULL closes the TOCTOU window.
+//
+// Per-line tax fields (tax_rate_bp, tax_amount_cents, total_amount_cents,
+// amount_cents) are rewritten from the caller's supplied lineItems because
+// the post-discount tax base may shift the per-line splits (inclusive-mode
+// carving in particular). Lines keyed by id; ids that don't belong to this
+// invoice are silently ignored so a caller can't corrupt a sibling.
+func (s *PostgresStore) ApplyDiscountAtomic(
+	ctx context.Context, tenantID, invoiceID string,
+	update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem,
+) (domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var (
+		status           domain.InvoiceStatus
+		existingDiscount int64
+		taxTransactionID string
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT status, discount_cents, COALESCE(tax_transaction_id,'')
+		FROM invoices WHERE id = $1 FOR UPDATE
+	`, invoiceID).Scan(&status, &existingDiscount, &taxTransactionID)
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if status != domain.InvoiceDraft {
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+			"invoice must be draft to apply a coupon (current: %s)", status))
+	}
+	if existingDiscount > 0 {
+		return domain.Invoice{}, errs.InvalidState("invoice already has a discount applied")
+	}
+	if taxTransactionID != "" {
+		return domain.Invoice{}, errs.InvalidState("invoice tax has already been committed upstream")
+	}
+
+	now := time.Now().UTC()
+
+	for _, li := range lineItems {
+		if li.ID == "" {
+			continue
+		}
+		_, err = tx.ExecContext(ctx, `
+			UPDATE invoice_line_items
+			SET amount_cents = $3,
+			    tax_rate_bp = $4,
+			    tax_amount_cents = $5,
+			    total_amount_cents = $6
+			WHERE invoice_id = $1 AND id = $2
+		`, invoiceID, li.ID, li.AmountCents, li.TaxRateBP, li.TaxAmountCents, li.TotalAmountCents)
+		if err != nil {
+			return domain.Invoice{}, fmt.Errorf("update line item tax stamp: %w", err)
+		}
+	}
+
+	total := update.SubtotalCents - update.DiscountCents + update.TaxAmountCents
+
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `
+		UPDATE invoices SET
+			subtotal_cents = $2,
+			discount_cents = $3,
+			tax_amount_cents = $4,
+			tax_rate_bp = $5,
+			tax_name = $6,
+			tax_country = $7,
+			tax_id = $8,
+			tax_provider = $9,
+			tax_calculation_id = $10,
+			tax_reverse_charge = $11,
+			tax_exempt_reason = $12,
+			tax_status = $13,
+			tax_deferred_at = $14,
+			tax_pending_reason = $15,
+			total_amount_cents = $16,
+			amount_due_cents = GREATEST($16 - amount_paid_cents - credits_applied_cents, 0),
+			updated_at = $17
+		WHERE id = $1
+		RETURNING `+invCols,
+		invoiceID,
+		update.SubtotalCents, update.DiscountCents, update.TaxAmountCents, update.TaxRateBP,
+		update.TaxName, update.TaxCountry, update.TaxID,
+		postgres.NullableString(update.TaxProvider),
+		postgres.NullableString(update.TaxCalculationID),
+		update.TaxReverseCharge, update.TaxExemptReason,
+		update.TaxStatus, postgres.NullableTime(update.TaxDeferredAt), update.TaxPendingReason,
+		total, now,
+	).Scan(scanInvDest(&inv)...)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, err
+	}
+	return inv, nil
+}
+
 // CreateWithLineItems creates an invoice and all its line items in a single
 // atomic transaction. This prevents orphaned invoices with missing line items.
 // The unique index on (tenant_id, subscription_id, billing_period_start, billing_period_end)

@@ -28,11 +28,22 @@ type TaxCommitter interface {
 	CommitTax(ctx context.Context, tenantID, invoiceID, calculationID string) error
 }
 
+// CouponApplier is the narrow view into coupon+tax+invoice orchestration
+// the apply-coupon-to-draft-invoice endpoint depends on. Satisfied by
+// billing.Engine in production. Lives here (not in the coupon package) so
+// the invoice domain owns the surface it calls — coupon can't import
+// invoice (peer-import rule), and invoice can't import billing, so the
+// shared contract lives right where the handler consumes it.
+type CouponApplier interface {
+	ApplyCouponToInvoice(ctx context.Context, tenantID, invoiceID, code, idempotencyKey string) (domain.Invoice, error)
+}
+
 type Service struct {
-	store        Store
-	clock        clock.Clock
-	numberer     InvoiceNumberer
-	taxCommitter TaxCommitter
+	store         Store
+	clock         clock.Clock
+	numberer      InvoiceNumberer
+	taxCommitter  TaxCommitter
+	couponApplier CouponApplier
 }
 
 func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service {
@@ -46,6 +57,12 @@ func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service
 // router.go with the billing engine so finalize can commit Stripe tax calcs.
 func (s *Service) SetTaxCommitter(tc TaxCommitter) {
 	s.taxCommitter = tc
+}
+
+// SetCouponApplier wires the orchestrator behind the apply-coupon endpoint.
+// Production passes billing.Engine; tests can pass any implementation.
+func (s *Service) SetCouponApplier(c CouponApplier) {
+	s.couponApplier = c
 }
 
 type CreateInput struct {
@@ -226,4 +243,20 @@ func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, i
 
 func (s *Service) ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error) {
 	return s.store.ListApproachingDue(ctx, daysBeforeDue)
+}
+
+// ApplyCoupon routes an operator-initiated coupon apply against an
+// already-issued draft invoice through the billing engine, which owns the
+// redeem → tax recompute → atomic persist → mark-periods orchestration.
+// Handlers call this so the HTTP surface stays tied to the invoice
+// resource even though the engine does the heavy lifting.
+func (s *Service) ApplyCoupon(ctx context.Context, tenantID, invoiceID, code, idempotencyKey string) (domain.Invoice, error) {
+	code = strings.TrimSpace(strings.ToUpper(code))
+	if code == "" {
+		return domain.Invoice{}, errs.Required("code")
+	}
+	if s.couponApplier == nil {
+		return domain.Invoice{}, errs.InvalidState("coupon application is not configured")
+	}
+	return s.couponApplier.ApplyCouponToInvoice(ctx, tenantID, invoiceID, code, idempotencyKey)
 }

@@ -852,6 +852,49 @@ paths:
               schema:
                 $ref: '#/components/schemas/Invoice'
 
+  /v1/invoices/{id}/apply-coupon:
+    post:
+      tags: [Invoices]
+      summary: Apply a coupon to a draft invoice
+      description: |
+        Applies a coupon to an already-issued draft invoice: commits a
+        redemption, recomputes tax against the post-discount subtotal, and
+        atomically updates the invoice with the new discount and tax. Only
+        valid while the invoice is in draft, has no existing discount, and
+        has not yet committed a tax_transaction upstream. Pass
+        Idempotency-Key to make replays safe.
+      operationId: applyInvoiceCoupon
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema:
+            type: string
+          description: Replay-safe request key. Repeating the same key returns the original result without re-redeeming the coupon.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  description: The coupon code to apply (case-insensitive).
+      responses:
+        '200':
+          description: Coupon applied; updated invoice returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '400':
+          description: Invalid request (invoice not draft, already discounted, tax already committed, coupon gate failed).
+        '404':
+          description: Invoice not found.
+
   /v1/invoices/{id}/line-items:
     post:
       tags: [Invoices]
