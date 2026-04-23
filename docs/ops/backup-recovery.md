@@ -225,6 +225,52 @@ psql -U velox -d velox_restore -p 15432 -c "
 docker rm -f velox-restore-test
 ```
 
+### 4.4 Automated Drill
+
+`scripts/restore-drill.sh` wraps §4.3 as a single command so the drill can be
+wired into CI or cron without a human following 6 steps every month.
+
+```bash
+SOURCE_DATABASE_URL="postgres://velox:velox@prod-host:5432/velox?sslmode=require" \
+  ./scripts/restore-drill.sh
+```
+
+What it does:
+
+1. Captures row counts for critical tables (`tenants`, `customers`,
+   `subscriptions`, `invoices`, `credit_ledger_entries`) from the source DB.
+2. Runs `scripts/backup.sh` into a temporary workdir (no S3 upload, no
+   interference with production backup rotation).
+3. Starts a one-shot `postgres:16-alpine` container on port `15432`.
+4. Runs `scripts/restore.sh` against the container with
+   `VELOX_RESTORE_CONFIRM=yes`.
+5. Re-reads the same row counts from the restored DB and compares.
+6. Appends a `PASS|FAIL` line with timings to `~/.velox/drill.log`.
+7. Tears down the container on every exit path (including `Ctrl-C`).
+
+Exit codes:
+
+- `0` pass — all table counts match
+- `2` backup failed
+- `3` restore failed
+- `4` row-count mismatch
+- `5` ephemeral Postgres didn't come up
+
+The `~/.velox/drill.log` history file lets you spot duration trend-over-time:
+if yesterday's drill took 90s and today's took 900s, backup size or DB
+contention changed and that's a signal worth investigating before the real
+RPO/RTO bites during an outage.
+
+**Schedule:** add to cron on the ops host (or a dedicated runner):
+
+```cron
+# Monthly drill, first Sunday at 04:00 UTC, against production read-replica
+0 4 1-7 * 0  SOURCE_DATABASE_URL=postgres://velox:PW@replica:5432/velox /opt/velox/scripts/restore-drill.sh 2>&1 | logger -t velox-drill
+```
+
+Point at a read-replica in production, not the primary, so the backup step
+doesn't add load to the write path.
+
 ---
 
 ## 5. Disaster Recovery Procedures
