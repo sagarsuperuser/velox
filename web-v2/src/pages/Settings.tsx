@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, setActiveCurrency, formatCents, type StripeProviderCredentials } from '@/lib/api'
-import { applyApiError } from '@/lib/formErrors'
+import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { useAuth } from '@/contexts/AuthContext'
 import { toast } from 'sonner'
@@ -59,6 +59,7 @@ const settingsSchema = z.object({
   company_postal_code: z.string().max(20, 'Must be at most 20 characters'),
   company_country: z.string().max(2, 'Must be an ISO-3166 alpha-2 code'),
   logo_url: z.string().max(500, 'Must be at most 500 characters'),
+  brand_color: z.string().regex(/^(#[0-9a-f]{6})?$/, 'Must be a 7-character hex like #1f6feb').or(z.literal('')),
   tax_id: z.string().max(50, 'Must be at most 50 characters'),
   support_url: z.string().regex(/^https?:\/\/.+/i, 'Must start with http:// or https://').or(z.literal('')),
   invoice_footer: z.string().max(1000, 'Must be at most 1000 characters'),
@@ -145,7 +146,7 @@ export default function SettingsPage() {
       company_name: '', company_email: '', company_phone: '',
       company_address_line1: '', company_address_line2: '',
       company_city: '', company_state: '', company_postal_code: '', company_country: '',
-      logo_url: '', tax_id: '', support_url: '', invoice_footer: '',
+      logo_url: '', brand_color: '', tax_id: '', support_url: '', invoice_footer: '',
       invoice_prefix: '', net_payment_terms: 0,
       tax_provider: 'manual', tax_rate_bp: 0, tax_name: '', tax_inclusive: false,
       default_product_tax_code: '',
@@ -178,6 +179,7 @@ export default function SettingsPage() {
         company_postal_code: s.company_postal_code || '',
         company_country: s.company_country || '',
         logo_url: s.logo_url || '',
+        brand_color: (s.brand_color || '').toLowerCase(),
         tax_id: s.tax_id || '', support_url: s.support_url || '', invoice_footer: s.invoice_footer || '',
         invoice_prefix: s.invoice_prefix || '', net_payment_terms: s.net_payment_terms || 0,
         tax_provider: (s.tax_provider as 'none' | 'manual' | 'stripe_tax') || 'manual',
@@ -206,6 +208,7 @@ export default function SettingsPage() {
         company_postal_code: updated.company_postal_code || '',
         company_country: updated.company_country || '',
         logo_url: updated.logo_url || '',
+        brand_color: (updated.brand_color || '').toLowerCase(),
         tax_id: updated.tax_id || '', support_url: updated.support_url || '', invoice_footer: updated.invoice_footer || '',
         invoice_prefix: updated.invoice_prefix || '', net_payment_terms: updated.net_payment_terms || 0,
         tax_provider: (updated.tax_provider as 'none' | 'manual' | 'stripe_tax') || 'manual',
@@ -221,7 +224,7 @@ export default function SettingsPage() {
         'company_name', 'company_email', 'company_phone',
         'company_address_line1', 'company_address_line2', 'company_city',
         'company_state', 'company_postal_code', 'company_country',
-        'logo_url',
+        'logo_url', 'brand_color',
         'tax_id', 'support_url', 'invoice_footer',
         'invoice_prefix', 'net_payment_terms', 'tax_provider', 'tax_rate_bp', 'tax_name', 'tax_inclusive',
         'default_product_tax_code', 'default_currency', 'timezone',
@@ -351,10 +354,45 @@ export default function SettingsPage() {
                   <div className="md:col-span-2">
                     <Label>Logo URL</Label>
                     <Input type="url" placeholder="https://acme.com/logo.png" maxLength={500}
-                      {...register('logo_url')} className="mt-1" />
-                    {form.logo_url && /^https?:\/\//i.test(form.logo_url)
-                      ? <LogoPreview url={form.logo_url} />
-                      : <p className="text-xs text-muted-foreground mt-1">Rendered at the top of invoice PDFs</p>}
+                      {...register('logo_url')}
+                      className={cn('mt-1', formErrors.logo_url && 'border-destructive')} />
+                    {formErrors.logo_url
+                      ? <p className="text-xs text-destructive mt-1">{formErrors.logo_url.message}</p>
+                      : form.logo_url && /^https?:\/\//i.test(form.logo_url)
+                        ? <LogoPreview url={form.logo_url} />
+                        : <p className="text-xs text-muted-foreground mt-1">Public HTTPS URL — e.g. Cloudinary, S3 public object, or your CDN. Rendered at the top of invoice PDFs.</p>}
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>Brand color</Label>
+                    <div className="mt-1 flex items-center gap-2">
+                      <input
+                        type="color"
+                        aria-label="Brand color picker"
+                        value={/^#[0-9a-f]{6}$/i.test(form.brand_color || '') ? (form.brand_color as string).toLowerCase() : '#1f6feb'}
+                        onChange={e => setValue('brand_color', e.target.value.toLowerCase(), { shouldDirty: true })}
+                        className="h-9 w-12 cursor-pointer rounded-md border border-border bg-background p-1"
+                      />
+                      <Input
+                        type="text"
+                        placeholder="#1f6feb"
+                        maxLength={7}
+                        value={form.brand_color || ''}
+                        onChange={e => setValue('brand_color', e.target.value.toLowerCase(), { shouldDirty: true })}
+                        className={cn('w-32 font-mono text-sm', formErrors.brand_color && 'border-destructive')}
+                      />
+                      {form.brand_color && (
+                        <button
+                          type="button"
+                          onClick={() => setValue('brand_color', '', { shouldDirty: true })}
+                          className="text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    {formErrors.brand_color
+                      ? <p className="text-xs text-destructive mt-1">{formErrors.brand_color.message}</p>
+                      : <p className="text-xs text-muted-foreground mt-1">Accent color on invoice PDFs. Leave blank for the neutral default.</p>}
                   </div>
                 </div>
               </CardContent>
@@ -1436,7 +1474,7 @@ function DisconnectAction({ mode, onDone }: { mode: 'test' | 'live'; onDone: () 
       onDone()
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : 'Failed to disconnect')
+      showApiError(err, 'Failed to disconnect')
     },
   })
 

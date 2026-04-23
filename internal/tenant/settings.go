@@ -22,6 +22,12 @@ import (
 
 var settingsPhonePattern = regexp.MustCompile(`^[\+\d\s\-\(\)]{7,20}$`)
 
+// brandColorPattern accepts the lowercase 7-char hex form (#rrggbb). Short
+// form (#rgb), uppercase, and alpha (#rrggbbaa) are rejected so we keep the
+// downstream PDF parser trivially simple (3×hex pairs). UI normalizes on
+// save; API clients must pre-normalize.
+var brandColorPattern = regexp.MustCompile(`^#[0-9a-f]{6}$`)
+
 // SettingsStore handles tenant settings CRUD.
 type SettingsStore struct {
 	db *postgres.DB
@@ -96,6 +102,7 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 			COALESCE(company_city,''), COALESCE(company_state,''),
 			COALESCE(company_postal_code,''), COALESCE(company_country,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
+			COALESCE(brand_color,''),
 			COALESCE(tax_id,''), COALESCE(support_url,''), COALESCE(invoice_footer,''),
 			audit_fail_closed, created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1
@@ -107,6 +114,7 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 		&ts.CompanyCity, &ts.CompanyState,
 		&ts.CompanyPostalCode, &ts.CompanyCountry,
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL,
+		&ts.BrandColor,
 		&ts.TaxID, &ts.SupportURL, &ts.InvoiceFooter,
 		&ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
 
@@ -138,9 +146,9 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			company_address_line1, company_address_line2, company_city, company_state,
 			company_postal_code, company_country,
 			company_email, company_phone,
-			logo_url, tax_id, support_url, invoice_footer,
+			logo_url, brand_color, tax_id, support_url, invoice_footer,
 			audit_fail_closed, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$26)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			default_currency = EXCLUDED.default_currency, timezone = EXCLUDED.timezone,
 			invoice_prefix = EXCLUDED.invoice_prefix, net_payment_terms = EXCLUDED.net_payment_terms,
@@ -157,6 +165,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			company_country = EXCLUDED.company_country,
 			company_email = EXCLUDED.company_email, company_phone = EXCLUDED.company_phone,
 			logo_url = EXCLUDED.logo_url,
+			brand_color = EXCLUDED.brand_color,
 			tax_id = EXCLUDED.tax_id, support_url = EXCLUDED.support_url,
 			invoice_footer = EXCLUDED.invoice_footer,
 			audit_fail_closed = EXCLUDED.audit_fail_closed,
@@ -169,6 +178,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			COALESCE(company_city,''), COALESCE(company_state,''),
 			COALESCE(company_postal_code,''), COALESCE(company_country,''),
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
+			COALESCE(brand_color,''),
 			COALESCE(tax_id,''), COALESCE(support_url,''), COALESCE(invoice_footer,''),
 			audit_fail_closed, created_at, updated_at
 	`, ts.TenantID, ts.DefaultCurrency, ts.Timezone, ts.InvoicePrefix,
@@ -180,6 +190,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 		postgres.NullableString(ts.CompanyPostalCode), postgres.NullableString(ts.CompanyCountry),
 		postgres.NullableString(ts.CompanyEmail), postgres.NullableString(ts.CompanyPhone),
 		postgres.NullableString(ts.LogoURL),
+		postgres.NullableString(ts.BrandColor),
 		postgres.NullableString(ts.TaxID), postgres.NullableString(ts.SupportURL),
 		postgres.NullableString(ts.InvoiceFooter),
 		ts.AuditFailClosed, now,
@@ -191,6 +202,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 		&ts.CompanyCity, &ts.CompanyState,
 		&ts.CompanyPostalCode, &ts.CompanyCountry,
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL,
+		&ts.BrandColor,
 		&ts.TaxID, &ts.SupportURL, &ts.InvoiceFooter,
 		&ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
 	if err != nil {
@@ -423,6 +435,10 @@ func validateSettings(ts *domain.TenantSettings) error {
 		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 			return errs.Invalid("support_url", "must start with http:// or https://")
 		}
+	}
+	ts.BrandColor = strings.ToLower(strings.TrimSpace(ts.BrandColor))
+	if ts.BrandColor != "" && !brandColorPattern.MatchString(ts.BrandColor) {
+		return errs.Invalid("brand_color", "must be a 7-character hex like #1f6feb")
 	}
 	if len(ts.InvoiceFooter) > 1000 {
 		return errs.Invalid("invoice_footer", "must be at most 1000 characters")
