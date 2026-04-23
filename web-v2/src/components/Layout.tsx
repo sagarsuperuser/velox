@@ -21,6 +21,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { CommandPalette } from '@/components/CommandPalette'
 import { VeloxLogo } from '@/components/VeloxLogo'
+import { OnboardingLauncher } from '@/components/OnboardingLauncher'
+import { useOnboardingSteps } from '@/hooks/useOnboardingSteps'
 
 const billingNav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -139,6 +141,9 @@ export function Layout({ children }: { children: ReactNode }) {
   const [toggling, setToggling] = useState(false)
   const { dark, toggle: toggleDark } = useDarkMode()
   const { user, logout, toggleLivemode } = useAuth()
+  // Drives the live-mode Stripe-missing hard-blocker. The launcher itself
+  // calls the same hook — React Query dedupes by key, so no duplicate fetches.
+  const { hasLiveStripe } = useOnboardingSteps()
 
   const handleLogout = async () => {
     await logout()
@@ -328,21 +333,46 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {/* Main content */}
       <main className="flex-1 overflow-auto bg-background">
-        {/* Top bar — always visible. Mobile adds a hamburger, desktop leaves
-            the left empty; the right carries the Test/Live toggle. */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-card sticky top-0 z-20">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            aria-label="Open menu"
-            className="md:hidden text-muted-foreground hover:text-foreground"
-          >
-            <Menu size={22} />
-          </button>
-          <div className="md:hidden">
-            <VeloxLogo size="sm" />
+        {/* Sticky top region — safety strips stack above the top bar so users
+            never lose sight of mode/credential warnings while scrolling. */}
+        <div className="sticky top-0 z-20">
+          {/* Live-mode hard blocker: non-dismissible. Only fires once the
+              Stripe-creds query has resolved to a definitive "no live keys"
+              (hasLiveStripe === false) — undefined means still loading, so
+              we don't flash a red banner to users who are fully set up. */}
+          {user && user.livemode && hasLiveStripe === false && (
+            <div
+              role="alert"
+              className="flex items-center justify-center gap-2 bg-destructive px-4 py-1.5 text-xs font-medium text-destructive-foreground"
+            >
+              <AlertTriangle size={14} aria-hidden="true" />
+              <span>
+                <strong className="font-semibold">LIVE</strong> mode but no Stripe live credentials — real charges will fail.
+              </span>
+              <Link
+                to="/settings?tab=payments"
+                className="ml-1 underline decoration-destructive-foreground/50 underline-offset-2 hover:decoration-destructive-foreground"
+              >
+                Connect Stripe
+              </Link>
+            </div>
+          )}
+          {/* Top bar — always visible. Mobile adds a hamburger, desktop leaves
+              the left empty; the right carries the Test/Live toggle. */}
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-card">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+              className="md:hidden text-muted-foreground hover:text-foreground"
+            >
+              <Menu size={22} />
+            </button>
+            <div className="md:hidden">
+              <VeloxLogo size="sm" />
+            </div>
+            <div className="flex-1" />
+            {user && <ModeToggle livemode={user.livemode} onToggle={handleToggleLivemode} busy={toggling} />}
           </div>
-          <div className="flex-1" />
-          {user && <ModeToggle livemode={user.livemode} onToggle={handleToggleLivemode} busy={toggling} />}
         </div>
         <div className="max-w-7xl mx-auto p-4 md:p-8">
           {children}
@@ -351,6 +381,10 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {/* Command Palette */}
       <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} />
+
+      {/* Global onboarding launcher — floating bottom-right, persists across
+          pages, self-hides when the checklist is complete or dismissed. */}
+      <OnboardingLauncher />
     </div>
   )
 }

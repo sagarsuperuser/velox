@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { AlertTriangle, Check, ChevronDown, ChevronUp, ArrowRight, X } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
 import {
   Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
@@ -34,8 +34,6 @@ function formatShortDate(dateStr: string): string {
 
 export default function DashboardPage() {
   const [period, setPeriod] = useState<Period>('30d')
-  const [getStartedOpen, setGetStartedOpen] = useState(true)
-  const [getStartedDismissed, setGetStartedDismissed] = useState(false)
   const theme = useChartTheme()
 
   const { data: overview, isLoading: overviewLoading, error: errorObj, refetch, dataUpdatedAt } = useQuery({
@@ -49,14 +47,6 @@ export default function DashboardPage() {
   const { data: recentInvoices } = useQuery({
     queryKey: ['dashboard-recent-invoices'],
     queryFn: () => api.listInvoices('limit=5'),
-  })
-  // Pricing-configured detection for the Get Started checklist. A plan
-  // requires meters + rating rules upstream, so presence of any plan covers
-  // step 1. Previous logic keyed off active_subscriptions/revenue which
-  // stayed false even after pricing was fully set up.
-  const { data: plansList } = useQuery({
-    queryKey: ['dashboard-plans'],
-    queryFn: () => api.listPlans(),
   })
 
   const chartData = useMemo(() => chartRes?.data ?? [], [chartRes])
@@ -124,19 +114,6 @@ export default function DashboardPage() {
         </div>
       ) : (
         <>
-          {/* Get Started — promoted to top so new tenants see the #1 CTA
-              immediately, not buried under empty KPIs. Self-hides when the
-              checklist is complete or the user dismisses. */}
-          {!getStartedDismissed && (
-            <GetStarted
-              overview={overview}
-              hasPlans={(plansList?.data?.length ?? 0) > 0}
-              open={getStartedOpen}
-              onToggle={() => setGetStartedOpen(o => !o)}
-              onDismiss={() => setGetStartedDismissed(true)}
-            />
-          )}
-
           {/* Alerts row */}
           {alerts.length > 0 && (
             <div className="mt-6 space-y-2" role="region" aria-label="Attention required">
@@ -328,168 +305,3 @@ function PaymentStatusDot({ status }: { status: string }) {
   )
 }
 
-interface GetStartedProps {
-  overview: {
-    active_subscriptions: number
-    active_customers: number
-    revenue: number
-  }
-  hasPlans: boolean
-  open: boolean
-  onToggle: () => void
-  onDismiss: () => void
-}
-
-// GetStarted — onboarding checklist for fresh tenants. Promoted to the top
-// of the dashboard because the KPIs below read zero until these are done.
-// Self-hides when the checklist completes; dismissable for the session.
-function GetStarted({ overview, hasPlans, open, onToggle, onDismiss }: GetStartedProps) {
-  const steps = [
-    {
-      done: hasPlans,
-      label: 'Configure pricing',
-      desc: 'Create meters and plans',
-      to: '/pricing',
-      cta: 'Set up pricing',
-    },
-    {
-      done: overview.active_customers > 0,
-      label: 'Add your first customer',
-      desc: 'Who are you billing?',
-      to: '/customers',
-      cta: 'Add a customer',
-    },
-    {
-      done: overview.active_subscriptions > 0,
-      label: 'Create a subscription',
-      desc: 'Subscribe them to a plan',
-      to: '/subscriptions',
-      cta: 'New subscription',
-    },
-    {
-      done: overview.revenue > 0,
-      label: 'Send your first invoice',
-      desc: 'Kick off a billing run',
-      to: '/subscriptions',
-      cta: 'Open subscriptions',
-    },
-  ]
-  const total = steps.length
-  const completed = steps.filter(s => s.done).length
-  if (completed >= total) return null
-  const percent = Math.round((completed / total) * 100)
-  const next = steps.find(s => !s.done)
-
-  return (
-    <Card className="mt-6 border-primary/20 bg-gradient-to-br from-primary/[0.03] to-transparent">
-      <CardContent className="p-0">
-        {/* Header: title, progress bar, inline next-step hint, controls */}
-        <div className="flex items-start gap-3 px-5 py-4">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <p className="text-sm font-semibold text-foreground">Get Velox ready</p>
-              <span className="text-xs text-muted-foreground tabular-nums">{completed}/{total}</span>
-            </div>
-            <div
-              className="mt-2 h-1.5 bg-muted rounded-full overflow-hidden"
-              role="progressbar"
-              aria-valuenow={completed}
-              aria-valuemin={0}
-              aria-valuemax={total}
-              aria-label="Setup progress"
-            >
-              <div
-                className="h-full bg-primary rounded-full transition-[width] duration-300"
-                style={{ width: `${percent}%` }}
-              />
-            </div>
-            {next && !open && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Next: <span className="text-foreground font-medium">{next.label}</span>
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              type="button"
-              onClick={onToggle}
-              aria-expanded={open}
-              aria-label={open ? 'Collapse' : 'Expand'}
-              className="h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center transition-colors"
-            >
-              {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            </button>
-            <button
-              type="button"
-              onClick={onDismiss}
-              aria-label="Hide for now"
-              className="h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center transition-colors"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        </div>
-
-        {open && (
-          <ol className="border-t border-border">
-            {steps.map((step, i) => {
-              const isNext = step === next
-              const rowCls = cn(
-                'flex items-center gap-3 px-5 py-3 border-b border-border last:border-b-0 transition-colors',
-                !step.done && 'hover:bg-accent/40',
-                isNext && 'bg-primary/[0.04]',
-              )
-              const indicator = step.done ? (
-                <div
-                  className="h-6 w-6 shrink-0 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center"
-                  aria-label="done"
-                >
-                  <Check size={13} />
-                </div>
-              ) : (
-                <div
-                  aria-hidden="true"
-                  className={cn(
-                    'h-6 w-6 shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold tabular-nums',
-                    isNext
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted text-muted-foreground ring-1 ring-border',
-                  )}
-                >
-                  {i + 1}
-                </div>
-              )
-              const body = (
-                <>
-                  {indicator}
-                  <div className="flex-1 min-w-0">
-                    <p className={cn(
-                      'text-sm font-medium',
-                      step.done ? 'text-muted-foreground' : 'text-foreground',
-                    )}>
-                      {step.label}
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-0.5">{step.desc}</p>
-                  </div>
-                  {isNext && (
-                    <span className="text-xs font-medium text-primary flex items-center gap-1 shrink-0">
-                      {step.cta}
-                      <ArrowRight size={12} />
-                    </span>
-                  )}
-                </>
-              )
-              return !step.done && step.to ? (
-                <li key={i}>
-                  <Link to={step.to} className={rowCls}>{body}</Link>
-                </li>
-              ) : (
-                <li key={i} className={rowCls}>{body}</li>
-              )
-            })}
-          </ol>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
