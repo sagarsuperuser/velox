@@ -1017,14 +1017,18 @@ func TestRunCycle_TaxProviderErrorDefersInvoice(t *testing.T) {
 // subscription-scope beats customer-scope on the same invoice. Each call
 // returns the scripted CouponDiscountResult so tests can simulate "no
 // subscription coupon" (return zero) and trigger the fallback branch.
+// markedRedemptions and markedCustomerDiscounts are populated by the two
+// Mark* methods separately — tests assert the engine routes each scope to
+// its own writer, since customer_discounts is its own table.
 type mockCouponApplier struct {
-	subResult         domain.CouponDiscountResult
-	subErr            error
-	customerResult    domain.CouponDiscountResult
-	customerErr       error
-	subCalled         bool
-	customerCalled    bool
-	markedRedemptions []string
+	subResult               domain.CouponDiscountResult
+	subErr                  error
+	customerResult          domain.CouponDiscountResult
+	customerErr             error
+	subCalled               bool
+	customerCalled          bool
+	markedRedemptions       []string
+	markedCustomerDiscounts []string
 }
 
 func (m *mockCouponApplier) ApplyToInvoice(_ context.Context, _, _, _, _ string, _ []string, _ int64) (domain.CouponDiscountResult, error) {
@@ -1039,6 +1043,11 @@ func (m *mockCouponApplier) ApplyToInvoiceForCustomer(_ context.Context, _, _, _
 
 func (m *mockCouponApplier) MarkPeriodsApplied(_ context.Context, _ string, ids []string) error {
 	m.markedRedemptions = append(m.markedRedemptions, ids...)
+	return nil
+}
+
+func (m *mockCouponApplier) MarkCustomerDiscountPeriodsApplied(_ context.Context, _ string, ids []string) error {
+	m.markedCustomerDiscounts = append(m.markedCustomerDiscounts, ids...)
 	return nil
 }
 
@@ -1074,8 +1083,11 @@ func TestRunCycle_CustomerScopedCouponFiresWhenSubscriptionScopeZero(t *testing.
 	if got := invoices.invoices[0].DiscountCents; got != 500 {
 		t.Errorf("DiscountCents = %d, want 500 (from customer-scope fallback)", got)
 	}
-	if len(applier.markedRedemptions) != 1 || applier.markedRedemptions[0] != "red_cust" {
-		t.Errorf("MarkPeriodsApplied redemption ids = %v, want [red_cust]", applier.markedRedemptions)
+	if len(applier.markedRedemptions) != 0 {
+		t.Errorf("MarkPeriodsApplied must not run for customer-scope discount, got %v", applier.markedRedemptions)
+	}
+	if len(applier.markedCustomerDiscounts) != 1 || applier.markedCustomerDiscounts[0] != "red_cust" {
+		t.Errorf("MarkCustomerDiscountPeriodsApplied ids = %v, want [red_cust]", applier.markedCustomerDiscounts)
 	}
 }
 
@@ -1105,6 +1117,9 @@ func TestRunCycle_SubscriptionCouponBeatsCustomerScope(t *testing.T) {
 	}
 	if len(applier.markedRedemptions) != 1 || applier.markedRedemptions[0] != "red_sub" {
 		t.Errorf("MarkPeriodsApplied redemption ids = %v, want [red_sub]", applier.markedRedemptions)
+	}
+	if len(applier.markedCustomerDiscounts) != 0 {
+		t.Errorf("MarkCustomerDiscountPeriodsApplied must not run for subscription-scope discount, got %v", applier.markedCustomerDiscounts)
 	}
 }
 
