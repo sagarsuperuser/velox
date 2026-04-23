@@ -1,10 +1,15 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
+import { showApiError } from '@/lib/formErrors'
+import { formatCents, formatDate } from '@/lib/api'
+import { statusBadgeVariant } from '@/lib/status'
+import { TypedConfirmDialog } from '@/components/TypedConfirmDialog'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import {
   CreditCard,
@@ -15,6 +20,10 @@ import {
   Loader2,
   Clock,
   ExternalLink,
+  FileText,
+  Download,
+  Layers,
+  HelpCircle,
 } from 'lucide-react'
 
 interface PaymentMethod {
@@ -28,8 +37,41 @@ interface PaymentMethod {
   created_at: string
 }
 
-interface ListResponse {
-  data: PaymentMethod[]
+interface PortalInvoice {
+  id: string
+  invoice_number: string
+  status: string
+  payment_status: string
+  currency: string
+  total_amount_cents: number
+  amount_due_cents: number
+  amount_paid_cents: number
+  issued_at?: string
+  due_at?: string
+  paid_at?: string
+}
+
+interface PortalSubscription {
+  id: string
+  display_name: string
+  status: string
+  items: { id: string; plan_id: string; quantity: number }[]
+  current_period_start?: string
+  current_period_end?: string
+  next_billing_at?: string
+  trial_end_at?: string
+  canceled_at?: string
+  started_at?: string
+}
+
+interface Branding {
+  company_name?: string
+  logo_url?: string
+  support_url?: string
+}
+
+interface ListResponse<T> {
+  data: T[]
 }
 
 interface SetupSessionResponse {
@@ -71,24 +113,45 @@ function brandLabel(b?: string) {
   return b.charAt(0).toUpperCase() + b.slice(1)
 }
 
+function prettyStatus(s: string) {
+  return s.charAt(0).toUpperCase() + s.slice(1).replaceAll('_', ' ')
+}
+
 export default function CustomerPortalPage() {
   const [searchParams] = useSearchParams()
   const token = searchParams.get('token') || ''
   const api = useApi(token)
 
+  const [branding, setBranding] = useState<Branding>({})
   const [pms, setPms] = useState<PaymentMethod[]>([])
+  const [invoices, setInvoices] = useState<PortalInvoice[]>([])
+  const [subs, setSubs] = useState<PortalSubscription[]>([])
+
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [sessionError, setSessionError] = useState('')
+
   const [busyID, setBusyID] = useState('')
+  const [pdfBusyID, setPdfBusyID] = useState('')
   const [addingCard, setAddingCard] = useState(false)
 
-  const load = useCallback(async () => {
+  const [cancelTarget, setCancelTarget] = useState<PortalSubscription | null>(null)
+  const [cancelBusy, setCancelBusy] = useState(false)
+
+  const loadAll = useCallback(async () => {
     try {
-      const res = await api<ListResponse>('/v1/me/payment-methods')
-      setPms(res.data || [])
-      setError('')
+      const [b, pmRes, invRes, subRes] = await Promise.all([
+        api<Branding>('/v1/me/branding').catch(() => ({})),
+        api<ListResponse<PaymentMethod>>('/v1/me/payment-methods'),
+        api<ListResponse<PortalInvoice>>('/v1/me/invoices').catch(() => ({ data: [] })),
+        api<ListResponse<PortalSubscription>>('/v1/me/subscriptions').catch(() => ({ data: [] })),
+      ])
+      setBranding(b)
+      setPms(pmRes.data || [])
+      setInvoices(invRes.data || [])
+      setSubs(subRes.data || [])
+      setSessionError('')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load payment methods')
+      setSessionError(err instanceof Error ? err.message : 'Failed to load portal data')
     } finally {
       setLoading(false)
     }
@@ -96,12 +159,12 @@ export default function CustomerPortalPage() {
 
   useEffect(() => {
     if (!token) {
-      setError('No portal session token provided')
+      setSessionError('No portal session token provided')
       setLoading(false)
       return
     }
-    load()
-  }, [token, load])
+    loadAll()
+  }, [token, loadAll])
 
   const handleAddCard = async () => {
     setAddingCard(true)
@@ -113,7 +176,7 @@ export default function CustomerPortalPage() {
       })
       window.location.href = res.url
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not start card setup')
+      showApiError(err, 'Could not start card setup')
       setAddingCard(false)
     }
   }
@@ -124,9 +187,9 @@ export default function CustomerPortalPage() {
     try {
       await api(`/v1/me/payment-methods/${encodeURIComponent(pm.id)}/default`, { method: 'POST' })
       toast.success('Default payment method updated')
-      await load()
+      await loadAll()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not set default')
+      showApiError(err, 'Could not set default')
     } finally {
       setBusyID('')
     }
@@ -138,42 +201,285 @@ export default function CustomerPortalPage() {
     try {
       await api(`/v1/me/payment-methods/${encodeURIComponent(pm.id)}`, { method: 'DELETE' })
       toast.success('Card removed')
-      await load()
+      await loadAll()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not remove card')
+      showApiError(err, 'Could not remove card')
     } finally {
       setBusyID('')
     }
   }
 
-  return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
-      <div className="w-full max-w-lg">
-        <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-foreground">Velox</h1>
-          <p className="text-sm text-muted-foreground mt-1">Payment Methods</p>
-        </div>
+  // PDF download: the endpoint is bearer-auth protected, so we can't use an
+  // <a href> — we fetch as a blob and trigger a download from a temp URL.
+  const handleDownloadPDF = async (inv: PortalInvoice) => {
+    setPdfBusyID(inv.id)
+    try {
+      const res = await fetch(`${apiBase}/v1/me/invoices/${encodeURIComponent(inv.id)}/pdf`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body?.error?.message || `Download failed (${res.status})`)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${inv.invoice_number}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      showApiError(err, 'Could not download invoice')
+    } finally {
+      setPdfBusyID('')
+    }
+  }
 
-        <Card className="overflow-hidden">
-          <CardContent className="p-0">
-            {loading ? (
-              <div className="p-12 text-center">
-                <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto" />
-                <p className="text-sm text-muted-foreground mt-4">Loading your cards...</p>
-              </div>
-            ) : error ? (
-              <div className="p-8 text-center">
-                <div className="w-12 h-12 rounded-full bg-destructive/10 flex items-center justify-center mx-auto mb-4">
-                  <Clock size={24} className="text-destructive/60" />
-                </div>
-                <p className="text-sm font-medium text-foreground">Session expired or invalid</p>
-                <p className="text-sm text-muted-foreground mt-2">{error}</p>
-                <p className="text-xs text-muted-foreground mt-4">
-                  Please contact your billing provider for a new link.
-                </p>
-              </div>
+  const handleCancelConfirm = async () => {
+    if (!cancelTarget) return
+    setCancelBusy(true)
+    try {
+      await api(`/v1/me/subscriptions/${encodeURIComponent(cancelTarget.id)}/cancel`, {
+        method: 'POST',
+      })
+      toast.success('Subscription canceled')
+      setCancelTarget(null)
+      await loadAll()
+    } catch (err) {
+      showApiError(err, 'Could not cancel subscription')
+    } finally {
+      setCancelBusy(false)
+    }
+  }
+
+  const companyName = branding.company_name || 'Velox'
+  const logoURL = branding.logo_url || ''
+  const supportURL = branding.support_url || ''
+
+  const activeSubCount = useMemo(
+    () => subs.filter(s => s.status === 'active' || s.status === 'trialing' || s.status === 'paused').length,
+    [subs]
+  )
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  if (sessionError) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <Card className="w-full max-w-md">
+          <CardContent className="p-8 text-center">
+            <div className="w-12 h-12 rounded-full bg-destructive/10 flex items-center justify-center mx-auto mb-4">
+              <Clock size={24} className="text-destructive/60" />
+            </div>
+            <p className="text-sm font-medium text-foreground">Session expired or invalid</p>
+            <p className="text-sm text-muted-foreground mt-2">{sessionError}</p>
+            <p className="text-xs text-muted-foreground mt-4">
+              Please contact your billing provider for a new link.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-background">
+      <header className="border-b border-border bg-card">
+        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {logoURL ? (
+              <img
+                src={logoURL}
+                alt={companyName}
+                className="h-8 w-auto max-w-[160px] object-contain"
+                onError={e => ((e.currentTarget as HTMLImageElement).style.display = 'none')}
+              />
             ) : (
-              <div className="p-6 space-y-6">
+              <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center">
+                <CreditCard size={16} className="text-primary" />
+              </div>
+            )}
+            <div>
+              <p className="text-sm font-semibold text-foreground">{companyName}</p>
+              <p className="text-xs text-muted-foreground">Customer Portal</p>
+            </div>
+          </div>
+          {supportURL && (
+            <a
+              href={supportURL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
+            >
+              <HelpCircle size={14} />
+              Support
+            </a>
+          )}
+        </div>
+      </header>
+
+      <main className="max-w-4xl mx-auto px-4 py-6">
+        <Tabs defaultValue="invoices" className="w-full">
+          <TabsList className="mb-6">
+            <TabsTrigger value="invoices">
+              <FileText size={14} />
+              Invoices
+              {invoices.length > 0 && (
+                <span className="ml-1.5 text-[10px] text-muted-foreground">({invoices.length})</span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="subscriptions">
+              <Layers size={14} />
+              Subscriptions
+              {activeSubCount > 0 && (
+                <span className="ml-1.5 text-[10px] text-muted-foreground">({activeSubCount})</span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="payment-methods">
+              <CreditCard size={14} />
+              Payment Methods
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="invoices">
+            <Card>
+              <CardContent className="p-0">
+                {invoices.length === 0 ? (
+                  <div className="p-10 text-center">
+                    <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
+                      <FileText size={22} className="text-muted-foreground" />
+                    </div>
+                    <p className="text-sm font-medium text-foreground">No invoices yet</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Your invoices will appear here once they're issued.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-border">
+                    {invoices.map(inv => (
+                      <div
+                        key={inv.id}
+                        className="flex items-center gap-4 p-4 hover:bg-muted/40 transition-colors"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium text-foreground truncate">
+                              {inv.invoice_number}
+                            </p>
+                            <Badge variant={statusBadgeVariant(inv.payment_status)} className="text-[10px] h-5">
+                              {prettyStatus(inv.payment_status)}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {inv.issued_at ? `Issued ${formatDate(inv.issued_at)}` : 'Issued —'}
+                            {inv.due_at ? ` · Due ${formatDate(inv.due_at)}` : ''}
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-sm font-semibold text-foreground">
+                            {formatCents(inv.total_amount_cents, inv.currency)}
+                          </p>
+                          {inv.amount_due_cents > 0 && (
+                            <p className="text-xs text-amber-600 dark:text-amber-400">
+                              {formatCents(inv.amount_due_cents, inv.currency)} due
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDownloadPDF(inv)}
+                          disabled={pdfBusyID === inv.id}
+                          title="Download PDF"
+                        >
+                          {pdfBusyID === inv.id ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Download size={14} />
+                          )}
+                          <span className="ml-1 text-xs hidden sm:inline">PDF</span>
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="subscriptions">
+            <Card>
+              <CardContent className="p-0">
+                {subs.length === 0 ? (
+                  <div className="p-10 text-center">
+                    <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
+                      <Layers size={22} className="text-muted-foreground" />
+                    </div>
+                    <p className="text-sm font-medium text-foreground">No subscriptions</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      You don't have any active subscriptions.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-border">
+                    {subs.map(sub => {
+                      const cancelable =
+                        sub.status === 'active' ||
+                        sub.status === 'trialing' ||
+                        sub.status === 'paused'
+                      return (
+                        <div key={sub.id} className="p-4">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="text-sm font-medium text-foreground truncate">
+                                  {sub.display_name || 'Subscription'}
+                                </p>
+                                <Badge variant={statusBadgeVariant(sub.status)} className="text-[10px] h-5">
+                                  {prettyStatus(sub.status)}
+                                </Badge>
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-1">
+                                {sub.items.length} {sub.items.length === 1 ? 'item' : 'items'}
+                                {sub.current_period_end
+                                  ? ` · Renews ${formatDate(sub.current_period_end)}`
+                                  : ''}
+                                {sub.canceled_at
+                                  ? ` · Canceled ${formatDate(sub.canceled_at)}`
+                                  : ''}
+                              </p>
+                            </div>
+                            {cancelable && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setCancelTarget(sub)}
+                                className="shrink-0 text-destructive hover:text-destructive"
+                              >
+                                Cancel
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="payment-methods">
+            <Card>
+              <CardContent className="p-6 space-y-6">
                 {pms.length === 0 ? (
                   <div className="text-center py-6">
                     <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
@@ -242,12 +548,7 @@ export default function CustomerPortalPage() {
                   </div>
                 )}
 
-                <Button
-                  onClick={handleAddCard}
-                  disabled={addingCard}
-                  className="w-full"
-                  size="lg"
-                >
+                <Button onClick={handleAddCard} disabled={addingCard} className="w-full" size="lg">
                   {addingCard ? (
                     <>
                       <Loader2 size={16} className="mr-2 animate-spin" />
@@ -266,13 +567,28 @@ export default function CustomerPortalPage() {
                   <ShieldCheck size={12} />
                   <span>Secured by Stripe. Card details are never stored on our servers.</span>
                 </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
 
-        <p className="text-xs text-muted-foreground text-center mt-6">Powered by Velox Billing</p>
-      </div>
+        <p className="text-xs text-muted-foreground text-center mt-8">Powered by Velox Billing</p>
+      </main>
+
+      <TypedConfirmDialog
+        open={cancelTarget !== null}
+        onOpenChange={open => !open && setCancelTarget(null)}
+        title="Cancel Subscription"
+        description={
+          cancelTarget
+            ? `Canceling ends ${cancelTarget.display_name || 'this subscription'} immediately. You will not be charged again. This action cannot be undone from the portal.`
+            : ''
+        }
+        confirmWord="CANCEL"
+        confirmLabel="Cancel Subscription"
+        onConfirm={handleCancelConfirm}
+        loading={cancelBusy}
+      />
     </div>
   )
 }

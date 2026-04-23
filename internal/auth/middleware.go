@@ -145,3 +145,29 @@ func extractBearerToken(r *http.Request) string {
 	}
 	return r.Header.Get("X-API-Key")
 }
+
+// LivemodeFromRawKey peeks at a raw API key's prefix to recover the mode it
+// was minted for, without touching the DB. Used by the session-or-api-key
+// adapter to refuse ambiguous requests where a cookie and an API key disagree
+// on mode (see session.MiddlewareOrAPIKey). Returns ok=false for strings that
+// don't look like Velox API keys so callers can skip the check silently.
+func LivemodeFromRawKey(raw string) (live, ok bool) {
+	switch {
+	case strings.Contains(raw, "_live_"):
+		return true, true
+	case strings.Contains(raw, "_test_"):
+		return false, true
+	}
+	return false, false
+}
+
+// LivemodeFromRequest extracts the mode from whichever auth header the
+// request carries (Authorization: Bearer or X-API-Key), if any. Returns
+// ok=false when the request has no API key or the key prefix is unrecognised.
+func LivemodeFromRequest(r *http.Request) (live, ok bool) {
+	raw := extractBearerToken(r)
+	if raw == "" {
+		return false, false
+	}
+	return LivemodeFromRawKey(raw)
+}

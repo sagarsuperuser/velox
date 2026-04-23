@@ -20,13 +20,33 @@ import (
 // Missing cookie → API-key middleware runs, which returns its own 401 if the
 // Authorization header is also absent.
 //
+// Mode-mismatch guard: when BOTH auth methods are present on the same request
+// (cookie + API key) and they disagree on livemode, the request is rejected
+// with 400. Without this, the cookie's mode silently wins and a developer
+// holding a test key would unwittingly read live data (or vice versa) — a
+// "did I just do that on live?" footgun. Stripe-grade: a request is in ONE
+// mode, always.
+//
 // Both paths populate the same ctx keys (tenant_id, user_id, key_type,
 // livemode), so downstream handlers are oblivious to which one ran.
 func MiddlewareOrAPIKey(sessSvc *Service, keySvc *auth.Service) func(http.Handler) http.Handler {
 	cookieMW := Middleware(sessSvc)
 	keyMW := auth.Middleware(keySvc)
 	return func(next http.Handler) http.Handler {
-		cookieNext := cookieMW(next)
+		// After cookie middleware populates ctx livemode, confirm any
+		// Authorization-header key in the same request agrees.
+		guardedNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if keyLive, ok := auth.LivemodeFromRequest(r); ok {
+				sessLive := postgres.Livemode(r.Context())
+				if keyLive != sessLive {
+					respond.BadRequest(w, r,
+						"auth mode mismatch: session and API key are in different modes — remove one or align them")
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+		cookieNext := cookieMW(guardedNext)
 		keyNext := keyMW(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if _, err := r.Cookie(CookieName); err == nil {
