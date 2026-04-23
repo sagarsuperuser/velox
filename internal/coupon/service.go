@@ -340,7 +340,7 @@ func (s *Service) Preview(ctx context.Context, tenantID string, input RedeemInpu
 	}
 	discount := CalculateDiscount(cpn, input.SubtotalCents)
 	if discount <= 0 {
-		return PreviewResult{}, errs.InvalidState("discount amount is zero")
+		return PreviewResult{}, errs.InvalidState("discount amount is zero").WithCode(CodeDiscountZero)
 	}
 	return PreviewResult{DiscountCents: discount, Coupon: cpn}, nil
 }
@@ -382,7 +382,7 @@ func (s *Service) RedeemDetail(ctx context.Context, tenantID string, input Redee
 
 	discount := CalculateDiscount(cpn, input.SubtotalCents)
 	if discount <= 0 {
-		return RedeemResult{}, errs.InvalidState("discount amount is zero")
+		return RedeemResult{}, errs.InvalidState("discount amount is zero").WithCode(CodeDiscountZero)
 	}
 
 	result, err := s.store.RedeemAtomic(ctx, tenantID, RedeemAtomicInput{
@@ -421,37 +421,37 @@ func (s *Service) validateRedeem(ctx context.Context, tenantID string, input *Re
 
 	cpn, err := s.store.GetByCode(ctx, tenantID, code)
 	if err != nil {
-		return domain.Coupon{}, errs.Invalid("code", "coupon not found")
+		return domain.Coupon{}, errs.Invalid("code", "coupon not found").WithCode(CodeNotFound)
 	}
 
 	if cpn.ArchivedAt != nil {
-		return domain.Coupon{}, errs.InvalidState("coupon is not active")
+		return domain.Coupon{}, errs.InvalidState("coupon is not active").WithCode(CodeArchived)
 	}
 
 	if cpn.ExpiresAt != nil && cpn.ExpiresAt.Before(time.Now()) {
-		return domain.Coupon{}, errs.InvalidState("coupon has expired")
+		return domain.Coupon{}, errs.InvalidState("coupon has expired").WithCode(CodeExpired)
 	}
 
 	if cpn.MaxRedemptions != nil && cpn.TimesRedeemed >= *cpn.MaxRedemptions {
-		return domain.Coupon{}, errs.InvalidState("coupon has reached maximum redemptions")
+		return domain.Coupon{}, errs.InvalidState("coupon has reached maximum redemptions").WithCode(CodeMaxed)
 	}
 
 	// Private coupon: the error shape mirrors "coupon not found" on
 	// purpose so the endpoint doesn't leak that a code exists but isn't
 	// yours — private codes are effectively secrets in the enterprise flow.
 	if cpn.CustomerID != "" && cpn.CustomerID != input.CustomerID {
-		return domain.Coupon{}, errs.Invalid("code", "coupon not found")
+		return domain.Coupon{}, errs.Invalid("code", "coupon not found").WithCode(CodeNotFound)
 	}
 
 	if len(cpn.PlanIDs) > 0 && input.PlanID != "" && !slices.Contains(cpn.PlanIDs, input.PlanID) {
-		return domain.Coupon{}, errs.Invalid("plan_id", "coupon is not valid for this plan")
+		return domain.Coupon{}, errs.Invalid("plan_id", "coupon is not valid for this plan").WithCode(CodePlanMismatch)
 	}
 
 	if cpn.Type == domain.CouponTypeFixedAmount && input.Currency != "" {
 		if !strings.EqualFold(cpn.Currency, input.Currency) {
 			return domain.Coupon{}, errs.Invalid("currency",
 				fmt.Sprintf("coupon currency %s does not match target currency %s",
-					strings.ToUpper(cpn.Currency), strings.ToUpper(input.Currency)))
+					strings.ToUpper(cpn.Currency), strings.ToUpper(input.Currency))).WithCode(CodeCurrencyMismatch)
 		}
 	}
 
@@ -460,7 +460,7 @@ func (s *Service) validateRedeem(ctx context.Context, tenantID string, input *Re
 	if !cpn.Restrictions.IsZero() {
 		if cpn.Restrictions.MinAmountCents > 0 && input.SubtotalCents < cpn.Restrictions.MinAmountCents {
 			return domain.Coupon{}, errs.Invalid("subtotal_cents",
-				fmt.Sprintf("coupon requires a minimum order of %d cents", cpn.Restrictions.MinAmountCents))
+				fmt.Sprintf("coupon requires a minimum order of %d cents", cpn.Restrictions.MinAmountCents)).WithCode(CodeMinAmount)
 		}
 		if cpn.Restrictions.MaxRedemptionsPerCustomer > 0 {
 			n, err := s.store.CountRedemptionsByCustomer(ctx, tenantID, cpn.ID, input.CustomerID)
@@ -468,7 +468,7 @@ func (s *Service) validateRedeem(ctx context.Context, tenantID string, input *Re
 				return domain.Coupon{}, fmt.Errorf("count customer redemptions: %w", err)
 			}
 			if n >= cpn.Restrictions.MaxRedemptionsPerCustomer {
-				return domain.Coupon{}, errs.InvalidState("coupon has reached per-customer redemption limit")
+				return domain.Coupon{}, errs.InvalidState("coupon has reached per-customer redemption limit").WithCode(CodePerCustomerMaxed)
 			}
 		}
 		if cpn.Restrictions.FirstTimeCustomerOnly {
@@ -482,7 +482,7 @@ func (s *Service) validateRedeem(ctx context.Context, tenantID string, input *Re
 					return domain.Coupon{}, fmt.Errorf("check prior payments: %w", err)
 				}
 				if hasPaid {
-					return domain.Coupon{}, errs.InvalidState("coupon limited to first-time customers")
+					return domain.Coupon{}, errs.InvalidState("coupon limited to first-time customers").WithCode(CodeFirstTimeOnly)
 				}
 			}
 		}
@@ -502,13 +502,13 @@ func translateGate(err error) error {
 	}
 	switch gate.Reason {
 	case GateArchived:
-		return errs.InvalidState("coupon is not active")
+		return errs.InvalidState("coupon is not active").WithCode(CodeArchived)
 	case GateExpired:
-		return errs.InvalidState("coupon has expired")
+		return errs.InvalidState("coupon has expired").WithCode(CodeExpired)
 	case GateMaxRedemptions:
-		return errs.InvalidState("coupon has reached maximum redemptions")
+		return errs.InvalidState("coupon has reached maximum redemptions").WithCode(CodeMaxed)
 	case GateNotFound:
-		return errs.Invalid("code", "coupon not found")
+		return errs.Invalid("code", "coupon not found").WithCode(CodeNotFound)
 	default:
 		return err
 	}
