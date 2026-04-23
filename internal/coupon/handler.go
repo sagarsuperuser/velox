@@ -2,8 +2,10 @@ package coupon
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +15,46 @@ import (
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
+
+// couponETag formats a coupon's version as a strong ETag header value.
+// RFC 7232: strong tags are quoted ASCII. We use the plain integer so
+// clients can echo it back via If-Match without any parsing beyond
+// strconv.
+func couponETag(version int) string {
+	return fmt.Sprintf("\"%d\"", version)
+}
+
+// setCouponETag writes the resource's ETag header. Called on every read
+// and on successful writes so clients always see the current version.
+func setCouponETag(w http.ResponseWriter, c domain.Coupon) {
+	w.Header().Set("ETag", couponETag(c.Version))
+}
+
+// parseIfMatch extracts the integer version from a standards-shaped
+// If-Match header value. Empty header → (nil, nil) meaning "no
+// precondition". Any malformed value → non-nil error so the handler can
+// respond with a clean 400 instead of the caller silently bypassing the
+// concurrency check. Accepts weak form (W/"N") for leniency even though
+// the server only emits strong tags; HTTP proxies occasionally downgrade.
+func parseIfMatch(header string) (*int, error) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return nil, nil
+	}
+	if header == "*" {
+		// "*" means "any current version" — treat as no precondition.
+		return nil, nil
+	}
+	header = strings.TrimPrefix(header, "W/")
+	if len(header) < 2 || header[0] != '"' || header[len(header)-1] != '"' {
+		return nil, fmt.Errorf("If-Match must be a quoted ETag")
+	}
+	v, err := strconv.Atoi(header[1 : len(header)-1])
+	if err != nil {
+		return nil, fmt.Errorf("If-Match value must be numeric")
+	}
+	return &v, nil
+}
 
 type Handler struct {
 	svc *Service
@@ -102,6 +144,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setCouponETag(w, cpn)
 	respond.JSON(w, r, http.StatusCreated, cpn)
 }
 
@@ -135,6 +178,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setCouponETag(w, cpn)
 	respond.JSON(w, r, http.StatusOK, cpn)
 }
 
@@ -153,6 +197,12 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	id := chi.URLParam(r, "id")
 
+	ifMatch, err := parseIfMatch(r.Header.Get("If-Match"))
+	if err != nil {
+		respond.BadRequest(w, r, err.Error())
+		return
+	}
+
 	var wire updateWire
 	if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
 		respond.BadRequest(w, r, "invalid JSON body")
@@ -164,6 +214,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		MaxRedemptions: wire.MaxRedemptions,
 		Restrictions:   wire.Restrictions,
 		Metadata:       []byte(wire.Metadata),
+		IfMatch:        ifMatch,
 	}
 	if len(wire.ExpiresAt) > 0 {
 		in.ExpiresAt = new(*time.Time)
@@ -183,6 +234,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setCouponETag(w, cpn)
 	respond.JSON(w, r, http.StatusOK, cpn)
 }
 

@@ -205,6 +205,12 @@ type UpdateInput struct {
 	ExpiresAt      **time.Time                `json:"expires_at,omitempty"`
 	Restrictions   *domain.CouponRestrictions `json:"restrictions,omitempty"`
 	Metadata       []byte                     `json:"metadata,omitempty"`
+	// IfMatch is the optimistic-concurrency token (current row version)
+	// the caller expects to find. Non-nil enables the check; mismatch
+	// yields errs.ErrPreconditionFailed. Nil — the field was absent on
+	// the wire — skips the check, matching lost-update-tolerant clients
+	// (CLI scripts, one-shot tooling) that don't round-trip ETags.
+	IfMatch *int `json:"-"`
 }
 
 func (s *Service) Update(ctx context.Context, tenantID, id string, in UpdateInput) (domain.Coupon, error) {
@@ -250,7 +256,7 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, in UpdateInpu
 		existing.Metadata = in.Metadata
 	}
 
-	return s.store.Update(ctx, tenantID, existing)
+	return s.store.Update(ctx, tenantID, existing, in.IfMatch)
 }
 
 // Archive marks a coupon archived. The coupon stops accepting new

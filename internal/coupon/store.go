@@ -26,8 +26,12 @@ type Store interface {
 	// Update patches mutable fields (name, max_redemptions, expires_at,
 	// metadata). Immutable fields (type, code, amount/percent, plan_ids,
 	// customer_id, duration, stackable) are rejected upstream to keep the
-	// redemption semantics stable under the same code.
-	Update(ctx context.Context, tenantID string, coupon domain.Coupon) (domain.Coupon, error)
+	// redemption semantics stable under the same code. ifMatch is the
+	// optimistic-concurrency token: when non-nil, the UPDATE only fires
+	// if the stored version matches; a mismatch yields
+	// errs.ErrPreconditionFailed so the caller can surface 412. When nil,
+	// the write proceeds unconditionally.
+	Update(ctx context.Context, tenantID string, coupon domain.Coupon, ifMatch *int) (domain.Coupon, error)
 
 	// Archive stamps archived_at = now(). Idempotent: repeat calls on an
 	// already-archived row are a no-op, not an error.

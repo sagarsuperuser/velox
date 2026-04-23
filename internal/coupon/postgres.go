@@ -27,7 +27,7 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 const couponColumns = `id, tenant_id, code, name, type, amount_off, percent_off_bp,
 	currency, max_redemptions, times_redeemed, expires_at, plan_ids,
 	duration, duration_periods, stackable,
-	COALESCE(customer_id, ''), restrictions, metadata, archived_at, created_at`
+	COALESCE(customer_id, ''), restrictions, metadata, archived_at, created_at, version`
 
 // redemptionCols is the single source of truth for coupon_redemptions
 // SELECT lists. voided_at is nullable so reads use the pointer form;
@@ -180,7 +180,14 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string, includeArchiv
 	return coupons, rows.Err()
 }
 
-func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Coupon) (domain.Coupon, error) {
+// Update applies the mutable-field changes in c and bumps version by 1.
+// When ifMatch is non-nil, the UPDATE is gated on the row's current
+// version matching — a mismatch surfaces as ErrPreconditionFailed and
+// is distinguished from a missing row via a follow-up SELECT in the
+// same transaction. When nil, the write proceeds without the
+// concurrency check — internal callers (archive, unarchive flows) use
+// this path.
+func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Coupon, ifMatch *int) (domain.Coupon, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Coupon{}, err
@@ -192,6 +199,14 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Co
 		metadataBytes = []byte(`{}`)
 	}
 
+	// $7::integer is NULL when ifMatch is nil (no version check) or the
+	// caller's expected version otherwise. When the version guard fails,
+	// RowsAffected is 0 and the fallback SELECT below distinguishes
+	// missing-row from version-mismatch.
+	var ifMatchArg any
+	if ifMatch != nil {
+		ifMatchArg = *ifMatch
+	}
 	err = tx.QueryRowContext(ctx, `
 		UPDATE coupons
 		SET name = $2,
@@ -199,17 +214,31 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Co
 		    expires_at = $4,
 		    restrictions = $5,
 		    metadata = $6,
+		    version = version + 1,
 		    updated_at = now()
 		WHERE id = $1
+		  AND ($7::integer IS NULL OR version = $7)
 		RETURNING `+couponColumns,
 		c.ID, c.Name, c.MaxRedemptions, postgres.NullableTime(c.ExpiresAt),
-		c.Restrictions, metadataBytes,
+		c.Restrictions, metadataBytes, ifMatchArg,
 	).Scan(scanDest(&c)...)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return domain.Coupon{}, err
+		}
+		// Zero rows affected: either the row is gone (404) or the
+		// version doesn't match (412). Probe to decide.
+		var currentVersion int
+		probeErr := tx.QueryRowContext(ctx, `SELECT version FROM coupons WHERE id = $1`, c.ID).Scan(&currentVersion)
+		if errors.Is(probeErr, sql.ErrNoRows) {
 			return domain.Coupon{}, errs.ErrNotFound
 		}
-		return domain.Coupon{}, err
+		if probeErr != nil {
+			return domain.Coupon{}, probeErr
+		}
+		return domain.Coupon{}, errs.PreconditionFailed(
+			fmt.Sprintf("coupon version mismatch (have %d, expected %d) — refetch and retry",
+				currentVersion, *ifMatch))
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -226,10 +255,14 @@ func (s *PostgresStore) Archive(ctx context.Context, tenantID, id string, at tim
 	defer postgres.Rollback(tx)
 
 	// Idempotent: COALESCE preserves the original archive timestamp if
-	// the caller archives an already-archived row.
+	// the caller archives an already-archived row. version advances only
+	// on an actual state transition so no-op repeat calls don't
+	// invalidate the caller's cached ETag unnecessarily.
 	res, err := tx.ExecContext(ctx, `
 		UPDATE coupons
-		SET archived_at = COALESCE(archived_at, $2), updated_at = now()
+		SET archived_at = COALESCE(archived_at, $2),
+		    updated_at = now(),
+		    version = CASE WHEN archived_at IS NULL THEN version + 1 ELSE version END
 		WHERE id = $1
 	`, id, at.UTC())
 	if err != nil {
@@ -250,7 +283,11 @@ func (s *PostgresStore) Unarchive(ctx context.Context, tenantID, id string) erro
 	defer postgres.Rollback(tx)
 
 	res, err := tx.ExecContext(ctx, `
-		UPDATE coupons SET archived_at = NULL, updated_at = now() WHERE id = $1
+		UPDATE coupons
+		SET archived_at = NULL,
+		    updated_at = now(),
+		    version = CASE WHEN archived_at IS NOT NULL THEN version + 1 ELSE version END
+		WHERE id = $1
 	`, id)
 	if err != nil {
 		return err
@@ -574,7 +611,7 @@ func scanDest(c *domain.Coupon) []any {
 		&c.Currency, &c.MaxRedemptions, &c.TimesRedeemed, &c.ExpiresAt,
 		(*postgres.StringArray)(&c.PlanIDs),
 		&c.Duration, &c.DurationPeriods, &c.Stackable,
-		&c.CustomerID, &c.Restrictions, &c.Metadata, &c.ArchivedAt, &c.CreatedAt,
+		&c.CustomerID, &c.Restrictions, &c.Metadata, &c.ArchivedAt, &c.CreatedAt, &c.Version,
 	}
 }
 
