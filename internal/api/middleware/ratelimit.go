@@ -131,12 +131,26 @@ func (rl *RateLimiter) allow(r *http.Request, key string) (int, time.Time, bool)
 	return res.Remaining, resetAt, res.Allowed > 0
 }
 
+// rateLimitKey chooses the most-specific bucket available for this request,
+// Stripe-style:
+//
+//  1. API key id when present — per-key buckets so a runaway integration
+//     can't starve the tenant's dashboard or a parallel worker. Matches the
+//     "each key has its own throughput" expectation operators bring from
+//     Stripe / Twilio / OpenAI.
+//  2. Tenant id for session-authed UI traffic (no key attached) so every
+//     logged-in operator for the tenant shares a single bucket. Dashboards
+//     are low-volume; a shared bucket is the right default.
+//  3. Remote IP for wholly-unauthenticated paths (bootstrap, login, public
+//     health probes that slipped past the skip-list) so an unauthenticated
+//     flood can't bypass the limiter entirely.
 func rateLimitKey(r *http.Request) string {
-	// Prefer tenant-scoped bucket so all keys for the same tenant share a limit
+	if keyID := auth.KeyID(r.Context()); keyID != "" {
+		return "key:" + keyID
+	}
 	if tenantID := auth.TenantID(r.Context()); tenantID != "" {
 		return "tenant:" + tenantID
 	}
-	// Fallback to IP for unauthenticated requests (strip port)
 	ip := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(ip); err == nil {
 		ip = host
