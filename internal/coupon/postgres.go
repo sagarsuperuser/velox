@@ -29,6 +29,23 @@ const couponColumns = `id, tenant_id, code, name, type, amount_off, percent_off_
 	duration, duration_periods, stackable,
 	COALESCE(customer_id, ''), restrictions, metadata, archived_at, created_at`
 
+// redemptionCols is the single source of truth for coupon_redemptions
+// SELECT lists. voided_at is nullable so reads use the pointer form;
+// scanRedemption mirrors this exact column order.
+const redemptionCols = `id, tenant_id, coupon_id, customer_id,
+	COALESCE(subscription_id,''), COALESCE(invoice_id,''),
+	discount_cents, periods_applied, COALESCE(idempotency_key,''),
+	voided_at, created_at`
+
+func scanRedemptionDest(r *domain.CouponRedemption) []any {
+	return []any{
+		&r.ID, &r.TenantID, &r.CouponID, &r.CustomerID,
+		&r.SubscriptionID, &r.InvoiceID,
+		&r.DiscountCents, &r.PeriodsApplied, &r.IdempotencyKey,
+		&r.VoidedAt, &r.CreatedAt,
+	}
+}
+
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Coupon) (domain.Coupon, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -308,15 +325,11 @@ func (s *PostgresStore) RedeemAtomic(ctx context.Context, tenantID string, in Re
 		INSERT INTO coupon_redemptions (id, tenant_id, coupon_id, customer_id,
 			subscription_id, invoice_id, discount_cents, idempotency_key, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-		RETURNING id, tenant_id, coupon_id, customer_id,
-			COALESCE(subscription_id,''), COALESCE(invoice_id,''),
-			discount_cents, periods_applied, COALESCE(idempotency_key,''), created_at
-	`, redID, tenantID, c.ID, in.CustomerID,
+		RETURNING `+redemptionCols,
+		redID, tenantID, c.ID, in.CustomerID,
 		postgres.NullableString(in.SubscriptionID), postgres.NullableString(in.InvoiceID),
 		in.DiscountCents, postgres.NullableString(in.IdempotencyKey), nowUTC,
-	).Scan(&r.ID, &r.TenantID, &r.CouponID, &r.CustomerID,
-		&r.SubscriptionID, &r.InvoiceID, &r.DiscountCents, &r.PeriodsApplied,
-		&r.IdempotencyKey, &r.CreatedAt)
+	).Scan(scanRedemptionDest(&r)...)
 	if err != nil {
 		// Idempotency-key collision: return the existing redemption as a
 		// replay so the caller sees the same response they saw first time.
@@ -370,14 +383,10 @@ func (s *PostgresStore) GetRedemptionByIdempotencyKey(ctx context.Context, tenan
 
 	var r domain.CouponRedemption
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, coupon_id, customer_id,
-			COALESCE(subscription_id,''), COALESCE(invoice_id,''),
-			discount_cents, periods_applied, COALESCE(idempotency_key,''), created_at
+		SELECT `+redemptionCols+`
 		FROM coupon_redemptions
 		WHERE idempotency_key = $1
-	`, key).Scan(&r.ID, &r.TenantID, &r.CouponID, &r.CustomerID,
-		&r.SubscriptionID, &r.InvoiceID, &r.DiscountCents, &r.PeriodsApplied,
-		&r.IdempotencyKey, &r.CreatedAt)
+	`, key).Scan(scanRedemptionDest(&r)...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.CouponRedemption{}, errs.ErrNotFound
@@ -395,9 +404,7 @@ func (s *PostgresStore) ListRedemptions(ctx context.Context, tenantID, couponID 
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, coupon_id, customer_id,
-			COALESCE(subscription_id,''), COALESCE(invoice_id,''),
-			discount_cents, periods_applied, COALESCE(idempotency_key,''), created_at
+		SELECT `+redemptionCols+`
 		FROM coupon_redemptions WHERE coupon_id = $1
 		ORDER BY created_at DESC LIMIT 1000
 	`, couponID)
@@ -409,9 +416,7 @@ func (s *PostgresStore) ListRedemptions(ctx context.Context, tenantID, couponID 
 	var redemptions []domain.CouponRedemption
 	for rows.Next() {
 		var r domain.CouponRedemption
-		if err := rows.Scan(&r.ID, &r.TenantID, &r.CouponID, &r.CustomerID,
-			&r.SubscriptionID, &r.InvoiceID, &r.DiscountCents, &r.PeriodsApplied,
-			&r.IdempotencyKey, &r.CreatedAt); err != nil {
+		if err := rows.Scan(scanRedemptionDest(&r)...); err != nil {
 			return nil, err
 		}
 		redemptions = append(redemptions, r)
@@ -419,6 +424,10 @@ func (s *PostgresStore) ListRedemptions(ctx context.Context, tenantID, couponID 
 	return redemptions, rows.Err()
 }
 
+// ListRedemptionsBySubscription returns only live (non-voided) redemptions.
+// ApplyToInvoice is the sole caller and must not consider voided rows —
+// filtering here keeps that invariant local to the store so the service
+// can't accidentally bring a voided redemption back into a discount pool.
 func (s *PostgresStore) ListRedemptionsBySubscription(ctx context.Context, tenantID, subscriptionID string) ([]domain.CouponRedemption, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -427,10 +436,9 @@ func (s *PostgresStore) ListRedemptionsBySubscription(ctx context.Context, tenan
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, coupon_id, customer_id,
-			COALESCE(subscription_id,''), COALESCE(invoice_id,''),
-			discount_cents, periods_applied, COALESCE(idempotency_key,''), created_at
-		FROM coupon_redemptions WHERE subscription_id = $1
+		SELECT `+redemptionCols+`
+		FROM coupon_redemptions
+		WHERE subscription_id = $1 AND voided_at IS NULL
 		ORDER BY created_at ASC
 	`, subscriptionID)
 	if err != nil {
@@ -441,9 +449,7 @@ func (s *PostgresStore) ListRedemptionsBySubscription(ctx context.Context, tenan
 	var redemptions []domain.CouponRedemption
 	for rows.Next() {
 		var r domain.CouponRedemption
-		if err := rows.Scan(&r.ID, &r.TenantID, &r.CouponID, &r.CustomerID,
-			&r.SubscriptionID, &r.InvoiceID, &r.DiscountCents, &r.PeriodsApplied,
-			&r.IdempotencyKey, &r.CreatedAt); err != nil {
+		if err := rows.Scan(scanRedemptionDest(&r)...); err != nil {
 			return nil, err
 		}
 		redemptions = append(redemptions, r)
@@ -464,6 +470,65 @@ func (s *PostgresStore) CountRedemptionsByCustomer(ctx context.Context, tenantID
 		WHERE coupon_id = $1 AND customer_id = $2
 	`, couponID, customerID).Scan(&n)
 	return n, err
+}
+
+// VoidRedemptionsForInvoice reverses coupon effects for the given invoice:
+// marks each non-voided redemption on the invoice as voided and
+// decrements both coupon.times_redeemed and redemption.periods_applied
+// (floored at 0 to respect the CHECK constraint) in a single tx. Uses a
+// subquery rather than a loop so a partial failure can't leave some
+// redemptions voided and others not.
+func (s *PostgresStore) VoidRedemptionsForInvoice(ctx context.Context, tenantID, invoiceID string) (int, error) {
+	if invoiceID == "" {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Step 1: void the redemptions, capturing their coupon_ids so we know
+	// which coupons to decrement. RETURNING into a CTE so the decrement
+	// stays in the same tx and can't drift.
+	rows, err := tx.QueryContext(ctx, `
+		WITH voided AS (
+			UPDATE coupon_redemptions
+			SET voided_at = now(),
+			    periods_applied = GREATEST(periods_applied - 1, 0)
+			WHERE invoice_id = $1 AND voided_at IS NULL
+			RETURNING coupon_id
+		)
+		UPDATE coupons
+		SET times_redeemed = GREATEST(times_redeemed - counts.n, 0)
+		FROM (
+			SELECT coupon_id, COUNT(*) AS n FROM voided GROUP BY coupon_id
+		) AS counts
+		WHERE coupons.id = counts.coupon_id
+		RETURNING counts.n
+	`, invoiceID)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var total int
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 // IncrementPeriodsApplied advances each redemption's counter by one in a

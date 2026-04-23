@@ -141,8 +141,13 @@ type CouponRedemption struct {
 	// token. Partial UNIQUE (tenant_id, idempotency_key) in the DB
 	// guarantees that replaying the same key returns the same row
 	// rather than creating a second redemption.
-	IdempotencyKey string    `json:"idempotency_key,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// VoidedAt is set when the underlying invoice is fully credited or
+	// refunded. A voided redemption no longer counts toward the coupon's
+	// usage — ApplyToInvoice skips it, and the coupon's times_redeemed is
+	// decremented in the same tx that sets this field.
+	VoidedAt  *time.Time `json:"voided_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // CouponDiscountResult is what coupon-apply returns to the billing side.

@@ -63,6 +63,16 @@ type Store interface {
 	// half-bumped state the pre-batch per-id loop could produce on a mid-run
 	// failure.
 	IncrementPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
+
+	// VoidRedemptionsForInvoice marks every (non-voided) redemption pinned
+	// to invoiceID as voided and reverses its effects on the parent coupon:
+	// times_redeemed is decremented by one per voided redemption, and
+	// periods_applied is rolled back to max(0, periods_applied - 1) — all
+	// in a single transaction. Returns the count of redemptions voided so
+	// callers can tell "nothing to do" apart from a successful reversal.
+	// Idempotent: repeat calls with the same invoice id void nothing
+	// further and return 0.
+	VoidRedemptionsForInvoice(ctx context.Context, tenantID, invoiceID string) (int, error)
 }
 
 // RedeemAtomicInput carries everything the atomic redeem path needs. The
