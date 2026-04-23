@@ -32,9 +32,9 @@ type InviteDispatcher interface {
 }
 
 type Handler struct {
-	users    *user.Service
-	inviter  InviteDispatcher
-	now      func() time.Time
+	users   *user.Service
+	inviter InviteDispatcher
+	now     func() time.Time
 }
 
 func NewHandler(users *user.Service, inviter InviteDispatcher) *Handler {

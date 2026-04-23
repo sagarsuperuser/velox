@@ -366,9 +366,9 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 
 	if h.auditLogger != nil {
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "coupon", cpn.ID, map[string]any{
-			"resource_label":  cpn.Code,
+			"resource_label": cpn.Code,
 			"changed_fields": changedFields(wire),
-			"version":         cpn.Version,
+			"version":        cpn.Version,
 		})
 	}
 	payload := couponEventPayload(cpn)
