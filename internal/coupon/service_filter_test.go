@@ -46,7 +46,7 @@ func seedMixed(t *testing.T, svc *Service, store *mockStore) {
 	fix1, _ := svc.Create(ctx, "t1", CreateInput{
 		Code: "FIX-O", Name: "fixed once",
 		Type: domain.CouponTypeFixedAmount, AmountOff: 1000, Currency: "USD",
-		Duration: domain.CouponDurationOnce,
+		Duration:  domain.CouponDurationOnce,
 		ExpiresAt: timePtr(nearFuture),
 	})
 

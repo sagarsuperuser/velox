@@ -43,65 +43,65 @@ const (
 )
 
 type Invoice struct {
-	ID                    string               `json:"id"`
-	TenantID              string               `json:"tenant_id,omitempty"`
-	CustomerID            string               `json:"customer_id"`
-	SubscriptionID        string               `json:"subscription_id"`
-	InvoiceNumber         string               `json:"invoice_number"`
-	Status                InvoiceStatus        `json:"status"`
-	PaymentStatus         InvoicePaymentStatus `json:"payment_status"`
-	Currency              string               `json:"currency"`
-	SubtotalCents         int64                `json:"subtotal_cents"`
-	DiscountCents         int64                `json:"discount_cents"`
-	TaxAmountCents        int64                `json:"tax_amount_cents"`
-	TaxRateBP             int64                `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
-	TaxName               string               `json:"tax_name,omitempty"`
-	TaxCountry            string               `json:"tax_country,omitempty"`
-	TaxID                 string               `json:"tax_id,omitempty"`
+	ID             string               `json:"id"`
+	TenantID       string               `json:"tenant_id,omitempty"`
+	CustomerID     string               `json:"customer_id"`
+	SubscriptionID string               `json:"subscription_id"`
+	InvoiceNumber  string               `json:"invoice_number"`
+	Status         InvoiceStatus        `json:"status"`
+	PaymentStatus  InvoicePaymentStatus `json:"payment_status"`
+	Currency       string               `json:"currency"`
+	SubtotalCents  int64                `json:"subtotal_cents"`
+	DiscountCents  int64                `json:"discount_cents"`
+	TaxAmountCents int64                `json:"tax_amount_cents"`
+	TaxRateBP      int64                `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
+	TaxName        string               `json:"tax_name,omitempty"`
+	TaxCountry     string               `json:"tax_country,omitempty"`
+	TaxID          string               `json:"tax_id,omitempty"`
 	// Durable audit snapshot of the tax decision. Written once at invoice
 	// build time and never mutated so a finalized invoice remains
 	// reconstructable even after the upstream provider's tax_calculation
 	// expires (Stripe Tax: 24 h). TaxCalculationID is the provider ref used
 	// by Commit to create a tax_transaction at finalize time.
-	TaxProvider       string `json:"tax_provider,omitempty"`
-	TaxCalculationID  string `json:"tax_calculation_id,omitempty"`
+	TaxProvider      string `json:"tax_provider,omitempty"`
+	TaxCalculationID string `json:"tax_calculation_id,omitempty"`
 	// TaxTransactionID is the committed upstream transaction reference
 	// (Stripe Tax: tx_xxx), captured at finalize time. Durable upstream
 	// record of the tax decision and the handle the provider needs for
 	// a later reversal when a credit note is issued against this invoice.
 	// Empty for providers without durable state (none, manual) and for
 	// invoices whose finalize has not committed tax yet.
-	TaxTransactionID  string `json:"tax_transaction_id,omitempty"`
-	TaxReverseCharge  bool   `json:"tax_reverse_charge,omitempty"`
-	TaxExemptReason   string `json:"tax_exempt_reason,omitempty"`
+	TaxTransactionID string `json:"tax_transaction_id,omitempty"`
+	TaxReverseCharge bool   `json:"tax_reverse_charge,omitempty"`
+	TaxExemptReason  string `json:"tax_exempt_reason,omitempty"`
 	// TaxStatus gates finalize: only invoices with TaxStatus=ok are
 	// finalizable. Pending/failed invoices carry no committed tax yet and
 	// are either awaiting retry or awaiting operator intervention.
-	TaxStatus         InvoiceTaxStatus `json:"tax_status,omitempty"`
-	TaxDeferredAt     *time.Time       `json:"tax_deferred_at,omitempty"`
-	TaxRetryCount     int              `json:"tax_retry_count,omitempty"`
-	TaxPendingReason  string           `json:"tax_pending_reason,omitempty"`
-	TotalAmountCents      int64                `json:"total_amount_cents"`
-	AmountDueCents        int64                `json:"amount_due_cents"`
-	AmountPaidCents       int64                `json:"amount_paid_cents"`
-	CreditsAppliedCents   int64                `json:"credits_applied_cents"`
-	BillingPeriodStart    time.Time            `json:"billing_period_start"`
-	BillingPeriodEnd      time.Time            `json:"billing_period_end"`
-	IssuedAt              *time.Time           `json:"issued_at,omitempty"`
-	DueAt                 *time.Time           `json:"due_at,omitempty"`
-	PaidAt                *time.Time           `json:"paid_at,omitempty"`
-	VoidedAt              *time.Time           `json:"voided_at,omitempty"`
-	StripePaymentIntentID string               `json:"stripe_payment_intent_id,omitempty"`
-	LastPaymentError      string               `json:"last_payment_error,omitempty"`
-	PaymentOverdue        bool                 `json:"payment_overdue"`
-	AutoChargePending     bool                 `json:"auto_charge_pending,omitempty"`
-	PDFObjectKey          string               `json:"-"`
-	NetPaymentTermDays    int                  `json:"net_payment_term_days"`
-	Memo                  string               `json:"memo,omitempty"`
-	Footer                string               `json:"footer,omitempty"`
-	Metadata              map[string]any       `json:"metadata,omitempty"`
-	CreatedAt             time.Time            `json:"created_at"`
-	UpdatedAt             time.Time            `json:"updated_at"`
+	TaxStatus             InvoiceTaxStatus `json:"tax_status,omitempty"`
+	TaxDeferredAt         *time.Time       `json:"tax_deferred_at,omitempty"`
+	TaxRetryCount         int              `json:"tax_retry_count,omitempty"`
+	TaxPendingReason      string           `json:"tax_pending_reason,omitempty"`
+	TotalAmountCents      int64            `json:"total_amount_cents"`
+	AmountDueCents        int64            `json:"amount_due_cents"`
+	AmountPaidCents       int64            `json:"amount_paid_cents"`
+	CreditsAppliedCents   int64            `json:"credits_applied_cents"`
+	BillingPeriodStart    time.Time        `json:"billing_period_start"`
+	BillingPeriodEnd      time.Time        `json:"billing_period_end"`
+	IssuedAt              *time.Time       `json:"issued_at,omitempty"`
+	DueAt                 *time.Time       `json:"due_at,omitempty"`
+	PaidAt                *time.Time       `json:"paid_at,omitempty"`
+	VoidedAt              *time.Time       `json:"voided_at,omitempty"`
+	StripePaymentIntentID string           `json:"stripe_payment_intent_id,omitempty"`
+	LastPaymentError      string           `json:"last_payment_error,omitempty"`
+	PaymentOverdue        bool             `json:"payment_overdue"`
+	AutoChargePending     bool             `json:"auto_charge_pending,omitempty"`
+	PDFObjectKey          string           `json:"-"`
+	NetPaymentTermDays    int              `json:"net_payment_term_days"`
+	Memo                  string           `json:"memo,omitempty"`
+	Footer                string           `json:"footer,omitempty"`
+	Metadata              map[string]any   `json:"metadata,omitempty"`
+	CreatedAt             time.Time        `json:"created_at"`
+	UpdatedAt             time.Time        `json:"updated_at"`
 
 	// SourcePlanChangedAt + SourceSubscriptionItemID + SourceChangeType, when
 	// set, identify this invoice as a proration artifact generated by an

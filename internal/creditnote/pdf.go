@@ -85,8 +85,6 @@ var cnCurrencySymbols = map[string]string{
 	"THB": "฿", "MYR": "RM ", "IDR": "Rp ", "PHP": "₱", "VND": "₫",
 }
 
-var cnPDFCurrencySymbol = "$"
-
 // RenderPDF renders a standalone credit note PDF. The caller supplies the
 // credit note header, its line items, the original invoice it references,
 // a BillTo snapshot for the buyer, and a CompanyInfo snapshot for the
@@ -104,17 +102,20 @@ func RenderPDF(
 	billTo BillToInfo,
 	company CompanyInfo,
 ) ([]byte, error) {
-	// Set currency symbol
+	// Resolve the currency symbol once and thread it through the formatters.
+	// Keeping this call-scoped (vs a package global) means concurrent
+	// RenderPDF calls with different currencies don't stomp on each other.
 	currency := cn.Currency
 	if currency == "" {
 		currency = orig.Currency
 	}
+	var symbol string
 	if sym, ok := cnCurrencySymbols[strings.ToUpper(currency)]; ok {
-		cnPDFCurrencySymbol = sym
+		symbol = sym
 	} else if currency != "" {
-		cnPDFCurrencySymbol = currency + " "
+		symbol = currency + " "
 	} else {
-		cnPDFCurrencySymbol = "$"
+		symbol = "$"
 	}
 
 	pdf := &gopdf.GoPdf{}
@@ -349,8 +350,8 @@ func RenderPDF(
 		}
 		textAt(colX[0], y, desc)
 		rightAlignAt(colX[1], y, colX[2]-colX[1], cnFormatNumber(item.Quantity))
-		rightAlignAt(colX[2], y, colX[3]-colX[2], cnFormatCents(item.UnitAmountCents))
-		rightAlignAt(colX[3], y, colEnd-colX[3], cnFormatCents(item.AmountCents))
+		rightAlignAt(colX[2], y, colX[3]-colX[2], cnFormatCents(item.UnitAmountCents, symbol))
+		rightAlignAt(colX[3], y, colEnd-colX[3], cnFormatCents(item.AmountCents, symbol))
 		y += 18
 	}
 
@@ -378,7 +379,7 @@ func RenderPDF(
 		y += 16
 	}
 
-	totalsRow("Subtotal", cnFormatCents(cn.SubtotalCents), false, 80, 80, 80, 40, 40, 40)
+	totalsRow("Subtotal", cnFormatCents(cn.SubtotalCents, symbol), false, 80, 80, 80, 40, 40, 40)
 
 	if cn.TaxAmountCents > 0 {
 		taxLabel := "Tax"
@@ -391,17 +392,17 @@ func RenderPDF(
 		if orig.TaxCountry != "" {
 			taxLabel = fmt.Sprintf("%s [%s]", taxLabel, orig.TaxCountry)
 		}
-		totalsRow(taxLabel, cnFormatCents(cn.TaxAmountCents), false, 80, 80, 80, 40, 40, 40)
+		totalsRow(taxLabel, cnFormatCents(cn.TaxAmountCents, symbol), false, 80, 80, 80, 40, 40, 40)
 	} else if orig.ReverseCharge {
 		// Even with zero-amount tax, surface the reverse-charge row so
 		// the CN reads as a deliberate treatment, not a bug.
-		totalsRow("Tax (reverse charge)", cnFormatCents(0), false, 80, 80, 80, 120, 120, 120)
+		totalsRow("Tax (reverse charge)", cnFormatCents(0, symbol), false, 80, 80, 80, 120, 120, 120)
 	}
 
 	pdf.SetStrokeColor(220, 220, 220)
 	pdf.Line(totalsX, y-4, totalsX+totalsW, y-4)
 	y += 2
-	totalsRow("Credit Total", cnFormatCents(cn.TotalCents), true, 30, 30, 30, 30, 30, 30)
+	totalsRow("Credit Total", cnFormatCents(cn.TotalCents, symbol), true, 30, 30, 30, 30, 30, 30)
 
 	// ── Refund destination ──
 	// Tells the reader where the money went. Three cases map to the three
@@ -416,7 +417,7 @@ func RenderPDF(
 	y += 14
 	setFont(false, 9)
 	setColor(60, 60, 60)
-	for _, line := range settlementLines(cn) {
+	for _, line := range settlementLines(cn, symbol) {
 		textAt(margin, y, line)
 		y += 12
 	}
@@ -479,26 +480,26 @@ func RenderPDF(
 // explicit about refund status so a customer reading a CN whose Stripe
 // refund failed still sees the honest state rather than a misleading
 // "refunded" line.
-func settlementLines(cn domain.CreditNote) []string {
+func settlementLines(cn domain.CreditNote, symbol string) []string {
 	if cn.RefundAmountCents > 0 {
 		switch cn.RefundStatus {
 		case domain.RefundSucceeded:
-			return []string{fmt.Sprintf("Refunded %s to the original payment method.", cnFormatCents(cn.RefundAmountCents))}
+			return []string{fmt.Sprintf("Refunded %s to the original payment method.", cnFormatCents(cn.RefundAmountCents, symbol))}
 		case domain.RefundPending:
-			return []string{fmt.Sprintf("%s refund is pending — please allow up to 10 business days.", cnFormatCents(cn.RefundAmountCents))}
+			return []string{fmt.Sprintf("%s refund is pending — please allow up to 10 business days.", cnFormatCents(cn.RefundAmountCents, symbol))}
 		case domain.RefundFailed:
 			return []string{
-				fmt.Sprintf("%s refund attempt failed.", cnFormatCents(cn.RefundAmountCents)),
+				fmt.Sprintf("%s refund attempt failed.", cnFormatCents(cn.RefundAmountCents, symbol)),
 				"Our team will reach out to resolve the refund manually.",
 			}
 		default:
-			return []string{fmt.Sprintf("Refund of %s scheduled to the original payment method.", cnFormatCents(cn.RefundAmountCents))}
+			return []string{fmt.Sprintf("Refund of %s scheduled to the original payment method.", cnFormatCents(cn.RefundAmountCents, symbol))}
 		}
 	}
 	if cn.CreditAmountCents > 0 {
-		return []string{fmt.Sprintf("%s added to your account credit balance. Applied automatically to future invoices.", cnFormatCents(cn.CreditAmountCents))}
+		return []string{fmt.Sprintf("%s added to your account credit balance. Applied automatically to future invoices.", cnFormatCents(cn.CreditAmountCents, symbol))}
 	}
-	return []string{fmt.Sprintf("%s applied to reduce the amount due on the original invoice.", cnFormatCents(cn.TotalCents))}
+	return []string{fmt.Sprintf("%s applied to reduce the amount due on the original invoice.", cnFormatCents(cn.TotalCents, symbol))}
 }
 
 // cnFormatCityStatePostal joins "City, State Postal" gracefully when any
@@ -520,9 +521,9 @@ func cnFormatCityStatePostal(city, state, postal string) string {
 	return line
 }
 
-func cnFormatCents(cents int64) string {
+func cnFormatCents(cents int64, symbol string) string {
 	if cents == 0 {
-		return cnPDFCurrencySymbol + "0.00"
+		return symbol + "0.00"
 	}
 	sign := ""
 	if cents < 0 {
@@ -531,7 +532,7 @@ func cnFormatCents(cents int64) string {
 	}
 	dollars := cents / 100
 	remainder := cents % 100
-	return fmt.Sprintf("%s%s%s.%02d", sign, cnPDFCurrencySymbol, cnFormatNumber(dollars), remainder)
+	return fmt.Sprintf("%s%s%s.%02d", sign, symbol, cnFormatNumber(dollars), remainder)
 }
 
 func cnFormatNumber(n int64) string {

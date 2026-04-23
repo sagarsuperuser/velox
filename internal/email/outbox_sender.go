@@ -25,23 +25,23 @@ const (
 // serialisation ceremony — the dispatcher reads the type tag and knows which
 // fields are meaningful.
 type outboxMessage struct {
-	To              string `json:"to"`
-	CustomerName    string `json:"customer_name,omitempty"`
-	InvoiceNumber   string `json:"invoice_number,omitempty"`
-	AmountCents     int64  `json:"amount_cents,omitempty"`
-	Currency        string `json:"currency,omitempty"`
-	AttemptNumber   int    `json:"attempt_number,omitempty"`
-	MaxAttempts     int    `json:"max_attempts,omitempty"`
-	NextRetryDate   string `json:"next_retry_date,omitempty"`
-	Action          string `json:"action,omitempty"`
-	Reason          string `json:"reason,omitempty"`
-	UpdateURL       string `json:"update_url,omitempty"`
-	MagicLinkURL    string `json:"magic_link_url,omitempty"`
+	To               string `json:"to"`
+	CustomerName     string `json:"customer_name,omitempty"`
+	InvoiceNumber    string `json:"invoice_number,omitempty"`
+	AmountCents      int64  `json:"amount_cents,omitempty"`
+	Currency         string `json:"currency,omitempty"`
+	AttemptNumber    int    `json:"attempt_number,omitempty"`
+	MaxAttempts      int    `json:"max_attempts,omitempty"`
+	NextRetryDate    string `json:"next_retry_date,omitempty"`
+	Action           string `json:"action,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	UpdateURL        string `json:"update_url,omitempty"`
+	MagicLinkURL     string `json:"magic_link_url,omitempty"`
 	PasswordResetURL string `json:"password_reset_url,omitempty"`
-	InviteURL       string `json:"invite_url,omitempty"`
-	InviterEmail    string `json:"inviter_email,omitempty"`
-	TenantName      string `json:"tenant_name,omitempty"`
-	PDF             []byte `json:"pdf,omitempty"`
+	InviteURL        string `json:"invite_url,omitempty"`
+	InviterEmail     string `json:"inviter_email,omitempty"`
+	TenantName       string `json:"tenant_name,omitempty"`
+	PDF              []byte `json:"pdf,omitempty"`
 }
 
 // OutboxSender satisfies the four domain email interfaces (invoice.EmailSender,

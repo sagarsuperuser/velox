@@ -12,9 +12,9 @@ import (
 type fakeStore struct {
 	users       map[string]User // key: id
 	memberships map[string][]Membership
-	resetTokens map[string]fakeToken      // key: hash
-	invites     map[string]Invitation     // key: id
-	inviteByHsh map[string]string         // token_hash -> invitation id
+	resetTokens map[string]fakeToken  // key: hash
+	invites     map[string]Invitation // key: id
+	inviteByHsh map[string]string     // token_hash -> invitation id
 }
 
 type fakeToken struct {

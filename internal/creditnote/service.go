@@ -60,13 +60,13 @@ type CreditGrantInput struct {
 }
 
 type Service struct {
-	store         Store
-	invoices      InvoiceReader
-	refunder      Refunder
-	credits       CreditGranter
-	numbers       NumberGenerator
-	taxRev        TaxReverser
-	couponVoider  CouponRedemptionVoider
+	store        Store
+	invoices     InvoiceReader
+	refunder     Refunder
+	credits      CreditGranter
+	numbers      NumberGenerator
+	taxRev       TaxReverser
+	couponVoider CouponRedemptionVoider
 }
 
 func NewService(store Store, invoices InvoiceReader, refunder Refunder, credits ...CreditGranter) *Service {

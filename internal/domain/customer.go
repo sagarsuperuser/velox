@@ -49,18 +49,18 @@ const (
 )
 
 type CustomerBillingProfile struct {
-	CustomerID        string               `json:"customer_id"`
-	TenantID          string               `json:"tenant_id,omitempty"`
-	LegalName         string               `json:"legal_name,omitempty"`
-	Email             string               `json:"email,omitempty"`
-	Phone             string               `json:"phone,omitempty"`
-	AddressLine1      string               `json:"address_line1,omitempty"`
-	AddressLine2      string               `json:"address_line2,omitempty"`
-	City              string               `json:"city,omitempty"`
-	State             string               `json:"state,omitempty"`
-	PostalCode        string               `json:"postal_code,omitempty"`
-	Country           string               `json:"country,omitempty"`
-	Currency          string               `json:"currency,omitempty"`
+	CustomerID   string `json:"customer_id"`
+	TenantID     string `json:"tenant_id,omitempty"`
+	LegalName    string `json:"legal_name,omitempty"`
+	Email        string `json:"email,omitempty"`
+	Phone        string `json:"phone,omitempty"`
+	AddressLine1 string `json:"address_line1,omitempty"`
+	AddressLine2 string `json:"address_line2,omitempty"`
+	City         string `json:"city,omitempty"`
+	State        string `json:"state,omitempty"`
+	PostalCode   string `json:"postal_code,omitempty"`
+	Country      string `json:"country,omitempty"`
+	Currency     string `json:"currency,omitempty"`
 	// TaxStatus drives tax-decision routing independent of the configured
 	// provider. 'standard' is the default; 'exempt' and 'reverse_charge' both
 	// zero the invoice tax but render different legends on the PDF (exempt
@@ -68,12 +68,12 @@ type CustomerBillingProfile struct {
 	// self-assess). Mirrors the CHECK constraint on
 	// customer_billing_profiles.tax_status.
 	TaxStatus       CustomerTaxStatus    `json:"tax_status"`
-	TaxExemptReason string                `json:"tax_exempt_reason,omitempty"`
-	TaxID           string                `json:"tax_id"`
-	TaxIDType       string                `json:"tax_id_type"`
-	ProfileStatus   BillingProfileStatus  `json:"profile_status"`
-	CreatedAt         time.Time            `json:"created_at"`
-	UpdatedAt         time.Time            `json:"updated_at"`
+	TaxExemptReason string               `json:"tax_exempt_reason,omitempty"`
+	TaxID           string               `json:"tax_id"`
+	TaxIDType       string               `json:"tax_id_type"`
+	ProfileStatus   BillingProfileStatus `json:"profile_status"`
+	CreatedAt       time.Time            `json:"created_at"`
+	UpdatedAt       time.Time            `json:"updated_at"`
 }
 
 type PaymentSetupStatus string

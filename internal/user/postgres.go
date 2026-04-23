@@ -184,7 +184,7 @@ func (s *PostgresStore) ListMemberships(ctx context.Context, userID string) ([]M
 	if err != nil {
 		return nil, fmt.Errorf("query memberships: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Membership
 	for rows.Next() {
@@ -265,7 +265,7 @@ func (s *PostgresStore) ListMembersForTenant(ctx context.Context, tenantID strin
 	if err != nil {
 		return nil, fmt.Errorf("query members: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Member
 	for rows.Next() {
@@ -424,7 +424,7 @@ func (s *PostgresStore) ListInvitationsForTenant(ctx context.Context, tenantID s
 	if err != nil {
 		return nil, fmt.Errorf("query invitations: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Invitation
 	for rows.Next() {
