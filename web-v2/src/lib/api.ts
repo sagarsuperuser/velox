@@ -123,6 +123,8 @@ export const api = {
     apiRequest<Invoice>('POST', `/invoices/${id}/finalize`),
   voidInvoice: (id: string) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/void`),
+  applyInvoiceCoupon: (id: string, data: { code: string; idempotency_key?: string }) =>
+    apiRequest<Invoice>('POST', `/invoices/${id}/apply-coupon`, data),
   collectPayment: (id: string) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/collect`),
   sendInvoiceEmail: (invoiceId: string, email: string) =>
@@ -381,6 +383,7 @@ export interface Invoice {
   tax_id?: string
   tax_provider?: string
   tax_calculation_id?: string
+  tax_transaction_id?: string
   tax_reverse_charge?: boolean
   tax_exempt_reason?: string
   total_amount_cents: number
