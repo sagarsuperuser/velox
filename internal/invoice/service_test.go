@@ -75,6 +75,15 @@ func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.Invoice,
 	return result, len(result), nil
 }
 
+func (m *memStore) HasSucceededInvoice(_ context.Context, tenantID, customerID string) (bool, error) {
+	for _, inv := range m.invoices {
+		if inv.TenantID == tenantID && inv.CustomerID == customerID && inv.PaymentStatus == domain.PaymentSucceeded {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error) {
 	inv, ok := m.invoices[id]
 	if !ok || inv.TenantID != tenantID {
