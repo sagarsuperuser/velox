@@ -47,9 +47,8 @@ func (s *Service) SetCustomerHistoryLookup(h CustomerHistoryLookup) {
 }
 
 // CreateInput is the validated wire format for POST /coupons.
-// PercentOffBP is the source of truth for percentage coupons; the
-// legacy percent_off (float) input is accepted on the handler side and
-// converted to BP before reaching the service.
+// Percentages are carried end-to-end in basis points (int) — no floats in
+// the request, domain, or DB. 5050 means 50.50%.
 type CreateInput struct {
 	Code            string                    `json:"code"`
 	Name            string                    `json:"name"`

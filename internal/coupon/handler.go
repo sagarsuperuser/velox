@@ -79,16 +79,15 @@ func (h *Handler) Routes() chi.Router {
 	return r
 }
 
-// createWire is the on-the-wire shape — accepts legacy percent_off as a
-// float (for backward compat and UI friendliness) alongside the canonical
-// percent_off_bp. Either field works; _bp wins if both are set.
+// createWire is the on-the-wire shape. percent_off_bp carries percentages
+// in basis points (5050 = 50.50%); the DB column has the same shape, so no
+// float-to-int conversion happens anywhere in the stack.
 type createWire struct {
 	Code            string                    `json:"code"`
 	Name            string                    `json:"name"`
 	Type            domain.CouponType         `json:"type"`
 	AmountOff       int64                     `json:"amount_off"`
-	PercentOff      *float64                  `json:"percent_off,omitempty"`
-	PercentOffBP    *int                      `json:"percent_off_bp,omitempty"`
+	PercentOffBP    int                       `json:"percent_off_bp"`
 	Currency        string                    `json:"currency"`
 	MaxRedemptions  *int                      `json:"max_redemptions"`
 	ExpiresAt       *time.Time                `json:"expires_at,omitempty"`
@@ -101,22 +100,13 @@ type createWire struct {
 	Metadata        json.RawMessage           `json:"metadata,omitempty"`
 }
 
-// toCreateInput resolves percent_off / percent_off_bp to the canonical BP
-// integer the service layer expects. Precedence: _bp wins; else _off * 100.
 func (w *createWire) toCreateInput() CreateInput {
-	var bp int
-	switch {
-	case w.PercentOffBP != nil:
-		bp = *w.PercentOffBP
-	case w.PercentOff != nil:
-		bp = int(*w.PercentOff * 100)
-	}
 	return CreateInput{
 		Code:            w.Code,
 		Name:            w.Name,
 		Type:            w.Type,
 		AmountOff:       w.AmountOff,
-		PercentOffBP:    bp,
+		PercentOffBP:    w.PercentOffBP,
 		Currency:        w.Currency,
 		MaxRedemptions:  w.MaxRedemptions,
 		ExpiresAt:       w.ExpiresAt,
