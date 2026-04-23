@@ -127,6 +127,14 @@ var (
 		},
 		[]string{"table"},
 	)
+
+	couponRedemptions = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "velox_coupon_redemptions_total",
+			Help: "Coupon redemption attempts labeled by outcome — 'success' or a domain error code (coupon_expired, coupon_min_amount_not_met, …). Operators alert on the ratio of failures to total.",
+		},
+		[]string{"outcome"},
+	)
 )
 
 // RecordStripeBreakerState updates the global breaker state gauge. Called
@@ -235,6 +243,15 @@ func RecordCreditOperation(opType string) {
 // RecordAutoChargeRetry records an auto-charge retry result ("succeeded" or "failed").
 func RecordAutoChargeRetry(result string) {
 	autoChargeRetries.WithLabelValues(result).Inc()
+}
+
+// RecordCouponRedemption records a redemption attempt labeled by outcome.
+// Pass "success" for a committed redemption; otherwise the domain error code
+// (coupon_expired, coupon_min_amount_not_met, …) so operators can alert
+// on a sudden spike in any single failure mode rather than a blunt
+// HTTP-status-only view.
+func RecordCouponRedemption(outcome string) {
+	couponRedemptions.WithLabelValues(outcome).Inc()
 }
 
 // RecordScheduledCleanup records rows purged by a scheduled cleanup task.
