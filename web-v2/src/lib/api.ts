@@ -247,6 +247,16 @@ export const api = {
       `/coupons/${id}/redemptions${params ? '?' + params : ''}`,
     ),
 
+  // Customer-scoped coupon assignment. Applies to every future invoice
+  // until revoked or the coupon's duration exhausts. 404 from
+  // getCustomerCoupon simply means "no active assignment".
+  getCustomerCoupon: (customerId: string) =>
+    apiRequest<CustomerCouponAssignment>('GET', `/customers/${customerId}/coupon`),
+  assignCustomerCoupon: (customerId: string, data: { code: string; idempotency_key?: string }) =>
+    apiRequest<CustomerCouponAssignment>('POST', `/customers/${customerId}/coupon`, data),
+  revokeCustomerCoupon: (customerId: string) =>
+    apiRequest<void>('DELETE', `/customers/${customerId}/coupon`),
+
   // Audit Log
   listAuditLog: (params?: string) => apiRequest<{ data: AuditEntry[]; total: number }>('GET', `/audit-log${params ? '?' + params : ''}`),
   getAuditFilters: () => apiRequest<AuditFilterOptions>('GET', '/audit-log/filters'),
@@ -682,6 +692,15 @@ export interface CouponRedemption {
   discount_cents: number
   idempotency_key?: string
   created_at: string
+}
+
+export interface CustomerCouponAssignment {
+  id: string
+  coupon_id: string
+  customer_id: string
+  periods_applied: number
+  created_at: string
+  coupon: Coupon
 }
 
 export interface AuditEntry {
