@@ -241,7 +241,11 @@ export const api = {
     apiRequest<{ discount_cents: number; coupon: Coupon }>('POST', '/coupons/preview', data),
   redeemCoupon: (data: { code: string; customer_id: string; subtotal_cents: number; subscription_id?: string; invoice_id?: string; plan_id?: string; currency?: string; idempotency_key?: string }) =>
     apiRequest<CouponRedemption>('POST', '/coupons/redeem', data),
-  listCouponRedemptions: (id: string) => apiRequest<{ data: CouponRedemption[] }>('GET', `/coupons/${id}/redemptions`),
+  listCouponRedemptions: (id: string, params?: string) =>
+    apiRequest<{ data: CouponRedemption[]; has_more?: boolean; next_cursor?: string }>(
+      'GET',
+      `/coupons/${id}/redemptions${params ? '?' + params : ''}`,
+    ),
 
   // Audit Log
   listAuditLog: (params?: string) => apiRequest<{ data: AuditEntry[]; total: number }>('GET', `/audit-log${params ? '?' + params : ''}`),
