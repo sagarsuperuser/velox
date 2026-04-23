@@ -84,3 +84,31 @@ func TestRenderPDF(t *testing.T) {
 
 	t.Logf("PDF generated: %d bytes", len(pdfBytes))
 }
+
+func TestParseBrandColor(t *testing.T) {
+	cases := []struct {
+		in         string
+		wantR      uint8
+		wantG      uint8
+		wantB      uint8
+		ok         bool
+	}{
+		{"#1f6feb", 0x1f, 0x6f, 0xeb, true},
+		{"#000000", 0, 0, 0, true},
+		{"#ffffff", 0xff, 0xff, 0xff, true},
+		{"#FF00AA", 0xff, 0, 0xaa, true},
+		{"", 0, 0, 0, false},
+		{"#fff", 0, 0, 0, false},      // short form rejected
+		{"1f6feb", 0, 0, 0, false},    // missing #
+		{"#zzzzzz", 0, 0, 0, false},   // non-hex
+		{"#12345", 0, 0, 0, false},    // too short
+		{"#1234567", 0, 0, 0, false},  // too long
+	}
+	for _, c := range cases {
+		r, g, b, ok := parseBrandColor(c.in)
+		if ok != c.ok || r != c.wantR || g != c.wantG || b != c.wantB {
+			t.Errorf("parseBrandColor(%q) = (%d,%d,%d,%v), want (%d,%d,%d,%v)",
+				c.in, r, g, b, ok, c.wantR, c.wantG, c.wantB, c.ok)
+		}
+	}
+}

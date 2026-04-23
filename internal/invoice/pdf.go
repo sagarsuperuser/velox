@@ -23,6 +23,45 @@ type CompanyInfo struct {
 	State        string
 	PostalCode   string
 	Country      string
+	// BrandColor is a 7-char hex string (#rrggbb) applied to the company
+	// name and a thin accent bar between header and body. Empty falls back
+	// to the neutral palette — the exact palette existing PDFs used before
+	// this field was introduced.
+	BrandColor string
+}
+
+// parseBrandColor converts a #rrggbb string to RGB. Returns ok=false for
+// anything malformed so callers can cleanly fall back to the default palette.
+func parseBrandColor(hex string) (r, g, b uint8, ok bool) {
+	if len(hex) != 7 || hex[0] != '#' {
+		return 0, 0, 0, false
+	}
+	parse := func(s string) (uint8, bool) {
+		var v uint8
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			var n uint8
+			switch {
+			case c >= '0' && c <= '9':
+				n = c - '0'
+			case c >= 'a' && c <= 'f':
+				n = c - 'a' + 10
+			case c >= 'A' && c <= 'F':
+				n = c - 'A' + 10
+			default:
+				return 0, false
+			}
+			v = v<<4 | n
+		}
+		return v, true
+	}
+	rr, ok1 := parse(hex[1:3])
+	gg, ok2 := parse(hex[3:5])
+	bb, ok3 := parse(hex[5:7])
+	if !ok1 || !ok2 || !ok3 {
+		return 0, 0, 0, false
+	}
+	return rr, gg, bb, true
 }
 
 // CreditNoteInfo holds credit note data for the totals section.
@@ -116,6 +155,8 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 	companyName := "Velox"
 	var companyAddrLines []string
 	companyContact := ""
+	var brandR, brandG, brandB uint8
+	brandSet := false
 	if len(company) > 0 && company[0].Name != "" {
 		c := company[0]
 		companyName = c.Name
@@ -141,10 +182,18 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		if len(parts) > 0 {
 			companyContact = strings.Join(parts, "  |  ")
 		}
+		if r, g, b, ok := parseBrandColor(c.BrandColor); ok {
+			brandR, brandG, brandB = r, g, b
+			brandSet = true
+		}
 	}
 
 	setFont(true, 18)
-	setColor(30, 30, 30)
+	if brandSet {
+		setColor(brandR, brandG, brandB)
+	} else {
+		setColor(30, 30, 30)
+	}
 	textAt(margin, y, companyName)
 
 	setFont(true, 18)
@@ -167,7 +216,17 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		y += 11
 	}
 
-	y += 16
+	// Thin accent bar under the header — visible branding without overwhelming
+	// the document. Skipped when no brand color is set so existing tenants'
+	// PDFs are byte-identical to their pre-0046 output.
+	if brandSet {
+		y += 8
+		pdf.SetFillColor(brandR, brandG, brandB)
+		pdf.RectFromUpperLeftWithStyle(margin, y, contentW, 2, "F")
+		y += 8
+	} else {
+		y += 16
+	}
 
 	// ── Invoice Details (left) + Bill To (right) ──
 	detailStartY := y

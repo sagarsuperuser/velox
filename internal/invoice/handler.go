@@ -501,6 +501,7 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 				State:        ts.CompanyState,
 				PostalCode:   ts.CompanyPostalCode,
 				Country:      ts.CompanyCountry,
+				BrandColor:   ts.BrandColor,
 			}
 		}
 	}
@@ -897,6 +898,7 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 				State:        ts.CompanyState,
 				PostalCode:   ts.CompanyPostalCode,
 				Country:      ts.CompanyCountry,
+				BrandColor:   ts.BrandColor,
 			}
 		}
 	}
