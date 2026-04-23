@@ -936,6 +936,83 @@ func TestRedeem_PrivateCouponRejectsOtherCustomer(t *testing.T) {
 	assertErrContains(t, err, "coupon not found")
 }
 
+// stubHistory is a CustomerHistoryLookup that answers from an in-memory set
+// of customer IDs marked as having a prior successful payment. Used by the
+// first_time_customer_only tests so the restriction has something to consult
+// without dragging in the invoice package.
+type stubHistory struct {
+	paid map[string]bool
+	err  error
+}
+
+func (s stubHistory) HasSucceededInvoice(_ context.Context, _, customerID string) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
+	return s.paid[customerID], nil
+}
+
+// Coupon with first_time_customer_only must reject a customer the history
+// lookup reports as having a prior paid invoice.
+func TestRedeem_FirstTimeCustomerOnly_RejectsReturningCustomer(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "WELCOME10", Name: "Welcome", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000,
+		Restrictions: domain.CouponRestrictions{FirstTimeCustomerOnly: true},
+	})
+	svc := NewService(store)
+	svc.SetCustomerHistoryLookup(stubHistory{paid: map[string]bool{"cust_returning": true}})
+
+	_, err := svc.Redeem(context.Background(), "t1", RedeemInput{
+		Code: "WELCOME10", CustomerID: "cust_returning", SubtotalCents: 10000,
+	})
+	assertErrContains(t, err, "first-time customers")
+}
+
+// Matching case: first_time_customer_only must let a customer with no prior
+// successful payment through.
+func TestRedeem_FirstTimeCustomerOnly_AcceptsNewCustomer(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "WELCOME10", Name: "Welcome", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000,
+		Restrictions: domain.CouponRestrictions{FirstTimeCustomerOnly: true},
+	})
+	svc := NewService(store)
+	svc.SetCustomerHistoryLookup(stubHistory{paid: map[string]bool{}})
+
+	red, err := svc.Redeem(context.Background(), "t1", RedeemInput{
+		Code: "WELCOME10", CustomerID: "cust_new", SubtotalCents: 10000,
+	})
+	if err != nil {
+		t.Fatalf("first-time customer should redeem cleanly, got: %v", err)
+	}
+	if red.DiscountCents != 1000 {
+		t.Errorf("expected 1000 discount, got %d", red.DiscountCents)
+	}
+}
+
+// Fail-open: when no lookup is wired, the restriction is skipped with a warn
+// log — preserves pre-wiring behaviour so existing tests/deployments don't
+// suddenly reject every redeem just because the dep isn't injected yet.
+func TestRedeem_FirstTimeCustomerOnly_NoLookupWired_Skips(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "WELCOME10", Name: "Welcome", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000,
+		Restrictions: domain.CouponRestrictions{FirstTimeCustomerOnly: true},
+	})
+	svc := NewService(store)
+
+	_, err := svc.Redeem(context.Background(), "t1", RedeemInput{
+		Code: "WELCOME10", CustomerID: "cust_any", SubtotalCents: 10000,
+	})
+	if err != nil {
+		t.Fatalf("without lookup wired, restriction must be skipped not rejected: %v", err)
+	}
+}
+
 // Regression: CustomerID == "" is the public-coupon case and must not
 // restrict anyone. A stray "private-by-accident" blocker here would
 // silently break every public coupon.
