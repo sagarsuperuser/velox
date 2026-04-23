@@ -2,6 +2,7 @@ package coupon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -2047,5 +2048,387 @@ func TestMarkPeriodsApplied_NoopOnEmpty(t *testing.T) {
 	// redemption to increment" (defensive guard, see service.go).
 	if err := svc.MarkPeriodsApplied(context.Background(), "t1", []string{""}); err != nil {
 		t.Errorf("empty-string id: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Customer-scoped assignment — AssignToCustomer / Revoke / Get
+// ---------------------------------------------------------------------------
+
+func TestAssignToCustomer_Success(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "SAVE20", Name: "20% off", Type: domain.CouponTypePercentage,
+		PercentOffBP: 2000, Duration: domain.CouponDurationForever,
+	})
+	svc := NewService(store)
+
+	res, err := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
+		Code: "SAVE20", CustomerID: "cus_1",
+	})
+	if err != nil {
+		t.Fatalf("AssignToCustomer: %v", err)
+	}
+	if res.Replay {
+		t.Error("first attach Replay=true, expected false")
+	}
+	if res.Assignment.CustomerID != "cus_1" {
+		t.Errorf("CustomerID = %q, want cus_1", res.Assignment.CustomerID)
+	}
+	if res.Assignment.SubscriptionID != "" {
+		t.Errorf("SubscriptionID = %q, want empty (customer-scope)", res.Assignment.SubscriptionID)
+	}
+	if res.Assignment.InvoiceID != "" {
+		t.Errorf("InvoiceID = %q, want empty (customer-scope)", res.Assignment.InvoiceID)
+	}
+	if res.Coupon.TimesRedeemed != 1 {
+		t.Errorf("TimesRedeemed = %d, want 1", res.Coupon.TimesRedeemed)
+	}
+}
+
+func TestAssignToCustomer_RejectsDoubleAttach(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "SAVE20", Name: "20% off", Type: domain.CouponTypePercentage,
+		PercentOffBP: 2000, Duration: domain.CouponDurationForever,
+	})
+	svc := NewService(store)
+
+	if _, err := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
+		Code: "SAVE20", CustomerID: "cus_1",
+	}); err != nil {
+		t.Fatalf("first attach: %v", err)
+	}
+	_, err := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
+		Code: "SAVE20", CustomerID: "cus_1",
+	})
+	if err == nil {
+		t.Fatal("expected second attach to fail, got nil")
+	}
+	if got := errs.Code(err); got != CodeAlreadyAssigned {
+		t.Errorf("error code = %q, want %q", got, CodeAlreadyAssigned)
+	}
+}
+
+// Reattach AFTER the existing assignment has exhausted its duration must
+// succeed — that's the "durationHasPeriodLeft == false → ignore" escape
+// hatch that AssignToCustomer promises.
+func TestAssignToCustomer_ReattachAfterExhaustion(t *testing.T) {
+	store := newMockStore()
+	periods := 2
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_1", Code: "TWO", Name: "2mo", Type: domain.CouponTypePercentage,
+		PercentOffBP: 2000,
+		Duration:     domain.CouponDurationRepeating, DurationPeriods: &periods,
+	})
+	// Pre-existing exhausted assignment: periods_applied == duration_periods.
+	store.seedRedemption(domain.CouponRedemption{
+		CouponID: "cpn_1", CustomerID: "cus_1", PeriodsApplied: 2,
+	})
+	svc := NewService(store)
+
+	res, err := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
+		Code: "TWO", CustomerID: "cus_1",
+	})
+	if err != nil {
+		t.Fatalf("reattach after exhaustion: %v", err)
+	}
+	if res.Replay {
+		t.Error("Replay=true on fresh attach")
+	}
+}
+
+func TestAssignToCustomer_PrivateCouponCrossCustomerHiddenAsNotFound(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "FRIEND", Name: "Alice-only", Type: domain.CouponTypePercentage,
+		PercentOffBP: 2500, CustomerID: "cus_alice",
+	})
+	svc := NewService(store)
+
+	_, err := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
+		Code: "FRIEND", CustomerID: "cus_bob",
+	})
+	if err == nil {
+		t.Fatal("expected not-found error, got nil")
+	}
+	if got := errs.Code(err); got != CodeNotFound {
+		t.Errorf("error code = %q, want %q (don't leak that code exists)", got, CodeNotFound)
+	}
+}
+
+func TestAssignToCustomer_ArchivedRejected(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "OLD", Name: "archived", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000, ArchivedAt: &pastTime,
+	})
+	svc := NewService(store)
+
+	_, err := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
+		Code: "OLD", CustomerID: "cus_1",
+	})
+	if got := errs.Code(err); got != CodeArchived {
+		t.Errorf("error code = %q, want %q", got, CodeArchived)
+	}
+}
+
+func TestAssignToCustomer_ExpiredRejected(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "STALE", Name: "expired", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000, ExpiresAt: &pastTime,
+	})
+	svc := NewService(store)
+
+	_, err := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
+		Code: "STALE", CustomerID: "cus_1",
+	})
+	if got := errs.Code(err); got != CodeExpired {
+		t.Errorf("error code = %q, want %q", got, CodeExpired)
+	}
+}
+
+func TestAssignToCustomer_IdempotencyReplay(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "IDEMP", Name: "10% off", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000, Duration: domain.CouponDurationForever,
+	})
+	svc := NewService(store)
+
+	in := AssignInput{Code: "IDEMP", CustomerID: "cus_1", IdempotencyKey: "k_assign_1"}
+	first, err := svc.AssignToCustomer(context.Background(), "t1", in)
+	if err != nil {
+		t.Fatalf("first attach: %v", err)
+	}
+	second, err := svc.AssignToCustomer(context.Background(), "t1", in)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if !second.Replay {
+		t.Error("Replay=false on idempotent retry")
+	}
+	if second.Assignment.ID != first.Assignment.ID {
+		t.Errorf("replay assignment ID = %q, want %q", second.Assignment.ID, first.Assignment.ID)
+	}
+	cpn, _ := store.GetByCode(context.Background(), "t1", "IDEMP")
+	if cpn.TimesRedeemed != 1 {
+		t.Errorf("replay bumped counter: TimesRedeemed = %d, want 1", cpn.TimesRedeemed)
+	}
+}
+
+func TestRevokeCustomerAssignment_Success(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "GONE", Name: "10% off", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000, Duration: domain.CouponDurationForever,
+	})
+	svc := NewService(store)
+
+	if _, err := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
+		Code: "GONE", CustomerID: "cus_1",
+	}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	cpn, _ := store.GetByCode(context.Background(), "t1", "GONE")
+	if cpn.TimesRedeemed != 1 {
+		t.Fatalf("pre-revoke TimesRedeemed = %d, want 1", cpn.TimesRedeemed)
+	}
+
+	if err := svc.RevokeCustomerAssignment(context.Background(), "t1", "cus_1"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	// Counter rolls back so operators can re-attach the same coupon to
+	// another customer within a capped max-redemptions budget.
+	cpn, _ = store.GetByCode(context.Background(), "t1", "GONE")
+	if cpn.TimesRedeemed != 0 {
+		t.Errorf("post-revoke TimesRedeemed = %d, want 0", cpn.TimesRedeemed)
+	}
+
+	// Re-revoke → 404, matching the attach/detach state machine.
+	if err := svc.RevokeCustomerAssignment(context.Background(), "t1", "cus_1"); err == nil {
+		t.Error("expected re-revoke to fail with not-found")
+	}
+}
+
+func TestRevokeCustomerAssignment_NoActiveAssignment(t *testing.T) {
+	svc := NewService(newMockStore())
+	err := svc.RevokeCustomerAssignment(context.Background(), "t1", "cus_1")
+	if !errors.Is(err, errs.ErrNotFound) {
+		t.Errorf("error = %v, want errs.ErrNotFound", err)
+	}
+}
+
+func TestGetCustomerAssignment_ReturnsActiveWithCoupon(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "PEEK", Name: "15% off", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1500, Duration: domain.CouponDurationForever,
+	})
+	svc := NewService(store)
+	attached, _ := svc.AssignToCustomer(context.Background(), "t1", AssignInput{
+		Code: "PEEK", CustomerID: "cus_1",
+	})
+
+	got, err := svc.GetCustomerAssignment(context.Background(), "t1", "cus_1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Assignment.ID != attached.Assignment.ID {
+		t.Errorf("ID = %q, want %q", got.Assignment.ID, attached.Assignment.ID)
+	}
+	if got.Coupon.Code != "PEEK" {
+		t.Errorf("Coupon.Code = %q, want PEEK", got.Coupon.Code)
+	}
+}
+
+func TestGetCustomerAssignment_NoActive(t *testing.T) {
+	svc := NewService(newMockStore())
+	_, err := svc.GetCustomerAssignment(context.Background(), "t1", "cus_1")
+	if !errors.Is(err, errs.ErrNotFound) {
+		t.Errorf("error = %v, want errs.ErrNotFound", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ApplyToInvoiceForCustomer — per-invoice fallback path
+// ---------------------------------------------------------------------------
+
+func TestApplyToInvoiceForCustomer_PercentageAppliesEveryInvoice(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_1", Code: "FOREVER20", Name: "20% off",
+		Type: domain.CouponTypePercentage, PercentOffBP: 2000,
+		Duration: domain.CouponDurationForever,
+	})
+	store.seedRedemption(domain.CouponRedemption{
+		CouponID: "cpn_1", CustomerID: "cus_1",
+	})
+	svc := NewService(store)
+
+	got, err := svc.ApplyToInvoiceForCustomer(context.Background(), "t1", "cus_1", "usd", nil, 10000)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Cents != 2000 {
+		t.Errorf("Cents = %d, want 2000 (20%% of 10000)", got.Cents)
+	}
+	if len(got.RedemptionIDs) != 1 {
+		t.Errorf("RedemptionIDs len = %d, want 1", len(got.RedemptionIDs))
+	}
+}
+
+func TestApplyToInvoiceForCustomer_DurationExhaustedSkipped(t *testing.T) {
+	store := newMockStore()
+	periods := 2
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_1", Code: "TWO", Name: "2mo", Type: domain.CouponTypePercentage,
+		PercentOffBP: 2000,
+		Duration:     domain.CouponDurationRepeating, DurationPeriods: &periods,
+	})
+	store.seedRedemption(domain.CouponRedemption{
+		CouponID: "cpn_1", CustomerID: "cus_1", PeriodsApplied: 2,
+	})
+	svc := NewService(store)
+
+	got, err := svc.ApplyToInvoiceForCustomer(context.Background(), "t1", "cus_1", "usd", nil, 10000)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Cents != 0 {
+		t.Errorf("Cents = %d, want 0 (exhausted)", got.Cents)
+	}
+}
+
+func TestApplyToInvoiceForCustomer_FixedAmountCurrencyMismatchSkipped(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_eur", Code: "EUR5", Name: "€5 off",
+		Type: domain.CouponTypeFixedAmount, AmountOff: 500, Currency: "eur",
+		Duration: domain.CouponDurationForever,
+	})
+	store.seedRedemption(domain.CouponRedemption{
+		CouponID: "cpn_eur", CustomerID: "cus_1",
+	})
+	svc := NewService(store)
+
+	got, err := svc.ApplyToInvoiceForCustomer(context.Background(), "t1", "cus_1", "usd", nil, 10000)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Cents != 0 {
+		t.Errorf("Cents = %d, want 0 (currency mismatch)", got.Cents)
+	}
+}
+
+func TestApplyToInvoiceForCustomer_PicksBestDiscount(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_small", Code: "FIVE", Name: "5% off",
+		Type: domain.CouponTypePercentage, PercentOffBP: 500,
+		Duration: domain.CouponDurationForever,
+	})
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_big", Code: "THIRTY", Name: "30% off",
+		Type: domain.CouponTypePercentage, PercentOffBP: 3000,
+		Duration: domain.CouponDurationForever,
+	})
+	// Simulate a pathological state: two active assignments on the same
+	// customer (service guards against this but the fallback picks best).
+	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_small", CustomerID: "cus_1"})
+	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_big", CustomerID: "cus_1"})
+	svc := NewService(store)
+
+	got, err := svc.ApplyToInvoiceForCustomer(context.Background(), "t1", "cus_1", "usd", nil, 10000)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Cents != 3000 {
+		t.Errorf("Cents = %d, want 3000 (picks best)", got.Cents)
+	}
+}
+
+func TestApplyToInvoiceForCustomer_EmptyCustomerReturnsZero(t *testing.T) {
+	svc := NewService(newMockStore())
+	got, err := svc.ApplyToInvoiceForCustomer(context.Background(), "t1", "", "usd", nil, 10000)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Cents != 0 {
+		t.Errorf("Cents = %d, want 0 (empty customer id)", got.Cents)
+	}
+}
+
+func TestApplyToInvoiceForCustomer_NoAssignmentsReturnsZero(t *testing.T) {
+	svc := NewService(newMockStore())
+	got, err := svc.ApplyToInvoiceForCustomer(context.Background(), "t1", "cus_1", "usd", nil, 10000)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Cents != 0 {
+		t.Errorf("Cents = %d, want 0 (no assignments)", got.Cents)
+	}
+}
+
+func TestApplyToInvoiceForCustomer_PlanRestrictionSkipped(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		ID: "cpn_plan", Code: "PLAN_A_ONLY", Name: "20% off plan A",
+		Type: domain.CouponTypePercentage, PercentOffBP: 2000,
+		Duration: domain.CouponDurationForever,
+		PlanIDs:  []string{"plan_a"},
+	})
+	store.seedRedemption(domain.CouponRedemption{
+		CouponID: "cpn_plan", CustomerID: "cus_1",
+	})
+	svc := NewService(store)
+
+	got, err := svc.ApplyToInvoiceForCustomer(context.Background(), "t1", "cus_1", "usd", []string{"plan_b"}, 10000)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.Cents != 0 {
+		t.Errorf("Cents = %d, want 0 (plan restriction mismatch)", got.Cents)
 	}
 }
