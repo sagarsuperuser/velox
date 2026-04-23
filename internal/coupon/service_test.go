@@ -442,6 +442,68 @@ func TestCalculateDiscount_UnknownType(t *testing.T) {
 	}
 }
 
+// TestCalculateDiscount_IntOnlyEdgeCases exercises cases where a float
+// implementation would drift or lose precision — the int-only path is
+// byte-deterministic and must produce exact results.
+func TestCalculateDiscount_IntOnlyEdgeCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		pctBP    int
+		subtotal int64
+		want     int64
+	}{
+		{
+			// 1 bp of $10M (1e9 cents): 1e9 × 1 = 1e9, /10000 = 100_000.
+			// A naive float round-trip drops to ~99_999 on some platforms.
+			name:     "1 bp of 10M — no float drift",
+			pctBP:    1,
+			subtotal: 1_000_000_000,
+			want:     100_000,
+		},
+		{
+			// 50% of odd subtotal: 999 × 5000 = 4_995_000, /10000 = 499,
+			// rem 5000, doubled=10000, equal, quotient=499 odd → 500.
+			name:     "banker's tie at odd quotient rounds up",
+			pctBP:    5000,
+			subtotal: 999,
+			want:     500,
+		},
+		{
+			// 50% of even subtotal: 998 × 5000 = 4_990_000, /10000 = 499,
+			// rem 0 — clean division, no rounding required.
+			name:     "even half cent, no tie",
+			pctBP:    5000,
+			subtotal: 998,
+			want:     499,
+		},
+		{
+			// 1 bp of 5000 cents: 5000 × 1 = 5000, /10000 = 0, rem=5000,
+			// doubled=10000, equal, quotient=0 even → 0. Tie on 0 stays 0.
+			name:     "banker's tie at zero quotient stays even",
+			pctBP:    1,
+			subtotal: 5000,
+			want:     0,
+		},
+		{
+			// 1 bp of 15000 cents: 15000 × 1 = 15000, /10000 = 1, rem=5000.
+			// doubled=10000, equal, quotient=1 odd → 2.
+			name:     "banker's tie at odd-1 quotient rounds up",
+			pctBP:    1,
+			subtotal: 15000,
+			want:     2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := domain.Coupon{Type: domain.CouponTypePercentage, PercentOffBP: tt.pctBP}
+			if got := CalculateDiscount(c, tt.subtotal); got != tt.want {
+				t.Errorf("got %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Create — validation tests
 // ---------------------------------------------------------------------------
