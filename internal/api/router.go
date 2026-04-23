@@ -320,6 +320,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	invoiceH.SetAuditLogger(auditLogger)
 	subH.SetAuditLogger(auditLogger)
 	creditNoteH.SetAuditLogger(auditLogger)
+	couponH.SetAuditLogger(auditLogger)
 
 	// Feature flags (created before billing engine to gate Stripe Tax)
 	featureSvc := feature.NewService(feature.NewPostgresStore(db))

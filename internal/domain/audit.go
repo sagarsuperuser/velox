@@ -32,6 +32,9 @@ const (
 	AuditActionRevoke   = "revoke"
 	AuditActionGrant    = "grant"
 	AuditActionRefund   = "refund"
+	AuditActionArchive   = "archive"
+	AuditActionUnarchive = "unarchive"
+	AuditActionRedeem    = "redeem"
 )
 
 type TenantSettings struct {
