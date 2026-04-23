@@ -88,6 +88,39 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Co
 	`, id))
 }
 
+// GetByIDs batch-loads coupons by id in a single query — replaces the N+1
+// per-redemption Get loop that ApplyToInvoice used to run. Missing ids are
+// simply absent from the returned map.
+func (s *PostgresStore) GetByIDs(ctx context.Context, tenantID string, ids []string) (map[string]domain.Coupon, error) {
+	if len(ids) == 0 {
+		return map[string]domain.Coupon{}, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+couponColumns+` FROM coupons WHERE id = ANY($1)
+	`, postgres.StringArray(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string]domain.Coupon, len(ids))
+	for rows.Next() {
+		c, err := scanCouponRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[c.ID] = c
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) GetByCode(ctx context.Context, tenantID, code string) (domain.Coupon, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

@@ -69,7 +69,7 @@ type CreditApplier interface {
 // 'repeating' coupon, so it must run only when the invoice that consumed
 // the discount is durably persisted.
 type CouponApplier interface {
-	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
+	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, customerID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
 	MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
 }
 
@@ -890,7 +890,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	var discountCents int64
 	var appliedRedemptionIDs []string
 	if e.coupons != nil && subtotal > 0 && sub.ID != "" {
-		d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, invoiceCurrency, planIDs, subtotal)
+		d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, sub.CustomerID, invoiceCurrency, planIDs, subtotal)
 		if err != nil {
 			slog.Warn("coupon apply failed, proceeding without discount",
 				"error", err, "subscription_id", sub.ID)

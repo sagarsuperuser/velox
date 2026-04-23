@@ -16,6 +16,11 @@ type Store interface {
 
 	Get(ctx context.Context, tenantID, id string) (domain.Coupon, error)
 	GetByCode(ctx context.Context, tenantID, code string) (domain.Coupon, error)
+	// GetByIDs batch-loads coupons keyed by id. Missing ids are omitted
+	// from the map rather than raising ErrNotFound — ApplyToInvoice uses
+	// it to resolve the coupons for a redemption set and simply drops
+	// redemptions whose coupon has been deleted.
+	GetByIDs(ctx context.Context, tenantID string, ids []string) (map[string]domain.Coupon, error)
 	List(ctx context.Context, tenantID string, includeArchived bool) ([]domain.Coupon, error)
 
 	// Update patches mutable fields (name, max_redemptions, expires_at,

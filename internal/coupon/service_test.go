@@ -62,6 +62,16 @@ func (m *mockStore) GetByCode(_ context.Context, _, code string) (domain.Coupon,
 	return c, nil
 }
 
+func (m *mockStore) GetByIDs(_ context.Context, _ string, ids []string) (map[string]domain.Coupon, error) {
+	out := make(map[string]domain.Coupon, len(ids))
+	for _, id := range ids {
+		if c, ok := m.coupons[id]; ok {
+			out[id] = c
+		}
+	}
+	return out, nil
+}
+
 func (m *mockStore) List(_ context.Context, _ string, includeArchived bool) ([]domain.Coupon, error) {
 	var result []domain.Coupon
 	for _, c := range m.coupons {
@@ -1048,7 +1058,7 @@ func TestApplyToInvoice_PercentageCoupon(t *testing.T) {
 		DiscountCents:  1000,
 	})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", []string{"plan_1"}, 12345)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "", []string{"plan_1"}, 12345)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1078,7 +1088,7 @@ func TestApplyToInvoice_FixedAmountCoupon(t *testing.T) {
 		DiscountCents:  500,
 	})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1111,7 +1121,7 @@ func TestApplyToInvoice_SkipsFixedAmountCouponWithCurrencyMismatch(t *testing.T)
 		DiscountCents:  500,
 	})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "EUR", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "EUR", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1144,7 +1154,7 @@ func TestApplyToInvoice_AppliesPercentageRegardlessOfInvoiceCurrency(t *testing.
 		DiscountCents:  1000,
 	})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "EUR", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "EUR", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1175,7 +1185,7 @@ func TestApplyToInvoice_ClampsToSubtotal(t *testing.T) {
 		DiscountCents:  5000,
 	})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", []string{"plan_1"}, 2000)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "", []string{"plan_1"}, 2000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1204,7 +1214,7 @@ func TestApplyToInvoice_ExpiredCouponIgnored(t *testing.T) {
 		DiscountCents:  1000,
 	})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1231,7 +1241,7 @@ func TestApplyToInvoice_InactiveCouponIgnored(t *testing.T) {
 		DiscountCents:  1000,
 	})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1260,7 +1270,7 @@ func TestApplyToInvoice_PlanRestriction(t *testing.T) {
 	})
 
 	// Subscription is on plan_B — restriction blocks.
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", []string{"plan_B"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "", []string{"plan_B"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1269,7 +1279,7 @@ func TestApplyToInvoice_PlanRestriction(t *testing.T) {
 	}
 
 	// Subscription is on plan_A — restriction passes.
-	got, err = svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", []string{"plan_A"}, 10000)
+	got, err = svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "", []string{"plan_A"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1282,7 +1292,7 @@ func TestApplyToInvoice_NoRedemptions(t *testing.T) {
 	store := newMockStore()
 	svc := NewService(store)
 
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1295,12 +1305,105 @@ func TestApplyToInvoice_EmptySubscriptionID(t *testing.T) {
 	store := newMockStore()
 	svc := NewService(store)
 
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got.Cents != 0 {
 		t.Errorf("expected 0 with empty subscription ID, got %d", got.Cents)
+	}
+}
+
+// Defence-in-depth: even if a redemption row exists, a coupon privately scoped
+// to a different customer must not apply to this invoice. Skips the discount
+// silently — logged as a warning inside the service.
+func TestApplyToInvoice_PrivateCouponCustomerMismatch_Skips(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID:           "cpn_priv",
+		Code:         "FRIEND",
+		Name:         "20% off",
+		Type:         domain.CouponTypePercentage,
+		PercentOffBP: 2000,
+		CustomerID:   "cus_alice",
+	})
+	store.redemptions = append(store.redemptions, domain.CouponRedemption{
+		CouponID:       "cpn_priv",
+		SubscriptionID: "sub_1",
+		CustomerID:     "cus_alice",
+		DiscountCents:  2000,
+	})
+
+	// Invoice belongs to cus_bob — the private coupon must not apply.
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "cus_bob", "", []string{"plan_1"}, 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cents != 0 {
+		t.Errorf("expected 0 (private coupon not owned by invoice customer), got %d", got.Cents)
+	}
+}
+
+// The matching customer path still works — regression guard against the
+// private-coupon skip becoming too aggressive.
+func TestApplyToInvoice_PrivateCouponMatchingCustomer_Applies(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID:           "cpn_priv",
+		Code:         "FRIEND",
+		Name:         "20% off",
+		Type:         domain.CouponTypePercentage,
+		PercentOffBP: 2000,
+		CustomerID:   "cus_alice",
+	})
+	store.redemptions = append(store.redemptions, domain.CouponRedemption{
+		CouponID:       "cpn_priv",
+		SubscriptionID: "sub_1",
+		CustomerID:     "cus_alice",
+		DiscountCents:  2000,
+	})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "cus_alice", "", []string{"plan_1"}, 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cents != 2000 {
+		t.Errorf("expected 2000 (20%% of 10000), got %d", got.Cents)
+	}
+}
+
+// A public coupon (empty CustomerID) with a redemption stamped for a
+// different customer should still be skipped — the redemption-side check
+// catches the case where a redemption leaked across customers on the same
+// subscription.
+func TestApplyToInvoice_RedemptionCustomerMismatch_Skips(t *testing.T) {
+	store := newMockStore()
+	svc := NewService(store)
+
+	store.seedCoupon(domain.Coupon{
+		ID:           "cpn_pub",
+		Code:         "SAVE10",
+		Name:         "10% off",
+		Type:         domain.CouponTypePercentage,
+		PercentOffBP: 1000,
+	})
+	store.redemptions = append(store.redemptions, domain.CouponRedemption{
+		CouponID:       "cpn_pub",
+		SubscriptionID: "sub_1",
+		CustomerID:     "cus_old",
+		DiscountCents:  1000,
+	})
+
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "cus_new", "", []string{"plan_1"}, 10000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cents != 0 {
+		t.Errorf("expected 0 (redemption stamped for different customer), got %d", got.Cents)
 	}
 }
 
@@ -1332,7 +1435,7 @@ func TestApplyToInvoice_MultipleCouponsTakesLargest(t *testing.T) {
 		domain.CouponRedemption{CouponID: "cpn_big", SubscriptionID: "sub_1"},
 	)
 
-	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "tenant_1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1360,7 +1463,7 @@ func TestApplyToInvoice_DurationOnce_ExhaustsAfterFirst(t *testing.T) {
 		CouponID: "cpn_once", SubscriptionID: "sub_1",
 	})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1375,7 +1478,7 @@ func TestApplyToInvoice_DurationOnce_ExhaustsAfterFirst(t *testing.T) {
 		t.Fatalf("MarkPeriodsApplied: %v", err)
 	}
 
-	got, err = svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err = svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error on cycle 2: %v", err)
 	}
@@ -1402,7 +1505,7 @@ func TestApplyToInvoice_DurationRepeating_ExhaustsAfterNPeriods(t *testing.T) {
 	})
 
 	for cycle := 1; cycle <= 3; cycle++ {
-		got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", []string{"plan_1"}, 10000)
+		got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", "", []string{"plan_1"}, 10000)
 		if err != nil {
 			t.Fatalf("cycle %d unexpected error: %v", cycle, err)
 		}
@@ -1414,7 +1517,7 @@ func TestApplyToInvoice_DurationRepeating_ExhaustsAfterNPeriods(t *testing.T) {
 		}
 	}
 
-	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("cycle 4 unexpected error: %v", err)
 	}
@@ -1442,7 +1545,7 @@ func TestApplyToInvoice_DurationForever_NeverExhausts(t *testing.T) {
 	})
 	_ = redID
 
-	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1473,7 +1576,7 @@ func TestApplyToInvoice_StackablePercentAndFixed(t *testing.T) {
 	id1 := store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_pct", SubscriptionID: "sub_1"})
 	id2 := store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_fix", SubscriptionID: "sub_1"})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1507,7 +1610,7 @@ func TestApplyToInvoice_StackablePercentCappedAt100(t *testing.T) {
 	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_a", SubscriptionID: "sub_1"})
 	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_b", SubscriptionID: "sub_1"})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1534,7 +1637,7 @@ func TestApplyToInvoice_StackableClampedToSubtotal(t *testing.T) {
 	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_50", SubscriptionID: "sub_1"})
 	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_80", SubscriptionID: "sub_1"})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1571,7 +1674,7 @@ func TestApplyToInvoice_NonStackableOverridesStackable(t *testing.T) {
 	bigID := store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_20p_ns", SubscriptionID: "sub_1"})
 	store.seedRedemption(domain.CouponRedemption{CouponID: "cpn_3f_s", SubscriptionID: "sub_1"})
 
-	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", []string{"plan_1"}, 10000)
+	got, err := svc.ApplyToInvoice(context.Background(), "t1", "sub_1", "", "", []string{"plan_1"}, 10000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

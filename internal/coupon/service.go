@@ -491,10 +491,16 @@ func (s *Service) ListRedemptions(ctx context.Context, tenantID, couponID string
 // (one per item) rather than a single plan_id. A coupon whose PlanIDs gate
 // references any plan the subscription currently carries is eligible.
 //
+// customerID scopes the check defensively: a private coupon (Coupon.CustomerID
+// non-empty) must match the invoice's customer, and a redemption stamped for
+// a different customer is skipped. Defence-in-depth for the case where the
+// redemption path missed a gate — better to drop the discount than to honour
+// a stranger's private coupon.
+//
 // invoiceCurrency is the currency the invoice will settle in. Fixed-amount
 // coupons whose stored currency differs are skipped (with a warning). Percentage
 // coupons are currency-agnostic and pass through regardless.
-func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error) {
+func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, customerID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error) {
 	if subscriptionID == "" || subtotalCents <= 0 {
 		return domain.CouponDiscountResult{}, nil
 	}
@@ -507,6 +513,20 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 		return domain.CouponDiscountResult{}, nil
 	}
 
+	couponIDs := make([]string, 0, len(redemptions))
+	seen := make(map[string]struct{}, len(redemptions))
+	for _, r := range redemptions {
+		if _, ok := seen[r.CouponID]; ok {
+			continue
+		}
+		seen[r.CouponID] = struct{}{}
+		couponIDs = append(couponIDs, r.CouponID)
+	}
+	coupons, err := s.store.GetByIDs(ctx, tenantID, couponIDs)
+	if err != nil {
+		return domain.CouponDiscountResult{}, fmt.Errorf("load coupons: %w", err)
+	}
+
 	now := time.Now()
 
 	type eligible struct {
@@ -516,8 +536,24 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 	var pool []eligible
 
 	for _, r := range redemptions {
-		cpn, err := s.store.Get(ctx, tenantID, r.CouponID)
-		if err != nil {
+		cpn, ok := coupons[r.CouponID]
+		if !ok {
+			continue
+		}
+		if customerID != "" && cpn.CustomerID != "" && cpn.CustomerID != customerID {
+			slog.Warn("coupon: private coupon customer mismatch — skipping",
+				"coupon_id", cpn.ID,
+				"coupon_customer_id", cpn.CustomerID,
+				"invoice_customer_id", customerID,
+				"subscription_id", subscriptionID)
+			continue
+		}
+		if customerID != "" && r.CustomerID != "" && r.CustomerID != customerID {
+			slog.Warn("coupon: redemption customer mismatch — skipping",
+				"redemption_id", r.ID,
+				"redemption_customer_id", r.CustomerID,
+				"invoice_customer_id", customerID,
+				"subscription_id", subscriptionID)
 			continue
 		}
 		if cpn.ArchivedAt != nil {
