@@ -355,6 +355,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// invoice. Manual/none providers receive the call but no-op.
 	invoiceSvc.SetTaxCommitter(engine)
 
+	// Operator-initiated apply-coupon-to-draft-invoice routes through the
+	// billing engine, which owns redeem → tax recompute → atomic persist
+	// → mark-periods orchestration. Keeps the HTTP surface on the invoice
+	// resource while the engine does the coordination.
+	invoiceSvc.SetCouponApplier(engine)
+
 	// Credit note issue reverses the invoice's tax_transaction so the
 	// tenant's upstream tax liability is reduced alongside the refund.
 	// Required for EU VAT, UK VAT, India GST compliance — without this

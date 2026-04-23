@@ -128,6 +128,14 @@ func (a *invoiceStoreAdapter) SetTaxTransaction(ctx context.Context, tenantID, i
 	return a.store.SetTaxTransaction(ctx, tenantID, id, taxTransactionID)
 }
 
+func (a *invoiceStoreAdapter) ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error) {
+	return a.store.ListLineItems(ctx, tenantID, invoiceID)
+}
+
+func (a *invoiceStoreAdapter) ApplyDiscountAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return a.store.ApplyDiscountAtomic(ctx, tenantID, invoiceID, update, lineItems)
+}
+
 // TestFullBillingCycle_E2E tests the complete flow against real Postgres:
 // tenant → customer → meter → rating rule → plan → subscription → usage → billing engine → invoice
 func TestFullBillingCycle_E2E(t *testing.T) {

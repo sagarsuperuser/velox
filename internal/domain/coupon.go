@@ -165,6 +165,36 @@ type CouponDiscountResult struct {
 	RedemptionIDs []string `json:"redemption_ids,omitempty"`
 }
 
+// CouponRedeemRequest is the cross-package redeem input used when the
+// billing engine commits a coupon against an already-issued invoice (the
+// apply-coupon-to-draft-invoice flow). Lives in domain because billing
+// and coupon both handle it without importing each other — domain is the
+// shared vocabulary.
+//
+// PlanIDs carries the target subscription's full plan set so a coupon
+// gated to specific plans matches against any-one-of rather than a single
+// plan. An empty list disables the plan gate (matches the legacy
+// single-plan RedeemInput contract).
+type CouponRedeemRequest struct {
+	Code           string   `json:"code"`
+	CustomerID     string   `json:"customer_id"`
+	SubscriptionID string   `json:"subscription_id,omitempty"`
+	InvoiceID      string   `json:"invoice_id,omitempty"`
+	SubtotalCents  int64    `json:"subtotal_cents"`
+	Currency       string   `json:"currency,omitempty"`
+	IdempotencyKey string   `json:"idempotency_key,omitempty"`
+	PlanIDs        []string `json:"plan_ids,omitempty"`
+}
+
+// CouponRedeemResult is the domain-shape echo of coupon.RedeemResult so
+// billing can consume a redemption outcome without importing the coupon
+// package. Replay mirrors the idempotency-replay flag the HTTP layer
+// surfaces as the Idempotent-Replay response header.
+type CouponRedeemResult struct {
+	Redemption CouponRedemption `json:"redemption"`
+	Replay     bool             `json:"replay"`
+}
+
 // CustomerDiscount is the operator-initiated attachment of a coupon to a
 // customer. The billing engine consults the single active row per customer
 // on every invoice generation and recomputes the discount against that

@@ -59,6 +59,14 @@ func (a *invoiceWriterAdapter) SetTaxTransaction(ctx context.Context, tenantID, 
 	return a.store.SetTaxTransaction(ctx, tenantID, id, taxTransactionID)
 }
 
+func (a *invoiceWriterAdapter) ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error) {
+	return a.store.ListLineItems(ctx, tenantID, invoiceID)
+}
+
+func (a *invoiceWriterAdapter) ApplyDiscountAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return a.store.ApplyDiscountAtomic(ctx, tenantID, invoiceID, update, lineItems)
+}
+
 // creditGrantAdapter bridges credit.Service → creditnote.CreditGranter.
 type creditGrantAdapter struct {
 	svc *credit.Service
