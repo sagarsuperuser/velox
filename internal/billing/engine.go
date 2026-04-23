@@ -70,6 +70,12 @@ type CreditApplier interface {
 // the discount is durably persisted.
 type CouponApplier interface {
 	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, customerID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
+	// ApplyToInvoiceForCustomer is the customer-scoped fallback: when no
+	// subscription coupon applies (or the invoice has no subscription at
+	// all), the engine consults the customer's standing assignment so the
+	// operator's "apply this coupon to all future invoices" action takes
+	// effect. Subscription-scope wins when both exist (Stripe's rule).
+	ApplyToInvoiceForCustomer(ctx context.Context, tenantID, customerID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
 	MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
 }
 
@@ -889,14 +895,30 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	// a repeating coupon that the customer never actually got.
 	var discountCents int64
 	var appliedRedemptionIDs []string
-	if e.coupons != nil && subtotal > 0 && sub.ID != "" {
-		d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, sub.CustomerID, invoiceCurrency, planIDs, subtotal)
-		if err != nil {
-			slog.Warn("coupon apply failed, proceeding without discount",
-				"error", err, "subscription_id", sub.ID)
-		} else {
-			discountCents = d.Cents
-			appliedRedemptionIDs = d.RedemptionIDs
+	if e.coupons != nil && subtotal > 0 {
+		if sub.ID != "" {
+			d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, sub.CustomerID, invoiceCurrency, planIDs, subtotal)
+			if err != nil {
+				slog.Warn("coupon apply failed, proceeding without discount",
+					"error", err, "subscription_id", sub.ID)
+			} else {
+				discountCents = d.Cents
+				appliedRedemptionIDs = d.RedemptionIDs
+			}
+		}
+		// Customer-scope fallback: only runs when subscription-scope
+		// produced no discount (or there's no subscription at all).
+		// Stripe's rule — subscription.discount beats customer.discount on
+		// the same invoice, so we never stack the two.
+		if discountCents == 0 && sub.CustomerID != "" {
+			d, err := e.coupons.ApplyToInvoiceForCustomer(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, planIDs, subtotal)
+			if err != nil {
+				slog.Warn("customer coupon apply failed, proceeding without discount",
+					"error", err, "customer_id", sub.CustomerID)
+			} else {
+				discountCents = d.Cents
+				appliedRedemptionIDs = d.RedemptionIDs
+			}
 		}
 	}
 	taxApp, _ := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, lineItems)

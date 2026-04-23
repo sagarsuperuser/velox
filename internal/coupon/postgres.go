@@ -643,6 +643,86 @@ func (s *PostgresStore) VoidRedemptionsForInvoice(ctx context.Context, tenantID,
 	return total, nil
 }
 
+// ListActiveCustomerAssignments reads the rows that represent a
+// customer-scoped coupon attachment — subscription_id / invoice_id both
+// NULL, voided_at NULL. The partial index idx_coupon_redemptions_active_customer
+// (migration 0046) serves this exact WHERE clause.
+func (s *PostgresStore) ListActiveCustomerAssignments(ctx context.Context, tenantID, customerID string) ([]domain.CouponRedemption, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+redemptionCols+`
+		FROM coupon_redemptions
+		WHERE customer_id = $1
+		  AND subscription_id IS NULL
+		  AND invoice_id IS NULL
+		  AND voided_at IS NULL
+		ORDER BY created_at ASC
+	`, customerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.CouponRedemption
+	for rows.Next() {
+		var r domain.CouponRedemption
+		if err := rows.Scan(scanRedemptionDest(&r)...); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// VoidCustomerAssignment marks the given customer-scoped redemption
+// voided and rolls back coupon.times_redeemed in the same tx. Only
+// targets assignment rows (both subscription_id and invoice_id NULL) —
+// by scoping the WHERE we prevent accidental void of a subscription or
+// invoice-attached redemption via the same endpoint. Returns
+// errs.ErrNotFound when no matching active row exists (already revoked,
+// wrong id, or the redemption is scoped elsewhere).
+func (s *PostgresStore) VoidCustomerAssignment(ctx context.Context, tenantID, redemptionID string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	var couponID string
+	err = tx.QueryRowContext(ctx, `
+		UPDATE coupon_redemptions
+		SET voided_at = now()
+		WHERE id = $1
+		  AND subscription_id IS NULL
+		  AND invoice_id IS NULL
+		  AND voided_at IS NULL
+		RETURNING coupon_id
+	`, redemptionID).Scan(&couponID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errs.ErrNotFound
+		}
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE coupons
+		SET times_redeemed = GREATEST(times_redeemed - 1, 0),
+		    updated_at = now()
+		WHERE id = $1
+	`, couponID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 // IncrementPeriodsApplied advances each redemption's counter by one in a
 // single UPDATE. Not guarded against double-increment because the billing
 // engine is the only caller and it invokes this once per (invoice,
