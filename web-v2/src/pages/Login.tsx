@@ -116,6 +116,19 @@ export default function LoginPage() {
           </form>
         </CardContent>
       </Card>
+      <p className="text-xs text-muted-foreground mt-6">
+        Trouble signing in?{' '}
+        <a
+          href={`mailto:support@velox.dev?subject=${encodeURIComponent(
+            'Velox sign-in issue',
+          )}&body=${encodeURIComponent(
+            `What happened:\n\n\n--- context ---\nurl: ${typeof window !== 'undefined' ? window.location.href : ''}\nuser_agent: ${typeof navigator !== 'undefined' ? navigator.userAgent : ''}\n`,
+          )}`}
+          className="text-foreground hover:underline"
+        >
+          Contact support
+        </a>
+      </p>
     </div>
   )
 }

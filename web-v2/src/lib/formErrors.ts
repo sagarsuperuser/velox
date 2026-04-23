@@ -11,7 +11,9 @@ import { ApiError } from './api'
  *   focused so keyboard users land on the problem immediately.
  * - If the error is field-less (InvalidState, NotFound, 500s, unexpected
  *   errors) or the field isn't rendered in this form, the message shows as a
- *   toast instead of silently disappearing.
+ *   toast instead of silently disappearing. When a Request ID is available,
+ *   it's attached as the toast description with a Copy action — operators can
+ *   paste it straight into a support email and we can trace it in logs.
  *
  * Pass `fields` as either:
  *   - `string[]` of form field names when server and form names match, or
@@ -49,7 +51,40 @@ export function applyApiError<T extends FieldValues>(
     return
   }
 
-  toast.error(err.message)
+  toastApiError(err)
+}
+
+/**
+ * Show a user-facing error toast. When the server returned a Request ID, it is
+ * included as the toast description with a Copy action — operators can paste
+ * it into a support email and the server-side trace is discoverable in logs.
+ *
+ * Prefer this helper over raw `toast.error(err.message)` for every mutation
+ * catch/onError path, even when you don't need form-field routing.
+ */
+export function showApiError(err: unknown, fallback: string): void {
+  if (err instanceof ApiError) {
+    toastApiError(err)
+    return
+  }
+  toast.error(err instanceof Error ? err.message : fallback)
+}
+
+function toastApiError(err: ApiError): void {
+  if (!err.requestId) {
+    toast.error(err.message)
+    return
+  }
+  const requestId = err.requestId
+  toast.error(err.message, {
+    description: `Request ID: ${requestId}`,
+    action: {
+      label: 'Copy ID',
+      onClick: () => {
+        void navigator.clipboard.writeText(requestId)
+      },
+    },
+  })
 }
 
 function resolveFormField(

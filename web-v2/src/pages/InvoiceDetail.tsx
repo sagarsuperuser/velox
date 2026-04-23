@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type TenantSettings } from '@/lib/api'
-import { applyApiError } from '@/lib/formErrors'
+import { applyApiError, showApiError } from '@/lib/formErrors'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
@@ -21,10 +21,7 @@ import { Separator } from '@/components/ui/separator'
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
+import { TypedConfirmDialog } from '@/components/TypedConfirmDialog'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
@@ -158,19 +155,19 @@ export default function InvoiceDetailPage() {
   const finalizeMutation = useMutation({
     mutationFn: () => api.finalizeInvoice(id!),
     onSuccess: () => { invalidateAll(); toast.success(`Invoice ${invoice?.invoice_number} finalized`) },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to finalize'),
+    onError: (err) => showApiError(err, 'Failed to finalize'),
   })
 
   const voidMutation = useMutation({
     mutationFn: () => api.voidInvoice(id!),
     onSuccess: () => { invalidateAll(); setShowVoidConfirm(false); toast.success(`Invoice ${invoice?.invoice_number} voided`) },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to void'),
+    onError: (err) => showApiError(err, 'Failed to void'),
   })
 
   const collectMutation = useMutation({
     mutationFn: () => api.collectPayment(id!),
     onSuccess: () => { invalidateAll(); toast.success('Payment initiated') },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Payment failed'),
+    onError: (err) => showApiError(err, 'Payment failed'),
   })
 
   const acting = finalizeMutation.isPending || voidMutation.isPending || collectMutation.isPending
@@ -696,22 +693,16 @@ export default function InvoiceDetailPage() {
       )}
 
       {/* Void Confirm */}
-      <AlertDialog open={showVoidConfirm} onOpenChange={setShowVoidConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Void Invoice</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to void this invoice? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => voidMutation.mutate()} disabled={voidMutation.isPending}>
-              Void Invoice
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <TypedConfirmDialog
+        open={showVoidConfirm}
+        onOpenChange={setShowVoidConfirm}
+        title="Void Invoice"
+        description="Voiding reverses this invoice and marks it uncollectible. This action cannot be undone."
+        confirmWord="VOID"
+        confirmLabel="Void Invoice"
+        onConfirm={() => voidMutation.mutate()}
+        loading={voidMutation.isPending}
+      />
 
       {/* Email Modal */}
       {showEmailModal && (
@@ -798,7 +789,7 @@ function AddLineItemDialog({ invoiceId, onClose, onAdded }: {
       })
       onAdded()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to add line item')
+      showApiError(err, 'Failed to add line item')
     } finally {
       setSaving(false)
     }

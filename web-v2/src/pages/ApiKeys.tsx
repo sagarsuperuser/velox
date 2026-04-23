@@ -5,7 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, formatRelativeTime, type ApiKeyInfo } from '@/lib/api'
-import { applyApiError } from '@/lib/formErrors'
+import { applyApiError, showApiError } from '@/lib/formErrors'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
@@ -102,7 +102,7 @@ export default function ApiKeysPage() {
       setRevokeTarget(null)
       queryClient.invalidateQueries({ queryKey: ['api-keys'] })
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to revoke key')
+      showApiError(err, 'Failed to revoke key')
     }
   }
 

@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Coupon, type CouponRedemption, type Plan } from '@/lib/api'
+import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 
@@ -154,7 +155,7 @@ export default function CouponDetailPage() {
       setArchiveOpen(false)
       toast.success('Coupon archived')
     },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to archive'),
+    onError: (err) => showApiError(err, 'Failed to archive'),
   })
 
   const unarchiveMutation = useMutation({
@@ -165,7 +166,7 @@ export default function CouponDetailPage() {
       setUnarchiveOpen(false)
       toast.success('Coupon restored')
     },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to restore'),
+    onError: (err) => showApiError(err, 'Failed to restore'),
   })
 
   if (isLoading) {

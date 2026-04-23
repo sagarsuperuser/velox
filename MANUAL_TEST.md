@@ -106,7 +106,7 @@ signs out. Run this before every merge to main and as a nightly canary.
 
 ### S1.1 Stack comes up clean
 - [ ] `make up` — Postgres + Redis containers start without errors
-- [ ] `make dev` — backend starts, logs show `migrations: applied N, current version 35`
+- [ ] `make dev` — backend starts, logs show `migrations: applied N, current version 46`
   and `using app database connection (RLS enforced)`
 - [ ] `curl http://localhost:8080/health` → `{"status":"ok"}`
 - [ ] `curl http://localhost:8080/health/ready` → 200 with `database: ok`, `scheduler: ok`
@@ -138,7 +138,9 @@ signs out. Run this before every merge to main and as a nightly canary.
 
 ### S1.5 Bill + charge
 - [ ] Usage → ingest 1,000 events for `api_calls` on `smoke_corp`
-- [ ] Dashboard → Trigger Billing
+- [ ] Trigger billing via API (UI button was removed):
+  `curl -X POST -H "Authorization: Bearer $VELOX_KEY" http://localhost:8080/v1/billing/run`
+  where `$VELOX_KEY` is a secret key from API Keys page (or the bootstrap key)
 - [ ] Verify: exactly 1 invoice generated; auto-finalized, `payment_status = succeeded`
 - [ ] Invoice detail → line items: base fee (prorated), usage ($10.00), tax (10%)
 - [ ] Verify: Stripe CLI terminal shows `payment_intent.succeeded`
@@ -243,12 +245,27 @@ via the email outbox (no plaintext tokens in the DB — only sha256 hashes).
 
 ## FLOW A7: Livemode toggle
 
-- [ ] Sign in — Test/Live toggle shows "Test" active
+- [ ] Sign in — Test/Live toggle shows "Test" active (default on fresh sessions)
 - [ ] Click → PATCH /v1/session/ `{"livemode":true}` → 200; toggle shows "Live" with green dot
 - [ ] Refresh page → toggle state persists (read from session)
-- [ ] Verify: API calls made while live send `X-Livemode: true` semantics server-side
-  (e.g., list customers returns live-mode rows only)
+- [ ] Verify: API calls made while live return live-mode rows only (list customers, etc.)
 - [ ] Toggle back; new state sticks across page reloads
+- [ ] **Test-mode banner** (Stripe parity): while in test mode, an amber bar reading
+  `You're viewing TEST data. No real money is moving.` pins to the top of every page,
+  above the nav. Banner disappears entirely in live mode. Clicking "Switch to live"
+  in the banner flips mode inline.
+- [ ] **Shift+M shortcut**: pressing `Shift+M` from any page (outside text inputs)
+  toggles mode — same action as the pill. Pressing `M` inside an input types "M".
+  Hovering the pill shows `Switch to ... mode (Shift+M)` tooltip.
+- [ ] **Session/key mode-mismatch guard**: with a browser cookie session in LIVE
+  mode, fire a curl against `/v1/customers` using a `Bearer vlx_secret_test_...`
+  (cookie AND key on the same request) → **400** with `"auth mode mismatch: session
+  and API key are in different modes — remove one or align them"`. Without this
+  guard the cookie silently wins and the test key appears to read live data.
+- [ ] **Cross-key fetch-by-id**: with a test key, request `GET /v1/customers/{live_customer_id}`
+  → **404**. RLS filters by livemode, so a caller who knows the opposite-mode ID
+  cannot sidestep isolation. Covered by `TestE2E_TestModeIsolation` sub-tests
+  `test_key_probing_live_customer_ID_→_404` and its inverse.
 
 ---
 
@@ -542,7 +559,10 @@ against `tax_id_type`. Known kinds: GSTIN, EU VAT, AU ABN. Unknown kinds pass th
 - [ ] Change currency → NEW invoices use it; existing invoices unchanged
 - [ ] Customer detail → edit billing profile (address, tax ID) → PDF reflects updated bill-to
 
-## FLOW CU2: Customer portal API
+## FLOW CU2: Operator-facing customer portal API
+
+Operator view (API-key auth, `PermCustomerRead`). This is what the dashboard hits to render
+a customer's portal-eye view; it is NOT what end customers use — see CU5 for that.
 
 - [ ] GET /v1/customer-portal/{customer_id}/overview → active subs, recent invoices, credit balance
 - [ ] GET /v1/customer-portal/{customer_id}/subscriptions → only that customer's subs
@@ -567,14 +587,59 @@ against `tax_id_type`. Known kinds: GSTIN, EU VAT, AU ABN. Unknown kinds pass th
 - [ ] Restore → banner disappears, actions reappear, badge `active`
 - [ ] Customers list → Archived tab → shows archived rows (or empty + Clear filter)
 
+## FLOW CU5: Customer-facing self-service portal (`/v1/me/*`)
+
+End-customer surface added in T0-8. Bearer-token auth (`vlx_cps_...`) via customer portal
+session. UI lives at `web-v2/src/pages/CustomerPortal.tsx` with tabs: Invoices, Subscriptions,
+Payment Methods.
+
+Endpoints (all bearer-auth, scoped to the session's customer):
+- `GET /v1/me/invoices` — list
+- `GET /v1/me/invoices/{id}/pdf` — download (blob fetch; cannot use `<a href>` because endpoint is bearer-protected)
+- `GET /v1/me/subscriptions` — list
+- `POST /v1/me/subscriptions/{id}/cancel` — cancel
+- `GET /v1/me/branding` — tenant branding (logo, company name, support URL, brand color)
+- `GET /v1/me/payment-methods` — list + update
+
+### Magic-link flow
+- [ ] Operator mints a portal session: `POST /v1/customer-portal-sessions {"customer_id":"..."}` → returns bearer token
+- [ ] Public magic-link request/consume at `/v1/public/customer-portal/*` — untested end-to-end in this runbook; verify token expiry and single-use
+- [ ] Load `CustomerPortal` page with the token → header shows partner logo + company name + support URL (from `/me/branding`)
+
+### Self-service
+- [ ] Invoices tab → list renders newest first; drafts filtered out
+- [ ] Click PDF → blob download triggers (not a direct link); filename matches invoice number
+- [ ] Subscriptions tab → only the session customer's subs appear
+- [ ] Cancel a subscription → `TypedConfirmDialog` requires typing `CANCEL` (case-insensitive)
+- [ ] Webhook emitted: `subscription.canceled` with `canceled_by: customer` in payload
+- [ ] Payment Methods tab → attach / detach via Stripe SetupIntent
+- [ ] Cross-customer probe: swap the bearer token for one scoped to a different customer; hitting the first customer's invoice ID → **404** (not 403 — avoids enumeration)
+
+## FLOW CU6: Brand color + logo URL (tenant settings)
+
+Shipped in T0-12. URL-only logo (no upload infra); brand accent color applied to invoice PDF.
+
+- [ ] Settings → Business tab → Logo URL field accepts public HTTPS URL (example hosts in help text: Cloudinary, S3 public object, CDN)
+- [ ] Paste `https://via.placeholder.com/200x60` → live `LogoPreview` thumbnail renders inline
+- [ ] Paste an invalid / non-HTTPS URL → thumbnail shows "Couldn't load image"
+- [ ] Brand color field: native `<input type="color">` + hex text input (lowercased on save) + Clear button
+- [ ] Invalid hex (`#zzz`, `#12345`, missing `#`, uppercase `#FF00AA`): client rejects on save with `"Must be a 7-character hex like #1f6feb"`; server validates the same pattern `^#[0-9a-f]{6}$`
+- [ ] Save → generate an invoice PDF → company name tinted in the brand color, thin 2px accent bar under the header block
+- [ ] Clear the brand color → save → new PDF has neutral palette (no accent bar); output is byte-identical to the pre-migration look
+- [ ] Email brand color is **deferred** — `internal/email/sender.go` sends plain-text bodies; no HTML templating yet
+
 ---
 
 ## Platform
 
 ## FLOW P1: Feature flags
 
-- [ ] GET /v1/feature-flags → seeded flags returned (auto_charge, tax_basis_points, webhooks.enabled,
-  dunning.enabled, credits.auto_apply, billing.stripe_tax) with key / enabled / description / timestamps
+- [ ] GET /v1/feature-flags → seeded flags returned: `billing.auto_charge`, `billing.tax_basis_points`,
+  `webhooks.enabled`, `dunning.enabled`, `credits.auto_apply`, `billing.stripe_tax`
+  (each with key / enabled / description / timestamps)
+- [ ] `billing.stripe_tax` is **legacy** — tax provider selection is now authoritative at
+  `tenant_settings.tax_provider` (`none` / `manual` / `stripe_tax`, migration 0031). The flag
+  is still seeded for backward compat but per-tenant settings override it.
 - [ ] PUT /v1/feature-flags/webhooks.enabled `{"enabled":false}` → flag disabled globally;
   trigger an event → NOT delivered; re-enable → delivery resumes
 - [ ] PUT /v1/feature-flags/dunning.enabled/overrides/{tenant_id} `{"enabled":false}` → disabled for tenant only
@@ -631,8 +696,10 @@ falls through to `ManualCalculator`. Operators alert on sustained non-zero value
 - [ ] 4 KPI cards: MRR (sparkline + trend %), Active Customers, Failed Payments (red if >0), Revenue 30d
 - [ ] Revenue bar chart (compact, no axes, link to Analytics)
 - [ ] Recent Activity: last 5 invoices with status dot, badge, amount, relative time — clicking navigates to detail
-- [ ] Get Started checklist: numbered, checkmarks as steps complete; disappears when all 4 done
-- [ ] Trigger Billing button shows result after run
+- [ ] Get Started checklist: **6 steps** — Connect Stripe, Create first plan, Add first customer, Create subscription, Set up webhook endpoint, Complete company profile. Each auto-tracks against server state (no manual checkoff). Self-hides at 100%.
+- [ ] Dismiss button persists per-tenant in localStorage (`velox:getstarted-dismissed:${tenantID}`) — dismissing in Tenant A does not hide it in Tenant B
+- [ ] "Skip to API-first flow" link → `/docs/quickstart`
+- [ ] "Trigger Billing" button was **removed** from the dashboard (use `POST /v1/billing/run` via API — see S1.5). Dashboard empty state copy reads "Trigger a billing run from Settings → Operations" (aspirational; that tab doesn't yet exist)
 - [ ] No overlap with Analytics (no period selector, no detailed charts here)
 
 ## FLOW U2: Analytics page
@@ -692,6 +759,58 @@ falls through to `ManualCalculator`. Operators alert on sustained non-zero value
 | Revoke current session's API key | Warning dialog about logout |
 | Create subscription for archived customer | Allowed (backend permits) |
 | Esc from modal with form data | "Unsaved changes" confirmation |
+
+## FLOW U8: Error toasts carry the Request ID
+
+Every error toast (via `showApiError` from `lib/formErrors.ts`) surfaces the server-assigned
+`Velox-Request-Id` so you can correlate to server logs. Every successful request also records
+the latest Request-Id via `lib/lastRequestId.ts` for the Report-an-issue flow (U11).
+
+- [ ] Force any API error (e.g. create a customer with a duplicate external_id) → toast shows
+  `Request ID: req_...` as the bottom line; click to copy
+- [ ] Trigger an error even when the response envelope fails to parse — the Request-Id from the
+  `Velox-Request-Id` response header should still appear in the toast
+- [ ] Run `grep "req_abc..." server.log` → matches the toast's trace handle
+
+## FLOW U9: Typed destructive confirmations (`TypedConfirmDialog`)
+
+High-blast-radius actions require typing a specific word before the confirm button enables.
+Match is case-insensitive. Used on:
+
+- [ ] Void invoice (type `VOID`) — `InvoiceDetail.tsx`
+- [ ] Void credit note (type `VOID`) — `CreditNotes.tsx`
+- [ ] Cancel subscription from operator UI (type `CANCEL`) — `SubscriptionDetail.tsx`
+- [ ] Cancel subscription from customer portal (type `CANCEL`) — `CustomerPortal.tsx`
+- [ ] Delete webhook endpoint (type `DELETE`) — `Webhooks.tsx`
+- [ ] Typing the wrong word leaves the confirm button disabled
+- [ ] Cancel button always closes the dialog
+
+## FLOW U10: Public pages (no auth required)
+
+Added in T0-2 through T0-6. All routes load without `ProtectedRoute` wrapping.
+
+- [ ] `/docs` landing, `/docs/quickstart`, `/docs/webhooks`, `/docs/idempotency` — each renders `DocsShell` layout
+- [ ] `/docs/api` — OpenAPI spec rendered by Scalar, with endpoints browsable
+- [ ] `/security` — Security page renders under `PublicLayout`
+- [ ] `/status` — Status placeholder page
+- [ ] `/changelog` — reverse-chronological entries
+- [ ] `/terms`, `/privacy`, `/dpa` — `LegalLayout` pages
+- [ ] Sign out, then hit each URL directly → no redirect to /login
+- [ ] Dashboard footer links to `/terms` and `/privacy`; account menu links to `/docs`, `/changelog`, `/status`, and the Report-issue mailto (U11)
+
+## FLOW U11: In-app support channel (Report-an-issue mailto)
+
+Added in T0-10. Two entry points; both build the mailto body at click-time so the
+freshest trace context is included.
+
+- [ ] Signed-in: account menu → "Report an issue" → opens mail client with:
+  - `To:` the configured support address
+  - Body includes `tenant_id`, current URL, user agent, and the most recent `Velox-Request-Id`
+    from `lib/lastRequestId.ts` (set after any API call — success or error)
+- [ ] Trigger a failing API request, then click "Report an issue" → the Request ID in the
+  mailto body matches the one from the error toast
+- [ ] Sign out, open `/login`, click "Trouble signing in? Contact support" → same mailto scaffold
+  with URL + user agent (no Request-Id in pre-auth mode)
 
 ---
 

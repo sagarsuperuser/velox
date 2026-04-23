@@ -13,6 +13,7 @@ import {
   type Customer,
 } from '@/lib/api'
 import { Layout } from '@/components/Layout'
+import { showApiError } from '@/lib/formErrors'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
@@ -212,7 +213,7 @@ function PolicyTab() {
       setSavedForm(JSON.stringify(updated))
       toast.success('Dunning policy saved')
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save policy')
+      showApiError(err, 'Failed to save policy')
     } finally {
       setSaving(false)
     }
@@ -823,7 +824,7 @@ function ResolveDialog({ run, invoiceMap, onClose, onResolved }: {
       await api.resolveDunningRun(run.id, resolution)
       onResolved()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to resolve dunning run')
+      showApiError(err, 'Failed to resolve dunning run')
     } finally {
       setSaving(false)
     }

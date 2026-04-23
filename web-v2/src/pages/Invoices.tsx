@@ -1,9 +1,9 @@
 import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { toast } from 'sonner'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime } from '@/lib/api'
 import type { Customer, Invoice } from '@/lib/api'
+import { showApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
@@ -332,7 +332,7 @@ export default function InvoicesPage() {
                             try {
                               await downloadPDF(inv.id, inv.invoice_number)
                             } catch (err) {
-                              toast.error(err instanceof Error ? err.message : 'Failed to download PDF')
+                              showApiError(err, 'Failed to download PDF')
                             }
                           }}
                         >

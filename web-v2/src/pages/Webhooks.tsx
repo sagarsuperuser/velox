@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, type WebhookEndpoint } from '@/lib/api'
-import { applyApiError } from '@/lib/formErrors'
+import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 
 import { Button } from '@/components/ui/button'
@@ -24,16 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
+import { TypedConfirmDialog } from '@/components/TypedConfirmDialog'
 import {
   Table,
   TableBody,
@@ -127,7 +118,7 @@ function EndpointsTab() {
       setDeleteTarget(null)
       queryClient.invalidateQueries({ queryKey: ['webhook-endpoints'] })
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete endpoint')
+      showApiError(err, 'Failed to delete endpoint')
     }
   }
 
@@ -208,7 +199,7 @@ function EndpointsTab() {
                               setCreatedSecret(res.secret)
                               toast.success('Secret rotated')
                             } catch (err) {
-                              toast.error(err instanceof Error ? err.message : 'Failed to rotate secret')
+                              showApiError(err, 'Failed to rotate secret')
                             }
                           }}>
                           Rotate Secret
@@ -272,22 +263,15 @@ function EndpointsTab() {
       )}
 
       {/* Delete confirmation */}
-      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Endpoint</AlertDialogTitle>
-            <AlertDialogDescription>
-              {deleteTarget ? `Are you sure you want to delete the endpoint "${deleteTarget.url}"?` : ''}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setDeleteTarget(null)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <TypedConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}
+        title="Delete Endpoint"
+        description={deleteTarget ? `Deleting "${deleteTarget.url}" will stop all future event deliveries to this URL. This action cannot be undone.` : ''}
+        confirmWord="DELETE"
+        confirmLabel="Delete Endpoint"
+        onConfirm={handleDelete}
+      />
     </>
   )
 }
@@ -542,7 +526,7 @@ function EventsTab() {
       await api.replayWebhookEvent(id)
       toast.success('Event replayed')
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to replay event')
+      showApiError(err, 'Failed to replay event')
     }
   }
 

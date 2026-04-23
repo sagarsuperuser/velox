@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Customer, type BillingProfile, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride, type CustomerCouponAssignment } from '@/lib/api'
-import { applyApiError } from '@/lib/formErrors'
+import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
@@ -191,7 +191,7 @@ export default function CustomerDetailPage() {
         toast.success('Stripe checkout opened in new tab')
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to set up payment')
+      showApiError(err, 'Failed to set up payment')
     } finally {
       setSettingUpPayment(false)
     }
@@ -250,7 +250,7 @@ export default function CustomerDetailPage() {
                 api.updateCustomer(customer.id, { status: 'active' } as any).then(() => {
                   toast.success('Customer restored')
                   invalidateAll()
-                }).catch((err: Error) => toast.error(err.message))
+                }).catch((err: Error) => showApiError(err, 'Failed to update'))
               }}>
               Restore Customer
             </Button>
@@ -295,7 +295,7 @@ export default function CustomerDetailPage() {
                       api.updateCustomer(customer.id, { status: 'archived' } as any).then(() => {
                         toast.success('Customer archived')
                         refetch()
-                      }).catch((err: Error) => toast.error(err.message))
+                      }).catch((err: Error) => showApiError(err, 'Failed to update'))
                     }}
                   >
                     Archive Customer
@@ -1348,7 +1348,7 @@ function DunningOverrideDialog({ customerId, override, onClose, onSaved, onDelet
       await api.upsertCustomerDunningOverride(customerId, payload)
       onSaved()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save')
+      showApiError(err, 'Failed to save')
     } finally {
       setSaving(false)
     }
@@ -1360,7 +1360,7 @@ function DunningOverrideDialog({ customerId, override, onClose, onSaved, onDelet
       await api.deleteCustomerDunningOverride(customerId)
       onDeleted()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete')
+      showApiError(err, 'Failed to delete')
     } finally {
       setDeleting(false)
     }

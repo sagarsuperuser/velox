@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Subscription, type SubscriptionItem, type Plan, type ItemChangeResult } from '@/lib/api'
+import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { cn } from '@/lib/utils'
@@ -21,6 +22,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { TypedConfirmDialog } from '@/components/TypedConfirmDialog'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
@@ -94,31 +96,31 @@ export default function SubscriptionDetailPage() {
   const activateMutation = useMutation({
     mutationFn: () => api.activateSubscription(id!),
     onSuccess: () => { invalidateAll(); toast.success('Subscription activated') },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to activate'),
+    onError: (err) => showApiError(err, 'Failed to activate'),
   })
 
   const pauseMutation = useMutation({
     mutationFn: () => api.pauseSubscription(id!),
     onSuccess: () => { invalidateAll(); toast.success('Subscription paused'); setShowPauseConfirm(false) },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to pause'),
+    onError: (err) => showApiError(err, 'Failed to pause'),
   })
 
   const resumeMutation = useMutation({
     mutationFn: () => api.resumeSubscription(id!),
     onSuccess: () => { invalidateAll(); toast.success('Subscription resumed') },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to resume'),
+    onError: (err) => showApiError(err, 'Failed to resume'),
   })
 
   const cancelMutation = useMutation({
     mutationFn: () => api.cancelSubscription(id!),
     onSuccess: () => { invalidateAll(); toast.success('Subscription canceled'); setShowCancelConfirm(false) },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to cancel'),
+    onError: (err) => showApiError(err, 'Failed to cancel'),
   })
 
   const cancelPendingMutation = useMutation({
     mutationFn: (itemID: string) => api.cancelPendingItemChange(id!, itemID),
     onSuccess: () => { invalidateAll(); toast.success('Pending plan change canceled') },
-    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to cancel pending change'),
+    onError: (err) => showApiError(err, 'Failed to cancel pending change'),
   })
 
   const acting = activateMutation.isPending || pauseMutation.isPending || resumeMutation.isPending || cancelMutation.isPending
@@ -616,22 +618,16 @@ export default function SubscriptionDetailPage() {
       </AlertDialog>
 
       {/* Cancel Confirm */}
-      <AlertDialog open={showCancelConfirm} onOpenChange={setShowCancelConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Cancel Subscription</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to cancel this subscription? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => cancelMutation.mutate()} disabled={cancelMutation.isPending}>
-              Cancel Subscription
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <TypedConfirmDialog
+        open={showCancelConfirm}
+        onOpenChange={setShowCancelConfirm}
+        title="Cancel Subscription"
+        description="Cancelling ends billing and stops future invoices for this subscription. This action cannot be undone."
+        confirmWord="CANCEL"
+        confirmLabel="Cancel Subscription"
+        onConfirm={() => cancelMutation.mutate()}
+        loading={cancelMutation.isPending}
+      />
 
       {/* Add Item */}
       {itemDialog?.kind === 'add' && plansData && (
@@ -734,7 +730,7 @@ function AddItemDialog({ subscription, plans, existingPlanIDs, onClose, onAdded 
       await api.addSubscriptionItem(subscription.id, { plan_id: selectedPlan, quantity: qty })
       onAdded()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to add item')
+      showApiError(err, 'Failed to add item')
     } finally {
       setSubmitting(false)
     }
@@ -828,7 +824,7 @@ function ChangeItemPlanDialog({ subscriptionID, item, plans, existingPlanIDs, on
       })
       onChanged(res)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to change plan')
+      showApiError(err, 'Failed to change plan')
     } finally {
       setSubmitting(false)
     }
@@ -929,7 +925,7 @@ function ChangeItemQuantityDialog({ subscriptionID, item, plan, onClose, onChang
       const res = await api.updateSubscriptionItem(subscriptionID, item.id, { quantity: qty })
       onChanged(res)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to change quantity')
+      showApiError(err, 'Failed to change quantity')
     } finally {
       setSubmitting(false)
     }
@@ -994,7 +990,7 @@ function RemoveItemConfirm({ subscriptionID, item, plan, onClose, onRemoved }: {
       await api.removeSubscriptionItem(subscriptionID, item.id)
       onRemoved()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove item')
+      showApiError(err, 'Failed to remove item')
       setSubmitting(false)
     }
   }

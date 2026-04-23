@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate } from '@/lib/api'
 import type { Coupon, CouponRedemption } from '@/lib/api'
-import { applyApiError } from '@/lib/formErrors'
+import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { CustomerCombobox } from '@/components/CustomerCombobox'
@@ -297,7 +297,7 @@ export default function CouponsPage() {
       setArchiveId(null)
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : 'Failed to archive')
+      showApiError(err, 'Failed to archive')
     },
   })
 
@@ -309,7 +309,7 @@ export default function CouponsPage() {
       setUnarchiveId(null)
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : 'Failed to restore')
+      showApiError(err, 'Failed to restore')
     },
   })
 
