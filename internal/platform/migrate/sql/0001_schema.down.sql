@@ -10,6 +10,7 @@ DROP TABLE IF EXISTS coupon_redemptions CASCADE;
 DROP TABLE IF EXISTS coupons CASCADE;
 DROP TABLE IF EXISTS invoice_dunning_events CASCADE;
 DROP TABLE IF EXISTS invoice_dunning_runs CASCADE;
+DROP TABLE IF EXISTS dunning_policies CASCADE;
 DROP TABLE IF EXISTS credit_note_line_items CASCADE;
 DROP TABLE IF EXISTS credit_notes CASCADE;
 DROP TABLE IF EXISTS customer_credit_ledger CASCADE;
