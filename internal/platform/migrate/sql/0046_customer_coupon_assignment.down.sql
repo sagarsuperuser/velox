@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_coupon_redemptions_active_customer;

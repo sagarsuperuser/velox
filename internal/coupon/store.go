@@ -123,6 +123,22 @@ type Store interface {
 	// Idempotent: repeat calls with the same invoice id void nothing
 	// further and return 0.
 	VoidRedemptionsForInvoice(ctx context.Context, tenantID, invoiceID string) (int, error)
+
+	// ListActiveCustomerAssignments returns live customer-scoped
+	// assignments: redemption rows with subscription_id IS NULL AND
+	// invoice_id IS NULL AND voided_at IS NULL. At most one active row per
+	// customer is expected under normal operation — the service layer
+	// rejects a second attach while the first still has periods left.
+	// ApplyToInvoiceForCustomer re-reads this on every invoice generation,
+	// which is why 0046 adds the partial index on (tenant_id, customer_id).
+	ListActiveCustomerAssignments(ctx context.Context, tenantID, customerID string) ([]domain.CouponRedemption, error)
+
+	// VoidCustomerAssignment marks a single customer-scoped assignment
+	// voided and rolls back its coupon.times_redeemed in the same tx.
+	// Mirrors VoidRedemptionsForInvoice but scopes by redemption id since
+	// revocation is operator-initiated, not invoice-driven. Returns
+	// errs.ErrNotFound if the row doesn't exist or is already voided.
+	VoidCustomerAssignment(ctx context.Context, tenantID, redemptionID string) error
 }
 
 // RedeemAtomicInput carries everything the atomic redeem path needs. The

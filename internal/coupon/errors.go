@@ -33,4 +33,11 @@ const (
 	CodeCodeTaken       = "coupon_code_taken"
 	CodeDiscountZero    = "coupon_discount_is_zero"
 	CodeVersionConflict = "coupon_version_conflict"
+
+	// Customer-scoped assignment (POST /v1/customers/{id}/coupon). A
+	// customer has at most one active assignment at a time — a second
+	// attach while the first still has periods left lands on this code
+	// so the caller can decide whether to revoke-and-reattach or surface
+	// the existing discount.
+	CodeAlreadyAssigned = "coupon_already_assigned"
 )

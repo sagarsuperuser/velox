@@ -316,6 +316,39 @@ func (m *mockStore) VoidRedemptionsForInvoice(_ context.Context, _, invoiceID st
 	return voided, nil
 }
 
+func (m *mockStore) ListActiveCustomerAssignments(_ context.Context, _, customerID string) ([]domain.CouponRedemption, error) {
+	var out []domain.CouponRedemption
+	for _, r := range m.redemptions {
+		if r.CustomerID == customerID && r.SubscriptionID == "" && r.InvoiceID == "" && r.VoidedAt == nil {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockStore) VoidCustomerAssignment(_ context.Context, _, redemptionID string) error {
+	now := time.Now().UTC()
+	for i := range m.redemptions {
+		r := &m.redemptions[i]
+		if r.ID != redemptionID {
+			continue
+		}
+		if r.SubscriptionID != "" || r.InvoiceID != "" || r.VoidedAt != nil {
+			return errs.ErrNotFound
+		}
+		r.VoidedAt = &now
+		if c, ok := m.coupons[r.CouponID]; ok {
+			if c.TimesRedeemed > 0 {
+				c.TimesRedeemed--
+			}
+			m.coupons[c.ID] = c
+			m.byCode[c.Code] = c
+		}
+		return nil
+	}
+	return errs.ErrNotFound
+}
+
 func (m *mockStore) IncrementPeriodsApplied(_ context.Context, _ string, ids []string) error {
 	for _, id := range ids {
 		found := false
