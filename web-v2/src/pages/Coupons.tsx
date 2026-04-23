@@ -506,6 +506,11 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
       onCreated()
     },
     onError: (err) => {
+      // Mirrors internal/coupon/service.go Create() validation paths.
+      // Fields without a backend validation site (plan_ids, customer_id,
+      // stackable, restrictions.first_time_customer_only, metadata) are
+      // omitted — applyApiError falls through to a toast, which is the
+      // honest UX when the server can't produce an inline error anyway.
       applyApiError(form, err, {
         code: 'code',
         name: 'name',
@@ -515,13 +520,9 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
         currency: 'currency',
         max_redemptions: 'maxRedemptions',
         expires_at: 'expiresAt',
-        plan_ids: 'planIds',
-        customer_id: 'customerId',
         duration: 'duration',
         duration_periods: 'durationPeriods',
-        stackable: 'stackable',
         'restrictions.min_amount_cents': 'minAmount',
-        'restrictions.first_time_customer_only': 'firstTimeCustomerOnly',
         'restrictions.max_redemptions_per_customer': 'maxRedemptionsPerCustomer',
       })
     },
