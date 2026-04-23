@@ -80,6 +80,14 @@ func ValidationField(w http.ResponseWriter, r *http.Request, field, message stri
 	errorField(w, r, http.StatusUnprocessableEntity, "invalid_request_error", "validation_error", field, message)
 }
 
+// PreconditionFailed writes a 412 response. The canonical use is optimistic
+// concurrency: the caller sent If-Match with the ETag they last saw and a
+// concurrent writer has since bumped the version. The client should GET the
+// resource, re-apply its edits against the fresh copy, and retry.
+func PreconditionFailed(w http.ResponseWriter, r *http.Request, message string) {
+	Error(w, r, http.StatusPreconditionFailed, "invalid_request_error", "precondition_failed", message)
+}
+
 func InternalError(w http.ResponseWriter, r *http.Request) {
 	Error(w, r, http.StatusInternalServerError, "api_error", "internal_error", "an internal error occurred")
 }

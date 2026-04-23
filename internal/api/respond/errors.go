@@ -46,6 +46,9 @@ func FromError(w http.ResponseWriter, r *http.Request, err error, resource strin
 			Conflict(w, r, err.Error())
 		}
 
+	case errors.Is(err, errs.ErrPreconditionFailed):
+		PreconditionFailed(w, r, err.Error())
+
 	case errors.Is(err, errs.ErrInvalidState), errors.Is(err, errs.ErrValidation):
 		if field != "" {
 			ValidationField(w, r, field, err.Error())

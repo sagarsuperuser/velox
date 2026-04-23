@@ -41,6 +41,7 @@ func (m *mockStore) Create(_ context.Context, _ string, c domain.Coupon) (domain
 	m.nextID++
 	c.ID = fmt.Sprintf("cpn_%d", m.nextID)
 	c.CreatedAt = time.Now().UTC()
+	c.Version = 1
 	m.coupons[c.ID] = c
 	m.byCode[c.Code] = c
 	return c, nil
@@ -83,7 +84,17 @@ func (m *mockStore) List(_ context.Context, _ string, includeArchived bool) ([]d
 	return result, nil
 }
 
-func (m *mockStore) Update(_ context.Context, _ string, c domain.Coupon) (domain.Coupon, error) {
+func (m *mockStore) Update(_ context.Context, _ string, c domain.Coupon, ifMatch *int) (domain.Coupon, error) {
+	existing, ok := m.coupons[c.ID]
+	if !ok {
+		return domain.Coupon{}, errs.ErrNotFound
+	}
+	if ifMatch != nil && existing.Version != *ifMatch {
+		return domain.Coupon{}, errs.PreconditionFailed(
+			fmt.Sprintf("coupon version mismatch (have %d, expected %d)",
+				existing.Version, *ifMatch))
+	}
+	c.Version = existing.Version + 1
 	m.coupons[c.ID] = c
 	m.byCode[c.Code] = c
 	return c, nil
