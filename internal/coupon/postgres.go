@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -303,12 +302,18 @@ func (s *PostgresStore) RedeemAtomic(ctx context.Context, tenantID string, in Re
 	return RedeemAtomicResult{Coupon: c, Redemption: r, Replay: false}, nil
 }
 
+// idempotencyIndex is the name of the partial-unique index on
+// coupon_redemptions(tenant_id, idempotency_key). Kept as a const so the
+// constraint-name match below can't silently drift from the migration.
+const idempotencyIndex = "idx_coupon_redemptions_idempotency"
+
 // isIdempotencyCollision checks whether a unique-violation came from the
 // idempotency index specifically (vs the subscription/invoice dedupe
-// indexes). Postgres includes the constraint name in the error, so we
-// match on that.
+// indexes). Uses the typed pgconn.PgError.ConstraintName via
+// postgres.UniqueViolationConstraint — matching on err.Error() substrings
+// is fragile to driver wrapping and locale changes.
 func isIdempotencyCollision(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "idx_coupon_redemptions_idempotency")
+	return postgres.UniqueViolationConstraint(err) == idempotencyIndex
 }
 
 func (s *PostgresStore) replayByIdempotencyKey(ctx context.Context, tenantID, key string) (RedeemAtomicResult, error) {

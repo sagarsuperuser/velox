@@ -276,6 +276,17 @@ type PreviewResult struct {
 	Coupon        domain.Coupon `json:"coupon"`
 }
 
+// RedeemResult bundles the redemption row with a flag indicating whether
+// this call returned a previously-completed request (Replay=true) rather
+// than a fresh commit. The HTTP layer uses Replay to set the
+// Idempotent-Replay response header and return 200 instead of 201 so
+// integrating clients can distinguish a genuine retry-to-success from a
+// true first-time create.
+type RedeemResult struct {
+	Redemption domain.CouponRedemption
+	Replay     bool
+}
+
 // Preview exercises every redeem gate except the atomic-persist step,
 // returning the computed discount. Useful for the cart-preview flow —
 // the caller shows the discount alongside the unaffected subtotal, and
@@ -296,23 +307,44 @@ func (s *Service) Preview(ctx context.Context, tenantID string, input RedeemInpu
 	return PreviewResult{DiscountCents: discount, Coupon: cpn}, nil
 }
 
+// Redeem is a thin wrapper over RedeemDetail that returns only the
+// redemption. Prefer RedeemDetail when the caller needs to distinguish a
+// fresh redemption from an idempotent replay — typically the HTTP handler,
+// which sets the Idempotent-Replay header on the response.
 func (s *Service) Redeem(ctx context.Context, tenantID string, input RedeemInput) (domain.CouponRedemption, error) {
+	res, err := s.RedeemDetail(ctx, tenantID, input)
+	if err != nil {
+		return domain.CouponRedemption{}, err
+	}
+	return res.Redemption, nil
+}
+
+// RedeemDetail runs the full redeem pipeline and returns the redemption
+// along with whether it was served from the idempotency replay path. Two
+// replay entry points feed this flag:
+//
+//  1. Fast-path: when the caller's idempotency key already matches a
+//     committed redemption, skip the validation + atomic insert entirely.
+//  2. Store race: when two concurrent requests share a key, one INSERTs
+//     successfully and the other sees the unique violation; the store
+//     then reads back the winner and flags the loser's result Replay.
+func (s *Service) RedeemDetail(ctx context.Context, tenantID string, input RedeemInput) (RedeemResult, error) {
 	// Fast-path for idempotency replay: look up by key before even
 	// loading the coupon. Saves the round trip on the common retry case.
 	if key := strings.TrimSpace(input.IdempotencyKey); key != "" {
 		if existing, err := s.store.GetRedemptionByIdempotencyKey(ctx, tenantID, key); err == nil {
-			return existing, nil
+			return RedeemResult{Redemption: existing, Replay: true}, nil
 		}
 	}
 
 	cpn, err := s.validateRedeem(ctx, tenantID, &input)
 	if err != nil {
-		return domain.CouponRedemption{}, err
+		return RedeemResult{}, err
 	}
 
 	discount := CalculateDiscount(cpn, input.SubtotalCents)
 	if discount <= 0 {
-		return domain.CouponRedemption{}, errs.InvalidState("discount amount is zero")
+		return RedeemResult{}, errs.InvalidState("discount amount is zero")
 	}
 
 	result, err := s.store.RedeemAtomic(ctx, tenantID, RedeemAtomicInput{
@@ -324,9 +356,9 @@ func (s *Service) Redeem(ctx context.Context, tenantID string, input RedeemInput
 		IdempotencyKey: input.IdempotencyKey,
 	})
 	if err != nil {
-		return domain.CouponRedemption{}, translateGate(err)
+		return RedeemResult{}, translateGate(err)
 	}
-	return result.Redemption, nil
+	return RedeemResult{Redemption: result.Redemption, Replay: result.Replay}, nil
 }
 
 // validateRedeem is the stateless-or-near-stateless gate pass used by
