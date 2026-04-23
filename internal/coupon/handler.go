@@ -3,6 +3,7 @@ package coupon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -454,10 +455,17 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) {
 		// Label by the stable domain code so operators can alert on a
 		// spike in a specific failure mode (e.g. coupon_expired climbing
 		// suggests someone just published a campaign with a stale code).
-		// Empty code → "error" so we don't lose the signal entirely.
+		// Validation errors without a code (bad client request: missing
+		// customer_id, non-positive subtotal) go to "invalid_request" —
+		// those are the caller's fault, not an infra signal. Untyped errors
+		// go to "error", which the on-call alert fires on.
 		outcome := errs.Code(err)
 		if outcome == "" {
-			outcome = "error"
+			if errors.Is(err, errs.ErrValidation) {
+				outcome = "invalid_request"
+			} else {
+				outcome = "error"
+			}
 		}
 		middleware.RecordCouponRedemption(outcome)
 		respond.FromError(w, r, err, "coupon")

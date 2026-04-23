@@ -131,7 +131,7 @@ var (
 	couponRedemptions = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "velox_coupon_redemptions_total",
-			Help: "Coupon redemption attempts labeled by outcome — 'success' or a domain error code (coupon_expired, coupon_min_amount_not_met, …). Operators alert on the ratio of failures to total.",
+			Help: "Coupon redemption attempts labeled by outcome — 'success', 'replay' (idempotent retry), a domain error code (coupon_expired, coupon_min_amount_not_met, …), 'invalid_request' (bad caller input), or 'error' (infra / unknown). Alerts page on the 'error' bucket.",
 		},
 		[]string{"outcome"},
 	)
