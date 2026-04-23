@@ -57,7 +57,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Archive, ArchiveRestore, Eye, Copy, Search, Loader2, Ticket, Sparkles, Lock } from 'lucide-react'
+import { Plus, Archive, ArchiveRestore, Eye, Copy, Search, Loader2, Ticket, Sparkles, Lock, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 
 // Code is optional — the server auto-generates a CPN-XXXX-XXXX code when
@@ -117,6 +117,64 @@ function couponStatusVariant(status: string): 'success' | 'secondary' | 'danger'
   }
 }
 
+function SortHeader({ label, column, sortKey, sortDir, onToggle }: {
+  label: string
+  column: SortKey
+  sortKey: string
+  sortDir: 'asc' | 'desc' | null
+  onToggle: (key: SortKey) => void
+}) {
+  const active = sortKey === column
+  const Icon = !active ? ArrowUpDown : sortDir === 'asc' ? ArrowUp : ArrowDown
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(column)}
+      className={cn(
+        'inline-flex items-center gap-1 hover:text-foreground transition-colors',
+        active ? 'text-foreground' : 'text-muted-foreground',
+      )}
+    >
+      {label}
+      <Icon size={12} className={cn(active ? 'opacity-100' : 'opacity-40')} />
+    </button>
+  )
+}
+
+// Sortable columns. Discount is deliberately excluded — percentage
+// and fixed_amount use different units, so "sort by discount" across
+// both types would mean nothing. Status and Type are sorted via the
+// tab filter, not per-column.
+type SortKey = 'code' | 'name' | 'redemptions' | 'expires'
+
+function sortCoupons(list: Coupon[], key: SortKey, dir: 'asc' | 'desc'): Coupon[] {
+  const sign = dir === 'asc' ? 1 : -1
+  const cmp = (a: Coupon, b: Coupon): number => {
+    switch (key) {
+      case 'code':
+        return a.code.localeCompare(b.code) * sign
+      case 'name':
+        // Blank names sort last regardless of direction — "—" at the
+        // bottom reads as "no value" rather than a column to search.
+        if (!a.name && !b.name) return 0
+        if (!a.name) return 1
+        if (!b.name) return -1
+        return a.name.localeCompare(b.name) * sign
+      case 'redemptions':
+        return (a.times_redeemed - b.times_redeemed) * sign
+      case 'expires': {
+        // "Never" always sorts last — an indefinite coupon is never
+        // the thing you'd look at in a "sort by expiry" view.
+        if (!a.expires_at && !b.expires_at) return 0
+        if (!a.expires_at) return 1
+        if (!b.expires_at) return -1
+        return (new Date(a.expires_at).getTime() - new Date(b.expires_at).getTime()) * sign
+      }
+    }
+  }
+  return [...list].sort(cmp)
+}
+
 export default function CouponsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [archiveId, setArchiveId] = useState<string | null>(null)
@@ -141,6 +199,23 @@ export default function CouponsPage() {
       const next = new URLSearchParams(prev)
       if (value) next.set('q', value)
       else next.delete('q')
+      return next
+    }, { replace: true })
+  }
+  // Sort state is URL-backed too (?sort=code&dir=asc). Clicking a
+  // sortable header cycles asc → desc → unsorted, matching Linear.
+  const sortKey = searchParams.get('sort') ?? ''
+  const sortDir = (searchParams.get('dir') as 'asc' | 'desc' | null) ?? null
+  const toggleSort = (key: SortKey) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (sortKey !== key) {
+        next.set('sort', key); next.set('dir', 'asc')
+      } else if (sortDir === 'asc') {
+        next.set('dir', 'desc')
+      } else {
+        next.delete('sort'); next.delete('dir')
+      }
       return next
     }, { replace: true })
   }
@@ -199,8 +274,11 @@ export default function CouponsPage() {
         (c.name && c.name.toLowerCase().includes(q))
       )
     }
+    if (sortKey && sortDir) {
+      result = sortCoupons(result, sortKey as SortKey, sortDir)
+    }
     return result
-  }, [coupons, filterStatus, search])
+  }, [coupons, filterStatus, search, sortKey, sortDir])
 
   return (
     <Layout>
@@ -298,12 +376,20 @@ export default function CouponsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="text-xs font-medium">Code</TableHead>
-                  <TableHead className="text-xs font-medium">Name</TableHead>
+                  <TableHead className="text-xs font-medium">
+                    <SortHeader label="Code" column="code" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  </TableHead>
+                  <TableHead className="text-xs font-medium">
+                    <SortHeader label="Name" column="name" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  </TableHead>
                   <TableHead className="text-xs font-medium">Type</TableHead>
                   <TableHead className="text-xs font-medium text-right">Discount</TableHead>
-                  <TableHead className="text-xs font-medium">Redemptions</TableHead>
-                  <TableHead className="text-xs font-medium">Expires</TableHead>
+                  <TableHead className="text-xs font-medium">
+                    <SortHeader label="Redemptions" column="redemptions" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  </TableHead>
+                  <TableHead className="text-xs font-medium">
+                    <SortHeader label="Expires" column="expires" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                  </TableHead>
                   <TableHead className="text-xs font-medium">Status</TableHead>
                   <TableHead className="text-xs font-medium text-right">Actions</TableHead>
                 </TableRow>
