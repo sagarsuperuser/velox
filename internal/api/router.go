@@ -605,6 +605,14 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/api-keys", authH.Routes())
 		r.With(auth.Require(auth.PermCustomerRead)).Mount("/customers", customerH.Routes())
+		// Customer-scoped coupon assignment. Mounted as a sibling of
+		// /customers so GET/POST/DELETE can carry independent permission
+		// guards (attach/revoke need write, get needs read) without
+		// threading the coupon handler into the customer package.
+		r.Mount("/customers/{id}/coupon", couponH.CustomerAssignmentRoutes(
+			auth.Require(auth.PermCustomerRead),
+			auth.Require(auth.PermCustomerWrite),
+		))
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/meters", pricingH.MeterRoutes())
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/plans", pricingH.PlanRoutes())
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/rating-rules", pricingH.RatingRuleRoutes())
