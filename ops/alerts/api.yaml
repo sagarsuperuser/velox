@@ -1,0 +1,48 @@
+# Velox — API surface alerts
+#
+# Import path: Prometheus → rule_files; Grafana Cloud / Mimir → managed rule group;
+# Alertmanager → routes by severity label. See ops/alerts/README.md.
+#
+# Metrics source: internal/api/middleware/metrics.go (Prometheus HTTP middleware).
+groups:
+  - name: velox_api
+    interval: 30s
+    rules:
+      - alert: VeloxAPIErrorBudgetBurn
+        expr: |
+          sum(rate(velox_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(velox_http_requests_total[5m])) > 0.005
+        for: 5m
+        labels:
+          severity: page
+          service: velox
+          slo: availability
+        annotations:
+          summary: "Velox API 5xx rate >0.5% (monthly SLO 99.95%)"
+          description: "5xx share of traffic is {{ $value | humanizePercentage }} over 5m. Monthly 99.95% SLO is ~22 min of full budget; this burn rate exhausts it in hours."
+          runbook: docs/ops/runbook.md#playbook-veloxapierrorbudgetburn
+
+      - alert: VeloxAPIHighLatency
+        expr: |
+          histogram_quantile(
+            0.99,
+            rate(velox_http_request_duration_seconds_bucket[5m])
+          ) > 1
+        for: 10m
+        labels:
+          severity: ticket
+          service: velox
+          slo: latency
+        annotations:
+          summary: "Velox API p99 latency >1s for 10m"
+          description: "p99 latency is {{ $value | humanizeDuration }}. Latency SLO target is <1s at p99."
+
+      - alert: VeloxAPIHighConcurrency
+        expr: velox_http_requests_in_flight > 200
+        for: 5m
+        labels:
+          severity: info
+          service: velox
+        annotations:
+          summary: "Velox API in-flight requests >200"
+          description: "Saturation signal. {{ $value }} concurrent requests — investigate before it becomes latency or 5xx."
