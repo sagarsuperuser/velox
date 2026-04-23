@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -910,19 +910,53 @@ function CreateCouponDialog({ open, onOpenChange, onCreated }: {
 function RedemptionsDialog({ coupon, open, onOpenChange }: {
   coupon: Coupon; open: boolean; onOpenChange: (open: boolean) => void
 }) {
-  const { data: redemptionsData, isLoading: loading } = useQuery({
+  // Seek-cursor pagination: useInfiniteQuery accumulates pages, API
+  // returns has_more/next_cursor. 25 per page keeps the dialog compact.
+  const {
+    data: redemptionsPages,
+    isLoading: loading,
+    isFetchingNextPage,
+    fetchNextPage,
+    hasNextPage,
+  } = useInfiniteQuery({
     queryKey: ['coupon-redemptions', coupon.id],
-    queryFn: () => api.listCouponRedemptions(coupon.id),
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: '25' })
+      if (pageParam) params.set('cursor', pageParam)
+      return api.listCouponRedemptions(coupon.id, params.toString())
+    },
+    initialPageParam: '' as string,
+    getNextPageParam: (last) => (last.has_more ? last.next_cursor : undefined),
     enabled: open,
   })
+  const redemptions = useMemo(
+    () => (redemptionsPages?.pages ?? []).flatMap(p => p.data ?? []),
+    [redemptionsPages],
+  )
 
-  const redemptions = redemptionsData?.data ?? []
+  // Join the redemption's customer_id against the customer list so
+  // operators see "Acme Corp" instead of a raw cus_... UUID. Dialog's
+  // query only runs when open, so no wasted request on closed rows.
+  const { data: customersData } = useQuery({
+    queryKey: ['customers'],
+    queryFn: () => api.listCustomers(),
+    staleTime: 30_000,
+    enabled: open,
+  })
+  const customerById = useMemo(() => {
+    const list = customersData?.data ?? []
+    const map = new Map<string, { name: string; email: string }>()
+    for (const c of list) {
+      map.set(c.id, { name: c.display_name || c.external_id || c.id, email: c.email ?? '' })
+    }
+    return map
+  }, [customersData])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Redemptions - {coupon.code}</DialogTitle>
+          <DialogTitle>Redemptions — {coupon.code}</DialogTitle>
         </DialogHeader>
 
         <div className="flex items-center gap-3 mb-3">
@@ -941,25 +975,61 @@ function RedemptionsDialog({ coupon, open, onOpenChange }: {
             <p className="text-sm text-muted-foreground mt-1">This coupon has not been used</p>
           </div>
         ) : (
-          <div className="max-h-80 overflow-y-auto">
+          <div className="max-h-96 overflow-y-auto">
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead className="text-xs font-medium">Customer</TableHead>
+                  <TableHead className="text-xs font-medium">Invoice</TableHead>
                   <TableHead className="text-xs font-medium text-right">Discount</TableHead>
                   <TableHead className="text-xs font-medium">Date</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {redemptions.map((r: CouponRedemption) => (
-                  <TableRow key={r.id}>
-                    <TableCell className="text-sm text-foreground font-mono">{r.customer_id.slice(0, 20)}...</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono text-sm text-emerald-600">{formatCents(r.discount_cents)}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{formatDate(r.created_at)}</TableCell>
-                  </TableRow>
-                ))}
+                {redemptions.map((r: CouponRedemption) => {
+                  const cust = customerById.get(r.customer_id)
+                  return (
+                    <TableRow key={r.id}>
+                      <TableCell>
+                        <Link to={`/customers/${r.customer_id}`} className="text-sm text-primary hover:underline">
+                          {cust?.name ?? r.customer_id}
+                        </Link>
+                        {cust?.email && (
+                          <div className="text-xs text-muted-foreground">{cust.email}</div>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {r.invoice_id ? (
+                          <Link to={`/invoices/${r.invoice_id}`} className="text-sm font-mono text-primary hover:underline">
+                            {r.invoice_id.slice(0, 12)}…
+                          </Link>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums font-mono text-sm text-emerald-600">{formatCents(r.discount_cents)}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{formatDate(r.created_at)}</TableCell>
+                    </TableRow>
+                  )
+                })}
               </TableBody>
             </Table>
+            {hasNextPage && (
+              <div className="border-t border-border py-3 flex justify-center">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fetchNextPage()}
+                  disabled={isFetchingNextPage}
+                >
+                  {isFetchingNextPage ? (
+                    <><Loader2 className="h-3 w-3 animate-spin mr-2" /> Loading…</>
+                  ) : (
+                    'Load more'
+                  )}
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
