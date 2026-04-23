@@ -1306,6 +1306,100 @@ paths:
           description: Coupon failed a gate (see domain `code`)
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
+  /v1/customers/{id}/coupon:
+    get:
+      tags: [Coupons]
+      summary: Get the customer's active coupon assignment
+      operationId: getCustomerCoupon
+      description: |
+        Returns the customer-scoped coupon that applies to every future
+        invoice until revoked or the coupon's duration exhausts. 404 when
+        no active assignment exists.
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      responses:
+        '200':
+          description: Active assignment with inlined coupon snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerCouponAssignment' }
+        '404':
+          description: No active assignment
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    post:
+      tags: [Coupons]
+      summary: Attach a coupon to a customer
+      operationId: assignCustomerCoupon
+      description: |
+        Assigns a coupon to the customer. The discount applies to every
+        future invoice automatically — on each invoice the engine consults
+        the customer-scope assignment only when no subscription-scope
+        coupon produced a discount (Stripe's `subscription.discount` beats
+        `customer.discount` precedence rule).
+
+        Duration semantics match the coupon: `once` applies to one invoice,
+        `repeating` to N, `forever` until revoked. Percentage coupons
+        recompute per-invoice against the current subtotal so the discount
+        stays correct as usage varies.
+
+        At most one active assignment per customer. A second attach while
+        the first still has duration left returns `coupon_already_assigned`
+        — revoke first, then reattach. Supply `Idempotency-Key` (header or
+        body) for safe retry.
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+        - in: header
+          name: Idempotency-Key
+          schema: { type: string }
+          description: Client-supplied retry token. Same key → same row.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, description: 'Coupon code (case-insensitive).' }
+                idempotency_key:
+                  type: string
+                  description: Optional — header `Idempotency-Key` takes precedence when both are supplied.
+      responses:
+        '201':
+          description: New assignment created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerCouponAssignment' }
+        '200':
+          description: Idempotent replay of an earlier assignment
+          headers:
+            Idempotent-Replay:
+              schema: { type: string, enum: ['true'] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerCouponAssignment' }
+        '422':
+          description: |
+            Coupon failed a gate. Known `code` values: `coupon_not_found`,
+            `coupon_archived`, `coupon_expired`, `coupon_max_redemptions_reached`,
+            `coupon_already_assigned`.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    delete:
+      tags: [Coupons]
+      summary: Revoke the customer's active coupon assignment
+      operationId: revokeCustomerCoupon
+      description: |
+        Voids the active assignment. Future invoices bill at full price
+        unless another coupon is assigned. Re-revoking an already-voided
+        assignment returns 404, matching the attach/detach state machine.
+      parameters:
+        - $ref: '#/components/parameters/ResourceID'
+      responses:
+        '204': { description: Revoked }
+        '404':
+          description: No active assignment
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
   /v1/coupons/{id}/redemptions:
     get:
       tags: [Coupons]
@@ -2345,6 +2439,26 @@ components:
         created_at:
           type: string
           format: date-time
+
+    CustomerCouponAssignment:
+      type: object
+      description: |
+        Customer-scoped coupon assignment. Persists as a `coupon_redemption`
+        row with `subscription_id` and `invoice_id` both NULL — the sentinels
+        the billing engine scans for on each invoice generation.
+      properties:
+        id: { type: string, description: 'Underlying redemption id.' }
+        coupon_id: { type: string }
+        customer_id: { type: string }
+        periods_applied:
+          type: integer
+          description: Number of invoices this assignment has already discounted. For `repeating` coupons, exhausts when it equals `duration_periods`.
+        created_at:
+          type: string
+          format: date-time
+        coupon:
+          description: Snapshot of the coupon at assignment time — inlined so clients can render the discount without a follow-up GET.
+          $ref: '#/components/schemas/Coupon'
 
     TenantSettings:
       type: object
