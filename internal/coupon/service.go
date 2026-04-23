@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 )
 
 var codeRegexp = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9\-]{1,48}[A-Za-z0-9]$`)
@@ -662,7 +662,7 @@ func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, 
 	if percentBPSum > 10000 {
 		percentBPSum = 10000
 	}
-	percentCents := int64(math.RoundToEven(float64(subtotalCents) * float64(percentBPSum) / 10000))
+	percentCents := money.RoundHalfToEven(subtotalCents*int64(percentBPSum), 10000)
 	total := min(percentCents+fixedSum, subtotalCents)
 	if total <= 0 {
 		return domain.CouponDiscountResult{}, nil
@@ -729,9 +729,18 @@ func (s *Service) MarkPeriodsApplied(ctx context.Context, tenantID string, redem
 }
 
 // CalculateDiscount computes the discount amount in cents for a given
-// coupon and subtotal. Uses banker's rounding for percentage discounts to
-// match established Velox money math — repeated small discounts don't
-// systematically favour one side.
+// coupon and subtotal. Pure integer math — no float conversion — so the
+// output is byte-deterministic across platforms and immune to the
+// well-known float-rounding drift that affects large totals (e.g.
+// 99_999_999 cents × 1 bp on a float path would silently lose the
+// trailing digit). Uses the shared money.RoundHalfToEven helper for
+// banker's rounding so repeated small discounts don't systematically
+// favour one side; the same rule is applied across pricing, tax, and
+// subscription proration.
+//
+// Overflow bound: subtotalCents × 10000 must fit in int64. With a
+// practical invoice ceiling of ~$10M (1e9 cents) the product is 1e13,
+// five orders of magnitude below int64 max.
 func CalculateDiscount(c domain.Coupon, subtotalCents int64) int64 {
 	if subtotalCents <= 0 {
 		return 0
@@ -740,7 +749,7 @@ func CalculateDiscount(c domain.Coupon, subtotalCents int64) int64 {
 	switch c.Type {
 	case domain.CouponTypePercentage:
 		// percent_off_bp is basis points: 5050 = 50.50%.
-		discount := int64(math.RoundToEven(float64(subtotalCents) * float64(c.PercentOffBP) / 10000))
+		discount := money.RoundHalfToEven(subtotalCents*int64(c.PercentOffBP), 10000)
 		if discount > subtotalCents {
 			return subtotalCents
 		}
