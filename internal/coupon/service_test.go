@@ -940,6 +940,49 @@ func TestRedeem_PublicCouponAcceptsAnyCustomer(t *testing.T) {
 	}
 }
 
+// TestRedeemDetail_IdempotencyReplay exercises the contract the HTTP layer
+// relies on for setting the Idempotent-Replay response header: a repeated
+// RedeemDetail call with the same idempotency key returns Replay=true and
+// the original redemption, without bumping the redemption count.
+func TestRedeemDetail_IdempotencyReplay(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "RETRY10", Name: "10% Off", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000,
+	})
+	svc := NewService(store)
+
+	in := RedeemInput{
+		Code: "RETRY10", CustomerID: "cust_1", SubtotalCents: 10000,
+		IdempotencyKey: "k_retry_1",
+	}
+
+	first, err := svc.RedeemDetail(context.Background(), "t1", in)
+	if err != nil {
+		t.Fatalf("first redeem: %v", err)
+	}
+	if first.Replay {
+		t.Error("first call Replay=true, expected false")
+	}
+
+	second, err := svc.RedeemDetail(context.Background(), "t1", in)
+	if err != nil {
+		t.Fatalf("replay redeem: %v", err)
+	}
+	if !second.Replay {
+		t.Error("replay call Replay=false, expected true")
+	}
+	if second.Redemption.ID != first.Redemption.ID {
+		t.Errorf("replay returned redemption %s, want %s",
+			second.Redemption.ID, first.Redemption.ID)
+	}
+
+	cpn, _ := store.GetByCode(context.Background(), "t1", "RETRY10")
+	if cpn.TimesRedeemed != 1 {
+		t.Errorf("replay bumped counter: times_redeemed=%d, want 1", cpn.TimesRedeemed)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------

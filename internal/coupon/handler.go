@@ -242,13 +242,21 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) {
 		input.IdempotencyKey = h
 	}
 
-	redemption, err := h.svc.Redeem(r.Context(), tenantID, input)
+	res, err := h.svc.RedeemDetail(r.Context(), tenantID, input)
 	if err != nil {
 		respond.FromError(w, r, err, "coupon")
 		return
 	}
 
-	respond.JSON(w, r, http.StatusCreated, redemption)
+	// Stripe convention: an idempotent replay returns 200 + the
+	// Idempotent-Replay: true response header. Callers can then tell a
+	// genuine retry-to-success apart from a true first-time create.
+	if res.Replay {
+		w.Header().Set("Idempotent-Replay", "true")
+		respond.JSON(w, r, http.StatusOK, res.Redemption)
+		return
+	}
+	respond.JSON(w, r, http.StatusCreated, res.Redemption)
 }
 
 func (h *Handler) listRedemptions(w http.ResponseWriter, r *http.Request) {
