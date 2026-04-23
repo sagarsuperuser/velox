@@ -360,6 +360,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// tenant over-remitting tax. Manual/none providers receive the call
 	// but no-op.
 	creditNoteSvc.SetTaxReverser(engine)
+	// Full-credit/full-refund credit notes reverse coupon usage on the
+	// underlying invoice: voids the redemption rows, rolls back
+	// times_redeemed and periods_applied so "once" / "repeating" coupons
+	// aren't permanently burned by a refunded invoice.
+	creditNoteSvc.SetCouponRedemptionVoider(couponSvc)
 
 	// Coupon discount applier: billing engine consults redemptions at finalize time.
 	engine.SetCouponApplier(couponSvc)

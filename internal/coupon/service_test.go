@@ -193,6 +193,33 @@ func (m *mockStore) CountRedemptionsByCustomer(_ context.Context, _, couponID, c
 	return n, nil
 }
 
+func (m *mockStore) VoidRedemptionsForInvoice(_ context.Context, _, invoiceID string) (int, error) {
+	if invoiceID == "" {
+		return 0, nil
+	}
+	var voided int
+	now := time.Now().UTC()
+	for i := range m.redemptions {
+		r := &m.redemptions[i]
+		if r.InvoiceID != invoiceID || r.VoidedAt != nil {
+			continue
+		}
+		r.VoidedAt = &now
+		if r.PeriodsApplied > 0 {
+			r.PeriodsApplied--
+		}
+		if c, ok := m.coupons[r.CouponID]; ok {
+			if c.TimesRedeemed > 0 {
+				c.TimesRedeemed--
+			}
+			m.coupons[c.ID] = c
+			m.byCode[c.Code] = c
+		}
+		voided++
+	}
+	return voided, nil
+}
+
 func (m *mockStore) IncrementPeriodsApplied(_ context.Context, _ string, ids []string) error {
 	for _, id := range ids {
 		found := false
