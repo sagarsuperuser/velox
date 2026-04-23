@@ -1,14 +1,17 @@
-import { useState, useEffect, type ReactNode } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
   Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3, Ticket,
-  Sun, Moon, Search, TrendingUp, UsersRound, ChevronsUpDown, type LucideIcon,
+  Sun, Moon, Search, TrendingUp, UsersRound, ChevronsUpDown, BookOpen, Activity,
+  Sparkles, MessageSquareWarning, type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useDarkMode } from '@/hooks/useDarkMode'
 import { cn } from '@/lib/utils'
 import { api, setActiveCurrency } from '@/lib/api'
+import { showApiError } from '@/lib/formErrors'
+import { getLastRequestId } from '@/lib/lastRequestId'
 import { useAuth } from '@/contexts/AuthContext'
 import { Separator } from '@/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -105,7 +108,8 @@ function ModeToggle({ livemode, onToggle, busy }: { livemode: boolean; onToggle:
       type="button"
       onClick={onToggle}
       disabled={busy}
-      aria-label={`Switch to ${livemode ? 'test' : 'live'} mode`}
+      aria-label={`Switch to ${livemode ? 'test' : 'live'} mode (Shift+M)`}
+      title={`Switch to ${livemode ? 'test' : 'live'} mode (Shift+M)`}
       className={cn(
         'flex items-center rounded-full border border-border bg-muted p-0.5 text-xs font-medium transition-opacity',
         busy && 'opacity-60 cursor-not-allowed'
@@ -157,18 +161,36 @@ export function Layout({ children }: { children: ReactNode }) {
       await toggleLivemode()
       toast.success(user?.livemode ? 'Switched to test mode' : 'Switched to live mode')
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not switch mode')
+      showApiError(err, 'Could not switch mode')
     } finally {
       setToggling(false)
     }
   }
 
-  // Cmd+K / Ctrl+K keyboard shortcut
+  // Ref-to-latest so the global keydown listener can call the freshest handler
+  // without re-registering on every render (matches Stripe's Shift+M UX).
+  const toggleLivemodeRef = useRef(handleToggleLivemode)
+  useEffect(() => { toggleLivemodeRef.current = handleToggleLivemode })
+
+  // Global keyboard shortcuts:
+  //   Cmd/Ctrl+K — command palette
+  //   Shift+M    — toggle Test/Live mode (Stripe parity)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault()
         setCommandOpen(prev => !prev)
+        return
+      }
+      if (e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === 'M' || e.key === 'm')) {
+        const t = e.target as HTMLElement | null
+        if (t) {
+          const tag = t.tagName
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+          if (t.isContentEditable) return
+        }
+        e.preventDefault()
+        toggleLivemodeRef.current()
       }
     }
     document.addEventListener('keydown', onKeyDown)
@@ -286,6 +308,41 @@ export function Layout({ children }: { children: ReactNode }) {
                 </div>
               </div>
               <DropdownMenuSeparator />
+              <DropdownMenuItem render={<Link to="/docs" />}>
+                <BookOpen />
+                <span>Documentation</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem render={<Link to="/changelog" />}>
+                <Sparkles />
+                <span>Changelog</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem render={<Link to="/status" />}>
+                <Activity />
+                <span>System status</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  // Build the mailto body at click-time so the request_id we
+                  // send is the freshest one — not whatever was current when
+                  // the menu rendered. tenant_id helps us scope the search on
+                  // our end without asking the user to reproduce.
+                  const requestId = getLastRequestId()
+                  const body =
+                    `What happened:\n\n\n` +
+                    `--- context ---\n` +
+                    `tenant_id: ${user.tenant_id}\n` +
+                    `url: ${window.location.href}\n` +
+                    `user_agent: ${navigator.userAgent}\n` +
+                    (requestId ? `request_id: ${requestId}\n` : '')
+                  window.location.href = `mailto:support@velox.dev?subject=${encodeURIComponent(
+                    'Velox issue report',
+                  )}&body=${encodeURIComponent(body)}`
+                }}
+              >
+                <MessageSquareWarning />
+                <span>Report an issue</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={toggleDark}>
                 {dark ? <Sun /> : <Moon />}
                 <span>{dark ? 'Light mode' : 'Dark mode'}</span>
@@ -296,9 +353,18 @@ export function Layout({ children }: { children: ReactNode }) {
                 <span>Sign out</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <p className="px-2 py-1 text-[10px] text-muted-foreground/60 text-center tracking-wide">
-                Velox v2.0
-              </p>
+              <div className="px-2 py-1.5 flex items-center justify-between text-[10px] text-muted-foreground/60 tracking-wide">
+                <span>Velox v2.0</span>
+                <span className="flex items-center gap-2">
+                  <Link to="/terms" className="hover:text-foreground transition-colors">
+                    Terms
+                  </Link>
+                  <span>·</span>
+                  <Link to="/privacy" className="hover:text-foreground transition-colors">
+                    Privacy
+                  </Link>
+                </span>
+              </div>
             </DropdownMenuContent>
           </DropdownMenu>
         )}
@@ -333,13 +399,16 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {/* Main content */}
       <main className="flex-1 overflow-auto bg-background">
-        {/* Sticky top region — safety strips stack above the top bar so users
-            never lose sight of mode/credential warnings while scrolling. */}
+        {/* Header stack — mode/safety banner + top-bar, pinned together so
+            whichever banner is live (Stripe-missing hard blocker in live
+            mode, test-mode strip otherwise) can never scroll out of sight.
+            Mirrors Stripe's persistent chrome — the single strongest guard
+            against "did I just do that on live?" operator confusion. */}
         <div className="sticky top-0 z-20">
-          {/* Live-mode hard blocker: non-dismissible. Only fires once the
-              Stripe-creds query has resolved to a definitive "no live keys"
-              (hasLiveStripe === false) — undefined means still loading, so
-              we don't flash a red banner to users who are fully set up. */}
+          {/* Hard blocker — live mode without a Stripe live credential means
+              every real charge will 4xx. Non-dismissible; the only fix is to
+              connect Stripe. Mutually exclusive with the test-mode banner
+              (this only fires in live mode). */}
           {user && user.livemode && hasLiveStripe === false && (
             <div
               role="alert"
@@ -355,6 +424,26 @@ export function Layout({ children }: { children: ReactNode }) {
               >
                 Connect Stripe
               </Link>
+            </div>
+          )}
+          {user && !user.livemode && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex items-center justify-center gap-2 bg-amber-500 px-4 py-1.5 text-xs font-medium text-amber-950"
+            >
+              <AlertTriangle size={14} aria-hidden="true" />
+              <span>
+                You're viewing <strong className="font-semibold">TEST</strong> data. No real money is moving.
+              </span>
+              <button
+                type="button"
+                onClick={handleToggleLivemode}
+                disabled={toggling}
+                className="ml-1 underline decoration-amber-950/40 underline-offset-2 hover:decoration-amber-950 disabled:opacity-60"
+              >
+                Switch to live
+              </button>
             </div>
           )}
           {/* Top bar — always visible. Mobile adds a hamburger, desktop leaves
@@ -382,8 +471,9 @@ export function Layout({ children }: { children: ReactNode }) {
       {/* Command Palette */}
       <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} />
 
-      {/* Global onboarding launcher — floating bottom-right, persists across
-          pages, self-hides when the checklist is complete or dismissed. */}
+      {/* Global onboarding launcher — floats bottom-right, self-hides when
+          the checklist is complete or dismissed. Rendered at the Layout level
+          so it persists across all authed routes, not just Dashboard. */}
       <OnboardingLauncher />
     </div>
   )
