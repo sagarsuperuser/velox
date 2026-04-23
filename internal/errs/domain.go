@@ -117,12 +117,28 @@ func InvalidState(message string) *DomainError {
 	}
 }
 
+// PreconditionFailed signals that an HTTP precondition — typically an
+// If-Match header carrying the caller's expected resource version — did
+// not match the current state. Maps to HTTP 412. The intended use is
+// optimistic concurrency: the client sends If-Match with the ETag it last
+// saw, and this error fires when a concurrent writer has bumped the
+// version in between.
+//
+//	return errs.PreconditionFailed("coupon has been modified, refresh and retry")
+func PreconditionFailed(message string) *DomainError {
+	return &DomainError{
+		Kind:    ErrPreconditionFailed,
+		Message: message,
+	}
+}
+
 // Sentinel errors for store and service layers.
 var (
-	ErrNotFound      = errors.New("not found")
-	ErrAlreadyExists = errors.New("already exists")
-	ErrDuplicateKey  = errors.New("duplicate key")
-	ErrInvalidState  = errors.New("invalid state")
+	ErrNotFound           = errors.New("not found")
+	ErrAlreadyExists      = errors.New("already exists")
+	ErrDuplicateKey       = errors.New("duplicate key")
+	ErrInvalidState       = errors.New("invalid state")
+	ErrPreconditionFailed = errors.New("precondition failed")
 	// ErrValidation marks an error caused by bad caller input (missing field,
 	// malformed value). New code should prefer errs.Required / errs.Invalid /
 	// errs.AlreadyExists which set Field metadata for the UI. The legacy

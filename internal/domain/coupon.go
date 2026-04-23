@@ -109,6 +109,11 @@ type Coupon struct {
 	// aren't broken retroactively.
 	ArchivedAt *time.Time `json:"archived_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
+	// Version is the optimistic-concurrency token. Every mutating write
+	// (Update, Archive, Unarchive) bumps it by 1; the API echoes the
+	// current value back via the ETag header, and clients replay it via
+	// If-Match on subsequent writes to detect concurrent edits.
+	Version int `json:"version"`
 }
 
 // Valid reports whether the coupon can accept new redemptions right now.
