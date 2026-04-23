@@ -9,6 +9,8 @@ import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -17,7 +19,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 
-import { Loader2, Archive, ArchiveRestore, Lock } from 'lucide-react'
+import { Loader2, Archive, ArchiveRestore, Lock, Calculator } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
@@ -243,6 +245,12 @@ export default function CouponDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Preview — runs the real server-side discount calculator against a
+          sample customer + subtotal, so operators can sanity-check an
+          unfamiliar coupon without minting a throwaway invoice. This is
+          the coupon equivalent of a pricing calculator. */}
+      <CouponPreviewCard coupon={coupon} restrictedPlans={restrictedPlans} />
+
       {/* Properties */}
       <Card className="mt-6">
         <CardHeader>
@@ -452,5 +460,162 @@ function PropRow({ label, children }: { label: string; children: React.ReactNode
       <span className="text-sm text-muted-foreground">{label}</span>
       {children}
     </div>
+  )
+}
+
+// CouponPreviewCard lets an operator run the real server-side discount
+// path (same code the invoice pipeline uses) against a customer + subtotal
+// to confirm what will happen before they commit. Server errors (gates
+// failing, customer not eligible, etc.) surface inline so the operator
+// sees them in context rather than as a toast that vanishes.
+function CouponPreviewCard({
+  coupon,
+  restrictedPlans,
+}: {
+  coupon: Coupon
+  restrictedPlans: Plan[]
+}) {
+  const [customerId, setCustomerId] = useState(coupon.customer_id ?? '')
+  const [subtotal, setSubtotal] = useState('')
+  const [planId, setPlanId] = useState('')
+  const [result, setResult] = useState<{ discount: number; subtotal: number } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Customer list — for private coupons the customer is fixed, so we
+  // skip the full list and use the bound customer_id. For public coupons
+  // we show the dropdown so operators can try different customers (the
+  // preview checks first-time/per-customer restrictions, so which
+  // customer actually matters).
+  const { data: customersData } = useQuery({
+    queryKey: ['customers'],
+    queryFn: () => api.listCustomers(),
+    enabled: !coupon.customer_id,
+  })
+  const customers = customersData?.data ?? []
+
+  const previewMutation = useMutation({
+    mutationFn: async () => {
+      const subtotalCents = Math.round(parseFloat(subtotal) * 100)
+      return api.previewCoupon({
+        code: coupon.code,
+        customer_id: customerId,
+        subtotal_cents: subtotalCents,
+        ...(planId ? { plan_id: planId } : {}),
+        ...(coupon.type === 'fixed_amount' && coupon.currency ? { currency: coupon.currency } : {}),
+      })
+    },
+    onSuccess: (res) => {
+      setResult({ discount: res.discount_cents, subtotal: Math.round(parseFloat(subtotal) * 100) })
+      setError(null)
+    },
+    onError: (err) => {
+      setResult(null)
+      setError(err instanceof Error ? err.message : 'Preview failed')
+    },
+  })
+
+  const canSubmit = customerId && subtotal && parseFloat(subtotal) > 0
+
+  return (
+    <Card className="mt-6">
+      <CardHeader>
+        <CardTitle className="text-sm flex items-center gap-2">
+          <Calculator size={14} />
+          Preview Discount
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <Label className="text-xs text-muted-foreground">Customer</Label>
+            {coupon.customer_id ? (
+              <Input
+                value={coupon.customer_id}
+                disabled
+                className="font-mono text-xs mt-1"
+                title="Private coupon — customer is fixed"
+              />
+            ) : (
+              <select
+                value={customerId}
+                onChange={e => setCustomerId(e.target.value)}
+                className="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="">Select a customer...</option>
+                {customers.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.display_name}{c.email ? ` — ${c.email}` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <div>
+            <Label className="text-xs text-muted-foreground">
+              Subtotal {coupon.type === 'fixed_amount' && coupon.currency ? `(${coupon.currency.toUpperCase()})` : ''}
+            </Label>
+            <Input
+              type="number"
+              step="0.01"
+              min="0"
+              placeholder="100.00"
+              value={subtotal}
+              onChange={e => setSubtotal(e.target.value)}
+              className="mt-1"
+            />
+          </div>
+          {restrictedPlans.length > 0 && (
+            <div>
+              <Label className="text-xs text-muted-foreground">Plan (optional)</Label>
+              <select
+                value={planId}
+                onChange={e => setPlanId(e.target.value)}
+                className="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="">Any plan</option>
+                {restrictedPlans.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between mt-4">
+          <Button
+            size="sm"
+            disabled={!canSubmit || previewMutation.isPending}
+            onClick={() => { setError(null); previewMutation.mutate() }}
+          >
+            {previewMutation.isPending ? (
+              <><Loader2 size={14} className="animate-spin mr-2" />Calculating...</>
+            ) : (
+              'Calculate discount'
+            )}
+          </Button>
+
+          {error && (
+            <p className="text-sm text-destructive">{error}</p>
+          )}
+
+          {result && !error && (
+            <div className="flex items-center gap-6 text-sm">
+              <div>
+                <span className="text-muted-foreground">Discount: </span>
+                <span className="tabular-nums font-mono font-medium text-emerald-600">
+                  −{formatCents(result.discount, coupon.currency)}
+                </span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Final: </span>
+                <span className="tabular-nums font-mono font-medium text-foreground">
+                  {formatCents(result.subtotal - result.discount, coupon.currency)}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   )
 }
