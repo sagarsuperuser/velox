@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -197,6 +198,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Patch("/{id}/items/{itemID}", h.updateItem)
 	r.Delete("/{id}/items/{itemID}/pending-change", h.cancelPendingItemChange)
 	r.Delete("/{id}/items/{itemID}", h.removeItem)
+	r.Get("/{id}/timeline", h.activityTimeline)
 	return r
 }
 
@@ -1046,4 +1048,129 @@ func max64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// --- Activity timeline (T0-18) ---
+//
+// Industry-standard subscription detail view (Stripe, Lago, Orb) shows
+// a chronological feed of everything that happened to a subscription so
+// a CS rep responding to "why was my sub cancelled?" lands on the right
+// page with the right story already written. We source it from the
+// audit_log — every lifecycle mutation (create/activate/pause/resume/
+// cancel, item add/remove/update) is already captured there with the
+// actor, timestamp, and a metadata blob. No new instrumentation needed,
+// and no RLS gap since audit.Logger.Query already runs under the
+// tenant-scoped tx.
+
+// timelineEvent is the wire shape the SPA's timeline component consumes.
+// Kept structurally compatible with the invoice payment-timeline event
+// so the React renderer can handle both without branching logic.
+type timelineEvent struct {
+	Timestamp   string `json:"timestamp"`
+	Source      string `json:"source"`
+	EventType   string `json:"event_type"`
+	Status      string `json:"status"`
+	Description string `json:"description"`
+	ActorType   string `json:"actor_type,omitempty"`
+	ActorName   string `json:"actor_name,omitempty"`
+	ActorID     string `json:"actor_id,omitempty"`
+}
+
+// describeSubscriptionAction maps audit_log action + metadata to a
+// human-readable sentence + a status tag the UI colors by. Unknown
+// actions pass through with a neutral info tag rather than hiding —
+// the feed should never silently drop an event.
+func describeSubscriptionAction(action string, meta map[string]any) (string, string) {
+	switch action {
+	case domain.AuditActionCreate:
+		return "Subscription created", "info"
+	case domain.AuditActionActivate:
+		return "Subscription activated", "succeeded"
+	case domain.AuditActionPause:
+		return "Subscription paused", "warning"
+	case domain.AuditActionResume:
+		return "Subscription resumed", "succeeded"
+	case domain.AuditActionCancel:
+		by := ""
+		if v, ok := meta["canceled_by"].(string); ok && v != "" {
+			by = " by " + v
+		}
+		return "Subscription canceled" + by, "canceled"
+	case domain.AuditActionUpdate:
+		// Item-level mutations (plan change, quantity change, add, remove)
+		// all land on AuditActionUpdate today with a metadata discriminator.
+		// Read the most-useful field if present; otherwise stay generic.
+		if t, ok := meta["change_type"].(string); ok && t != "" {
+			switch t {
+			case "plan":
+				return "Plan changed", "info"
+			case "quantity":
+				return "Quantity updated", "info"
+			case "add":
+				return "Item added", "info"
+			case "remove":
+				return "Item removed", "info"
+			}
+		}
+		return "Subscription updated", "info"
+	default:
+		return action, "info"
+	}
+}
+
+func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	// Verify the subscription exists + belongs to this tenant before
+	// leaking a 200 with empty events — otherwise a bad id returns the
+	// same shape as a real sub that just has no audit yet.
+	if _, err := h.svc.Get(r.Context(), tenantID, id); err != nil {
+		if errors.Is(err, errs.ErrNotFound) {
+			respond.NotFound(w, r, "subscription")
+			return
+		}
+		respond.InternalError(w, r)
+		return
+	}
+
+	events := []timelineEvent{}
+
+	if h.auditLogger != nil {
+		// Pull a generous slice of audit entries for this sub — the UI
+		// shows the most recent first anyway, and subs rarely have more
+		// than a few dozen mutations over their lifetime. 200 leaves
+		// headroom for pathological cases without unbounded fetches.
+		entries, _, err := h.auditLogger.Query(r.Context(), tenantID, audit.QueryFilter{
+			ResourceType: "subscription",
+			ResourceID:   id,
+			Limit:        200,
+		})
+		if err == nil {
+			for _, e := range entries {
+				desc, status := describeSubscriptionAction(e.Action, e.Metadata)
+				events = append(events, timelineEvent{
+					Timestamp:   e.CreatedAt.UTC().Format(time.RFC3339),
+					Source:      "audit",
+					EventType:   e.Action,
+					Status:      status,
+					Description: desc,
+					ActorType:   e.ActorType,
+					ActorName:   e.ActorName,
+					ActorID:     e.ActorID,
+				})
+			}
+		} else {
+			slog.ErrorContext(r.Context(), "subscription timeline: audit query",
+				"subscription_id", id, "error", err)
+		}
+	}
+
+	// Ascending order — CS reps read a timeline top-down, earliest first.
+	// audit.Logger.Query returns DESC so we flip.
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Timestamp < events[j].Timestamp
+	})
+
+	respond.JSON(w, r, http.StatusOK, map[string]any{"events": events})
 }
