@@ -41,7 +41,11 @@ type outboxMessage struct {
 	InviteURL        string `json:"invite_url,omitempty"`
 	InviterEmail     string `json:"inviter_email,omitempty"`
 	TenantName       string `json:"tenant_name,omitempty"`
-	PDF              []byte `json:"pdf,omitempty"`
+	// PublicToken is the Stripe-equivalent hosted_invoice_url credential
+	// (T0-17). Carried on invoice-related email types so the dispatcher
+	// can build the hosted-invoice CTA URL for the rendered HTML body.
+	PublicToken string `json:"public_token,omitempty"`
+	PDF         []byte `json:"pdf,omitempty"`
 }
 
 // OutboxSender satisfies the four domain email interfaces (invoice.EmailSender,
@@ -82,6 +86,7 @@ func (s *OutboxSender) enqueue(tenantID, emailType string, msg outboxMessage) er
 		"invite_url":         msg.InviteURL,
 		"inviter_email":      msg.InviterEmail,
 		"tenant_name":        msg.TenantName,
+		"public_token":       msg.PublicToken,
 	}
 	if len(msg.PDF) > 0 {
 		payload["pdf"] = msg.PDF
@@ -91,30 +96,32 @@ func (s *OutboxSender) enqueue(tenantID, emailType string, msg outboxMessage) er
 }
 
 // SendInvoice enqueues an invoice email. Satisfies invoice.EmailSender.
-func (s *OutboxSender) SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte) error {
+func (s *OutboxSender) SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error {
 	return s.enqueue(tenantID, TypeInvoice, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
 		AmountCents:   totalCents,
 		Currency:      currency,
+		PublicToken:   publicToken,
 		PDF:           pdfBytes,
 	})
 }
 
 // SendPaymentReceipt enqueues a receipt email. Satisfies payment.EmailReceipt.
-func (s *OutboxSender) SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency string) error {
+func (s *OutboxSender) SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error {
 	return s.enqueue(tenantID, TypePaymentReceipt, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
 		AmountCents:   amountCents,
 		Currency:      currency,
+		PublicToken:   publicToken,
 	})
 }
 
 // SendDunningWarning enqueues a dunning-warning email. Satisfies dunning.EmailNotifier.
-func (s *OutboxSender) SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate string) error {
+func (s *OutboxSender) SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, publicToken string) error {
 	return s.enqueue(tenantID, TypeDunningWarning, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
@@ -122,26 +129,29 @@ func (s *OutboxSender) SendDunningWarning(tenantID, to, customerName, invoiceNum
 		AttemptNumber: attemptNumber,
 		MaxAttempts:   maxAttempts,
 		NextRetryDate: nextRetryDate,
+		PublicToken:   publicToken,
 	})
 }
 
 // SendDunningEscalation enqueues a dunning-escalation email. Satisfies dunning.EmailNotifier.
-func (s *OutboxSender) SendDunningEscalation(tenantID, to, customerName, invoiceNumber string, action string) error {
+func (s *OutboxSender) SendDunningEscalation(tenantID, to, customerName, invoiceNumber, action, publicToken string) error {
 	return s.enqueue(tenantID, TypeDunningEscalation, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
 		Action:        action,
+		PublicToken:   publicToken,
 	})
 }
 
 // SendPaymentFailed enqueues a payment-failed email. Satisfies dunning.EmailNotifier.
-func (s *OutboxSender) SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason string) error {
+func (s *OutboxSender) SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason, publicToken string) error {
 	return s.enqueue(tenantID, TypePaymentFailed, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
 		Reason:        reason,
+		PublicToken:   publicToken,
 	})
 }
 
