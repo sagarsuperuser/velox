@@ -220,6 +220,22 @@ func (s *Service) GetWithLineItems(ctx context.Context, tenantID, id string) (do
 	return inv, items, nil
 }
 
+// GetByPublicToken resolves a hosted-invoice-URL token to the invoice.
+// Exposed on the service so the public hosted-invoice handler can look
+// up the invoice (and hence the owning tenant) before any tenant context
+// is available. Thin forward to the store — the store method is the one
+// that uses TxBypass.
+func (s *Service) GetByPublicToken(ctx context.Context, token string) (domain.Invoice, error) {
+	return s.store.GetByPublicToken(ctx, token)
+}
+
+// SetPublicToken persists a rotated public_token on a non-draft invoice.
+// Exposed on the service so the operator rotate-public-token endpoint
+// (T0-17.4) can delegate without reaching past the service boundary.
+func (s *Service) SetPublicToken(ctx context.Context, tenantID, invoiceID, token string) error {
+	return s.store.SetPublicToken(ctx, tenantID, invoiceID, token)
+}
+
 type AddLineItemInput struct {
 	Description     string `json:"description"`
 	LineType        string `json:"line_type"`
