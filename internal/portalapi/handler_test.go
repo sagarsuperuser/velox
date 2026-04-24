@@ -118,12 +118,6 @@ func (f *fakeSettingsGetter) Get(_ context.Context, tenantID string) (domain.Ten
 	return s, nil
 }
 
-type fakeCreditNoteLister struct{}
-
-func (fakeCreditNoteLister) List(_ context.Context, _ string, _ string) ([]domain.CreditNote, error) {
-	return nil, nil
-}
-
 type fakeEventDispatcher struct {
 	dispatched []dispatchedEvent
 }

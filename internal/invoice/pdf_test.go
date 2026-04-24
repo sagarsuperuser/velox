@@ -87,22 +87,22 @@ func TestRenderPDF(t *testing.T) {
 
 func TestParseBrandColor(t *testing.T) {
 	cases := []struct {
-		in         string
-		wantR      uint8
-		wantG      uint8
-		wantB      uint8
-		ok         bool
+		in    string
+		wantR uint8
+		wantG uint8
+		wantB uint8
+		ok    bool
 	}{
 		{"#1f6feb", 0x1f, 0x6f, 0xeb, true},
 		{"#000000", 0, 0, 0, true},
 		{"#ffffff", 0xff, 0xff, 0xff, true},
 		{"#FF00AA", 0xff, 0, 0xaa, true},
 		{"", 0, 0, 0, false},
-		{"#fff", 0, 0, 0, false},      // short form rejected
-		{"1f6feb", 0, 0, 0, false},    // missing #
-		{"#zzzzzz", 0, 0, 0, false},   // non-hex
-		{"#12345", 0, 0, 0, false},    // too short
-		{"#1234567", 0, 0, 0, false},  // too long
+		{"#fff", 0, 0, 0, false},     // short form rejected
+		{"1f6feb", 0, 0, 0, false},   // missing #
+		{"#zzzzzz", 0, 0, 0, false},  // non-hex
+		{"#12345", 0, 0, 0, false},   // too short
+		{"#1234567", 0, 0, 0, false}, // too long
 	}
 	for _, c := range cases {
 		r, g, b, ok := parseBrandColor(c.in)
