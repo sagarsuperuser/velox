@@ -347,19 +347,22 @@ func (s *PostgresStore) ListExpiredGrants(ctx context.Context) ([]domain.CreditL
 	}
 	defer postgres.Rollback(tx)
 
+	// TxBypass crosses tenants for the credit-expiry sweep; livemode filter
+	// ensures test-mode expiries don't append under live ctx (see #13).
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, tenant_id, customer_id, amount_cents
 		FROM customer_credit_ledger
 		WHERE entry_type = 'grant'
 		  AND expires_at IS NOT NULL
 		  AND expires_at < NOW()
+		  AND livemode = $1
 		  AND NOT EXISTS (
 		    SELECT 1 FROM customer_credit_ledger e2
 		    WHERE e2.customer_id = customer_credit_ledger.customer_id
 		      AND e2.entry_type = 'expiry'
 		      AND e2.description LIKE 'Expired grant %' || customer_credit_ledger.id || '%'
 		  )
-	`)
+	`, postgres.Livemode(ctx))
 	if err != nil {
 		return nil, err
 	}
