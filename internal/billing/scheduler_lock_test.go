@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -211,6 +212,34 @@ func TestScheduler_DunningFansOutPerLivemode(t *testing.T) {
 	if !sawLive || !sawTest {
 		t.Fatalf("fan-out must cover both live and test modes; saw live=%v test=%v", sawLive, sawTest)
 	}
+}
+
+// TestScheduler_RunDunningForMode_PanicsWithoutLivemode is the regression
+// guard for #14: runDunningForMode is a mode-aware entry point and must
+// panic if its caller forgot to wrap ctx with WithLivemode. Without this
+// assertion the scheduler would silently route test-mode work into the
+// live partition via the default-to-live fallback.
+func TestScheduler_RunDunningForMode_PanicsWithoutLivemode(t *testing.T) {
+	t.Parallel()
+
+	s := &Scheduler{
+		engine:  &Engine{},
+		dunning: &countingDunning{},
+		tenants: &fixedTenants{ids: []string{"t_1"}},
+		batch:   1,
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("runDunningForMode should panic on ctx without WithLivemode")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "without explicit livemode") {
+			t.Fatalf("panic should mention missing livemode; got %q", msg)
+		}
+	}()
+	s.runDunningForMode(context.Background(), true, []string{"t_1"})
 }
 
 // TestScheduler_LeaderGate_DunningHalfSkipsWhenHeld verifies that when the
