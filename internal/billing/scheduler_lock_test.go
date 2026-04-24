@@ -3,8 +3,11 @@ package billing
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // fakeLocker lets a test simulate two replicas racing for the same key.
@@ -60,11 +63,27 @@ func (l *fakeLock) Release() {
 
 type countingDunning struct {
 	calls atomic.Int32
+
+	// modesMu guards modes; the scheduler fans out per livemode so every
+	// tick should record both true and false at least once per tenant.
+	modesMu sync.Mutex
+	modes   []bool
 }
 
-func (c *countingDunning) ProcessDueRuns(_ context.Context, _ string, _ int) (int, []error) {
+func (c *countingDunning) ProcessDueRuns(ctx context.Context, _ string, _ int) (int, []error) {
 	c.calls.Add(1)
+	c.modesMu.Lock()
+	c.modes = append(c.modes, postgres.Livemode(ctx))
+	c.modesMu.Unlock()
 	return 0, nil
+}
+
+func (c *countingDunning) observedModes() []bool {
+	c.modesMu.Lock()
+	defer c.modesMu.Unlock()
+	out := make([]bool, len(c.modes))
+	copy(out, c.modes)
+	return out
 }
 
 type fixedTenants struct {
@@ -148,15 +167,49 @@ func TestScheduler_LeaderGate_DunningHalfRuns(t *testing.T) {
 
 	s.runDunningHalf(context.Background())
 
-	if got := dunning.calls.Load(); got != 2 {
-		t.Fatalf("dunning body should have fired twice (once per tenant); got %d", got)
+	// Fan-out: 2 tenants × 2 livemodes = 4 calls per tick.
+	if got := dunning.calls.Load(); got != 4 {
+		t.Fatalf("dunning body should have fired four times (2 tenants × 2 modes); got %d", got)
 	}
 
 	// After release, the key must be free again — another runDunningHalf
 	// call should acquire the lock and run again.
 	s.runDunningHalf(context.Background())
-	if got := dunning.calls.Load(); got != 4 {
+	if got := dunning.calls.Load(); got != 8 {
 		t.Fatalf("second dunning tick should have fired after lock released; got %d", got)
+	}
+}
+
+// TestScheduler_DunningFansOutPerLivemode verifies #13's core guarantee: every
+// tick invokes the dunning body once per livemode per tenant, and each call
+// carries the correct livemode in ctx (not the default-to-live fallback).
+func TestScheduler_DunningFansOutPerLivemode(t *testing.T) {
+	t.Parallel()
+
+	dunning := &countingDunning{}
+	s := &Scheduler{
+		engine:  &Engine{},
+		dunning: dunning,
+		tenants: &fixedTenants{ids: []string{"t_1"}},
+		batch:   1,
+	}
+
+	s.runDunningHalf(context.Background())
+
+	modes := dunning.observedModes()
+	if len(modes) != 2 {
+		t.Fatalf("expected 2 calls (1 tenant × 2 modes); got %d", len(modes))
+	}
+	var sawLive, sawTest bool
+	for _, m := range modes {
+		if m {
+			sawLive = true
+		} else {
+			sawTest = true
+		}
+	}
+	if !sawLive || !sawTest {
+		t.Fatalf("fan-out must cover both live and test modes; saw live=%v test=%v", sawLive, sawTest)
 	}
 }
 
@@ -233,7 +286,8 @@ func TestScheduler_LockerNil_RunsUngated(t *testing.T) {
 	}
 
 	s.runDunningHalf(context.Background())
-	if got := dunning.calls.Load(); got != 1 {
-		t.Fatalf("nil locker should let body run once per tenant; got %d", got)
+	// Fan-out: 1 tenant × 2 livemodes = 2 calls per tick even without a locker.
+	if got := dunning.calls.Load(); got != 2 {
+		t.Fatalf("nil locker should let body run once per tenant per mode; got %d", got)
 	}
 }
