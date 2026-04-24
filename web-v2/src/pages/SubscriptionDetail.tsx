@@ -86,10 +86,22 @@ export default function SubscriptionDetailPage() {
     retry: false,
   })
 
+  // Activity timeline (T0-18) — chronological feed of lifecycle events
+  // pulled from the audit log. Separate query key from the period-
+  // progress visualization further down; the two are unrelated despite
+  // both being called "timeline" in local parlance.
+  const { data: activityTimelineData } = useQuery({
+    queryKey: ['subscription-activity-timeline', id],
+    queryFn: () => api.getSubscriptionTimeline(id!).then(r => r.events || []),
+    enabled: !!id,
+  })
+  const activityTimeline = activityTimelineData ?? []
+
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ['subscription', id] })
     queryClient.invalidateQueries({ queryKey: ['subscription-invoices', id] })
     queryClient.invalidateQueries({ queryKey: ['subscription-preview', id] })
+    queryClient.invalidateQueries({ queryKey: ['subscription-activity-timeline', id] })
     queryClient.invalidateQueries({ queryKey: ['subscriptions'] })
   }
 
@@ -598,6 +610,47 @@ export default function SubscriptionDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Activity Timeline (T0-18) — lifecycle audit feed. Mirrors the
+          invoice payment-activity panel so CS reps see the same shape
+          on both resources. Hidden when there's nothing to show. */}
+      {activityTimeline.length > 0 && (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle className="text-sm">Activity</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="relative">
+              {activityTimeline.map((event, i) => (
+                <div key={i} className="flex gap-4 pb-4 last:pb-0">
+                  <div className="flex flex-col items-center">
+                    <div className={cn(
+                      'w-2.5 h-2.5 rounded-full mt-1.5',
+                      event.status === 'succeeded' || event.status === 'resolved' ? 'bg-emerald-500' :
+                      event.status === 'canceled' ? 'bg-destructive' :
+                      event.status === 'warning' ? 'bg-amber-500' :
+                      event.status === 'escalated' ? 'bg-violet-500' :
+                      'bg-blue-500'
+                    )} />
+                    {i < activityTimeline.length - 1 && <div className="w-px flex-1 bg-border mt-1" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-foreground">{event.description}</p>
+                      <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.timestamp)}</span>
+                    </div>
+                    {(event.actor_name || event.actor_type) && (
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        by {event.actor_name || event.actor_type}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Pause Confirm */}
       <AlertDialog open={showPauseConfirm} onOpenChange={setShowPauseConfirm}>
