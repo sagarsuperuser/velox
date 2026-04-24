@@ -8,3 +8,4 @@ tmp/
 .DS_Store
 velox
 temp.txt
+MANUAL_TEST_BUGS.md
