@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -429,6 +430,41 @@ func TestFinalizeAndVoid(t *testing.T) {
 		})
 		if draft.PublicToken != "" {
 			t.Errorf("draft invoice should not carry a public_token, got %q", draft.PublicToken)
+		}
+	})
+
+	t.Run("rotate public token on finalized invoice", func(t *testing.T) {
+		// inv is already finalized from the earlier subtest; rotate
+		// should replace the token cleanly.
+		current, _ := svc.Get(ctx, "t1", inv.ID)
+		original := current.PublicToken
+		if original == "" {
+			t.Fatal("precondition: finalized invoice should have a token")
+		}
+		newToken, err := GeneratePublicToken()
+		if err != nil {
+			t.Fatalf("generate: %v", err)
+		}
+		if err := svc.SetPublicToken(ctx, "t1", inv.ID, newToken); err != nil {
+			t.Fatalf("SetPublicToken: %v", err)
+		}
+		after, _ := svc.Get(ctx, "t1", inv.ID)
+		if after.PublicToken == original {
+			t.Error("SetPublicToken should have replaced the token")
+		}
+		if after.PublicToken != newToken {
+			t.Errorf("after = %q, want %q", after.PublicToken, newToken)
+		}
+	})
+
+	t.Run("rotate rejected on draft invoice", func(t *testing.T) {
+		draft, _ := svc.Create(ctx, "t1", CreateInput{
+			CustomerID: "c", SubscriptionID: "s3",
+			BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+		})
+		err := svc.SetPublicToken(ctx, "t1", draft.ID, "vlx_pinv_abc")
+		if !errors.Is(err, errs.ErrNotFound) {
+			t.Errorf("expected ErrNotFound on draft rotate, got %v", err)
 		}
 	})
 
