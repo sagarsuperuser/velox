@@ -17,6 +17,19 @@ const entries: {
   bullets?: string[]
 }[] = [
   {
+    date: '2026-04-24',
+    title: 'Design-partner readiness: hosted invoice page, branded emails, webhook rotation grace',
+    tag: 'feature',
+    body: 'Five pre-invite blockers shipped as one batch, each anchored to an explicit industry reference (Stripe hosted_invoice_url, Stripe-Signature multi-v1 rotation, multipart/alternative branded email). Velox is now a credible substrate for a design partner to run real billing through.',
+    bullets: [
+      'Hosted invoice page at a public tokenized URL — Stripe-equivalent hosted_invoice_url. Mobile-first, tenant-branded, Stripe Checkout for Pay, PDF download, state-gated Pay for paid/voided invoices. Operator rotate endpoint + "Copy Link" / "Rotate" dashboard actions.',
+      'Customer-facing emails render as multipart/alternative with tenant logo, brand color, support link, and a primary CTA pointing at the hosted invoice page. Six emails covered: invoice-ready, receipt, dunning warning, dunning escalation, payment failed, payment update request.',
+      'Webhook signing-secret rotation now runs with a 72-hour dual-signing window — outbound events carry both the new and previous signatures in Velox-Signature (Stripe multi-v1 format) so receivers can stage a verifier deploy without a production outage.',
+      'Subscription detail page gains an Activity timeline sourced from the audit log — lifecycle events (create, activate, pause, resume, cancel, plan/quantity changes) in one chronological feed. Matches the invoice payment-activity panel.',
+      'SMTP permanent-failure (5xx) responses flag the customer\'s email_status as bounced, surface a red Bounced badge on the customer page, and fire a customer.email_bounced webhook event. Async NDR / SES / SendGrid webhooks plug into the same seam later.',
+    ],
+  },
+  {
     date: '2026-04-23',
     title: 'Coupons v2: customer-scoped discounts and apply-to-draft',
     tag: 'feature',
@@ -72,7 +85,7 @@ export default function ChangelogPage() {
       <PublicPageHeader
         eyebrow="Platform"
         title="Changelog"
-        description="Everything we ship, in reverse chronological order. For the full history, see the repository's CHANGELOG.md and release notes."
+        description="Everything user-visible we ship, in reverse chronological order. The full engineering log lives in CHANGELOG.md on GitHub; this page curates the rollups worth reading."
       />
       <div className="max-w-3xl mx-auto px-6 py-12 space-y-10">
         {entries.map((entry) => (
