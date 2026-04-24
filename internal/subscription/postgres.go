@@ -348,14 +348,22 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 	// next_billing_at is on-or-before the clock's frozen time, not wall clock.
 	// LEFT JOIN keeps live subs (test_clock_id NULL) comparing against $1.
 	// Columns must be qualified because test_clocks shares id/tenant_id/etc.
+	//
+	// TxBypass is used to cross tenants (scheduler-wide sweep), but the
+	// caller's ctx livemode must still scope us to a single partition —
+	// otherwise the per-sub TxTenant calls downstream (plan / test-clock /
+	// settings lookups) default to live and silently fail for test-mode
+	// subs. The scheduler fans out ctx per livemode; we honour that here
+	// with an explicit WHERE clause since TxBypass doesn't set app.livemode.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
 		LEFT JOIN test_clocks tc ON tc.id = s.test_clock_id
 		WHERE s.status = 'active'
-		  AND s.next_billing_at <= COALESCE(tc.frozen_time, $1)
-		ORDER BY s.next_billing_at ASC LIMIT $2
+		  AND s.livemode = $1
+		  AND s.next_billing_at <= COALESCE(tc.frozen_time, $2)
+		ORDER BY s.next_billing_at ASC LIMIT $3
 		FOR UPDATE OF s SKIP LOCKED
-	`, before, limit)
+	`, postgres.Livemode(ctx), before, limit)
 	if err != nil {
 		return nil, err
 	}
