@@ -145,6 +145,8 @@ export const api = {
     apiRequest<{ status: string }>('POST', `/invoices/${invoiceId}/send`, { email }),
   getPaymentTimeline: (invoiceId: string) =>
     apiRequest<{ events: TimelineEvent[] }>('GET', `/invoices/${invoiceId}/payment-timeline`),
+  getSubscriptionTimeline: (subscriptionId: string) =>
+    apiRequest<{ events: TimelineEvent[] }>('GET', `/subscriptions/${subscriptionId}/timeline`),
 
   // Payment setup
   setupPayment: (data: { customer_id: string; customer_name: string; email: string; address_line1?: string; address_city?: string; address_state?: string; address_postal_code?: string; address_country?: string }) =>
@@ -436,7 +438,10 @@ export interface LineItem {
 
 export interface TimelineEvent {
   timestamp: string
-  source: 'stripe' | 'dunning'
+  // 'audit' is emitted by the subscription timeline (T0-18); invoice
+  // timeline keeps 'stripe' and 'dunning'. Kept as a string union so the
+  // renderer can default-case unknown sources rather than hiding them.
+  source: 'stripe' | 'dunning' | 'audit' | string
   event_type: string
   status: string
   description: string
@@ -445,6 +450,12 @@ export interface TimelineEvent {
   currency?: string
   payment_intent_id?: string
   attempt_count?: number
+  // Audit-sourced events carry the actor who performed the action. The
+  // invoice payment timeline never populates these (webhook + dunning are
+  // system-driven) so they're strictly optional.
+  actor_type?: string
+  actor_name?: string
+  actor_id?: string
 }
 
 export interface CreditBalance {
