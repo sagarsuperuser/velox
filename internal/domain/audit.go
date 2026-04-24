@@ -36,6 +36,11 @@ const (
 	AuditActionUnarchive   = "unarchive"
 	AuditActionRedeem      = "redeem"
 	AuditActionApplyCoupon = "apply_coupon"
+	// AuditActionRotate covers credential/token rotation (API keys,
+	// webhook secrets, hosted-invoice public tokens). Its own action so
+	// audit queries can surface "who rotated what, when" separately from
+	// generic updates.
+	AuditActionRotate = "rotate"
 )
 
 type TenantSettings struct {
