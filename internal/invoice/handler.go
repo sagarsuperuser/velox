@@ -204,6 +204,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/{id}/collect", h.collectPayment)
 	r.Post("/{id}/refund", h.refund)
 	r.Post("/{id}/apply-coupon", h.applyCoupon)
+	r.Post("/{id}/rotate-public-token", h.rotatePublicToken)
 	r.Get("/{id}/payment-timeline", h.paymentTimeline)
 	return r
 }
@@ -443,6 +444,56 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventInvoiceVoided, inv)
+
+	respond.JSON(w, r, http.StatusOK, inv)
+}
+
+// rotatePublicToken mints a fresh hosted-invoice-URL token for an invoice,
+// invalidating the previous one. Defensive rotation for the case where the
+// public URL is ever shared where it shouldn't be (accidentally cc'd on a
+// wider thread, pasted into a ticketing system, scraped from an email
+// archive leak). Only finalized/paid/voided invoices carry tokens — draft
+// invoices return 422, matching the store-level guard in SetPublicToken.
+func (h *Handler) rotatePublicToken(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	inv, err := h.svc.Get(r.Context(), tenantID, id)
+	if err != nil {
+		respond.FromError(w, r, err, "invoice")
+		return
+	}
+	if inv.Status == domain.InvoiceDraft {
+		respond.Error(w, r, http.StatusUnprocessableEntity, "invalid_request_error", "invalid_state",
+			"draft invoices do not have a public token — finalize first")
+		return
+	}
+
+	previousToken := inv.PublicToken
+	token, err := GeneratePublicToken()
+	if err != nil {
+		slog.ErrorContext(r.Context(), "rotate public token: generate", "invoice_id", id, "error", err)
+		respond.InternalError(w, r)
+		return
+	}
+	if err := h.svc.SetPublicToken(r.Context(), tenantID, id, token); err != nil {
+		respond.FromError(w, r, err, "invoice")
+		return
+	}
+	inv.PublicToken = token
+
+	if h.auditLogger != nil {
+		// Audit the rotation but NOT the token values themselves —
+		// plaintext tokens in the audit log would turn the log into an
+		// attractive target for credential harvesting. Record only that
+		// a rotation happened.
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRotate, "invoice", inv.ID, map[string]any{
+			"invoice_number":           inv.InvoiceNumber,
+			"customer_id":              inv.CustomerID,
+			"field":                    "public_token",
+			"previous_token_was_unset": previousToken == "",
+		})
+	}
 
 	respond.JSON(w, r, http.StatusOK, inv)
 }
