@@ -31,6 +31,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
 	"github.com/sagarsuperuser/velox/internal/feature"
+	"github.com/sagarsuperuser/velox/internal/hostedinvoice"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
@@ -277,6 +278,22 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeClients,
 		strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_RETURN_URL")))
 
+	// Hosted invoice page — Stripe-equivalent hosted_invoice_url surface.
+	// Public tokenized routes that the partner's end customer visits from
+	// an email (T0-17). The Stripe adapter picks live/test keys based on
+	// the invoice row's livemode; HOSTED_INVOICE_BASE_URL is the public
+	// SPA origin the Checkout success/cancel URLs redirect back to. In
+	// dev, leave empty and the handler falls back to http://localhost:5173
+	// so `make dev` works without extra config.
+	hostedInvoiceH := hostedinvoice.New(hostedinvoice.Deps{
+		Invoices:    invoiceSvc,
+		Customers:   customerStore,
+		Settings:    settingsStore,
+		CreditNotes: &creditNoteListerAdapter{svc: creditNoteSvc},
+		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients, db: db},
+		BaseURL:     strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
+	})
+
 	// Email sender. When the email outbox is enabled (default), producers
 	// enqueue into email_outbox via OutboxSender instead of calling SMTP
 	// directly; a background Dispatcher drains the queue. This makes email
@@ -517,6 +534,20 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		rateLimiter.SetFailClosed(true)
 	}
 
+	// Tighter bucket for the public hosted-invoice surface. Industry
+	// practice (Stripe, Paddle) is to rate-limit payment pages more
+	// aggressively than the general API because: (a) the URL is publicly
+	// shareable so abuse potential is higher, (b) each Pay click creates a
+	// Stripe Checkout Session which has its own upstream rate limit, and
+	// (c) genuine customer traffic from a single NAT is small — ~5-10
+	// requests per visit. 60/min per IP leaves headroom for ~10
+	// simultaneous customers behind a single corporate NAT while keeping
+	// enumerations and scraping bounded.
+	hostedInvoiceRL := mw.NewRateLimiter(rdb, 60, time.Minute)
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
+		hostedInvoiceRL.SetFailClosed(true)
+	}
+
 	r := chi.NewRouter()
 	r.Use(mw.Tracing())
 	r.Use(middleware.RequestID)
@@ -581,6 +612,16 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	if publicPaymentH != nil {
 		r.Mount("/v1/public/payment-updates", publicPaymentH.Routes())
 	}
+
+	// Public hosted invoice — Stripe-equivalent hosted_invoice_url.
+	// Unauthenticated: the 256-bit public_token in the URL is the sole
+	// credential. Wrapped in its own rate-limit bucket (60/min per IP)
+	// because payment surfaces deserve tighter limits than the general
+	// API — see hostedInvoiceRL above.
+	r.Route("/v1/public/invoices", func(r chi.Router) {
+		r.Use(hostedInvoiceRL.Middleware())
+		r.Mount("/", hostedInvoiceH.Routes())
+	})
 
 	// Public customer-portal routes (magic-link request + consume). No
 	// API-key auth: the caller supplies an email (request) or a token
