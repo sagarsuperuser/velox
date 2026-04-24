@@ -3,6 +3,7 @@ package invoice
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +83,32 @@ func (m *memStore) HasSucceededInvoice(_ context.Context, tenantID, customerID s
 		}
 	}
 	return false, nil
+}
+
+func (m *memStore) SetPublicToken(_ context.Context, tenantID, invoiceID, token string) error {
+	inv, ok := m.invoices[invoiceID]
+	if !ok || inv.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	if inv.Status == domain.InvoiceDraft {
+		return errs.ErrNotFound
+	}
+	inv.PublicToken = token
+	inv.UpdatedAt = time.Now().UTC()
+	m.invoices[invoiceID] = inv
+	return nil
+}
+
+func (m *memStore) GetByPublicToken(_ context.Context, token string) (domain.Invoice, error) {
+	if token == "" {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	for _, inv := range m.invoices {
+		if inv.PublicToken == token {
+			return inv, nil
+		}
+	}
+	return domain.Invoice{}, errs.ErrNotFound
 }
 
 func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error) {
@@ -374,12 +401,34 @@ func TestFinalizeAndVoid(t *testing.T) {
 		if finalized.Status != domain.InvoiceFinalized {
 			t.Errorf("got status %q, want finalized", finalized.Status)
 		}
+		// Industry-standard hosted_invoice_url: finalize must mint a public
+		// token so downstream email CTAs (T0-16) have a target on day one.
+		if finalized.PublicToken == "" {
+			t.Error("finalize should mint a public_token")
+		}
+		if !strings.HasPrefix(finalized.PublicToken, PublicTokenPrefix) {
+			t.Errorf("public_token %q missing %q prefix", finalized.PublicToken, PublicTokenPrefix)
+		}
+		// Prefix + 64 hex chars of 32-byte entropy.
+		if got, want := len(finalized.PublicToken), len(PublicTokenPrefix)+64; got != want {
+			t.Errorf("public_token length = %d, want %d", got, want)
+		}
 	})
 
 	t.Run("cannot finalize again", func(t *testing.T) {
 		_, err := svc.Finalize(ctx, "t1", inv.ID)
 		if err == nil {
 			t.Fatal("expected error finalizing non-draft")
+		}
+	})
+
+	t.Run("draft has no public_token", func(t *testing.T) {
+		draft, _ := svc.Create(ctx, "t1", CreateInput{
+			CustomerID: "c", SubscriptionID: "s2",
+			BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+		})
+		if draft.PublicToken != "" {
+			t.Errorf("draft invoice should not carry a public_token, got %q", draft.PublicToken)
 		}
 	})
 
