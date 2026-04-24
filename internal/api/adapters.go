@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/stripe/stripe-go/v82"
 
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/credit"
@@ -15,6 +18,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 )
 
@@ -282,4 +286,75 @@ func (a *customerLookupAdapter) FindByEmailBlindIndex(ctx context.Context, blind
 		}
 	}
 	return out, nil
+}
+
+// hostedInvoiceStripeAdapter bridges *payment.StripeClients →
+// hostedinvoice.CheckoutSessionCreator. The caller is a public
+// unauthenticated request: we resolve livemode from the invoice row itself
+// (not from any request context), pick the matching Stripe key, and build
+// a Checkout Session in payment mode with a single pre-totaled line item.
+// Velox owns the tax computation, so Stripe's automatic_tax is
+// intentionally off — the UnitAmount already includes tax from the
+// invoice row.
+//
+// Metadata stamps velox_purpose=hosted_invoice_pay so the existing
+// payment-intent webhook path can route successful charges to
+// Invoice.RecordPayment via invoice_id lookup, instead of mis-identifying
+// these as subscription-billing charges.
+type hostedInvoiceStripeAdapter struct {
+	clients *payment.StripeClients
+	db      *postgres.DB
+}
+
+func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
+	ctx context.Context, tenantID string, inv domain.Invoice, successURL, cancelURL string,
+) (string, error) {
+	if a == nil || a.clients == nil {
+		return "", fmt.Errorf("stripe not configured")
+	}
+	// Livemode isn't part of domain.Invoice (see invoice/postgres.go
+	// scanInvDest — the test-mode migration added the column but kept the
+	// struct thin). Separate read keeps the adapter self-contained and
+	// matches the pattern in payment/public_handler.go.
+	var livemode bool
+	if err := a.db.Pool.QueryRowContext(ctx,
+		`SELECT livemode FROM invoices WHERE id = $1`, inv.ID).Scan(&livemode); err != nil {
+		return "", fmt.Errorf("resolve livemode: %w", err)
+	}
+	sc := a.clients.For(ctx, tenantID, livemode)
+	if sc == nil {
+		return "", fmt.Errorf("stripe not configured for mode livemode=%v", livemode)
+	}
+	currency := strings.ToLower(inv.Currency)
+	productName := "Invoice " + inv.InvoiceNumber
+	sess, err := sc.V1CheckoutSessions.Create(ctx, &stripe.CheckoutSessionCreateParams{
+		Mode: stripe.String(string(stripe.CheckoutSessionModePayment)),
+		LineItems: []*stripe.CheckoutSessionCreateLineItemParams{
+			{
+				Quantity: stripe.Int64(1),
+				PriceData: &stripe.CheckoutSessionCreateLineItemPriceDataParams{
+					Currency:   stripe.String(currency),
+					UnitAmount: stripe.Int64(inv.AmountDueCents),
+					ProductData: &stripe.CheckoutSessionCreateLineItemPriceDataProductDataParams{
+						Name: stripe.String(productName),
+					},
+				},
+			},
+		},
+		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
+		SuccessURL:         stripe.String(successURL),
+		CancelURL:          stripe.String(cancelURL),
+		Params: stripe.Params{
+			Metadata: map[string]string{
+				"velox_invoice_id":  inv.ID,
+				"velox_tenant_id":   tenantID,
+				"velox_customer_id": inv.CustomerID,
+				"velox_purpose":     "hosted_invoice_pay",
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("checkout session: %w", err)
+	}
+	return sess.URL, nil
 }
