@@ -106,7 +106,7 @@ func (h *Handler) rotateSecret(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	id := chi.URLParam(r, "id")
 
-	newSecret, err := h.svc.RotateSecret(r.Context(), tenantID, id)
+	result, err := h.svc.RotateSecret(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
 		respond.NotFound(w, r, "webhook endpoint")
 		return
@@ -117,7 +117,7 @@ func (h *Handler) rotateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respond.JSON(w, r, http.StatusOK, map[string]string{"secret": newSecret})
+	respond.JSON(w, r, http.StatusOK, result)
 }
 
 func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
