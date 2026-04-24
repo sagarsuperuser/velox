@@ -135,6 +135,8 @@ export const api = {
     apiRequest<Invoice>('POST', `/invoices/${id}/finalize`),
   voidInvoice: (id: string) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/void`),
+  rotateInvoicePublicToken: (id: string) =>
+    apiRequest<Invoice>('POST', `/invoices/${id}/rotate-public-token`),
   applyInvoiceCoupon: (id: string, data: { code: string; idempotency_key?: string }) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/apply-coupon`, data),
   collectPayment: (id: string) =>
@@ -410,6 +412,9 @@ export interface Invoice {
   due_at?: string
   voided_at?: string
   paid_at?: string
+  // public_token is populated at finalize. Drafts and pre-addendum
+  // finalized invoices (migrated-in but never rotated) carry empty.
+  public_token?: string
   created_at: string
 }
 
