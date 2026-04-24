@@ -381,6 +381,22 @@ Stripe-Tax-enabled path.
 - [ ] Export customer with `tax_exempt = true`: tax = $0, `tax_name = ""` (exempt overrides export annotation)
 - [ ] Clear `tax_home_country`: US customer now charged 18% (no home country → can't zero-rate)
 
+## FLOW B12: Subscription activity timeline (T0-18)
+
+Chronological feed of lifecycle events sourced from the audit log. CS reps land here for "why was my sub cancelled / plan changed" tickets.
+
+- [ ] Create a subscription → activate → pause → resume → change plan → cancel — at least 5 mutations
+- [ ] `GET /v1/subscriptions/{id}/timeline` returns `{events: [...]}` — entries in ascending timestamp order
+- [ ] Each event carries `timestamp`, `source: "audit"`, `event_type`, `status`, `description`, `actor_type`, `actor_name`, `actor_id`
+- [ ] Descriptions are human-readable ("Subscription activated", "Subscription paused", "Plan changed", "Subscription canceled")
+- [ ] Operator-initiated cancel: `description` = "Subscription canceled" (no "by" suffix)
+- [ ] Portal-initiated cancel (via customer portal /v1/me route): metadata carries `canceled_by = "customer"` → description becomes "Subscription canceled **by customer**"
+- [ ] Status tags color-code: `succeeded` (emerald), `warning` (amber), `canceled` (destructive/red), `escalated` (violet), `info` (blue default)
+- [ ] SPA: Subscription detail page shows an **Activity** card under the period visualization
+- [ ] Card mirrors the invoice payment-activity timeline layout (colored dot, description left, timestamp right-aligned)
+- [ ] When an actor is resolved (API key name, operator email), a second line shows "by {actor_name}" underneath
+- [ ] Nonexistent subscription ID: **404** (not an empty events array — silent-empty masquerade is worse than a clear miss)
+
 ## FLOW B11: Tax-ID format validation
 
 `UpsertBillingProfile` normalizes (trim + uppercase) and format-validates `tax_id`
@@ -441,6 +457,20 @@ against `tax_id_type`. Known kinds: GSTIN, EU VAT, AU ABN. Unknown kinds pass th
 - [ ] Verify: email queued in `email_outbox`, PDF attached; SMTP logs (or Mailtrap) show delivery
 - [ ] Invoice detail → Preview PDF → renders in overlay iframe; close via X or backdrop
 
+### Branded HTML body (T0-16, 2026-04-24)
+
+Every customer-facing email renders as multipart/alternative (text + HTML) with tenant chrome. Check the HTML part in Mailtrap/inbox.
+
+- [ ] Configure tenant with `company_name`, `logo_url` (e.g. `https://via.placeholder.com/200x60`), `brand_color` (`#1f6feb`), `support_url`
+- [ ] Trigger invoice-ready email → HTML body includes: tenant logo + company name in header, 2px brand-color accent bar at top, line items summary, "Amount due" amount card, **View & pay invoice** CTA button styled with `brand_color`
+- [ ] CTA URL points at `{HOSTED_INVOICE_BASE_URL}/invoice/{public_token}` (or Velox defaults if unset) — copy + open it in an incognito window (covered in FLOW I10)
+- [ ] Footer shows "Contact support" link + "Powered by Velox Billing" micro-credit
+- [ ] Plain-text part (view source, pick `text/plain`) is still present for deliverability fallback
+- [ ] Payment-receipt email after a successful charge: similar chrome, CTA labelled **View receipt**
+- [ ] Dunning warning email: shows attempt N of M + next retry date, CTA **Update payment**
+- [ ] Payment-update-request email: CTA uses the token URL from `PAYMENT_UPDATE_URL`, not the hosted invoice URL (different flow)
+- [ ] Operator emails (password reset, member invite, portal magic link) intentionally stay **plain text** — no HTML chrome, no tenant branding, since they carry security-sensitive tokens
+
 ## FLOW I7: Zero-amount invoice
 
 - [ ] Plan with `base_amount_cents = 0`, no meters → subscription → run billing
@@ -456,6 +486,53 @@ against `tax_id_type`. Known kinds: GSTIN, EU VAT, AU ABN. Unknown kinds pass th
 
 - [ ] Void an invoice, then try to issue a credit note → error `"cannot issue credit note on voided invoice"`
 - [ ] CN is NOT created
+
+## FLOW I10: Hosted invoice page (public tokenized URL — T0-17)
+
+Stripe-equivalent `hosted_invoice_url`. End customer clicks the CTA in an invoice/receipt email and lands on a branded, unauthenticated page where they can pay. Token is the sole credential.
+
+### Token minting + dashboard affordances
+
+- [ ] Create a customer + subscription, run billing (or create an invoice manually) → result: a **draft** invoice has no `public_token`
+- [ ] Finalize the invoice → `public_token` minted (query `SELECT public_token FROM invoices WHERE id = ...` → starts with `vlx_pinv_` + 64 hex chars)
+- [ ] Invoice detail page: **Copy Link** button copies `{HOSTED_INVOICE_BASE_URL}/invoice/{public_token}` (falls back to `window.location.origin` if env unset) — toast confirms
+- [ ] **Rotate** button opens `TypedConfirmDialog` requiring the word `ROTATE` — confirm → new token minted, old URL stops resolving
+- [ ] Buttons are **hidden** for draft invoices
+
+### Public page render
+
+Open the copied URL in an **incognito window** (no session cookie, no auth):
+
+- [ ] Page loads without a login prompt
+- [ ] Header: tenant logo (if `logo_url` set) + `company_name` + optional `support_url` link
+- [ ] Optional 3px `brand_color` accent bar at top
+- [ ] Invoice meta: invoice number (mono), amount due (large, tabular numerals), due date
+- [ ] Bill-to + From columns show structured address
+- [ ] Line-items table: description + qty + unit + amount, tabular numerals on numbers
+- [ ] Totals card: subtotal, optional discount (−), optional tax with rate "(XX.XX%)", reverse-charge note if applicable, total, amount paid, **Amount due** bold
+- [ ] Primary **Pay {amount}** button with tenant `brand_color` background (falls back to theme primary if unset)
+- [ ] **Download PDF** secondary button — opens the same PDF the operator gets
+- [ ] Footer: "Secured by Stripe" micro-credit + "Powered by Velox Billing"
+
+### Pay flow (Stripe test mode)
+
+- [ ] Click **Pay** → `POST /v1/public/invoices/{token}/checkout` → redirected to `checkout.stripe.com`
+- [ ] Use test card `4242 4242 4242 4242` → complete payment → Stripe redirects back to `{baseURL}/invoice/{token}?paid=1`
+- [ ] Page shows a provisional **"Processing your payment…"** banner (green with animated spinner) while the webhook catches up
+- [ ] `payment_intent.succeeded` webhook arrives → invoice flips to `paid` → page auto-refetches and shows the **Paid on {date}** banner; Pay button disappears
+- [ ] PDF download still works on a paid invoice
+
+### State-gated variants
+
+- [ ] Void a finalized invoice → visit its public URL → **Voided on {date}** banner, no Pay button, PDF still downloads (customers revisit for records)
+- [ ] Visit the URL of a **draft** invoice (craft via psql or pre-finalize) → **404** (draft never leaks — belt-and-suspenders guard in `resolveInvoice`)
+- [ ] Rotate the token → old URL returns **404**; new URL works
+
+### Security checks
+
+- [ ] Inspect the JSON response at `GET /v1/public/invoices/{token}` → **no** `tenant_id`, `subscription_id`, `tax_id`, `stripe_payment_intent_id`, or `stripe_customer_id` fields (safe-projection audit)
+- [ ] Hit the public route 61+ times in a minute from the same IP → rate-limit bucket (`hostedInvoiceRL`, 60/min) kicks in with 429 + `Retry-After`
+- [ ] Operator `POST /v1/invoices/{id}/rotate-public-token` requires `PermInvoiceWrite`; unauthenticated call returns 401
 
 ---
 
@@ -537,11 +614,18 @@ against `tax_id_type`. Known kinds: GSTIN, EU VAT, AU ABN. Unknown kinds pass th
 - [ ] Replay the same payload 5+ min later → rejected (timestamp tolerance exceeded)
 - [ ] Modify payload but keep original signature → rejected (signature mismatch)
 
-## FLOW W2: Outbound webhook secret rotation
+## FLOW W2: Outbound webhook secret rotation (72h grace period — T0-19)
 
-- [ ] Webhooks → Endpoints → Rotate Secret on an endpoint → new `whsec_...` shown in modal
-- [ ] Old secret fails signature verification
-- [ ] New secret succeeds
+Stripe-parity dual-signing window. Outbound events are signed with BOTH the new and previous secrets for 72 hours so partner verifiers can stage a deploy without a production outage.
+
+- [ ] Webhooks → Endpoints → Rotate Secret on an endpoint → modal shows the new `whsec_...` **and** a green card: *"Previous secret valid until {timestamp}"* with "during this window, both secrets sign outbound webhooks — deploy at your own pace" copy
+- [ ] API response on `POST /v1/webhook-endpoints/{id}/rotate-secret`: body includes `secret` + `secondary_valid_until` (ISO 8601, ~72h in the future)
+- [ ] Endpoints table: row shows a subtle *"Dual-signing until {timestamp}"* hint under the URL
+- [ ] Trigger any outbound event (finalize an invoice, etc.) while the grace window is open → `Velox-Signature` header carries **two** `v1=` entries: `t=<ts>,v1=<newSig>,v1=<oldSig>`
+- [ ] Verify with new secret: valid ✓
+- [ ] Verify with old secret: **still valid** ✓ (this is the grace-window guarantee)
+- [ ] Simulate expiry: manually set `secondary_secret_expires_at` in the past via psql → trigger another event → header now carries **one** `v1=` entry, only the new secret verifies
+- [ ] Hard-replace path: `RotateEndpointSecret(..., gracePeriod=0)` skips the secondary entirely (not exposed via UI; library-level test only)
 
 ## FLOW W3: Delivery stats
 
@@ -615,6 +699,52 @@ Endpoints (all bearer-auth, scoped to the session's customer):
 - [ ] Payment Methods tab → attach / detach via Stripe SetupIntent
 - [ ] Cross-customer probe: swap the bearer token for one scoped to a different customer; hitting the first customer's invoice ID → **404** (not 403 — avoids enumeration)
 
+## FLOW CU7: Email bounce capture + badge (T0-20)
+
+Minimum-viable bounce handling. SMTP permanent-failure (5xx) responses flip `customers.email_status` to `bounced` and fire a `customer.email_bounced` webhook event.
+
+### Setup a deliberately-bouncing address
+
+Easiest path: use Mailtrap with a rule that 5xx's specific addresses, or point `SMTP_HOST` at a fake SMTP that rejects `RCPT TO: <bounce@example.invalid>` with `550 5.1.1 User unknown`.
+
+Alternative psql-based manual test (for quick verification without infra):
+```sql
+-- Simulate a bounce by calling the service method directly through the
+-- public customer_svc.MarkEmailBounced path (see TestCustomerService tests).
+UPDATE customers SET email_status = 'bounced',
+    email_last_bounced_at = NOW(),
+    email_bounce_reason = '550 5.1.1 User unknown'
+WHERE id = '<customer_id>';
+```
+
+### Capture path (preferred: real SMTP)
+
+- [ ] Create a customer with email `bounce@example.invalid`
+- [ ] Trigger an invoice email send to that customer
+- [ ] Server logs show: `send email failed ... error="550 5.1.1 User unknown"`
+- [ ] Within ~5 seconds: `customers.email_status` flips to `bounced`, `email_last_bounced_at` populated, `email_bounce_reason` captured
+- [ ] `VELOX_EMAIL_BIDX_KEY` must be set — without the blinder, bounces are logged but NOT persisted (graceful degradation; the dashboard stays "unknown")
+
+### Dashboard badge
+
+- [ ] Customer detail page top metrics: email displays a small red **Bounced** badge next to the address
+- [ ] Details card: email row shows `Bounced · {formatDate(email_last_bounced_at)}` badge
+- [ ] Hover the badge → `title` attribute surfaces the `email_bounce_reason`
+- [ ] Customers with `email_status` ∈ `{unknown, ok, complained}` show **no** badge
+
+### Webhook event
+
+- [ ] Register a webhook endpoint subscribed to `customer.email_bounced`
+- [ ] Trigger a bounce → `webhook_outbox` gets a row; dispatcher delivers
+- [ ] Delivery payload: `{customer_id, reason}` + the standard envelope
+- [ ] `webhook_deliveries` log records a 2xx from the receiver
+
+### Heuristic boundaries
+
+- [ ] 4xx transient error (`421 try again later`) does NOT flip status — email outbox handles the retry
+- [ ] Error string containing "5xx-like-digits" in unrelated context (zip code 95014) does NOT flip — the parser anchors on word boundaries
+- [ ] Deliberately-deferred surfaces (tracked in T1-8): async NDR parsing, SES/SendGrid provider webhooks, auto-suppression on subsequent sends, complaint-vs-bounce differentiation. All plug into the same `customer.MarkEmailBounced` seam.
+
 ## FLOW CU6: Brand color + logo URL (tenant settings)
 
 Shipped in T0-12. URL-only logo (no upload infra); brand accent color applied to invoice PDF.
@@ -626,7 +756,7 @@ Shipped in T0-12. URL-only logo (no upload infra); brand accent color applied to
 - [ ] Invalid hex (`#zzz`, `#12345`, missing `#`, uppercase `#FF00AA`): client rejects on save with `"Must be a 7-character hex like #1f6feb"`; server validates the same pattern `^#[0-9a-f]{6}$`
 - [ ] Save → generate an invoice PDF → company name tinted in the brand color, thin 2px accent bar under the header block
 - [ ] Clear the brand color → save → new PDF has neutral palette (no accent bar); output is byte-identical to the pre-migration look
-- [ ] Email brand color is **deferred** — `internal/email/sender.go` sends plain-text bodies; no HTML templating yet
+- [ ] Branded email (T0-16, 2026-04-24): trigger any customer-facing email with `brand_color` set → HTML body renders the 2px accent bar at top, CTA button background uses the brand color, logo + company name in header. See FLOW I6 for the full checklist.
 
 ---
 
