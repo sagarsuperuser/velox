@@ -699,9 +699,9 @@ Endpoints (all bearer-auth, scoped to the session's customer):
 - [ ] Payment Methods tab → attach / detach via Stripe SetupIntent
 - [ ] Cross-customer probe: swap the bearer token for one scoped to a different customer; hitting the first customer's invoice ID → **404** (not 403 — avoids enumeration)
 
-## FLOW CU7: Email bounce capture + badge (T0-20)
+## FLOW CU7: Email bounce capture + badge (T0-20 — 🟡 pipeline only)
 
-Minimum-viable bounce handling. SMTP permanent-failure (5xx) responses flip `customers.email_status` to `bounced` and fire a `customer.email_bounced` webhook event.
+Pipeline is complete, UI is ready, webhook event defined — but synchronous SMTP 5xx detection covers only a minority of real-world bounces because most providers emit bounces as async NDRs, not synchronous `RCPT TO` failures. Test the pipeline end-to-end with the psql shortcut below; real bounce detection for most partner traffic ships with T1-8 (SES/SendGrid/Postmark webhook handlers) plugging into the same `customer.MarkEmailBounced` seam.
 
 ### Setup a deliberately-bouncing address
 
