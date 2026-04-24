@@ -327,6 +327,20 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 	}
 	currency := strings.ToLower(inv.Currency)
 	productName := "Invoice " + inv.InvoiceNumber
+	// Duplicate the metadata on BOTH the session and the PaymentIntent.
+	// Session-level metadata only lives on the checkout_session object;
+	// Stripe does NOT automatically copy it to the underlying PaymentIntent.
+	// Our webhook path routes payment_intent.succeeded → Invoice.MarkPaid
+	// by reading velox_invoice_id off the PI's metadata (payment/handler.go
+	// line 195), so PaymentIntentData.Metadata is the one that actually
+	// matters. The session copy is kept for operator visibility when
+	// inspecting a checkout session directly in Stripe dashboard.
+	meta := map[string]string{
+		"velox_invoice_id":  inv.ID,
+		"velox_tenant_id":   tenantID,
+		"velox_customer_id": inv.CustomerID,
+		"velox_purpose":     "hosted_invoice_pay",
+	}
 	sess, err := sc.V1CheckoutSessions.Create(ctx, &stripe.CheckoutSessionCreateParams{
 		Mode: stripe.String(string(stripe.CheckoutSessionModePayment)),
 		LineItems: []*stripe.CheckoutSessionCreateLineItemParams{
@@ -344,13 +358,12 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
 		SuccessURL:         stripe.String(successURL),
 		CancelURL:          stripe.String(cancelURL),
+		PaymentIntentData: &stripe.CheckoutSessionCreatePaymentIntentDataParams{
+			Metadata:    meta,
+			Description: stripe.String(productName),
+		},
 		Params: stripe.Params{
-			Metadata: map[string]string{
-				"velox_invoice_id":  inv.ID,
-				"velox_tenant_id":   tenantID,
-				"velox_customer_id": inv.CustomerID,
-				"velox_purpose":     "hosted_invoice_pay",
-			},
+			Metadata: meta,
 		},
 	})
 	if err != nil {
