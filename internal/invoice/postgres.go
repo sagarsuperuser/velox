@@ -499,6 +499,8 @@ func (s *PostgresStore) ListApproachingDue(ctx context.Context, daysBeforeDue in
 	}
 	defer postgres.Rollback(tx)
 
+	// TxBypass crosses tenants for reminder sweep; livemode filter ensures
+	// reminders only fire for invoices in the ctx's mode (see #13).
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+invCols+` FROM invoices
 		WHERE status = 'finalized'
@@ -506,9 +508,10 @@ func (s *PostgresStore) ListApproachingDue(ctx context.Context, daysBeforeDue in
 		  AND due_at IS NOT NULL
 		  AND due_at BETWEEN NOW() AND NOW() + INTERVAL '1 day' * $1
 		  AND amount_due_cents > 0
+		  AND livemode = $2
 		ORDER BY due_at ASC
 		LIMIT 500
-	`, daysBeforeDue)
+	`, daysBeforeDue, postgres.Livemode(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -877,15 +880,18 @@ func (s *PostgresStore) ListAutoChargePending(ctx context.Context, limit int) ([
 		limit = 50
 	}
 
+	// TxBypass crosses tenants for the scheduler sweep; livemode must still
+	// be honoured explicitly from ctx (see scheduler fan-out in #13).
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+invCols+` FROM invoices
 		WHERE auto_charge_pending = TRUE
 		  AND payment_status = 'pending'
 		  AND status = 'finalized'
 		  AND amount_due_cents > 0
+		  AND livemode = $1
 		ORDER BY created_at ASC
-		LIMIT $1
-	`, limit)
+		LIMIT $2
+	`, postgres.Livemode(ctx), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -921,13 +927,16 @@ func (s *PostgresStore) ListUnknownPayments(ctx context.Context, olderThan time.
 		limit = 50
 	}
 
+	// TxBypass crosses tenants for reconciler sweep; livemode filter prevents
+	// test-mode unknowns from being reconciled under live ctx (see #13).
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+invCols+` FROM invoices
 		WHERE payment_status = 'unknown'
 		  AND updated_at < $1
+		  AND livemode = $2
 		ORDER BY updated_at ASC
-		LIMIT $2
-	`, olderThan, limit)
+		LIMIT $3
+	`, olderThan, postgres.Livemode(ctx), limit)
 	if err != nil {
 		return nil, err
 	}
