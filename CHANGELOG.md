@@ -37,11 +37,15 @@ Two surfaces mirror this file:
     {id}/timeline` + SPA Activity panel. CS reps get a chronological feed
     of lifecycle events (create, activate, pause, resume, cancel, item
     changes) sourced from the audit log.
-  - **SMTP bounce capture** (T0-20) — permanent-failure (5xx) SMTP errors
-    flip `customers.email_status` to `bounced` and fire a
-    `customer.email_bounced` webhook event. Red "Bounced" badge on
-    customer detail page. Async NDR / provider-webhook handling stays in
-    T1-8 and plugs into the same `MarkEmailBounced` seam.
+  - **SMTP bounce capture** (T0-20, **pipeline only**) — schema,
+    webhook event, and UI badge ready for bounce signal; synchronous
+    SMTP 5xx detection catches a minority of real-world bounces because
+    most MX providers emit bounces as async NDRs, not synchronous `RCPT
+    TO` rejections. Full coverage ships with T1-8 SES / SendGrid /
+    Postmark webhook handlers, which plug into the same
+    `customer.MarkEmailBounced` seam. Deployments without
+    `VELOX_EMAIL_BIDX_KEY` get graceful degradation — bounces are
+    logged but `email_status` stays `unknown`.
 
 ### Changed
 
