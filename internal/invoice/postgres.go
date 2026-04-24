@@ -32,7 +32,8 @@ const invCols = `id, tenant_id, customer_id, subscription_id, invoice_number, st
 	COALESCE(source_change_type,''),
 	tax_provider, tax_calculation_id, COALESCE(tax_transaction_id,''),
 	tax_reverse_charge, tax_exempt_reason,
-	tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason`
+	tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason,
+	COALESCE(public_token,'')`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -970,7 +971,70 @@ func scanInvDest(inv *domain.Invoice) []any {
 		&inv.TaxProvider, &inv.TaxCalculationID, &inv.TaxTransactionID,
 		&inv.TaxReverseCharge, &inv.TaxExemptReason,
 		(*string)(&inv.TaxStatus), &inv.TaxDeferredAt, &inv.TaxRetryCount, &inv.TaxPendingReason,
+		&inv.PublicToken,
 	}
+}
+
+// SetPublicToken writes (or overwrites) the hosted-invoice-URL token for a
+// non-draft invoice. The token is the URL — non-guessable by design — so a
+// rotation just swaps the column value. Drafts never carry a token, hence
+// the status guard; callers that try to set one on a draft get ErrNotFound.
+func (s *PostgresStore) SetPublicToken(ctx context.Context, tenantID, invoiceID, token string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE invoices SET public_token = $1, updated_at = $2
+		WHERE id = $3 AND status <> 'draft'
+	`, token, time.Now().UTC(), invoiceID)
+	if err != nil {
+		if postgres.IsUniqueViolation(err) {
+			// 256 bits of entropy means collisions are astronomically unlikely,
+			// but if one ever surfaces we want loud failure, not silent reuse
+			// of another invoice's URL.
+			return fmt.Errorf("set public token: collision: %w", err)
+		}
+		return fmt.Errorf("set public token: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errs.ErrNotFound
+	}
+	return tx.Commit()
+}
+
+// GetByPublicToken resolves a hosted-invoice-URL token to its invoice row.
+// The caller is unauthenticated (a public /invoice/{token} route), so we
+// have to look up the tenant FROM the token before any tenant context can
+// exist. Runs under TxBypass for exactly that reason; the token's 256 bits
+// of entropy plus the UNIQUE index make cross-tenant probing infeasible.
+// Empty token returns ErrNotFound rather than querying a null match.
+func (s *PostgresStore) GetByPublicToken(ctx context.Context, token string) (domain.Invoice, error) {
+	if token == "" {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `SELECT `+invCols+` FROM invoices WHERE public_token = $1`, token).
+		Scan(scanInvDest(&inv)...)
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, err
+	}
+	return inv, nil
 }
 
 func buildInvWhere(f ListFilter) (string, []any) {
