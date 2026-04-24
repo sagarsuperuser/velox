@@ -8,6 +8,7 @@ import (
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // DunningProcessor processes due dunning runs.
@@ -180,6 +181,13 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 // issuance, payment reconciliation, auto-charge retries, cleanup sweeps, and
 // reminders. Splitting from dunning lets two replicas divvy up roles instead
 // of one replica monopolising every periodic job.
+//
+// Mode fan-out: every mode-scoped step runs once per livemode (live, then
+// test) under its own ctx so downstream TxTenant transactions route to the
+// correct RLS partition. Without this the scheduler inherits the default
+// live-mode fallback from an unset ctx and silently hides test-mode rows
+// (reads) or misroutes writes into the live partition. Cross-mode cleanup
+// steps (token + idempotency purge) run once, outside the fan-out.
 func (s *Scheduler) runBillingHalf(ctx context.Context) {
 	start := time.Now()
 
@@ -196,51 +204,72 @@ func (s *Scheduler) runBillingHalf(ctx context.Context) {
 		defer lock.Release()
 	}
 
+	// Mode-scoped work: live first (the bulk of traffic), then test. One
+	// mode's errors do not gate the other — they share nothing at the
+	// DB level once the RLS predicate splits them.
+	for _, live := range []bool{true, false} {
+		modeCtx := postgres.WithLivemode(ctx, live)
+		s.runBillingCycleForMode(modeCtx, live)
+	}
+
+	duration := time.Since(start)
+	mw.RecordBillingCycleDuration(duration.Seconds())
+
+	// Cross-mode cleanup: TxBypass DELETEs that are mode-agnostic by design
+	// (tokens / idempotency keys expire regardless of mode). Running these
+	// once saves two DB round-trips per tick.
+	s.runCrossModeCleanup(ctx)
+}
+
+// runBillingCycleForMode runs a single mode's half-cycle (reconcile, retry,
+// bill, expire credits, list approaching-due). Called twice per tick — once
+// with ctx livemode=true, once with livemode=false. Logs are tagged with the
+// mode so operators can distinguish partitions.
+func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
+	mode := "live"
+	if !live {
+		mode = "test"
+	}
+
 	// 0a. Reconcile PaymentUnknown invoices against Stripe. Runs before
 	// auto-charge retry so any stuck-unknown charge that actually succeeded
 	// is marked paid before the retry path considers re-charging.
 	if s.paymentReconciler != nil {
 		resolved, rErrs := s.paymentReconciler.Run(ctx, s.batch)
 		if resolved > 0 {
-			slog.Info("payment reconciler resolved unknowns", "count", resolved)
+			slog.Info("payment reconciler resolved unknowns", "mode", mode, "count", resolved)
 		}
 		for _, e := range rErrs {
-			slog.Error("payment reconciler error", "error", e)
+			slog.Error("payment reconciler error", "mode", mode, "error", e)
 		}
 	}
 
 	// 0. Retry pending auto-charges from previous cycles
 	if chargeRetried, chargeErrs := s.engine.RetryPendingCharges(ctx, s.batch); chargeRetried > 0 || len(chargeErrs) > 0 {
-		slog.Info("auto-charge retries", "succeeded", chargeRetried, "errors", len(chargeErrs))
+		slog.Info("auto-charge retries", "mode", mode, "succeeded", chargeRetried, "errors", len(chargeErrs))
 		for i := 0; i < chargeRetried; i++ {
 			mw.RecordAutoChargeRetry("succeeded")
 		}
 		for _, e := range chargeErrs {
-			slog.Error("auto-charge retry error", "error", e)
+			slog.Error("auto-charge retry error", "mode", mode, "error", e)
 			mw.RecordAutoChargeRetry("failed")
 		}
 	}
 
 	// 1. Billing cycle — generate invoices
 	generated, errs := s.engine.RunCycle(ctx, s.batch)
-
-	duration := time.Since(start)
-	mw.RecordBillingCycleDuration(duration.Seconds())
 	if len(errs) > 0 {
 		slog.Error("billing cycle completed with errors",
+			"mode", mode,
 			"generated", generated,
 			"errors", len(errs),
-			"duration_ms", duration.Milliseconds(),
 		)
 		for _, err := range errs {
-			slog.Error("billing cycle error", "error", err)
+			slog.Error("billing cycle error", "mode", mode, "error", err)
 			mw.RecordBillingCycleError()
 		}
 	} else if generated > 0 {
-		slog.Info("billing cycle completed",
-			"generated", generated,
-			"duration_ms", duration.Milliseconds(),
-		)
+		slog.Info("billing cycle completed", "mode", mode, "generated", generated)
 	}
 
 	// 3. Credit expiry sweep
@@ -248,14 +277,14 @@ func (s *Scheduler) runBillingHalf(ctx context.Context) {
 		expired, cErrs := s.credits.ExpireCredits(ctx)
 		if len(cErrs) > 0 {
 			for _, e := range cErrs {
-				slog.Error("credit expiry error", "error", e)
+				slog.Error("credit expiry error", "mode", mode, "error", e)
 			}
 		}
 		for i := 0; i < expired; i++ {
 			mw.RecordCreditOperation("expiry")
 		}
 		if expired > 0 {
-			slog.Info("credits expired", "count", expired)
+			slog.Info("credits expired", "mode", mode, "count", expired)
 		}
 	}
 
@@ -263,12 +292,19 @@ func (s *Scheduler) runBillingHalf(ctx context.Context) {
 	if s.reminders != nil {
 		approaching, err := s.reminders.ListApproachingDue(ctx, 3)
 		if err != nil {
-			slog.Error("approaching due query failed", "error", err)
+			slog.Error("approaching due query failed", "mode", mode, "error", err)
 		} else if len(approaching) > 0 {
-			slog.Info("invoices approaching due date", "count", len(approaching))
+			slog.Info("invoices approaching due date", "mode", mode, "count", len(approaching))
 		}
 	}
+}
 
+// runCrossModeCleanup runs the mode-agnostic cleanup steps exactly once per
+// tick. These operate via TxBypass DELETEs that intentionally ignore livemode
+// (an expired idempotency key or payment-update token is expired regardless
+// of which partition it belonged to), so fanning out would just double the
+// DB round-trips for no additional work.
+func (s *Scheduler) runCrossModeCleanup(ctx context.Context) {
 	// 5. Payment update token cleanup (expired > 7 days)
 	if s.tokenCleaner != nil {
 		cleaned, err := s.tokenCleaner.Cleanup(ctx)
@@ -297,6 +333,11 @@ func (s *Scheduler) runBillingHalf(ctx context.Context) {
 // runDunningHalf runs the leader-gated half that advances dunning state.
 // Held behind a separate lock key so a replica can win dunning even if
 // another replica is currently running the (longer-lived) billing half.
+//
+// Fans out per livemode (live then test) so ProcessDueRuns — which opens
+// TxTenant and relies on ctx livemode for RLS — sees both partitions.
+// Tenant discovery runs once (ListTenantIDs is not mode-partitioned);
+// per-tenant dunning work is what needs the fan-out.
 func (s *Scheduler) runDunningHalf(ctx context.Context) {
 	if s.dunning == nil || s.tenants == nil {
 		return
@@ -320,18 +361,32 @@ func (s *Scheduler) runDunningHalf(ctx context.Context) {
 		slog.Error("dunning: failed to list tenants", "error", err)
 		return
 	}
+
+	for _, live := range []bool{true, false} {
+		modeCtx := postgres.WithLivemode(ctx, live)
+		s.runDunningForMode(modeCtx, live, tenantIDs)
+	}
+}
+
+// runDunningForMode processes due dunning runs for every tenant under the
+// given livemode. Called twice per tick.
+func (s *Scheduler) runDunningForMode(ctx context.Context, live bool, tenantIDs []string) {
+	mode := "live"
+	if !live {
+		mode = "test"
+	}
 	for _, tid := range tenantIDs {
 		processed, dErrs := s.dunning.ProcessDueRuns(ctx, tid, 20)
 		if len(dErrs) > 0 {
 			for _, e := range dErrs {
-				slog.Error("dunning error", "tenant_id", tid, "error", e)
+				slog.Error("dunning error", "mode", mode, "tenant_id", tid, "error", e)
 			}
 		}
 		for i := 0; i < processed; i++ {
 			mw.RecordDunningRun()
 		}
 		if processed > 0 {
-			slog.Info("dunning runs processed", "tenant_id", tid, "processed", processed)
+			slog.Info("dunning runs processed", "mode", mode, "tenant_id", tid, "processed", processed)
 		}
 	}
 }
