@@ -29,6 +29,20 @@ const (
 	CustomerStatusArchived CustomerStatus = "archived"
 )
 
+// CustomerEmailStatus mirrors the CHECK constraint on
+// customers.email_status. 'unknown' is the default (we've never observed
+// a delivery outcome); 'bounced' is populated by Sender on SMTP 5xx or
+// later by provider webhooks (SES/SendGrid) plugging into the same
+// customer.MarkEmailBounced code path.
+type CustomerEmailStatus string
+
+const (
+	EmailStatusUnknown    CustomerEmailStatus = "unknown"
+	EmailStatusOK         CustomerEmailStatus = "ok"
+	EmailStatusBounced    CustomerEmailStatus = "bounced"
+	EmailStatusComplained CustomerEmailStatus = "complained"
+)
+
 type Customer struct {
 	ID          string         `json:"id"`
 	TenantID    string         `json:"tenant_id,omitempty"`
@@ -36,8 +50,14 @@ type Customer struct {
 	DisplayName string         `json:"display_name"`
 	Email       string         `json:"email,omitempty"`
 	Status      CustomerStatus `json:"status"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	// Email deliverability signal populated by bounce-capture hooks.
+	// Most rows stay 'unknown' until a send outcome is observed; partners
+	// that never send stay at default forever.
+	EmailStatus        CustomerEmailStatus `json:"email_status,omitempty"`
+	EmailLastBouncedAt *time.Time          `json:"email_last_bounced_at,omitempty"`
+	EmailBounceReason  string              `json:"email_bounce_reason,omitempty"`
+	CreatedAt          time.Time           `json:"created_at"`
+	UpdatedAt          time.Time           `json:"updated_at"`
 }
 
 type BillingProfileStatus string

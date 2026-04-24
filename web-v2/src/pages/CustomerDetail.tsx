@@ -314,7 +314,14 @@ export default function CustomerDetailPage() {
           <div className="flex divide-x divide-border">
             <div className="flex-1 px-6 py-4">
               <p className="text-sm text-muted-foreground">Email</p>
-              <p className="text-sm font-medium text-foreground mt-1">{customer.email || '\u2014'}</p>
+              <div className="flex items-center gap-2 mt-1">
+                <p className="text-sm font-medium text-foreground">{customer.email || '\u2014'}</p>
+                {customer.email_status === 'bounced' && (
+                  <Badge variant="destructive" className="text-xs" title={customer.email_bounce_reason || 'Permanent delivery failure'}>
+                    Bounced
+                  </Badge>
+                )}
+              </div>
             </div>
             <Link to={`/credits?customer=${id}`} className="flex-1 px-6 py-4 hover:bg-accent/50 transition-colors">
               <p className="text-sm text-muted-foreground">Credit Balance</p>
@@ -345,7 +352,14 @@ export default function CustomerDetailPage() {
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Email</span>
-              <span className="text-sm text-foreground">{customer.email || '\u2014'}</span>
+              <span className="text-sm text-foreground flex items-center gap-2">
+                {customer.email || '\u2014'}
+                {customer.email_status === 'bounced' && customer.email_last_bounced_at && (
+                  <Badge variant="destructive" className="text-xs" title={customer.email_bounce_reason || 'Permanent delivery failure'}>
+                    Bounced \u00b7 {formatDate(customer.email_last_bounced_at)}
+                  </Badge>
+                )}
+              </span>
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Status</span>

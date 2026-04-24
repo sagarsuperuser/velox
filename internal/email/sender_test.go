@@ -93,6 +93,44 @@ func TestRenderInvoiceHTML(t *testing.T) {
 	}
 }
 
+// TestIsPermanentSMTPBounce checks the heuristic classifier used by
+// the bounce-capture hook. 5xx codes in the error message → permanent,
+// 4xx → transient, random 5-digit strings → must NOT misclassify.
+func TestIsPermanentSMTPBounce(t *testing.T) {
+	tests := []struct {
+		name      string
+		msg       string
+		permanent bool
+	}{
+		{"no error", "", false},
+		{"classic 550", "550 5.1.1 User unknown", true},
+		{"553 relaying", "553 relaying denied", true},
+		{"552 too big", "552 message size exceeds limits", true},
+		{"421 transient", "421 try again later", false},
+		{"450 soft bounce", "450 mailbox busy", false},
+		{"zip code false-positive", "SMTP relay error for customer at 95014", false},
+		{"wrapped 550", "send email: smtp: 550 mailbox unavailable", true},
+		{"timeout", "dial tcp: i/o timeout", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var err error
+			if tt.msg != "" {
+				err = wrapErr(tt.msg)
+			}
+			got, _ := isPermanentSMTPBounce(err)
+			if got != tt.permanent {
+				t.Errorf("isPermanentSMTPBounce(%q) = %v, want %v", tt.msg, got, tt.permanent)
+			}
+		})
+	}
+}
+
+type testErr struct{ m string }
+
+func (e *testErr) Error() string { return e.m }
+func wrapErr(m string) error     { return &testErr{m: m} }
+
 // TestHostedInvoiceURL covers the base-URL-and-token assembly rules.
 func TestHostedInvoiceURL(t *testing.T) {
 	tests := []struct {

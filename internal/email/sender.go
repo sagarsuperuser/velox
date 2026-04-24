@@ -40,6 +40,12 @@ type Sender struct {
 	// send to fetch the tenant's branding (logo, brand color, company
 	// name, support URL, from-name). Nil => fall back to Velox defaults.
 	settings SettingsGetter
+
+	// bounceReporter, when non-nil, is called on SMTP permanent-failure
+	// (5xx) errors so the partner's customer row flips to email_status=
+	// 'bounced'. Nil means bounces are still logged but not persisted —
+	// acceptable in tests and standalone contexts.
+	bounceReporter BounceReporter
 }
 
 // SettingsGetter resolves a tenantID to the tenant's public-facing
@@ -47,6 +53,18 @@ type Sender struct {
 // pass a fake.
 type SettingsGetter interface {
 	Get(ctx context.Context, tenantID string) (domain.TenantSettings, error)
+}
+
+// BounceReporter is the callback the Sender invokes when SMTP rejects a
+// send with a permanent-failure (5xx) code. The router-side adapter
+// resolves email → customer via the blind index and calls
+// customer.MarkEmailBounced. Kept behind an interface so the email
+// package doesn't import customer.
+//
+// Called synchronously from the SMTP send path; implementations should
+// bound their own latency so a bounce doesn't stall the outbox worker.
+type BounceReporter interface {
+	ReportBounce(ctx context.Context, tenantID, email, reason string)
 }
 
 // NewSender creates an email sender from environment variables. Returns
@@ -68,6 +86,62 @@ func (s *Sender) IsConfigured() bool { return s.host != "" }
 // SetSettingsGetter wires the tenant settings store so Send* methods can
 // look up branding per email. Called from router.go; optional for tests.
 func (s *Sender) SetSettingsGetter(g SettingsGetter) { s.settings = g }
+
+// SetBounceReporter wires the bounce-capture callback. Router-side
+// adapter resolves email → customer ID → customer.MarkEmailBounced.
+func (s *Sender) SetBounceReporter(r BounceReporter) { s.bounceReporter = r }
+
+// isPermanentSMTPBounce checks an SMTP send error for an RFC 5321
+// permanent-failure (5yz) reply code. Pure SMTP returns these
+// synchronously when the MX rejects MAIL FROM / RCPT TO / DATA —
+// "550 mailbox unavailable", "553 relaying denied", etc. Transient 4xx
+// failures are left to the outbox retry path.
+//
+// Heuristic string-match because stdlib net/smtp wraps the underlying
+// textproto.Error by the time callers see it. False negatives get
+// retried; false positives mark the customer once and surface as an
+// operator "unexpected bounce" — tolerable for MVP.
+func isPermanentSMTPBounce(err error) (bool, string) {
+	if err == nil {
+		return false, ""
+	}
+	msg := err.Error()
+	for i := 0; i <= len(msg)-3; i++ {
+		if msg[i] != '5' {
+			continue
+		}
+		if !isDigit(msg[i+1]) || !isDigit(msg[i+2]) {
+			continue
+		}
+		if i > 0 {
+			prev := msg[i-1]
+			if isDigit(prev) || isLetter(prev) {
+				continue
+			}
+		}
+		return true, msg
+	}
+	return false, ""
+}
+
+func isDigit(c byte) bool  { return c >= '0' && c <= '9' }
+func isLetter(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+
+// reportBounceIfPermanent forwards a permanent-failure SMTP error to
+// the configured BounceReporter. Fresh 5s context so a slow DB lookup
+// doesn't starve the next send.
+func (s *Sender) reportBounceIfPermanent(tenantID, to string, err error) {
+	if s.bounceReporter == nil {
+		return
+	}
+	permanent, reason := isPermanentSMTPBounce(err)
+	if !permanent {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.bounceReporter.ReportBounce(ctx, tenantID, to, reason)
+}
 
 // brandingFor resolves branding for tenantID. Never errors — a missing
 // tenant or a cold-start settings row just gets Velox defaults.
@@ -447,6 +521,7 @@ func (s *Sender) sendRich(msg richMessage) error {
 	addr := fmt.Sprintf("%s:%s", s.host, s.port)
 	if err := smtp.SendMail(addr, auth, s.from, []string{msg.To}, []byte(body.String())); err != nil {
 		slog.Error("send email failed", "to", msg.To, "subject", msg.Subject, "error", err)
+		s.reportBounceIfPermanent(msg.TenantID, msg.To, err)
 		return fmt.Errorf("send email: %w", err)
 	}
 	slog.Info("email sent", "to", msg.To, "subject", msg.Subject, "html", true)
@@ -477,6 +552,7 @@ func (s *Sender) sendPlain(tenantID, to, fromName, subject, body string) error {
 	addr := fmt.Sprintf("%s:%s", s.host, s.port)
 	if err := smtp.SendMail(addr, auth, s.from, []string{to}, []byte(msg.String())); err != nil {
 		slog.Error("send email failed", "to", to, "subject", subject, "error", err)
+		s.reportBounceIfPermanent(tenantID, to, err)
 		return fmt.Errorf("send email: %w", err)
 	}
 	slog.Info("email sent", "to", to, "subject", subject, "html", false)

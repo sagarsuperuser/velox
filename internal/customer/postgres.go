@@ -171,9 +171,13 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 
 	var c domain.Customer
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status, created_at, updated_at
+		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
+			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
+			created_at, updated_at
 		FROM customers WHERE id = $1
-	`, id).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.CreatedAt, &c.UpdatedAt)
+	`, id).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
+		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
+		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return domain.Customer{}, errs.ErrNotFound
@@ -193,9 +197,13 @@ func (s *PostgresStore) GetByExternalID(ctx context.Context, tenantID, externalI
 
 	var c domain.Customer
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status, created_at, updated_at
+		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
+			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
+			created_at, updated_at
 		FROM customers WHERE external_id = $1
-	`, externalID).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.CreatedAt, &c.UpdatedAt)
+	`, externalID).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
+		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
+		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return domain.Customer{}, errs.ErrNotFound
@@ -347,6 +355,36 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Cu
 		return domain.Customer{}, err
 	}
 	return c, nil
+}
+
+// MarkEmailBounced flips email_status to 'bounced' and records the
+// timestamp + free-text reason. Accepts customerID (not email) to avoid
+// routing a raw email string through the store — the caller holds the
+// blind-index lookup, which keeps encrypted email handling in one place.
+// Idempotent: repeated calls refresh the timestamp and reason but are
+// otherwise no-ops.
+func (s *PostgresStore) MarkEmailBounced(ctx context.Context, tenantID, customerID, reason string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE customers SET email_status = 'bounced',
+			email_last_bounced_at = NOW(),
+			email_bounce_reason = NULLIF($1, ''),
+			updated_at = NOW()
+		WHERE id = $2
+	`, reason, customerID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errs.ErrNotFound
+	}
+	return tx.Commit()
 }
 
 func (s *PostgresStore) UpsertBillingProfile(ctx context.Context, tenantID string, bp domain.CustomerBillingProfile) (domain.CustomerBillingProfile, error) {

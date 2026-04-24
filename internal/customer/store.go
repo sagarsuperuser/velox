@@ -18,6 +18,12 @@ type Store interface {
 
 	UpsertPaymentSetup(ctx context.Context, tenantID string, ps domain.CustomerPaymentSetup) (domain.CustomerPaymentSetup, error)
 	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
+
+	// MarkEmailBounced records a permanent delivery failure for a customer.
+	// Sender calls this via a narrow interface when SMTP returns a 5xx; the
+	// same path is later reused by provider webhooks (SES/SendGrid) when
+	// wired. Idempotent — repeated calls just refresh the timestamp.
+	MarkEmailBounced(ctx context.Context, tenantID, customerID, reason string) error
 }
 
 type ListFilter struct {

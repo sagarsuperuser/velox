@@ -330,6 +330,11 @@ export interface Customer {
   email: string
   status: string
   created_at: string
+  // Deliverability signal populated by the email bounce-capture hook
+  // (T0-20). Absent on cold tenants; defaults to 'unknown' server-side.
+  email_status?: 'unknown' | 'ok' | 'bounced' | 'complained'
+  email_last_bounced_at?: string
+  email_bounce_reason?: string
 }
 
 export interface SubscriptionItem {
