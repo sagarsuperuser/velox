@@ -226,6 +226,12 @@ func (s *Scheduler) runBillingHalf(ctx context.Context) {
 // with ctx livemode=true, once with livemode=false. Logs are tagged with the
 // mode so operators can distinguish partitions.
 func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
+	// Sanity: the only legitimate caller (runBillingHalf) always wraps ctx
+	// with WithLivemode before calling us. Assert here so a future refactor
+	// that skips the wrap crashes the test that exercises this path, not
+	// silently routes test-mode work into the live partition.
+	ctx = postgres.WithRequiredLivemode(ctx)
+
 	mode := "live"
 	if !live {
 		mode = "test"
@@ -371,6 +377,9 @@ func (s *Scheduler) runDunningHalf(ctx context.Context) {
 // runDunningForMode processes due dunning runs for every tenant under the
 // given livemode. Called twice per tick.
 func (s *Scheduler) runDunningForMode(ctx context.Context, live bool, tenantIDs []string) {
+	// Assert the fan-out site did its job; see note on runBillingCycleForMode.
+	ctx = postgres.WithRequiredLivemode(ctx)
+
 	mode := "live"
 	if !live {
 		mode = "test"
