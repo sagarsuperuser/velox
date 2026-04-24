@@ -45,6 +45,12 @@ Two surfaces mirror this file:
 
 ### Changed
 
+- **Manual test runbook** updated for the Phase 2 Addendum surfaces.
+  Existing flows I6 (emails), W2 (webhook rotation), CU6 (brand color)
+  expanded with branded-HTML / grace-period / email-brand checks. New
+  flows: I10 hosted invoice page (token mint + public render + Stripe
+  Checkout + state-gated variants + security audit), B12 subscription
+  activity timeline, CU7 email bounce capture + badge.
 - **API shape:** 5 customer-facing email interfaces (`invoice.EmailSender`,
   `dunning.EmailNotifier`, `payment.EmailReceipt`, `email.EmailDeliverer`)
   gained a trailing `publicToken` parameter. All callers updated
