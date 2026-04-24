@@ -259,8 +259,19 @@ Already in response headers. Just publish the limits + semantics in `/docs/rate-
 - UI flow: Rotate → shows new secret once → "Old secret valid until {now+72h}".
 - Why: Stripe-standard. Without it, rotation is a production risk.
 
-#### [T1-5] Changelog discipline — ongoing — ⏳
-One entry per notable release. Automate via GitHub Actions from PR labels (`user-facing`), or write manually on ship. Aim for weekly cadence during partner engagement.
+#### [T1-5] Changelog discipline — ongoing — 🚧
+Two-surface discipline, anchored to industry standards:
+
+1. **`CHANGELOG.md` at repo root** — [Keep a Changelog v1.1.0](https://keepachangelog.com/en/1.1.0/) format. Sections: Added / Changed / Deprecated / Removed / Fixed / Security / Migrations. `[Unreleased]` section accumulates bullets on every merge to `main` that touches user-visible behavior. Pre-1.0 [semver](https://semver.org/): `0.MINOR.PATCH` — MINOR bumps for features, PATCH for fixes. Version cuts move `[Unreleased]` under a new `## [0.X.0] - YYYY-MM-DD` heading.
+2. **`web-v2/src/pages/Changelog.tsx`** — customer-facing public changelog, modelled on [Linear's changelog](https://linear.app/changelog). Curated rollups grouped around shipped features — not every PR. Updated whenever a meaningful batch (feature, milestone, pre-invite readiness ship) completes.
+
+**Readiness-checklist trigger:** any Tier 0 / Tier 1 / Tier 2 item that flips to ✅ gets at least one bullet added to `CHANGELOG.md [Unreleased]`; if the item is customer-visible, a `Changelog.tsx` entry too.
+
+**Automation path (Tier 2+):** GitHub Actions on PR merge with a `user-facing` label appends to `[Unreleased]`. For now, manual on every ship.
+
+**Cadence during partner engagement:** weekly minimum, more often when shipping the addendum tier.
+
+- **Initialised 2026-04-24:** canonical `CHANGELOG.md` created with the full Phase 2 Addendum ship listed under `[Unreleased]`; `Changelog.tsx` gained a rollup entry for the same. Header of `Changelog.tsx` now links to the GitHub CHANGELOG.md explicitly.
 
 #### [T1-6] Partner feedback intake — ongoing — ⏳
 Every issue raised by partner lands in Linear/GitHub issues same-day, tagged `design-partner`. Weekly sync (30 min) to review.
