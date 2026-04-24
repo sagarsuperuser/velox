@@ -29,7 +29,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { Loader2, Mail, CreditCard } from 'lucide-react'
+import { Loader2, Mail, CreditCard, Link2, RotateCw } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
@@ -92,6 +92,7 @@ export default function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
   const [showVoidConfirm, setShowVoidConfirm] = useState(false)
+  const [showRotatePublicTokenConfirm, setShowRotatePublicTokenConfirm] = useState(false)
   const [showEmailModal, setShowEmailModal] = useState(false)
   const [showCreditModal, setShowCreditModal] = useState(false)
   const [showAddLineItem, setShowAddLineItem] = useState(false)
@@ -170,7 +171,33 @@ export default function InvoiceDetailPage() {
     onError: (err) => showApiError(err, 'Payment failed'),
   })
 
-  const acting = finalizeMutation.isPending || voidMutation.isPending || collectMutation.isPending
+  const rotatePublicTokenMutation = useMutation({
+    mutationFn: () => api.rotateInvoicePublicToken(id!),
+    onSuccess: () => {
+      invalidateAll()
+      setShowRotatePublicTokenConfirm(false)
+      toast.success('Public link rotated — previous URL no longer works')
+    },
+    onError: err => showApiError(err, 'Failed to rotate public link'),
+  })
+
+  const acting = finalizeMutation.isPending || voidMutation.isPending || collectMutation.isPending || rotatePublicTokenMutation.isPending
+
+  // Build the shareable hosted-invoice URL for clipboard copy. Uses the
+  // dashboard origin — deployments that serve the dashboard and the
+  // hosted page on separate domains should set VITE_HOSTED_INVOICE_BASE_URL.
+  const hostedInvoiceBase = import.meta.env.VITE_HOSTED_INVOICE_BASE_URL || window.location.origin
+  const publicInvoiceURL = invoice?.public_token ? `${hostedInvoiceBase}/invoice/${invoice.public_token}` : ''
+
+  const copyPublicLink = async () => {
+    if (!publicInvoiceURL) return
+    try {
+      await navigator.clipboard.writeText(publicInvoiceURL)
+      toast.success('Public link copied to clipboard')
+    } catch {
+      toast.error('Failed to copy — you can select the URL manually')
+    }
+  }
 
   const loading = isLoading
   const error = loadError instanceof Error ? loadError.message : loadError ? String(loadError) : null
@@ -257,6 +284,22 @@ export default function InvoiceDetailPage() {
               <CreditCard size={14} className="mr-1.5" />
               Issue Credit
             </Button>
+          )}
+
+          {/* Hosted-invoice URL actions: only visible when the invoice has
+              a public token — i.e. it's been finalized (drafts have none)
+              and hasn't been pre-addendum-finalized without a rotate. */}
+          {invoice.public_token && invoice.status !== 'draft' && (
+            <>
+              <Button variant="outline" size="sm" onClick={copyPublicLink} disabled={acting} title={publicInvoiceURL}>
+                <Link2 size={14} className="mr-1.5" />
+                Copy Link
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setShowRotatePublicTokenConfirm(true)} disabled={acting} title="Invalidate the current URL and mint a new one">
+                <RotateCw size={14} className="mr-1.5" />
+                Rotate
+              </Button>
+            </>
           )}
 
           {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.amount_due_cents > 0 && (
@@ -702,6 +745,21 @@ export default function InvoiceDetailPage() {
         confirmLabel="Void Invoice"
         onConfirm={() => voidMutation.mutate()}
         loading={voidMutation.isPending}
+      />
+
+      {/* Rotate public-token Confirm — defensive affordance for when the
+          public URL has been shared where it shouldn't be (wider email
+          thread, ticketing-system paste, archive leak). Not destructive
+          to the invoice itself, but irreversible for the old URL. */}
+      <TypedConfirmDialog
+        open={showRotatePublicTokenConfirm}
+        onOpenChange={setShowRotatePublicTokenConfirm}
+        title="Rotate public link"
+        description="This invalidates the current public URL for this invoice and mints a new one. Any email, message, or page still linking to the old URL will stop working. Use this if the current link was shared somewhere it shouldn't have been."
+        confirmWord="ROTATE"
+        confirmLabel="Rotate Link"
+        onConfirm={() => rotatePublicTokenMutation.mutate()}
+        loading={rotatePublicTokenMutation.isPending}
       />
 
       {/* Email Modal */}
