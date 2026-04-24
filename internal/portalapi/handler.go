@@ -478,4 +478,3 @@ func (h *Handler) branding(w http.ResponseWriter, r *http.Request) {
 		SupportURL:  ts.SupportURL,
 	})
 }
-

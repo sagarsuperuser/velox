@@ -87,7 +87,7 @@ type TenantSettings struct {
 	// BrandColor is a 7-char hex accent color (#rrggbb) applied to the
 	// company name and a thin bar on invoice PDFs. Empty = no brand —
 	// the PDF falls back to its neutral default palette.
-	BrandColor     string `json:"brand_color,omitempty"`
+	BrandColor string `json:"brand_color,omitempty"`
 	// TaxID is the SELLER's tax identifier (VAT, EIN, GSTIN, ABN, ...),
 	// printed in the invoice "From" block. Separate from customer.TaxID /
 	// billing_profile.TaxID which hold the BUYER's identifier.
