@@ -87,6 +87,7 @@ const (
 	EventSubscriptionPendingChangeApplied   = "subscription.pending_change.applied"
 	EventSubscriptionPendingChangeCanceled  = "subscription.pending_change.canceled"
 	EventCustomerCreated                    = "customer.created"
+	EventCustomerEmailBounced               = "customer.email_bounced"
 	EventDunningStarted                     = "dunning.started"
 	EventDunningEscalated                   = "dunning.escalated"
 	EventDunningResolved                    = "dunning.resolved"

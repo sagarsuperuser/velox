@@ -27,6 +27,7 @@ type Service struct {
 	store         Store
 	stripeSyncer  StripeSyncer
 	paymentSetups PaymentSetupReader
+	events        domain.EventDispatcher
 }
 
 func NewService(store Store) *Service {
@@ -37,6 +38,40 @@ func NewService(store Store) *Service {
 func (s *Service) SetStripeSyncer(syncer StripeSyncer, setups PaymentSetupReader) {
 	s.stripeSyncer = syncer
 	s.paymentSetups = setups
+}
+
+// SetEventDispatcher wires the outbound webhook dispatcher so the service
+// can emit customer.email_bounced (and future customer.* events). Nil is
+// acceptable — events become a no-op, which is the right behaviour in
+// narrow unit tests.
+func (s *Service) SetEventDispatcher(d domain.EventDispatcher) {
+	s.events = d
+}
+
+// MarkEmailBounced records a permanent-delivery-failure signal for the
+// given customer (resolved from email by the caller via the blind-index
+// lookup). Fires customer.email_bounced after a successful write so
+// partners can wire their own dead-address handling. Missing customer
+// IDs are treated as soft failures — log and return — because the
+// sender path must never panic an outbox worker.
+func (s *Service) MarkEmailBounced(ctx context.Context, tenantID, customerID, reason string) error {
+	if err := s.store.MarkEmailBounced(ctx, tenantID, customerID, reason); err != nil {
+		return err
+	}
+	if s.events != nil {
+		payload := map[string]any{
+			"customer_id": customerID,
+			"reason":      reason,
+		}
+		// Non-fatal on dispatch error — the state transition already
+		// landed; losing a webhook event isn't worth reversing the
+		// status.
+		if err := s.events.Dispatch(ctx, tenantID, domain.EventCustomerEmailBounced, payload); err != nil {
+			slog.WarnContext(ctx, "dispatch customer.email_bounced",
+				"tenant_id", tenantID, "customer_id", customerID, "error", err)
+		}
+	}
+	return nil
 }
 
 type CreateInput struct {

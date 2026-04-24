@@ -244,6 +244,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	})
 	dunningSvc.SetSubscriptionPauser(&subscriptionPauserAdapter{svc: subSvc}, invoiceStore)
 	dunningSvc.SetEventDispatcher(eventDispatcher)
+	// customer service emits customer.email_bounced when T0-20 bounce
+	// reporting fires; needs the same webhook dispatcher as the other
+	// domain services.
+	customerSvc.SetEventDispatcher(eventDispatcher)
 	webhookH := payment.NewHandler(stripeAdapter, tenantStripeSvc)
 
 	invoiceSvc := invoice.NewService(invoiceStore, clk, settingsStore)
@@ -305,6 +309,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// branding (logo, brand color, company name, support URL). Cold-start
 	// tenants without settings gracefully fall back to Velox defaults.
 	emailSender.SetSettingsGetter(settingsStore)
+	// bounceReporterAdapter wires Sender SMTP 5xx errors to
+	// customer.MarkEmailBounced. Requires an email blinder (configured
+	// later from VELOX_EMAIL_BIDX_KEY); if the blinder is missing, the
+	// adapter short-circuits and the partner stays on pre-T0-20 behavior
+	// (bounces logged, customer.email_status stays 'unknown').
+	// Attached inside the blinder branch below once emailBlinder exists.
 	emailOutboxStore := email.NewOutboxStore(db)
 	emailOutboxEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_EMAIL_OUTBOX_ENABLED"))) != "false"
 
@@ -430,7 +440,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		} else {
 			emailBlinder = b
 			customerStore.SetBlinder(b)
-			slog.Info("email blind index enabled for customer-portal magic-link lookup")
+			// Wire bounce reporting now that we have the blinder.
+			emailSender.SetBounceReporter(&bounceReporterAdapter{
+				blinder: b,
+				store:   customerStore,
+				svc:     customerSvc,
+			})
+			slog.Info("email blind index enabled for customer-portal magic-link lookup + bounce reporting")
 		}
 	} else {
 		slog.Warn("VELOX_EMAIL_BIDX_KEY not set — magic-link requests will fail closed (no customers findable by email)")
