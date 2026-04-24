@@ -53,6 +53,21 @@ type Store interface {
 	// restriction — existence-only so the query can use LIMIT 1 instead of
 	// paging full history.
 	HasSucceededInvoice(ctx context.Context, tenantID, customerID string) (bool, error)
+
+	// SetPublicToken writes (or overwrites) the hosted-invoice-URL token for
+	// an invoice. Called from Service.Finalize at first generation and from
+	// the rotate-public-token endpoint for explicit rotation. Invoice must
+	// exist and be non-draft; drafts never carry a token. Returns
+	// errs.ErrNotFound if the invoice is missing or still draft.
+	SetPublicToken(ctx context.Context, tenantID, invoiceID, token string) error
+
+	// GetByPublicToken resolves the hosted-invoice-URL token to its invoice.
+	// Runs under TxBypass because the caller is unauthenticated: the public
+	// route receives a raw token from the URL and must resolve it to a
+	// tenant BEFORE any tenant context can be set. The token itself is the
+	// credential (256 bits of entropy, UNIQUE indexed) so cross-tenant
+	// probing isn't feasible. Returns errs.ErrNotFound on miss.
+	GetByPublicToken(ctx context.Context, token string) (domain.Invoice, error)
 }
 
 type ListFilter struct {

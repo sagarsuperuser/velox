@@ -155,6 +155,22 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 	if err != nil {
 		return domain.Invoice{}, err
 	}
+	// Generate the hosted-invoice-URL token. Non-fatal if it fails — mirrors
+	// the tax-commit convention below: the invoice is already authoritative
+	// after UpdateStatus, so a transient DB hiccup on a side-effect doesn't
+	// unwind the state transition. Operators can repair via the rotate
+	// endpoint. Happens BEFORE tax commit because the rotate endpoint will
+	// anyway need to talk to Stripe-less code paths, and token generation
+	// is pure Go with no external dependency.
+	if token, tokenErr := GeneratePublicToken(); tokenErr != nil {
+		slog.Warn("invoice: public token generation failed at finalize",
+			"error", tokenErr, "tenant_id", tenantID, "invoice_id", finalized.ID)
+	} else if err := s.store.SetPublicToken(ctx, tenantID, id, token); err != nil {
+		slog.Warn("invoice: public token persist failed at finalize",
+			"error", err, "tenant_id", tenantID, "invoice_id", finalized.ID)
+	} else {
+		finalized.PublicToken = token
+	}
 	// Commit Stripe Tax calculation to a tax_transaction at finalize. Missing
 	// calculation id = manual/none provider — skip silently. Commit failure
 	// does not unwind finalize: the invoice is already authoritative; we log
