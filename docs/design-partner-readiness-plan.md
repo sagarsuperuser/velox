@@ -162,17 +162,65 @@ Extended `docs/ops/runbook.md` (the pre-existing metrics + alert catalog already
 
 ---
 
+## Phase 2 Addendum — Second-audit pre-invite blockers (~8 days)
+
+Added 2026-04-24 after a re-audit against a stricter pre-invite bar: *"nothing embarrasses the partner in front of their customers, nothing loses money, nothing breaks silently."* Five items were pulled forward from T1 or added where no coverage existed.
+
+#### [T0-16] HTML + branded emails — M — ⏳
+**Current gap:** `internal/email/sender.go` sends plain-text bodies only (invoice-ready, payment receipt, dunning warning, dunning escalation). Brand color + logo ship in the PDF attachment but are invisible in the email body itself. Phrasing is hardcoded "Velox Billing" / "Dear %s".
+- Minimum viable: HTML bodies (MJML or `html/template`) with tenant logo, `brand_color` accent, tenant `from_name`, support link, primary CTA button. Multipart plain-text fallback preserved for deliverability.
+- Primary CTA links to hosted invoice page (T0-17) for invoice/receipt emails; portal for account emails.
+- Why pre-invite (vs T1-2): partner's customers see the email first. Plain-text "Velox Billing" from their account is a first-impression loss that doesn't recover by shipping HTML in Week 2.
+- Subsumes and replaces T1-2.
+
+#### [T0-17] Hosted invoice page (public tokenized URL) — M — ⏳
+**Current gap:** `/v1/public/payment-updates/{token}` exists but is a payment-method-update surface, not a Stripe-style `hosted_invoice_url`. Invoices are otherwise reachable only via `/v1/invoices/{id}` (API-key) or `/v1/me/invoices/{id}/pdf` (portal-login-gated). No public URL an end customer can click from an email to pay.
+- Minimum viable: `invoices.public_token` column (nullable, generated on finalize, rotatable). Public route `GET /invoice/{token}` — unauthenticated, rate-limited. Renders: tenant branding, line items, totals, tax breakdown, Pay button (Stripe Checkout), PDF download. Respects paid / voided / expired states.
+- Email CTA from T0-16 points here.
+- Why pre-invite: for SaaS partners whose customers pay from email links (the common case), there is no paying surface without this.
+- Defer-path: if the partner's flow is AR-rep-managed (bank transfer + manual reconciliation), this can ship Week 1. Confirm flow at partner intake.
+
+#### [T0-18] Activity timeline on Subscription detail — S — ⏳
+**Current gap:** Invoice timeline exists (`internal/invoice/handler.go::paymentTimeline()`). Subscription detail has none.
+- Minimum viable: refactor the invoice aggregator into a reusable `internal/timeline/` builder. Scope to `subscription_id`. Sources: `audit_log` + webhook deliveries for subscription events + plan changes + dunning runs attached via invoice.
+- Why pre-invite (vs T1-1): subscription-change tickets dominate partner CS volume ("why was my plan changed," "why was I cancelled"). Invoice-only timeline doesn't answer these.
+- Customer timeline (the other half of T1-1) remains in T1 — lower support pressure.
+
+#### [T0-19] Webhook secret rotation grace period — S — ⏳
+**Current gap:** `internal/webhook/service.go::RotateSecret()` immediately replaces the old secret. No `secondary_secret` column.
+- Minimum viable: add `secondary_secret` + `secondary_secret_expires_at` columns on `webhook_endpoints`. Dispatcher verifies against both for 72h post-rotation; expiry path drops secondary.
+- UI: rotate shows new secret once with "old secret valid until {now+72h}" banner.
+- Why pre-invite (vs T1-4): if the partner rotates in production (expected inside 30 days), immediate invalidation is a production incident.
+- Subsumes and replaces T1-4.
+
+#### [T0-20] SMTP bounce/complaint handling (minimum viable) — S — ⏳
+**Current gap:** no bounce capture. Silent delivery failures mean partner's customers never receive invoices → collections go sideways → partner blames Velox.
+- Minimum viable for pre-invite: capture SMTP-level bounces (or provider webhook if SES/Sendgrid), mark `customers.email_status = bounced`, surface as badge on customer detail, emit `customer.email_bounced` webhook event.
+- Full handling (auto-suppression, retry decay, complaint-vs-bounce differentiation) remains T1-8.
+- Why pre-invite: invisible delivery failures erode partner trust in the first week. Even visibility-only is a big upgrade over silent.
+
+---
+
 ## Phase 3 — Invitation readiness gate
 
 Before sending the invite email, confirm all of:
 
+**Shipped:**
 - [ ] All Phase 1 testing-pass **Blocker** items fixed
-- [ ] All T0-1 to T0-12 shipped or ⏭️ consciously deferred
-- [ ] T0-13 (monitoring) alerting in-flight for >24h with no false positives
-- [ ] T0-14 (backup drill) completed and documented
-- [ ] T0-15 (runbook) reviewed by a second pair of eyes (even another AI)
-- [ ] You have: named partner contact, Slack Connect channel, mutual NDA (if applicable), clear scope of pilot (what they'll use, for how long, success criteria)
-- [ ] 24h of synthetic production-like traffic through a staging tenant with no anomalies
+- [ ] All T0-1 to T0-15 shipped or ⏭️ consciously deferred
+- [ ] All T0-16 to T0-20 (second-audit additions) shipped or ⏭️ consciously deferred
+
+**Verified at runtime (shipped ≠ working):**
+- [ ] Phase 1 manual testing checklist actually executed end-to-end (not just listed). Blockers fixed.
+- [ ] OpenAPI spec at `web-v2/public/openapi.yaml` covers every exposed endpoint (second audit spot-checked only the Customers section — confirm full coverage).
+- [ ] T0-13 alerts firing in a real Prometheus with on-call routing, 24h clean (stricter than "alerting in-flight for >24h").
+- [ ] T0-14 backup drill scheduled as cron AND completed one full round-trip; `~/.velox/drill.log` shows entry.
+- [ ] End-to-end Stripe connect → PaymentIntent → webhook ingest → refund tested in a live Stripe test environment.
+- [ ] 24h of synthetic production-like traffic through a staging tenant with no anomalies.
+- [ ] T0-15 runbook reviewed by a second pair of eyes (even another AI).
+
+**Partner operations:**
+- [ ] You have: named partner contact, Slack Connect channel, mutual NDA (if applicable), clear scope of pilot (what they'll use, for how long, success criteria).
 
 ---
 
@@ -181,10 +229,14 @@ Before sending the invite email, confirm all of:
 Things a partner will hit in their first week of real use.
 
 #### [T1-1] Activity timeline on Customer + Subscription detail pages — M — ⏳
+*Subscription half pulled to T0-18 pre-invite (second audit). Customer timeline remains here.*
+
 Unified chronological feed per resource combining: audit_log entries + webhook deliveries + payment attempts + plan changes. Already exists on Invoice (payment timeline). Extend.
 - Why: When a partner's CS rep gets "my subscription got cancelled unexpectedly," this is the first page they open.
 
-#### [T1-2] Email brandability — M — ⏳
+#### [T1-2] Email brandability — M — ⏳ → superseded by T0-16
+*Pulled to T0-16 pre-invite (second audit). Plain-text "Velox Billing" emails from the partner's account are a first-impression loss that doesn't recover post-invite.*
+
 **Current gap (audit finding):** Email templates hardcoded with "Velox Billing" branding. Not partner-configurable.
 - Per-tenant settings: `email_from_name`, `email_reply_to`, `email_footer_text`, `email_accent_color`.
 - Templates use tenant logo + accent color.
@@ -194,7 +246,9 @@ Unified chronological feed per resource combining: audit_log entries + webhook d
 #### [T1-3] Rate-limit documentation — XS — ⏳
 Already in response headers. Just publish the limits + semantics in `/docs/rate-limits`. Note fail-open posture (or switch to fail-closed for production — decide + document).
 
-#### [T1-4] Webhook secret rotation with grace period — S — ⏳
+#### [T1-4] Webhook secret rotation with grace period — S — ⏳ → superseded by T0-19
+*Pulled to T0-19 pre-invite (second audit). Immediate invalidation is a production incident when the partner rotates inside the 30-day pilot.*
+
 **Current gap (audit finding):** rotate → old secret immediately invalidated. Breaks partner deploys.
 - Add `secondary_secret` column; both verify for 72h after rotation; after expiry, secondary is dropped.
 - UI flow: Rotate → shows new secret once → "Old secret valid until {now+72h}".
@@ -212,6 +266,8 @@ Every issue raised by partner lands in Linear/GitHub issues same-day, tagged `de
 - Test in report-only mode first.
 
 #### [T1-8] Auth-email bounce/complaint handling — S — ⏳
+*Minimum-viable pulled to T0-20 pre-invite (second audit). Full handling — auto-suppression, retry decay, complaint-vs-bounce differentiation — remains here for Week 2.*
+
 **Current gap (audit finding):** No bounce handling on SMTP. A partner with bad customer email addresses will have silent delivery failures.
 - Minimum: listen for SMTP bounce responses, mark `customers.email_status = bounced`, surface in customer detail.
 - If using SES/Sendgrid: wire their webhook for bounces + complaints.
@@ -294,24 +350,34 @@ Checkbox column + kebab per row. Action bar appears when ≥1 selected: "3 invoi
 ## Execution sequence (condensed)
 
 ```
-Week 0 (starting now)
-├─ Mon–Tue: Phase 1 manual testing (you) + Phase 2 [T0-2, T0-3, T0-4, T0-5, T0-6] content pages in parallel
-├─ Wed:     Fix testing-pass Blockers + T0-7 + T0-8 portal completion kickoff
-├─ Thu:     T0-8 portal complete + T0-9 + T0-10 + T0-11 + T0-12
-└─ Fri:     T0-13 monitoring wired + T0-14 backup drill + T0-15 runbook
-             → Phase 3 invitation gate review
+Week 0 — SHIPPED 2026-04-23
+└─ T0-2 through T0-15 per revision history.
+   Still open: T0-1 velox.dev site, Phase 1 manual testing pass execution.
 
-Week 1
-├─ Mon:     First design partner invited
-├─ T1-1 (activity timeline) + T1-7 (CSP) + T1-4 (webhook rotation grace)
-└─ T1-2 (email brandability) kickoff
+Week 0a — Second-audit pre-invite additions (~8 days, from 2026-04-24)
+├─ T0-16 HTML + branded emails              (3-4 days)
+├─ T0-17 Hosted invoice page                (5 days; parallelize with T0-16)
+├─ T0-18 Subscription timeline              (2 days)
+├─ T0-19 Webhook secret rotation grace      (2 days)
+├─ T0-20 Bounce handling minimum viable     (2 days)
+├─ T0-1  velox.dev marketing site (3 pages) (2-3 days; parallelize)
+└─ Phase 1 manual testing pass executed     (2 days; gates the invite)
+
+Week 0b — Phase 3 gate verification (2 days)
+└─ Runtime verification checklist (alerts firing, backup drill round-trip,
+   Stripe end-to-end, 24h synthetic traffic, OpenAPI coverage).
+
+Week 1 — INVITE (≈2026-05-12)
+├─ Mon: First design partner invited
+├─ T1-3 rate-limit docs, T1-7 CSP (report-only), T1-9 deliverability guide
+└─ T1-5 changelog discipline (ongoing), T1-6 partner feedback intake (ongoing)
 
 Week 2
-├─ T1-2 complete + T1-3 (rate-limit docs) + T1-8 (bounce handling) + T1-9 (deliverability guide)
-├─ Start T2-1 (2-col layout) + T2-2 (ID truncation) + T2-3 (tabular numerals)
+├─ T1-1 remainder (Customer timeline) + T1-8 full handling (complaint + suppression)
+└─ T2-1 (2-col layout) + T2-2 (ID truncation) + T2-3 (tabular numerals)
 
 Week 3
-├─ T2-4 metadata + T2-5 JSON view + T2-6 global search by ID
+├─ T2-4 metadata + T2-5 JSON view + T2-6 global search
 └─ T2-7 developer panel
 
 Week 4
@@ -319,7 +385,7 @@ Week 4
 └─ T2-11 saved views + T2-12 row menus (Invoices pilot)
 ```
 
-**Rough total:** ~4 weeks to full design-partner-grade. Week 0 minimum before invitation.
+**Revised total to invite:** ~2.5 weeks from 2026-04-24 (Week 0a + Week 0b). Then ~4 weeks of Week 1–4 polish with the partner using the product.
 
 ---
 
@@ -333,3 +399,4 @@ Week 4
 - **2026-04-23 (night)** — Shipped T0-11 (onboarding checklist polish). `GetStarted` extended from 4 → 6 steps, each auto-tracked from server state (Stripe creds, plans, customers, subscriptions, webhooks, company profile). Dismiss persisted in localStorage per-tenant (`velox:getstarted-dismissed:${tenantID}`). Gating queries run only while the checklist is visible. "Skip to API-first flow" → `/docs/quickstart` link added. Substituted "Verify email SMTP" with "Complete company profile" because Velox email is platform-level (no per-tenant SMTP) — company name + email is the underlying partner-facing blocker.
 - **2026-04-23 (late night)** — Shipped T0-12 (logo guidance + brand accent color). Chose URL-only guidance (option b) over S3/R2 upload — Velox is pre-launch, no storage infra exists, and paste-a-CDN-URL is the Stripe/Linear precedent. Migration 0046 adds `brand_color` (TEXT) to `tenant_settings`; server-side pattern `^#[0-9a-f]{6}$` (strict 7-char lowercase hex). Domain/store/handler plumbed through `invoice/pdf.go` (company name tinted + 2px accent bar; byte-identical for empty `brand_color`). Settings UI: native color picker + hex input + Clear button + live logo thumbnail; logo help text now names Cloudinary / S3 public URL / CDN as example hosts. New `TestParseBrandColor` covers edge cases (uppercase, short-form, missing `#`, too short/long, non-hex). Email brand color deferred — `email/sender.go` bodies are plain text; HTML templating is a separate scope item. `tsc --noEmit`, `vite build` (461ms), `go test ./... -short` all green.
 - **2026-04-23 (parallel to manual-testing pass)** — Shipped T0-13, T0-14, T0-15 as a bundled ops batch so the user's manual testing wasn't disrupted by handler code changes. T0-15: extended `docs/ops/runbook.md` with severity definitions, 4 missing playbooks (PaymentIntent failure, scheduler stale, DB pool, outbox backlog), communication templates (status page + partner + internal), rollback procedures (app/migration/feature-flag), and a post-mortem template. T0-14: `scripts/restore-drill.sh` wraps `backup.sh → ephemeral-Postgres → restore.sh → row-count-diff` as a single command with `~/.velox/drill.log` history for trend-over-time; `backup-recovery.md` §4.4 documents it; Security public page gained a **Backup & recovery** section (RPO 5 min / RTO 1 hour / encryption / drill cadence / retention). T0-13: `ops/alerts/*.yaml` (api, billing, payments, webhooks, audit, scheduler) + `ops/alerts/README.md` covering self-hosted Prom / Grafana Cloud / Datadog import, the blackbox-exporter config for `VeloxSchedulerStale`, and the three instrumentation gaps (scheduler gauge, DB pool gauges, outbox backlog gauge) with postgres_exporter/blackbox workarounds until the Go-side instrumentation lands. No handler code changed. All YAML parses; `tsc --noEmit` clean.
+- **2026-04-24** — Second-audit brutal readiness review (Session B). Surfaced five pre-invite blockers mis-bucketed as T1 or missing entirely, promoted them into a **Phase 2 Addendum** as T0-16 through T0-20: (1) emails are still plain-text with hardcoded "Velox Billing" despite T0-12 shipping brand color only to the PDF attachment — pulled T1-2 → T0-16; (2) no Stripe-style hosted invoice URL — `/v1/public/payment-updates/{token}` is a payment-method-update surface, not a `hosted_invoice_url` — added T0-17; (3) Invoice has a timeline, Subscription does not, and subscription-change tickets dominate CS volume — pulled subscription half of T1-1 → T0-18; (4) webhook secret rotation invalidates immediately with no grace window — pulled T1-4 → T0-19; (5) no SMTP bounce capture, silent delivery failures erode partner trust in the first week — pulled minimum-viable of T1-8 → T0-20. Extended the Phase 3 gate with six runtime-verification items (shipped ≠ working): manual testing pass actually executed, OpenAPI full-coverage confirmed, alerts firing in real Prom with on-call routing, backup drill cron-scheduled and round-tripped, Stripe end-to-end tested in live-test env, 24h synthetic traffic. Revised execution sequence to ~2.5 weeks to invite (Week 0a + Week 0b) from 2026-04-24. Documentation-only pass — no code changed.
