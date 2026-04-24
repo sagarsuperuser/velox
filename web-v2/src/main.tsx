@@ -100,6 +100,7 @@ const AuditLogPage = lazy(() => import('@/pages/AuditLog'))
 const UpdatePaymentPage = lazy(() => import('@/pages/UpdatePayment'))
 const CustomerPortalPage = lazy(() => import('@/pages/CustomerPortal'))
 const CustomerPortalLoginPage = lazy(() => import('@/pages/CustomerPortalLogin'))
+const HostedInvoicePage = lazy(() => import('@/pages/HostedInvoice'))
 const CustomerDetailPage = lazy(() => import('@/pages/CustomerDetail'))
 const InvoiceDetailPage = lazy(() => import('@/pages/InvoiceDetail'))
 const SubscriptionDetailPage = lazy(() => import('@/pages/SubscriptionDetail'))
@@ -160,6 +161,7 @@ const App = () => (
               <Route path="/update-payment" element={<UpdatePaymentPage />} />
               <Route path="/customer-portal" element={<CustomerPortalPage />} />
               <Route path="/customer-portal/login" element={<CustomerPortalLoginPage />} />
+              <Route path="/invoice/:token" element={<HostedInvoicePage />} />
               <Route path="/docs" element={<DocsPage />} />
               <Route path="/docs/quickstart" element={<DocsQuickstartPage />} />
               <Route path="/docs/webhooks" element={<DocsWebhooksPage />} />
