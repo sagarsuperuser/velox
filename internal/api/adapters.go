@@ -18,6 +18,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
+	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 )
@@ -286,6 +287,46 @@ func (a *customerLookupAdapter) FindByEmailBlindIndex(ctx context.Context, blind
 		}
 	}
 	return out, nil
+}
+
+// bounceReporterAdapter bridges email.Sender → customer.Service. When
+// SMTP rejects a send with a permanent-failure (5xx), the Sender calls
+// ReportBounce with (tenantID, email, reason). This adapter resolves
+// the email via the blind-index lookup and flips email_status on every
+// matching customer in that tenant. Multiple matches can happen when
+// two customers share an email (rare; we mark all).
+//
+// Lives in internal/api so email doesn't import customer — keeps the
+// one-way-coupled layering intact.
+type bounceReporterAdapter struct {
+	blinder *crypto.Blinder
+	store   *customer.PostgresStore
+	svc     *customer.Service
+}
+
+func (a *bounceReporterAdapter) ReportBounce(ctx context.Context, tenantID, email, reason string) {
+	if a == nil || a.store == nil || a.svc == nil || a.blinder == nil || email == "" {
+		return
+	}
+	blind := a.blinder.Blind(email)
+	if blind == "" {
+		return
+	}
+	matches, err := a.store.FindByEmailBlindIndex(ctx, blind, 10)
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		if m.TenantID != tenantID {
+			continue
+		}
+		if err := a.svc.MarkEmailBounced(ctx, tenantID, m.CustomerID, reason); err != nil {
+			// Swallow — the sender has already logged the upstream bounce.
+			// Failure here just means the badge won't update, not a
+			// correctness issue.
+			_ = err
+		}
+	}
 }
 
 // hostedInvoiceStripeAdapter bridges *payment.StripeClients →

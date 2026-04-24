@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -102,6 +103,19 @@ func (m *memoryStore) GetPaymentSetup(_ context.Context, tenantID, customerID st
 		return domain.CustomerPaymentSetup{}, errs.ErrNotFound
 	}
 	return ps, nil
+}
+
+func (m *memoryStore) MarkEmailBounced(_ context.Context, tenantID, customerID, reason string) error {
+	c, ok := m.customers[customerID]
+	if !ok || c.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	now := time.Now().UTC()
+	c.EmailStatus = domain.EmailStatusBounced
+	c.EmailLastBouncedAt = &now
+	c.EmailBounceReason = reason
+	m.customers[customerID] = c
+	return nil
 }
 
 func TestCustomerService_Create(t *testing.T) {
