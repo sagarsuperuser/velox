@@ -281,7 +281,7 @@ export const api = {
   listWebhookEndpoints: () => apiRequest<{ data: WebhookEndpoint[] }>('GET', '/webhook-endpoints/endpoints'),
   createWebhookEndpoint: (data: { url: string; description?: string; events?: string[] }) => apiRequest<{ endpoint: WebhookEndpoint; secret: string }>('POST', '/webhook-endpoints/endpoints', data),
   deleteWebhookEndpoint: (id: string) => apiRequest<{ status: string }>('DELETE', `/webhook-endpoints/endpoints/${id}`),
-  rotateWebhookSecret: (id: string) => apiRequest<{ secret: string }>('POST', `/webhook-endpoints/endpoints/${id}/rotate-secret`),
+  rotateWebhookSecret: (id: string) => apiRequest<{ secret: string; secondary_valid_until?: string }>('POST', `/webhook-endpoints/endpoints/${id}/rotate-secret`),
   getWebhookEndpointStats: () => apiRequest<{ data: { endpoint_id: string; total_deliveries: number; succeeded: number; failed: number; success_rate: number }[] }>('GET', '/webhook-endpoints/endpoints/stats'),
   listWebhookEvents: () => apiRequest<{ data: WebhookEvent[] }>('GET', '/webhook-endpoints/events'),
   replayWebhookEvent: (id: string) => apiRequest<{ status: string }>('POST', `/webhook-endpoints/events/${id}/replay`),
@@ -751,6 +751,12 @@ export interface WebhookEndpoint {
   events: string[]
   active: boolean
   created_at: string
+  secret_last4?: string
+  // Populated only during a rotation's 72h grace window. When set, the
+  // dispatcher signs outbound events with BOTH the current and previous
+  // secrets so the receiver's verifier can be staged without an outage.
+  secondary_secret_last4?: string
+  secondary_secret_expires_at?: string
 }
 
 export interface WebhookEvent {

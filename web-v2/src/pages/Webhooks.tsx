@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatDate, type WebhookEndpoint } from '@/lib/api'
+import { api, formatDate, formatDateTime, type WebhookEndpoint } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 
@@ -88,7 +88,7 @@ export default function WebhooksPage() {
 
 function EndpointsTab() {
   const [showCreate, setShowCreate] = useState(false)
-  const [createdSecret, setCreatedSecret] = useState<string | null>(null)
+  const [createdSecret, setCreatedSecret] = useState<{ secret: string; secondary_valid_until?: string } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<WebhookEndpoint | null>(null)
   const queryClient = useQueryClient()
 
@@ -165,9 +165,24 @@ function EndpointsTab() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {endpoints.map(ep => (
+                {endpoints.map(ep => {
+                  // Grace period is active when secondary_secret_expires_at
+                  // is populated AND still in the future. After it passes
+                  // the dispatcher drops back to single-secret signing
+                  // server-side \u2014 we just stop showing the banner.
+                  const rotationActive =
+                    !!ep.secondary_secret_expires_at &&
+                    new Date(ep.secondary_secret_expires_at) > new Date()
+                  return (
                   <TableRow key={ep.id}>
-                    <TableCell className="font-mono text-sm max-w-xs truncate" title={ep.url}>{ep.url}</TableCell>
+                    <TableCell className="font-mono text-sm max-w-xs" title={ep.url}>
+                      <div className="truncate">{ep.url}</div>
+                      {rotationActive && ep.secondary_secret_expires_at && (
+                        <div className="text-xs text-emerald-700 dark:text-emerald-400 font-normal mt-0.5">
+                          Dual-signing until {formatDateTime(ep.secondary_secret_expires_at)}
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell className="text-muted-foreground">{ep.description || '\u2014'}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
@@ -196,7 +211,8 @@ function EndpointsTab() {
                           onClick={async () => {
                             try {
                               const res = await api.rotateWebhookSecret(ep.id)
-                              setCreatedSecret(res.secret)
+                              setCreatedSecret({ secret: res.secret, secondary_valid_until: res.secondary_valid_until })
+                              queryClient.invalidateQueries({ queryKey: ['webhook-endpoints'] })
                               toast.success('Secret rotated')
                             } catch (err) {
                               showApiError(err, 'Failed to rotate secret')
@@ -211,7 +227,8 @@ function EndpointsTab() {
                       </div>
                     </TableCell>
                   </TableRow>
-                ))}
+                  )
+                })}
               </TableBody>
             </Table>
           )}
@@ -230,30 +247,50 @@ function EndpointsTab() {
         />
       )}
 
-      {/* Secret display dialog */}
+      {/* Secret display dialog — shown after create or rotate. Rotation
+          response carries secondary_valid_until so we can tell the user
+          their previous secret keeps working for the grace window,
+          preventing a panic deploy. */}
       {createdSecret && (
         <Dialog open onOpenChange={() => setCreatedSecret(null)}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>Signing Secret</DialogTitle>
+              {createdSecret.secondary_valid_until ? (
+                <DialogDescription>
+                  Save this secret now. It won't be shown again. The previous secret stays valid in parallel during the rollout window below.
+                </DialogDescription>
+              ) : (
+                <DialogDescription>
+                  Save this signing secret now. It will not be shown again.
+                </DialogDescription>
+              )}
             </DialogHeader>
             <div className="space-y-3">
-              <p className="text-sm text-muted-foreground">
-                Save this signing secret now. It will not be shown again.
-              </p>
               <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-lg p-4">
-                <p className="text-xs text-amber-700 dark:text-amber-400 font-medium mb-1">Signing Secret</p>
+                <p className="text-xs text-amber-700 dark:text-amber-400 font-medium mb-1">New Signing Secret</p>
                 <div className="flex items-start gap-2">
-                  <p className="font-mono text-sm text-amber-900 dark:text-amber-300 break-all select-all flex-1">{createdSecret}</p>
+                  <p className="font-mono text-sm text-amber-900 dark:text-amber-300 break-all select-all flex-1">{createdSecret.secret}</p>
                   <Button variant="outline" size="sm" className="shrink-0"
                     onClick={() => {
-                      navigator.clipboard.writeText(createdSecret)
+                      navigator.clipboard.writeText(createdSecret.secret)
                       toast.success('Copied to clipboard')
                     }}>
                     Copy
                   </Button>
                 </div>
               </div>
+
+              {createdSecret.secondary_valid_until && (
+                <div className="bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 rounded-lg p-4 space-y-1">
+                  <p className="text-xs font-medium text-emerald-800 dark:text-emerald-300">
+                    Previous secret valid until {formatDateTime(createdSecret.secondary_valid_until)}
+                  </p>
+                  <p className="text-xs text-emerald-700/80 dark:text-emerald-400/80">
+                    Webhook deliveries are signed with both secrets during this window, so your receiver keeps accepting requests while you deploy the new key. After that the old secret is dropped.
+                  </p>
+                </div>
+              )}
             </div>
             <DialogFooter>
               <Button onClick={() => setCreatedSecret(null)}>Done</Button>
