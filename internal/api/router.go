@@ -301,6 +301,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// operators a DLQ to inspect. Set VELOX_EMAIL_OUTBOX_ENABLED=false to
 	// fall back to the direct-SMTP path for emergency rollback.
 	emailSender := email.NewSender()
+	// Wire tenant settings so customer-facing emails pull per-tenant
+	// branding (logo, brand color, company name, support URL). Cold-start
+	// tenants without settings gracefully fall back to Velox defaults.
+	emailSender.SetSettingsGetter(settingsStore)
 	emailOutboxStore := email.NewOutboxStore(db)
 	emailOutboxEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_EMAIL_OUTBOX_ENABLED"))) != "false"
 

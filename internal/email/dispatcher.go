@@ -42,11 +42,11 @@ type DispatchLocker interface {
 // Satisfied by *email.Sender. Defined here so tests can inject fakes without
 // touching the production Sender.
 type EmailDeliverer interface {
-	SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte) error
-	SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency string) error
-	SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate string) error
-	SendDunningEscalation(tenantID, to, customerName, invoiceNumber string, action string) error
-	SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason string) error
+	SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
+	SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
+	SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, publicToken string) error
+	SendDunningEscalation(tenantID, to, customerName, invoiceNumber, action, publicToken string) error
+	SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
 	SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
 	SendPortalMagicLink(tenantID, to, customerName, magicLinkURL string) error
 	SendPasswordReset(tenantID, to, displayName, resetURL string) error
@@ -149,19 +149,19 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 	switch row.EmailType {
 	case TypeInvoice:
 		return d.sender.SendInvoice(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
-			msg.AmountCents, msg.Currency, msg.PDF)
+			msg.AmountCents, msg.Currency, msg.PDF, msg.PublicToken)
 	case TypePaymentReceipt:
 		return d.sender.SendPaymentReceipt(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
-			msg.AmountCents, msg.Currency)
+			msg.AmountCents, msg.Currency, msg.PublicToken)
 	case TypeDunningWarning:
 		return d.sender.SendDunningWarning(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
-			msg.AttemptNumber, msg.MaxAttempts, msg.NextRetryDate)
+			msg.AttemptNumber, msg.MaxAttempts, msg.NextRetryDate, msg.PublicToken)
 	case TypeDunningEscalation:
 		return d.sender.SendDunningEscalation(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
-			msg.Action)
+			msg.Action, msg.PublicToken)
 	case TypePaymentFailed:
 		return d.sender.SendPaymentFailed(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
-			msg.Reason)
+			msg.Reason, msg.PublicToken)
 	case TypePaymentUpdateRequest:
 		return d.sender.SendPaymentUpdateRequest(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.AmountCents, msg.Currency, msg.UpdateURL)
