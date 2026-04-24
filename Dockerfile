@@ -18,7 +18,6 @@ LABEL org.opencontainers.image.description="Velox — usage-based billing engine
 LABEL org.opencontainers.image.licenses="MIT"
 
 COPY --from=builder /velox /usr/local/bin/velox
-COPY --from=builder /app/internal/invoice/fonts/ /usr/local/share/velox/fonts/
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 EXPOSE 8080
