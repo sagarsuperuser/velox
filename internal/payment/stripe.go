@@ -43,7 +43,7 @@ type CardFetcher interface {
 
 // EmailReceipt sends payment receipt emails.
 type EmailReceipt interface {
-	SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency string) error
+	SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
 }
 
 // CustomerEmailResolver resolves customer contact info for email notifications.
@@ -457,7 +457,7 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
 				return
 			}
-			if err := s.emailReceipt.SendPaymentReceipt(tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency); err != nil {
+			if err := s.emailReceipt.SendPaymentReceipt(tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, inv.PublicToken); err != nil {
 				slog.Error("failed to send payment receipt email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}

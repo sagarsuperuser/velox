@@ -264,7 +264,7 @@ func TestEmailOutbox_OutboxSender_RoundTrip(t *testing.T) {
 	sender := email.NewOutboxSender(store)
 
 	pdf := []byte("%PDF-fake")
-	if err := sender.SendInvoice(tenantID, "ada@example.com", "Ada", "VLX-7", 25_000, "USD", pdf); err != nil {
+	if err := sender.SendInvoice(tenantID, "ada@example.com", "Ada", "VLX-7", 25_000, "USD", pdf, "vlx_pinv_roundtrip"); err != nil {
 		t.Fatalf("enqueue SendInvoice: %v", err)
 	}
 
@@ -338,51 +338,57 @@ func TestEmailOutbox_Counts(t *testing.T) {
 // fakeDeliverer satisfies email.EmailDeliverer — captures the last call so
 // tests can assert which Send* method was invoked with which arguments.
 type fakeDeliverer struct {
-	calls         int
-	lastType      string
-	lastTenant    string
-	lastTo        string
-	lastName      string
-	lastInvoice   string
-	lastAmount    int64
-	lastCurrency  string
-	lastAttemptN  int
-	lastMaxN      int
-	lastNextDate  string
-	lastAction    string
-	lastReason    string
-	lastUpdateURL string
-	lastPDF       []byte
+	calls           int
+	lastType        string
+	lastTenant      string
+	lastTo          string
+	lastName        string
+	lastInvoice     string
+	lastAmount      int64
+	lastCurrency    string
+	lastAttemptN    int
+	lastMaxN        int
+	lastNextDate    string
+	lastAction      string
+	lastReason      string
+	lastUpdateURL   string
+	lastPDF         []byte
+	lastPublicToken string
 }
 
-func (f *fakeDeliverer) SendInvoice(tenantID, to, name, inv string, total int64, cur string, pdf []byte) error {
+func (f *fakeDeliverer) SendInvoice(tenantID, to, name, inv string, total int64, cur string, pdf []byte, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeInvoice, tenantID, to, name, inv
 	f.lastAmount, f.lastCurrency, f.lastPDF = total, cur, pdf
+	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendPaymentReceipt(tenantID, to, name, inv string, amount int64, cur string) error {
+func (f *fakeDeliverer) SendPaymentReceipt(tenantID, to, name, inv string, amount int64, cur, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypePaymentReceipt, tenantID, to, name, inv
 	f.lastAmount, f.lastCurrency = amount, cur
+	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendDunningWarning(tenantID, to, name, inv string, n, max int, next string) error {
+func (f *fakeDeliverer) SendDunningWarning(tenantID, to, name, inv string, n, max int, next, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeDunningWarning, tenantID, to, name, inv
 	f.lastAttemptN, f.lastMaxN, f.lastNextDate = n, max, next
+	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendDunningEscalation(tenantID, to, name, inv, action string) error {
+func (f *fakeDeliverer) SendDunningEscalation(tenantID, to, name, inv, action, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeDunningEscalation, tenantID, to, name, inv
 	f.lastAction = action
+	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendPaymentFailed(tenantID, to, name, inv, reason string) error {
+func (f *fakeDeliverer) SendPaymentFailed(tenantID, to, name, inv, reason, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypePaymentFailed, tenantID, to, name, inv
 	f.lastReason = reason
+	f.lastPublicToken = publicToken
 	return nil
 }
 func (f *fakeDeliverer) SendPaymentUpdateRequest(tenantID, to, name, inv string, amount int64, cur, url string) error {
@@ -432,6 +438,7 @@ func callDeliverer(_ context.Context, d email.EmailDeliverer, row email.OutboxRo
 		Reason        string `json:"reason"`
 		UpdateURL     string `json:"update_url"`
 		MagicLinkURL  string `json:"magic_link_url"`
+		PublicToken   string `json:"public_token"`
 		PDF           []byte `json:"pdf"`
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -439,15 +446,15 @@ func callDeliverer(_ context.Context, d email.EmailDeliverer, row email.OutboxRo
 	}
 	switch row.EmailType {
 	case email.TypeInvoice:
-		return d.SendInvoice(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PDF)
+		return d.SendInvoice(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PDF, m.PublicToken)
 	case email.TypePaymentReceipt:
-		return d.SendPaymentReceipt(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency)
+		return d.SendPaymentReceipt(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PublicToken)
 	case email.TypeDunningWarning:
-		return d.SendDunningWarning(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AttemptNumber, m.MaxAttempts, m.NextRetryDate)
+		return d.SendDunningWarning(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AttemptNumber, m.MaxAttempts, m.NextRetryDate, m.PublicToken)
 	case email.TypeDunningEscalation:
-		return d.SendDunningEscalation(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Action)
+		return d.SendDunningEscalation(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Action, m.PublicToken)
 	case email.TypePaymentFailed:
-		return d.SendPaymentFailed(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Reason)
+		return d.SendPaymentFailed(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Reason, m.PublicToken)
 	case email.TypePaymentUpdateRequest:
 		return d.SendPaymentUpdateRequest(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.UpdateURL)
 	case email.TypePortalMagicLink:
