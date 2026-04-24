@@ -6,17 +6,27 @@ import (
 )
 
 type WebhookEndpoint struct {
-	ID          string    `json:"id"`
-	TenantID    string    `json:"tenant_id,omitempty"`
-	Livemode    bool      `json:"livemode"`
-	URL         string    `json:"url"`
-	Description string    `json:"description,omitempty"`
-	Secret      string    `json:"-"` // Plaintext signing key. Only populated after create/rotate or after store decrypts it for dispatch.
-	SecretLast4 string    `json:"secret_last4"`
-	Events      []string  `json:"events"`
-	Active      bool      `json:"active"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string   `json:"id"`
+	TenantID    string   `json:"tenant_id,omitempty"`
+	Livemode    bool     `json:"livemode"`
+	URL         string   `json:"url"`
+	Description string   `json:"description,omitempty"`
+	Secret      string   `json:"-"` // Plaintext signing key. Only populated after create/rotate or after store decrypts it for dispatch.
+	SecretLast4 string   `json:"secret_last4"`
+	Events      []string `json:"events"`
+	Active      bool     `json:"active"`
+	// During a grace-period rotation, SecondarySecret carries the previous
+	// signing key and SecondarySecretExpiresAt is set 72h in the future.
+	// The dispatcher signs outbound events with both during the window
+	// (two v1= entries in Velox-Signature, Stripe-style) so partners can
+	// stage a verifier update without breaking production webhooks. After
+	// expiry, both fields are skipped at sign time; the row keeps them as
+	// cold data until the next rotation overwrites them.
+	SecondarySecret          string     `json:"-"`
+	SecondarySecretLast4     string     `json:"secondary_secret_last4,omitempty"`
+	SecondarySecretExpiresAt *time.Time `json:"secondary_secret_expires_at,omitempty"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
 }
 
 type WebhookEvent struct {

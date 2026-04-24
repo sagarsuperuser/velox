@@ -172,19 +172,44 @@ func (s *Service) CreateEndpoint(ctx context.Context, tenantID string, input Cre
 	return CreateEndpointResult{Endpoint: ep, Secret: secret}, nil
 }
 
-// RotateSecret generates a new signing secret for an endpoint and returns it.
-// The new secret is shown once to the user.
-func (s *Service) RotateSecret(ctx context.Context, tenantID, endpointID string) (string, error) {
+// SecretRotationGracePeriod is how long a rotated-out secret keeps
+// signing alongside its replacement. Matches Stripe's public guidance
+// for their rotating signing-secret feature: long enough for a partner
+// to stage a deploy across a typical release window, short enough that a
+// compromised-key rotation has a bounded bleed-through.
+const SecretRotationGracePeriod = 72 * time.Hour
+
+// RotateSecret generates a new signing secret for an endpoint and returns it
+// alongside the grace-period expiry. The previous secret stays valid for
+// SecretRotationGracePeriod — dispatcher signs outbound events with BOTH
+// secrets during the window (two v1= entries in Velox-Signature, Stripe
+// multi-signature style) so receivers can stage a verifier update without
+// breaking production traffic. After the window, only the new secret is
+// used. The new secret is returned once to the caller (dashboard shows it,
+// then it's no longer retrievable).
+func (s *Service) RotateSecret(ctx context.Context, tenantID, endpointID string) (RotateSecretResult, error) {
 	secretBytes := make([]byte, 24)
 	if _, err := rand.Read(secretBytes); err != nil {
-		return "", fmt.Errorf("generate webhook secret: %w", err)
+		return RotateSecretResult{}, fmt.Errorf("generate webhook secret: %w", err)
 	}
 	newSecret := "whsec_" + hex.EncodeToString(secretBytes)
 
-	if _, err := s.store.UpdateEndpointSecret(ctx, tenantID, endpointID, newSecret); err != nil {
-		return "", err
+	ep, err := s.store.RotateEndpointSecret(ctx, tenantID, endpointID, newSecret, SecretRotationGracePeriod)
+	if err != nil {
+		return RotateSecretResult{}, err
 	}
-	return newSecret, nil
+	return RotateSecretResult{
+		Secret:             newSecret,
+		SecondaryValidTill: ep.SecondarySecretExpiresAt,
+	}, nil
+}
+
+// RotateSecretResult carries the new secret and the expiry of the
+// grace-period sibling. Exposed on the handler response so the dashboard
+// can show "old secret valid until <time>" copy.
+type RotateSecretResult struct {
+	Secret             string     `json:"secret"`
+	SecondaryValidTill *time.Time `json:"secondary_valid_until,omitempty"`
 }
 
 func (s *Service) ListEndpoints(ctx context.Context, tenantID string) ([]domain.WebhookEndpoint, error) {
@@ -258,9 +283,11 @@ func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.Webhoo
 	}
 	bodyBytes, _ := json.Marshal(body)
 
-	// Sign with HMAC-SHA256
-	timestamp := fmt.Sprintf("%d", time.Now().Unix())
-	signature := computeSignature(bodyBytes, timestamp, ep.Secret)
+	// Sign with HMAC-SHA256. buildSignatureHeader folds in the grace-
+	// period secondary when rotation is in its 72h window.
+	now := time.Now().UTC()
+	timestamp := fmt.Sprintf("%d", now.Unix())
+	sigHeader := buildSignatureHeader(timestamp, bodyBytes, ep, now)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -268,7 +295,7 @@ func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.Webhoo
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Velox-Signature", fmt.Sprintf("t=%s,v1=%s", timestamp, signature))
+	req.Header.Set("Velox-Signature", sigHeader)
 	req.Header.Set("Velox-Event-Type", event.EventType)
 
 	resp, err := s.client.Do(req)
@@ -365,6 +392,26 @@ func computeSignature(payload []byte, timestamp, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(timestamp + "." + string(payload)))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// buildSignatureHeader produces the Velox-Signature header value.
+//
+// In steady state, it's a single-sig "t=<ts>,v1=<sig>". During a
+// grace-period rotation (secondary secret populated and not yet
+// expired), it emits two v1= entries — the same multi-signature format
+// Stripe uses on Stripe-Signature. Receivers that follow the
+// "verify ANY v1= matches" convention pass through the rotation without
+// a production outage while their code deploys the new verifier.
+//
+// `now` is taken as a parameter (rather than called internally) so unit
+// tests can exercise pre- and post-expiry branches deterministically.
+func buildSignatureHeader(timestamp string, body []byte, ep domain.WebhookEndpoint, now time.Time) string {
+	primary := computeSignature(body, timestamp, ep.Secret)
+	if ep.SecondarySecret == "" || ep.SecondarySecretExpiresAt == nil || !now.Before(*ep.SecondarySecretExpiresAt) {
+		return fmt.Sprintf("t=%s,v1=%s", timestamp, primary)
+	}
+	secondary := computeSignature(body, timestamp, ep.SecondarySecret)
+	return fmt.Sprintf("t=%s,v1=%s,v1=%s", timestamp, primary, secondary)
 }
 
 // GetEndpointStats returns delivery success/failure stats per endpoint.
@@ -492,8 +539,9 @@ func (s *Service) retryDeliver(ctx context.Context, d domain.WebhookDelivery, ep
 	}
 	bodyBytes, _ := json.Marshal(body)
 
-	timestamp := fmt.Sprintf("%d", time.Now().Unix())
-	signature := computeSignature(bodyBytes, timestamp, ep.Secret)
+	now := time.Now().UTC()
+	timestamp := fmt.Sprintf("%d", now.Unix())
+	sigHeader := buildSignatureHeader(timestamp, bodyBytes, ep, now)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -501,7 +549,7 @@ func (s *Service) retryDeliver(ctx context.Context, d domain.WebhookDelivery, ep
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Velox-Signature", fmt.Sprintf("t=%s,v1=%s", timestamp, signature))
+	req.Header.Set("Velox-Signature", sigHeader)
 	req.Header.Set("Velox-Event-Type", event.EventType)
 
 	resp, err := s.client.Do(req)

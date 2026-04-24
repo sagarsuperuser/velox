@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
@@ -21,7 +22,12 @@ type Store interface {
 	GetEndpoint(ctx context.Context, tenantID, id string) (domain.WebhookEndpoint, error)
 	ListEndpoints(ctx context.Context, tenantID string) ([]domain.WebhookEndpoint, error)
 	DeleteEndpoint(ctx context.Context, tenantID, id string) error
-	UpdateEndpointSecret(ctx context.Context, tenantID, id, newSecret string) (domain.WebhookEndpoint, error)
+	// RotateEndpointSecret atomically moves the current signing secret into
+	// the secondary slot with `gracePeriod` left on its clock, and replaces
+	// the primary with `newSecret`. Runs under a single transaction with
+	// FOR UPDATE so a concurrent rotate can't lose the old secret. If
+	// gracePeriod is zero, no secondary is written (hard-replace).
+	RotateEndpointSecret(ctx context.Context, tenantID, id, newSecret string, gracePeriod time.Duration) (domain.WebhookEndpoint, error)
 
 	// Events
 	CreateEvent(ctx context.Context, tenantID string, event domain.WebhookEvent) (domain.WebhookEvent, error)

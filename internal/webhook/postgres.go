@@ -65,6 +65,8 @@ func (s *PostgresStore) CreateEndpoint(ctx context.Context, tenantID string, ep 
 	}
 	secretLast4 := lastFour(plaintextSecret)
 
+	// New endpoints start in single-secret mode — secondary_* stay NULL
+	// until the first RotateEndpointSecret call populates them.
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO webhook_endpoints (id, tenant_id, url, description, secret_encrypted, secret_last4, events, active, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
@@ -93,10 +95,17 @@ func (s *PostgresStore) GetEndpoint(ctx context.Context, tenantID, id string) (d
 	var ep domain.WebhookEndpoint
 	var eventsJSON []byte
 	var secretEncrypted string
+	var secondaryEncrypted sql.NullString
+	var secondaryLast4 sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, livemode, url, COALESCE(description,''), secret_encrypted, secret_last4, events, active, created_at, updated_at
+		SELECT id, tenant_id, livemode, url, COALESCE(description,''), secret_encrypted, secret_last4,
+			secondary_secret_encrypted, secondary_secret_last4, secondary_secret_expires_at,
+			events, active, created_at, updated_at
 		FROM webhook_endpoints WHERE id = $1
-	`, id).Scan(&ep.ID, &ep.TenantID, &ep.Livemode, &ep.URL, &ep.Description, &secretEncrypted, &ep.SecretLast4, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
+	`, id).Scan(&ep.ID, &ep.TenantID, &ep.Livemode, &ep.URL, &ep.Description,
+		&secretEncrypted, &ep.SecretLast4,
+		&secondaryEncrypted, &secondaryLast4, &ep.SecondarySecretExpiresAt,
+		&eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return domain.WebhookEndpoint{}, errs.ErrNotFound
 	}
@@ -105,6 +114,14 @@ func (s *PostgresStore) GetEndpoint(ctx context.Context, tenantID, id string) (d
 	}
 	if ep.Secret, err = s.enc.Decrypt(secretEncrypted); err != nil {
 		return domain.WebhookEndpoint{}, fmt.Errorf("decrypt webhook secret: %w", err)
+	}
+	if secondaryEncrypted.Valid && secondaryEncrypted.String != "" {
+		if ep.SecondarySecret, err = s.enc.Decrypt(secondaryEncrypted.String); err != nil {
+			return domain.WebhookEndpoint{}, fmt.Errorf("decrypt secondary webhook secret: %w", err)
+		}
+	}
+	if secondaryLast4.Valid {
+		ep.SecondarySecretLast4 = secondaryLast4.String
 	}
 	_ = json.Unmarshal(eventsJSON, &ep.Events)
 	return ep, nil
@@ -118,7 +135,9 @@ func (s *PostgresStore) ListEndpoints(ctx context.Context, tenantID string) ([]d
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, livemode, url, COALESCE(description,''), secret_encrypted, secret_last4, events, active, created_at, updated_at
+		SELECT id, tenant_id, livemode, url, COALESCE(description,''), secret_encrypted, secret_last4,
+			secondary_secret_encrypted, secondary_secret_last4, secondary_secret_expires_at,
+			events, active, created_at, updated_at
 		FROM webhook_endpoints WHERE active = true ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -131,11 +150,24 @@ func (s *PostgresStore) ListEndpoints(ctx context.Context, tenantID string) ([]d
 		var ep domain.WebhookEndpoint
 		var eventsJSON []byte
 		var secretEncrypted string
-		if err := rows.Scan(&ep.ID, &ep.TenantID, &ep.Livemode, &ep.URL, &ep.Description, &secretEncrypted, &ep.SecretLast4, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
+		var secondaryEncrypted sql.NullString
+		var secondaryLast4 sql.NullString
+		if err := rows.Scan(&ep.ID, &ep.TenantID, &ep.Livemode, &ep.URL, &ep.Description,
+			&secretEncrypted, &ep.SecretLast4,
+			&secondaryEncrypted, &secondaryLast4, &ep.SecondarySecretExpiresAt,
+			&eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if ep.Secret, err = s.enc.Decrypt(secretEncrypted); err != nil {
 			return nil, fmt.Errorf("decrypt webhook secret: %w", err)
+		}
+		if secondaryEncrypted.Valid && secondaryEncrypted.String != "" {
+			if ep.SecondarySecret, err = s.enc.Decrypt(secondaryEncrypted.String); err != nil {
+				return nil, fmt.Errorf("decrypt secondary webhook secret: %w", err)
+			}
+		}
+		if secondaryLast4.Valid {
+			ep.SecondarySecretLast4 = secondaryLast4.String
 		}
 		_ = json.Unmarshal(eventsJSON, &ep.Events)
 		endpoints = append(endpoints, ep)
@@ -161,35 +193,82 @@ func (s *PostgresStore) DeleteEndpoint(ctx context.Context, tenantID, id string)
 	return tx.Commit()
 }
 
-func (s *PostgresStore) UpdateEndpointSecret(ctx context.Context, tenantID, id, newSecret string) (domain.WebhookEndpoint, error) {
+func (s *PostgresStore) RotateEndpointSecret(ctx context.Context, tenantID, id, newSecret string, gracePeriod time.Duration) (domain.WebhookEndpoint, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
 	defer postgres.Rollback(tx)
 
-	secretEncrypted, err := s.enc.Encrypt(newSecret)
-	if err != nil {
-		return domain.WebhookEndpoint{}, fmt.Errorf("encrypt webhook secret: %w", err)
-	}
-	secretLast4 := lastFour(newSecret)
-
-	var ep domain.WebhookEndpoint
-	var eventsJSON []byte
+	// FOR UPDATE so two concurrent rotates can't both read the same
+	// current secret and both try to stash it as secondary — one would
+	// see the other's new primary. Single-row lock, no contention at
+	// real-world rotation frequency.
+	var currentEncrypted, currentLast4 string
 	err = tx.QueryRowContext(ctx, `
-		UPDATE webhook_endpoints SET secret_encrypted = $1, secret_last4 = $2, updated_at = NOW()
-		WHERE id = $3
-		RETURNING id, tenant_id, livemode, url, COALESCE(description,''), events, active, created_at, updated_at
-	`, secretEncrypted, secretLast4, id).Scan(&ep.ID, &ep.TenantID, &ep.Livemode, &ep.URL, &ep.Description, &eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
+		SELECT secret_encrypted, secret_last4
+		FROM webhook_endpoints WHERE id = $1 FOR UPDATE
+	`, id).Scan(&currentEncrypted, &currentLast4)
 	if err == sql.ErrNoRows {
 		return domain.WebhookEndpoint{}, errs.ErrNotFound
 	}
 	if err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
+
+	newEncrypted, err := s.enc.Encrypt(newSecret)
+	if err != nil {
+		return domain.WebhookEndpoint{}, fmt.Errorf("encrypt webhook secret: %w", err)
+	}
+	newLast4 := lastFour(newSecret)
+
+	var (
+		secondaryEncArg  any
+		secondaryLastArg any
+		secondaryExpArg  any
+		expiresAt        *time.Time
+	)
+	if gracePeriod > 0 {
+		secondaryEncArg = currentEncrypted
+		secondaryLastArg = currentLast4
+		exp := time.Now().UTC().Add(gracePeriod)
+		expiresAt = &exp
+		secondaryExpArg = exp
+	}
+
+	var ep domain.WebhookEndpoint
+	var eventsJSON []byte
+	var secondaryLast4Scan sql.NullString
+	err = tx.QueryRowContext(ctx, `
+		UPDATE webhook_endpoints SET
+			secret_encrypted = $1,
+			secret_last4 = $2,
+			secondary_secret_encrypted = $3,
+			secondary_secret_last4 = $4,
+			secondary_secret_expires_at = $5,
+			updated_at = NOW()
+		WHERE id = $6
+		RETURNING id, tenant_id, livemode, url, COALESCE(description,''),
+			secondary_secret_last4, secondary_secret_expires_at,
+			events, active, created_at, updated_at
+	`, newEncrypted, newLast4, secondaryEncArg, secondaryLastArg, secondaryExpArg, id).
+		Scan(&ep.ID, &ep.TenantID, &ep.Livemode, &ep.URL, &ep.Description,
+			&secondaryLast4Scan, &ep.SecondarySecretExpiresAt,
+			&eventsJSON, &ep.Active, &ep.CreatedAt, &ep.UpdatedAt)
+	if err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
 	_ = json.Unmarshal(eventsJSON, &ep.Events)
 	ep.Secret = newSecret
-	ep.SecretLast4 = secretLast4
+	ep.SecretLast4 = newLast4
+	if secondaryLast4Scan.Valid {
+		ep.SecondarySecretLast4 = secondaryLast4Scan.String
+	}
+	// Preserve expiresAt on the returned struct even when Scan gave us
+	// nil (immediate post-commit visibility quirk on some drivers).
+	if ep.SecondarySecretExpiresAt == nil && expiresAt != nil {
+		ep.SecondarySecretExpiresAt = expiresAt
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.WebhookEndpoint{}, err
 	}

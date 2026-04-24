@@ -71,10 +71,20 @@ func (m *memStore) DeleteEndpoint(_ context.Context, tenantID, id string) error 
 	return nil
 }
 
-func (m *memStore) UpdateEndpointSecret(_ context.Context, tenantID, id, newSecret string) (domain.WebhookEndpoint, error) {
+func (m *memStore) RotateEndpointSecret(_ context.Context, tenantID, id, newSecret string, gracePeriod time.Duration) (domain.WebhookEndpoint, error) {
 	ep, ok := m.endpoints[id]
 	if !ok || ep.TenantID != tenantID {
 		return domain.WebhookEndpoint{}, errs.ErrNotFound
+	}
+	if gracePeriod > 0 {
+		ep.SecondarySecret = ep.Secret
+		ep.SecondarySecretLast4 = ep.SecretLast4
+		exp := time.Now().UTC().Add(gracePeriod)
+		ep.SecondarySecretExpiresAt = &exp
+	} else {
+		ep.SecondarySecret = ""
+		ep.SecondarySecretLast4 = ""
+		ep.SecondarySecretExpiresAt = nil
 	}
 	ep.Secret = newSecret
 	ep.SecretLast4 = lastFour(newSecret)
@@ -540,5 +550,156 @@ func TestDispatch_ModeScoped(t *testing.T) {
 	}
 	if store.deliveries[1].WebhookEndpointID != liveEP.Endpoint.ID {
 		t.Errorf("live dispatch went to wrong endpoint: %s", store.deliveries[1].WebhookEndpointID)
+	}
+}
+
+// TestBuildSignatureHeader exercises the three states buildSignatureHeader
+// has to get right: single-secret steady state, fresh rotation with a
+// live secondary (Stripe-style dual v1=), and an expired secondary
+// that must be skipped so rotation doesn't keep the old key alive
+// beyond the grace window. The verifier on the partner side accepts any
+// v1= match, so the test checks both signatures line up with their
+// secrets.
+func TestBuildSignatureHeader(t *testing.T) {
+	body := []byte(`{"id":"evt_1","event_type":"invoice.created"}`)
+	ts := "1714000000"
+	now := time.Unix(1714000100, 0).UTC()
+
+	verify := func(headerSecret, sigPart string) bool {
+		mac := hmac.New(sha256.New, []byte(headerSecret))
+		mac.Write([]byte(ts + "." + string(body)))
+		return hex.EncodeToString(mac.Sum(nil)) == sigPart
+	}
+	extractV1 := func(header string) []string {
+		var v1s []string
+		for _, p := range strings.Split(header, ",") {
+			kv := strings.SplitN(p, "=", 2)
+			if len(kv) == 2 && kv[0] == "v1" {
+				v1s = append(v1s, kv[1])
+			}
+		}
+		return v1s
+	}
+
+	t.Run("single secret (steady state)", func(t *testing.T) {
+		ep := domain.WebhookEndpoint{Secret: "whsec_primary"}
+		got := buildSignatureHeader(ts, body, ep, now)
+		sigs := extractV1(got)
+		if len(sigs) != 1 {
+			t.Fatalf("expected 1 v1 entry, got %d: %s", len(sigs), got)
+		}
+		if !verify("whsec_primary", sigs[0]) {
+			t.Error("primary signature did not verify")
+		}
+	})
+
+	t.Run("fresh rotation (dual v1)", func(t *testing.T) {
+		future := now.Add(72 * time.Hour)
+		ep := domain.WebhookEndpoint{
+			Secret:                   "whsec_new",
+			SecondarySecret:          "whsec_old",
+			SecondarySecretExpiresAt: &future,
+		}
+		got := buildSignatureHeader(ts, body, ep, now)
+		sigs := extractV1(got)
+		if len(sigs) != 2 {
+			t.Fatalf("expected 2 v1 entries during rotation, got %d: %s", len(sigs), got)
+		}
+		if !verify("whsec_new", sigs[0]) {
+			t.Error("primary (new) signature did not verify")
+		}
+		if !verify("whsec_old", sigs[1]) {
+			t.Error("secondary (old) signature did not verify")
+		}
+	})
+
+	t.Run("expired secondary is skipped", func(t *testing.T) {
+		past := now.Add(-time.Hour)
+		ep := domain.WebhookEndpoint{
+			Secret:                   "whsec_new",
+			SecondarySecret:          "whsec_ancient",
+			SecondarySecretExpiresAt: &past,
+		}
+		got := buildSignatureHeader(ts, body, ep, now)
+		sigs := extractV1(got)
+		if len(sigs) != 1 {
+			t.Fatalf("expected 1 v1 entry after expiry, got %d: %s", len(sigs), got)
+		}
+		if !verify("whsec_new", sigs[0]) {
+			t.Error("primary signature did not verify")
+		}
+	})
+
+	t.Run("secondary secret present but expires_at nil", func(t *testing.T) {
+		// Defensive: if some migration left a secondary secret without
+		// a valid expiry, the header should NOT use it. Treat nil
+		// expiry as already-expired.
+		ep := domain.WebhookEndpoint{
+			Secret:          "whsec_new",
+			SecondarySecret: "whsec_orphan",
+		}
+		got := buildSignatureHeader(ts, body, ep, now)
+		sigs := extractV1(got)
+		if len(sigs) != 1 {
+			t.Fatalf("expected 1 v1 entry when expires_at is nil, got %d: %s", len(sigs), got)
+		}
+	})
+}
+
+// TestRotateSecret_GracePeriod checks the end-to-end grace-period wiring:
+// rotate returns a secondary_valid_until, a follow-up dispatch signs with
+// both secrets, and after the window the header drops back to one.
+func TestRotateSecret_GracePeriod(t *testing.T) {
+	ctx := context.Background()
+	store := newMemStore()
+	httpClient := &mockHTTPClient{statusCode: 200}
+	svc := NewTestService(store, httpClient)
+
+	created, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+		URL:    "http://localhost:3000/webhook",
+		Events: []string{"*"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	rot, err := svc.RotateSecret(ctx, "t1", created.Endpoint.ID)
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if rot.SecondaryValidTill == nil {
+		t.Fatal("rotate should return secondary_valid_until")
+	}
+	if !rot.SecondaryValidTill.After(time.Now().UTC()) {
+		t.Error("secondary_valid_until should be in the future")
+	}
+	if rot.Secret == created.Secret {
+		t.Fatal("rotate should produce a different secret")
+	}
+
+	// Dispatch — header should carry BOTH signatures while grace is live.
+	if err := svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{"invoice_id": "inv_1"}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if httpClient.lastRequest == nil {
+		t.Fatal("no outbound request captured")
+	}
+	header := httpClient.lastRequest.Header.Get("Velox-Signature")
+	if c := strings.Count(header, "v1="); c != 2 {
+		t.Errorf("during grace, header should have 2 v1= entries, got %d: %s", c, header)
+	}
+
+	// Force the secondary to expire and re-dispatch — single sig again.
+	ep := store.endpoints[created.Endpoint.ID]
+	past := time.Now().UTC().Add(-time.Hour)
+	ep.SecondarySecretExpiresAt = &past
+	store.endpoints[created.Endpoint.ID] = ep
+
+	httpClient.lastRequest = nil
+	if err := svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{"invoice_id": "inv_2"}); err != nil {
+		t.Fatalf("dispatch 2: %v", err)
+	}
+	header2 := httpClient.lastRequest.Header.Get("Velox-Signature")
+	if c := strings.Count(header2, "v1="); c != 1 {
+		t.Errorf("after expiry, header should have 1 v1= entry, got %d: %s", c, header2)
 	}
 }
