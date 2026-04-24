@@ -61,7 +61,7 @@ func (s *PostgresStore) UpsertPolicy(ctx context.Context, tenantID string, p dom
 		INSERT INTO dunning_policies (id, tenant_id, name, enabled, retry_schedule,
 			max_retry_attempts, final_action, grace_period_days, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
-		ON CONFLICT (tenant_id) DO UPDATE SET
+		ON CONFLICT (tenant_id, livemode) DO UPDATE SET
 			name = EXCLUDED.name, enabled = EXCLUDED.enabled,
 			retry_schedule = EXCLUDED.retry_schedule,
 			max_retry_attempts = EXCLUDED.max_retry_attempts,
