@@ -28,18 +28,18 @@ curl -X POST https://api.velox.dev/v1/meters \
   -d '{"key": "tokens", "name": "LLM tokens", "unit": "token"}'
 
 # 2. Ingest events that carry the dimensions inline
-curl -X POST https://api.velox.dev/v1/usage_events \
+curl -X POST https://api.velox.dev/v1/usage-events \
   -H "Authorization: Bearer $VELOX_SECRET" \
   -H "Idempotency-Key: req_8f2c..." \
   -d '{
-    "meter_key": "tokens",
-    "customer_id": "cust_acme",
-    "value": "12450",
+    "event_name": "tokens",
+    "external_customer_id": "cust_acme",
+    "quantity": "12450",
     "dimensions": {"model": "gpt-4", "operation": "input", "cached": false}
   }'
 
 # 3. Define one pricing rule per (dimension subset, rate)
-curl -X POST https://api.velox.dev/v1/meters/mtr_tokens/pricing_rules \
+curl -X POST https://api.velox.dev/v1/meters/mtr_tokens/pricing-rules \
   -d '{
     "dimension_match": {"model": "gpt-4", "operation": "input", "cached": false},
     "rating_rule_version_id": "rrv_gpt4_input_uncached",
@@ -170,9 +170,9 @@ ADRs explaining the load-bearing decisions live in [`docs/adr/`](docs/adr/).
 ## API surface (selected)
 
 ```
-POST   /v1/usage_events                 — ingest with dimensions + decimal value
+POST   /v1/usage-events                 — ingest with dimensions + decimal value
 POST   /v1/usage-events/batch           — batch ingest, up to 1000 per call
-POST   /v1/meters/{id}/pricing_rules    — add a dimension-matched pricing rule
+POST   /v1/meters/{id}/pricing-rules    — add a dimension-matched pricing rule
 GET    /v1/customers/{id}/usage         — period aggregation, grouped by dimension
 
 POST   /v1/customers                    — create customer
