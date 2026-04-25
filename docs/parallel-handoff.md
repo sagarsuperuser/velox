@@ -39,6 +39,28 @@
 - **Open questions for human:** none yet — wedge is clear from positioning.md
 - **Next:** start the README rewrite immediately.
 
+#### End-of-turn (Track B)
+- **Shipped (all three Week 1 deliverables, in order):**
+  - `README.md` — full rewrite. Leads with the AI-native + self-host wedge from `docs/positioning.md`. Replaced (not appended to) the generic framing. Includes the multi-dim "wedge in code" demo, three pillars, anti-positioning, comparison table, 90-day roadmap. Drops the stale stat block (numbers were 6+ months out of date).
+  - `docs/blog/2026-04-stripe-meter-api-ai-workloads.md` — long-form post (~1,800 words). Walks the Stripe Meter object model field-by-field (verified against `docs.stripe.com/api/billing/meter/object`), shows ~36 Meters of wiring for an Anthropic-style 4-dim rate card, contrasts with 1 meter + N rules in Velox, calls out the per-meter aggregation-mode mismatch as a second structural issue. Honest anti-positioning section ("when Stripe Meter is still right").
+  - `docs/marketing/outreach-list.md` — 50 leads: 22 AI inference / model APIs, 9 vector DB, 19 dev infra. Each row has named founder/CEO with a `(verify)` flag, a tier (A/B/C), and a wedge-fit reason tied to their public pricing matrix or regulatory profile. Includes outreach sequencing, what's deliberately *not* on the list, and a templates-needed punch list for Week 2.
+- **Commits (this branch, in order):**
+  - `080d90d docs(handoff): Track B kickoff entry`
+  - `e0d2e09 docs(readme): lead with AI-native + self-host wedge`
+  - `815a472 docs(blog): why Stripe Meter API doesn't fit AI workloads (draft)`
+  - `e97dd0b docs(marketing): 50-candidate outreach list (AI inference, vector DB, dev infra)`
+- **Discipline notes:**
+  - No half-finished drafts; each deliverable shipped polished before moving on.
+  - Industry-references-first: Stripe Meter object/event docs verified via WebFetch before writing the blog post; positioning anchored explicitly on Stripe / Lago / Orb / OpenMeter / Vercel / Linear.
+  - No seed-data shortcuts; outreach list groups companies by **wedge fit**, not "easy to demo to."
+  - All three deliverables explicitly anchor on `docs/positioning.md` and `docs/design-multi-dim-meters.md` (the design doc is the API contract for the README and blog code samples).
+  - Did not touch `internal/`, `cmd/`, `internal/platform/migrate/sql/`, or `docs/design-*.md` / `docs/adr/` — Track A's lane.
+- **Blocking Track A on:** nothing
+- **Track A can pick up from this work:**
+  - The blog post and README treat the multi-dim API surface as **the published contract** (`POST /v1/usage_events` with `value` + `dimensions`, `POST /v1/meters/{id}/pricing_rules`). If Track A's Week 2 implementation diverges from the doc, the doc updates first — and the blog/README will need a follow-up edit to match.
+  - One naming nit worth confirming: README and blog use `/v1/usage_events` (underscore, per the design doc) while the rest of the API uses hyphens (`/v1/usage-events`, `/v1/credit-notes`). Worth a short ADR or a doc-doc fix before May 8 — not blocking, but pick one and stick with it.
+- **Next:** rebase on `origin/main`, push `feat/track-b-week1`, open PR to `main` (do not merge — leave for human). Then this session pauses until Week 2.
+
 ---
 
 ## 2026-04-25 (Sat) — second update, Track A end-of-Week-2
