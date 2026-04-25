@@ -20,12 +20,12 @@ import (
 // against a clean test database. Returned pieces are everything the tests
 // need to instantiate a recipe and then count what landed in each table.
 type recipeIntegrationFixture struct {
-	db          *postgres.DB
-	svc         *Service
-	store       *PostgresStore
-	pricingSvc  *pricing.Service
-	dunningSvc  *dunning.Service
-	webhookSvc  *webhook.Service
+	db         *postgres.DB
+	svc        *Service
+	store      *PostgresStore
+	pricingSvc *pricing.Service
+	dunningSvc *dunning.Service
+	webhookSvc *webhook.Service
 }
 
 func newRecipeFixture(t *testing.T) *recipeIntegrationFixture {
