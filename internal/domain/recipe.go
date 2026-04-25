@@ -30,7 +30,6 @@ type RecipeInstance struct {
 // running the recipe fresh. A recipe is free to leave any of these slices
 // empty if its YAML doesn't declare that role.
 type CreatedObjects struct {
-	ProductIDs        []string `json:"product_ids,omitempty"`
 	MeterIDs          []string `json:"meter_ids,omitempty"`
 	RatingRuleIDs     []string `json:"rating_rule_ids,omitempty"`
 	PricingRuleIDs    []string `json:"pricing_rule_ids,omitempty"`
@@ -53,7 +52,6 @@ type Recipe struct {
 	Description string
 	Overridable []RecipeOverride
 
-	Products      []RecipeProduct
 	Meters        []RecipeMeter
 	RatingRules   []RecipeRatingRule
 	PricingRules  []RecipePricingRule
@@ -73,12 +71,6 @@ type RecipeOverride struct {
 	Enum      []string `json:"enum,omitempty"`
 	MaxLength int      `json:"max_length,omitempty"`
 	Pattern   string   `json:"pattern,omitempty"`
-}
-
-type RecipeProduct struct {
-	Code        string `json:"code"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
 }
 
 type RecipeMeter struct {

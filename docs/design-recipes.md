@@ -10,7 +10,7 @@
 
 Stripe Billing's onboarding for an AI-native product is a multi-day chore: you create N Meters by hand (one per `model × operation × cached` combination), wire each into a Plan, attach a webhook, configure dunning retry logic, then mock the whole thing for QA. The first invoice is a week away. Buyers leave.
 
-Velox's wedge (per `docs/positioning.md` pillar 1) includes **pricing recipes**: a single API call, ~30 seconds, walks away with a working `anthropic_style` setup — products, prices, meters, multi-dim pricing rules, dunning, webhook endpoint, sample data. The picker UI in the dashboard means a non-technical CS rep can do the same thing.
+Velox's wedge (per `docs/positioning.md` pillar 1) includes **pricing recipes**: a single API call, ~30 seconds, walks away with a working `anthropic_style` setup — plans, meters, multi-dim pricing rules, dunning, webhook endpoint, sample data. The picker UI in the dashboard means a non-technical CS rep can do the same thing.
 
 This is the developer-experience flagship that turns the AI-native pillar from a slide into a 5-minute quickstart. Without it, the multi-dim meter machinery from Week 2 is invisible: no prospect builds a 12-rule `anthropic_style` setup by hand to evaluate it. With recipes, evaluation collapses to one POST.
 
@@ -18,7 +18,7 @@ This design ships in Week 3 and depends on Week 2 multi-dim meters being merged.
 
 ## Goals
 
-- **One-call instantiation.** `POST /v1/recipes/instantiate` atomically creates the full surface area for a given recipe key (products, prices, meters, multi-dim pricing rules, dunning policy, webhook endpoint placeholder, optional sample data). All-or-nothing transaction.
+- **One-call instantiation.** `POST /v1/recipes/instantiate` atomically creates the full surface area for a given recipe key (plans, meters, multi-dim pricing rules, dunning policy, webhook endpoint placeholder, optional sample data). All-or-nothing transaction.
 - **Five built-ins shipping in v1:** `anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`. Each represents a real-world pricing pattern Velox-class buyers actually use.
 - **Preview before commit.** `POST /v1/recipes/{key}/preview` returns the full graph of objects that *would* be created, with no DB writes. Powers the "review and instantiate" dialog in the dashboard.
 - **Embedded YAML, no DB recipe table.** Recipes are versioned with the binary (`internal/recipe/recipes/*.yaml`, `embed.FS`). Tenants don't author them in v1; built-ins only.
@@ -32,7 +32,7 @@ This design ships in Week 3 and depends on Week 2 multi-dim meters being merged.
 - **Tenant-authored recipes.** Defer until a paying tenant asks. The maintenance cost of a tenant-recipe registry, validation, version migration, and security review (a recipe is arbitrary infra-as-code) is steep and unwarranted before product/market fit.
 - **Recipe upgrades / migrations across versions.** A recipe is instantiated once. If Velox ships `anthropic_style` v2, instantiating it on an existing tenant either no-ops (idempotency match by key) or overwrites (force flag). No "upgrade my v1 instance to v2" path. Defer until the API stabilizes.
 - **Marketplace / shared recipes from third parties.** Phase 4+. Security model alone (signing, sandboxing) is its own design.
-- **Cross-tenant recipe templates.** Each tenant gets its own copy. No shared product/price catalog across tenants by design — RLS isolation is the whole point.
+- **Cross-tenant recipe templates.** Each tenant gets its own copy. No shared plan catalog across tenants by design — RLS isolation is the whole point.
 - **Recipes that span Stripe configuration** (tax codes per region, payment method preferences). Defer; the tenant's own `tenantstripe` settings already cover this.
 
 ## Today's surface (in repo)
@@ -104,13 +104,12 @@ Response `200`:
       "key": "anthropic_style",
       "version": "1.0.0",
       "name": "Anthropic-style AI inference",
-      "summary": "Per-token billing across model × operation × cached. 12 pricing rules, 1 multi-dim meter, monthly billing.",
+      "summary": "Per-token billing across model × operation × cached. 9 pricing rules, 1 multi-dim meter, monthly billing.",
       "creates": {
         "meters": 1,
-        "pricing_rules": 12,
+        "pricing_rules": 9,
         "plans": 1,
-        "products": 1,
-        "rating_rules": 12,
+        "rating_rules": 9,
         "dunning_policies": 1,
         "webhook_endpoints": 1
       },
@@ -159,7 +158,6 @@ Response `200`:
   "key": "anthropic_style",
   "version": "1.0.0",
   "objects": {
-    "products": [{ "code": "ai_api", "name": "AI API", "description": "..." }],
     "meters": [{ "key": "tokens", "name": "Tokens", "unit": "tokens", "aggregation": "sum" }],
     "rating_rules": [
       { "rule_key": "gpt4_input_uncached", "mode": "flat", "currency": "USD", "flat_amount_cents": 30 },
@@ -210,7 +208,6 @@ Response `201`:
   "tenant_id": "vlx_ten_...",
   "created_at": "2026-04-25T12:34:56Z",
   "created_objects": {
-    "product_ids": ["vlx_prd_..."],
     "meter_ids": ["vlx_mtr_..."],
     "rating_rule_ids": ["vlx_rrv_..."],
     "pricing_rule_ids": ["vlx_mpr_...", "..."],
@@ -275,11 +272,6 @@ overridable:
     type: string
     default: ai_api_pro
     pattern: '^[a-z0-9_]+$'
-
-products:
-  - code: ai_api
-    name: '{{ .plan_name }}'
-    description: Token-based AI inference billing
 
 meters:
   - key: tokens
@@ -378,7 +370,7 @@ internal/recipe/
 ```
 
 `Service` depends on:
-- `pricing.Service` for plan + product + meter + rating rule creation
+- `pricing.Service` for plan + meter + rating rule creation
 - `dunning.Service` for policy upsert
 - `webhook.Service` for endpoint creation
 - `usage.Service` for `MeterPricingRule` upsert (Week 2 dependency)
@@ -417,11 +409,6 @@ func (s *Service) Instantiate(ctx context.Context, tenantID, recipeKey string, o
 
     // Create in dependency order. Each Create* takes the tx so the
     // graph is one atomic unit.
-    for _, p := range rendered.Products {
-        id, err := s.pricing.CreateProductTx(ctx, tx, tenantID, p)
-        if err != nil { return domain.RecipeInstance{}, err }
-        objs.ProductIDs = append(objs.ProductIDs, id)
-    }
     // meters → rating_rules → pricing_rules → plans → dunning → webhook → sample_data
     // ... (~150 lines of similar)
 
@@ -466,10 +453,10 @@ Each recipe gets a one-pager at `/docs/recipes/{key}.md` (Track B's `/docs/recip
 
 ### Integration tests (real Postgres)
 
-- `Instantiate(anthropic_style)` produces a tenant with: 1 product, 1 meter, 12 rating rules, 12 pricing rules, 1 plan, 1 dunning policy, 1 webhook endpoint. Verify object counts via direct SQL.
+- `Instantiate(anthropic_style)` produces a tenant with: 1 meter, 9 rating rules, 9 pricing rules, 1 plan, 1 dunning policy, 1 webhook endpoint. Verify object counts via direct SQL.
 - `Instantiate` twice without `force` → second call returns 409 with the existing instance ID.
 - `Instantiate` twice with `force=true` → second call returns a fresh instance, the first instance's objects are gone.
-- Atomicity: inject a failing `pricing.CreatePlan` mid-instantiation; verify zero objects exist post-rollback (no orphan products / meters / rules).
+- Atomicity: inject a failing `pricing.CreatePlan` mid-instantiation; verify zero objects exist post-rollback (no orphan meters / rules).
 - RLS: instantiate `anthropic_style` for tenant A; tenant B's `GET /v1/recipes` shows `anthropic_style` with `instantiated: null`.
 - `Preview` on tenant A produces an identical object graph to what `Instantiate` then creates (modulo the IDs).
 

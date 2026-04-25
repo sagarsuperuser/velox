@@ -36,11 +36,6 @@ overridable:
     default: ai_api_pro
     pattern: '^[a-z][a-z0-9_]*$'
 
-products:
-  - code: ai_api
-    name: '{{ .plan_name }}'
-    description: Token-based AI inference billing (multi-model, multi-operation)
-
 meters:
   - key: tokens
     name: Tokens
