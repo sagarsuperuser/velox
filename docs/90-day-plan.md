@@ -1,0 +1,152 @@
+# Velox 90-Day Plan
+
+**Window:** 2026-04-25 → 2026-07-24
+**Wedge:** AI-native billing engine you can self-host (see `docs/positioning.md`)
+
+## North-star outcome
+
+**Three design partners running real billing through Velox by day 90.** At least one in full production with paying customers cutting through the system.
+
+## Leading indicators
+
+- Time-to-first-invoice (sign-up → test invoice sent): target **under 5 minutes** by week 4
+- AI-native demo path (multi-dim meter → pricing rule → invoice with cost breakdown): working end-to-end by week 3
+- Self-host one-shot install (Helm or Compose, fresh VM → working tenant): under **1 hour** by week 9
+- GitHub stars: 100+ by day 90 (proxy for OSS narrative resonance, not the goal itself)
+
+---
+
+## Phase 1 — Wedge clarity + AI-native foundation (Days 1–30)
+
+Goal: ship the AI-native primitives that justify the positioning. Without these, the wedge is just a slide.
+
+### Week 1 (Apr 25 – May 1) — Position & narrative
+- [ ] `docs/positioning.md` published (this commit)
+- [ ] `README.md` rewritten to lead with AI-native + self-host
+- [ ] `velox.dev` hero rewritten (or stand it up if not yet live)
+- [ ] Outreach list: 50 candidate design partners (AI inference, vector DB, dev infra) with named contacts
+- [ ] First long-form post drafted: "Why Stripe Billing's Meter API doesn't fit AI workloads"
+
+### Week 2 (May 2–8) — Multi-dimensional meters
+- [ ] Schema migration: `usage_events.dimensions JSONB`, GIN index on dimensions
+- [ ] Service layer: aggregate over arbitrary dimension subsets (`SUM(value) GROUP BY dimensions->>'model'`)
+- [ ] Handler: `POST /v1/usage_events` with `{meter, customer, dimensions, value, timestamp, idempotency_key}`
+- [ ] Pricing rules: `pricing_rule.dimension_match JSONB` with subset-match semantics; rule resolution at finalize
+- [ ] Tests: aggregation correctness, pricing rule precedence, partial-dimension match
+- [ ] Benchmark: 50k events/sec sustained ingest on a single tenant
+
+### Week 3 (May 9–15) — Pricing recipes
+- [ ] Recipe definition format (YAML in `internal/recipe/recipes/`)
+- [ ] Built-in recipes: `anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`
+- [ ] `POST /v1/recipes/instantiate` — creates products + prices + meters + dunning + webhooks atomically
+- [ ] Dashboard UI: pick recipe → preview generated objects → instantiate
+- [ ] Recipes documented at `/docs/recipes` with copy-pasteable curl
+
+### Week 4 (May 16–22) — Quickstart wizard + 5-min path
+- [ ] Onboarding flow: pick template → connect Stripe (test) → tax mode → branding → send first test invoice
+- [ ] Sample data: each recipe seeds 1 demo customer + 1 active subscription
+- [ ] Telemetry on time-to-first-invoice (audit-log driven)
+- [ ] **Demo recording** — 5-minute screen recording walking through wizard → invoice in inbox
+
+---
+
+## Phase 2 — Operator UX + design-partner outreach (Days 31–60)
+
+Goal: punch above weight on operator UX so demo calls land. Start outreach.
+
+### Week 5 (May 23–29) — Embeddable cost dashboard (the AI-native sticky feature)
+- [ ] React component: `<VeloxCostDashboard tenantKey customerId />`
+- [ ] Renders: current period usage by dimension, projected bill, top usage drivers, alert threshold
+- [ ] Public iframe-able URL with secure token (reuses public-token pattern from hosted invoice)
+- [ ] Theming via CSS variables; dark mode by default
+- [ ] Documented embed snippet at `/docs/embeds/cost-dashboard`
+
+### Week 6 (May 30 – Jun 5) — Live event stream + plan migration preview
+- [ ] Real-time webhook event UI (server-sent events, replay button, payload diff for retries)
+- [ ] Plan migration tool: pick old plan → new plan → preview impact across N customers (per-customer before/after invoice) → one-click commit with audit trail
+
+### Week 7 (Jun 6–12) — Bulk operations + one-off invoice composer
+- [ ] Bulk: apply coupon to N customers, schedule cancel for cohort, plan migrate cohort
+- [ ] One-off invoice composer (target 30-second flow, no leaving customer page)
+- [ ] Operator CLI: `velox sub list`, `velox invoice send`, `velox import-from-stripe`
+
+### Week 8 (Jun 13–19) — Outreach intensifies
+- [ ] 50 cold emails sent (week 1 list)
+- [ ] 10+ demo calls scheduled
+- [ ] **3 design partners with signed LOI** (12 months free, co-branded case study, weekly check-in)
+- [ ] Onboarding playbook drafted (`docs/design-partner-onboarding.md`)
+
+---
+
+## Phase 3 — Self-host story + first production cutover (Days 61–90)
+
+Goal: prove the self-host pillar works end-to-end. Get one partner to production.
+
+### Week 9 (Jun 20–26) — Self-host playbook
+- [ ] Helm chart for Kubernetes (`charts/velox/`)
+- [ ] Docker Compose for single-VM (`deploy/compose/`)
+- [ ] Postgres backup + restore guide (pg_basebackup + WAL archive)
+- [ ] Terraform module for AWS VPC deploy (`deploy/terraform/aws/`)
+- [ ] Self-host docs page at `/docs/self-host`
+- [ ] **Cold-install test:** non-Velox engineer follows docs from scratch, reports friction
+
+### Week 10 (Jun 27 – Jul 3) — Compliance + audit posture
+- [ ] Encryption-at-rest verification (webhook secrets, API keys, customer email/PII): single doc tying it together
+- [ ] Audit log retention guide (recommended retention windows, S3 archival pattern)
+- [ ] SOC2 control mapping doc (`docs/compliance/soc2-mapping.md`)
+- [ ] GDPR data export + deletion verified end-to-end against the multi-dim usage_events table
+
+### Week 11 (Jul 4–10) — Migration FROM Stripe
+- [ ] Importer: customers, subscriptions, products, prices, finalized invoice history
+- [ ] CLI: `velox import-from-stripe --api-key=... --since=2024-01-01`
+- [ ] Migration guide with cutover playbook (parallel-run window, webhook redirection, reconciliation)
+- [ ] Test against a real Stripe test account end-to-end
+
+### Week 12 (Jul 11–17) — First production cutover
+- [ ] At least 1 design partner cuts over to Velox in production
+- [ ] Daily standup with that partner during cutover week
+- [ ] Incident runbook tested (failover, rollback to Stripe Billing, billing reconciliation)
+
+### Week 13 (Jul 18–24) — Stabilize + retro
+- [ ] Bug-fix sprint based on production findings
+- [ ] **Public retro post** — "What we learned shipping Velox to our first production tenant"
+- [ ] Plan next 90 days based on what production actually exposed
+
+---
+
+## Risks & mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Design partners don't sign | 50-deep outreach pipeline; offer 12 months free; co-brand case study; weekly office hours |
+| Multi-dim meter performance regression | Benchmark against current `usage_records` baseline before merging; partition `usage_events` by `(tenant_id, month)` from day one |
+| Migration FROM Stripe is harder than estimated | Start the importer Week 7 in parallel, not Week 11; prototype on internal test data first |
+| Self-host docs underdeliver | Cold-install test with non-Velox engineer in Week 9; budget 2 days of doc fixes after that |
+| First-cutover incident causes partner churn | Parallel-run window (both Stripe Billing + Velox running, Velox dark) for 2 weeks before flipping primary |
+
+## Out of scope (deferred to next 90 days)
+
+These are real Stripe-parity gaps but they don't serve the wedge. Each is a quarter-long initiative on its own; revisit after design-partner traction is real.
+
+- Subscription Schedules / Phases
+- Quotes
+- Connect / multi-party
+- Multi-PSP (Razorpay, Paystack, Adyen)
+- Revenue Recognition (ASC 606)
+- Sigma / SQL reporting
+- Promotion Codes (vs the existing Coupon API)
+- Multi-currency
+- 50+ payment method types
+- Pricing Tables / Embedded Checkout components
+- Smart Retries (ML-driven dunning)
+- Automatic card updater
+
+## Open questions
+
+- Lead vertical: AI inference, vector DB, or dev infra? **Proposed:** all three in week-1 outreach, double down on whichever segment converts first
+- Cloud pricing model: defer until 2 production tenants exist
+- Whether to lean on a hosted demo tenant for OSS visitors to "try without installing": likely yes, decide week 4
+
+---
+
+**Cadence:** weekly review every Saturday (current week's deliverables + next week's plan). Major milestones (week 4, 8, 12) trigger a short public update post.
