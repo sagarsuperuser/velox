@@ -185,3 +185,52 @@ Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. 
   - Then either (a) embeddable cost-dashboard scaffold (Week 5, depends on `/v1/customers/{id}/usage` from Track A), or (b) sidebar nav entries + polish on `/recipes` + `/onboarding`. (b) is unblocked today.
 
 **Wall-clock for this round:** 00:05 → 00:30 IST 2026-04-26 (≈ 25m).
+
+---
+
+## 2026-04-26 (Sun) — Track A end-of-Week-3, recipes shipped
+
+### Track A
+- **Shipped (Week 3 pricing recipes — full backend slice):**
+  - Migration `0055_recipe_instances` — thin index of `(tenant_id, recipe_key)` instantiations + `created_objects` JSONB; UNIQUE for idempotency, RLS-enforced.
+  - Domain types: `domain.Recipe`, `domain.RecipeInstance`, `domain.CreatedObjects`, plus the recipe-shape types (`RecipeMeter`, `RecipeRatingRule`, `RecipePricingRule`, `RecipePlan`, `RecipeDunningPolicy`, `RecipeWebhook`, `RecipeOverridable`).
+  - `internal/recipe` package: `embed.FS` registry, YAML parser with enum validation (e.g. `dunning.policy.final_action` checked against `domain.DunningFinalAction`), `text/template` renderer with `Option("missingkey=error")`, in-memory `Registry` API.
+  - Postgres `Store` + interface — `GetByKey`, `GetByID`, `List`, `CreateTx`, `GetByKeyTx`, `DeleteByIDTx`, `DeleteByKeyTx` (Tx variants for cross-domain composition).
+  - `Service` — `ListRecipes` (registry × tenant install state), `GetRecipe`, `Preview` (no DB), `Instantiate` (atomic graph build under one tx), `Uninstall` (instance row only — operator owns downstream resources).
+  - `*Tx` variants on cross-domain writers: `pricing.Service` (CreateRatingRuleTx, CreateMeterTx, CreatePlanTx, UpsertMeterPricingRuleTx), `dunning.Service` (UpsertPolicyTx), `webhook.Service` (CreateEndpointTx). `recipe.Service` defines its own narrow `PricingWriter`/`DunningWriter`/`WebhookWriter` interfaces and threads a single `*sql.Tx` through.
+  - Five built-in recipes under `internal/recipe/recipes/`: `anthropic_style.yaml` (1 multi-dim meter, 9 rating rules, 9 pricing rules — cached input via priority=200 rule), `openai_style.yaml` (14 pricing rules across GPT-4 / GPT-4o / 4o-mini / 3.5-turbo + 3 embedding models), `replicate_style.yaml` (per-second GPU billing for a100/a40/t4/cpu, `last_during_period`), `b2b_saas_pro.yaml` (graduated seat tiers + storage GB add-on), `marketplace_gmv.yaml` (package-billing GMV take rate + per-transaction fee).
+  - HTTP handlers + router wiring at `/v1/recipes` behind `PermPricingWrite`: `GET /`, `GET /{key}`, `POST /{key}/preview`, `POST /{key}/instantiate`, `GET /instances`, `DELETE /instances/{id}`. Registry loads once at server boot via `embed.FS`; load failure panics (TestLoad gates malformed YAMLs in CI before they ship).
+  - Six integration tests against real Postgres (`service_integration_test.go`): full graph build (counts match the design doc — 1 meter / 9 rating rules / 9 pricing rules / 1 plan / 1 dunning policy / 1 webhook endpoint for `anthropic_style`); idempotency (second instantiate returns ErrAlreadyExists with existing instance ID, no new rows); atomicity rollback (synthetic mid-graph failure injected via a `failingPricingWriter` wrapper — zero rows survive in every cross-domain table); RLS isolation (tenant B can't see tenant A's instance via store or `ListRecipes`); preview/instantiate parity (same logical graph, modulo IDs); uninstall-keeps-resources (instance row removed, plans/meters/rules survive). Plus 12 unit tests covering Preview / GetRecipe / ListRecipes / force rejection / helper conversions.
+  - CHANGELOG entries (both surfaces, per `feedback_changelog_discipline`): `CHANGELOG.md` Keep-a-Changelog Unreleased + Migrations 0055, plus `web-v2/src/pages/Changelog.tsx` Linear-style entry dated 2026-04-26 with 6 bullets.
+- **Commits (this branch, in order):**
+  - `4143eab feat(recipe): migration 0055 — recipe_instances index table`
+  - `0d51e95 feat(domain): Recipe, RecipeInstance, CreatedObjects`
+  - `9d57c3c feat(recipe): package skeleton — embed.FS, parser, template renderer`
+  - `e672be1 feat(recipe): Store interface + Postgres impl`
+  - `a707597 fix(recipe): drop Products — Velox has no separate Products table`
+  - `92f62a8 feat(recipes): add *Tx variants on cross-domain Create methods`
+  - `c63fc2f feat(recipe): Service — Preview, Instantiate, Uninstall`
+  - `cb5d66f feat(recipe): 4 built-in recipes — openai_style, replicate_style, b2b_saas_pro, marketplace_gmv`
+  - `cfd36bd feat(recipe): HTTP handlers + router wiring`
+  - `5e7a0bd test(recipe): integration tests for Instantiate / Uninstall`
+  - + (pending) CHANGELOG + handoff commit, then PR.
+- **Decisions made inline (per `feedback_feat8_autonomy`):**
+  - Force re-instantiation deferred to v2: API accepts the field today and returns `InvalidState` rather than silently dropping it — keeps the contract stable when force support lands. Operators uninstall first.
+  - Uninstall removes the recipe-instance row only; downstream resources (plans, meters, dunning policy, webhook endpoint) stay. Reasoning: those resources may have live subscriptions and silent cascade would lose billing data.
+  - Sample data + subscriptions deferred from v1 instantiate. The recipe defines a `sample_data` block but `Instantiate` doesn't materialise customers/subscriptions — the recipe's job is the pricing graph, not seed data (matches `feedback_no_seed_data_shortcut`).
+  - Final-action enum validation lifted to the parser layer so future recipes fail at boot rather than at first instantiate. Caught a stale `final_action: void` in `anthropic_style.yaml` and corrected to `pause`.
+  - Registry-load failure at server boot: panic rather than bubbling through `NewServer`'s signature — `TestLoad` gates malformed YAML in CI before it ships, so this path is unreachable in production.
+- **Blocking Track B on:** nothing.
+- **Track B can start:**
+  - **Recipe picker UI** — the API surface is now real and behind `PermPricingWrite`. Routes:
+    - `GET /v1/recipes` returns `[{...recipe, instantiated: {id, created_at, ...} | null}]` — picker grid.
+    - `GET /v1/recipes/{key}` returns the full recipe definition for the detail drawer.
+    - `POST /v1/recipes/{key}/preview` body `{overrides: {...}}` returns the rendered recipe (no DB writes) — call on every override-form keystroke.
+    - `POST /v1/recipes/{key}/instantiate` body `{overrides: {...}, force?: false}` returns the `RecipeInstance` (created_objects has the IDs).
+    - `GET /v1/recipes/instances` returns the tenant's installed instances; `DELETE /v1/recipes/instances/{id}` uninstalls.
+    - All bodies are JSON; auth via existing API-key flow (PermPricingWrite required).
+  - Multi-dim meter dashboard surfaces (MeterDetail / UsageEvents) once Week 2 PR lands — independent of recipes.
+- **Open for human review:**
+  - PR (this work, `feat/backend-week3-recipes`) — to be opened next.
+  - The 7 open questions in `docs/design-recipes.md` — most settled by the implementation; worth a short doc pass to reflect the actual v1 decisions before closing the design as "shipped".
+- **Next session (Track A):** open the PR for review, then either (a) drive it to merge + start Week 4 (`create_preview` design / billing-cycle hardening per 90-day plan), or (b) wait for Track B to ship the recipe picker so we can iterate on API ergonomics with real UI feedback.
