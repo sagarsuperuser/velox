@@ -160,7 +160,7 @@ dunning:
     name: AI default retry
     max_retries: 4
     intervals_hours: [24, 72, 168, 336]
-    final_action: void
+    final_action: pause
 
 webhook:
   events:
