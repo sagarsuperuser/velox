@@ -17,6 +17,20 @@ const entries: {
   bullets?: string[]
 }[] = [
   {
+    date: '2026-04-26',
+    title: 'Pricing recipes — one-call billing setup',
+    tag: 'feature',
+    body: 'Five built-in recipes (anthropic_style, openai_style, replicate_style, b2b_saas_pro, marketplace_gmv) collapse a multi-day Stripe-Billing-style onboarding into a single API call. POST /v1/recipes/{key}/instantiate atomically builds the full graph — meters, multi-dim pricing rules, plan, dunning policy, webhook endpoint — under one transaction; partial state never reaches the tenant. Designed to make the multi-dimensional meter engine immediately usable: a 12-rule anthropic_style setup goes from ~30 manual API calls to one POST.',
+    bullets: [
+      'Five v1 recipes: anthropic_style (Claude 3.5 Sonnet / Opus / Sonnet / Haiku, input/output, cached-input via priority=200 rule), openai_style (GPT-4 / 4o / 4o-mini / 3.5-turbo + embeddings — 14 rules), replicate_style (per-second GPU billing for a100/a40/t4/cpu), b2b_saas_pro (seats with included tier + storage GB), marketplace_gmv (package-billing GMV take rate + per-transaction fee).',
+      'POST /v1/recipes/{key}/preview renders the full would-be graph with zero DB writes — cheap enough to call on every override-form keystroke. Powers the dashboard\'s review-and-instantiate dialog.',
+      'Atomic graph build under one tenant-scoped transaction: rating rules → meters → multi-dim pricing rules → plan → optional dunning policy → optional webhook endpoint → instance row. Mid-graph failure rolls back every cross-domain write — no orphan meters or rules to clean up by hand.',
+      'Idempotent on (tenant_id, recipe_key): a second instantiate returns the existing instance ID via 409 ErrAlreadyExists. Force re-instantiation reserved for v2 — the API accepts the field today and returns InvalidState, keeping the contract stable when force lands.',
+      'Per-instantiation overrides (currency, plan_name, plan_code, plus recipe-specific knobs like included_seats) flow through templated YAML with strict missing-key handling — typos fail at preview rather than silently drop.',
+      'Uninstall removes the recipe-instance row only; the resources the recipe created (plans, meters, dunning policy, webhook endpoint) stay — operators own them once they exist, and silent cascade could lose live billing data.',
+    ],
+  },
+  {
     date: '2026-04-25',
     title: 'Trial extension (Stripe parity)',
     tag: 'feature',
