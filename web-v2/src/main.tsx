@@ -75,6 +75,27 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
+// Mirror of ProtectedRoute for pages that only make sense when logged out
+// (login, forgot-password). A signed-in user landing on /login is sent to the
+// dashboard instead of being shown a sign-in form for an account they're
+// already in. Token-driven flows (reset-password, accept-invite) deliberately
+// skip this — those tokens are the proof of intent and may apply to a
+// different account than the active session.
+function PublicOnlyRoute({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth()
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin h-8 w-8 border-2 border-primary border-t-transparent rounded-full" />
+      </div>
+    )
+  }
+  if (user) {
+    return <Navigate to="/" replace />
+  }
+  return <>{children}</>
+}
+
 // Lazy load pages
 const LoginPage = lazy(() => import('@/pages/Login'))
 const ForgotPasswordPage = lazy(() => import('@/pages/ForgotPassword'))
@@ -132,8 +153,8 @@ const App = () => (
             }
           >
             <Routes>
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+              <Route path="/login" element={<PublicOnlyRoute><LoginPage /></PublicOnlyRoute>} />
+              <Route path="/forgot-password" element={<PublicOnlyRoute><ForgotPasswordPage /></PublicOnlyRoute>} />
               <Route path="/reset-password" element={<ResetPasswordPage />} />
               <Route path="/accept-invite" element={<AcceptInvitePage />} />
               <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
