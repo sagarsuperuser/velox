@@ -99,8 +99,12 @@ CREATE INDEX idx_meter_pricing_rules_lookup
     ON meter_pricing_rules (tenant_id, meter_id, priority DESC);
 
 ALTER TABLE meter_pricing_rules ENABLE ROW LEVEL SECURITY;
-CREATE POLICY meter_pricing_rules_tenant_isolation ON meter_pricing_rules
-    USING (tenant_id = current_setting('velox.tenant_id', true));
+ALTER TABLE meter_pricing_rules FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON meter_pricing_rules FOR ALL USING (
+    current_setting('app.bypass_rls', true) = 'on'
+    OR tenant_id = current_setting('app.tenant_id', true)
+);
+GRANT ALL ON TABLE meter_pricing_rules TO velox_app;
 ```
 
 ### Why a new table instead of extending `meters`
