@@ -92,6 +92,53 @@ type Plan struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// AggregationMode is how a meter pricing rule rolls up the events it
+// claims into a single quantity for the period. The set is fixed at the
+// schema layer (CHECK constraint on meter_pricing_rules.aggregation_mode).
+//
+// Stripe Tier 1 parity: count, last_during_period, last_ever, max are
+// modes Stripe's Meter API supports that the prior single-mode meter
+// could not express. Hoisted into v1 of multi-dim meters.
+type AggregationMode string
+
+const (
+	AggSum              AggregationMode = "sum"
+	AggCount            AggregationMode = "count"
+	AggLastDuringPeriod AggregationMode = "last_during_period"
+	AggLastEver         AggregationMode = "last_ever"
+	AggMax              AggregationMode = "max"
+)
+
+// IsValid returns true if m is a recognised aggregation mode.
+func (m AggregationMode) IsValid() bool {
+	switch m {
+	case AggSum, AggCount, AggLastDuringPeriod, AggLastEver, AggMax:
+		return true
+	default:
+		return false
+	}
+}
+
+// MeterPricingRule binds a rating rule version to a subset of a meter's
+// events via a JSONB dimension match. At billing time, rules are walked
+// in priority-DESC order and each event is claimed by the highest-
+// priority matching rule (no double-count). The default rule for a
+// meter has dimension_match='{}' which matches every event; priority=0
+// keeps it last so specific rules win.
+//
+// See docs/design-multi-dim-meters.md for the resolution algorithm.
+type MeterPricingRule struct {
+	ID                  string          `json:"id"`
+	TenantID            string          `json:"tenant_id,omitempty"`
+	MeterID             string          `json:"meter_id"`
+	RatingRuleVersionID string          `json:"rating_rule_version_id"`
+	DimensionMatch      map[string]any  `json:"dimension_match"`
+	AggregationMode     AggregationMode `json:"aggregation_mode"`
+	Priority            int             `json:"priority"`
+	CreatedAt           time.Time       `json:"created_at"`
+	UpdatedAt           time.Time       `json:"updated_at"`
+}
+
 var ErrInvalidPricingConfig = errors.New("invalid pricing config")
 
 // ErrAmountOverflow is returned when a pricing computation would exceed
