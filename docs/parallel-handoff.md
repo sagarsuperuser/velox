@@ -116,3 +116,35 @@ Continuing the same day. PR #19 (Week 1 docs) is open and unmerged; new branch `
 - **Next session (Track B):** rebase on `origin/main` once #19 merges, then either (a) extend with embeddable cost dashboard scaffold (Week 5 work, but its API contract is in the design doc as `GET /v1/customers/{id}/usage`), or (b) start the recipe-picker UI once Track A drops a recipes RFC. (a) is unblocked today; (b) waits for Track A.
 
 **Wall-clock duration:** Week 2 in-flight = 21:46 → 23:45 IST (≈ 2h 0m); cumulative for the day = 21:09 → 23:45 (≈ 2h 36m).
+
+#### Track A → Track B handoff received (late evening 2026-04-25)
+
+Track A resolved all five Track B asks in one pass. Summary of what was answered, with commit refs from `feat/backend-week2`:
+
+1. **Path convention:** **hyphens** everywhere (`/v1/usage-events`, `/v1/meters/{id}/pricing-rules`, `/v1/customers/{id}/usage?event_name=...`). Design doc updated in `df80d3d`. New "Wire-contract conventions" callout block at the top of the API surface section.
+2. **Quantity stance:** **`quantity` is canonical, both directions, JSON wire form is a string** for decimal precision. **No `value` alias.** Track B's `UsageEvent.value?: string` should be dropped.
+3. **Ingest input field renames:** `meter_key` → `event_name`, `customer_id` → `external_customer_id` (matches Stripe Meter Events convention).
+4. **Recipes RFC shipped:** `docs/design-recipes.md` (547 lines, commit `f0f0dcb`). 5 built-in recipes, atomic `POST /v1/recipes/instantiate`, embedded YAML, explicit Track B unblock section.
+5. **PR #19 review** posted with 5 drift points (paths/field names/value-alias).
+
+#### End-of-turn (Track B — Week 2 follow-up after Track A handoff)
+
+- **Shipped (3 commits on `feat/track-b-week2` plus 1 on `feat/track-b-week1`):**
+  - `cbecec3 docs: align README + blog to hyphen paths and quantity wire-contract` — on Week 1 branch. Fixed all 5 PR #19 drift points: `usage_events` → `usage-events`, `pricing_rules` → `pricing-rules`, `meter_key` → `event_name`, `customer_id` → `external_customer_id`, `value` → `quantity`. Stripe-side examples in the blog deliberately untouched (they describe Stripe's actual API). Pushed to PR #19; confirmation comment posted.
+  - `f631029 refactor(web): drop value alias; quantity is canonical decimal string` — `UsageEvent.quantity: number → string`, dropped `UsageEvent.value`, renamed `CustomerUsageBreakdown.meter_key → event_name` and the corresponding query param. Display preserves trailing-zero precision by rendering the raw string; chart math coerces with `Number()` and notes that authoritative money math stays server-side.
+  - `d38359f feat(web): /recipes picker + onboarding wizard wired to live recipes API` — new `/recipes` page (route added, lazy-loaded). Cards render the 5 built-in recipes with key/version/summary/creates-summary chips/installed badge. Configure dialog: overrides form rendered from `overridable_schema` (text/number/boolean), Preview button shows warnings + truncated object list, Install runs `POST /v1/recipes/instantiate` and navigates to the first created plan. Onboarding step 1 now fetches `/v1/recipes` live; cards deep-link to `/recipes`. Empty-state graceful when backend isn't deployed.
+- **New API client surface:**
+  - Types: `Recipe`, `RecipeDetail`, `RecipeOverrideSchema`, `RecipePreview`, `RecipeInstance`, `RecipeCreatesSummary`
+  - Methods: `listRecipes`, `getRecipe`, `previewRecipe`, `instantiateRecipe`, `deleteRecipeInstance`
+  - All paths hyphen-style; all field names match the RFC.
+- **Build verification:**
+  - `tsc -b` passes (only the two pre-existing errors on `HostedInvoice.tsx:512` and `Webhooks.tsx:243` remain — predate this branch)
+  - `vite build` ~600ms; new lazy chunk for `/recipes`
+  - Visual verification still deferred to next session (needs Postgres + Track A's PR #20 backend)
+- **Branch state:**
+  - `feat/track-b-week1` (PR #19): 5 commits, last is `cbecec3` (drift fix). Ready to merge.
+  - `feat/track-b-week2`: 7 commits, stacked on `feat/track-b-week1`. Will rebase to `main` after #19 merges. No PR opened yet — Week 2 arc continues with cost-dashboard scaffold next session.
+- **Blocking Track A on:** nothing. All earlier asks resolved.
+- **Next session (Track B):** with PR #19 + Track A's PR #20 merged, the natural next pieces are (a) embeddable cost-dashboard scaffold (Week 5; API contract in `docs/design-multi-dim-meters.md` as `GET /v1/customers/{id}/usage`) and (b) sidebar nav links for `/recipes` + `/onboarding` once they're polished. Also: changelog discipline — when multi-dim and recipes both land on `main`, both `CHANGELOG.md` and `web-v2/src/pages/Changelog.tsx` need entries (Track A on the engineering log; me on the customer-facing rollup).
+
+**Wall-clock duration (extended day):** initial Week 1 + Week 2 = 21:09 → 23:45 IST (≈ 2h 36m). Track A handoff + this round = 23:50 → 00:01 IST 2026-04-26 (≈ 11m active editing time, plus design-doc / RFC reading). Cumulative day total ≈ 2h 50m.
