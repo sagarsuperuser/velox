@@ -145,3 +145,30 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.UsageEv
 func (s *Service) AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	return s.store.AggregateForBillingPeriod(ctx, tenantID, customerID, meterIDs, from, to)
 }
+
+// AggregateByPricingRules resolves a single (customer, meter, period) into
+// per-rule aggregations using the priority+claim algorithm. The defaultMode
+// applies to events that match no rule; it must be one of the four
+// period-bounded modes (sum, count, max, last_during_period) — last_ever
+// as a meter-default is rejected because it would silently break the
+// "current state" semantics for unclaimed events.
+//
+// See docs/design-multi-dim-meters.md for the resolution semantics; this
+// method is the runtime entry point that billing-finalize will call.
+func (s *Service) AggregateByPricingRules(
+	ctx context.Context,
+	tenantID, customerID, meterID string,
+	defaultMode domain.AggregationMode,
+	from, to time.Time,
+) ([]domain.RuleAggregation, error) {
+	if defaultMode == "" {
+		defaultMode = domain.AggSum
+	}
+	switch defaultMode {
+	case domain.AggSum, domain.AggCount, domain.AggMax, domain.AggLastDuringPeriod:
+		// ok
+	default:
+		return nil, errs.Invalid("default_mode", fmt.Sprintf("must be one of sum/count/max/last_during_period, got %q", defaultMode))
+	}
+	return s.store.AggregateByPricingRules(ctx, tenantID, customerID, meterID, defaultMode, from, to)
+}

@@ -199,6 +199,159 @@ func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID,
 	return result, rows.Err()
 }
 
+// AggregateByPricingRules implements the priority+claim resolution path
+// described in docs/design-multi-dim-meters.md. Strategy:
+//
+//  1. Rank meter_pricing_rules by (priority DESC, created_at ASC) so the
+//     deterministic ROW_NUMBER becomes the rule_rank we order claims by.
+//  2. LEFT JOIN LATERAL each in-period event against the ranked rules,
+//     keeping only the top-priority rule whose dimension_match is a
+//     subset of the event's properties. NULL rule means unclaimed.
+//  3. Aggregate per rule. The CASE inside the SELECT is safe because
+//     every event in a given (rule_id) group shares the rule's mode —
+//     we GROUP BY (rule_id, mode, rrv) so the CASE evaluates a constant
+//     within each group.
+//
+// last_ever needs a separate query because it ignores the period bounds.
+// We run it only if any of the meter's rules is last_ever, then merge.
+func (s *PostgresStore) AggregateByPricingRules(
+	ctx context.Context,
+	tenantID, customerID, meterID string,
+	defaultMode domain.AggregationMode,
+	from, to time.Time,
+) ([]domain.RuleAggregation, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Period-bounded modes: sum, count, last_during_period, max, plus
+	// the unclaimed bucket (defaultMode is one of these — last_ever on
+	// the meter default is rejected at the service layer).
+	//
+	// last_during_period uses (array_agg ORDER BY ts DESC)[1] to pick
+	// the latest event's quantity per group — a standard Postgres trick
+	// that compiles down to a single sort over the group.
+	rows, err := tx.QueryContext(ctx, `
+		WITH ranked_rules AS (
+			SELECT id, dimension_match, aggregation_mode, rating_rule_version_id,
+			       ROW_NUMBER() OVER (ORDER BY priority DESC, created_at ASC) AS rule_rank
+			FROM meter_pricing_rules
+			WHERE tenant_id = $1 AND meter_id = $2
+		),
+		claims AS (
+			SELECT
+				e.id,
+				e.quantity,
+				e.timestamp,
+				rr.id                     AS rule_id,
+				rr.aggregation_mode       AS aggregation_mode,
+				rr.rating_rule_version_id AS rating_rule_version_id
+			FROM usage_events e
+			LEFT JOIN LATERAL (
+				SELECT id, aggregation_mode, rating_rule_version_id, rule_rank
+				FROM ranked_rules
+				WHERE e.properties @> ranked_rules.dimension_match
+				  AND ranked_rules.aggregation_mode <> 'last_ever'
+				ORDER BY rule_rank ASC
+				LIMIT 1
+			) rr ON TRUE
+			WHERE e.tenant_id  = $1
+			  AND e.meter_id   = $2
+			  AND e.customer_id = $3
+			  AND e.timestamp >= $4
+			  AND e.timestamp <  $5
+		)
+		SELECT
+			COALESCE(rule_id, '')                AS rule_id,
+			COALESCE(rating_rule_version_id, '') AS rating_rule_version_id,
+			COALESCE(aggregation_mode, $6)       AS aggregation_mode,
+			CASE COALESCE(aggregation_mode, $6)
+				WHEN 'sum'                THEN COALESCE(SUM(quantity), 0)
+				WHEN 'count'              THEN COUNT(*)::numeric
+				WHEN 'max'                THEN COALESCE(MAX(quantity), 0)
+				WHEN 'last_during_period' THEN (array_agg(quantity ORDER BY timestamp DESC))[1]
+				ELSE 0
+			END AS quantity
+		FROM claims
+		GROUP BY rule_id, rating_rule_version_id, aggregation_mode
+	`, tenantID, meterID, customerID, from, to, string(defaultMode))
+	if err != nil {
+		return nil, fmt.Errorf("aggregate by pricing rules (period): %w", err)
+	}
+
+	var out []domain.RuleAggregation
+	for rows.Next() {
+		var r domain.RuleAggregation
+		var mode string
+		if err := rows.Scan(&r.RuleID, &r.RatingRuleVersionID, &mode, &r.Quantity); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		r.AggregationMode = domain.AggregationMode(mode)
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	// last_ever pass — only if the meter has any last_ever rules. Each
+	// last_ever rule's quantity is the most recent event (across all
+	// time) claimed by it. The claim semantics are identical to the
+	// period-bounded path; the only difference is the missing time
+	// filter.
+	leverRows, err := tx.QueryContext(ctx, `
+		WITH ranked_rules AS (
+			SELECT id, dimension_match, aggregation_mode, rating_rule_version_id,
+			       ROW_NUMBER() OVER (ORDER BY priority DESC, created_at ASC) AS rule_rank
+			FROM meter_pricing_rules
+			WHERE tenant_id = $1 AND meter_id = $2
+		),
+		claims AS (
+			SELECT DISTINCT ON (e.id)
+				e.id,
+				e.quantity,
+				e.timestamp,
+				rr.id                     AS rule_id,
+				rr.rating_rule_version_id AS rating_rule_version_id
+			FROM usage_events e
+			JOIN ranked_rules rr ON e.properties @> rr.dimension_match
+			WHERE e.tenant_id   = $1
+			  AND e.meter_id    = $2
+			  AND e.customer_id = $3
+			  AND rr.aggregation_mode = 'last_ever'
+			ORDER BY e.id, rr.rule_rank ASC
+		)
+		SELECT DISTINCT ON (rule_id)
+			rule_id, rating_rule_version_id, quantity
+		FROM claims
+		ORDER BY rule_id, timestamp DESC
+	`, tenantID, meterID, customerID)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate by pricing rules (last_ever): %w", err)
+	}
+	defer func() { _ = leverRows.Close() }()
+
+	for leverRows.Next() {
+		var r domain.RuleAggregation
+		r.AggregationMode = domain.AggLastEver
+		if err := leverRows.Scan(&r.RuleID, &r.RatingRuleVersionID, &r.Quantity); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := leverRows.Err(); err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}
+
 func buildUsageWhere(f ListFilter) (string, []any) {
 	var clauses []string
 	var args []any
