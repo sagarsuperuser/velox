@@ -129,6 +129,20 @@ type SubscriptionReader interface {
 	// Returns nil + no error when no items are due (caller proceeds with the
 	// existing plan).
 	ApplyDuePendingItemPlansAtomic(ctx context.Context, tenantID, subscriptionID string, now time.Time) ([]domain.SubscriptionItem, error)
+
+	// FireScheduledCancellation transitions a sub with a due cancel_at or
+	// cancel_at_period_end intent to canceled in one statement. Called by
+	// the cycle scan after invoice generation, instead of UpdateBillingCycle,
+	// when the schedule fields say it's time. The `at` argument is the
+	// engine's effectiveNow so canceled_at stays consistent with test-
+	// clock-driven time travel.
+	FireScheduledCancellation(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
+
+	// ClearPauseCollection nulls the pause_collection_* columns. Called by
+	// the cycle scan to auto-resume a sub whose pause_collection.resumes_at
+	// has passed. Mirrors the explicit DELETE /pause-collection in the
+	// store-side semantics.
+	ClearPauseCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error)
 }
 
 // UsageAggregator aggregates usage events for a billing period.
@@ -290,6 +304,78 @@ func (e *Engine) SetTestClockReader(r TestClockReader) {
 // dropped (acceptable for narrow billing unit tests).
 func (e *Engine) SetEventDispatcher(d domain.EventDispatcher) {
 	e.events = d
+}
+
+// shouldFireScheduledCancel reports whether a sub's soft-cancel intent has
+// caught up with the current cycle tick. Two trigger conditions, OR'd:
+//
+//   - cancel_at_period_end=true and the period we just billed has ended
+//     (periodEnd <= now) — by construction this is true at every invocation
+//     since billSubscription is only entered when next_billing_at <= now,
+//     but we keep the guard explicit so the helper doesn't depend on
+//     caller invariants.
+//
+//   - cancel_at <= now — a specific timestamp the cycle has crossed.
+//
+// The check is intentionally placed after invoice generation so the just-
+// ended period bills normally before the sub transitions to canceled
+// (matching Stripe: the final invoice goes out, then the sub ends).
+func shouldFireScheduledCancel(sub domain.Subscription, periodEnd, now time.Time) bool {
+	if sub.CancelAtPeriodEnd && !periodEnd.After(now) {
+		return true
+	}
+	if sub.CancelAt != nil && !sub.CancelAt.After(now) {
+		return true
+	}
+	return false
+}
+
+// advanceCycleOrCancel either fires a due scheduled cancel or advances the
+// billing cycle, whichever the sub's current schedule fields require. The
+// two outcomes are mutually exclusive at this point in the flow — a sub
+// that's about to cancel must not also have its cycle advanced, otherwise
+// the next tick would observe a canceled sub with a fresh next_billing_at
+// and either log a confusing skip-not-active or risk a double-cycle bug
+// later. trigger is "scheduled" or "scheduled_at" for telemetry.
+func (e *Engine) advanceCycleOrCancel(ctx context.Context, sub domain.Subscription, periodEnd, nextPeriodStart, nextPeriodEnd, now time.Time) error {
+	if !shouldFireScheduledCancel(sub, periodEnd, now) {
+		return e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd)
+	}
+
+	canceled, err := e.subs.FireScheduledCancellation(ctx, sub.TenantID, sub.ID, now)
+	if err != nil {
+		// InvalidState here means a concurrent immediate-cancel already won
+		// the race. Treat as a no-op success — the sub is canceled, which is
+		// what we wanted, and the immediate-cancel handler already fired its
+		// own webhook. A surfaced error here would mark the cycle as failed.
+		if errors.Is(err, errs.ErrInvalidState) {
+			slog.Info("scheduled cancel skipped, already canceled",
+				"subscription_id", sub.ID, "tenant_id", sub.TenantID)
+			return nil
+		}
+		return fmt.Errorf("fire scheduled cancel: %w", err)
+	}
+
+	slog.Info("scheduled cancel fired",
+		"subscription_id", sub.ID,
+		"tenant_id", sub.TenantID,
+		"canceled_at", now.UTC(),
+	)
+
+	if e.events != nil {
+		payload := map[string]any{
+			"subscription_id": canceled.ID,
+			"customer_id":     canceled.CustomerID,
+			"status":          string(canceled.Status),
+			"canceled_at":     now.UTC(),
+			"triggered_by":    "schedule",
+		}
+		if err := e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionCanceled, payload); err != nil {
+			slog.Error("dispatch subscription.canceled (scheduled)",
+				"subscription_id", sub.ID, "tenant_id", sub.TenantID, "error", err)
+		}
+	}
+	return nil
 }
 
 // effectiveNow returns the clock time the engine should use for this sub.
@@ -615,6 +701,37 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	// this function must use this value so trial/pending-plan/mark-paid
 	// decisions stay consistent with the clock the sub lives on.
 	now := e.effectiveNow(ctx, sub)
+
+	// Auto-resume pause_collection if resumes_at has passed. Stripe parity:
+	// the cycle scan checks resumes_at at cycle time (not via a separate
+	// timer) — when this period closes, if the pause was set to expire
+	// somewhere inside it, the next period bills normally. The clear
+	// updates sub.PauseCollection in-memory so the rest of this call
+	// generates a finalized (not draft) invoice as if no pause had ever
+	// been set.
+	if sub.PauseCollection != nil && sub.PauseCollection.ResumesAt != nil && !sub.PauseCollection.ResumesAt.After(now) {
+		updated, err := e.subs.ClearPauseCollection(ctx, sub.TenantID, sub.ID)
+		if err != nil {
+			slog.Warn("auto-resume pause_collection failed",
+				"subscription_id", sub.ID,
+				"error", err,
+			)
+		} else {
+			sub = updated
+			slog.Info("auto-resumed pause_collection",
+				"subscription_id", sub.ID,
+				"tenant_id", sub.TenantID,
+			)
+			if e.events != nil {
+				_ = e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
+					"subscription_id": sub.ID,
+					"customer_id":     sub.CustomerID,
+					"resumed_at":      now.UTC(),
+					"triggered_by":    "schedule",
+				})
+			}
+		}
+	}
 
 	// If any item has a scheduled plan change whose effective_at is due, apply
 	// them all BEFORE reading plans so the new cycle bills on the new plans.
@@ -970,8 +1087,18 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	// invoice implies the amounts (including tax) are authoritative, which
 	// they are not until the retry worker completes the calculation. The
 	// retry worker lifts the block and transitions draft → finalized.
+	//
+	// pause_collection (Stripe parity): when a sub has pause_collection set
+	// (still non-nil after the auto-resume check above), force draft. The
+	// engine still runs the cycle and produces line items so the period is
+	// captured and aging behaves normally; the operator/customer flow that
+	// would finalize, charge, and dunn is skipped until pause is cleared.
 	invStatus := domain.InvoiceFinalized
 	if taxApp.TaxStatus == domain.InvoiceTaxPending {
+		invStatus = domain.InvoiceDraft
+	}
+	collectionPaused := sub.PauseCollection != nil
+	if collectionPaused {
 		invStatus = domain.InvoiceDraft
 	}
 
@@ -1023,7 +1150,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			// Still advance the billing cycle in case it was missed
 			nextPeriodStart := periodEnd
 			nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
-			_ = e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd)
+			_ = e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now)
 			return false, nil
 		}
 		return false, fmt.Errorf("create invoice: %w", err)
@@ -1075,7 +1202,11 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	// in a single transaction. A failure leaves both unchanged — no dual-write
 	// hole where credits are consumed but the invoice still shows the pre-credit
 	// amount due (which would double-bill the customer via Stripe).
-	if e.credits != nil && totalWithTax > 0 {
+	//
+	// Skip during pause_collection — credits should not be consumed against a
+	// draft invoice that may never be finalized; the credit will apply when
+	// collection resumes and the invoice transitions out of draft.
+	if e.credits != nil && totalWithTax > 0 && !collectionPaused {
 		credited, err := e.credits.ApplyToInvoice(ctx, sub.TenantID, sub.CustomerID, inv.ID, totalWithTax, inv.InvoiceNumber)
 		if err != nil {
 			slog.Warn("failed to apply credits", "invoice_id", inv.ID, "error", err)
@@ -1100,7 +1231,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 				// Still advance the billing cycle
 				nextPeriodStart := periodEnd
 				nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
-				if err := e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd); err != nil {
+				if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
 					return true, fmt.Errorf("advance billing cycle: %w", err)
 				}
 				return true, nil
@@ -1110,7 +1241,12 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 
 	// Auto-charge: synchronous with timeout. If it fails, mark for scheduler retry
 	// instead of fire-and-forget goroutine that loses failures.
-	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
+	//
+	// Skip entirely when pause_collection is set — the invoice is draft so
+	// charging it would be a state-violation; dunning is also off the table
+	// because finalize hasn't happened. This is the Stripe-parity behavior:
+	// pause_collection neuters the financial side without touching the cycle.
+	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && !collectionPaused {
 		if ps, err := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID); err == nil &&
 			ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
 
@@ -1133,11 +1269,11 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		}
 	}
 
-	// Advance billing cycle
+	// Advance billing cycle (or fire scheduled cancel if due)
 	nextPeriodStart := periodEnd
 	nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
 
-	if err := e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd); err != nil {
+	if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
 		return false, fmt.Errorf("advance billing cycle: %w", err)
 	}
 

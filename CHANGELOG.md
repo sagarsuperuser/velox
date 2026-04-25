@@ -20,6 +20,41 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Pause collection — Stripe parity** (2026-04-25) — distinct from a hard
+  pause: the cycle keeps running, but invoices generate as drafts and skip
+  finalize/charge/dunning until resumed. New nullable composite
+  `pause_collection = {behavior, resumes_at}` on `subscriptions`. Two new
+  endpoints: `PUT /v1/subscriptions/{id}/pause-collection` accepts
+  `{behavior:"keep_as_draft", resumes_at?:<RFC3339>}`; `DELETE
+  /v1/subscriptions/{id}/pause-collection` clears the pause. v1 only
+  supports `keep_as_draft` (the `mark_uncollectible` and `void` Stripe
+  modes need an `uncollectible` invoice status that doesn't exist yet).
+  Billing engine forces invoice status to draft, skips
+  `credits.ApplyToInvoice` and auto-charge, and auto-resumes when
+  `resumes_at` passes (cycle scan checks at cycle time, fires
+  `subscription.collection_resumed` with `triggered_by:"schedule"` so
+  analytics can distinguish from operator-triggered resume). Webhook
+  events: `subscription.collection_paused` /
+  `subscription.collection_resumed`. Dashboard `SubscriptionDetail` gets a
+  blue "Collection paused" banner with one-click Resume and a Stripe-style
+  choice dialog ("Pause subscription" hard freeze vs "Pause collection
+  only") on the Pause action.
+
+- **Scheduled subscription cancellation — Stripe parity** (2026-04-25) —
+  `cancel_at_period_end` (soft, reversible) and `cancel_at` (timestamp
+  schedule) on `subscriptions`. Two new endpoints: `POST /v1/subscriptions/
+  {id}/schedule-cancel` accepts `{at_period_end:true}` xor
+  `{cancel_at:<RFC3339>}`; `DELETE /v1/subscriptions/{id}/scheduled-cancel`
+  clears any prior schedule. Billing engine fires the cancel atomically at
+  the period boundary after the final invoice generates, mirrors test-clock
+  time for `canceled_at`, and emits `subscription.cancel_scheduled` /
+  `subscription.cancel_cleared` / `subscription.canceled` (with
+  `triggered_by:"schedule"`). v1 only accepts `cancel_at` >= current period
+  end; mid-period proration is a follow-up. Dashboard `SubscriptionDetail`
+  gets a "Cancellation scheduled" banner with one-click Undo and a Stripe-
+  style choice dialog ("at period end" vs "immediately") on the Cancel
+  action.
+
 - **Phase 2 Addendum shipped — pre-invite design-partner readiness** (2026-04-24)
   - **Hosted invoice page** (T0-17) — Stripe-equivalent `hosted_invoice_url`.
     `invoices.public_token` + three public routes at `/v1/public/invoices/*`
@@ -84,6 +119,9 @@ Two surfaces mirror this file:
   `secondary_secret_last4` + `secondary_secret_expires_at`.
 - `0050_customer_email_status` — adds `customers.email_status` (NOT NULL,
   default `unknown`) + `email_last_bounced_at` + `email_bounce_reason`.
+- `0051_subscription_scheduled_cancel` — adds
+  `subscriptions.cancel_at_period_end` (NOT NULL, default false) +
+  `cancel_at` (nullable timestamptz, partial index for the cycle scan).
 
 ---
 

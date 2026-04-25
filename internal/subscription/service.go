@@ -404,6 +404,112 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 	return s.store.CancelAtomic(ctx, tenantID, id)
 }
 
+// ScheduleCancelInput carries the soft-cancel intent. Exactly one of
+// AtPeriodEnd or CancelAt must be set on a single call. AtPeriodEnd defers
+// the cancel to current_billing_period_end; CancelAt is an explicit
+// timestamp the cycle scan compares against effectiveNow. The mutually-
+// exclusive split forces unambiguous caller intent — Stripe's update
+// endpoint accepts both fields together but the resulting precedence is
+// surprising; rejecting the combination here keeps the API obvious.
+type ScheduleCancelInput struct {
+	AtPeriodEnd bool       `json:"at_period_end,omitempty"`
+	CancelAt    *time.Time `json:"cancel_at,omitempty"`
+}
+
+// ScheduleCancel persists the soft-cancel intent. v1 only accepts
+// CancelAt values >= current_billing_period_end so the active period
+// bills normally and the cancel lands on a clean cycle boundary; the
+// shorten-current-period + proration variant is a follow-up that needs
+// the proration generator wired into the engine cancel path.
+//
+// Re-scheduling is idempotent: a second call with the same intent leaves
+// the row unchanged but for updated_at. Toggling between modes (e.g.
+// AtPeriodEnd → CancelAt) is allowed because each call is a full
+// replacement of the row's schedule fields.
+func (s *Service) ScheduleCancel(ctx context.Context, tenantID, id string, input ScheduleCancelInput) (domain.Subscription, error) {
+	if !input.AtPeriodEnd && input.CancelAt == nil {
+		return domain.Subscription{}, errs.Invalid("body", "one of at_period_end or cancel_at must be set")
+	}
+	if input.AtPeriodEnd && input.CancelAt != nil {
+		return domain.Subscription{}, errs.Invalid("body", "at_period_end and cancel_at cannot be set together; pick one")
+	}
+
+	sub, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	now := s.clock.Now()
+	var cancelAt *time.Time
+	if input.CancelAt != nil {
+		ts := input.CancelAt.UTC()
+		if !ts.After(now) {
+			return domain.Subscription{}, errs.Invalid("cancel_at", "must be in the future")
+		}
+		// v1 constraint — see function comment.
+		if sub.CurrentBillingPeriodEnd != nil && ts.Before(*sub.CurrentBillingPeriodEnd) {
+			return domain.Subscription{}, errs.Invalid("cancel_at",
+				"must be on or after current_billing_period_end (mid-period cancel with proration is not yet supported)")
+		}
+		cancelAt = &ts
+	}
+
+	return s.store.ScheduleCancellation(ctx, tenantID, id, cancelAt, input.AtPeriodEnd)
+}
+
+// ClearScheduledCancel undoes any prior schedule. Idempotent — a row
+// without a schedule returns unchanged.
+func (s *Service) ClearScheduledCancel(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	return s.store.ClearScheduledCancellation(ctx, tenantID, id)
+}
+
+// PauseCollectionInput carries the collection-pause intent. Behavior is
+// required and must be one of the supported modes (v1: keep_as_draft).
+// ResumesAt is optional; when set, the cycle scan auto-clears the pause
+// at the start of the period containing or after that timestamp so that
+// period bills normally. When nil, only an explicit DELETE clears it.
+type PauseCollectionInput struct {
+	Behavior  domain.PauseCollectionBehavior `json:"behavior"`
+	ResumesAt *time.Time                     `json:"resumes_at,omitempty"`
+}
+
+// PauseCollection sets the Stripe-parity collection-pause state. Distinct
+// from Pause (hard freeze on status). The cycle keeps advancing; the engine
+// generates the invoice as draft and skips finalize/charge/dunning while
+// pause_collection is non-null.
+//
+// Idempotent: a second call with the same input replaces the row's
+// pause_collection_* columns with the same values. Switching from one
+// resumes_at to another is supported because each call is a full
+// replacement.
+func (s *Service) PauseCollection(ctx context.Context, tenantID, id string, input PauseCollectionInput) (domain.Subscription, error) {
+	if input.Behavior == "" {
+		return domain.Subscription{}, errs.Invalid("behavior", "behavior is required")
+	}
+	if input.Behavior != domain.PauseCollectionKeepAsDraft {
+		return domain.Subscription{}, errs.Invalid("behavior",
+			"only 'keep_as_draft' is supported in v1; mark_uncollectible and void require an uncollectible invoice status that does not yet exist")
+	}
+
+	pc := domain.PauseCollection{Behavior: input.Behavior}
+	if input.ResumesAt != nil {
+		ts := input.ResumesAt.UTC()
+		if !ts.After(s.clock.Now()) {
+			return domain.Subscription{}, errs.Invalid("resumes_at", "must be in the future")
+		}
+		pc.ResumesAt = &ts
+	}
+
+	return s.store.SetPauseCollection(ctx, tenantID, id, pc)
+}
+
+// ResumeCollection clears any active collection-pause. Idempotent — a row
+// without an active pause returns unchanged. Distinct from Resume (which
+// flips status from paused back to active).
+func (s *Service) ResumeCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	return s.store.ClearPauseCollection(ctx, tenantID, id)
+}
+
 func beginningOfMonth(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
 }

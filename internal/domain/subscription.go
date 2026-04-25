@@ -19,6 +19,24 @@ const (
 	BillingTimeAnniversary SubscriptionBillingTime = "anniversary"
 )
 
+// PauseCollectionBehavior controls what the engine does with the invoice it
+// would normally finalize during a paused-collection cycle. v1 supports
+// only KeepAsDraft; the other Stripe modes (mark_uncollectible, void) need
+// an "uncollectible" invoice status that doesn't exist in Velox yet.
+type PauseCollectionBehavior string
+
+const (
+	PauseCollectionKeepAsDraft PauseCollectionBehavior = "keep_as_draft"
+)
+
+// PauseCollection is the per-subscription collection-pause state. The
+// pointer-on-Subscription form mirrors Stripe's nullable subscription.
+// pause_collection — nil = running normally, non-nil = paused.
+type PauseCollection struct {
+	Behavior  PauseCollectionBehavior `json:"behavior"`
+	ResumesAt *time.Time              `json:"resumes_at,omitempty"`
+}
+
 // SubscriptionItem is a single priced line on a subscription. A subscription
 // holds one or more items; each item pairs a plan with a quantity and carries
 // its own pending-plan-change state so upgrades and downgrades can schedule
@@ -54,7 +72,23 @@ type Subscription struct {
 	StartedAt                 *time.Time              `json:"started_at,omitempty"`
 	ActivatedAt               *time.Time              `json:"activated_at,omitempty"`
 	CanceledAt                *time.Time              `json:"canceled_at,omitempty"`
-	CurrentBillingPeriodStart *time.Time              `json:"current_billing_period_start,omitempty"`
+	// CancelAt is a future timestamp at which the billing cycle should
+	// transition the subscription to canceled. Distinct from CanceledAt
+	// (past-tense, set only when the cancel has fired). Nil means no
+	// timestamp-based schedule.
+	CancelAt *time.Time `json:"cancel_at,omitempty"`
+	// CancelAtPeriodEnd is the soft-cancel flag. When true and the cycle
+	// scan observes effectiveNow >= CurrentBillingPeriodEnd, the engine
+	// transitions the sub to canceled and skips the next invoice. Setting
+	// false before the boundary fires undoes the schedule.
+	CancelAtPeriodEnd bool `json:"cancel_at_period_end"`
+	// PauseCollection holds the Stripe-parity collection-pause state. When
+	// non-nil, the cycle still advances but the engine generates the
+	// invoice as draft and skips finalize/charge/dunning. Distinct from
+	// Status=paused, which is the hard freeze (sub excluded from
+	// GetDueBilling entirely). Nil means collection is running normally.
+	PauseCollection           *PauseCollection `json:"pause_collection,omitempty"`
+	CurrentBillingPeriodStart *time.Time       `json:"current_billing_period_start,omitempty"`
 	CurrentBillingPeriodEnd   *time.Time              `json:"current_billing_period_end,omitempty"`
 	NextBillingAt             *time.Time              `json:"next_billing_at,omitempty"`
 	UsageCapUnits             *int64                  `json:"usage_cap_units,omitempty"` // Max usage units per billing period (nil = unlimited)

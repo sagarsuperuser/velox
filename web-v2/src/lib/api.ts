@@ -204,6 +204,14 @@ export const api = {
     apiRequest<Subscription>('POST', `/subscriptions/${id}/resume`),
   cancelSubscription: (id: string) =>
     apiRequest<Subscription>('POST', `/subscriptions/${id}/cancel`),
+  scheduleSubscriptionCancel: (id: string, body: { at_period_end: true } | { cancel_at: string }) =>
+    apiRequest<Subscription>('POST', `/subscriptions/${id}/schedule-cancel`, body),
+  clearScheduledSubscriptionCancel: (id: string) =>
+    apiRequest<Subscription>('DELETE', `/subscriptions/${id}/scheduled-cancel`),
+  pauseSubscriptionCollection: (id: string, body: { behavior: 'keep_as_draft'; resumes_at?: string }) =>
+    apiRequest<Subscription>('PUT', `/subscriptions/${id}/pause-collection`, body),
+  resumeSubscriptionCollection: (id: string) =>
+    apiRequest<Subscription>('DELETE', `/subscriptions/${id}/pause-collection`),
   // Item CRUD. PATCH body is either `{quantity}` or `{new_plan_id, immediate}`,
   // never both — mirrors the backend's UpdateItemInput guard.
   addSubscriptionItem: (id: string, data: { plan_id: string; quantity?: number }) =>
@@ -384,6 +392,13 @@ export interface Subscription {
   trial_end_at?: string
   usage_cap_units?: number | null
   overage_action?: string
+  cancel_at_period_end?: boolean
+  cancel_at?: string
+  canceled_at?: string
+  pause_collection?: {
+    behavior: 'keep_as_draft'
+    resumes_at?: string
+  }
   created_at: string
 }
 

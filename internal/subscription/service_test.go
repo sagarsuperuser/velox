@@ -8,6 +8,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // memStore is an in-memory Store implementation used across the subscription
@@ -137,6 +138,85 @@ func (m *memStore) CancelAtomic(_ context.Context, tenantID, id string) (domain.
 	s.CanceledAt = &now
 	s.UpdatedAt = now
 	m.subs[id] = s
+	return s, nil
+}
+
+func (m *memStore) ScheduleCancellation(_ context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status == domain.SubscriptionCanceled || s.Status == domain.SubscriptionArchived {
+		return domain.Subscription{}, fmt.Errorf("cannot schedule cancellation on %s subscription", s.Status)
+	}
+	s.CancelAt = cancelAt
+	s.CancelAtPeriodEnd = cancelAtPeriodEnd
+	s.UpdatedAt = time.Now().UTC()
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
+	return s, nil
+}
+
+func (m *memStore) ClearScheduledCancellation(_ context.Context, tenantID, id string) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	s.CancelAt = nil
+	s.CancelAtPeriodEnd = false
+	s.UpdatedAt = time.Now().UTC()
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
+	return s, nil
+}
+
+func (m *memStore) FireScheduledCancellation(_ context.Context, tenantID, id string, at time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status != domain.SubscriptionActive {
+		return domain.Subscription{}, fmt.Errorf("scheduled cancel cannot fire on %s subscription", s.Status)
+	}
+	s.Status = domain.SubscriptionCanceled
+	s.CanceledAt = &at
+	s.CancelAt = nil
+	s.CancelAtPeriodEnd = false
+	s.UpdatedAt = at
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
+	return s, nil
+}
+
+func (m *memStore) SetPauseCollection(_ context.Context, tenantID, id string, pc domain.PauseCollection) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status == domain.SubscriptionCanceled || s.Status == domain.SubscriptionArchived {
+		return domain.Subscription{}, fmt.Errorf("cannot pause collection on %s subscription", s.Status)
+	}
+	pcCopy := pc
+	if pc.ResumesAt != nil {
+		t := *pc.ResumesAt
+		pcCopy.ResumesAt = &t
+	}
+	s.PauseCollection = &pcCopy
+	s.UpdatedAt = time.Now().UTC()
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
+	return s, nil
+}
+
+func (m *memStore) ClearPauseCollection(_ context.Context, tenantID, id string) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	s.PauseCollection = nil
+	s.UpdatedAt = time.Now().UTC()
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
 	return s, nil
 }
 
@@ -654,6 +734,259 @@ func TestPauseAndResume(t *testing.T) {
 		_, err := svc.Pause(ctx, "t1", sub.ID)
 		if err == nil {
 			t.Fatal("expected error pausing canceled sub")
+		}
+	})
+}
+
+// TestScheduleCancel covers the v1 service-layer validation rules for the
+// soft-cancel surface: the at_period_end / cancel_at mutual exclusion, the
+// "must be in the future" guard, the "must land on a clean cycle boundary"
+// guard, the round-trip schedule → clear path, and toggling between modes.
+func TestScheduleCancel(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	periodStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+
+	mkSvc := func() (*Service, domain.Subscription) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, _ := svc.Create(context.Background(), "t1", CreateInput{
+			Code: "sub-sched", DisplayName: "Test", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p"}},
+			StartNow: true,
+		})
+		_, _ = svc.Activate(context.Background(), "t1", sub.ID)
+		// Stamp a billing period so cancel_at validation has something to compare against.
+		stored, _ := svc.Get(context.Background(), "t1", sub.ID)
+		stored.CurrentBillingPeriodStart = &periodStart
+		stored.CurrentBillingPeriodEnd = &periodEnd
+		_, _ = svc.store.Update(context.Background(), "t1", stored)
+		return svc, stored
+	}
+
+	t.Run("at_period_end sets the flag", func(t *testing.T) {
+		svc, sub := mkSvc()
+		out, err := svc.ScheduleCancel(context.Background(), "t1", sub.ID, ScheduleCancelInput{AtPeriodEnd: true})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !out.CancelAtPeriodEnd {
+			t.Error("cancel_at_period_end should be true")
+		}
+		if out.CancelAt != nil {
+			t.Error("cancel_at should remain nil when scheduling at_period_end")
+		}
+	})
+
+	t.Run("cancel_at on or after period end accepted", func(t *testing.T) {
+		svc, sub := mkSvc()
+		ts := periodEnd
+		out, err := svc.ScheduleCancel(context.Background(), "t1", sub.ID, ScheduleCancelInput{CancelAt: &ts})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.CancelAt == nil || !out.CancelAt.Equal(periodEnd) {
+			t.Errorf("cancel_at: got %v, want %v", out.CancelAt, periodEnd)
+		}
+		if out.CancelAtPeriodEnd {
+			t.Error("at_period_end flag should remain false on timestamp schedule")
+		}
+	})
+
+	t.Run("rejects empty input", func(t *testing.T) {
+		svc, sub := mkSvc()
+		_, err := svc.ScheduleCancel(context.Background(), "t1", sub.ID, ScheduleCancelInput{})
+		if err == nil {
+			t.Fatal("expected error when neither field is set")
+		}
+	})
+
+	t.Run("rejects both fields together", func(t *testing.T) {
+		svc, sub := mkSvc()
+		ts := periodEnd
+		_, err := svc.ScheduleCancel(context.Background(), "t1", sub.ID, ScheduleCancelInput{AtPeriodEnd: true, CancelAt: &ts})
+		if err == nil {
+			t.Fatal("expected error when both fields are set")
+		}
+	})
+
+	t.Run("rejects past timestamp", func(t *testing.T) {
+		svc, sub := mkSvc()
+		past := now.Add(-time.Hour)
+		_, err := svc.ScheduleCancel(context.Background(), "t1", sub.ID, ScheduleCancelInput{CancelAt: &past})
+		if err == nil {
+			t.Fatal("expected error for past cancel_at")
+		}
+	})
+
+	t.Run("rejects mid-period timestamp", func(t *testing.T) {
+		svc, sub := mkSvc()
+		mid := periodEnd.Add(-24 * time.Hour)
+		_, err := svc.ScheduleCancel(context.Background(), "t1", sub.ID, ScheduleCancelInput{CancelAt: &mid})
+		if err == nil {
+			t.Fatal("expected error for cancel_at before current_billing_period_end")
+		}
+	})
+
+	t.Run("clear undoes any prior schedule", func(t *testing.T) {
+		svc, sub := mkSvc()
+		_, err := svc.ScheduleCancel(context.Background(), "t1", sub.ID, ScheduleCancelInput{AtPeriodEnd: true})
+		if err != nil {
+			t.Fatalf("schedule: %v", err)
+		}
+		out, err := svc.ClearScheduledCancel(context.Background(), "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("clear: %v", err)
+		}
+		if out.CancelAtPeriodEnd {
+			t.Error("cancel_at_period_end should be false after clear")
+		}
+		if out.CancelAt != nil {
+			t.Error("cancel_at should be nil after clear")
+		}
+	})
+
+	t.Run("toggle from at_period_end to cancel_at replaces schedule", func(t *testing.T) {
+		svc, sub := mkSvc()
+		if _, err := svc.ScheduleCancel(context.Background(), "t1", sub.ID, ScheduleCancelInput{AtPeriodEnd: true}); err != nil {
+			t.Fatalf("first schedule: %v", err)
+		}
+		ts := periodEnd
+		out, err := svc.ScheduleCancel(context.Background(), "t1", sub.ID, ScheduleCancelInput{CancelAt: &ts})
+		if err != nil {
+			t.Fatalf("second schedule: %v", err)
+		}
+		if out.CancelAtPeriodEnd {
+			t.Error("at_period_end flag should be cleared by full replacement")
+		}
+		if out.CancelAt == nil {
+			t.Error("cancel_at should be set after toggle")
+		}
+	})
+}
+
+// TestPauseCollection covers the v1 service-layer validation for the
+// pause_collection surface: behavior whitelist (only keep_as_draft for now),
+// resumes_at must be future or nil, and the round-trip pause → resume path.
+func TestPauseCollection(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+
+	mkSvc := func() (*Service, domain.Subscription) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, _ := svc.Create(context.Background(), "t1", CreateInput{
+			Code: "sub-pause", DisplayName: "Test", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p"}},
+			StartNow: true,
+		})
+		_, _ = svc.Activate(context.Background(), "t1", sub.ID)
+		stored, _ := svc.Get(context.Background(), "t1", sub.ID)
+		return svc, stored
+	}
+
+	t.Run("behavior keep_as_draft accepted, no resumes_at", func(t *testing.T) {
+		svc, sub := mkSvc()
+		out, err := svc.PauseCollection(context.Background(), "t1", sub.ID, PauseCollectionInput{
+			Behavior: domain.PauseCollectionKeepAsDraft,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.PauseCollection == nil {
+			t.Fatal("PauseCollection must be set")
+		}
+		if out.PauseCollection.Behavior != domain.PauseCollectionKeepAsDraft {
+			t.Errorf("behavior: got %q, want %q", out.PauseCollection.Behavior, domain.PauseCollectionKeepAsDraft)
+		}
+		if out.PauseCollection.ResumesAt != nil {
+			t.Error("ResumesAt must be nil when not provided")
+		}
+	})
+
+	t.Run("future resumes_at accepted", func(t *testing.T) {
+		svc, sub := mkSvc()
+		future := now.Add(7 * 24 * time.Hour)
+		out, err := svc.PauseCollection(context.Background(), "t1", sub.ID, PauseCollectionInput{
+			Behavior:  domain.PauseCollectionKeepAsDraft,
+			ResumesAt: &future,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.PauseCollection == nil || out.PauseCollection.ResumesAt == nil {
+			t.Fatal("ResumesAt must be set")
+		}
+		if !out.PauseCollection.ResumesAt.Equal(future) {
+			t.Errorf("ResumesAt: got %v, want %v", out.PauseCollection.ResumesAt, future)
+		}
+	})
+
+	t.Run("rejects empty behavior", func(t *testing.T) {
+		svc, sub := mkSvc()
+		_, err := svc.PauseCollection(context.Background(), "t1", sub.ID, PauseCollectionInput{})
+		if err == nil {
+			t.Fatal("expected error for empty behavior")
+		}
+	})
+
+	t.Run("rejects unsupported behavior", func(t *testing.T) {
+		svc, sub := mkSvc()
+		_, err := svc.PauseCollection(context.Background(), "t1", sub.ID, PauseCollectionInput{
+			Behavior: domain.PauseCollectionBehavior("mark_uncollectible"),
+		})
+		if err == nil {
+			t.Fatal("expected error for unsupported behavior")
+		}
+	})
+
+	t.Run("rejects past resumes_at", func(t *testing.T) {
+		svc, sub := mkSvc()
+		past := now.Add(-time.Hour)
+		_, err := svc.PauseCollection(context.Background(), "t1", sub.ID, PauseCollectionInput{
+			Behavior:  domain.PauseCollectionKeepAsDraft,
+			ResumesAt: &past,
+		})
+		if err == nil {
+			t.Fatal("expected error for past resumes_at")
+		}
+	})
+
+	t.Run("resume clears the pause", func(t *testing.T) {
+		svc, sub := mkSvc()
+		future := now.Add(time.Hour)
+		if _, err := svc.PauseCollection(context.Background(), "t1", sub.ID, PauseCollectionInput{
+			Behavior:  domain.PauseCollectionKeepAsDraft,
+			ResumesAt: &future,
+		}); err != nil {
+			t.Fatalf("pause: %v", err)
+		}
+		out, err := svc.ResumeCollection(context.Background(), "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+		if out.PauseCollection != nil {
+			t.Errorf("PauseCollection should be nil after resume, got %+v", out.PauseCollection)
+		}
+	})
+
+	t.Run("re-pause replaces resumes_at", func(t *testing.T) {
+		svc, sub := mkSvc()
+		first := now.Add(time.Hour)
+		if _, err := svc.PauseCollection(context.Background(), "t1", sub.ID, PauseCollectionInput{
+			Behavior:  domain.PauseCollectionKeepAsDraft,
+			ResumesAt: &first,
+		}); err != nil {
+			t.Fatalf("first: %v", err)
+		}
+		second := now.Add(48 * time.Hour)
+		out, err := svc.PauseCollection(context.Background(), "t1", sub.ID, PauseCollectionInput{
+			Behavior:  domain.PauseCollectionKeepAsDraft,
+			ResumesAt: &second,
+		})
+		if err != nil {
+			t.Fatalf("second: %v", err)
+		}
+		if !out.PauseCollection.ResumesAt.Equal(second) {
+			t.Errorf("ResumesAt: got %v, want %v (second call must replace first)",
+				out.PauseCollection.ResumesAt, second)
 		}
 	})
 }
