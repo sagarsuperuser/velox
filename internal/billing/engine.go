@@ -1049,15 +1049,15 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			unitAmount := decimal.NewFromInt(amount).Div(quantity).RoundBank(0).IntPart()
 
 			lineItems = append(lineItems, domain.InvoiceLineItem{
-				LineType: domain.LineTypeUsage,
-				MeterID:  meterID,
+				LineType:    domain.LineTypeUsage,
+				MeterID:     meterID,
 				Description: fmt.Sprintf("%s (%s)", meter.Name, meter.Unit),
 				// Quantity is truncated to int for the line item — fractional
 				// quantities (e.g. 1.5 GPU-hours) are supported in pricing
 				// math but the line item display column is still integer.
 				// Followup: widen InvoiceLineItem.Quantity to NUMERIC.
-				Quantity:        quantity.IntPart(),
-				UnitAmountCents: unitAmount,
+				Quantity:            quantity.IntPart(),
+				UnitAmountCents:     unitAmount,
 				AmountCents:         amount,
 				TotalAmountCents:    amount,
 				Currency:            invoiceCurrency,
