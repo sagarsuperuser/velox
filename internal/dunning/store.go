@@ -2,6 +2,7 @@ package dunning
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -11,6 +12,7 @@ type Store interface {
 	// Policy
 	GetPolicy(ctx context.Context, tenantID string) (domain.DunningPolicy, error)
 	UpsertPolicy(ctx context.Context, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error)
+	UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error)
 
 	// Runs
 	CreateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error)

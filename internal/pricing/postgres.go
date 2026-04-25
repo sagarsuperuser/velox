@@ -31,6 +31,25 @@ func (s *PostgresStore) CreateRatingRule(ctx context.Context, tenantID string, r
 	}
 	defer postgres.Rollback(tx)
 
+	created, err := s.createRatingRuleTx(ctx, tx, tenantID, rule)
+	if err != nil {
+		return domain.RatingRuleVersion{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.RatingRuleVersion{}, err
+	}
+	return created, nil
+}
+
+// CreateRatingRuleTx inserts a rating rule version inside an existing tx.
+// Used by recipe.Service.Instantiate to atomically create the recipe's
+// rating rules + meters + plans + pricing rules in a single transaction —
+// the recipe rolls back as a unit if any step fails.
+func (s *PostgresStore) CreateRatingRuleTx(ctx context.Context, tx *sql.Tx, tenantID string, rule domain.RatingRuleVersion) (domain.RatingRuleVersion, error) {
+	return s.createRatingRuleTx(ctx, tx, tenantID, rule)
+}
+
+func (s *PostgresStore) createRatingRuleTx(ctx context.Context, tx *sql.Tx, tenantID string, rule domain.RatingRuleVersion) (domain.RatingRuleVersion, error) {
 	id := postgres.NewID("vlx_rrv")
 	tiersJSON, err := json.Marshal(rule.GraduatedTiers)
 	if err != nil {
@@ -62,9 +81,6 @@ func (s *PostgresStore) CreateRatingRule(ctx context.Context, tenantID string, r
 	}
 
 	if err := json.Unmarshal(tiersJSON, &rule.GraduatedTiers); err != nil {
-		return domain.RatingRuleVersion{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return domain.RatingRuleVersion{}, err
 	}
 	return rule, nil
@@ -151,10 +167,27 @@ func (s *PostgresStore) CreateMeter(ctx context.Context, tenantID string, m doma
 	}
 	defer postgres.Rollback(tx)
 
+	created, err := s.createMeterTx(ctx, tx, tenantID, m)
+	if err != nil {
+		return domain.Meter{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Meter{}, err
+	}
+	return created, nil
+}
+
+// CreateMeterTx inserts a meter inside an existing tx. See CreateRatingRuleTx
+// for the cross-domain composition rationale.
+func (s *PostgresStore) CreateMeterTx(ctx context.Context, tx *sql.Tx, tenantID string, m domain.Meter) (domain.Meter, error) {
+	return s.createMeterTx(ctx, tx, tenantID, m)
+}
+
+func (s *PostgresStore) createMeterTx(ctx context.Context, tx *sql.Tx, tenantID string, m domain.Meter) (domain.Meter, error) {
 	id := postgres.NewID("vlx_mtr")
 	now := time.Now().UTC()
 
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		INSERT INTO meters (id, tenant_id, key, name, unit, aggregation, rating_rule_version_id, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
 		RETURNING id, tenant_id, key, name, unit, aggregation, COALESCE(rating_rule_version_id,''), created_at, updated_at
@@ -167,9 +200,6 @@ func (s *PostgresStore) CreateMeter(ctx context.Context, tenantID string, m doma
 		if postgres.IsUniqueViolation(err) {
 			return domain.Meter{}, errs.AlreadyExists("key", fmt.Sprintf("meter key %q already exists", m.Key))
 		}
-		return domain.Meter{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return domain.Meter{}, err
 	}
 	return m, nil
@@ -280,11 +310,28 @@ func (s *PostgresStore) CreatePlan(ctx context.Context, tenantID string, p domai
 	}
 	defer postgres.Rollback(tx)
 
+	created, err := s.createPlanTx(ctx, tx, tenantID, p)
+	if err != nil {
+		return domain.Plan{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Plan{}, err
+	}
+	return created, nil
+}
+
+// CreatePlanTx inserts a plan inside an existing tx. See CreateRatingRuleTx
+// for the cross-domain composition rationale.
+func (s *PostgresStore) CreatePlanTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.Plan) (domain.Plan, error) {
+	return s.createPlanTx(ctx, tx, tenantID, p)
+}
+
+func (s *PostgresStore) createPlanTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.Plan) (domain.Plan, error) {
 	id := postgres.NewID("vlx_pln")
 	now := time.Now().UTC()
 	meterIDsJSON, _ := json.Marshal(p.MeterIDs)
 
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		INSERT INTO plans (id, tenant_id, code, name, description, currency, billing_interval,
 			status, base_amount_cents, meter_ids, created_at, updated_at, tax_code)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12)
@@ -303,9 +350,6 @@ func (s *PostgresStore) CreatePlan(ctx context.Context, tenantID string, p domai
 		return domain.Plan{}, err
 	}
 	_ = json.Unmarshal(meterIDsJSON, &p.MeterIDs)
-	if err := tx.Commit(); err != nil {
-		return domain.Plan{}, err
-	}
 	return p, nil
 }
 
@@ -463,6 +507,25 @@ func (s *PostgresStore) UpsertMeterPricingRule(ctx context.Context, tenantID str
 	}
 	defer postgres.Rollback(tx)
 
+	stored, err := s.upsertMeterPricingRuleTx(ctx, tx, tenantID, rule)
+	if err != nil {
+		return domain.MeterPricingRule{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.MeterPricingRule{}, err
+	}
+	return stored, nil
+}
+
+// UpsertMeterPricingRuleTx upserts a rule inside an existing tx. Recipe
+// instantiation pairs this with CreateMeterTx + CreateRatingRuleTx so the
+// rule's foreign keys to meter_id and rating_rule_version_id are visible
+// inside the same uncommitted snapshot.
+func (s *PostgresStore) UpsertMeterPricingRuleTx(ctx context.Context, tx *sql.Tx, tenantID string, rule domain.MeterPricingRule) (domain.MeterPricingRule, error) {
+	return s.upsertMeterPricingRuleTx(ctx, tx, tenantID, rule)
+}
+
+func (s *PostgresStore) upsertMeterPricingRuleTx(ctx context.Context, tx *sql.Tx, tenantID string, rule domain.MeterPricingRule) (domain.MeterPricingRule, error) {
 	id := rule.ID
 	if id == "" {
 		id = postgres.NewID("vlx_mpr")
@@ -511,10 +574,6 @@ func (s *PostgresStore) UpsertMeterPricingRule(ctx context.Context, tenantID str
 	}
 	if stored.DimensionMatch == nil {
 		stored.DimensionMatch = map[string]any{}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return domain.MeterPricingRule{}, err
 	}
 	return stored, nil
 }

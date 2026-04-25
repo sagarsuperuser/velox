@@ -52,12 +52,30 @@ func (s *PostgresStore) UpsertPolicy(ctx context.Context, tenantID string, p dom
 	}
 	defer postgres.Rollback(tx)
 
+	stored, err := s.upsertPolicyTx(ctx, tx, tenantID, p)
+	if err != nil {
+		return domain.DunningPolicy{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.DunningPolicy{}, err
+	}
+	return stored, nil
+}
+
+// UpsertPolicyTx upserts the dunning policy inside an existing tx. Used by
+// recipe.Service.Instantiate so a recipe that opts into a custom dunning
+// schedule can land it atomically with the rest of the recipe's objects.
+func (s *PostgresStore) UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.DunningPolicy) (domain.DunningPolicy, error) {
+	return s.upsertPolicyTx(ctx, tx, tenantID, p)
+}
+
+func (s *PostgresStore) upsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.DunningPolicy) (domain.DunningPolicy, error) {
 	id := postgres.NewID("vlx_dpol")
 	now := time.Now().UTC()
 	scheduleJSON, _ := json.Marshal(p.RetrySchedule)
 
 	var scheduleOut []byte
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		INSERT INTO dunning_policies (id, tenant_id, name, enabled, retry_schedule,
 			max_retry_attempts, final_action, grace_period_days, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
@@ -78,9 +96,6 @@ func (s *PostgresStore) UpsertPolicy(ctx context.Context, tenantID string, p dom
 		return domain.DunningPolicy{}, err
 	}
 	_ = json.Unmarshal(scheduleOut, &p.RetrySchedule)
-	if err := tx.Commit(); err != nil {
-		return domain.DunningPolicy{}, err
-	}
 	return p, nil
 }
 
