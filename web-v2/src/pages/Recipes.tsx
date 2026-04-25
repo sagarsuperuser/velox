@@ -1,0 +1,397 @@
+import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { useNavigate } from 'react-router-dom'
+import { api, formatDateTime } from '@/lib/api'
+import type { Recipe, RecipeDetail, RecipeOverrideSchema, RecipePreview } from '@/lib/api'
+import { showApiError } from '@/lib/formErrors'
+import { Layout } from '@/components/Layout'
+
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { EmptyState } from '@/components/EmptyState'
+import { TableSkeleton } from '@/components/ui/TableSkeleton'
+
+import { Box, Loader2, Eye, Sparkles, AlertTriangle, CheckCircle2 } from 'lucide-react'
+
+export default function RecipesPage() {
+  const [selected, setSelected] = useState<Recipe | null>(null)
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['recipes'],
+    queryFn: async () => {
+      try {
+        return await api.listRecipes()
+      } catch {
+        return { data: [] }
+      }
+    },
+  })
+
+  const recipes = data?.data ?? []
+
+  return (
+    <Layout>
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-foreground">Pricing recipes</h1>
+          <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
+            Start from a built-in pricing template that mirrors a known billing shape — Anthropic-style multi-dim tokens, OpenAI per-token, Replicate per-second compute, B2B SaaS with seats + overage, marketplace GMV. Each recipe creates products, meters, pricing rules, plans, dunning, and a webhook placeholder atomically.
+          </p>
+        </div>
+      </div>
+
+      {error ? (
+        <Card className="mt-6">
+          <CardContent className="p-8 text-center">
+            <p className="text-sm text-destructive mb-3">{(error as Error).message}</p>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
+          </CardContent>
+        </Card>
+      ) : isLoading ? (
+        <Card className="mt-6">
+          <CardContent className="p-0">
+            <TableSkeleton columns={3} />
+          </CardContent>
+        </Card>
+      ) : recipes.length === 0 ? (
+        <Card className="mt-6">
+          <CardContent className="p-0">
+            <EmptyState
+              icon={Box}
+              title="No recipes available yet"
+              description="Pricing recipes ship with the v0.x release of the recipes API (Week 3). Check back after the next deploy, or follow docs/design-recipes.md for the contract."
+            />
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+          {recipes.map(r => (
+            <RecipeCard key={r.key} recipe={r} onConfigure={() => setSelected(r)} />
+          ))}
+        </div>
+      )}
+
+      {selected && (
+        <RecipeDialog
+          recipe={selected}
+          onClose={() => setSelected(null)}
+        />
+      )}
+    </Layout>
+  )
+}
+
+function RecipeCard({ recipe, onConfigure }: { recipe: Recipe; onConfigure: () => void }) {
+  const c = recipe.creates
+  const installed = !!recipe.instantiated
+
+  return (
+    <Card className={installed ? 'border-primary/40' : ''}>
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-sm text-foreground">{recipe.key}</span>
+              <span className="text-xs text-muted-foreground">v{recipe.version}</span>
+            </div>
+            <h3 className="text-base font-semibold text-foreground mt-1">{recipe.name}</h3>
+          </div>
+          {installed && (
+            <Badge variant="success" className="shrink-0">
+              <CheckCircle2 size={12} className="mr-1" />
+              Installed
+            </Badge>
+          )}
+        </div>
+
+        <p className="text-sm text-muted-foreground mt-3 leading-relaxed">{recipe.summary}</p>
+
+        <div className="flex flex-wrap gap-1.5 mt-4">
+          {c.meters > 0 && <Chip n={c.meters} label="meter" />}
+          {c.pricing_rules > 0 && <Chip n={c.pricing_rules} label="pricing rule" />}
+          {c.plans > 0 && <Chip n={c.plans} label="plan" />}
+          {c.products > 0 && <Chip n={c.products} label="product" />}
+          {c.rating_rules > 0 && <Chip n={c.rating_rules} label="rating rule" />}
+          {c.dunning_policies > 0 && <Chip n={c.dunning_policies} label="dunning policy" />}
+          {c.webhook_endpoints > 0 && <Chip n={c.webhook_endpoints} label="webhook" />}
+        </div>
+
+        {recipe.instantiated && (
+          <p className="text-xs text-muted-foreground mt-3">
+            Installed {formatDateTime(recipe.instantiated.instantiated_at)} · <span className="font-mono">{recipe.instantiated.id}</span>
+          </p>
+        )}
+
+        <div className="mt-5 flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">
+            {recipe.overridable.length} override{recipe.overridable.length !== 1 ? 's' : ''} available
+          </span>
+          <Button size="sm" variant={installed ? 'outline' : 'default'} onClick={onConfigure}>
+            {installed ? 'View' : 'Configure'}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function Chip({ n, label }: { n: number; label: string }) {
+  return (
+    <span className="inline-flex items-center text-xs font-medium bg-muted text-foreground px-2 py-0.5 rounded">
+      {n} {label}{n !== 1 ? 's' : ''}
+    </span>
+  )
+}
+
+function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [overrides, setOverrides] = useState<Record<string, string | number | boolean>>({})
+  const [seedSample, setSeedSample] = useState(false)
+  const [preview, setPreview] = useState<RecipePreview | null>(null)
+
+  const detailQuery = useQuery({
+    queryKey: ['recipe', recipe.key],
+    queryFn: async () => {
+      try {
+        return await api.getRecipe(recipe.key)
+      } catch {
+        return null as RecipeDetail | null
+      }
+    },
+  })
+  const detail = detailQuery.data
+
+  const previewMutation = useMutation({
+    mutationFn: () => api.previewRecipe(recipe.key, overrides),
+    onSuccess: (res) => setPreview(res),
+    onError: (err) => showApiError(err, 'Preview failed'),
+  })
+
+  const installMutation = useMutation({
+    mutationFn: () =>
+      api.instantiateRecipe({
+        key: recipe.key,
+        overrides,
+        seed_sample_data: seedSample,
+        force: false,
+      }),
+    onSuccess: (res) => {
+      toast.success(`Installed ${recipe.name}`)
+      queryClient.invalidateQueries({ queryKey: ['recipes'] })
+      onClose()
+      // Send the operator straight to the catalog — the new plan is the
+      // most likely next thing they want to look at.
+      if (res.created_objects.plan_ids.length > 0) {
+        navigate(`/plans/${res.created_objects.plan_ids[0]}`)
+      } else {
+        navigate('/pricing')
+      }
+    },
+    onError: (err) => showApiError(err, 'Install failed'),
+  })
+
+  const setOverride = (k: string, v: string | number | boolean) => {
+    setOverrides(prev => ({ ...prev, [k]: v }))
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Sparkles size={16} className="text-primary" />
+            {recipe.name}
+          </DialogTitle>
+          <DialogDescription>{recipe.summary}</DialogDescription>
+        </DialogHeader>
+
+        {detail?.description && (
+          <div className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line border-l-2 border-muted pl-3">
+            {detail.description}
+          </div>
+        )}
+
+        {/* Overrides */}
+        <div>
+          <Label className="text-xs uppercase tracking-wide text-muted-foreground">Overrides</Label>
+          {detail?.overridable_schema && Object.keys(detail.overridable_schema).length > 0 ? (
+            <div className="space-y-3 mt-2">
+              {Object.entries(detail.overridable_schema).map(([key, schema]) => (
+                <OverrideField
+                  key={key}
+                  fieldKey={key}
+                  schema={schema}
+                  value={overrides[key] ?? schema.default ?? ''}
+                  onChange={(v) => setOverride(key, v)}
+                />
+              ))}
+            </div>
+          ) : recipe.overridable.length > 0 ? (
+            <div className="space-y-3 mt-2">
+              {recipe.overridable.map(key => (
+                <OverrideField
+                  key={key}
+                  fieldKey={key}
+                  schema={{ type: 'string' }}
+                  value={overrides[key] ?? ''}
+                  onChange={(v) => setOverride(key, v)}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground mt-2">No overrides for this recipe.</p>
+          )}
+        </div>
+
+        {/* Sample data toggle */}
+        <div className="flex items-start justify-between gap-3 rounded-lg border border-input p-3">
+          <div>
+            <p className="text-sm font-medium text-foreground">Seed sample data</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Creates one demo customer + one trialing subscription so usage flows immediately. Off by default to keep the workspace clean.
+            </p>
+          </div>
+          <Switch checked={seedSample} onCheckedChange={setSeedSample} />
+        </div>
+
+        {/* Preview */}
+        {preview && (
+          <div className="rounded-lg border border-input p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-foreground">Preview</p>
+              <span className="text-xs text-muted-foreground">v{preview.version}</span>
+            </div>
+
+            {preview.warnings.length > 0 && (
+              <div className="rounded bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3">
+                <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300 text-xs font-medium mb-1.5">
+                  <AlertTriangle size={12} />
+                  {preview.warnings.length} warning{preview.warnings.length !== 1 ? 's' : ''}
+                </div>
+                <ul className="text-xs text-amber-700 dark:text-amber-300 space-y-1">
+                  {preview.warnings.map((w, i) => <li key={i}>· {w}</li>)}
+                </ul>
+              </div>
+            )}
+
+            <ObjectsList preview={preview} />
+          </div>
+        )}
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button
+            variant="outline"
+            onClick={() => previewMutation.mutate()}
+            disabled={previewMutation.isPending}
+          >
+            {previewMutation.isPending ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Eye size={14} className="mr-1.5" />}
+            Preview
+          </Button>
+          <Button
+            onClick={() => installMutation.mutate()}
+            disabled={installMutation.isPending || !!recipe.instantiated}
+          >
+            {installMutation.isPending ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Sparkles size={14} className="mr-1.5" />}
+            {recipe.instantiated ? 'Already installed' : 'Install recipe'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function OverrideField({
+  fieldKey,
+  schema,
+  value,
+  onChange,
+}: {
+  fieldKey: string
+  schema: RecipeOverrideSchema
+  value: string | number | boolean
+  onChange: (v: string | number | boolean) => void
+}) {
+  if (schema.type === 'boolean') {
+    return (
+      <div className="flex items-center justify-between">
+        <Label htmlFor={`override-${fieldKey}`} className="font-mono text-sm">{fieldKey}</Label>
+        <Switch
+          id={`override-${fieldKey}`}
+          checked={!!value}
+          onCheckedChange={onChange}
+        />
+      </div>
+    )
+  }
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <Label htmlFor={`override-${fieldKey}`} className="font-mono text-sm">{fieldKey}</Label>
+        {schema.description && <span className="text-xs text-muted-foreground">{schema.description}</span>}
+      </div>
+      <Input
+        id={`override-${fieldKey}`}
+        type={schema.type === 'number' ? 'number' : 'text'}
+        value={String(value)}
+        onChange={(e) => {
+          const raw = e.target.value
+          onChange(schema.type === 'number' ? Number(raw) : raw)
+        }}
+        className="mt-1.5 font-mono"
+      />
+    </div>
+  )
+}
+
+function ObjectsList({ preview }: { preview: RecipePreview }) {
+  const sections: { label: string; items: string[] }[] = []
+  if (preview.objects.products?.length) sections.push({ label: 'Products', items: preview.objects.products.map(p => p.name) })
+  if (preview.objects.meters?.length) sections.push({ label: 'Meters', items: preview.objects.meters.map(m => `${m.name} (${m.aggregation})`) })
+  if (preview.objects.rating_rules?.length) sections.push({ label: 'Rating rules', items: preview.objects.rating_rules.map(r => `${r.rule_key} · ${r.mode}`) })
+  if (preview.objects.pricing_rules?.length) sections.push({
+    label: 'Pricing rules',
+    items: preview.objects.pricing_rules.map(r => {
+      const dims = Object.entries(r.dimension_match).map(([k, v]) => `${k}=${v}`).join(', ')
+      return `${r.meter_key} → ${r.rating_rule_key} (${dims || 'all events'}, ${r.aggregation_mode}, p${r.priority})`
+    }),
+  })
+  if (preview.objects.plans?.length) sections.push({ label: 'Plans', items: preview.objects.plans.map(p => `${p.name} (${p.billing_interval}, ${p.currency})`) })
+  if (preview.objects.dunning_policies?.length) sections.push({ label: 'Dunning policies', items: preview.objects.dunning_policies.map(d => `${d.name} (${d.max_retries} retries)`) })
+  if (preview.objects.webhook_endpoints?.length) sections.push({ label: 'Webhook endpoints', items: preview.objects.webhook_endpoints.map(w => `${w.url}${w._placeholder ? ' (placeholder)' : ''}`) })
+
+  if (sections.length === 0) {
+    return <p className="text-xs text-muted-foreground">No objects to preview.</p>
+  }
+
+  return (
+    <div className="space-y-2.5">
+      {sections.map(s => (
+        <div key={s.label}>
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1">{s.label}</p>
+          <ul className="text-xs text-foreground space-y-0.5 font-mono">
+            {s.items.slice(0, 5).map((it, i) => <li key={i}>· {it}</li>)}
+            {s.items.length > 5 && (
+              <li className="text-muted-foreground">… and {s.items.length - 5} more</li>
+            )}
+          </ul>
+        </div>
+      ))}
+    </div>
+  )
+}
