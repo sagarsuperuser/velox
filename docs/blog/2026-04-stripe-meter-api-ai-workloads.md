@@ -90,11 +90,11 @@ This is what people mean when they say "Stripe Billing wasn't built for AI." The
 Velox's [multi-dim meters design](../design-multi-dim-meters.md) takes the inverse position. There is **one meter per usage type** — `tokens`, `requests`, `gb_hours` — and events carry dimensions inline:
 
 ```json
-POST /v1/usage_events
+POST /v1/usage-events
 {
-  "meter_key": "tokens",
-  "customer_id": "cus_acme",
-  "value": "12450",
+  "event_name": "tokens",
+  "external_customer_id": "cus_acme",
+  "quantity": "12450",
   "dimensions": {
     "model": "opus4",
     "operation": "input",
@@ -110,7 +110,7 @@ POST /v1/usage_events
 Pricing is then expressed as **rules attached to the meter**, each with a `dimension_match` and an `aggregation_mode`:
 
 ```json
-POST /v1/meters/mtr_tokens/pricing_rules
+POST /v1/meters/mtr_tokens/pricing-rules
 {
   "rating_rule_version_id": "rrv_opus4_input_uncached",
   "dimension_match": {
@@ -132,7 +132,7 @@ This collapses the 36 cells from the Stripe wiring into:
 - **36 pricing rules** on that meter
 - **1 subscription item** per customer
 
-The dimension structure that lives in your application gets sent across the wire intact. You can ask "how many tokens did this customer use across all Opus models in April?" with a single grouping query — `GET /v1/customers/{id}/usage?meter_key=tokens&group_by=model`. You can introduce a new model by adding one rule, not 12. You can deprecate a cell by removing one rule, not migrating every customer's subscription items.
+The dimension structure that lives in your application gets sent across the wire intact. You can ask "how many tokens did this customer use across all Opus models in April?" with a single grouping query — `GET /v1/customers/{id}/usage?event_name=tokens&group_by=model`. You can introduce a new model by adding one rule, not 12. You can deprecate a cell by removing one rule, not migrating every customer's subscription items.
 
 ---
 
