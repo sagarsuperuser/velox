@@ -39,9 +39,10 @@ export default function UsageEventsPage() {
     meter: '',
     from: '',
     to: '',
+    dim: '',
     page: '1',
   })
-  const { customer: filterCustomer, meter: filterMeter, from: filterFrom, to: filterTo } = urlState
+  const { customer: filterCustomer, meter: filterMeter, from: filterFrom, to: filterTo, dim: filterDim } = urlState
   const page = Math.max(1, parseInt(urlState.page) || 1)
   const [events, setEvents] = useState<UsageEvent[]>([])
   const [total, setTotal] = useState(0)
@@ -84,18 +85,37 @@ export default function UsageEventsPage() {
     if (filterMeter) parts.push(`meter_id=${filterMeter}`)
     if (filterFrom) parts.push(`from=${new Date(filterFrom).toISOString()}`)
     if (filterTo) parts.push(`to=${new Date(filterTo + 'T23:59:59').toISOString()}`)
+    if (filterDim) parts.push(`dimensions=${encodeURIComponent(filterDim)}`)
     const params = parts.join('&')
     api.listUsageEvents(params)
       .then(res => { setEvents(res.data || []); setTotal(res.total || 0); setLoading(false) })
       .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load usage events'); setEvents([]); setTotal(0); setLoading(false) })
-  }, [page, filterCustomer, filterMeter, filterFrom, filterTo])
+  }, [page, filterCustomer, filterMeter, filterFrom, filterTo, filterDim])
 
   useEffect(() => { loadEvents() }, [loadEvents])
+
+  // Prefer the decimal-precision `value` field once it lands (multi-dim meters
+  // ship May 8); fall back to the legacy integer `quantity` for older events.
+  const eventValue = (e: UsageEvent): number => {
+    if (e.value !== undefined && e.value !== null && e.value !== '') {
+      const n = Number(e.value)
+      if (!Number.isNaN(n)) return n
+    }
+    return e.quantity
+  }
+
+  // Show the dimensions column + filter only when at least one event in the
+  // current page actually carries dimensions, OR when a dimension filter is
+  // set. Pre-multi-dim tenants stay visually clean.
+  const hasDimensions = useMemo(
+    () => events.some(e => e.dimensions && Object.keys(e.dimensions).length > 0) || !!filterDim,
+    [events, filterDim],
+  )
 
   // Computed stats from current page data
   const stats = useMemo(() => {
     const totalEvents = total
-    const totalUnits = events.reduce((sum, e) => sum + e.quantity, 0)
+    const totalUnits = events.reduce((sum, e) => sum + eventValue(e), 0)
     const activeMeters = new Set(events.map(e => e.meter_id)).size
     const activeCustomers = new Set(events.map(e => e.customer_id)).size
     return { totalEvents, totalUnits, activeMeters, activeCustomers }
@@ -105,7 +125,7 @@ export default function UsageEventsPage() {
   const meterBreakdown = useMemo(() => {
     const grouped: Record<string, number> = {}
     for (const e of events) {
-      grouped[e.meter_id] = (grouped[e.meter_id] || 0) + e.quantity
+      grouped[e.meter_id] = (grouped[e.meter_id] || 0) + eventValue(e)
     }
     const grandTotal = Object.values(grouped).reduce((a, b) => a + b, 0)
     return Object.entries(grouped)
@@ -127,15 +147,17 @@ export default function UsageEventsPage() {
     if (filterMeter) parts.push(`meter_id=${filterMeter}`)
     if (filterFrom) parts.push(`from=${new Date(filterFrom).toISOString()}`)
     if (filterTo) parts.push(`to=${new Date(filterTo + 'T23:59:59').toISOString()}`)
+    if (filterDim) parts.push(`dimensions=${encodeURIComponent(filterDim)}`)
     const exportParams = parts.length > 0 ? parts.join('&') : undefined
     api.listUsageEvents(exportParams).then(res => {
       const rows = (res.data || []).map(ev => [
         formatDateTime(ev.timestamp),
         customerMap[ev.customer_id]?.display_name || ev.customer_id,
         meterMap[ev.meter_id]?.name || ev.meter_id,
-        String(ev.quantity),
+        ev.value ?? String(ev.quantity),
+        ev.dimensions && Object.keys(ev.dimensions).length > 0 ? JSON.stringify(ev.dimensions) : '',
       ])
-      downloadCSV('usage-events.csv', ['Timestamp', 'Customer', 'Meter', 'Quantity'], rows)
+      downloadCSV('usage-events.csv', ['Timestamp', 'Customer', 'Meter', 'Value', 'Dimensions'], rows)
     })
   }
 
@@ -195,6 +217,13 @@ export default function UsageEventsPage() {
           onChange={v => setUrlState({ to: v, page: '1' })}
           placeholder="To date"
           className="w-44"
+        />
+        <input
+          type="text"
+          value={filterDim}
+          onChange={(e) => setUrlState({ dim: e.target.value, page: '1' })}
+          placeholder="dimension (e.g. model=gpt-4)"
+          className="flex h-9 w-56 rounded-md border border-input bg-transparent px-3 py-1 text-sm font-mono shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring placeholder:text-muted-foreground placeholder:font-sans"
         />
       </div>
 
@@ -276,24 +305,45 @@ export default function UsageEventsPage() {
                     <TableHead className="text-xs font-medium">Timestamp</TableHead>
                     <TableHead className="text-xs font-medium">Customer</TableHead>
                     <TableHead className="text-xs font-medium">Meter</TableHead>
-                    <TableHead className="text-xs font-medium text-right">Quantity</TableHead>
+                    {hasDimensions && <TableHead className="text-xs font-medium">Dimensions</TableHead>}
+                    <TableHead className="text-xs font-medium text-right">Value</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {events.map(ev => (
-                    <TableRow key={ev.id}>
-                      <TableCell className="text-sm text-foreground">{formatDateTime(ev.timestamp)}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {customerMap[ev.customer_id]?.display_name || ev.customer_id.slice(0, 8) + '...'}
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {meterMap[ev.meter_id]?.name || ev.meter_id.slice(0, 8) + '...'}
-                      </TableCell>
-                      <TableCell className={cn('text-sm font-medium text-right tabular-nums', ev.quantity < 0 ? 'text-destructive' : 'text-foreground')}>
-                        {ev.quantity < 0 ? '' : '+'}{ev.quantity.toLocaleString()}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {events.map(ev => {
+                    const v = eventValue(ev)
+                    const display = ev.value ?? v.toLocaleString()
+                    const dims = ev.dimensions && Object.keys(ev.dimensions).length > 0 ? ev.dimensions : null
+                    return (
+                      <TableRow key={ev.id}>
+                        <TableCell className="text-sm text-foreground">{formatDateTime(ev.timestamp)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {customerMap[ev.customer_id]?.display_name || ev.customer_id.slice(0, 8) + '...'}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {meterMap[ev.meter_id]?.name || ev.meter_id.slice(0, 8) + '...'}
+                        </TableCell>
+                        {hasDimensions && (
+                          <TableCell>
+                            {dims ? (
+                              <div className="flex flex-wrap gap-1">
+                                {Object.entries(dims).map(([k, val]) => (
+                                  <span key={k} className="inline-flex items-center text-xs font-mono bg-muted px-1.5 py-0.5 rounded">
+                                    {k}=<span className="text-foreground">{String(val)}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                        )}
+                        <TableCell className={cn('text-sm font-medium text-right tabular-nums', v < 0 ? 'text-destructive' : 'text-foreground')}>
+                          {v < 0 ? '' : '+'}{display}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
 
