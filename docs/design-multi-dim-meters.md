@@ -119,24 +119,30 @@ GRANT ALL ON TABLE meter_pricing_rules TO velox_app;
 
 ## API surface
 
-### `POST /v1/usage_events`
+> **Wire-contract conventions** (consistent with the rest of `/v1/*`):
+>
+> - **Paths use hyphens**, not underscores: `/v1/usage-events`, `/v1/meters/{id}/pricing-rules`, `/v1/usage-records`. Matches `/v1/credit-notes`, `/v1/rating-rules`, etc.
+> - **Quantity field is `quantity`, both directions.** JSON wire form is a string for decimal precision (`"1234.5"`); numeric form is also accepted on input. There is no `value` alias — pre-launch we don't owe back-compat, and one canonical name beats two.
+> - **External identifiers on input.** Ingest takes `external_customer_id` (the developer's own ID) and `event_name` (the meter key); the handler resolves both to internal `customer_id` / `meter_id` server-side.
+
+### `POST /v1/usage-events`
 
 ```http
-POST /v1/usage_events
+POST /v1/usage-events
 Idempotency-Key: <key>
 Authorization: Bearer <secret_key>
 
 {
-  "meter_key": "tokens",
-  "customer_id": "cust_xyz",
-  "subscription_id": "sub_abc",       // optional
-  "value": "1234.5",                  // string for decimal precision; numeric also accepted
+  "external_customer_id": "cust_xyz",
+  "event_name": "tokens",
+  "quantity": "1234.5",                // string for decimal precision; numeric also accepted
   "dimensions": {
     "model": "gpt-4",
     "operation": "input",
     "cached": false
   },
-  "timestamp": "2026-04-25T12:34:56Z" // optional, defaults to now
+  "idempotency_key": "evt-1",          // optional; alternative to the header form
+  "timestamp": "2026-04-25T12:34:56Z"  // optional, defaults to now
 }
 ```
 
@@ -145,21 +151,24 @@ Response `201`:
 {
   "id": "vlx_evt_...",
   "tenant_id": "tnt_...",
+  "customer_id": "vlx_cus_...",
   "meter_id": "vlx_mtr_...",
-  "customer_id": "cust_xyz",
-  "value": "1234.5",
-  "dimensions": { "model": "gpt-4", "operation": "input", "cached": false },
+  "subscription_id": "vlx_sub_...",
+  "quantity": "1234.5",
+  "properties": { "model": "gpt-4", "operation": "input", "cached": false },
   "timestamp": "2026-04-25T12:34:56Z",
-  "subscription_id": "sub_abc"
+  "origin": "api"
 }
 ```
 
-Existing `POST /v1/usage_records` stays for back-compat (no `dimensions`, integer-only `quantity`); ingests into the same `usage_events` table with empty `properties`.
+The response carries internal IDs (`vlx_cus_*`, `vlx_mtr_*`) and surfaces dimensions on `properties` (the storage column name) — `dimensions` on the request is just an alias and collapses onto `properties` at the storage layer.
 
-### `POST /v1/meters/{id}/pricing_rules`
+Existing `POST /v1/usage-records` stays for back-compat (no `dimensions`, integer-only `quantity`); ingests into the same `usage_events` table with empty `properties`.
+
+### `POST /v1/meters/{id}/pricing-rules`
 
 ```http
-POST /v1/meters/mtr_xyz/pricing_rules
+POST /v1/meters/mtr_xyz/pricing-rules
 Authorization: Bearer <secret_key>
 
 {
@@ -179,7 +188,7 @@ Plus `GET`, `LIST`, `DELETE` for full CRUD.
 ### `GET /v1/customers/{id}/usage`
 
 ```http
-GET /v1/customers/cust_xyz/usage?meter_key=tokens&period_start=2026-04-01&period_end=2026-04-30&group_by=model,operation
+GET /v1/customers/cust_xyz/usage?event_name=tokens&period_start=2026-04-01&period_end=2026-04-30&group_by=model,operation
 ```
 
 Returns the per-rule aggregated quantity + projected charges, grouped by requested dimensions. Powers the cost-dashboard component (Week 5).
@@ -192,11 +201,11 @@ When billing finalizes for `(customer, meter, period_start, period_end)`:
 2. Iterate rules. For each rule:
    - Find events in the period whose `properties` is a **superset** of `dimension_match` AND that haven't been claimed by a higher-priority rule.
    - Apply the rule's `aggregation_mode`:
-     - `sum` → `SUM(value)`
+     - `sum` → `SUM(quantity)`
      - `count` → `COUNT(*)`
-     - `last_during_period` → value of the latest event by `timestamp` within the period
-     - `last_ever` → value of the latest event by `timestamp` across all time, regardless of period (used for "current state" billing like seat counts)
-     - `max` → `MAX(value)`
+     - `last_during_period` → quantity of the latest event by `timestamp` within the period
+     - `last_ever` → quantity of the latest event by `timestamp` across all time, regardless of period (used for "current state" billing like seat counts)
+     - `max` → `MAX(quantity)`
    - Resolve the aggregated quantity → cents via the rule's `rating_rule_version` (existing flat / graduated / package logic, unchanged).
 3. Events not claimed by any pricing rule fall back to the meter's default `rating_rule_version_id` with mode `meters.aggregation`.
 
@@ -225,7 +234,7 @@ WITH ranked_rules AS (
 ),
 claimed AS (
     SELECT DISTINCT ON (e.id)
-        e.id, e.value, e.timestamp,
+        e.id, e.quantity, e.timestamp,
         r.id AS rule_id, r.aggregation_mode, r.rating_rule_version_id
     FROM usage_events e
     CROSS JOIN ranked_rules r
@@ -250,7 +259,7 @@ For `last_during_period`, `last_ever`, `max` modes the aggregation differs — i
 
 - Domain type: `decimal.Decimal` from `github.com/shopspring/decimal` (already battle-tested, used by Stripe's own SDK and many Go billing systems)
 - Postgres driver: `pgtype.Numeric` ↔ `decimal.Decimal` conversion in store layer
-- All `domain.UsageEvent.Quantity` (or rename to `Value`) becomes `decimal.Decimal`
+- `domain.UsageEvent.Quantity` becomes `decimal.Decimal` (kept the `Quantity` name — wire field is `quantity`, no rename to `Value`)
 - Existing internal callers passing `int64` need adapters
 
 Per memory `feedback_prefer_battle_tested_libs`: use `shopspring/decimal`, do not roll our own.
@@ -293,7 +302,7 @@ Per memory `feedback_prefer_battle_tested_libs`: use `shopspring/decimal`, do no
 
 1. **Should dimensions be schema-validated against the meter?** Proposal: **no** for v1. Free-form JSONB. Revisit after first design partner reports a typo'd dimension caused a billing miss.
 2. **Should pricing rules support time-windowed match?** Proposal: **no**. Period boundary is the only window for v1.
-3. **How do we handle events whose `value` is zero?** Proposal: ingest, count for `count` mode, sum to zero for `sum` mode (no special case).
+3. **How do we handle events whose `quantity` is zero?** Proposal: ingest, count for `count` mode, sum to zero for `sum` mode (no special case).
 4. **Decimal precision — `NUMERIC(38, 12)` sufficient?** Proposal: **yes**. Tokens are integer; GPU-hours need 4–6 decimals; 12 is generous.
 5. **Cap on dimension count per event?** Proposal: **16 keys, soft limit**. Reject events with >16 dimension keys to bound JSONB size and avoid pathological tenants.
 6. **Do existing `usage_events.quantity` BIGINT values need any migration data work?** Proposal: **no**. Widening cast is lossless; max BIGINT (≈9.2 × 10¹⁸) fits NUMERIC(38, 12) trivially.
@@ -304,12 +313,12 @@ Per memory `feedback_prefer_battle_tested_libs`: use `shopspring/decimal`, do no
 Tracking via the 90-day plan; this is the canonical breakdown:
 
 - [ ] Migration `0054_multi_dim_meters.{up,down}.sql` (allocate number from `origin/main`)
-- [ ] `domain.UsageEvent.Quantity` → `decimal.Decimal` (rename to `Value` if cleaner; one-time refactor)
+- [ ] `domain.UsageEvent.Quantity` → `decimal.Decimal` (one-time refactor; field name stays `Quantity`)
 - [ ] `domain.MeterPricingRule` struct
 - [ ] `usage.Store.UpsertPricingRule(...)`, `ListPricingRulesByMeter(...)`, `DeletePricingRule(...)`
-- [ ] `usage.Service.IngestEvent(...)` accepts decimal value + dimensions
+- [ ] `usage.Service.IngestEvent(...)` accepts decimal quantity + dimensions
 - [ ] `usage.Service.AggregateForBillingPeriod(...)` resolves rules with priority + dimension match
-- [ ] HTTP handlers: `POST /v1/usage_events`, `POST/GET/LIST/DELETE /v1/meters/{id}/pricing_rules`
+- [ ] HTTP handlers: `POST /v1/usage-events`, `POST/GET/LIST/DELETE /v1/meters/{id}/pricing-rules`
 - [ ] `GET /v1/customers/{id}/usage` (powers Week 5 cost dashboard)
 - [ ] Unit tests: ingest, aggregation per mode, subset-match, priority-claim
 - [ ] Integration tests: real Postgres, RLS-isolated tenants, decimal precision, idempotency
