@@ -129,6 +129,45 @@ func TestIngest(t *testing.T) {
 			t.Errorf("got origin %q, want %q", e.Origin, domain.UsageOriginAPI)
 		}
 	})
+
+	t.Run("dimensions persist on properties", func(t *testing.T) {
+		e, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_dims", MeterID: "mtr_1", Quantity: dec(1),
+			Properties: map[string]any{"model": "gpt-4", "cached": false, "tier": int64(1)},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.Properties["model"] != "gpt-4" {
+			t.Errorf("model: got %v", e.Properties["model"])
+		}
+		if e.Properties["cached"] != false {
+			t.Errorf("cached: got %v", e.Properties["cached"])
+		}
+	})
+
+	t.Run("rejects too many dimension keys", func(t *testing.T) {
+		dims := map[string]any{}
+		for i := 0; i < MaxPropertyKeys+1; i++ {
+			dims[fmt.Sprintf("k%d", i)] = "v"
+		}
+		_, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "c", MeterID: "m", Quantity: dec(1), Properties: dims,
+		})
+		if err == nil {
+			t.Fatal("expected error for too many keys")
+		}
+	})
+
+	t.Run("rejects non-scalar dimension value", func(t *testing.T) {
+		_, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "c", MeterID: "m", Quantity: dec(1),
+			Properties: map[string]any{"models": []string{"gpt-4", "claude"}},
+		})
+		if err == nil {
+			t.Fatal("expected error for slice value")
+		}
+	})
 }
 
 // TestBackfill exercises the audit-path contract: past timestamp required,

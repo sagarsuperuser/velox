@@ -58,11 +58,20 @@ func (h *Handler) Backfill(w http.ResponseWriter, r *http.Request) {
 // apiEvent is the public API input — developers send external identifiers.
 // Quantity accepts both number (5) and string ("5.5") forms via shopspring's
 // UnmarshalJSON; the response side serializes as a string for precision.
+//
+// Dimensions: per docs/design-multi-dim-meters.md, AI-native ingest uses
+// `dimensions` as the field name for the JSONB filter that pricing rules
+// dispatch on. Properties is the original name and is kept as an alias
+// for backward compatibility — if both are present, dimensions wins (it
+// is the documented v1 field; properties was an internal name leaked
+// into the wire). The two collapse onto the same usage_events.properties
+// column at the storage layer.
 type apiEvent struct {
 	ExternalCustomerID string           `json:"external_customer_id"`
 	EventName          string           `json:"event_name"`
 	Quantity           decimal.Decimal  `json:"quantity,omitempty"`
 	Properties         map[string]any   `json:"properties,omitempty"`
+	Dimensions         map[string]any   `json:"dimensions,omitempty"`
 	IdempotencyKey     string           `json:"idempotency_key,omitempty"`
 	Timestamp          *json.RawMessage `json:"timestamp,omitempty"`
 }
@@ -89,11 +98,17 @@ func (h *Handler) resolve(ctx context.Context, tenantID string, evt apiEvent) (I
 		return IngestInput{}, errs.Invalid("event_name", fmt.Sprintf("meter %q not found", eventName))
 	}
 
+	// dimensions takes precedence over properties — see apiEvent doc.
+	dims := evt.Dimensions
+	if dims == nil {
+		dims = evt.Properties
+	}
+
 	input := IngestInput{
 		CustomerID:     cust.ID,
 		MeterID:        meter.ID,
 		Quantity:       evt.Quantity,
-		Properties:     evt.Properties,
+		Properties:     dims,
 		IdempotencyKey: evt.IdempotencyKey,
 	}
 
