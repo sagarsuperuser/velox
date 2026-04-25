@@ -1,9 +1,12 @@
 import { useMemo } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import { Check, ArrowRight } from 'lucide-react'
+import { Check, ArrowRight, ExternalLink, CheckCircle2 } from 'lucide-react'
 
 interface Step {
   key: string
@@ -12,35 +15,93 @@ interface Step {
   body: React.ReactNode
 }
 
+function TemplateStepBody() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['recipes'],
+    queryFn: async () => {
+      try {
+        return await api.listRecipes()
+      } catch {
+        return { data: [] }
+      }
+    },
+  })
+  const recipes = data?.data ?? []
+
+  if (isLoading) {
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {[0, 1, 2, 3].map(i => (
+          <div key={i} className="h-24 rounded-lg border border-input bg-muted/30 animate-pulse" />
+        ))}
+      </div>
+    )
+  }
+
+  if (recipes.length === 0) {
+    return (
+      <div className="rounded-lg border border-input p-5 text-center">
+        <p className="text-sm text-muted-foreground">
+          Pricing recipes ship with the Week 3 release. You can configure pricing manually in the meantime — head to{' '}
+          <Link to="/pricing" className="underline underline-offset-2 hover:text-foreground">Pricing</Link> to create meters and rating rules.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {recipes.map(r => {
+          const c = r.creates
+          const installed = !!r.instantiated
+          return (
+            <Link
+              key={r.key}
+              to={`/recipes`}
+              className={cn(
+                'block text-left rounded-lg border p-4 hover:border-primary/40 hover:bg-muted/30 transition-colors',
+                installed ? 'border-primary/40' : 'border-input',
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono text-sm text-foreground truncate">{r.key}</span>
+                {installed ? (
+                  <Badge variant="success" className="shrink-0">
+                    <CheckCircle2 size={11} className="mr-1" />
+                    Installed
+                  </Badge>
+                ) : (
+                  <span className="text-xs text-muted-foreground">v{r.version}</span>
+                )}
+              </div>
+              <p className="text-sm text-foreground mt-1 leading-snug">{r.name}</p>
+              <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed line-clamp-2">{r.summary}</p>
+              <div className="flex flex-wrap gap-1 mt-2.5 text-xs text-muted-foreground">
+                <span>{c.meters} meter{c.meters !== 1 ? 's' : ''}</span>
+                <span>·</span>
+                <span>{c.pricing_rules} pricing rule{c.pricing_rules !== 1 ? 's' : ''}</span>
+                <span>·</span>
+                <span>{c.plans} plan{c.plans !== 1 ? 's' : ''}</span>
+              </div>
+            </Link>
+          )
+        })}
+      </div>
+      <Link to="/recipes" className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 mt-3 inline-flex items-center">
+        Open full recipe picker
+        <ExternalLink size={11} className="ml-1" />
+      </Link>
+    </div>
+  )
+}
+
 const STEPS: Step[] = [
   {
     key: 'template',
     title: 'Pick a pricing template',
-    description: 'Start from one of the recipes that match common usage-billing shapes — or skip and build from scratch.',
-    body: (
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {[
-          { name: 'anthropic_style', tag: 'AI inference', detail: 'Multi-dim tokens (model × operation × cached) + base subscription' },
-          { name: 'openai_style', tag: 'AI inference', detail: 'Per-token rates per model with prompt-cache discount' },
-          { name: 'replicate_style', tag: 'AI inference', detail: 'Per-second compute billed by GPU class' },
-          { name: 'b2b_saas_pro', tag: 'SaaS', detail: 'Per-seat base + usage overage with credit grant' },
-          { name: 'marketplace_gmv', tag: 'Marketplace', detail: 'Take rate on GMV with platform-fee floor' },
-          { name: 'blank', tag: 'Custom', detail: 'Empty product catalog. Build it yourself in the dashboard.' },
-        ].map(r => (
-          <button
-            key={r.name}
-            className="text-left rounded-lg border border-input p-4 hover:border-primary/40 hover:bg-muted/30 transition-colors"
-            disabled
-          >
-            <div className="flex items-center justify-between">
-              <span className="font-mono text-sm text-foreground">{r.name}</span>
-              <span className="text-xs text-muted-foreground">{r.tag}</span>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">{r.detail}</p>
-          </button>
-        ))}
-      </div>
-    ),
+    description: 'Start from one of the recipes that match common usage-billing shapes — or skip and build from scratch in Pricing.',
+    body: <TemplateStepBody />,
   },
   {
     key: 'stripe',

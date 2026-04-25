@@ -314,6 +314,21 @@ export const api = {
   revokeCustomerCoupon: (customerId: string) =>
     apiRequest<void>('DELETE', `/customers/${customerId}/coupon`),
 
+  // Recipes (pricing templates) — see docs/design-recipes.md
+  listRecipes: () => apiRequest<{ data: Recipe[] }>('GET', '/recipes'),
+  getRecipe: (key: string) => apiRequest<RecipeDetail>('GET', `/recipes/${key}`),
+  previewRecipe: (key: string, overrides: Record<string, string | number | boolean>) =>
+    apiRequest<RecipePreview>('POST', `/recipes/${key}/preview`, { overrides }),
+  instantiateRecipe: (data: {
+    key: string
+    overrides?: Record<string, string | number | boolean>
+    seed_sample_data?: boolean
+    force?: boolean
+    idempotency_key?: string
+  }) => apiRequest<RecipeInstance>('POST', '/recipes/instantiate', data),
+  deleteRecipeInstance: (id: string) =>
+    apiRequest<{ status: string }>('DELETE', `/recipes/instances/${id}`),
+
   // Audit Log
   listAuditLog: (params?: string) => apiRequest<{ data: AuditEntry[]; total: number }>('GET', `/audit-log${params ? '?' + params : ''}`),
   getAuditFilters: () => apiRequest<AuditFilterOptions>('GET', '/audit-log/filters'),
@@ -628,6 +643,76 @@ export interface CustomerUsageBreakdown {
     quantity: string
     projected_amount_cents: number
   }[]
+}
+
+export interface RecipeCreatesSummary {
+  meters: number
+  pricing_rules: number
+  plans: number
+  products: number
+  rating_rules: number
+  dunning_policies: number
+  webhook_endpoints: number
+}
+
+export interface Recipe {
+  key: string
+  version: string
+  name: string
+  summary: string
+  creates: RecipeCreatesSummary
+  overridable: string[]
+  instantiated?: { id: string; instantiated_at: string } | null
+}
+
+export interface RecipeOverrideSchema {
+  type: 'string' | 'number' | 'boolean'
+  default?: string | number | boolean
+  description?: string
+  enum?: (string | number)[]
+}
+
+export interface RecipeDetail extends Recipe {
+  description: string
+  overridable_schema: Record<string, RecipeOverrideSchema>
+}
+
+export interface RecipePreview {
+  key: string
+  version: string
+  objects: {
+    products?: { code: string; name: string; description?: string }[]
+    meters?: { key: string; name: string; unit: string; aggregation: string }[]
+    rating_rules?: { rule_key: string; mode: string; currency: string; flat_amount_cents?: number }[]
+    pricing_rules?: {
+      meter_key: string
+      rating_rule_key: string
+      dimension_match: Record<string, string | number | boolean>
+      aggregation_mode: MeterAggregationMode
+      priority: number
+    }[]
+    plans?: { code: string; name: string; currency: string; billing_interval: string; base_amount_cents: number; meter_keys: string[] }[]
+    dunning_policies?: { name: string; max_retries: number; intervals_hours: number[] }[]
+    webhook_endpoints?: { url: string; events: string[]; _placeholder?: boolean }[]
+  }
+  warnings: string[]
+}
+
+export interface RecipeInstance {
+  id: string
+  key: string
+  version: string
+  tenant_id: string
+  created_at: string
+  created_objects: {
+    product_ids: string[]
+    meter_ids: string[]
+    rating_rule_ids: string[]
+    pricing_rule_ids: string[]
+    plan_ids: string[]
+    dunning_policy_id: string
+    webhook_endpoint_id: string
+  }
 }
 
 export interface UsageSummary {
