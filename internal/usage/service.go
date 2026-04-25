@@ -27,7 +27,7 @@ type IngestInput struct {
 	MeterID        string          `json:"meter_id"`
 	SubscriptionID string          `json:"subscription_id,omitempty"`
 	Quantity       decimal.Decimal `json:"quantity,omitempty"`
-	Properties     map[string]any  `json:"properties,omitempty"`
+	Dimensions     map[string]any  `json:"dimensions,omitempty"`
 	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 	Timestamp      *time.Time      `json:"timestamp,omitempty"`
 }
@@ -60,28 +60,28 @@ func (s *Service) Backfill(ctx context.Context, tenantID string, input IngestInp
 	return s.ingest(ctx, tenantID, input, domain.UsageOriginBackfill)
 }
 
-// MaxPropertyKeys caps the size of the JSONB properties map on each
-// usage event. Properties feed pricing-rule dispatch via @> subset
+// MaxDimensionKeys caps the size of the JSONB dimensions map on each
+// usage event. Dimensions feed pricing-rule dispatch via @> subset
 // matches at finalize time; bounding the per-event JSONB size protects
 // the GIN index from pathological tenants and matches the equivalent
 // cap on meter_pricing_rules.dimension_match (16 keys).
-const MaxPropertyKeys = 16
+const MaxDimensionKeys = 16
 
-// validateProperties enforces the v1 dimension contract: at most
-// MaxPropertyKeys keys, scalar values only (string, number, bool, nil).
+// validateDimensions enforces the v1 dimension contract: at most
+// MaxDimensionKeys keys, scalar values only (string, number, bool, nil).
 // Object/array values are rejected — Postgres `@>` would still match
 // them but the priority+claim semantics aren't well-defined for nested
 // containers in v1 (revisit if a design partner needs it).
-func validateProperties(props map[string]any) error {
-	if len(props) > MaxPropertyKeys {
-		return errs.Invalid("properties", fmt.Sprintf("at most %d keys (got %d)", MaxPropertyKeys, len(props)))
+func validateDimensions(dims map[string]any) error {
+	if len(dims) > MaxDimensionKeys {
+		return errs.Invalid("dimensions", fmt.Sprintf("at most %d keys (got %d)", MaxDimensionKeys, len(dims)))
 	}
-	for k, v := range props {
+	for k, v := range dims {
 		switch v.(type) {
 		case nil, string, bool, float64, float32, int, int32, int64:
 			// Scalar — fine.
 		default:
-			return errs.Invalid("properties", fmt.Sprintf("key %q value must be a scalar (string/number/bool), got %T", k, v))
+			return errs.Invalid("dimensions", fmt.Sprintf("key %q value must be a scalar (string/number/bool), got %T", k, v))
 		}
 	}
 	return nil
@@ -94,7 +94,7 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 	if strings.TrimSpace(input.MeterID) == "" {
 		return domain.UsageEvent{}, errs.Required("meter_id")
 	}
-	if err := validateProperties(input.Properties); err != nil {
+	if err := validateDimensions(input.Dimensions); err != nil {
 		return domain.UsageEvent{}, err
 	}
 	if input.Quantity.IsZero() {
@@ -113,7 +113,7 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 		MeterID:        input.MeterID,
 		SubscriptionID: input.SubscriptionID,
 		Quantity:       input.Quantity,
-		Properties:     input.Properties,
+		Dimensions:     input.Dimensions,
 		IdempotencyKey: input.IdempotencyKey,
 		Timestamp:      ts,
 		Origin:         origin,

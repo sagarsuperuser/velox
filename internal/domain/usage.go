@@ -28,7 +28,7 @@ type UsageEvent struct {
 	MeterID        string           `json:"meter_id"`
 	SubscriptionID string           `json:"subscription_id,omitempty"`
 	Quantity       decimal.Decimal  `json:"quantity"`
-	Properties     map[string]any   `json:"properties,omitempty"`
+	Dimensions     map[string]any   `json:"dimensions,omitempty"`
 	IdempotencyKey string           `json:"idempotency_key,omitempty"`
 	Timestamp      time.Time        `json:"timestamp"`
 	Origin         UsageEventOrigin `json:"origin,omitempty"`

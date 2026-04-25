@@ -53,7 +53,7 @@ func TestUsageEvents_DimensionsPersistAndJSONBSupersetMatch(t *testing.T) {
 	for i, e := range events {
 		if _, err := svc.Ingest(ctx, tenantID, usage.IngestInput{
 			CustomerID: customerID, MeterID: meterID,
-			Quantity: decimal.NewFromInt(e.qty), Properties: e.props,
+			Quantity: decimal.NewFromInt(e.qty), Dimensions: e.props,
 		}); err != nil {
 			t.Fatalf("ingest %d: %v", i, err)
 		}

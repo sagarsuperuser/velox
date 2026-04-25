@@ -93,7 +93,7 @@ func main() {
 				t0 := time.Now()
 				_, err := svc.Ingest(ctx, tenantID, usage.IngestInput{
 					CustomerID: customerID, MeterID: meterID,
-					Quantity: qty, Properties: props,
+					Quantity: qty, Dimensions: props,
 				})
 				lat := time.Since(t0)
 				if err != nil {
