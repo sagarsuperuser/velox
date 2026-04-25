@@ -18,6 +18,19 @@ const entries: {
 }[] = [
   {
     date: '2026-04-25',
+    title: 'Trial state machine (Stripe parity)',
+    tag: 'feature',
+    body: 'Subscriptions started with a trial now enter a real status="trialing" state, distinct from active. The billing engine runs a proper trial state machine: while the trial is active it skips billing and advances the cycle; when the trial elapses it atomically flips to active, stamps activated_at, and bills the period. Operators can also end the trial early from the dashboard.',
+    bullets: [
+      'New status value "trialing" on subscriptions; Service.Create routes any sub with trial_days > 0 into trialing instead of active.',
+      'Cycle scan now sweeps both active and trialing — auto-flip to active fires subscription.trial_ended with triggered_by="schedule" the first cycle visit on or after trial_end_at.',
+      'POST /v1/subscriptions/{id}/end-trial flips trialing → active immediately and fires subscription.trial_ended with triggered_by="operator" so analytics can split scheduled vs sales-driven trial-ends.',
+      'Atomic UPDATE WHERE status=\'trialing\' closes the race between scheduler auto-flip and operator early-end — only one wins, and activated_at is COALESCE\'d so the first-set value is preserved on retries.',
+      'Dashboard SubscriptionDetail surfaces an "End trial now" button on trialing subs.',
+    ],
+  },
+  {
+    date: '2026-04-25',
     title: 'Pause collection (Stripe parity)',
     tag: 'feature',
     body: 'Subscriptions can now have collection paused as a state distinct from a hard pause: the cycle keeps running, but invoices generate as drafts and skip finalize/charge/dunning until resumed. Use this for collections holds, payment-method updates, or temporary courtesy without losing usage continuity. Stripe-equivalent pause_collection field; v1 supports the keep_as_draft mode.',

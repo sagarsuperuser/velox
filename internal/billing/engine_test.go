@@ -56,7 +56,8 @@ type mockSubs struct {
 func (m *mockSubs) GetDueBilling(_ context.Context, before time.Time, limit int) ([]domain.Subscription, error) {
 	var result []domain.Subscription
 	for _, s := range m.subs {
-		if s.Status == domain.SubscriptionActive && s.NextBillingAt != nil && !s.NextBillingAt.After(before) {
+		eligible := s.Status == domain.SubscriptionActive || s.Status == domain.SubscriptionTrialing
+		if eligible && s.NextBillingAt != nil && !s.NextBillingAt.After(before) {
 			result = append(result, s)
 		}
 	}
@@ -111,6 +112,23 @@ func (m *mockSubs) ClearPauseCollection(_ context.Context, _, id string) (domain
 		return domain.Subscription{}, errs.ErrNotFound
 	}
 	s.PauseCollection = nil
+	m.subs[id] = s
+	return s, nil
+}
+
+func (m *mockSubs) ActivateAfterTrial(_ context.Context, _, id string, at time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status != domain.SubscriptionTrialing {
+		return domain.Subscription{}, errs.InvalidState("not trialing")
+	}
+	s.Status = domain.SubscriptionActive
+	if s.ActivatedAt == nil {
+		t := at
+		s.ActivatedAt = &t
+	}
 	m.subs[id] = s
 	return s, nil
 }
@@ -528,9 +546,13 @@ func TestRunCycle_NoDueSubscriptions(t *testing.T) {
 func TestRunCycle_SkipsTrialSubscription(t *testing.T) {
 	engine, subs, _, _, invoices := setupEngine()
 
-	// Set trial that hasn't ended yet
+	// New state-machine semantics: a trial is conveyed by status='trialing',
+	// not just by trial_end_at being set. Service.Create routes new subs with
+	// trial_days > 0 to trialing; the engine skips billing while they're in
+	// that state.
 	s := subs.subs["sub_1"]
 	trialEnd := time.Now().UTC().AddDate(0, 0, 7) // 7 days from now
+	s.Status = domain.SubscriptionTrialing
 	s.TrialEndAt = &trialEnd
 	subs.subs["sub_1"] = s
 
@@ -1867,6 +1889,126 @@ func TestRunCycle_PauseCollection_AutoResumesWhenResumesAtPasses(t *testing.T) {
 	}
 	if resumeEvent["triggered_by"] != "schedule" {
 		t.Errorf("triggered_by: got %v, want schedule", resumeEvent["triggered_by"])
+	}
+}
+
+// TestRunCycle_Trial_Active_SkipsBillingAndAdvancesCycle covers case (a) of
+// the trial state machine: the cycle scan visits a trialing sub whose trial
+// has not yet elapsed. No invoice generated; next_billing_at advances.
+func TestRunCycle_Trial_Active_SkipsBillingAndAdvancesCycle(t *testing.T) {
+	periodStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)        // past, so cycle scan picks it up
+	trialEnd := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)         // far-future: trial still active at scan time
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status:                    domain.SubscriptionTrialing,
+				BillingTime:               domain.BillingTimeCalendar,
+				TrialEndAt:                &trialEnd,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {ID: "pln_1", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 4900},
+		},
+	}
+	invoices := &mockInvoices{}
+	dispatcher := &capturingEventDispatcher{}
+	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine.SetEventDispatcher(dispatcher)
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	if len(invoices.invoices) != 0 {
+		t.Errorf("expected 0 invoices during active trial, got %d", len(invoices.invoices))
+	}
+	if !subs.cycleUpdated["sub_1"] {
+		t.Error("expected cycle to be advanced even when trial-skipping")
+	}
+	if subs.subs["sub_1"].Status != domain.SubscriptionTrialing {
+		t.Errorf("status should remain trialing during active trial, got %q", subs.subs["sub_1"].Status)
+	}
+}
+
+// TestRunCycle_Trial_Ended_AutoActivatesAndBills covers case (b): cycle scan
+// arrives after trial_end_at; the engine flips status to active, fires
+// subscription.trial_ended (triggered_by="schedule"), then bills the period
+// normally.
+func TestRunCycle_Trial_Ended_AutoActivatesAndBills(t *testing.T) {
+	periodStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)        // past, so cycle scan picks it up
+	trialEnd := time.Date(2026, 2, 15, 0, 0, 0, 0, time.UTC)        // past: trial elapsed before now
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status:                    domain.SubscriptionTrialing,
+				BillingTime:               domain.BillingTimeCalendar,
+				TrialEndAt:                &trialEnd,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {ID: "pln_1", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 4900},
+		},
+	}
+	invoices := &mockInvoices{}
+	dispatcher := &capturingEventDispatcher{}
+	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine.SetEventDispatcher(dispatcher)
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("expected 1 invoice after trial ends, got %d", len(invoices.invoices))
+	}
+	if invoices.invoices[0].Status != domain.InvoiceFinalized {
+		t.Errorf("invoice status: got %q, want finalized", invoices.invoices[0].Status)
+	}
+
+	updated := subs.subs["sub_1"]
+	if updated.Status != domain.SubscriptionActive {
+		t.Errorf("status: got %q, want active after trial ends", updated.Status)
+	}
+	if updated.ActivatedAt == nil {
+		t.Error("activated_at should be stamped after trial-end auto-flip")
+	}
+
+	var trialEndedEvent map[string]any
+	for _, ev := range dispatcher.events {
+		if ev.eventType == domain.EventSubscriptionTrialEnded {
+			trialEndedEvent = ev.payload
+			break
+		}
+	}
+	if trialEndedEvent == nil {
+		types := make([]string, 0, len(dispatcher.events))
+		for _, ev := range dispatcher.events {
+			types = append(types, ev.eventType)
+		}
+		t.Fatalf("expected %s event, got types=%v", domain.EventSubscriptionTrialEnded, types)
+	}
+	if trialEndedEvent["triggered_by"] != "schedule" {
+		t.Errorf("triggered_by: got %v, want schedule", trialEndedEvent["triggered_by"])
 	}
 }
 

@@ -20,6 +20,25 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Trial state machine — Stripe parity** (2026-04-25) — subscriptions
+  with `trial_days > 0` now enter a real `status='trialing'` state on
+  `Create` (previously they went straight to `active` and the engine
+  inferred trial-skip from `trial_end_at` alone). New status added to the
+  `subscriptions.status` CHECK constraint and to `domain.SubscriptionStatus`.
+  Billing engine runs a three-branch state machine on each cycle visit:
+  (a) trialing AND `now < trial_end_at` → skip billing, advance the cycle;
+  (b) trialing AND `now >= trial_end_at` → atomically flip to `active`,
+  stamp `activated_at`, fire `subscription.trial_ended`
+  (`triggered_by:"schedule"`), then bill normally; (c) any other status →
+  bill normally. `GetDueBilling` now sweeps `IN ('active', 'trialing')` so
+  the cycle scan actually visits trialing subs. New endpoint `POST
+  /v1/subscriptions/{id}/end-trial` lets sales/ops end a trial early; it
+  fires `subscription.trial_ended` with `triggered_by:"operator"` so
+  analytics can split scheduled trial-ends from manual ones. Dashboard
+  `SubscriptionDetail` shows an "End trial now" button on trialing subs.
+  The atomic `'trialing' → 'active'` UPDATE-WHERE-status closes the race
+  between scheduler auto-flip and operator early-end.
+
 - **Pause collection — Stripe parity** (2026-04-25) — distinct from a hard
   pause: the cycle keeps running, but invoices generate as drafts and skip
   finalize/charge/dunning until resumed. New nullable composite

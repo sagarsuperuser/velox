@@ -143,6 +143,13 @@ type SubscriptionReader interface {
 	// has passed. Mirrors the explicit DELETE /pause-collection in the
 	// store-side semantics.
 	ClearPauseCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error)
+
+	// ActivateAfterTrial atomically transitions a sub from 'trialing' to
+	// 'active' and stamps activated_at if not already set. Called by the
+	// cycle scan when the trial window has elapsed. Idempotent at the SQL
+	// level: re-running on a row already 'active' returns InvalidState
+	// (caller swallows it as benign).
+	ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
 }
 
 // UsageAggregator aggregates usage events for a billing period.
@@ -686,8 +693,11 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	)
 	defer span.End()
 
-	// Guard: only bill active subscriptions
-	if sub.Status != domain.SubscriptionActive {
+	// Guard: only bill active or trialing subscriptions. Trialing subs flow
+	// through to the trial state machine below, which either advances the
+	// cycle without billing (trial active) or atomically flips to active and
+	// then bills (trial elapsed).
+	if sub.Status != domain.SubscriptionActive && sub.Status != domain.SubscriptionTrialing {
 		slog.Info("skipping billing (not active)", "subscription_id", sub.ID, "status", sub.Status)
 		return false, nil
 	}
@@ -807,11 +817,51 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	periodStart := *sub.CurrentBillingPeriodStart
 	periodEnd := *sub.CurrentBillingPeriodEnd
 
-	// Skip if in trial — advance cycle but don't generate invoice.
-	if sub.TrialEndAt != nil && now.Before(*sub.TrialEndAt) {
-		nextBilling := advanceBillingPeriod(periodEnd, domain.BillingMonthly)
-		slog.Info("skipping billing (trial active)", "subscription_id", sub.ID)
-		return false, e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, periodEnd, nextBilling, nextBilling)
+	// Trial state machine. Two cases:
+	//
+	// (a) status='trialing' AND now < trial_end_at: trial is still running.
+	//     Skip billing, advance cycle so we revisit at the next boundary.
+	//     trial_end_at may not align with period_end — when it doesn't,
+	//     the next-cycle visit will fall into case (b).
+	//
+	// (b) status='trialing' AND now >= trial_end_at: trial has elapsed.
+	//     Atomically flip to 'active' and stamp activated_at, fire
+	//     subscription.trial_ended (triggered_by="schedule"), then
+	//     continue with normal billing for this period. The atomic
+	//     UPDATE protects against a concurrent operator EndTrial racing
+	//     the scheduler.
+	//
+	// Subs whose status is no longer 'trialing' (operator already ended
+	// the trial, or the row was created without a trial in the first
+	// place) skip both branches and fall through to normal billing.
+	if sub.Status == domain.SubscriptionTrialing {
+		trialOver := sub.TrialEndAt == nil || !now.Before(*sub.TrialEndAt)
+		if !trialOver {
+			nextBilling := advanceBillingPeriod(periodEnd, domain.BillingMonthly)
+			slog.Info("skipping billing (trial active)", "subscription_id", sub.ID)
+			return false, e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, periodEnd, nextBilling, nextBilling)
+		}
+		updated, err := e.subs.ActivateAfterTrial(ctx, sub.TenantID, sub.ID, now)
+		if err != nil {
+			slog.Warn("auto-activate after trial failed",
+				"subscription_id", sub.ID,
+				"error", err,
+			)
+		} else {
+			sub = updated
+			slog.Info("trial ended, transitioned to active",
+				"subscription_id", sub.ID,
+				"tenant_id", sub.TenantID,
+			)
+			if e.events != nil {
+				_ = e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionTrialEnded, map[string]any{
+					"subscription_id": sub.ID,
+					"customer_id":     sub.CustomerID,
+					"ended_at":        now.UTC(),
+					"triggered_by":    "schedule",
+				})
+			}
+		}
 	}
 
 	// Resolve every item's plan up-front so we can read currency / meters / base

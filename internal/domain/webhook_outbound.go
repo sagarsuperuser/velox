@@ -90,6 +90,7 @@ const (
 	EventSubscriptionCancelCleared          = "subscription.cancel_cleared"
 	EventSubscriptionCollectionPaused       = "subscription.collection_paused"
 	EventSubscriptionCollectionResumed      = "subscription.collection_resumed"
+	EventSubscriptionTrialEnded             = "subscription.trial_ended"
 	EventCustomerCreated                    = "customer.created"
 	EventCustomerEmailBounced               = "customer.email_bounced"
 	EventDunningStarted                     = "dunning.started"

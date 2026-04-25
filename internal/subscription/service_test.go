@@ -220,6 +220,25 @@ func (m *memStore) ClearPauseCollection(_ context.Context, tenantID, id string) 
 	return s, nil
 }
 
+func (m *memStore) ActivateAfterTrial(_ context.Context, tenantID, id string, at time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status != domain.SubscriptionTrialing {
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot end trial on %s subscription", s.Status))
+	}
+	s.Status = domain.SubscriptionActive
+	if s.ActivatedAt == nil {
+		t := at
+		s.ActivatedAt = &t
+	}
+	s.UpdatedAt = time.Now().UTC()
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
+	return s, nil
+}
+
 func (m *memStore) ListItems(_ context.Context, tenantID, subscriptionID string) ([]domain.SubscriptionItem, error) {
 	s, ok := m.subs[subscriptionID]
 	if !ok || s.TenantID != tenantID {
@@ -402,7 +421,7 @@ func TestCreate(t *testing.T) {
 		}
 	})
 
-	t.Run("trial_days sets trial window", func(t *testing.T) {
+	t.Run("trial_days sets trial window and status=trialing", func(t *testing.T) {
 		sub, err := svc.Create(ctx, "t1", CreateInput{
 			Code: "sub-003", DisplayName: "Trial",
 			CustomerID: "cus_1",
@@ -412,12 +431,18 @@ func TestCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		if sub.Status != domain.SubscriptionTrialing {
+			t.Errorf("got status %q, want trialing", sub.Status)
+		}
 		if sub.TrialStartAt == nil || sub.TrialEndAt == nil {
 			t.Fatal("trial dates should be set")
 		}
 		diff := sub.TrialEndAt.Sub(*sub.TrialStartAt)
 		if diff.Hours() < 13*24 || diff.Hours() > 15*24 {
 			t.Errorf("trial duration %v, expected ~14 days", diff)
+		}
+		if sub.StartedAt == nil {
+			t.Error("started_at should be set on trialing sub")
 		}
 	})
 
@@ -987,6 +1012,67 @@ func TestPauseCollection(t *testing.T) {
 		if !out.PauseCollection.ResumesAt.Equal(second) {
 			t.Errorf("ResumesAt: got %v, want %v (second call must replace first)",
 				out.PauseCollection.ResumesAt, second)
+		}
+	})
+}
+
+func TestEndTrial(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+
+	mkTrialingSvc := func() (*Service, domain.Subscription) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, err := svc.Create(context.Background(), "t1", CreateInput{
+			Code: "sub-trial", DisplayName: "Trial", CustomerID: "c",
+			Items:     []CreateItemInput{{PlanID: "p"}},
+			TrialDays: 14,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		return svc, sub
+	}
+
+	t.Run("flips trialing to active and stamps activated_at", func(t *testing.T) {
+		svc, sub := mkTrialingSvc()
+		if sub.Status != domain.SubscriptionTrialing {
+			t.Fatalf("precondition: want trialing, got %q", sub.Status)
+		}
+		if sub.ActivatedAt != nil {
+			t.Fatal("precondition: activated_at should be nil during trial")
+		}
+
+		out, err := svc.EndTrial(context.Background(), "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("EndTrial: %v", err)
+		}
+		if out.Status != domain.SubscriptionActive {
+			t.Errorf("status: got %q, want active", out.Status)
+		}
+		if out.ActivatedAt == nil {
+			t.Error("activated_at must be set after EndTrial")
+		}
+	})
+
+	t.Run("rejects when sub is already active (not trialing)", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, _ := svc.Create(context.Background(), "t1", CreateInput{
+			Code: "sub-active", DisplayName: "Active", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p"}},
+			StartNow: true,
+		})
+		_, err := svc.EndTrial(context.Background(), "t1", sub.ID)
+		if err == nil {
+			t.Fatal("expected error when ending trial on non-trialing sub")
+		}
+	})
+
+	t.Run("idempotent: second call on already-active returns error", func(t *testing.T) {
+		svc, sub := mkTrialingSvc()
+		if _, err := svc.EndTrial(context.Background(), "t1", sub.ID); err != nil {
+			t.Fatalf("first EndTrial: %v", err)
+		}
+		if _, err := svc.EndTrial(context.Background(), "t1", sub.ID); err == nil {
+			t.Error("second EndTrial on already-active should error")
 		}
 	})
 }
