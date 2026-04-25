@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -91,11 +93,11 @@ type usageStoreAdapter struct {
 	store *usage.PostgresStore
 }
 
-func (a *usageStoreAdapter) AggregateForBillingPeriod(ctx context.Context, tenantID, subID string, meterIDs []string, from, to time.Time) (map[string]int64, error) {
+func (a *usageStoreAdapter) AggregateForBillingPeriod(ctx context.Context, tenantID, subID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	return a.store.AggregateForBillingPeriod(ctx, tenantID, subID, meterIDs, from, to)
 }
 
-func (a *usageStoreAdapter) AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]int64, error) {
+func (a *usageStoreAdapter) AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	return a.store.AggregateForBillingPeriodByAgg(ctx, tenantID, customerID, meters, from, to)
 }
 
@@ -249,7 +251,7 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 		ts := periodStart.Add(time.Duration(i) * 24 * time.Hour)
 		_, err := usageStore.Ingest(ctx, tenantID, domain.UsageEvent{
 			CustomerID: cust.ID, MeterID: apiMeter.ID, SubscriptionID: sub.ID,
-			Quantity: 300, Timestamp: ts,
+			Quantity: decimal.NewFromInt(300), Timestamp: ts,
 		})
 		if err != nil {
 			t.Fatalf("ingest api usage %d: %v", i, err)
@@ -259,7 +261,7 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 
 	_, err = usageStore.Ingest(ctx, tenantID, domain.UsageEvent{
 		CustomerID: cust.ID, MeterID: storageMeter.ID, SubscriptionID: sub.ID,
-		Quantity: 50, Timestamp: periodStart.Add(48 * time.Hour),
+		Quantity: decimal.NewFromInt(50), Timestamp: periodStart.Add(48 * time.Hour),
 	})
 	if err != nil {
 		t.Fatalf("ingest storage usage: %v", err)

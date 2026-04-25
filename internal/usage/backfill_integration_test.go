@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
@@ -29,7 +31,7 @@ func TestBackfill_PersistsOriginAndAggregates(t *testing.T) {
 
 	// Event 1: live API ingest — should default to origin='api'.
 	apiEvt, err := svc.Ingest(ctx, tenantID, usage.IngestInput{
-		CustomerID: customerID, MeterID: meterID, Quantity: 10,
+		CustomerID: customerID, MeterID: meterID, Quantity: decimal.NewFromInt(10),
 	})
 	if err != nil {
 		t.Fatalf("api ingest: %v", err)
@@ -41,7 +43,7 @@ func TestBackfill_PersistsOriginAndAggregates(t *testing.T) {
 	// Event 2: backfill from 5 days ago.
 	past := time.Now().Add(-5 * 24 * time.Hour).UTC()
 	backfillEvt, err := svc.Backfill(ctx, tenantID, usage.IngestInput{
-		CustomerID: customerID, MeterID: meterID, Quantity: 100, Timestamp: &past,
+		CustomerID: customerID, MeterID: meterID, Quantity: decimal.NewFromInt(100), Timestamp: &past,
 	})
 	if err != nil {
 		t.Fatalf("backfill: %v", err)
@@ -57,8 +59,8 @@ func TestBackfill_PersistsOriginAndAggregates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("aggregate: %v", err)
 	}
-	if got, want := totals[meterID], int64(110); got != want {
-		t.Errorf("aggregate includes backfill+api: got %d, want %d (10 api + 100 backfill)", got, want)
+	if got, want := totals[meterID], decimal.NewFromInt(110); !got.Equal(want) {
+		t.Errorf("aggregate includes backfill+api: got %s, want %s (10 api + 100 backfill)", got.String(), want.String())
 	}
 
 	// Round-trip: read via List and verify Origin survives the scan.

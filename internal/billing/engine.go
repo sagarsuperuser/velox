@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -152,10 +154,13 @@ type SubscriptionReader interface {
 	ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
 }
 
-// UsageAggregator aggregates usage events for a billing period.
+// UsageAggregator aggregates usage events for a billing period. Returns
+// decimal.Decimal so fractional AI-usage primitives (GPU-hours, cached-token
+// ratios) round-trip without precision loss; the engine converts to cents
+// at the multiplication step.
 type UsageAggregator interface {
-	AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]int64, error)
-	AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]int64, error)
+	AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error)
+	AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]decimal.Decimal, error)
 }
 
 // PricingReader reads plan, rating rule, and override data.
@@ -930,19 +935,20 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		return false, fmt.Errorf("aggregate usage: %w", err)
 	}
 
-	// Enforce usage cap if configured (integer math only). Cap is a
-	// subscription-level total across all meters — it doesn't need to respect
-	// item boundaries because the cap is a container-level guardrail, not a
-	// per-plan constraint.
+	// Enforce usage cap if configured. Cap is a subscription-level total
+	// across all meters — a container-level guardrail, not a per-plan
+	// constraint. Cap stays integer (UsageCapUnits int64) because operators
+	// author it as a whole-unit ceiling; per-meter quantities are decimal
+	// and prorated proportionally if the cap fires.
 	if sub.UsageCapUnits != nil && *sub.UsageCapUnits > 0 && sub.OverageAction == "block" {
-		totalUsage := int64(0)
+		totalUsage := decimal.Zero
 		for _, qty := range usageTotals {
-			totalUsage += qty
+			totalUsage = totalUsage.Add(qty)
 		}
-		if totalUsage > *sub.UsageCapUnits {
-			cap := *sub.UsageCapUnits
+		capDec := decimal.NewFromInt(*sub.UsageCapUnits)
+		if totalUsage.GreaterThan(capDec) {
 			for mid, qty := range usageTotals {
-				usageTotals[mid] = qty * cap / totalUsage
+				usageTotals[mid] = qty.Mul(capDec).Div(totalUsage)
 			}
 		}
 	}
@@ -1002,7 +1008,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 			seenMeters[meterID] = struct{}{}
 
 			quantity, ok := usageTotals[meterID]
-			if !ok || quantity == 0 {
+			if !ok || quantity.IsZero() {
 				continue
 			}
 
@@ -1035,17 +1041,23 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 				return false, fmt.Errorf("compute amount for meter %s: %w", meterID, err)
 			}
 
-			unitAmount := int64(0)
-			if quantity > 0 {
-				unitAmount = money.RoundHalfToEven(amount, quantity)
-			}
+			// Per-unit amount on the invoice line is informational; the
+			// authoritative number is amount_cents from the rule. Compute as
+			// amount/quantity in decimal space, banker-round to int cents.
+			// Quantity here is decimal (fractional usage allowed) and cannot
+			// be zero — the IsZero check above already short-circuited.
+			unitAmount := decimal.NewFromInt(amount).Div(quantity).RoundBank(0).IntPart()
 
 			lineItems = append(lineItems, domain.InvoiceLineItem{
-				LineType:            domain.LineTypeUsage,
-				MeterID:             meterID,
-				Description:         fmt.Sprintf("%s (%s)", meter.Name, meter.Unit),
-				Quantity:            quantity,
-				UnitAmountCents:     unitAmount,
+				LineType: domain.LineTypeUsage,
+				MeterID:  meterID,
+				Description: fmt.Sprintf("%s (%s)", meter.Name, meter.Unit),
+				// Quantity is truncated to int for the line item — fractional
+				// quantities (e.g. 1.5 GPU-hours) are supported in pricing
+				// math but the line item display column is still integer.
+				// Followup: widen InvoiceLineItem.Quantity to NUMERIC.
+				Quantity:        quantity.IntPart(),
+				UnitAmountCents: unitAmount,
 				AmountCents:         amount,
 				TotalAmountCents:    amount,
 				Currency:            invoiceCurrency,

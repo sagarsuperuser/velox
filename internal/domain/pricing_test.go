@@ -3,7 +3,17 @@ package domain
 import (
 	"math"
 	"testing"
+
+	"github.com/shopspring/decimal"
 )
+
+// computeInt is a test-only convenience wrapping ComputeAmountCents with
+// an int64 quantity input. The production signature takes decimal.Decimal
+// (fractional usage is supported); these table tests still express
+// quantity as int for readability so we wrap once at the call site.
+func computeInt(rule RatingRuleVersion, n int64) (int64, error) {
+	return ComputeAmountCents(rule, decimal.NewFromInt(n))
+}
 
 func TestComputeAmountCents_Flat(t *testing.T) {
 	rule := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: 500}
@@ -21,7 +31,7 @@ func TestComputeAmountCents_Flat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ComputeAmountCents(rule, tt.qty)
+			got, err := computeInt(rule, tt.qty)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr = %v", err, tt.wantErr)
 			}
@@ -56,7 +66,7 @@ func TestComputeAmountCents_Graduated(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ComputeAmountCents(rule, tt.qty)
+			got, err := computeInt(rule, tt.qty)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -88,7 +98,7 @@ func TestComputeAmountCents_Package(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ComputeAmountCents(rule, tt.qty)
+			got, err := computeInt(rule, tt.qty)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -105,7 +115,7 @@ func TestComputeAmountCents_Package(t *testing.T) {
 
 func TestComputeAmountCents_Flat_NegativeUnitPrice(t *testing.T) {
 	rule := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: -1}
-	_, err := ComputeAmountCents(rule, 10)
+	_, err := computeInt(rule, 10)
 	if err != ErrInvalidPricingConfig {
 		t.Fatalf("expected ErrInvalidPricingConfig for negative flat price, got %v", err)
 	}
@@ -117,7 +127,7 @@ func TestComputeAmountCents_Flat_LargeQuantityOverflowCheck(t *testing.T) {
 	// the multiplication should still produce a valid result.
 	rule := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: 1000}
 	qty := int64(math.MaxInt64 / 1000) // largest safe quantity
-	got, err := ComputeAmountCents(rule, qty)
+	got, err := computeInt(rule, qty)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -131,7 +141,7 @@ func TestComputeAmountCents_Flat_OverflowDetected(t *testing.T) {
 	// Pathological input: qty * unit would wrap int64. Must be rejected,
 	// not silently produce a negative invoice line.
 	rule := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: 2}
-	_, err := ComputeAmountCents(rule, math.MaxInt64)
+	_, err := computeInt(rule, math.MaxInt64)
 	if err != ErrAmountOverflow {
 		t.Fatalf("expected ErrAmountOverflow, got %v", err)
 	}
@@ -145,7 +155,7 @@ func TestComputeAmountCents_Graduated_OverflowDetected(t *testing.T) {
 			{UpTo: 0, UnitAmountCents: math.MaxInt64 / 2},
 		},
 	}
-	_, err := ComputeAmountCents(rule, 10)
+	_, err := computeInt(rule, 10)
 	if err != ErrAmountOverflow {
 		t.Fatalf("expected ErrAmountOverflow in catch-all tier, got %v", err)
 	}
@@ -160,7 +170,7 @@ func TestComputeAmountCents_Graduated_OverflowOnSum(t *testing.T) {
 			{UpTo: 0, UnitAmountCents: 10},
 		},
 	}
-	_, err := ComputeAmountCents(rule, 2)
+	_, err := computeInt(rule, 2)
 	if err != ErrAmountOverflow {
 		t.Fatalf("expected ErrAmountOverflow on tier sum, got %v", err)
 	}
@@ -174,7 +184,7 @@ func TestComputeAmountCents_Package_OverflowDetected(t *testing.T) {
 		PackageAmountCents:     math.MaxInt64 / 2,
 		OverageUnitAmountCents: 0,
 	}
-	_, err := ComputeAmountCents(rule, 10)
+	_, err := computeInt(rule, 10)
 	if err != ErrAmountOverflow {
 		t.Fatalf("expected ErrAmountOverflow on package multiply, got %v", err)
 	}
@@ -188,7 +198,7 @@ func TestComputeAmountCents_Package_OverflowOnSum(t *testing.T) {
 		PackageAmountCents:     math.MaxInt64 - 5,
 		OverageUnitAmountCents: 10,
 	}
-	_, err := ComputeAmountCents(rule, 3) // 1 full package + 1 overage
+	_, err := computeInt(rule, 3) // 1 full package + 1 overage
 	if err != ErrAmountOverflow {
 		t.Fatalf("expected ErrAmountOverflow on package sum, got %v", err)
 	}
@@ -197,7 +207,7 @@ func TestComputeAmountCents_Package_OverflowOnSum(t *testing.T) {
 func TestComputeAmountCents_Flat_ZeroUnitPrice(t *testing.T) {
 	// Free tier: 0 cents per unit
 	rule := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: 0}
-	got, err := ComputeAmountCents(rule, 999999)
+	got, err := computeInt(rule, 999999)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -219,7 +229,7 @@ func TestComputeAmountCents_Graduated_ExactTierBoundary(t *testing.T) {
 		},
 	}
 	// Exactly at the first tier boundary
-	got, err := ComputeAmountCents(rule, 100)
+	got, err := computeInt(rule, 100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -236,7 +246,7 @@ func TestComputeAmountCents_Graduated_OnlyUnlimitedTier(t *testing.T) {
 			{UpTo: 0, UnitAmountCents: 10},
 		},
 	}
-	got, err := ComputeAmountCents(rule, 5000)
+	got, err := computeInt(rule, 5000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -253,7 +263,7 @@ func TestComputeAmountCents_Graduated_InsufficientTiers(t *testing.T) {
 			{UpTo: 100, UnitAmountCents: 50},
 		},
 	}
-	_, err := ComputeAmountCents(rule, 200)
+	_, err := computeInt(rule, 200)
 	if err != ErrInvalidPricingConfig {
 		t.Fatalf("expected ErrInvalidPricingConfig for insufficient tiers, got %v", err)
 	}
@@ -264,7 +274,7 @@ func TestComputeAmountCents_Graduated_EmptyTiers(t *testing.T) {
 		Mode:           PricingGraduated,
 		GraduatedTiers: nil,
 	}
-	_, err := ComputeAmountCents(rule, 10)
+	_, err := computeInt(rule, 10)
 	if err != ErrInvalidPricingConfig {
 		t.Fatalf("expected ErrInvalidPricingConfig for empty tiers, got %v", err)
 	}
@@ -277,7 +287,7 @@ func TestComputeAmountCents_Graduated_NegativeUnitPrice(t *testing.T) {
 			{UpTo: 100, UnitAmountCents: -5},
 		},
 	}
-	_, err := ComputeAmountCents(rule, 10)
+	_, err := computeInt(rule, 10)
 	if err != ErrInvalidPricingConfig {
 		t.Fatalf("expected ErrInvalidPricingConfig for negative unit price in tier, got %v", err)
 	}
@@ -290,7 +300,7 @@ func TestComputeAmountCents_Graduated_NegativeUpTo(t *testing.T) {
 			{UpTo: -10, UnitAmountCents: 50},
 		},
 	}
-	_, err := ComputeAmountCents(rule, 5)
+	_, err := computeInt(rule, 5)
 	if err != ErrInvalidPricingConfig {
 		t.Fatalf("expected ErrInvalidPricingConfig for negative UpTo, got %v", err)
 	}
@@ -304,7 +314,7 @@ func TestComputeAmountCents_Graduated_ZeroQuantity(t *testing.T) {
 			{UpTo: 0, UnitAmountCents: 25},
 		},
 	}
-	got, err := ComputeAmountCents(rule, 0)
+	got, err := computeInt(rule, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -337,7 +347,7 @@ func TestComputeAmountCents_Graduated_ThreeTiersExactBoundaries(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ComputeAmountCents(rule, tt.qty)
+			got, err := computeInt(rule, tt.qty)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -360,7 +370,7 @@ func TestComputeAmountCents_Package_ExactMultiple(t *testing.T) {
 		OverageUnitAmountCents: 30,
 	}
 	// 150 = 3 * 50, no overage
-	got, err := ComputeAmountCents(rule, 150)
+	got, err := computeInt(rule, 150)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -377,7 +387,7 @@ func TestComputeAmountCents_Package_SingleUnitLargePackage(t *testing.T) {
 		OverageUnitAmountCents: 10,
 	}
 	// qty=1: 0 full packages, 1 overage unit
-	got, err := ComputeAmountCents(rule, 1)
+	got, err := computeInt(rule, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -393,7 +403,7 @@ func TestComputeAmountCents_Package_ZeroPackageSize(t *testing.T) {
 		PackageAmountCents:     1000,
 		OverageUnitAmountCents: 10,
 	}
-	_, err := ComputeAmountCents(rule, 10)
+	_, err := computeInt(rule, 10)
 	if err != ErrInvalidPricingConfig {
 		t.Fatalf("expected ErrInvalidPricingConfig for zero package size, got %v", err)
 	}
@@ -406,7 +416,7 @@ func TestComputeAmountCents_Package_NegativePackageSize(t *testing.T) {
 		PackageAmountCents:     1000,
 		OverageUnitAmountCents: 10,
 	}
-	_, err := ComputeAmountCents(rule, 10)
+	_, err := computeInt(rule, 10)
 	if err != ErrInvalidPricingConfig {
 		t.Fatalf("expected ErrInvalidPricingConfig for negative package size, got %v", err)
 	}
@@ -419,7 +429,7 @@ func TestComputeAmountCents_Package_NegativePackagePrice(t *testing.T) {
 		PackageAmountCents:     -500,
 		OverageUnitAmountCents: 10,
 	}
-	_, err := ComputeAmountCents(rule, 10)
+	_, err := computeInt(rule, 10)
 	if err != ErrInvalidPricingConfig {
 		t.Fatalf("expected ErrInvalidPricingConfig for negative package price, got %v", err)
 	}
@@ -432,7 +442,7 @@ func TestComputeAmountCents_Package_NegativeOveragePrice(t *testing.T) {
 		PackageAmountCents:     1000,
 		OverageUnitAmountCents: -5,
 	}
-	_, err := ComputeAmountCents(rule, 10)
+	_, err := computeInt(rule, 10)
 	if err != ErrInvalidPricingConfig {
 		t.Fatalf("expected ErrInvalidPricingConfig for negative overage price, got %v", err)
 	}
@@ -446,7 +456,7 @@ func TestComputeAmountCents_Package_ZeroOveragePrice(t *testing.T) {
 		PackageAmountCents:     2000,
 		OverageUnitAmountCents: 0,
 	}
-	got, err := ComputeAmountCents(rule, 150)
+	got, err := computeInt(rule, 150)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -462,7 +472,7 @@ func TestComputeAmountCents_Package_ZeroOveragePrice(t *testing.T) {
 
 func TestComputeAmountCents_UnknownMode(t *testing.T) {
 	rule := RatingRuleVersion{Mode: "volume"}
-	_, err := ComputeAmountCents(rule, 10)
+	_, err := computeInt(rule, 10)
 	if err != ErrInvalidPricingConfig {
 		t.Fatalf("expected ErrInvalidPricingConfig for unknown mode, got %v", err)
 	}
@@ -488,7 +498,7 @@ func TestComputeAmountCents_NegativeQuantity_AllModes(t *testing.T) {
 	}
 	for _, m := range modes {
 		t.Run(m.name, func(t *testing.T) {
-			_, err := ComputeAmountCents(m.rule, -1)
+			_, err := computeInt(m.rule, -1)
 			if err != ErrInvalidPricingConfig {
 				t.Fatalf("expected ErrInvalidPricingConfig for negative quantity in %s mode, got %v", m.name, err)
 			}

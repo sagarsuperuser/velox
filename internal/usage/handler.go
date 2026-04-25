@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
@@ -55,10 +56,12 @@ func (h *Handler) Backfill(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiEvent is the public API input — developers send external identifiers.
+// Quantity accepts both number (5) and string ("5.5") forms via shopspring's
+// UnmarshalJSON; the response side serializes as a string for precision.
 type apiEvent struct {
 	ExternalCustomerID string           `json:"external_customer_id"`
 	EventName          string           `json:"event_name"`
-	Quantity           int64            `json:"quantity,omitempty"`
+	Quantity           decimal.Decimal  `json:"quantity,omitempty"`
 	Properties         map[string]any   `json:"properties,omitempty"`
 	IdempotencyKey     string           `json:"idempotency_key,omitempty"`
 	Timestamp          *json.RawMessage `json:"timestamp,omitempty"`

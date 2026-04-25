@@ -7,17 +7,18 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/auth"
 )
 
 // UsageSummary represents aggregated usage for a customer in a period.
 type UsageSummary struct {
-	CustomerID  string           `json:"customer_id"`
-	PeriodFrom  time.Time        `json:"period_from"`
-	PeriodTo    time.Time        `json:"period_to"`
-	Meters      map[string]int64 `json:"meters"` // meter_id → total quantity
-	TotalEvents int              `json:"total_events"`
+	CustomerID  string                     `json:"customer_id"`
+	PeriodFrom  time.Time                  `json:"period_from"`
+	PeriodTo    time.Time                  `json:"period_to"`
+	Meters      map[string]decimal.Decimal `json:"meters"` // meter_id -> total quantity
+	TotalEvents int                        `json:"total_events"`
 }
 
 // GetSummary aggregates usage for a customer in the current billing period.
@@ -33,9 +34,9 @@ func (s *Service) GetSummary(ctx context.Context, tenantID, customerID string, f
 		return UsageSummary{}, err
 	}
 
-	meters := make(map[string]int64)
+	meters := make(map[string]decimal.Decimal)
 	for _, e := range events {
-		meters[e.MeterID] += e.Quantity
+		meters[e.MeterID] = meters[e.MeterID].Add(e.Quantity)
 	}
 
 	return UsageSummary{
