@@ -20,6 +20,35 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Multi-dimensional meters foundation — AI-native wedge** (2026-04-25) —
+  the runtime engine for Velox's positioning bet (per
+  `docs/positioning.md`): one meter receives events with arbitrary
+  dimensions, many pricing rules pick out subsets at different rates.
+  Migration `0054_multi_dim_meters` widens `usage_events.quantity` to
+  `NUMERIC(38,12)` (Stripe `quantity_decimal` parity), adds a GIN index
+  over `properties` for JSONB-superset dispatch, and introduces
+  `meter_pricing_rules (dimension_match, aggregation_mode, priority)` —
+  N rules per meter, claim-based, no double-count. Per-rule
+  `aggregation_mode` adds `count`, `last_during_period`, `last_ever`,
+  `max` to the existing `sum` (Stripe Tier 1 gap closed). Ingest
+  accepts a `dimensions` field (alias for `properties`) capped at 16
+  scalar keys, matching the rule-side `dimension_match` cap. The
+  priority+claim resolution query lives in
+  `usage.Store.AggregateByPricingRules`: rules walked in `priority
+  DESC, created_at ASC` order, each in-period event claimed by its
+  top-priority match via `LATERAL JOIN`, per-mode aggregation
+  dispatched in SQL via a `CASE` over the per-group constant mode;
+  `last_ever` runs a separate query that ignores period bounds for
+  "current state" billing (e.g. seat counts). Unclaimed events fall
+  through to the meter's default `rating_rule_version_id` with
+  `meters.aggregation` — backward-compatible for tenants without rules.
+  Local benchmark harness (`cmd/velox-bench`) baselines ~2.5k
+  events/sec on dev hardware; the design doc's 50k/sec target requires
+  cloud-grade Postgres + batched INSERTs, both follow-up work. HTTP
+  endpoints for `meter_pricing_rules` CRUD will land in a follow-up PR
+  (engine first, surface second). See
+  `docs/design-multi-dim-meters.md` for the full algorithm.
+
 - **Trial extension — Stripe parity** (2026-04-25) — operators can now
   push a trialing subscription's `trial_end_at` later via `POST
   /v1/subscriptions/{id}/extend-trial` with `{trial_end:<RFC3339>}`. The
