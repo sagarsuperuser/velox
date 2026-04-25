@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, formatDateTime, eventDimensions } from '@/lib/api'
+import { api, formatDateTime } from '@/lib/api'
 import type { Customer, Meter, UsageEvent } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
@@ -106,7 +106,7 @@ export default function UsageEventsPage() {
   // current page actually carries dimensions, OR when a dimension filter is
   // set. Pre-multi-dim tenants stay visually clean.
   const hasDimensions = useMemo(
-    () => events.some(e => eventDimensions(e) !== undefined) || !!filterDim,
+    () => events.some(e => e.dimensions && Object.keys(e.dimensions).length > 0) || !!filterDim,
     [events, filterDim],
   )
 
@@ -153,7 +153,7 @@ export default function UsageEventsPage() {
         customerMap[ev.customer_id]?.display_name || ev.customer_id,
         meterMap[ev.meter_id]?.name || ev.meter_id,
         ev.quantity,
-        eventDimensions(ev) ? JSON.stringify(eventDimensions(ev)) : '',
+        ev.dimensions && Object.keys(ev.dimensions).length > 0 ? JSON.stringify(ev.dimensions) : '',
       ])
       downloadCSV('usage-events.csv', ['Timestamp', 'Customer', 'Meter', 'Value', 'Dimensions'], rows)
     })
@@ -314,7 +314,7 @@ export default function UsageEventsPage() {
                     // — losing trailing zeros via toLocaleString hides the
                     // distinction between "1.5" and "1.500000000000".
                     const display = ev.quantity
-                    const dims = eventDimensions(ev) ?? null
+                    const dims = ev.dimensions && Object.keys(ev.dimensions).length > 0 ? ev.dimensions : null
                     return (
                       <TableRow key={ev.id}>
                         <TableCell className="text-sm text-foreground">{formatDateTime(ev.timestamp)}</TableCell>

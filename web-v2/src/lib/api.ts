@@ -606,21 +606,11 @@ export interface UsageEvent {
   // String-encoded NUMERIC(38, 12) — decimal precision for fractional GPU-hours
   // and partial tokens. Coerce via Number() / parseFloat() at display time.
   quantity: string
-  // Free-form dimensions per docs/design-multi-dim-meters.md (subset-matched
-  // by pricing rules). Backend currently serializes the same JSONB column as
-  // `properties` on responses; UI reads either via `eventDimensions()`.
+  // Free-form dimensions per docs/design-multi-dim-meters.md, subset-matched
+  // by pricing rules.
   dimensions?: Record<string, string | number | boolean>
-  properties?: Record<string, string | number | boolean>
   idempotency_key: string
   timestamp: string
-}
-
-export function eventDimensions(
-  e: UsageEvent,
-): Record<string, string | number | boolean> | undefined {
-  if (e.dimensions && Object.keys(e.dimensions).length > 0) return e.dimensions
-  if (e.properties && Object.keys(e.properties).length > 0) return e.properties
-  return undefined
 }
 
 export type MeterAggregationMode =
