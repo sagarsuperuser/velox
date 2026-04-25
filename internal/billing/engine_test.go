@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -160,24 +162,24 @@ func (m *mockSubs) ApplyDuePendingItemPlansAtomic(_ context.Context, _, id strin
 }
 
 type mockUsage struct {
-	totals map[string]int64 // meterID -> quantity
+	totals map[string]int64 // meterID -> quantity (test inputs stay int for readability)
 }
 
-func (m *mockUsage) AggregateForBillingPeriod(_ context.Context, _, _ string, meterIDs []string, _, _ time.Time) (map[string]int64, error) {
-	result := make(map[string]int64)
+func (m *mockUsage) AggregateForBillingPeriod(_ context.Context, _, _ string, meterIDs []string, _, _ time.Time) (map[string]decimal.Decimal, error) {
+	result := make(map[string]decimal.Decimal)
 	for _, id := range meterIDs {
 		if qty, ok := m.totals[id]; ok {
-			result[id] = qty
+			result[id] = decimal.NewFromInt(qty)
 		}
 	}
 	return result, nil
 }
 
-func (m *mockUsage) AggregateForBillingPeriodByAgg(_ context.Context, _, _ string, meters map[string]string, _, _ time.Time) (map[string]int64, error) {
-	result := make(map[string]int64)
+func (m *mockUsage) AggregateForBillingPeriodByAgg(_ context.Context, _, _ string, meters map[string]string, _, _ time.Time) (map[string]decimal.Decimal, error) {
+	result := make(map[string]decimal.Decimal)
 	for id := range meters {
 		if qty, ok := m.totals[id]; ok {
-			result[id] = qty
+			result[id] = decimal.NewFromInt(qty)
 		}
 	}
 	return result, nil

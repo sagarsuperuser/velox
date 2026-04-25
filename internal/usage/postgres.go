@@ -2,9 +2,12 @@ package usage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -33,19 +36,24 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 		origin = string(domain.UsageOriginAPI)
 	}
 
+	props, err := propertiesJSON(event.Properties)
+	if err != nil {
+		return domain.UsageEvent{}, err
+	}
+
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO usage_events (id, tenant_id, customer_id, meter_id, subscription_id,
 			quantity, properties, idempotency_key, timestamp, origin)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		RETURNING id, tenant_id, customer_id, meter_id, COALESCE(subscription_id,''),
-			quantity, COALESCE(idempotency_key,''), timestamp, origin
+			quantity, properties, COALESCE(idempotency_key,''), timestamp, origin
 	`, id, tenantID, event.CustomerID, event.MeterID,
 		postgres.NullableString(event.SubscriptionID), event.Quantity,
-		propertiesJSON(event.Properties), postgres.NullableString(event.IdempotencyKey),
+		props, postgres.NullableString(event.IdempotencyKey),
 		event.Timestamp, origin,
 	).Scan(&event.ID, &event.TenantID, &event.CustomerID, &event.MeterID,
-		&event.SubscriptionID, &event.Quantity, &event.IdempotencyKey, &event.Timestamp,
-		&event.Origin)
+		&event.SubscriptionID, &event.Quantity, propertiesScanner{&event.Properties},
+		&event.IdempotencyKey, &event.Timestamp, &event.Origin)
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
@@ -80,7 +88,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	}
 
 	query := `SELECT id, tenant_id, customer_id, meter_id, COALESCE(subscription_id,''),
-		quantity, COALESCE(idempotency_key,''), timestamp
+		quantity, properties, COALESCE(idempotency_key,''), timestamp
 		FROM usage_events` + where + ` ORDER BY timestamp DESC LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
 	args = append(args, limit, filter.Offset)
 
@@ -94,7 +102,8 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	for rows.Next() {
 		var e domain.UsageEvent
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.MeterID,
-			&e.SubscriptionID, &e.Quantity, &e.IdempotencyKey, &e.Timestamp); err != nil {
+			&e.SubscriptionID, &e.Quantity, propertiesScanner{&e.Properties},
+			&e.IdempotencyKey, &e.Timestamp); err != nil {
 			return nil, 0, err
 		}
 		events = append(events, e)
@@ -102,20 +111,18 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	return events, total, rows.Err()
 }
 
-func (s *PostgresStore) AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]int64, error) {
+func (s *PostgresStore) AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	defer postgres.Rollback(tx)
 
+	result := make(map[string]decimal.Decimal)
 	if len(meters) == 0 {
-		return map[string]int64{}, nil
+		return result, nil
 	}
 
-	result := make(map[string]int64)
-
-	// Query each meter individually with its correct aggregation function
 	for meterID, agg := range meters {
 		aggFunc := "SUM"
 		switch agg {
@@ -124,26 +131,25 @@ func (s *PostgresStore) AggregateForBillingPeriodByAgg(ctx context.Context, tena
 		case "count":
 			aggFunc = "COUNT"
 		case "last":
-			// "last" = most recent value; use a subquery
-			var val int64
+			var val decimal.Decimal
 			err := tx.QueryRowContext(ctx, `
 				SELECT COALESCE(quantity, 0) FROM usage_events
 				WHERE customer_id = $1 AND meter_id = $2 AND timestamp >= $3 AND timestamp < $4
 				ORDER BY timestamp DESC LIMIT 1
 			`, customerID, meterID, from, to).Scan(&val)
-			if err == nil && val > 0 {
+			if err == nil && val.IsPositive() {
 				result[meterID] = val
 			}
 			continue
 		}
 
-		var val int64
+		var val decimal.Decimal
 		err := tx.QueryRowContext(ctx,
 			fmt.Sprintf(`SELECT COALESCE(%s(quantity), 0) FROM usage_events
 				WHERE customer_id = $1 AND meter_id = $2 AND timestamp >= $3 AND timestamp < $4`,
 				aggFunc),
 			customerID, meterID, from, to).Scan(&val)
-		if err == nil && val > 0 {
+		if err == nil && val.IsPositive() {
 			result[meterID] = val
 		}
 	}
@@ -151,15 +157,16 @@ func (s *PostgresStore) AggregateForBillingPeriodByAgg(ctx context.Context, tena
 	return result, nil
 }
 
-func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]int64, error) {
+func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	defer postgres.Rollback(tx)
 
+	result := make(map[string]decimal.Decimal)
 	if len(meterIDs) == 0 {
-		return map[string]int64{}, nil
+		return result, nil
 	}
 
 	placeholders := make([]string, len(meterIDs))
@@ -181,10 +188,9 @@ func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID,
 	}
 	defer func() { _ = rows.Close() }()
 
-	result := make(map[string]int64)
 	for rows.Next() {
 		var meterID string
-		var total int64
+		var total decimal.Decimal
 		if err := rows.Scan(&meterID, &total); err != nil {
 			return nil, err
 		}
@@ -224,12 +230,49 @@ func buildUsageWhere(f ListFilter) (string, []any) {
 	return " WHERE " + strings.Join(clauses, " AND "), args
 }
 
-func propertiesJSON(props map[string]any) string {
-	if props == nil {
-		return "{}"
+// propertiesJSON serializes the event's free-form properties for the JSONB
+// column. This map is also the carrier for multi-dim meter dimensions
+// (model, operation, region, etc.) that pricing_rule.dimension_match runs
+// subset-match against — losing it here would silently drop dimension
+// information at ingest, so a marshal failure is treated as a hard error.
+func propertiesJSON(props map[string]any) (string, error) {
+	if len(props) == 0 {
+		return "{}", nil
 	}
-	// Simple inline marshal — no error possible for map[string]any
-	b, _ := fmt.Printf("%v", props)
-	_ = b
-	return "{}"
+	b, err := json.Marshal(props)
+	if err != nil {
+		return "", fmt.Errorf("marshal usage_event.properties: %w", err)
+	}
+	return string(b), nil
+}
+
+// propertiesScanner adapts a *map[string]any to sql.Scanner so SELECT
+// statements can read the JSONB column straight into the struct field.
+// The pgx driver hands JSONB to Scan as []byte (or string in some paths).
+type propertiesScanner struct{ dst *map[string]any }
+
+func (s propertiesScanner) Scan(src any) error {
+	if src == nil {
+		*s.dst = nil
+		return nil
+	}
+	var raw []byte
+	switch v := src.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("unsupported scan type for properties: %T", src)
+	}
+	if len(raw) == 0 {
+		*s.dst = nil
+		return nil
+	}
+	m := map[string]any{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return fmt.Errorf("unmarshal usage_event.properties: %w", err)
+	}
+	*s.dst = m
+	return nil
 }

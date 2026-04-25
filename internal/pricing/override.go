@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -158,7 +160,7 @@ func (s *Service) CreateOverride(ctx context.Context, tenantID string, input Cre
 		PackageAmountCents:     input.PackageAmountCents,
 		OverageUnitAmountCents: input.OverageUnitAmountCents,
 	}
-	if _, err := domain.ComputeAmountCents(testRule, 1); err != nil {
+	if _, err := domain.ComputeAmountCents(testRule, decimal.NewFromInt(1)); err != nil {
 		return domain.CustomerPriceOverride{}, errs.Invalid("pricing", fmt.Sprintf("invalid pricing configuration: %v", err))
 	}
 
