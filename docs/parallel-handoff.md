@@ -28,7 +28,16 @@
 - **Next session (Track A):** start the Week 2 implementation against the design doc — schema migration, decimal-quantity refactor, `meter_pricing_rules` store, ingest service updates. Or, if human prefers, finalize Week 1 README/blog work first.
 
 ### Track B
-- _(no entries yet — this row created by Track A as a placeholder; Track B fills it in on first turn)_
+- **Kickoff:** session started in `../velox-track-b` worktree on `feat/track-b-week1` from `origin/main` (ceba954). Read positioning.md, 90-day-plan.md, parallel-work.md, design-multi-dim-meters.md, CLAUDE.md, and full memory index.
+- **Working from:** the design doc as API contract — no need to wait on Track A's `feat/backend-week2` to land.
+- **Plan for this week (May 1 deadline):**
+  1. README rewrite — lead with AI-native + self-host wedge (replace generic framing, don't append)
+  2. `docs/blog/2026-04-stripe-meter-api-ai-workloads.md` — long-form, uses the Anthropic-style worked example from the design doc (~24 Stripe Meters vs. 1 Velox meter + N rules)
+  3. `docs/marketing/outreach-list.md` — 50 real candidates across AI inference, vector DB, dev infra
+- **Blocking Track A on:** nothing
+- **Track A can:** proceed with Week 2 implementation against the design doc; nothing in Track B's lane affects backend
+- **Open questions for human:** none yet — wedge is clear from positioning.md
+- **Next:** start the README rewrite immediately.
 
 ---
 
