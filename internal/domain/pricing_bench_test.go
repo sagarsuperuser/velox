@@ -1,12 +1,17 @@
 package domain
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/shopspring/decimal"
+)
 
 func BenchmarkComputeAmountCents_Flat(b *testing.B) {
 	rule := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: 500}
+	q := decimal.NewFromInt(1000)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = ComputeAmountCents(rule, 1000)
+		_, _ = ComputeAmountCents(rule, q)
 	}
 }
 
@@ -21,9 +26,10 @@ func BenchmarkComputeAmountCents_Graduated_5Tiers(b *testing.B) {
 			{UpTo: 0, UnitAmountCents: 5},
 		},
 	}
+	q := decimal.NewFromInt(7500)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = ComputeAmountCents(rule, 7500)
+		_, _ = ComputeAmountCents(rule, q)
 	}
 }
 
@@ -34,8 +40,9 @@ func BenchmarkComputeAmountCents_Package(b *testing.B) {
 		PackageAmountCents:     2000,
 		OverageUnitAmountCents: 30,
 	}
+	q := decimal.NewFromInt(15750)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = ComputeAmountCents(rule, 15750)
+		_, _ = ComputeAmountCents(rule, q)
 	}
 }

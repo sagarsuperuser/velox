@@ -6,8 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
-	"github.com/sagarsuperuser/velox/internal/platform/money"
 )
 
 // PreviewLine represents one line in an invoice preview.
@@ -115,7 +116,7 @@ func (e *Engine) Preview(ctx context.Context, sub domain.Subscription) (PreviewR
 		rendered[meterID] = struct{}{}
 
 		quantity := usageTotals[meterID]
-		if quantity == 0 {
+		if quantity.IsZero() {
 			continue
 		}
 
@@ -139,16 +140,18 @@ func (e *Engine) Preview(ctx context.Context, sub domain.Subscription) (PreviewR
 			continue
 		}
 
-		unitAmount := int64(0)
-		if quantity > 0 {
-			unitAmount = money.RoundHalfToEven(amount, quantity)
-		}
+		// quantity is decimal here; the IsZero short-circuit above
+		// guarantees it is non-zero so unit-amount division is safe.
+		unitAmount := decimal.NewFromInt(amount).Div(quantity).RoundBank(0).IntPart()
 
 		result.Lines = append(result.Lines, PreviewLine{
-			LineType:        "usage",
-			Description:     fmt.Sprintf("%s - %d %s", meter.Name, quantity, meter.Unit),
+			LineType: "usage",
+			// Quantity column on previews is integer for now — fractional
+			// values are truncated in the human description but the
+			// AmountCents above is computed from the full decimal quantity.
+			Description:     fmt.Sprintf("%s - %s %s", meter.Name, quantity.String(), meter.Unit),
 			MeterID:         meterID,
-			Quantity:        quantity,
+			Quantity:        quantity.IntPart(),
 			UnitAmountCents: unitAmount,
 			AmountCents:     amount,
 			PricingMode:     string(rule.Mode),

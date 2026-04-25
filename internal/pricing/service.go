@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -71,7 +73,7 @@ func (s *Service) CreateRatingRule(ctx context.Context, tenantID string, input C
 	}
 
 	// Validate the pricing config by computing a test amount
-	if _, err := domain.ComputeAmountCents(rule, 1); err != nil {
+	if _, err := domain.ComputeAmountCents(rule, decimal.NewFromInt(1)); err != nil {
 		return domain.RatingRuleVersion{}, errs.Invalid("pricing", fmt.Sprintf("invalid pricing configuration: %v", err))
 	}
 

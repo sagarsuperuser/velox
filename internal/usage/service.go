@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -20,13 +22,13 @@ func NewService(store Store) *Service {
 // IngestInput is the internal service input — uses resolved internal IDs only.
 // The handler is responsible for resolving external identifiers before calling this.
 type IngestInput struct {
-	CustomerID     string         `json:"customer_id"`
-	MeterID        string         `json:"meter_id"`
-	SubscriptionID string         `json:"subscription_id,omitempty"`
-	Quantity       int64          `json:"quantity,omitempty"`
-	Properties     map[string]any `json:"properties,omitempty"`
-	IdempotencyKey string         `json:"idempotency_key,omitempty"`
-	Timestamp      *time.Time     `json:"timestamp,omitempty"`
+	CustomerID     string          `json:"customer_id"`
+	MeterID        string          `json:"meter_id"`
+	SubscriptionID string          `json:"subscription_id,omitempty"`
+	Quantity       decimal.Decimal `json:"quantity,omitempty"`
+	Properties     map[string]any  `json:"properties,omitempty"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	Timestamp      *time.Time      `json:"timestamp,omitempty"`
 }
 
 func (s *Service) Ingest(ctx context.Context, tenantID string, input IngestInput) (domain.UsageEvent, error) {
@@ -64,10 +66,10 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 	if strings.TrimSpace(input.MeterID) == "" {
 		return domain.UsageEvent{}, errs.Required("meter_id")
 	}
-	if input.Quantity == 0 {
+	if input.Quantity.IsZero() {
 		// Default quantity to 1 (count-based meters) when not explicitly provided.
 		// Negative values are allowed as usage corrections.
-		input.Quantity = 1
+		input.Quantity = decimal.NewFromInt(1)
 	}
 
 	ts := time.Now().UTC()
@@ -109,6 +111,6 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.UsageEv
 	return s.store.List(ctx, filter)
 }
 
-func (s *Service) AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]int64, error) {
+func (s *Service) AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	return s.store.AggregateForBillingPeriod(ctx, tenantID, customerID, meterIDs, from, to)
 }

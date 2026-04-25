@@ -6,9 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
+
+func dec(n int64) decimal.Decimal { return decimal.NewFromInt(n) }
 
 type memStore struct {
 	events map[string]domain.UsageEvent
@@ -46,12 +50,12 @@ func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.UsageEve
 	return result, len(result), nil
 }
 
-func (m *memStore) AggregateForBillingPeriod(_ context.Context, _, _ string, _ []string, _, _ time.Time) (map[string]int64, error) {
-	return map[string]int64{}, nil
+func (m *memStore) AggregateForBillingPeriod(_ context.Context, _, _ string, _ []string, _, _ time.Time) (map[string]decimal.Decimal, error) {
+	return map[string]decimal.Decimal{}, nil
 }
 
-func (m *memStore) AggregateForBillingPeriodByAgg(_ context.Context, _, _ string, _ map[string]string, _, _ time.Time) (map[string]int64, error) {
-	return map[string]int64{}, nil
+func (m *memStore) AggregateForBillingPeriodByAgg(_ context.Context, _, _ string, _ map[string]string, _, _ time.Time) (map[string]decimal.Decimal, error) {
+	return map[string]decimal.Decimal{}, nil
 }
 
 func TestIngest(t *testing.T) {
@@ -60,13 +64,13 @@ func TestIngest(t *testing.T) {
 
 	t.Run("valid event", func(t *testing.T) {
 		e, err := svc.Ingest(ctx, "t1", IngestInput{
-			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: 42,
+			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(42),
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if e.Quantity != 42 {
-			t.Errorf("got quantity %d, want 42", e.Quantity)
+		if !e.Quantity.Equal(dec(42)) {
+			t.Errorf("got quantity %s, want 42", e.Quantity.String())
 		}
 		if e.TenantID != "t1" {
 			t.Errorf("got tenant_id %q, want t1", e.TenantID)
@@ -76,7 +80,7 @@ func TestIngest(t *testing.T) {
 	t.Run("custom timestamp", func(t *testing.T) {
 		ts := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 		e, err := svc.Ingest(ctx, "t1", IngestInput{
-			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: 1, Timestamp: &ts,
+			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(1), Timestamp: &ts,
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -88,13 +92,13 @@ func TestIngest(t *testing.T) {
 
 	t.Run("idempotency", func(t *testing.T) {
 		_, err := svc.Ingest(ctx, "t1", IngestInput{
-			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: 1, IdempotencyKey: "key-1",
+			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(1), IdempotencyKey: "key-1",
 		})
 		if err != nil {
 			t.Fatalf("first ingest failed: %v", err)
 		}
 		_, err = svc.Ingest(ctx, "t1", IngestInput{
-			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: 1, IdempotencyKey: "key-1",
+			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(1), IdempotencyKey: "key-1",
 		})
 		if err == nil {
 			t.Fatal("expected duplicate error")
@@ -103,8 +107,8 @@ func TestIngest(t *testing.T) {
 
 	t.Run("validation", func(t *testing.T) {
 		cases := []IngestInput{
-			{MeterID: "m", Quantity: 1},    // missing customer_id
-			{CustomerID: "c", Quantity: 1}, // missing meter_id
+			{MeterID: "m", Quantity: dec(1)},    // missing customer_id
+			{CustomerID: "c", Quantity: dec(1)}, // missing meter_id
 		}
 		for _, input := range cases {
 			_, err := svc.Ingest(ctx, "t1", input)
@@ -116,7 +120,7 @@ func TestIngest(t *testing.T) {
 
 	t.Run("default origin is api", func(t *testing.T) {
 		e, err := svc.Ingest(ctx, "t1", IngestInput{
-			CustomerID: "cus_origin_api", MeterID: "mtr_1", Quantity: 1,
+			CustomerID: "cus_origin_api", MeterID: "mtr_1", Quantity: dec(1),
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -136,7 +140,7 @@ func TestBackfill(t *testing.T) {
 	t.Run("past timestamp is accepted and tagged backfill", func(t *testing.T) {
 		past := time.Now().Add(-24 * time.Hour)
 		e, err := svc.Backfill(ctx, "t1", IngestInput{
-			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: 7, Timestamp: &past,
+			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(7), Timestamp: &past,
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -151,7 +155,7 @@ func TestBackfill(t *testing.T) {
 
 	t.Run("missing timestamp rejected", func(t *testing.T) {
 		_, err := svc.Backfill(ctx, "t1", IngestInput{
-			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: 1,
+			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(1),
 		})
 		if err == nil {
 			t.Fatal("expected timestamp-required error")
@@ -161,7 +165,7 @@ func TestBackfill(t *testing.T) {
 	t.Run("future timestamp rejected", func(t *testing.T) {
 		future := time.Now().Add(1 * time.Hour)
 		_, err := svc.Backfill(ctx, "t1", IngestInput{
-			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: 1, Timestamp: &future,
+			CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(1), Timestamp: &future,
 		})
 		if err == nil {
 			t.Fatal("expected future-timestamp error")
@@ -171,7 +175,7 @@ func TestBackfill(t *testing.T) {
 	t.Run("one-second-ago accepted", func(t *testing.T) {
 		ts := time.Now().Add(-1 * time.Second)
 		_, err := svc.Backfill(ctx, "t1", IngestInput{
-			CustomerID: "cus_boundary", MeterID: "mtr_1", Quantity: 1, Timestamp: &ts,
+			CustomerID: "cus_boundary", MeterID: "mtr_1", Quantity: dec(1), Timestamp: &ts,
 		})
 		if err != nil {
 			t.Fatalf("one-second-ago backfill should be accepted: %v", err)
@@ -181,7 +185,7 @@ func TestBackfill(t *testing.T) {
 	t.Run("missing customer_id still caught", func(t *testing.T) {
 		past := time.Now().Add(-1 * time.Hour)
 		_, err := svc.Backfill(ctx, "t1", IngestInput{
-			MeterID: "mtr_1", Quantity: 1, Timestamp: &past,
+			MeterID: "mtr_1", Quantity: dec(1), Timestamp: &past,
 		})
 		if err == nil {
 			t.Fatal("expected missing customer_id error")

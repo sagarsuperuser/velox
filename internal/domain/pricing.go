@@ -4,6 +4,8 @@ import (
 	"errors"
 	"math"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 type PricingMode string
@@ -97,29 +99,22 @@ var ErrInvalidPricingConfig = errors.New("invalid pricing config")
 // emit a negative invoice line in production.
 var ErrAmountOverflow = errors.New("amount overflow: exceeds int64 range")
 
-// mulNonNegative multiplies two non-negative int64 values and flags
-// overflow. Callers must validate inputs >= 0 before calling.
-func mulNonNegative(a, b int64) (int64, bool) {
-	if a == 0 || b == 0 {
-		return 0, false
-	}
-	if b > math.MaxInt64/a {
-		return 0, true
-	}
-	return a * b, false
-}
+// maxInt64Decimal caches a decimal copy of math.MaxInt64 for the overflow
+// guard at the int64-cents conversion boundary.
+var maxInt64Decimal = decimal.NewFromInt(math.MaxInt64)
 
-// addNonNegative adds two non-negative int64 values and flags overflow.
-// Callers must validate inputs >= 0 before calling.
-func addNonNegative(a, b int64) (int64, bool) {
-	if a > math.MaxInt64-b {
-		return 0, true
-	}
-	return a + b, false
-}
-
-func ComputeAmountCents(rule RatingRuleVersion, quantity int64) (int64, error) {
-	if quantity < 0 {
+// ComputeAmountCents prices a decimal quantity through the given rating rule
+// and returns the result rounded to whole cents. Quantity is decimal so that
+// fractional usage primitives (GPU-hours, cached-token ratios) round-trip
+// without precision loss. Tier boundaries (`up_to`, `package_size`) stay
+// integer because pricing config is authored that way; the math walks tiers
+// in decimal space and converts to int64 cents only at the final round.
+//
+// Rounding: half-to-even (banker's rounding) at the cent boundary. This is
+// the same convention used elsewhere in the engine (money.RoundHalfToEven)
+// and the IEEE 754 default — minimizes systematic bias on bulk invoices.
+func ComputeAmountCents(rule RatingRuleVersion, quantity decimal.Decimal) (int64, error) {
+	if quantity.IsNegative() {
 		return 0, ErrInvalidPricingConfig
 	}
 
@@ -128,14 +123,11 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity int64) (int64, error) {
 		if rule.FlatAmountCents < 0 {
 			return 0, ErrInvalidPricingConfig
 		}
-		if quantity == 0 {
+		if quantity.IsZero() {
 			return 0, nil
 		}
-		total, overflow := mulNonNegative(quantity, rule.FlatAmountCents)
-		if overflow {
-			return 0, ErrAmountOverflow
-		}
-		return total, nil
+		total := quantity.Mul(decimal.NewFromInt(rule.FlatAmountCents))
+		return decimalToCents(total)
 
 	case PricingGraduated:
 		if len(rule.GraduatedTiers) == 0 {
@@ -143,24 +135,17 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity int64) (int64, error) {
 		}
 		remaining := quantity
 		lastUpper := int64(0)
-		amount := int64(0)
+		amount := decimal.Zero
 		for i, tier := range rule.GraduatedTiers {
 			if tier.UnitAmountCents < 0 || tier.UpTo < 0 {
 				return 0, ErrInvalidPricingConfig
 			}
-			if remaining == 0 {
+			if remaining.IsZero() {
 				break
 			}
 			if tier.UpTo == 0 {
-				tierAmt, overflow := mulNonNegative(remaining, tier.UnitAmountCents)
-				if overflow {
-					return 0, ErrAmountOverflow
-				}
-				amount, overflow = addNonNegative(amount, tierAmt)
-				if overflow {
-					return 0, ErrAmountOverflow
-				}
-				remaining = 0
+				amount = amount.Add(remaining.Mul(decimal.NewFromInt(tier.UnitAmountCents)))
+				remaining = decimal.Zero
 				break
 			}
 			if tier.UpTo < lastUpper {
@@ -173,47 +158,47 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity int64) (int64, error) {
 			if tierCapacity < 0 {
 				return 0, ErrInvalidPricingConfig
 			}
-			consumed := min(remaining, tierCapacity)
-			tierAmt, overflow := mulNonNegative(consumed, tier.UnitAmountCents)
-			if overflow {
-				return 0, ErrAmountOverflow
+			capDec := decimal.NewFromInt(tierCapacity)
+			consumed := remaining
+			if consumed.GreaterThan(capDec) {
+				consumed = capDec
 			}
-			amount, overflow = addNonNegative(amount, tierAmt)
-			if overflow {
-				return 0, ErrAmountOverflow
-			}
-			remaining -= consumed
+			amount = amount.Add(consumed.Mul(decimal.NewFromInt(tier.UnitAmountCents)))
+			remaining = remaining.Sub(consumed)
 			lastUpper = tier.UpTo
 		}
-		if remaining > 0 {
+		if remaining.IsPositive() {
 			return 0, ErrInvalidPricingConfig
 		}
-		return amount, nil
+		return decimalToCents(amount)
 
 	case PricingPackage:
 		if rule.PackageSize <= 0 || rule.PackageAmountCents < 0 || rule.OverageUnitAmountCents < 0 {
 			return 0, ErrInvalidPricingConfig
 		}
-		if quantity == 0 {
+		if quantity.IsZero() {
 			return 0, nil
 		}
-		fullPackages := quantity / rule.PackageSize
-		remainder := quantity % rule.PackageSize
-		packagesAmt, overflow := mulNonNegative(fullPackages, rule.PackageAmountCents)
-		if overflow {
-			return 0, ErrAmountOverflow
-		}
-		overageAmt, overflow := mulNonNegative(remainder, rule.OverageUnitAmountCents)
-		if overflow {
-			return 0, ErrAmountOverflow
-		}
-		total, overflow := addNonNegative(packagesAmt, overageAmt)
-		if overflow {
-			return 0, ErrAmountOverflow
-		}
-		return total, nil
+		pkgSize := decimal.NewFromInt(rule.PackageSize)
+		fullPackages := quantity.Div(pkgSize).Floor()
+		remainder := quantity.Sub(fullPackages.Mul(pkgSize))
+		total := fullPackages.Mul(decimal.NewFromInt(rule.PackageAmountCents)).
+			Add(remainder.Mul(decimal.NewFromInt(rule.OverageUnitAmountCents)))
+		return decimalToCents(total)
 
 	default:
 		return 0, ErrInvalidPricingConfig
 	}
+}
+
+// decimalToCents rounds a decimal cents value (potentially fractional after
+// quantity multiplication) to int64 using banker's rounding. Returns
+// ErrAmountOverflow if the rounded value would exceed int64 — silent wrap
+// would emit a negative invoice line in production, so this is fail-loud.
+func decimalToCents(d decimal.Decimal) (int64, error) {
+	rounded := d.RoundBank(0)
+	if rounded.GreaterThan(maxInt64Decimal) {
+		return 0, ErrAmountOverflow
+	}
+	return rounded.IntPart(), nil
 }
