@@ -139,6 +139,20 @@ type MeterPricingRule struct {
 	UpdatedAt           time.Time       `json:"updated_at"`
 }
 
+// RuleAggregation is one row of the priority+claim resolution result: events
+// in a billing period that were claimed by a single pricing rule, rolled up
+// per the rule's aggregation_mode into a final billable quantity.
+//
+// RuleID == "" indicates the unclaimed bucket — events that matched no rule.
+// The caller falls back to meters.rating_rule_version_id with the meter's
+// own aggregation, preserving back-compat for tenants without any rules.
+type RuleAggregation struct {
+	RuleID              string          `json:"rule_id,omitempty"`
+	RatingRuleVersionID string          `json:"rating_rule_version_id,omitempty"`
+	AggregationMode     AggregationMode `json:"aggregation_mode"`
+	Quantity            decimal.Decimal `json:"quantity"`
+}
+
 var ErrInvalidPricingConfig = errors.New("invalid pricing config")
 
 // ErrAmountOverflow is returned when a pricing computation would exceed
