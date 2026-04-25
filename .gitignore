@@ -7,5 +7,6 @@ tmp/
 .env.local
 .DS_Store
 velox
+velox-bench
 temp.txt
 MANUAL_TEST_BUGS.md
