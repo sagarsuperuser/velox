@@ -1,0 +1,233 @@
+key: openai_style
+version: 1.0.0
+name: OpenAI-style AI inference
+summary: |
+  Per-token billing across model × operation × cached for the GPT family
+  plus embedding models. Fourteen pricing rules, one multi-dim meter.
+  Designed for inference platforms reselling OpenAI API access.
+description: |
+  Models the public OpenAI pricing page: gpt-4-turbo, gpt-4o,
+  gpt-4o-mini, gpt-3.5-turbo, plus three embedding models. Token
+  billing is broken out by input vs output and a cache-discount on
+  input tokens for the chat models that support prompt caching.
+
+  Cached-input rules use higher priority so an event tagged
+  `cached: true` is claimed by the discount rate and not double-counted
+  by the uncached fallback. Embedding models charge once per input
+  token only — no separate output rate.
+
+  All amounts are in cents per million tokens. Operators override
+  `currency`, the customer-facing `plan_name`, and the slug `plan_code`
+  at instantiation.
+
+overridable:
+  - key: currency
+    type: string
+    default: USD
+    enum: [USD, EUR, GBP]
+  - key: plan_name
+    type: string
+    default: OpenAI-style API
+    max_length: 80
+  - key: plan_code
+    type: string
+    default: openai_api_pro
+    pattern: '^[a-z][a-z0-9_]*$'
+
+meters:
+  - key: tokens
+    name: Tokens
+    unit: tokens
+    aggregation: sum
+
+rating_rules:
+  # gpt-4-turbo — $10 / $30 per million; cached input $0.50
+  - key: gpt4_turbo_input
+    name: GPT-4 Turbo input (uncached)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 1000
+  - key: gpt4_turbo_input_cached
+    name: GPT-4 Turbo input (cached)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 50
+  - key: gpt4_turbo_output
+    name: GPT-4 Turbo output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 3000
+
+  # gpt-4o — $2.50 / $10 per million; cached input $1.25
+  - key: gpt4o_input
+    name: GPT-4o input (uncached)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 250
+  - key: gpt4o_input_cached
+    name: GPT-4o input (cached)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 125
+  - key: gpt4o_output
+    name: GPT-4o output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 1000
+
+  # gpt-4o-mini — $0.15 / $0.60 per million; cached input $0.075
+  - key: gpt4o_mini_input
+    name: GPT-4o mini input (uncached)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 15
+  - key: gpt4o_mini_input_cached
+    name: GPT-4o mini input (cached)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 7
+  - key: gpt4o_mini_output
+    name: GPT-4o mini output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 60
+
+  # gpt-3.5-turbo — $0.50 / $1.50 per million (no public cache rate)
+  - key: gpt35_turbo_input
+    name: GPT-3.5 Turbo input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 50
+  - key: gpt35_turbo_output
+    name: GPT-3.5 Turbo output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 150
+
+  # Embeddings — per million input tokens, no output rate.
+  - key: embed_3_small
+    name: text-embedding-3-small
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 2
+  - key: embed_3_large
+    name: text-embedding-3-large
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 13
+  - key: embed_ada_002
+    name: text-embedding-ada-002
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 10
+
+pricing_rules:
+  # Cached variants win via priority=200 over the uncached fallback
+  # for the same (model, operation: input) tuple.
+  - meter: tokens
+    rating_rule: gpt4_turbo_input_cached
+    dimension_match: { model: gpt-4-turbo, operation: input, cached: true }
+    aggregation_mode: sum
+    priority: 200
+  - meter: tokens
+    rating_rule: gpt4_turbo_input
+    dimension_match: { model: gpt-4-turbo, operation: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt4_turbo_output
+    dimension_match: { model: gpt-4-turbo, operation: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: gpt4o_input_cached
+    dimension_match: { model: gpt-4o, operation: input, cached: true }
+    aggregation_mode: sum
+    priority: 200
+  - meter: tokens
+    rating_rule: gpt4o_input
+    dimension_match: { model: gpt-4o, operation: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt4o_output
+    dimension_match: { model: gpt-4o, operation: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: gpt4o_mini_input_cached
+    dimension_match: { model: gpt-4o-mini, operation: input, cached: true }
+    aggregation_mode: sum
+    priority: 200
+  - meter: tokens
+    rating_rule: gpt4o_mini_input
+    dimension_match: { model: gpt-4o-mini, operation: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt4o_mini_output
+    dimension_match: { model: gpt-4o-mini, operation: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: gpt35_turbo_input
+    dimension_match: { model: gpt-3.5-turbo, operation: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt35_turbo_output
+    dimension_match: { model: gpt-3.5-turbo, operation: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: embed_3_small
+    dimension_match: { model: text-embedding-3-small }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: embed_3_large
+    dimension_match: { model: text-embedding-3-large }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: embed_ada_002
+    dimension_match: { model: text-embedding-ada-002 }
+    aggregation_mode: sum
+    priority: 100
+
+plans:
+  - code: '{{ .plan_code }}'
+    name: '{{ .plan_name }}'
+    currency: '{{ .currency }}'
+    billing_interval: monthly
+    base_amount_cents: 0
+    meters: [tokens]
+
+dunning:
+  policy:
+    name: AI default retry
+    max_retries: 4
+    intervals_hours: [24, 72, 168, 336]
+    final_action: pause
+
+webhook:
+  events:
+    - invoice.finalized
+    - invoice.paid
+    - invoice.payment_failed
+    - subscription.updated
+    - subscription.canceled
+  url_placeholder: 'https://example.com/webhooks/velox'
+
+sample_data:
+  customer:
+    external_id: demo-customer
+    display_name: Demo Customer
+    email: demo@example.com
+  subscription:
+    plan: '{{ .plan_code }}'
+    trial_days: 14
