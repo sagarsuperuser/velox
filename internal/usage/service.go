@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -59,12 +60,42 @@ func (s *Service) Backfill(ctx context.Context, tenantID string, input IngestInp
 	return s.ingest(ctx, tenantID, input, domain.UsageOriginBackfill)
 }
 
+// MaxPropertyKeys caps the size of the JSONB properties map on each
+// usage event. Properties feed pricing-rule dispatch via @> subset
+// matches at finalize time; bounding the per-event JSONB size protects
+// the GIN index from pathological tenants and matches the equivalent
+// cap on meter_pricing_rules.dimension_match (16 keys).
+const MaxPropertyKeys = 16
+
+// validateProperties enforces the v1 dimension contract: at most
+// MaxPropertyKeys keys, scalar values only (string, number, bool, nil).
+// Object/array values are rejected — Postgres `@>` would still match
+// them but the priority+claim semantics aren't well-defined for nested
+// containers in v1 (revisit if a design partner needs it).
+func validateProperties(props map[string]any) error {
+	if len(props) > MaxPropertyKeys {
+		return errs.Invalid("properties", fmt.Sprintf("at most %d keys (got %d)", MaxPropertyKeys, len(props)))
+	}
+	for k, v := range props {
+		switch v.(type) {
+		case nil, string, bool, float64, float32, int, int32, int64:
+			// Scalar — fine.
+		default:
+			return errs.Invalid("properties", fmt.Sprintf("key %q value must be a scalar (string/number/bool), got %T", k, v))
+		}
+	}
+	return nil
+}
+
 func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput, origin domain.UsageEventOrigin) (domain.UsageEvent, error) {
 	if strings.TrimSpace(input.CustomerID) == "" {
 		return domain.UsageEvent{}, errs.Required("customer_id")
 	}
 	if strings.TrimSpace(input.MeterID) == "" {
 		return domain.UsageEvent{}, errs.Required("meter_id")
+	}
+	if err := validateProperties(input.Properties); err != nil {
+		return domain.UsageEvent{}, err
 	}
 	if input.Quantity.IsZero() {
 		// Default quantity to 1 (count-based meters) when not explicitly provided.
