@@ -295,7 +295,7 @@ func ingest(t *testing.T, ctx context.Context, store *usage.PostgresStore,
 	svc := usage.NewService(store)
 	if _, err := svc.Ingest(ctx, tenantID, usage.IngestInput{
 		CustomerID: customerID, MeterID: meterID,
-		Quantity: qty, Properties: props,
+		Quantity: qty, Dimensions: props,
 	}); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
@@ -308,7 +308,7 @@ func ingestAt(t *testing.T, ctx context.Context, store *usage.PostgresStore,
 	svc := usage.NewService(store)
 	if _, err := svc.Ingest(ctx, tenantID, usage.IngestInput{
 		CustomerID: customerID, MeterID: meterID,
-		Quantity: qty, Properties: props, Timestamp: &ts,
+		Quantity: qty, Dimensions: props, Timestamp: &ts,
 	}); err != nil {
 		t.Fatalf("ingestAt: %v", err)
 	}

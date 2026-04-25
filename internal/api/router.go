@@ -682,6 +682,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 			auth.Require(auth.PermCustomerWrite),
 		))
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/meters", pricingH.MeterRoutes())
+		// Meter-scoped pricing rule subtree. Mounted as a sibling of
+		// /meters so reads (PermPricingRead) and writes (PermPricingWrite)
+		// can carry independent guards without nesting permission middleware.
+		r.Mount("/meters/{meter_id}/pricing-rules", pricingH.MeterPricingRuleRoutes(
+			auth.Require(auth.PermPricingRead),
+			auth.Require(auth.PermPricingWrite),
+		))
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/plans", pricingH.PlanRoutes())
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/rating-rules", pricingH.RatingRuleRoutes())
 		r.With(auth.Require(auth.PermSubscriptionRead)).Mount("/subscriptions", subH.Routes())
