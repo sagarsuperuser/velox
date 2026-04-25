@@ -41,6 +41,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/portalapi"
 	"github.com/sagarsuperuser/velox/internal/pricing"
+	"github.com/sagarsuperuser/velox/internal/recipe"
 	"github.com/sagarsuperuser/velox/internal/session"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 	"github.com/sagarsuperuser/velox/internal/tax"
@@ -215,6 +216,18 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		CreditReverser: creditSvc,
 		PaymentCancel:  payment.NewLiveStripeClient(stripeClients),
 	})
+
+	// Recipe registry — built-in pricing recipes loaded once at boot from
+	// the embedded YAML. Failure here is fatal: a malformed recipe would
+	// crash on first instantiate, and TestLoad already gates this in CI,
+	// so reaching this panic implies a broken build that should not run.
+	recipeRegistry, err := recipe.Load()
+	if err != nil {
+		panic(fmt.Sprintf("load recipe registry: %v", err))
+	}
+	recipeStore := recipe.NewPostgresStore(db)
+	recipeSvc := recipe.NewService(db, recipeStore, recipeRegistry, pricingSvc, dunningSvc, webhookOutSvc)
+	recipeH := recipe.NewHandler(recipeSvc)
 
 	// Global circuit breaker around Stripe calls. When Stripe is unhealthy
 	// (5xx/timeout/network), every caller backs off together so we don't
@@ -691,6 +704,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		))
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/plans", pricingH.PlanRoutes())
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/rating-rules", pricingH.RatingRuleRoutes())
+		r.With(auth.Require(auth.PermPricingWrite)).Mount("/recipes", recipeH.Routes())
 		r.With(auth.Require(auth.PermSubscriptionRead)).Mount("/subscriptions", subH.Routes())
 		// Backfill is mounted ahead of the /usage-events subtree so chi picks
 		// the more-specific pattern; PermUsageWrite gates it to secret-tier
