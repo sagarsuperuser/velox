@@ -38,6 +38,7 @@ const billingNav = [
 
 const configNav = [
   { to: '/pricing', icon: Tag, label: 'Pricing' },
+  { to: '/recipes', icon: Sparkles, label: 'Recipes' },
   { to: '/coupons', icon: Ticket, label: 'Coupons' },
   { to: '/credits', icon: Wallet, label: 'Credits' },
   { to: '/credit-notes', icon: Receipt, label: 'Credit Notes' },
