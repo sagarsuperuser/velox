@@ -20,6 +20,56 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Pricing recipes — one-call billing setup** (2026-04-26) — the
+  developer-experience flagship that turns Week 2's multi-dim meter
+  engine into a 30-second quickstart (per `docs/design-recipes.md`,
+  `docs/positioning.md` pillar 1.3). `POST
+  /v1/recipes/{key}/instantiate` atomically builds the full graph
+  (rating rules → meters → multi-dim pricing rules → plan → optional
+  dunning policy → optional webhook endpoint → instance row) under a
+  single tenant-scoped transaction; partial state never reaches the
+  tenant. Five built-ins ship in v1 — `anthropic_style` (4 Claude
+  models × input/output, cached input via priority=200 rule),
+  `openai_style` (14 rules across GPT-4 / GPT-4o / 3.5-turbo /
+  embeddings), `replicate_style` (per-second GPU billing across
+  a100/a40/t4/cpu), `b2b_saas_pro` (seats-with-included-tier +
+  storage), `marketplace_gmv` (package-billing GMV take rate +
+  per-transaction fee). Recipes live as embedded YAML under
+  `internal/recipe/recipes/*.yaml` (`embed.FS`, loaded at boot — no
+  DB recipe table); per-instantiation overrides (`currency`,
+  `plan_name`, `plan_code`, plus recipe-specific knobs like
+  `included_seats`) flow through `text/template` with
+  `Option("missingkey=error")` so a typo fails preview rather than
+  silently drops. `POST /{key}/preview` renders the would-be graph
+  with zero DB writes — cheap enough to call on every override-form
+  keystroke and powering the dashboard's review dialog. Idempotency
+  is enforced two ways: `(tenant_id, recipe_key)` UNIQUE in postgres,
+  plus a Service-layer pre-check inside the same tx that returns
+  `ErrAlreadyExists` with the existing instance ID surfaced through
+  the WithCode error. Force re-instantiation is reserved for v2 — v1
+  accepts the `force` field and returns `InvalidState` with a clear
+  message, keeping the API contract stable when force support lands.
+  Uninstall removes the recipe_instance row only; the resources the
+  recipe created (plans, meters, dunning policy, webhook endpoint)
+  stay — operators own them once they exist, and silent cascade
+  could lose live billing data. Cross-domain transactional
+  composition is built on `*Tx` writers added to
+  `pricing.Service` (CreateRatingRuleTx, CreateMeterTx, CreatePlanTx,
+  UpsertMeterPricingRuleTx), `dunning.Service` (UpsertPolicyTx), and
+  `webhook.Service` (CreateEndpointTx); `recipe.Service` defines
+  narrow `PricingWriter` / `DunningWriter` / `WebhookWriter`
+  interfaces it threads the same `*sql.Tx` through. Six integration
+  tests verify the contract end-to-end against real Postgres: full
+  graph build (counts match the design doc — 1 meter / 9 rating
+  rules / 9 pricing rules / 1 plan / 1 dunning policy / 1 webhook
+  endpoint for `anthropic_style`), idempotency, mid-graph rollback
+  (synthetic failure injected via a `failingPricingWriter` wrapper —
+  zero rows survive in every cross-domain table), RLS isolation
+  (tenant B never sees tenant A's instance), preview/instantiate
+  parity, and uninstall-keeps-resources. Mounted at `/v1/recipes`
+  behind `PermPricingWrite`. Dashboard surface is Track B's next
+  slice.
+
 - **Multi-dimensional meters foundation — AI-native wedge** (2026-04-25) —
   the runtime engine for Velox's positioning bet (per
   `docs/positioning.md`): one meter receives events with arbitrary
@@ -181,6 +231,11 @@ Two surfaces mirror this file:
 - `0051_subscription_scheduled_cancel` — adds
   `subscriptions.cancel_at_period_end` (NOT NULL, default false) +
   `cancel_at` (nullable timestamptz, partial index for the cycle scan).
+- `0055_recipe_instances` — adds `recipe_instances` (one row per
+  installed recipe per tenant) with `UNIQUE (tenant_id, recipe_key)`
+  for idempotency and a JSONB `created_objects` blob recording the
+  IDs the instantiation created. RLS-enforced via
+  `current_setting('app.current_tenant_id')`.
 
 ---
 
