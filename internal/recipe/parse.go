@@ -15,19 +15,19 @@ import (
 // lets us evolve the YAML schema without leaking transient parse fields
 // into the rest of the codebase.
 type rawRecipe struct {
-	Key         string                  `yaml:"key"`
-	Version     string                  `yaml:"version"`
-	Name        string                  `yaml:"name"`
-	Summary     string                  `yaml:"summary"`
-	Description string                  `yaml:"description"`
-	Overridable []rawOverride           `yaml:"overridable"`
-	Meters      []rawMeter              `yaml:"meters"`
-	RatingRules []rawRatingRule         `yaml:"rating_rules"`
-	PricingRules []rawPricingRule       `yaml:"pricing_rules"`
-	Plans       []rawPlan               `yaml:"plans"`
-	Dunning     *rawDunningSection      `yaml:"dunning"`
-	Webhook     *rawWebhook             `yaml:"webhook"`
-	SampleData  *rawSampleData          `yaml:"sample_data"`
+	Key          string             `yaml:"key"`
+	Version      string             `yaml:"version"`
+	Name         string             `yaml:"name"`
+	Summary      string             `yaml:"summary"`
+	Description  string             `yaml:"description"`
+	Overridable  []rawOverride      `yaml:"overridable"`
+	Meters       []rawMeter         `yaml:"meters"`
+	RatingRules  []rawRatingRule    `yaml:"rating_rules"`
+	PricingRules []rawPricingRule   `yaml:"pricing_rules"`
+	Plans        []rawPlan          `yaml:"plans"`
+	Dunning      *rawDunningSection `yaml:"dunning"`
+	Webhook      *rawWebhook        `yaml:"webhook"`
+	SampleData   *rawSampleData     `yaml:"sample_data"`
 }
 
 type rawOverride struct {
