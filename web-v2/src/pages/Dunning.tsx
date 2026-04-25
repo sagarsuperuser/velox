@@ -56,7 +56,7 @@ import {
 } from '@/components/ui/pagination'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Loader2, X } from 'lucide-react'
+import { AlertTriangle, Loader2, X, XCircle } from 'lucide-react'
 
 function relativeTime(dateStr: string): string {
   const now = Date.now()
@@ -266,26 +266,22 @@ function PolicyTab() {
             </div>
 
             <div className="px-6 py-4">
-              {/* Payment fails */}
-              <div className="flex items-start gap-3 relative pb-5">
-                <div className="absolute left-[15px] top-6 bottom-0 w-px bg-border" />
-                <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-destructive/10 border-2 border-destructive/30 flex items-center justify-center shrink-0">
-                  <span className="text-xs font-bold text-destructive">!</span>
+              {/* Trigger banner — frames the sequence, not a step */}
+              <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-destructive/5 border border-destructive/20">
+                <div className="w-6 h-6 rounded-full bg-destructive/15 flex items-center justify-center shrink-0">
+                  <XCircle size={14} className="text-destructive" />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground">Payment fails</p>
-                  <p className="text-xs text-muted-foreground">Day 0</p>
-                </div>
+                <p className="text-sm font-semibold text-destructive">Payment fails</p>
+                <span className="ml-auto text-xs text-muted-foreground tabular-nums">Day 0</span>
               </div>
 
-              {/* Grace period wait */}
-              <div className="flex items-start gap-3 relative pb-5">
-                <div className="absolute left-[15px] top-6 bottom-0 w-px bg-border" />
-                <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-muted border-2 border-border border-dashed flex items-center justify-center shrink-0" />
-                <div className="flex-1 flex items-center gap-3">
-                  <p className="text-sm text-muted-foreground">Wait</p>
+              {/* Grace segment — rail leading into Retry 1 */}
+              <div className="relative pl-9 py-2.5">
+                <div className="absolute left-3 top-0 bottom-0 w-px bg-border" />
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs text-muted-foreground">Grace period</span>
                   <Select value={String(graceDays)} onValueChange={v => setForm(f => ({ ...f, grace_period_days: parseInt(v ?? '0') }))}>
-                    <SelectTrigger className="w-auto">
+                    <SelectTrigger className="h-7 w-auto text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -298,74 +294,71 @@ function PolicyTab() {
                       <SelectItem value="14">14 days</SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">Grace period</p>
+                  <span className="text-xs text-muted-foreground">before Retry 1</span>
                 </div>
               </div>
 
-              {/* Retry steps */}
+              {/* Retries with interspersed wait segments */}
               {Array.from({ length: retryCount }, (_, i) => (
-                <div key={i}>
-                  <div className="flex items-start gap-3 relative pb-2">
-                    <div className="absolute left-[15px] top-6 bottom-0 w-px bg-border" />
-                    <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-primary/10 border-2 border-primary/40 flex items-center justify-center shrink-0">
-                      <span className="text-xs font-bold text-primary">{i + 1}</span>
+                <Fragment key={i}>
+                  <div className="relative flex items-center gap-3 py-1">
+                    <div className="absolute left-3 top-0 bottom-0 w-px bg-border" />
+                    <div className="relative z-10 w-6 h-6 rounded-full bg-primary/10 border-2 border-primary/40 flex items-center justify-center shrink-0">
+                      <span className="text-xs font-bold text-primary tabular-nums">{i + 1}</span>
                     </div>
-                    <div className="flex-1 flex items-center gap-3 flex-wrap min-w-0">
-                      <p className="text-sm font-medium text-foreground shrink-0">Retry {i + 1}</p>
-                      {i === 0 && (
-                        <span className="text-xs text-muted-foreground">after grace period</span>
-                      )}
-                      {i > 0 && (
-                        <Select value={String(gapDays[i - 1] ?? 3)} onValueChange={v => updateGap(i - 1, parseInt(v ?? '0'))}>
-                          <SelectTrigger className="w-auto">
+                    <p className="text-sm font-medium text-foreground">Retry {i + 1}</p>
+                    <span className="ml-auto text-xs text-muted-foreground tabular-nums">Day {timelineSteps[i]?.day ?? 0}</span>
+                    {retryCount > 1 && i === retryCount - 1 && (
+                      <Button variant="ghost" size="sm" onClick={() => setRetryCount(retryCount - 1)}
+                        className="shrink-0 text-muted-foreground hover:text-destructive h-7 w-7 p-0" title="Remove retry">
+                        <X size={14} />
+                      </Button>
+                    )}
+                  </div>
+
+                  {i < retryCount - 1 && (
+                    <div className="relative pl-9 py-2.5">
+                      <div className="absolute left-3 top-0 bottom-0 w-px bg-border" />
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs text-muted-foreground">Wait</span>
+                        <Select value={String(gapDays[i] ?? 3)} onValueChange={v => updateGap(i, parseInt(v ?? '0'))}>
+                          <SelectTrigger className="h-7 w-auto text-xs">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
                             {[1, 2, 3, 5, 7, 10, 14].map(d => (
-                              <SelectItem key={d} value={String(d)}>{d} {d === 1 ? 'day' : 'days'} after retry {i}</SelectItem>
+                              <SelectItem key={d} value={String(d)}>{d} {d === 1 ? 'day' : 'days'}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
-                      )}
-                      <span className="text-xs text-muted-foreground shrink-0 tabular-nums">Day {timelineSteps[i]?.day ?? 0}</span>
-                      {retryCount > 1 && i === retryCount - 1 && (
-                        <Button variant="ghost" size="sm" onClick={() => setRetryCount(retryCount - 1)}
-                          className="ml-auto shrink-0 text-muted-foreground hover:text-destructive h-7 w-7 p-0" title="Remove retry">
-                          <X size={14} />
-                        </Button>
-                      )}
+                        <span className="text-xs text-muted-foreground">before Retry {i + 2}</span>
+                      </div>
                     </div>
-                  </div>
-                  <div className="h-3" />
-                </div>
+                  )}
+                </Fragment>
               ))}
 
-              {/* Add retry */}
+              {/* Add retry — ghost inline, rail dashed to signal "potential" */}
               {retryCount < 8 && (
-                <div className="flex items-start gap-3 relative pb-5">
-                  <div className="absolute left-[15px] top-6 bottom-0 w-px bg-border" />
-                  <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-background border-2 border-dashed border-border flex items-center justify-center shrink-0">
-                    <span className="text-xs font-bold text-muted-foreground">+</span>
-                  </div>
-                  <Button variant="outline" size="sm" onClick={() => setRetryCount(retryCount + 1)}>
+                <div className="relative pl-9 py-1.5">
+                  <div className="absolute left-3 top-0 bottom-0 w-px border-l border-dashed border-border" />
+                  <Button variant="ghost" size="sm" onClick={() => setRetryCount(retryCount + 1)}
+                    className="h-7 px-2 -ml-2 text-xs text-muted-foreground hover:text-primary">
                     + Add retry attempt
                   </Button>
                 </div>
               )}
 
-              {/* Final action marker */}
-              <div className="flex items-start gap-3 relative">
-                <div className="relative z-10 mt-0.5 w-8 h-8 rounded-full bg-amber-100 dark:bg-amber-500/20 border-2 border-amber-400 flex items-center justify-center shrink-0">
-                  <span className="text-xs font-bold text-amber-600">!</span>
+              {/* Terminal banner — frames the sequence, not a step */}
+              <div className="mt-1 flex items-center gap-2.5 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30">
+                <div className="w-6 h-6 rounded-full bg-amber-200/60 dark:bg-amber-500/20 flex items-center justify-center shrink-0">
+                  <AlertTriangle size={14} className="text-amber-700 dark:text-amber-400" />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
-                    {FINAL_ACTIONS.find(a => a.value === (form.final_action || 'manual_review'))?.label || 'Final action'}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Day {timelineSteps[timelineSteps.length - 1]?.day ?? graceDays} -- if all retries fail
-                  </p>
-                </div>
+                <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+                  {FINAL_ACTIONS.find(a => a.value === (form.final_action || 'manual_review'))?.label || 'Final action'}
+                </p>
+                <span className="hidden sm:inline text-xs text-muted-foreground">if all retries fail</span>
+                <span className="ml-auto text-xs text-muted-foreground tabular-nums">Day {timelineSteps[timelineSteps.length - 1]?.day ?? graceDays}</span>
               </div>
             </div>
           </CardContent>
@@ -516,8 +509,10 @@ function RunsTab() {
 
   return (
     <>
-      {/* Summary stats */}
-      {!loading && total > 0 && (
+      {/* Summary stats — only meaningful on the unfiltered view; filter chips
+          drive the table beneath. Showing them while filtered would invert
+          the relationship (stat counts for one state, table empty for another). */}
+      {!loading && total > 0 && !filterStatus && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
           {statCards.map(stat => (
             <div key={stat.label} className={cn(stat.bg, 'rounded-xl px-4 py-3 ring-1', stat.ring)}>
@@ -530,8 +525,9 @@ function RunsTab() {
         </div>
       )}
 
-      {/* Filter */}
-      {total > 0 && (
+      {/* Filter — keep visible whenever a filter is active, even if the
+          filtered total is zero, so the user can always click back to All. */}
+      {(total > 0 || filterStatus) && (
         <div className="flex items-center gap-2 mt-4">
           <div className="flex gap-1 bg-muted rounded-lg p-1">
             {[
@@ -540,7 +536,7 @@ function RunsTab() {
               { value: 'escalated', label: 'Escalated' },
               { value: 'resolved', label: 'Recovered' },
             ].map(f => (
-              <button key={f.value} onClick={() => { setFilterStatus(f.value); setPage(1) }}
+              <button key={f.value} type="button" onClick={() => { setFilterStatus(f.value); setPage(1) }}
                 className={cn(
                   'px-3 py-1 rounded-md text-xs font-medium transition-colors',
                   filterStatus === f.value
@@ -566,10 +562,23 @@ function RunsTab() {
             <TableSkeleton columns={8} />
           ) : runs.length === 0 ? (
             <div className="p-12 text-center">
-              <p className="text-sm font-medium text-foreground">No dunning runs</p>
-              <p className="text-sm text-muted-foreground mt-1">
-                Dunning runs will appear here when Velox detects a failed payment and begins the recovery process.
-              </p>
+              {filterStatus ? (
+                <>
+                  <p className="text-sm font-medium text-foreground">
+                    No {filterStatus === 'resolved' ? 'recovered' : filterStatus} runs
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Try a different filter to see other dunning runs.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-medium text-foreground">No dunning runs</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Dunning runs will appear here when Velox detects a failed payment and begins the recovery process.
+                  </p>
+                </>
+              )}
             </div>
           ) : (
             <>
