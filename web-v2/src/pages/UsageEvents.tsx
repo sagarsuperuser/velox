@@ -94,14 +94,12 @@ export default function UsageEventsPage() {
 
   useEffect(() => { loadEvents() }, [loadEvents])
 
-  // Prefer the decimal-precision `value` field once it lands (multi-dim meters
-  // ship May 8); fall back to the legacy integer `quantity` for older events.
-  const eventValue = (e: UsageEvent): number => {
-    if (e.value !== undefined && e.value !== null && e.value !== '') {
-      const n = Number(e.value)
-      if (!Number.isNaN(n)) return n
-    }
-    return e.quantity
+  // `quantity` is wire-encoded as a string (NUMERIC(38, 12)) for decimal
+  // precision; coerce to number for chart math + stats only. Authoritative
+  // money math stays server-side.
+  const eventQuantity = (e: UsageEvent): number => {
+    const n = Number(e.quantity)
+    return Number.isNaN(n) ? 0 : n
   }
 
   // Show the dimensions column + filter only when at least one event in the
@@ -115,7 +113,7 @@ export default function UsageEventsPage() {
   // Computed stats from current page data
   const stats = useMemo(() => {
     const totalEvents = total
-    const totalUnits = events.reduce((sum, e) => sum + eventValue(e), 0)
+    const totalUnits = events.reduce((sum, e) => sum + eventQuantity(e), 0)
     const activeMeters = new Set(events.map(e => e.meter_id)).size
     const activeCustomers = new Set(events.map(e => e.customer_id)).size
     return { totalEvents, totalUnits, activeMeters, activeCustomers }
@@ -125,7 +123,7 @@ export default function UsageEventsPage() {
   const meterBreakdown = useMemo(() => {
     const grouped: Record<string, number> = {}
     for (const e of events) {
-      grouped[e.meter_id] = (grouped[e.meter_id] || 0) + eventValue(e)
+      grouped[e.meter_id] = (grouped[e.meter_id] || 0) + eventQuantity(e)
     }
     const grandTotal = Object.values(grouped).reduce((a, b) => a + b, 0)
     return Object.entries(grouped)
@@ -154,7 +152,7 @@ export default function UsageEventsPage() {
         formatDateTime(ev.timestamp),
         customerMap[ev.customer_id]?.display_name || ev.customer_id,
         meterMap[ev.meter_id]?.name || ev.meter_id,
-        ev.value ?? String(ev.quantity),
+        ev.quantity,
         ev.dimensions && Object.keys(ev.dimensions).length > 0 ? JSON.stringify(ev.dimensions) : '',
       ])
       downloadCSV('usage-events.csv', ['Timestamp', 'Customer', 'Meter', 'Value', 'Dimensions'], rows)
@@ -311,8 +309,11 @@ export default function UsageEventsPage() {
                 </TableHeader>
                 <TableBody>
                   {events.map(ev => {
-                    const v = eventValue(ev)
-                    const display = ev.value ?? v.toLocaleString()
+                    const v = eventQuantity(ev)
+                    // Render the raw string to preserve full decimal precision
+                    // — losing trailing zeros via toLocaleString hides the
+                    // distinction between "1.5" and "1.500000000000".
+                    const display = ev.quantity
                     const dims = ev.dimensions && Object.keys(ev.dimensions).length > 0 ? ev.dimensions : null
                     return (
                       <TableRow key={ev.id}>
