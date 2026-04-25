@@ -1,0 +1,115 @@
+key: replicate_style
+version: 1.0.0
+name: Replicate-style GPU-time billing
+summary: |
+  Per-second GPU billing across {a100, a40, t4, cpu}. One meter, four
+  pricing rules, monthly invoicing. Designed for inference platforms
+  that bill by hardware time rather than tokens.
+description: |
+  Models the public Replicate billing model: per-second cost varies by
+  GPU class. Events emit `gpu_seconds` tagged with `gpu_type`; the
+  pricing rules dispatch the per-class rate. `last_during_period` is
+  used so a long-running job samples its current accumulated duration
+  once per period rather than double-billing across overlapping
+  reports.
+
+  Rates are in cents per second — A100 at 1.4¢/s tracks the published
+  retail rate for nvidia-a100. Operators override `currency`, the
+  customer-facing `plan_name`, and the slug `plan_code`.
+
+overridable:
+  - key: currency
+    type: string
+    default: USD
+    enum: [USD, EUR, GBP]
+  - key: plan_name
+    type: string
+    default: GPU Compute
+    max_length: 80
+  - key: plan_code
+    type: string
+    default: gpu_compute_pro
+    pattern: '^[a-z][a-z0-9_]*$'
+
+meters:
+  - key: gpu_seconds
+    name: GPU seconds
+    unit: seconds
+    aggregation: sum
+
+rating_rules:
+  - key: gpu_a100
+    name: NVIDIA A100 per-second
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 14
+  - key: gpu_a40
+    name: NVIDIA A40 per-second
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 8
+  - key: gpu_t4
+    name: NVIDIA T4 per-second
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 5
+  - key: cpu
+    name: CPU-only per-second
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 1
+
+pricing_rules:
+  - meter: gpu_seconds
+    rating_rule: gpu_a100
+    dimension_match: { gpu_type: a100 }
+    aggregation_mode: last_during_period
+    priority: 100
+  - meter: gpu_seconds
+    rating_rule: gpu_a40
+    dimension_match: { gpu_type: a40 }
+    aggregation_mode: last_during_period
+    priority: 100
+  - meter: gpu_seconds
+    rating_rule: gpu_t4
+    dimension_match: { gpu_type: t4 }
+    aggregation_mode: last_during_period
+    priority: 100
+  - meter: gpu_seconds
+    rating_rule: cpu
+    dimension_match: { gpu_type: cpu }
+    aggregation_mode: last_during_period
+    priority: 100
+
+plans:
+  - code: '{{ .plan_code }}'
+    name: '{{ .plan_name }}'
+    currency: '{{ .currency }}'
+    billing_interval: monthly
+    base_amount_cents: 0
+    meters: [gpu_seconds]
+
+dunning:
+  policy:
+    name: GPU compute retry
+    max_retries: 4
+    intervals_hours: [24, 72, 168, 336]
+    final_action: pause
+
+webhook:
+  events:
+    - invoice.finalized
+    - invoice.paid
+    - invoice.payment_failed
+    - subscription.updated
+    - subscription.canceled
+  url_placeholder: 'https://example.com/webhooks/velox'
+
+sample_data:
+  customer:
+    external_id: demo-customer
+    display_name: Demo Customer
+    email: demo@example.com
+  subscription:
+    plan: '{{ .plan_code }}'
+    trial_days: 14

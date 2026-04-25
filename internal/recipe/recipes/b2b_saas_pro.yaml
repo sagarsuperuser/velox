@@ -1,0 +1,114 @@
+key: b2b_saas_pro
+version: 1.0.0
+name: B2B SaaS — seats + storage
+summary: |
+  Classic SaaS profile: per-seat with included tier and per-seat
+  overage, plus a metered storage add-on. One plan, two meters, two
+  pricing rules, monthly billing.
+description: |
+  The vanilla SaaS pricing pattern that shows up on most B2B product
+  pages: a price for the first N seats, a per-seat overage above that,
+  and a metered add-on (here: storage in GB). Tenants choosing Velox
+  for compliance / multi-tenant safety rather than for AI-native
+  features get a turnkey starting point.
+
+  Seats use `last_ever` aggregation so the bill reflects the current
+  team size on settlement day, not the peak across the period. Storage
+  uses `max` so customers aren't penalised for transient spikes during
+  a backup or migration. Overage above the included tier comes through
+  graduated pricing on the seat rate.
+
+  Operators override `currency`, the customer-facing `plan_name`, the
+  slug `plan_code`, and the `included_seats` count.
+
+overridable:
+  - key: currency
+    type: string
+    default: USD
+    enum: [USD, EUR, GBP]
+  - key: plan_name
+    type: string
+    default: Pro
+    max_length: 80
+  - key: plan_code
+    type: string
+    default: saas_pro
+    pattern: '^[a-z][a-z0-9_]*$'
+  - key: included_seats
+    type: int
+    default: 10
+
+meters:
+  - key: seats
+    name: Active seats
+    unit: seats
+    aggregation: max
+  - key: storage_gb
+    name: Storage (GB)
+    unit: gigabytes
+    aggregation: max
+
+rating_rules:
+  # Seat rate: first 10 seats free (covered by base_amount_cents on the
+  # plan), then $20 per seat. Graduated tiers express the included
+  # bucket without needing a second pricing rule.
+  - key: seat_rate
+    name: Seat rate (with included tier)
+    mode: graduated
+    currency: '{{ .currency }}'
+    graduated_tiers:
+      - up_to: 10
+        unit_amount_cents: 0
+      - up_to: 0
+        unit_amount_cents: 2000
+  # Storage add-on: $0.05 per GB-month, no included tier.
+  - key: storage_rate
+    name: Storage per GB-month
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 5
+
+pricing_rules:
+  - meter: seats
+    rating_rule: seat_rate
+    dimension_match: {}
+    aggregation_mode: last_ever
+    priority: 100
+  - meter: storage_gb
+    rating_rule: storage_rate
+    dimension_match: {}
+    aggregation_mode: max
+    priority: 100
+
+plans:
+  - code: '{{ .plan_code }}'
+    name: '{{ .plan_name }}'
+    currency: '{{ .currency }}'
+    billing_interval: monthly
+    base_amount_cents: 9900
+    meters: [seats, storage_gb]
+
+dunning:
+  policy:
+    name: SaaS default retry
+    max_retries: 3
+    intervals_hours: [72, 168, 336]
+    final_action: write_off_later
+
+webhook:
+  events:
+    - subscription.created
+    - subscription.canceled
+    - invoice.finalized
+    - invoice.paid
+    - invoice.payment_failed
+  url_placeholder: 'https://example.com/webhooks/velox'
+
+sample_data:
+  customer:
+    external_id: demo-customer
+    display_name: Demo Customer
+    email: demo@example.com
+  subscription:
+    plan: '{{ .plan_code }}'
+    trial_days: 14

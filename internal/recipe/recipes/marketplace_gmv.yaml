@@ -1,0 +1,110 @@
+key: marketplace_gmv
+version: 1.0.0
+name: Marketplace — GMV take rate
+summary: |
+  Percentage-of-volume marketplace billing with a per-transaction fee.
+  Two meters (GMV cents and transaction count), two pricing rules,
+  monthly settle. For platforms running their own seller billing
+  without Stripe Connect.
+description: |
+  Models the take-rate pattern used by Etsy / eBay / Shopify-style
+  marketplaces: settle a percentage of gross merchandise value plus a
+  flat per-transaction fee. Both rates run as separate meters so the
+  invoice line items show "GMV fees" and "transaction fees" cleanly
+  rather than rolling them into one opaque amount.
+
+  GMV uses package billing — `package_size` of 1000 cents and
+  `package_amount_cents` of 25 expresses a 2.5% take rate (25¢ owed
+  per $10 of GMV). The transaction-count rule is a flat 30¢ per
+  payment, summed for the period.
+
+  Operators override `currency`, the customer-facing `plan_name`, the
+  slug `plan_code`, and the `take_rate_bps` (basis points; default 250
+  = 2.5%) so the same recipe can model 1% or 5% marketplaces without
+  a recipe edit.
+
+overridable:
+  - key: currency
+    type: string
+    default: USD
+    enum: [USD, EUR, GBP]
+  - key: plan_name
+    type: string
+    default: Marketplace fees
+    max_length: 80
+  - key: plan_code
+    type: string
+    default: marketplace_pro
+    pattern: '^[a-z][a-z0-9_]*$'
+
+meters:
+  - key: gmv_cents
+    name: Gross merchandise value (cents)
+    unit: cents
+    aggregation: sum
+  - key: transactions
+    name: Transactions
+    unit: count
+    aggregation: sum
+
+rating_rules:
+  # 2.5% take rate: 25 cents per 1,000 cents of GMV. Operators tweak
+  # `package_amount_cents` to model different rates without changing
+  # the recipe contract.
+  - key: gmv_take_rate
+    name: GMV take rate (2.5%)
+    mode: package
+    currency: '{{ .currency }}'
+    package_size: 1000
+    package_amount_cents: 25
+    overage_unit_amount_cents: 0
+  - key: transaction_fee
+    name: Per-transaction fee
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 30
+
+pricing_rules:
+  - meter: gmv_cents
+    rating_rule: gmv_take_rate
+    dimension_match: {}
+    aggregation_mode: sum
+    priority: 100
+  - meter: transactions
+    rating_rule: transaction_fee
+    dimension_match: {}
+    aggregation_mode: count
+    priority: 100
+
+plans:
+  - code: '{{ .plan_code }}'
+    name: '{{ .plan_name }}'
+    currency: '{{ .currency }}'
+    billing_interval: monthly
+    base_amount_cents: 0
+    meters: [gmv_cents, transactions]
+
+dunning:
+  policy:
+    name: Marketplace default retry
+    max_retries: 3
+    intervals_hours: [24, 72, 168]
+    final_action: pause
+
+webhook:
+  events:
+    - invoice.finalized
+    - invoice.paid
+    - invoice.payment_failed
+    - subscription.created
+    - subscription.canceled
+  url_placeholder: 'https://example.com/webhooks/velox'
+
+sample_data:
+  customer:
+    external_id: demo-marketplace
+    display_name: Demo Marketplace Seller
+    email: seller@example.com
+  subscription:
+    plan: '{{ .plan_code }}'
+    trial_days: 0
