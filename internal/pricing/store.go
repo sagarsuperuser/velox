@@ -29,6 +29,13 @@ type Store interface {
 	CreateOverride(ctx context.Context, tenantID string, o domain.CustomerPriceOverride) (domain.CustomerPriceOverride, error)
 	GetOverride(ctx context.Context, tenantID, customerID, ruleID string) (domain.CustomerPriceOverride, error)
 	ListOverrides(ctx context.Context, tenantID, customerID string) ([]domain.CustomerPriceOverride, error)
+
+	// Meter pricing rules — N-rules-per-meter dispatch via dimension_match.
+	// See docs/design-multi-dim-meters.md.
+	UpsertMeterPricingRule(ctx context.Context, tenantID string, rule domain.MeterPricingRule) (domain.MeterPricingRule, error)
+	GetMeterPricingRule(ctx context.Context, tenantID, id string) (domain.MeterPricingRule, error)
+	ListMeterPricingRulesByMeter(ctx context.Context, tenantID, meterID string) ([]domain.MeterPricingRule, error)
+	DeleteMeterPricingRule(ctx context.Context, tenantID, id string) error
 }
 
 type RatingRuleFilter struct {
