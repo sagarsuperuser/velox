@@ -319,3 +319,109 @@ func (s *Service) UpdatePlan(ctx context.Context, tenantID, id string, input Cre
 
 	return s.store.UpdatePlan(ctx, tenantID, existing)
 }
+
+// ---------------------------------------------------------------------------
+// Meter Pricing Rules — N-rules-per-meter dispatch.
+// ---------------------------------------------------------------------------
+
+// UpsertMeterPricingRuleInput is the public input shape. The combination
+// (meter_id, rating_rule_version_id) identifies the rule — re-issuing
+// the same point pair with new dimension_match / mode / priority
+// updates the existing rule (idempotent reconfigure).
+type UpsertMeterPricingRuleInput struct {
+	MeterID             string                 `json:"meter_id"`
+	RatingRuleVersionID string                 `json:"rating_rule_version_id"`
+	DimensionMatch      map[string]any         `json:"dimension_match"`
+	AggregationMode     domain.AggregationMode `json:"aggregation_mode"`
+	Priority            int                    `json:"priority"`
+}
+
+// maxDimensionKeys caps the size of the JSONB filter to keep aggregation
+// queries cheap and to bound pathological tenants. 16 dimensions is
+// generous for the AI use case (model × operation × cached × tier ≈ 4),
+// matches the open-question in the design doc, and is enforced here at
+// the service boundary so the store never has to deal with bloated
+// filters.
+const maxDimensionKeys = 16
+
+// UpsertMeterPricingRule validates the input and upserts the rule.
+// Concretely the validations are:
+//   - meter_id and rating_rule_version_id required
+//   - rating rule must exist for this tenant (404 surfaces as 400 to
+//     avoid leaking other tenants' IDs through the API surface)
+//   - meter must exist for this tenant (same reasoning)
+//   - aggregation_mode must be one of the five accepted values
+//   - dimension_match has ≤ maxDimensionKeys keys
+//   - dimension_match values are scalars (string / number / bool); object
+//     and array values are rejected — Postgres `@>` would still match
+//     them but the semantics aren't well-defined for v1
+func (s *Service) UpsertMeterPricingRule(ctx context.Context, tenantID string, input UpsertMeterPricingRuleInput) (domain.MeterPricingRule, error) {
+	meterID := strings.TrimSpace(input.MeterID)
+	rrvID := strings.TrimSpace(input.RatingRuleVersionID)
+	if meterID == "" {
+		return domain.MeterPricingRule{}, errs.Required("meter_id")
+	}
+	if rrvID == "" {
+		return domain.MeterPricingRule{}, errs.Required("rating_rule_version_id")
+	}
+
+	if _, err := s.store.GetMeter(ctx, tenantID, meterID); err != nil {
+		return domain.MeterPricingRule{}, errs.Invalid("meter_id", fmt.Sprintf("meter %q not found", meterID))
+	}
+	if _, err := s.store.GetRatingRule(ctx, tenantID, rrvID); err != nil {
+		return domain.MeterPricingRule{}, errs.Invalid("rating_rule_version_id", fmt.Sprintf("rating rule %q not found", rrvID))
+	}
+
+	mode := input.AggregationMode
+	if mode == "" {
+		mode = domain.AggSum
+	}
+	if !mode.IsValid() {
+		return domain.MeterPricingRule{}, errs.Invalid("aggregation_mode", fmt.Sprintf("must be one of sum, count, last_during_period, last_ever, max; got %q", mode))
+	}
+
+	match := input.DimensionMatch
+	if match == nil {
+		match = map[string]any{}
+	}
+	if len(match) > maxDimensionKeys {
+		return domain.MeterPricingRule{}, errs.Invalid("dimension_match", fmt.Sprintf("at most %d keys (got %d)", maxDimensionKeys, len(match)))
+	}
+	for k, v := range match {
+		switch v.(type) {
+		case string, bool, float64, float32, int, int32, int64, nil:
+			// scalar — fine.
+		default:
+			return domain.MeterPricingRule{}, errs.Invalid("dimension_match", fmt.Sprintf("key %q value must be a scalar (string/number/bool), got %T", k, v))
+		}
+	}
+
+	return s.store.UpsertMeterPricingRule(ctx, tenantID, domain.MeterPricingRule{
+		MeterID:             meterID,
+		RatingRuleVersionID: rrvID,
+		DimensionMatch:      match,
+		AggregationMode:     mode,
+		Priority:            input.Priority,
+	})
+}
+
+// GetMeterPricingRule fetches one rule by id.
+func (s *Service) GetMeterPricingRule(ctx context.Context, tenantID, id string) (domain.MeterPricingRule, error) {
+	return s.store.GetMeterPricingRule(ctx, tenantID, id)
+}
+
+// ListMeterPricingRulesByMeter returns rules in priority-DESC order; the
+// store already enforces the ordering so callers can iterate top-down.
+func (s *Service) ListMeterPricingRulesByMeter(ctx context.Context, tenantID, meterID string) ([]domain.MeterPricingRule, error) {
+	if strings.TrimSpace(meterID) == "" {
+		return nil, errs.Required("meter_id")
+	}
+	return s.store.ListMeterPricingRulesByMeter(ctx, tenantID, meterID)
+}
+
+// DeleteMeterPricingRule removes a rule. Pre-existing usage events are
+// not retroactively re-scored; deletion only affects future billing
+// finalize cycles.
+func (s *Service) DeleteMeterPricingRule(ctx context.Context, tenantID, id string) error {
+	return s.store.DeleteMeterPricingRule(ctx, tenantID, id)
+}

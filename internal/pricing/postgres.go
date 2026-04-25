@@ -445,3 +445,184 @@ func joinClauses(parts []string) string {
 	}
 	return result
 }
+
+// ---------------------------------------------------------------------------
+// Meter Pricing Rules
+// ---------------------------------------------------------------------------
+
+// UpsertMeterPricingRule inserts or updates a pricing rule for a meter.
+// The unique key is (tenant_id, meter_id, rating_rule_version_id) — a
+// rule is identified by which rating rule it points at, so re-issuing
+// the same point-pair with new dimension_match / mode / priority
+// updates the existing row. ON CONFLICT keeps the original id and
+// created_at, and bumps updated_at.
+func (s *PostgresStore) UpsertMeterPricingRule(ctx context.Context, tenantID string, rule domain.MeterPricingRule) (domain.MeterPricingRule, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.MeterPricingRule{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	id := rule.ID
+	if id == "" {
+		id = postgres.NewID("vlx_mpr")
+	}
+
+	dimMatch := rule.DimensionMatch
+	if dimMatch == nil {
+		dimMatch = map[string]any{}
+	}
+	matchJSON, err := json.Marshal(dimMatch)
+	if err != nil {
+		return domain.MeterPricingRule{}, fmt.Errorf("marshal dimension_match: %w", err)
+	}
+
+	now := time.Now().UTC()
+	var stored domain.MeterPricingRule
+	var storedMatch []byte
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO meter_pricing_rules
+			(id, tenant_id, meter_id, rating_rule_version_id, dimension_match,
+			 aggregation_mode, priority, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
+		ON CONFLICT (tenant_id, meter_id, rating_rule_version_id) DO UPDATE
+		   SET dimension_match  = EXCLUDED.dimension_match,
+		       aggregation_mode = EXCLUDED.aggregation_mode,
+		       priority         = EXCLUDED.priority,
+		       updated_at       = EXCLUDED.updated_at
+		RETURNING id, tenant_id, meter_id, rating_rule_version_id,
+		          dimension_match, aggregation_mode, priority,
+		          created_at, updated_at
+	`, id, tenantID, rule.MeterID, rule.RatingRuleVersionID, matchJSON,
+		string(rule.AggregationMode), rule.Priority, now,
+	).Scan(
+		&stored.ID, &stored.TenantID, &stored.MeterID, &stored.RatingRuleVersionID,
+		&storedMatch, &stored.AggregationMode, &stored.Priority,
+		&stored.CreatedAt, &stored.UpdatedAt,
+	)
+	if err != nil {
+		return domain.MeterPricingRule{}, err
+	}
+
+	if len(storedMatch) > 0 {
+		if err := json.Unmarshal(storedMatch, &stored.DimensionMatch); err != nil {
+			return domain.MeterPricingRule{}, fmt.Errorf("unmarshal dimension_match: %w", err)
+		}
+	}
+	if stored.DimensionMatch == nil {
+		stored.DimensionMatch = map[string]any{}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.MeterPricingRule{}, err
+	}
+	return stored, nil
+}
+
+func (s *PostgresStore) GetMeterPricingRule(ctx context.Context, tenantID, id string) (domain.MeterPricingRule, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.MeterPricingRule{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	rule, err := scanMeterPricingRule(tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, meter_id, rating_rule_version_id,
+		       dimension_match, aggregation_mode, priority,
+		       created_at, updated_at
+		  FROM meter_pricing_rules
+		 WHERE id = $1
+	`, id))
+	if err != nil {
+		return domain.MeterPricingRule{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.MeterPricingRule{}, err
+	}
+	return rule, nil
+}
+
+// ListMeterPricingRulesByMeter returns all pricing rules for a meter
+// ordered by priority DESC, then created_at ASC. This matches the
+// runtime resolution order in design-multi-dim-meters.md so callers can
+// walk the slice top-down without re-sorting.
+func (s *PostgresStore) ListMeterPricingRulesByMeter(ctx context.Context, tenantID, meterID string) ([]domain.MeterPricingRule, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, tenant_id, meter_id, rating_rule_version_id,
+		       dimension_match, aggregation_mode, priority,
+		       created_at, updated_at
+		  FROM meter_pricing_rules
+		 WHERE meter_id = $1
+		 ORDER BY priority DESC, created_at ASC
+	`, meterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.MeterPricingRule
+	for rows.Next() {
+		rule, err := scanMeterPricingRule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rule)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) DeleteMeterPricingRule(ctx context.Context, tenantID, id string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM meter_pricing_rules WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errs.ErrNotFound
+	}
+	return tx.Commit()
+}
+
+func scanMeterPricingRule(row rowScanner) (domain.MeterPricingRule, error) {
+	var r domain.MeterPricingRule
+	var matchJSON []byte
+	err := row.Scan(&r.ID, &r.TenantID, &r.MeterID, &r.RatingRuleVersionID,
+		&matchJSON, &r.AggregationMode, &r.Priority,
+		&r.CreatedAt, &r.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return domain.MeterPricingRule{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.MeterPricingRule{}, err
+	}
+	if len(matchJSON) > 0 {
+		if err := json.Unmarshal(matchJSON, &r.DimensionMatch); err != nil {
+			return domain.MeterPricingRule{}, fmt.Errorf("unmarshal dimension_match: %w", err)
+		}
+	}
+	if r.DimensionMatch == nil {
+		r.DimensionMatch = map[string]any{}
+	}
+	return r, nil
+}

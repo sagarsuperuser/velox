@@ -10,16 +10,18 @@ import (
 )
 
 type memStore struct {
-	rules  map[string]domain.RatingRuleVersion
-	meters map[string]domain.Meter
-	plans  map[string]domain.Plan
+	rules      map[string]domain.RatingRuleVersion
+	meters     map[string]domain.Meter
+	plans      map[string]domain.Plan
+	meterRules map[string]domain.MeterPricingRule
 }
 
 func newMemStore() *memStore {
 	return &memStore{
-		rules:  make(map[string]domain.RatingRuleVersion),
-		meters: make(map[string]domain.Meter),
-		plans:  make(map[string]domain.Plan),
+		rules:      make(map[string]domain.RatingRuleVersion),
+		meters:     make(map[string]domain.Meter),
+		plans:      make(map[string]domain.Plan),
+		meterRules: make(map[string]domain.MeterPricingRule),
 	}
 }
 
@@ -160,6 +162,56 @@ func (m *memStore) GetOverride(_ context.Context, _, _, _ string) (domain.Custom
 
 func (m *memStore) ListOverrides(_ context.Context, _, _ string) ([]domain.CustomerPriceOverride, error) {
 	return nil, nil
+}
+
+func (m *memStore) UpsertMeterPricingRule(_ context.Context, tenantID string, r domain.MeterPricingRule) (domain.MeterPricingRule, error) {
+	if m.meterRules == nil {
+		m.meterRules = make(map[string]domain.MeterPricingRule)
+	}
+	// Dedup on (tenant_id, meter_id, rating_rule_version_id) — same
+	// UNIQUE key the Postgres schema enforces.
+	for id, existing := range m.meterRules {
+		if existing.TenantID == tenantID && existing.MeterID == r.MeterID && existing.RatingRuleVersionID == r.RatingRuleVersionID {
+			r.ID = id
+			r.TenantID = tenantID
+			r.CreatedAt = existing.CreatedAt
+			m.meterRules[id] = r
+			return r, nil
+		}
+	}
+	if r.ID == "" {
+		r.ID = fmt.Sprintf("vlx_mpr_%d", len(m.meterRules)+1)
+	}
+	r.TenantID = tenantID
+	m.meterRules[r.ID] = r
+	return r, nil
+}
+
+func (m *memStore) GetMeterPricingRule(_ context.Context, tenantID, id string) (domain.MeterPricingRule, error) {
+	r, ok := m.meterRules[id]
+	if !ok || r.TenantID != tenantID {
+		return domain.MeterPricingRule{}, errs.ErrNotFound
+	}
+	return r, nil
+}
+
+func (m *memStore) ListMeterPricingRulesByMeter(_ context.Context, tenantID, meterID string) ([]domain.MeterPricingRule, error) {
+	var out []domain.MeterPricingRule
+	for _, r := range m.meterRules {
+		if r.TenantID == tenantID && r.MeterID == meterID {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) DeleteMeterPricingRule(_ context.Context, tenantID, id string) error {
+	r, ok := m.meterRules[id]
+	if !ok || r.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	delete(m.meterRules, id)
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -382,5 +434,218 @@ func TestUpdatePlan(t *testing.T) {
 	}
 	if updated.BaseAmountCents != 5900 {
 		t.Errorf("got base_amount %d, want 5900", updated.BaseAmountCents)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Meter Pricing Rules
+// ---------------------------------------------------------------------------
+
+// seedMeterAndRule seeds a meter and a rating rule into the in-memory
+// store so the meter_pricing_rules tests can reference them by ID
+// without going through the public Create paths (those have their own
+// validation tested elsewhere).
+func seedMeterAndRule(t *testing.T, svc *Service, tenantID string) (meterID, rrvID string) {
+	t.Helper()
+	rule, err := svc.CreateRatingRule(context.Background(), tenantID, CreateRatingRuleInput{
+		RuleKey: "tokens_in", Name: "Input tokens", Mode: domain.PricingFlat,
+		Currency: "USD", FlatAmountCents: 5,
+	})
+	if err != nil {
+		t.Fatalf("seed rating rule: %v", err)
+	}
+	meter, err := svc.CreateMeter(context.Background(), tenantID, CreateMeterInput{
+		Key: "tokens", Name: "Tokens", Unit: "tokens", Aggregation: "sum",
+		RatingRuleVersionID: rule.ID,
+	})
+	if err != nil {
+		t.Fatalf("seed meter: %v", err)
+	}
+	return meter.ID, rule.ID
+}
+
+func TestUpsertMeterPricingRule_Valid(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	meterID, rrvID := seedMeterAndRule(t, svc, "t1")
+
+	rule, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{
+		MeterID:             meterID,
+		RatingRuleVersionID: rrvID,
+		DimensionMatch:      map[string]any{"model": "gpt-4", "cached": false},
+		AggregationMode:     domain.AggSum,
+		Priority:            100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rule.AggregationMode != domain.AggSum {
+		t.Errorf("agg mode: got %q, want sum", rule.AggregationMode)
+	}
+	if rule.Priority != 100 {
+		t.Errorf("priority: got %d, want 100", rule.Priority)
+	}
+	if rule.DimensionMatch["model"] != "gpt-4" {
+		t.Errorf("dimension_match did not round-trip: got %+v", rule.DimensionMatch)
+	}
+}
+
+func TestUpsertMeterPricingRule_DefaultModeIsSum(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	meterID, rrvID := seedMeterAndRule(t, svc, "t1")
+
+	rule, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{
+		MeterID: meterID, RatingRuleVersionID: rrvID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rule.AggregationMode != domain.AggSum {
+		t.Errorf("default agg mode: got %q, want sum", rule.AggregationMode)
+	}
+}
+
+func TestUpsertMeterPricingRule_RejectsBadMode(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	meterID, rrvID := seedMeterAndRule(t, svc, "t1")
+
+	_, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{
+		MeterID: meterID, RatingRuleVersionID: rrvID, AggregationMode: "average",
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown aggregation mode")
+	}
+}
+
+func TestUpsertMeterPricingRule_RejectsTooManyDimensions(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	meterID, rrvID := seedMeterAndRule(t, svc, "t1")
+
+	dims := map[string]any{}
+	for i := 0; i < maxDimensionKeys+1; i++ {
+		dims[fmt.Sprintf("k%d", i)] = "v"
+	}
+	_, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{
+		MeterID: meterID, RatingRuleVersionID: rrvID, DimensionMatch: dims,
+	})
+	if err == nil {
+		t.Fatal("expected error for too many dimension keys")
+	}
+}
+
+func TestUpsertMeterPricingRule_RejectsNonScalarDimensionValue(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	meterID, rrvID := seedMeterAndRule(t, svc, "t1")
+
+	_, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{
+		MeterID: meterID, RatingRuleVersionID: rrvID,
+		DimensionMatch: map[string]any{"models": []string{"gpt-4", "claude"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for slice value in dimension_match")
+	}
+}
+
+func TestUpsertMeterPricingRule_RequiresMeterAndRule(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	_, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{})
+	if err == nil {
+		t.Fatal("expected required-field error")
+	}
+}
+
+func TestUpsertMeterPricingRule_UnknownMeterRejected(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	_, rrvID := seedMeterAndRule(t, svc, "t1")
+
+	_, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{
+		MeterID: "vlx_mtr_does_not_exist", RatingRuleVersionID: rrvID,
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown meter")
+	}
+}
+
+func TestUpsertMeterPricingRule_TenantIsolation(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	// Tenant A seeds its own meter and rule; tenant B should not be able
+	// to bind a pricing rule to A's IDs.
+	meterID, rrvID := seedMeterAndRule(t, svc, "tenantA")
+
+	_, err := svc.UpsertMeterPricingRule(ctx, "tenantB", UpsertMeterPricingRuleInput{
+		MeterID: meterID, RatingRuleVersionID: rrvID,
+	})
+	if err == nil {
+		t.Fatal("expected cross-tenant attempt to be rejected")
+	}
+}
+
+func TestListMeterPricingRulesByMeter(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	meterID, rrvID := seedMeterAndRule(t, svc, "t1")
+
+	// Seed a second rating rule so we can attach two pricing rules.
+	rule2, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "tokens_cached", Name: "Cached", Mode: domain.PricingFlat,
+		Currency: "USD", FlatAmountCents: 1,
+	})
+	if err != nil {
+		t.Fatalf("second rating rule: %v", err)
+	}
+
+	if _, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{
+		MeterID: meterID, RatingRuleVersionID: rrvID,
+		DimensionMatch: map[string]any{}, Priority: 0,
+	}); err != nil {
+		t.Fatalf("default rule: %v", err)
+	}
+	if _, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{
+		MeterID: meterID, RatingRuleVersionID: rule2.ID,
+		DimensionMatch: map[string]any{"cached": true}, Priority: 100,
+	}); err != nil {
+		t.Fatalf("specific rule: %v", err)
+	}
+
+	rules, err := svc.ListMeterPricingRulesByMeter(ctx, "t1", meterID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("got %d rules, want 2", len(rules))
+	}
+}
+
+func TestUpsertMeterPricingRule_IsIdempotent(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	meterID, rrvID := seedMeterAndRule(t, svc, "t1")
+
+	first, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{
+		MeterID: meterID, RatingRuleVersionID: rrvID, Priority: 10,
+	})
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	// Re-issuing with the same (meter, rule) pair must update, not create.
+	second, err := svc.UpsertMeterPricingRule(ctx, "t1", UpsertMeterPricingRuleInput{
+		MeterID: meterID, RatingRuleVersionID: rrvID, Priority: 50,
+	})
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Errorf("upsert created a new row instead of updating: first=%s second=%s", first.ID, second.ID)
+	}
+	if second.Priority != 50 {
+		t.Errorf("priority not updated: got %d want 50", second.Priority)
 	}
 }
