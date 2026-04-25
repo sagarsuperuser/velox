@@ -127,10 +127,10 @@ export const api = {
     apiRequest<{ status: string }>('DELETE', `/meters/${meterId}/pricing-rules/${ruleId}`),
   customerUsageBreakdown: (
     customerId: string,
-    params: { meter_key: string; period_start: string; period_end: string; group_by?: string[] },
+    params: { event_name: string; period_start: string; period_end: string; group_by?: string[] },
   ) => {
     const qs = new URLSearchParams()
-    qs.set('meter_key', params.meter_key)
+    qs.set('event_name', params.event_name)
     qs.set('period_start', params.period_start)
     qs.set('period_end', params.period_end)
     if (params.group_by && params.group_by.length > 0) {
@@ -588,12 +588,11 @@ export interface UsageEvent {
   customer_id: string
   meter_id: string
   subscription_id: string
-  quantity: number
-  // String-encoded NUMERIC for decimal precision (GPU-hours, partial tokens).
-  // Optional until the multi-dim ingest endpoint replaces the integer-only one.
-  value?: string
+  // String-encoded NUMERIC(38, 12) — decimal precision for fractional GPU-hours
+  // and partial tokens. Coerce via Number() / parseFloat() at display time.
+  quantity: string
   // Free-form dimensions per docs/design-multi-dim-meters.md (subset-matched
-  // by pricing rules). Empty for events ingested before that endpoint.
+  // by pricing rules). Empty for events ingested before the multi-dim API.
   dimensions?: Record<string, string | number | boolean>
   idempotency_key: string
   timestamp: string
@@ -618,7 +617,7 @@ export interface MeterPricingRule {
 
 export interface CustomerUsageBreakdown {
   customer_id: string
-  meter_key: string
+  event_name: string
   period_start: string
   period_end: string
   group_by: string[]
