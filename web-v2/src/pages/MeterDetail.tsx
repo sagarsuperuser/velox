@@ -1,25 +1,59 @@
+import { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { api, formatCents, formatDateTime } from '@/lib/api'
+import type { MeterPricingRule, MeterAggregationMode, RatingRule } from '@/lib/api'
+import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { TypedConfirmDialog } from '@/components/TypedConfirmDialog'
 
-import { Loader2 } from 'lucide-react'
+import { Loader2, Plus, Trash2 } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
 const statusVariant = statusBadgeVariant
 
+const AGGREGATION_MODES: { value: MeterAggregationMode; label: string; help: string }[] = [
+  { value: 'sum', label: 'sum', help: 'Add all event values in the period.' },
+  { value: 'count', label: 'count', help: 'Count matching events; ignore values.' },
+  { value: 'last_during_period', label: 'last_during_period', help: 'Take the latest event in the period.' },
+  { value: 'last_ever', label: 'last_ever', help: 'Take the latest event across all time (state-style billing).' },
+  { value: 'max', label: 'max', help: 'Take the largest value in the period.' },
+]
+
 export default function MeterDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+
+  const [createOpen, setCreateOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<MeterPricingRule | null>(null)
 
   const { data: meter, isLoading: meterLoading, error: meterError, refetch } = useQuery({
     queryKey: ['meter', id],
@@ -55,6 +89,27 @@ export default function MeterDetailPage() {
     enabled: !!id,
   })
 
+  // Multi-dimensional pricing rules. Falls back to an empty list when the
+  // backend endpoint isn't deployed yet — keeps the page usable on tenants
+  // running pre-multi-dim builds.
+  const { data: rules } = useQuery({
+    queryKey: ['meter-pricing-rules', id],
+    queryFn: async () => {
+      try {
+        const res = await api.listMeterPricingRules(id!)
+        return res.data ?? []
+      } catch {
+        return [] as MeterPricingRule[]
+      }
+    },
+    enabled: !!id,
+  })
+
+  const { data: ratingRules } = useQuery({
+    queryKey: ['rating-rules-all'],
+    queryFn: () => api.listRatingRules(),
+  })
+
   const loading = meterLoading
   const error = meterError instanceof Error ? meterError.message : meterError ? String(meterError) : null
 
@@ -68,6 +123,16 @@ export default function MeterDetailPage() {
     }
     return `Next ${(tier.up_to - prev).toLocaleString()} units`
   }
+
+  const deleteMutation = useMutation({
+    mutationFn: (ruleId: string) => api.deleteMeterPricingRule(id!, ruleId),
+    onSuccess: () => {
+      toast.success('Pricing rule deleted')
+      queryClient.invalidateQueries({ queryKey: ['meter-pricing-rules', id] })
+      setDeleteTarget(null)
+    },
+    onError: (err) => showApiError(err, 'Failed to delete pricing rule'),
+  })
 
   if (loading) {
     return (
@@ -135,7 +200,7 @@ export default function MeterDetailPage() {
               <span className="text-sm text-foreground">{meter.unit}</span>
             </div>
             <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground">Aggregation</span>
+              <span className="text-sm text-muted-foreground">Default aggregation</span>
               <Badge variant="secondary">{meter.aggregation}</Badge>
             </div>
             <div className="flex items-center justify-between px-6 py-3">
@@ -153,14 +218,17 @@ export default function MeterDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Pricing Rule */}
+      {/* Default pricing rule */}
       <Card className="mt-6">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-sm">Pricing Rule</CardTitle>
+              <CardTitle className="text-sm">Default pricing rule</CardTitle>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Applies to events not claimed by a dimension-matched rule below.
+              </p>
               {ratingRule && (
-                <p className="text-sm text-muted-foreground mt-0.5">{ratingRule.name}</p>
+                <p className="text-sm text-muted-foreground mt-2">{ratingRule.name}</p>
               )}
             </div>
             {ratingRule && (
@@ -218,6 +286,93 @@ export default function MeterDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Dimension-matched pricing rules (multi-dim) */}
+      <Card className="mt-6">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-sm">Dimension-matched rules</CardTitle>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Pricing rules that match a subset of event dimensions. Higher priority claims events first.
+              </p>
+            </div>
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus size={14} className="mr-1.5" /> Add rule
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {rules && rules.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-xs font-medium w-20">Priority</TableHead>
+                  <TableHead className="text-xs font-medium">Dimension match</TableHead>
+                  <TableHead className="text-xs font-medium w-40">Aggregation</TableHead>
+                  <TableHead className="text-xs font-medium">Rating rule</TableHead>
+                  <TableHead className="text-xs font-medium w-44">Created</TableHead>
+                  <TableHead className="text-xs font-medium w-12 text-right" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rules.map(rule => {
+                  const ratingRuleName = ratingRules?.data.find(r => r.id === rule.rating_rule_version_id)?.name
+                  return (
+                    <TableRow key={rule.id}>
+                      <TableCell className="text-sm font-mono tabular-nums">{rule.priority}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
+                          {Object.entries(rule.dimension_match).length === 0 ? (
+                            <span className="text-xs text-muted-foreground italic">all events</span>
+                          ) : (
+                            Object.entries(rule.dimension_match).map(([k, v]) => (
+                              <span key={k} className="inline-flex items-center text-xs font-mono bg-muted px-1.5 py-0.5 rounded">
+                                {k}=<span className="text-foreground">{String(v)}</span>
+                              </span>
+                            ))
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="secondary" className="font-mono text-xs">{rule.aggregation_mode}</Badge>
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {ratingRuleName ? (
+                          <span title={rule.rating_rule_version_id}>{ratingRuleName}</span>
+                        ) : (
+                          <span className="font-mono text-xs">{rule.rating_rule_version_id.slice(0, 16)}…</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{formatDateTime(rule.created_at)}</TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => setDeleteTarget(rule)}
+                          aria-label="Delete pricing rule"
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="px-6 py-8 text-center">
+              <p className="text-sm text-muted-foreground">
+                No dimension-matched rules. Every event uses the default pricing rule above.
+              </p>
+              <Button variant="outline" size="sm" className="mt-3" onClick={() => setCreateOpen(true)}>
+                <Plus size={14} className="mr-1.5" /> Add a rule
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Plans */}
       <Card className="mt-6">
         <CardHeader>
@@ -266,6 +421,210 @@ export default function MeterDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {createOpen && (
+        <CreatePricingRuleDialog
+          meterId={meter.id}
+          ratingRules={ratingRules?.data ?? []}
+          onClose={() => setCreateOpen(false)}
+          onCreated={() => {
+            setCreateOpen(false)
+            queryClient.invalidateQueries({ queryKey: ['meter-pricing-rules', meter.id] })
+          }}
+        />
+      )}
+
+      {deleteTarget && (
+        <TypedConfirmDialog
+          open
+          onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}
+          title="Delete pricing rule?"
+          description={
+            <>
+              This rule stops applying to new events at finalize time. Invoices
+              already finalized are unaffected. Type <span className="font-mono">delete</span> to confirm.
+            </>
+          }
+          confirmWord="delete"
+          confirmLabel="Delete rule"
+          onConfirm={() => deleteMutation.mutate(deleteTarget.id)}
+          loading={deleteMutation.isPending}
+        />
+      )}
     </Layout>
   )
+}
+
+interface DimensionRow {
+  key: string
+  value: string
+}
+
+function CreatePricingRuleDialog({
+  meterId,
+  ratingRules,
+  onClose,
+  onCreated,
+}: {
+  meterId: string
+  ratingRules: RatingRule[]
+  onClose: () => void
+  onCreated: () => void
+}) {
+  const [dimensions, setDimensions] = useState<DimensionRow[]>([{ key: '', value: '' }])
+  const [aggregation, setAggregation] = useState<MeterAggregationMode>('sum')
+  const [ratingRuleId, setRatingRuleId] = useState<string>('')
+  const [priority, setPriority] = useState<number>(100)
+
+  const createMutation = useMutation({
+    mutationFn: () => {
+      const dimMap: Record<string, string | number | boolean> = {}
+      for (const row of dimensions) {
+        const k = row.key.trim()
+        if (!k) continue
+        dimMap[k] = parseDimensionValue(row.value)
+      }
+      return api.createMeterPricingRule(meterId, {
+        rating_rule_version_id: ratingRuleId,
+        dimension_match: dimMap,
+        aggregation_mode: aggregation,
+        priority,
+      })
+    },
+    onSuccess: () => {
+      toast.success('Pricing rule created')
+      onCreated()
+    },
+    onError: (err) => showApiError(err, 'Failed to create pricing rule'),
+  })
+
+  const updateRow = (i: number, patch: Partial<DimensionRow>) => {
+    setDimensions(rows => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
+  }
+  const addRow = () => setDimensions(rows => [...rows, { key: '', value: '' }])
+  const removeRow = (i: number) => setDimensions(rows => rows.filter((_, idx) => idx !== i))
+
+  const canSubmit = !!ratingRuleId && !createMutation.isPending
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Add dimension-matched pricing rule</DialogTitle>
+          <DialogDescription>
+            Match events whose dimensions are a superset of the keys below. Leave empty to match every event.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-5">
+          <div>
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground">Dimension match</Label>
+            <div className="space-y-2 mt-2">
+              {dimensions.map((row, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <Input
+                    placeholder="key (e.g. model)"
+                    value={row.key}
+                    onChange={(e) => updateRow(i, { key: e.target.value })}
+                    className="font-mono text-sm"
+                  />
+                  <span className="text-muted-foreground">=</span>
+                  <Input
+                    placeholder="value (e.g. gpt-4)"
+                    value={row.value}
+                    onChange={(e) => updateRow(i, { value: e.target.value })}
+                    className="font-mono text-sm"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9 shrink-0 text-muted-foreground"
+                    onClick={() => removeRow(i)}
+                    disabled={dimensions.length === 1}
+                    aria-label="Remove dimension"
+                  >
+                    <Trash2 size={14} />
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <Button variant="outline" size="sm" className="mt-2" onClick={addRow}>
+              <Plus size={14} className="mr-1.5" /> Add dimension
+            </Button>
+            <p className="text-xs text-muted-foreground mt-2">
+              Values <span className="font-mono">true</span>, <span className="font-mono">false</span>, and numeric strings are coerced; everything else is treated as a string.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Aggregation</Label>
+              <Select value={aggregation} onValueChange={(v) => setAggregation(v as MeterAggregationMode)}>
+                <SelectTrigger className="mt-2 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {AGGREGATION_MODES.map(m => (
+                    <SelectItem key={m.value} value={m.value}>
+                      <span className="font-mono">{m.label}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                {AGGREGATION_MODES.find(m => m.value === aggregation)?.help}
+              </p>
+            </div>
+            <div>
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Priority</Label>
+              <Input
+                type="number"
+                value={priority}
+                onChange={(e) => setPriority(parseInt(e.target.value || '0', 10) || 0)}
+                className="mt-2 font-mono"
+              />
+              <p className="text-xs text-muted-foreground mt-1">Higher priority claims events first.</p>
+            </div>
+          </div>
+
+          <div>
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground">Rating rule</Label>
+            <Select value={ratingRuleId} onValueChange={(v) => setRatingRuleId(v ?? '')}>
+              <SelectTrigger className="mt-2 w-full">
+                <SelectValue placeholder="Select rating rule…" />
+              </SelectTrigger>
+              <SelectContent>
+                {ratingRules.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-muted-foreground">No rating rules — create one first.</div>
+                ) : (
+                  ratingRules.map(rr => (
+                    <SelectItem key={rr.id} value={rr.id}>
+                      <span className="text-sm">{rr.name}</span>
+                      <span className="text-xs text-muted-foreground ml-2">{rr.mode} · v{rr.version}</span>
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => createMutation.mutate()} disabled={!canSubmit}>
+            {createMutation.isPending ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : null}
+            Create rule
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function parseDimensionValue(raw: string): string | number | boolean {
+  const trimmed = raw.trim()
+  if (trimmed === 'true') return true
+  if (trimmed === 'false') return false
+  if (trimmed !== '' && !isNaN(Number(trimmed))) return Number(trimmed)
+  return raw
 }

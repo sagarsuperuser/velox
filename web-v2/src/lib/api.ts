@@ -111,6 +111,33 @@ export const api = {
     apiRequest<Meter>('GET', `/meters/${id}`),
   createMeter: (data: { key: string; name: string; unit?: string; aggregation?: string; rating_rule_version_id?: string }) =>
     apiRequest<Meter>('POST', '/meters', data),
+  listMeterPricingRules: (meterId: string) =>
+    apiRequest<{ data: MeterPricingRule[] }>('GET', `/meters/${meterId}/pricing-rules`),
+  createMeterPricingRule: (
+    meterId: string,
+    data: {
+      rating_rule_version_id: string
+      dimension_match: Record<string, string | number | boolean>
+      aggregation_mode: MeterAggregationMode
+      priority: number
+    },
+  ) =>
+    apiRequest<MeterPricingRule>('POST', `/meters/${meterId}/pricing-rules`, data),
+  deleteMeterPricingRule: (meterId: string, ruleId: string) =>
+    apiRequest<{ status: string }>('DELETE', `/meters/${meterId}/pricing-rules/${ruleId}`),
+  customerUsageBreakdown: (
+    customerId: string,
+    params: { meter_key: string; period_start: string; period_end: string; group_by?: string[] },
+  ) => {
+    const qs = new URLSearchParams()
+    qs.set('meter_key', params.meter_key)
+    qs.set('period_start', params.period_start)
+    qs.set('period_end', params.period_end)
+    if (params.group_by && params.group_by.length > 0) {
+      qs.set('group_by', params.group_by.join(','))
+    }
+    return apiRequest<CustomerUsageBreakdown>('GET', `/customers/${customerId}/usage?${qs.toString()}`)
+  },
   listPlans: () =>
     apiRequest<{ data: Plan[] }>('GET', '/plans'),
   getPlan: (id: string) =>
@@ -562,8 +589,46 @@ export interface UsageEvent {
   meter_id: string
   subscription_id: string
   quantity: number
+  // String-encoded NUMERIC for decimal precision (GPU-hours, partial tokens).
+  // Optional until the multi-dim ingest endpoint replaces the integer-only one.
+  value?: string
+  // Free-form dimensions per docs/design-multi-dim-meters.md (subset-matched
+  // by pricing rules). Empty for events ingested before that endpoint.
+  dimensions?: Record<string, string | number | boolean>
   idempotency_key: string
   timestamp: string
+}
+
+export type MeterAggregationMode =
+  | 'sum'
+  | 'count'
+  | 'last_during_period'
+  | 'last_ever'
+  | 'max'
+
+export interface MeterPricingRule {
+  id: string
+  meter_id: string
+  rating_rule_version_id: string
+  dimension_match: Record<string, string | number | boolean>
+  aggregation_mode: MeterAggregationMode
+  priority: number
+  created_at: string
+}
+
+export interface CustomerUsageBreakdown {
+  customer_id: string
+  meter_key: string
+  period_start: string
+  period_end: string
+  group_by: string[]
+  buckets: {
+    dimensions: Record<string, string | number | boolean>
+    rule_id: string | null
+    aggregation_mode: MeterAggregationMode
+    quantity: string
+    projected_amount_cents: number
+  }[]
 }
 
 export interface UsageSummary {
