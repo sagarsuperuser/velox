@@ -21,7 +21,6 @@ type rawRecipe struct {
 	Summary     string                  `yaml:"summary"`
 	Description string                  `yaml:"description"`
 	Overridable []rawOverride           `yaml:"overridable"`
-	Products    []rawProduct            `yaml:"products"`
 	Meters      []rawMeter              `yaml:"meters"`
 	RatingRules []rawRatingRule         `yaml:"rating_rules"`
 	PricingRules []rawPricingRule       `yaml:"pricing_rules"`
@@ -38,12 +37,6 @@ type rawOverride struct {
 	Enum      []string `yaml:"enum"`
 	MaxLength int      `yaml:"max_length"`
 	Pattern   string   `yaml:"pattern"`
-}
-
-type rawProduct struct {
-	Code        string `yaml:"code"`
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
 }
 
 type rawMeter struct {
@@ -174,13 +167,6 @@ func parseRecipe(data []byte) (domain.Recipe, error) {
 			Key: ov.Key, Type: ov.Type, Default: ov.Default,
 			Enum: ov.Enum, MaxLength: ov.MaxLength, Pattern: ov.Pattern,
 		})
-	}
-
-	for _, p := range raw.Products {
-		if p.Code == "" || p.Name == "" {
-			return domain.Recipe{}, fmt.Errorf("recipe %q: product missing code or name", raw.Key)
-		}
-		out.Products = append(out.Products, domain.RecipeProduct(p))
 	}
 
 	meterKeys := make(map[string]struct{}, len(raw.Meters))

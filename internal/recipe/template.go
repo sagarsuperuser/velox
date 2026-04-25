@@ -52,19 +52,6 @@ func renderRecipe(r domain.Recipe, overrides map[string]any) (domain.Recipe, err
 		return domain.Recipe{}, err
 	}
 
-	out.Products = append([]domain.RecipeProduct(nil), r.Products...)
-	for i, p := range out.Products {
-		if out.Products[i].Code, err = apply(p.Code); err != nil {
-			return domain.Recipe{}, err
-		}
-		if out.Products[i].Name, err = apply(p.Name); err != nil {
-			return domain.Recipe{}, err
-		}
-		if out.Products[i].Description, err = apply(p.Description); err != nil {
-			return domain.Recipe{}, err
-		}
-	}
-
 	out.RatingRules = append([]domain.RecipeRatingRule(nil), r.RatingRules...)
 	for i, rr := range out.RatingRules {
 		if out.RatingRules[i].Currency, err = apply(rr.Currency); err != nil {
@@ -198,17 +185,6 @@ func validateTemplateReferences(r domain.Recipe, allowed map[string]struct{}) er
 	}
 	if err := check(r.Description, "description"); err != nil {
 		return err
-	}
-	for i, p := range r.Products {
-		if err := check(p.Code, fmt.Sprintf("products[%d].code", i)); err != nil {
-			return err
-		}
-		if err := check(p.Name, fmt.Sprintf("products[%d].name", i)); err != nil {
-			return err
-		}
-		if err := check(p.Description, fmt.Sprintf("products[%d].description", i)); err != nil {
-			return err
-		}
 	}
 	for i, rr := range r.RatingRules {
 		if err := check(rr.Currency, fmt.Sprintf("rating_rules[%d].currency", i)); err != nil {
