@@ -20,6 +20,17 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Trial extension — Stripe parity** (2026-04-25) — operators can now
+  push a trialing subscription's `trial_end_at` later via `POST
+  /v1/subscriptions/{id}/extend-trial` with `{trial_end:<RFC3339>}`. The
+  store atomic enforces `status='trialing'` (closing the race against
+  the cycle-scan auto-flip), and the service guards against past
+  timestamps and shrinks (use `end-trial` to shorten — `extend-trial`
+  is extension-only by design). Fires `subscription.trial_extended`
+  with `triggered_by:"operator"`. Dashboard `SubscriptionDetail`
+  surfaces an "Extend trial" button next to "End trial now" on
+  trialing subs; the dialog seeds with current + 7 days.
+
 - **Trial state machine — Stripe parity** (2026-04-25) — subscriptions
   with `trial_days > 0` now enter a real `status='trialing'` state on
   `Create` (previously they went straight to `active` and the engine

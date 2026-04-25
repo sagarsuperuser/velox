@@ -195,6 +195,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Put("/{id}/pause-collection", h.pauseCollection)
 	r.Delete("/{id}/pause-collection", h.resumeCollection)
 	r.Post("/{id}/end-trial", h.endTrial)
+	r.Post("/{id}/extend-trial", h.extendTrial)
 
 	// Items — Stripe-style per-item mutation. Quantity and plan changes land
 	// on the same PATCH (body discriminates), pending-change clear has its own
@@ -447,6 +448,49 @@ func (h *Handler) endTrial(w http.ResponseWriter, r *http.Request) {
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionTrialEnded, sub, map[string]any{
 		"triggered_by": "operator",
+	})
+
+	respond.JSON(w, r, http.StatusOK, sub)
+}
+
+// extendTrial pushes a trialing subscription's trial_end_at later. Body:
+// {trial_end:<RFC3339>}. Returns 422 if the new value is in the past or
+// not strictly after the current trial_end_at, or the sub is not in
+// 'trialing'. Fires subscription.trial_extended with
+// triggered_by="operator".
+func (h *Handler) extendTrial(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	var body struct {
+		TrialEnd time.Time `json:"trial_end"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respond.Error(w, r, http.StatusBadRequest, "invalid_body", "invalid request body", "")
+		return
+	}
+	if body.TrialEnd.IsZero() {
+		respond.Error(w, r, http.StatusUnprocessableEntity, "validation_error", "trial_end is required", "trial_end")
+		return
+	}
+
+	sub, err := h.svc.ExtendTrial(r.Context(), tenantID, id, body.TrialEnd)
+	if err != nil {
+		respond.FromError(w, r, err, "subscription")
+		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+			"action":      "trial_extended",
+			"customer_id": sub.CustomerID,
+			"trial_end":   body.TrialEnd.UTC(),
+		})
+	}
+
+	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionTrialExtended, sub, map[string]any{
+		"triggered_by": "operator",
+		"trial_end":    body.TrialEnd.UTC(),
 	})
 
 	respond.JSON(w, r, http.StatusOK, sub)

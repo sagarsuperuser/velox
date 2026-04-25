@@ -551,6 +551,55 @@ func (s *PostgresStore) ActivateAfterTrial(ctx context.Context, tenantID, id str
 	return sub, nil
 }
 
+// ExtendTrial atomically updates trial_end_at on a 'trialing' row. The
+// caller (Service.ExtendTrial) validates that newTrialEnd makes sense
+// (in the future, after the existing trial_end_at). Returns
+// errs.InvalidState if the row's status is not 'trialing' at UPDATE
+// time — distinguishes operator-already-ended / hard-paused / canceled
+// from missing-row by re-querying status when no row matches.
+func (s *PostgresStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd time.Time) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET trial_end_at = $1, updated_at = $2
+		WHERE id = $3 AND status = 'trialing'
+		RETURNING `+subCols,
+		newTrialEnd, now, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		var currentStatus string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
+		if err2 == sql.ErrNoRows {
+			return domain.Subscription{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.Subscription{}, err2
+		}
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot extend trial on %s subscription", currentStatus))
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	items, err := listItemsTx(ctx, tx, sub.ID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	sub.Items = items
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
 type transitionSpec struct {
 	targetStatus  string
 	allowedFrom   []string

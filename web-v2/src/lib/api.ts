@@ -214,6 +214,8 @@ export const api = {
     apiRequest<Subscription>('DELETE', `/subscriptions/${id}/pause-collection`),
   endSubscriptionTrial: (id: string) =>
     apiRequest<Subscription>('POST', `/subscriptions/${id}/end-trial`),
+  extendSubscriptionTrial: (id: string, body: { trial_end: string }) =>
+    apiRequest<Subscription>('POST', `/subscriptions/${id}/extend-trial`, body),
   // Item CRUD. PATCH body is either `{quantity}` or `{new_plan_id, immediate}`,
   // never both — mirrors the backend's UpdateItemInput guard.
   addSubscriptionItem: (id: string, data: { plan_id: string; quantity?: number }) =>
