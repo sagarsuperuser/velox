@@ -2,6 +2,7 @@ package dunning
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -41,6 +42,10 @@ func (m *memStore) UpsertPolicy(_ context.Context, _ string, p domain.DunningPol
 	p.ID = "dpol_1"
 	m.policy = &p
 	return p, nil
+}
+
+func (m *memStore) UpsertPolicyTx(ctx context.Context, _ *sql.Tx, tenantID string, p domain.DunningPolicy) (domain.DunningPolicy, error) {
+	return m.UpsertPolicy(ctx, tenantID, p)
 }
 
 func (m *memStore) CreateRun(_ context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error) {

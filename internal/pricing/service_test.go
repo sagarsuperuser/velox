@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 
@@ -212,6 +213,25 @@ func (m *memStore) DeleteMeterPricingRule(_ context.Context, tenantID, id string
 	}
 	delete(m.meterRules, id)
 	return nil
+}
+
+// *Tx variants forward to the non-Tx methods — the in-memory fake doesn't
+// model transaction semantics, and recipe-package tests that need real
+// rollback go through the Postgres integration tests instead.
+func (m *memStore) CreateRatingRuleTx(ctx context.Context, _ *sql.Tx, tenantID string, r domain.RatingRuleVersion) (domain.RatingRuleVersion, error) {
+	return m.CreateRatingRule(ctx, tenantID, r)
+}
+
+func (m *memStore) CreateMeterTx(ctx context.Context, _ *sql.Tx, tenantID string, meter domain.Meter) (domain.Meter, error) {
+	return m.CreateMeter(ctx, tenantID, meter)
+}
+
+func (m *memStore) CreatePlanTx(ctx context.Context, _ *sql.Tx, tenantID string, p domain.Plan) (domain.Plan, error) {
+	return m.CreatePlan(ctx, tenantID, p)
+}
+
+func (m *memStore) UpsertMeterPricingRuleTx(ctx context.Context, _ *sql.Tx, tenantID string, r domain.MeterPricingRule) (domain.MeterPricingRule, error) {
+	return m.UpsertMeterPricingRule(ctx, tenantID, r)
 }
 
 // ---------------------------------------------------------------------------

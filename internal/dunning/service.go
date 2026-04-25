@@ -2,6 +2,7 @@ package dunning
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -541,6 +542,13 @@ func (s *Service) UpsertPolicy(ctx context.Context, tenantID string, policy doma
 		return domain.DunningPolicy{}, err
 	}
 	return s.store.UpsertPolicy(ctx, tenantID, policy)
+}
+
+// UpsertPolicyTx forwards to the store's tx-aware upsert. Validation is
+// skipped here because the recipe template layer already validated against
+// the recipe schema. See pricing.Service tx variants for the same rationale.
+func (s *Service) UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error) {
+	return s.store.UpsertPolicyTx(ctx, tx, tenantID, policy)
 }
 
 // GetCustomerOverride returns the dunning override for a specific customer.

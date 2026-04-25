@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -170,6 +171,13 @@ func (s *Service) CreateEndpoint(ctx context.Context, tenantID string, input Cre
 	}
 
 	return CreateEndpointResult{Endpoint: ep, Secret: secret}, nil
+}
+
+// CreateEndpointTx forwards to the store's tx-aware insert. Used by
+// recipe.Service.Instantiate so a recipe with a default outbound endpoint
+// commits atomically with the rest of the recipe.
+func (s *Service) CreateEndpointTx(ctx context.Context, tx *sql.Tx, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error) {
+	return s.store.CreateEndpointTx(ctx, tx, tenantID, ep)
 }
 
 // SecretRotationGracePeriod is how long a rotated-out secret keeps

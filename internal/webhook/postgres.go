@@ -54,6 +54,24 @@ func (s *PostgresStore) CreateEndpoint(ctx context.Context, tenantID string, ep 
 	}
 	defer postgres.Rollback(tx)
 
+	created, err := s.createEndpointTx(ctx, tx, tenantID, ep)
+	if err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	return created, nil
+}
+
+// CreateEndpointTx inserts a webhook endpoint inside an existing tx. Used
+// by recipe.Service.Instantiate so a recipe that wants a default outbound
+// receiver lands its endpoint atomically with the rest of the recipe.
+func (s *PostgresStore) CreateEndpointTx(ctx context.Context, tx *sql.Tx, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error) {
+	return s.createEndpointTx(ctx, tx, tenantID, ep)
+}
+
+func (s *PostgresStore) createEndpointTx(ctx context.Context, tx *sql.Tx, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error) {
 	id := postgres.NewID("vlx_whe")
 	now := time.Now().UTC()
 	eventsJSON, _ := json.Marshal(ep.Events)
@@ -79,9 +97,6 @@ func (s *PostgresStore) CreateEndpoint(ctx context.Context, tenantID string, ep 
 	_ = json.Unmarshal(eventsJSON, &ep.Events)
 	ep.Secret = plaintextSecret // Callers need it once to show to the user.
 	ep.SecretLast4 = secretLast4
-	if err := tx.Commit(); err != nil {
-		return domain.WebhookEndpoint{}, err
-	}
 	return ep, nil
 }
 
