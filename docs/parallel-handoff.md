@@ -148,3 +148,40 @@ Track A resolved all five Track B asks in one pass. Summary of what was answered
 - **Next session (Track B):** with PR #19 + Track A's PR #20 merged, the natural next pieces are (a) embeddable cost-dashboard scaffold (Week 5; API contract in `docs/design-multi-dim-meters.md` as `GET /v1/customers/{id}/usage`) and (b) sidebar nav links for `/recipes` + `/onboarding` once they're polished. Also: changelog discipline — when multi-dim and recipes both land on `main`, both `CHANGELOG.md` and `web-v2/src/pages/Changelog.tsx` need entries (Track A on the engineering log; me on the customer-facing rollup).
 
 **Wall-clock duration (extended day):** initial Week 1 + Week 2 = 21:09 → 23:45 IST (≈ 2h 36m). Track A handoff + this round = 23:50 → 00:01 IST 2026-04-26 (≈ 11m active editing time, plus design-doc / RFC reading). Cumulative day total ≈ 2h 50m.
+
+---
+
+## 2026-04-26 (Sun) — post-PR-#20-merge
+
+### Track B — rebase + live smoke test
+
+Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. Cleanup pass on Track B's stacked branches plus first live API verification.
+
+- **Rebased both branches onto new main:**
+  - `feat/track-b-week1` rebased clean (handoff-log conflict resolved by keeping both Track A's "second update" and my Track B kickoff/end-of-turn — they describe the same date from two perspectives). Force-pushed to PR #19.
+  - `feat/track-b-week2` rebased via `git rebase --onto feat/track-b-week1 cbecec3 feat/track-b-week2` (skip the 6 Week-1 commits, replay only the 7 Week-2 unique commits). Force-pushed.
+- **Heads-up: Track B's "Week 3 picker UI scaffold" is already shipped.** Done in commit `0c719bd feat(web): /recipes picker + onboarding wizard wired to live recipes API` (and 6 sibling commits) on `feat/track-b-week2`. Per Track A's handoff message expecting Track B to "start" the picker — we got ahead of it Saturday night.
+- **Live smoke test against the merged backend (binary built from `main` HEAD on port :8090, fresh tenant + secret key):**
+  - `GET /v1/meters` ✓ — empty data, route works
+  - `POST /v1/meters` ✓ — created `vlx_mtr_d7mgm93majdkeceoujpg`
+  - `POST /v1/customers` ✓ — created `vlx_cus_...` with `external_id="acme"`
+  - `POST /v1/usage-events` with `{external_customer_id, event_name, quantity:"1234.567890123456", dimensions:{model,operation,cached}}` ✓ — accepted; response carries `quantity:"1234.567890123456"` (string-encoded decimal, matches my TS type) and the JSONB column round-trips intact.
+  - **Two real gaps surfaced:**
+    1. **`/v1/meters/{id}/pricing-rules` returns 404 on the chi router.** The store + service for `meter_pricing_rules` shipped in PR #20, but the HTTP handler / route registration did not. My UI's "Add rule" dialog and rules list will show empty state until Track A adds the handler. Caught by my UI's try/catch fallback so the page stays usable, but the feature is non-functional. Suggested follow-up commit: register `r.Post/Get/Delete` for `pricing-rules` under the existing `/v1/meters/{id}` subtree, calling `pricing.Service.UpsertMeterPricingRule` etc.
+    2. **Response-side returns `properties`, not `dimensions`.** Ingest accepts both (`dimensions` wins, per the apiEvent doc on `internal/usage/handler.go:74`), but the response keeps the legacy `properties` JSON field. My TS type expected `dimensions`. Patched in commit `af44730` — `UsageEvent.properties` added as optional alongside `dimensions`, new `eventDimensions()` helper reads whichever is present. Cleanest long-term fix: have Track A serialize as `dimensions` on responses too. Until then, my UI works against both.
+- **Recipes endpoints (`/v1/recipes*`):** correctly 404 — recipes are Track A's Week 3 work, not in PR #20. My `/recipes` page falls back to empty-state cleanly.
+- **Build:** `tsc -b` clean (only pre-existing errors); `vite build` ~600–740ms.
+- **Branch state pushed to origin:**
+  - `feat/track-b-week1`: 6 commits, ready to merge (PR #19 is up-to-date)
+  - `feat/track-b-week2`: 8 commits (7 from before + `af44730` patch), stacked on Week 1
+- **Messages for Track A (next-task copy):**
+  1. **Add the HTTP handler + routes for meter pricing rules.** Service already exists. Routes I'm calling: `POST/GET /v1/meters/{id}/pricing-rules`, `DELETE /v1/meters/{id}/pricing-rules/{rule_id}`. The Track B UI is already wired against these.
+  2. **Response-side wire alignment for `properties` vs `dimensions`.** Either rename to `dimensions` on the wire (cleanest) or leave as-is and document the alias in the wire-contract block. Track B side defensively reads both; Track A's choice.
+  3. **`GET /v1/customers/{id}/usage` (the breakdown endpoint).** Same gap as #1 — needed for the Week 5 cost dashboard. If the route doesn't exist yet, please add when adding pricing-rules routes (same handler file).
+  4. **Recipe RFC has 7 open questions** (per Track A's earlier handoff). When picking up Week 3 implementation, if any of those answers shift the API shape, ping Track B before changing the contract — my picker UI is already built against the doc-as-it-stands.
+- **Blocking Track A on:** nothing. Above are next-task asks, not blockers.
+- **Next session (Track B):**
+  - PR #19 hasn't merged yet — once it does, retire the Week 1 branch and rebase Week 2 directly onto main as the new base.
+  - Then either (a) embeddable cost-dashboard scaffold (Week 5, depends on `/v1/customers/{id}/usage` from Track A), or (b) sidebar nav entries + polish on `/recipes` + `/onboarding`. (b) is unblocked today.
+
+**Wall-clock for this round:** 00:05 → 00:30 IST 2026-04-26 (≈ 25m).
