@@ -1,313 +1,264 @@
 # Velox
 
-Open-source usage-based billing engine. Built in Go.
+**The open-source billing engine for AI and usage-heavy SaaS — runs in your own VPC.**
 
 [![CI](https://github.com/sagarsuperuser/velox/actions/workflows/ci.yml/badge.svg)](https://github.com/sagarsuperuser/velox/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-Velox handles the complete billing lifecycle: pricing configuration, subscription management, usage metering, invoice generation with PDF rendering, payment collection via Stripe, customer credits, and automated dunning for failed payments.
+Velox owns the layer above PaymentIntent: pricing, subscriptions, multi-dimensional usage metering, invoicing, dunning, and credits. Stripe still does cards under the hood. The 0.5% Stripe Billing fee disappears, and customer billing data never leaves your infrastructure.
 
-**136 Go files | 18,200+ lines | 324 tests | 76 API endpoints | 8-page React dashboard**
+Built for two market truths Stripe Billing structurally cannot serve:
 
-## Quick Start
+1. **AI/LLM apps need multi-dimensional pricing.** Real model pricing today is `model × operation × cached × tier × context-window`. Stripe's Meter API forces one Meter per dimension combination — six Meters and ugly subscription wiring just to model GPT-4 input/output/cached/uncached. Velox treats dimensions as first-class on the meter.
+2. **Regulated tenants cannot put customer billing data on Stripe's servers.** EU GDPR-strict, India RBI data localization, healthcare-adjacent SaaS, government procurement. Stripe's whole model is "send us the data." Velox runs in your VPC.
+
+See [`docs/positioning.md`](docs/positioning.md) for the full strategic frame and [`docs/90-day-plan.md`](docs/90-day-plan.md) for what's shipping when.
+
+---
+
+## The wedge in code
+
+Bill Anthropic-style multi-dimensional pricing (model × operation × cached) with **one meter** and a few pricing rules — not 24 Stripe Meters and a Subscription Item per combination.
+
+```bash
+# 1. Create one meter for "tokens"
+curl -X POST https://api.velox.dev/v1/meters \
+  -H "Authorization: Bearer $VELOX_SECRET" \
+  -d '{"key": "tokens", "name": "LLM tokens", "unit": "token"}'
+
+# 2. Ingest events that carry the dimensions inline
+curl -X POST https://api.velox.dev/v1/usage_events \
+  -H "Authorization: Bearer $VELOX_SECRET" \
+  -H "Idempotency-Key: req_8f2c..." \
+  -d '{
+    "meter_key": "tokens",
+    "customer_id": "cust_acme",
+    "value": "12450",
+    "dimensions": {"model": "gpt-4", "operation": "input", "cached": false}
+  }'
+
+# 3. Define one pricing rule per (dimension subset, rate)
+curl -X POST https://api.velox.dev/v1/meters/mtr_tokens/pricing_rules \
+  -d '{
+    "dimension_match": {"model": "gpt-4", "operation": "input", "cached": false},
+    "rating_rule_version_id": "rrv_gpt4_input_uncached",
+    "aggregation_mode": "sum",
+    "priority": 100
+  }'
+```
+
+A coarser rule (`{"model": "gpt-4"}`) plus a finer override (`{"model": "gpt-4", "cached": true}` at higher priority) compose cleanly — each event is claimed by the highest-priority matching rule, no double-count. The full design — schema, aggregation semantics, decimal quantities, all five aggregation modes (`sum`, `count`, `last_during_period`, `last_ever`, `max`) — lives in [`docs/design-multi-dim-meters.md`](docs/design-multi-dim-meters.md).
+
+> **Status:** multi-dim meters land in `v0.x` on **May 8, 2026** (Week 2 of the 90-day plan). The endpoints above are the published API contract; today's `POST /v1/usage-events` accepts integer `quantity` only and stays available for back-compat.
+
+---
+
+## What's in the box
+
+### AI/usage-native (the wedge)
+- **Multi-dimensional meters** — one meter, N rules, dimensions on every event
+- **Decimal quantities** — `NUMERIC(38, 12)` for fractional GPU-hours and partial tokens
+- **Per-rule aggregation modes** — `sum`, `count`, `last_during_period`, `last_ever`, `max`
+- **Pricing recipes** — one call instantiates products + prices + meters + dunning (`anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`)
+- **Embeddable cost dashboard** — drop `<VeloxCostDashboard customerId={…} />` into your app and end users see "$4.31 of GPT-4 today" with a projected bill
+
+### Self-host first
+- **Helm chart, Docker Compose, Terraform** — runs in your VPC in ≤1 hour
+- **Data sovereignty** — customer billing data never leaves your infrastructure
+- **Append-only audit log** — DB-trigger enforced tamper-evidence
+- **Row-Level Security** — one Velox deployment cleanly serves N internal tenants
+
+### Stripe-grade primitives (already shipped)
+Test clocks · idempotency · hosted invoice page with secure tokens · branded multipart emails · dunning with breaker · transactional outbox · webhook signing with 72h rotation grace · trial state machine with atomic flips · pause-collection · scheduled cancellation · plan changes with proration · per-customer price overrides · event-sourced credit ledger · credit notes + refunds · PDF invoices.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
+
+---
+
+## Quick start
 
 ```bash
 git clone https://github.com/sagarsuperuser/velox.git && cd velox
 
-# Backend
+# Backend — Postgres + bootstrap demo tenant + run the API
 docker compose up -d postgres
-make bootstrap    # Creates demo tenant + API keys
-make dev          # Starts API server on :8080
+make bootstrap       # creates a demo tenant and prints API keys
+make dev             # API on :8080
 
-# Frontend (new terminal)
+# Operator dashboard (separate terminal)
 cd web-v2 && npm install && npm run dev
-# → http://localhost:5173 (paste your API key to login)
+# → http://localhost:5173 — paste your secret key to log in
 ```
 
-Or run the full billing cycle via CLI:
+End-to-end demo (creates a customer, ingests usage, runs billing, generates a PDF invoice):
+
 ```bash
-./scripts/demo.sh <YOUR_SECRET_KEY>
+./scripts/demo.sh $VELOX_SECRET
 ```
 
-## Dashboard Screenshots
+Five-minute self-host: see [`docs/self-host`](docs/) (Week 9 deliverable — under construction).
 
-The operator dashboard provides real-time views of your billing data:
+---
 
-- **Dashboard** — KPI cards (customers, subscriptions, revenue) + recent invoices + active subscriptions
-- **Customers** — searchable table with status badges, click-through to detail
-- **Customer Detail** — credit balance, active subscriptions, recent invoices
-- **Invoices** — status + payment badges, billing period, amount, PDF download
-- **Invoice Detail** — line items breakdown (base fee, usage charges) with pricing mode
-- **Subscriptions** — billing period tracking, status management
+## What Velox is **not**
 
-## API Examples
+Stating these loudly so the wrong customers self-select out:
 
-**Create a customer:**
-```bash
-curl -X POST http://localhost:8080/v1/customers \
-  -H "Authorization: Bearer vlx_secret_..." \
-  -H "Content-Type: application/json" \
-  -d '{"external_id": "acme", "display_name": "Acme Corp", "email": "billing@acme.com"}'
-```
+- **Not for vanilla card-first SaaS** with simple per-seat pricing — Stripe Billing is fine for them.
+- **Not multi-PSP yet** — Stripe is the only payment processor. Razorpay/Adyen come when a paying tenant asks.
+- **Not for marketplaces or Connect** — single-tenant per Velox deployment.
+- **No Revenue Recognition / Sigma** — bring your own warehouse + dbt.
+- **No Quotes or Subscription Schedules** — sales-led contract billing should pick Recurly or Maxio.
+- **No 50+ payment-method types** — cards via Stripe + send-invoice. ACH/SEPA expand from there.
 
-```json
-{
-  "id": "vlx_cus_42014438d82ddf33b20f3dd5",
-  "external_id": "acme",
-  "display_name": "Acme Corp",
-  "email": "billing@acme.com",
-  "status": "active",
-  "created_at": "2026-04-07T10:33:15Z"
-}
-```
+---
 
-**Ingest usage:**
-```bash
-curl -X POST http://localhost:8080/v1/usage-events \
-  -H "Authorization: Bearer vlx_secret_..." \
-  -d '{"customer_id": "vlx_cus_...", "meter_id": "vlx_mtr_...", "quantity": 500}'
-```
+## How it fits
 
-**Trigger billing → Generate invoice:**
-```bash
-curl -X POST http://localhost:8080/v1/billing/run \
-  -H "Authorization: Bearer vlx_secret_..."
-```
+|                          | **Velox** | Stripe Billing | Lago        | Orb / Metronome   | OpenMeter        |
+|--------------------------|-----------|----------------|-------------|-------------------|------------------|
+| OSS / self-host          | ✅        | ❌             | ✅          | ❌                | ✅               |
+| AI-native pricing        | ✅        | ❌             | ⚠️ generic  | ⚠️ closed source  | ⚠️ metering only |
+| Full billing engine      | ✅        | ✅             | ✅          | ✅                | ❌               |
+| Stripe-grade primitives  | ✅        | ✅             | ⚠️          | ✅                | ❌               |
+| Pricing                  | OSS       | 0.5% of GMV    | OSS / cloud | $30K+/yr          | OSS              |
+| Data sovereignty         | ✅        | ❌             | ⚠️          | ❌                | ✅ (no billing)  |
 
-```json
-{"invoices_generated": 1, "errors": []}
-```
+Velox lives in the empty cell: **OSS + self-host + AI-native + full billing engine.**
 
-**Error responses (Stripe-consistent format):**
-```json
-{
-  "error": {
-    "type": "invalid_request_error",
-    "code": "not_found",
-    "message": "customer not found",
-    "request_id": "abc123"
-  }
-}
-```
+---
 
 ## Architecture
 
 ```
-cmd/velox/                  — Single binary, 85 lines
+cmd/velox/                  — single Go binary
 internal/
-  domain/                   — Pure domain models, zero dependencies
-  api/respond/              — Unified Stripe-style JSON responses
+  domain/                   — pure domain models, zero deps
+  api/respond/              — Stripe-style JSON responses
   auth/                     — API key auth (3 key types, 16 permissions)
-  tenant/                   — Tenant management + settings
-  customer/                 — Customer CRUD + billing profiles
-  pricing/                  — Meters, rating rules, plans, price overrides
-  subscription/             — Lifecycle (draft → active → paused → canceled)
-  usage/                    — Event ingestion, batch API, aggregation
-  invoice/                  — State machine (draft → finalized → paid) + PDF
-  billing/                  — Billing cycle engine + scheduler + preview
-  payment/                  — Stripe PaymentIntent + webhook handling
-  dunning/                  — Payment retry state machine
-  credit/                   — Event-sourced prepaid balance ledger
-  creditnote/               — Credit notes + refunds
-  webhook/                  — Outbound webhooks (HMAC-signed delivery)
-  audit/                    — Immutable append-only audit log
+  tenant/                   — tenants + settings
+  customer/                 — customer CRUD + billing profiles
+  pricing/                  — meters, rating rules, plans, price overrides
+  subscription/             — lifecycle (draft → trialing → active → paused → canceled)
+  usage/                    — event ingestion + multi-dim aggregation
+  invoice/                  — state machine (draft → finalized → paid) + PDF
+  billing/                  — billing engine + scheduler + preview
+  payment/                  — Stripe PaymentIntent + webhook receiver
+  dunning/                  — payment retry state machine
+  credit/                   — event-sourced prepaid balance ledger
+  creditnote/               — credit notes + refunds
+  webhook/                  — outbound webhooks (HMAC-signed delivery)
+  audit/                    — immutable append-only audit log
   platform/postgres/        — RLS-aware database layer
-  platform/migrate/         — Embedded SQL migrations
+  platform/migrate/         — embedded SQL migrations
 
-web-v2/                     — Operator dashboard (React + TypeScript + shadcn/ui)
-  src/pages/                — Dashboard, Customers, Invoices, Subscriptions, etc.
-  src/components/           — Shared components (Layout, Badge, StatCard)
-  src/lib/api.ts            — Typed API client with auth
+web-v2/                     — operator dashboard (React 19 + TypeScript + Tailwind)
 ```
 
-**Key design decisions:**
+Design rules:
 - **Per-domain packages** — each domain owns its store, service, and handler. Zero cross-domain imports between peer packages.
 - **Row-Level Security** — every tenant-scoped query runs inside an RLS-enforced transaction. Proven by integration tests.
-- **PaymentIntent-only Stripe** — no Stripe Billing/Invoices (avoids 0.5% fee). We own invoices, Stripe handles payment execution.
+- **PaymentIntent-only Stripe** — no Stripe Billing/Invoices. We own invoices end-to-end; Stripe executes the card charge.
 - **Billing engine as coordinator** — orchestrates across domains via narrow interfaces, not a god object.
-- **Event-sourced credits** — immutable append-only ledger, balance computed from entries.
-- **HMAC-signed webhooks** — both inbound (Stripe) and outbound (tenant endpoints).
+- **Append-only event sourcing for money** — credits, audit log, outbound webhook outbox.
 
-## Billing Cycle
+ADRs explaining the load-bearing decisions live in [`docs/adr/`](docs/adr/).
 
-```
-Subscription (active) → Usage Events → Billing Engine → Invoice (draft)
-    → Finalize → Stripe PaymentIntent → Webhook → Invoice (paid)
-    → Payment fails → Dunning (retry schedule → escalation)
-```
+---
 
-The billing engine:
-1. Finds subscriptions where `next_billing_at <= now`
-2. Checks for per-customer price overrides
-3. Aggregates usage per meter for the billing period
-4. Computes charges using rating rules (flat, graduated, or package)
-5. Generates a draft invoice with itemized line items
-6. Advances the subscription to the next billing period
-
-## Performance
-
-Pricing engine benchmarks (Apple M2, zero allocations):
+## API surface (selected)
 
 ```
-BenchmarkComputeAmountCents_Flat              283M     4.2 ns/op    0 B/op    0 allocs/op
-BenchmarkComputeAmountCents_Graduated_5Tiers  137M     8.7 ns/op    0 B/op    0 allocs/op
-BenchmarkComputeAmountCents_Package           269M     4.5 ns/op    0 B/op    0 allocs/op
+POST   /v1/usage_events                 — ingest with dimensions + decimal value
+POST   /v1/usage-events/batch           — batch ingest, up to 1000 per call
+POST   /v1/meters/{id}/pricing_rules    — add a dimension-matched pricing rule
+GET    /v1/customers/{id}/usage         — period aggregation, grouped by dimension
+
+POST   /v1/customers                    — create customer
+POST   /v1/subscriptions                — create subscription
+POST   /v1/subscriptions/{id}/change-plan        — plan change w/ proration
+POST   /v1/subscriptions/{id}/pause-collection   — keep cycle, invoice as draft
+POST   /v1/subscriptions/{id}/extend-trial       — push trial_end_at later
+
+POST   /v1/billing/run                  — finalize all due cycles
+GET    /v1/billing/preview/{sub_id}     — invoice preview (dry run)
+
+POST   /v1/credit-notes                 — issue credit note (credit or refund)
+POST   /v1/credits/grant                — grant prepaid credits to a customer
+GET    /v1/credits/balance/{customer_id} — current balance + ledger
+
+GET    /v1/dunning/runs                 — list dunning runs
+POST   /v1/webhook-endpoints/endpoints  — register an outbound webhook endpoint
+GET    /v1/audit-log                    — query the append-only audit log
 ```
 
-The pricing engine computes ~150M prices per second per core.
+Full endpoint list and request/response shapes: [`docs/openapi.yaml`](docs/openapi.yaml).
 
-## Features
+---
 
-| Feature | Description |
-|---|---|
-| **3 Pricing Models** | Flat, graduated (tiered), package (bundled + overage) |
-| **Per-Customer Overrides** | Custom pricing per customer per rating rule |
-| **Trial Periods** | Configurable trial days, billing starts after trial |
-| **Plan Changes** | Upgrade/downgrade with proration factor |
-| **Pause/Resume** | Pause subscriptions without canceling |
-| **Customer Credits** | Event-sourced prepaid balance, auto-applied before Stripe charge |
-| **Credit Notes** | Issue against invoices (credit or refund) |
-| **PDF Invoices** | Professional A4 PDF rendering with line items |
-| **Invoice Preview** | Dry-run billing without persisting |
-| **Batch Ingestion** | Up to 1000 usage events per request |
-| **Dunning** | Configurable retry schedule, escalation, manual resolution |
-| **Outbound Webhooks** | HMAC-signed delivery to tenant endpoints, 13 event types |
-| **Audit Log** | Immutable log of all sensitive operations |
-| **API Key Auth** | 3 key types (platform/secret/publishable), 16 permissions |
-| **Idempotency Keys** | Prevent duplicate operations on retries |
-| **Rate Limiting** | Token bucket with Stripe-convention headers |
-| **RLS Isolation** | PostgreSQL Row-Level Security per tenant |
-| **MRR/ARR Dashboard** | Real-time billing metrics |
+## API key types
 
-## API Key Types
+| Type        | Prefix            | What it can do                                           |
+|-------------|-------------------|----------------------------------------------------------|
+| Platform    | `vlx_platform_`   | Tenant management only                                   |
+| Secret      | `vlx_secret_`     | Full tenant access (server-side)                         |
+| Publishable | `vlx_pub_`        | Usage ingestion + customer-bound reads (browser-safe)    |
 
-| Key Type | Prefix | Permissions |
-|---|---|---|
-| Platform | `vlx_platform_` | Tenant management only (2 permissions) |
-| Secret | `vlx_secret_` | Full tenant access (14 permissions) |
-| Publishable | `vlx_pub_` | Usage ingestion, customer CRUD, reads (6 permissions) |
+All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook-signature pattern.
 
-## API Endpoints (68)
+---
 
-<details>
-<summary>Click to expand full endpoint list</summary>
+## Roadmap (next 90 days)
 
-```
-GET    /health                              — Health check
-GET    /health/ready                        — Deep health (DB connectivity)
+| Week  | Ship                                                                            |
+|-------|---------------------------------------------------------------------------------|
+| 1     | Positioning, README, blog post, design-partner outreach list (this commit)      |
+| 2     | Multi-dim meters, decimal quantities, all five aggregation modes                |
+| 3     | Pricing recipes (`anthropic_style`, etc.) + recipe-picker UI                    |
+| 4     | Quickstart wizard — sign-up → first invoice in <5 minutes                       |
+| 5     | `create_preview`, billing thresholds, billing alerts, `<VeloxCostDashboard />`  |
+| 6–7   | Live event stream UI, plan-migration preview, bulk operations, invoice composer |
+| 8     | 50 cold emails, 10+ demo calls, 3 design partners with signed LOI               |
+| 9     | Helm chart, Docker Compose, Terraform — self-host in ≤1 hour                    |
+| 10    | Compliance posture — encryption-at-rest, SOC2 mapping, GDPR export              |
+| 11    | Migration FROM Stripe Billing (importer + cutover playbook)                     |
+| 12    | First design partner cuts over to Velox in production                           |
+| 13    | Stabilize + public retro                                                         |
 
-POST   /v1/tenants                          — Create tenant
-GET    /v1/tenants                          — List tenants
-GET    /v1/tenants/{id}                     — Get tenant
+Full plan with leading indicators and risks: [`docs/90-day-plan.md`](docs/90-day-plan.md).
 
-POST   /v1/api-keys                         — Create API key
-GET    /v1/api-keys                         — List API keys
-DELETE /v1/api-keys/{id}                    — Revoke API key
+---
 
-POST   /v1/customers                        — Create customer
-GET    /v1/customers                        — List customers
-GET    /v1/customers/{id}                   — Get customer
-PATCH  /v1/customers/{id}                   — Update customer
-PUT    /v1/customers/{id}/billing-profile   — Upsert billing profile
-GET    /v1/customers/{id}/billing-profile   — Get billing profile
+## Tech stack
 
-POST   /v1/meters                           — Create meter
-GET    /v1/meters                           — List meters
-GET    /v1/meters/{id}                      — Get meter
+**Backend** — Go 1.25, chi/v5 router, PostgreSQL 16 with RLS, `shopspring/decimal` for money, `go-pdf/fpdf` for invoices, Prometheus metrics.
 
-POST   /v1/plans                            — Create plan
-GET    /v1/plans                            — List plans
-GET    /v1/plans/{id}                       — Get plan
-PATCH  /v1/plans/{id}                       — Update plan
+**Frontend** — React 19, TypeScript, Vite, TailwindCSS, shadcn/ui, Lucide icons.
 
-POST   /v1/rating-rules                     — Create rating rule
-GET    /v1/rating-rules                     — List rating rules
-GET    /v1/rating-rules/{id}               — Get rating rule
+**Payments** — Stripe (PaymentIntents + Checkout Sessions). No Stripe Billing dependency.
 
-POST   /v1/price-overrides                  — Create/update price override
-GET    /v1/price-overrides                  — List price overrides
+---
 
-POST   /v1/subscriptions                    — Create subscription
-GET    /v1/subscriptions                    — List subscriptions
-GET    /v1/subscriptions/{id}              — Get subscription
-POST   /v1/subscriptions/{id}/activate     — Activate draft subscription
-POST   /v1/subscriptions/{id}/pause        — Pause subscription
-POST   /v1/subscriptions/{id}/resume       — Resume subscription
-POST   /v1/subscriptions/{id}/change-plan  — Change plan (upgrade/downgrade)
-POST   /v1/subscriptions/{id}/cancel       — Cancel subscription
-
-POST   /v1/usage-events                     — Ingest single usage event
-POST   /v1/usage-events/batch              — Batch ingest (up to 1000)
-GET    /v1/usage-events                     — List usage events
-GET    /v1/usage-summary/{customer_id}     — Aggregated usage summary
-
-GET    /v1/invoices                         — List invoices
-GET    /v1/invoices/{id}                   — Get invoice + line items
-GET    /v1/invoices/{id}/pdf               — Download invoice PDF
-POST   /v1/invoices/{id}/finalize          — Finalize draft invoice
-POST   /v1/invoices/{id}/void             — Void invoice
-
-POST   /v1/billing/run                     — Trigger billing cycle
-GET    /v1/billing/preview/{sub_id}        — Invoice preview (dry run)
-
-POST   /v1/credit-notes                    — Create credit note
-GET    /v1/credit-notes                    — List credit notes
-GET    /v1/credit-notes/{id}              — Get credit note
-POST   /v1/credit-notes/{id}/issue        — Issue credit note
-POST   /v1/credit-notes/{id}/void         — Void credit note
-
-POST   /v1/credits/grant                   — Grant customer credits
-POST   /v1/credits/adjust                  — Manual credit adjustment
-GET    /v1/credits/balance/{customer_id}   — Get credit balance
-GET    /v1/credits/ledger/{customer_id}    — Full credit ledger
-
-GET    /v1/dunning/policy                  — Get dunning policy
-PUT    /v1/dunning/policy                  — Configure dunning policy
-GET    /v1/dunning/runs                    — List dunning runs
-GET    /v1/dunning/runs/{id}              — Get dunning run + events
-POST   /v1/dunning/runs/{id}/resolve      — Resolve dunning run
-
-POST   /v1/webhook-endpoints/endpoints    — Register webhook endpoint
-GET    /v1/webhook-endpoints/endpoints    — List webhook endpoints
-DELETE /v1/webhook-endpoints/endpoints/{id} — Delete endpoint
-GET    /v1/webhook-endpoints/events       — List webhook events
-GET    /v1/webhook-endpoints/events/{id}/deliveries — Delivery attempts
-
-GET    /v1/settings                        — Get tenant settings
-PUT    /v1/settings                        — Update tenant settings
-
-GET    /v1/audit-log                       — Query audit log
-
-POST   /v1/webhooks/stripe                 — Stripe webhook receiver
-```
-
-</details>
-
-## Development
+## Running tests
 
 ```bash
-make test               # Unit tests
-make test-integration   # Integration tests (requires Postgres)
-make dev                # Run server locally
-make bootstrap          # Create demo tenant + API keys
+make test                # unit tests only
+make test-integration    # full integration suite (needs Postgres)
 ```
 
-## Tech Stack
+Integration tests exercise real Postgres with RLS enforced. Per project convention, tests must hit a real database — never mocks — so a passing test means migrations and RLS work end-to-end.
 
-**Backend:**
-- **Go 1.25** — API server (chi/v5 router)
-- **PostgreSQL 16** — System of record with Row-Level Security
-- **Stripe** — Payment execution (PaymentIntents + Checkout Sessions)
-- **go-pdf/fpdf** — Invoice PDF rendering
-- **Prometheus** — Metrics endpoint
+---
 
-**Frontend:**
-- **React 19** + **TypeScript** — Operator dashboard
-- **Vite** — Build tooling
-- **TailwindCSS** — Styling
-- **Lucide** — Icons
+## Contributing
+
+Velox is open source under MIT. We're early and looking for design partners (12 months free hosted access in exchange for weekly check-ins and a co-branded case study). If you run AI inference, a vector DB, or any usage-heavy SaaS at $1M–$50M ARR and Stripe Billing is starting to chafe — open an issue or email `partners@velox.dev`.
+
+For code contributions, see [`CONTRIBUTING.md`](CONTRIBUTING.md) and the design-first / RFC pattern in [`docs/parallel-work.md`](docs/parallel-work.md).
+
+---
 
 ## License
 
-MIT
+[MIT](LICENSE)
