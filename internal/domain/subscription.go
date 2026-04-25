@@ -6,6 +6,7 @@ type SubscriptionStatus string
 
 const (
 	SubscriptionDraft    SubscriptionStatus = "draft"
+	SubscriptionTrialing SubscriptionStatus = "trialing"
 	SubscriptionActive   SubscriptionStatus = "active"
 	SubscriptionPaused   SubscriptionStatus = "paused"
 	SubscriptionCanceled SubscriptionStatus = "canceled"

@@ -1258,3 +1258,92 @@ func TestHandler_ClearScheduledCancel_FiresEvent(t *testing.T) {
 		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionCancelCleared, eventTypes(dispatcher.events))
 	}
 }
+
+// TestHandler_EndTrial_FiresEvent covers the operator-driven trial end:
+// POST /end-trial flips a trialing sub to active, fires
+// subscription.trial_ended with triggered_by="operator".
+func TestHandler_EndTrial_FiresEvent(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	now := time.Now().UTC()
+	trialEnd := now.Add(14 * 24 * time.Hour)
+	periodStart := now
+	periodEnd := trialEnd.Add(30 * 24 * time.Hour)
+	sub, err := store.Create(ctx, tenantID, domain.Subscription{
+		Code: "sub-trial", DisplayName: "Trial Sub", CustomerID: "cus_1",
+		Status:                    domain.SubscriptionTrialing,
+		BillingTime:               domain.BillingTimeCalendar,
+		TrialStartAt:              &periodStart,
+		TrialEndAt:                &trialEnd,
+		StartedAt:                 &periodStart,
+		CurrentBillingPeriodStart: &periodStart,
+		CurrentBillingPeriodEnd:   &periodEnd,
+		Items:                     []domain.SubscriptionItem{{PlanID: "plan_pro", Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	svc := NewService(store, nil)
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetEventDispatcher(dispatcher)
+
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/"+sub.ID+"/end-trial", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", sub.ID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+	rr := httptest.NewRecorder()
+	h.endTrial(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+
+	var got domain.Subscription
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Status != domain.SubscriptionActive {
+		t.Errorf("status: got %q, want active", got.Status)
+	}
+	if got.ActivatedAt == nil {
+		t.Error("activated_at should be stamped")
+	}
+
+	ev, ok := dispatcher.firstOfType(domain.EventSubscriptionTrialEnded)
+	if !ok {
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionTrialEnded, eventTypes(dispatcher.events))
+	}
+	if ev.payload["triggered_by"] != "operator" {
+		t.Errorf("triggered_by: got %v, want operator", ev.payload["triggered_by"])
+	}
+}
+
+// TestHandler_EndTrial_RejectsNonTrialingSub locks in the precondition: the
+// store atomic guard rejects calls on subs that aren't trialing (active,
+// canceled, paused, etc.) so operators don't accidentally mutate state.
+func TestHandler_EndTrial_RejectsNonTrialingSub(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old") // active
+	svc := NewService(store, nil)
+	h := NewHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/"+subID+"/end-trial", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+	rr := httptest.NewRecorder()
+	h.endTrial(rr, req)
+	if rr.Code == http.StatusOK {
+		t.Errorf("expected non-2xx for end-trial on active sub, got %d. body=%s", rr.Code, rr.Body.String())
+	}
+}

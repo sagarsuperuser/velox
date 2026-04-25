@@ -69,6 +69,15 @@ type Store interface {
 	// — clearing an already-cleared row returns the unchanged subscription.
 	ClearPauseCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error)
 
+	// ActivateAfterTrial atomically transitions a subscription from
+	// 'trialing' to 'active'. Sets activated_at = `at` if the column is
+	// still NULL (preserves the original activation timestamp on
+	// re-runs). Returns errs.InvalidState if the row's status is not
+	// 'trialing' at UPDATE time. Called by the billing engine at cycle
+	// scan when the trial window has elapsed, and by the operator-facing
+	// EndTrial action.
+	ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
+
 	// ---- Subscription items ----
 
 	// ListItems returns all items for a subscription ordered by created_at.

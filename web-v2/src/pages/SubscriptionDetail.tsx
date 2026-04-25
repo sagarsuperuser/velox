@@ -155,6 +155,12 @@ export default function SubscriptionDetailPage() {
     onError: (err) => showApiError(err, 'Failed to resume collection'),
   })
 
+  const endTrialMutation = useMutation({
+    mutationFn: () => api.endSubscriptionTrial(id!),
+    onSuccess: () => { invalidateAll(); toast.success('Trial ended — subscription is now active') },
+    onError: (err) => showApiError(err, 'Failed to end trial'),
+  })
+
   const cancelPendingMutation = useMutation({
     mutationFn: (itemID: string) => api.cancelPendingItemChange(id!, itemID),
     onSuccess: () => { invalidateAll(); toast.success('Pending plan change canceled') },
@@ -169,7 +175,8 @@ export default function SubscriptionDetailPage() {
     scheduleCancelMutation.isPending ||
     clearScheduledCancelMutation.isPending ||
     pauseCollectionMutation.isPending ||
-    resumeCollectionMutation.isPending
+    resumeCollectionMutation.isPending ||
+    endTrialMutation.isPending
 
   const loading = isLoading
   const error = loadError instanceof Error ? loadError.message : loadError ? String(loadError) : null
@@ -234,6 +241,16 @@ export default function SubscriptionDetailPage() {
             <>
               <Button variant="outline" className="border-amber-300 text-amber-600 hover:bg-amber-50" onClick={() => setShowPauseChoice(true)} disabled={acting}>
                 Pause
+              </Button>
+              <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelChoice(true)} disabled={acting}>
+                Cancel
+              </Button>
+            </>
+          )}
+          {sub.status === 'trialing' && (
+            <>
+              <Button variant="outline" className="border-primary text-primary hover:bg-primary/10" onClick={() => endTrialMutation.mutate()} disabled={acting}>
+                End trial now
               </Button>
               <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelChoice(true)} disabled={acting}>
                 Cancel

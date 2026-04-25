@@ -120,7 +120,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		te := now.AddDate(0, 0, input.TrialDays)
 		trialStart = &ts
 		trialEnd = &te
-		status = domain.SubscriptionActive
+		status = domain.SubscriptionTrialing
 		startedAt = &now
 		if billingTime == domain.BillingTimeCalendar {
 			ps := beginningOfMonth(te.AddDate(0, 1, 0))
@@ -508,6 +508,17 @@ func (s *Service) PauseCollection(ctx context.Context, tenantID, id string, inpu
 // flips status from paused back to active).
 func (s *Service) ResumeCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
 	return s.store.ClearPauseCollection(ctx, tenantID, id)
+}
+
+// EndTrial transitions a 'trialing' subscription to 'active' immediately,
+// regardless of trial_end_at. Operator-driven counterpart to the cycle-
+// scan auto-flip — used when the customer wants to start paying ahead of
+// the trial schedule, or the operator is upgrading them off a free trial
+// after a sales call. Idempotent at the SQL level (the store atomic
+// returns errs.InvalidState if the row is already active or terminal).
+func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	now := s.clock.Now()
+	return s.store.ActivateAfterTrial(ctx, tenantID, id, now)
 }
 
 func beginningOfMonth(t time.Time) time.Time {

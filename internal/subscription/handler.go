@@ -194,6 +194,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Delete("/{id}/scheduled-cancel", h.clearScheduledCancel)
 	r.Put("/{id}/pause-collection", h.pauseCollection)
 	r.Delete("/{id}/pause-collection", h.resumeCollection)
+	r.Post("/{id}/end-trial", h.endTrial)
 
 	// Items — Stripe-style per-item mutation. Quantity and plan changes land
 	// on the same PATCH (body discriminates), pending-change clear has its own
@@ -418,6 +419,35 @@ func (h *Handler) pauseCollection(w http.ResponseWriter, r *http.Request) {
 		extra["resumes_at"] = sub.PauseCollection.ResumesAt.UTC()
 	}
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCollectionPaused, sub, extra)
+
+	respond.JSON(w, r, http.StatusOK, sub)
+}
+
+// endTrial flips a 'trialing' subscription to 'active' immediately,
+// regardless of trial_end_at. Operator-driven counterpart to the cycle
+// scan's auto-flip. Fires subscription.trial_ended with
+// triggered_by="operator" so analytics can distinguish from the
+// scheduled transition. Returns 422 if the row is not in 'trialing'.
+func (h *Handler) endTrial(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := h.svc.EndTrial(r.Context(), tenantID, id)
+	if err != nil {
+		respond.FromError(w, r, err, "subscription")
+		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+			"action":      "trial_ended",
+			"customer_id": sub.CustomerID,
+		})
+	}
+
+	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionTrialEnded, sub, map[string]any{
+		"triggered_by": "operator",
+	})
 
 	respond.JSON(w, r, http.StatusOK, sub)
 }

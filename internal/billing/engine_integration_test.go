@@ -46,6 +46,10 @@ func (a *subStoreAdapter) ClearPauseCollection(ctx context.Context, tenantID, id
 	return a.store.ClearPauseCollection(ctx, tenantID, id)
 }
 
+func (a *subStoreAdapter) ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error) {
+	return a.store.ActivateAfterTrial(ctx, tenantID, id, at)
+}
+
 // pricingStoreAdapter wraps pricing.PostgresStore to implement billing.PricingReader
 type pricingStoreAdapter struct {
 	store *pricing.PostgresStore

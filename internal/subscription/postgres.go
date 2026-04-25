@@ -499,6 +499,58 @@ func (s *PostgresStore) ClearPauseCollection(ctx context.Context, tenantID, id s
 	return sub, nil
 }
 
+// ActivateAfterTrial flips status 'trialing' → 'active' atomically. Sets
+// activated_at = at if currently NULL (preserves the original activation
+// timestamp on re-runs). Used by the billing engine when the trial window
+// has elapsed during a cycle scan, and by the operator-facing EndTrial
+// service action. Returns errs.InvalidState if the row's status was not
+// 'trialing' at UPDATE time (e.g. it was already canceled or hard-paused);
+// the caller distinguishes this from missing-row by querying current
+// status when no row matches.
+func (s *PostgresStore) ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET status = 'active',
+		    activated_at = COALESCE(activated_at, $1),
+		    updated_at = $1
+		WHERE id = $2 AND status = 'trialing'
+		RETURNING `+subCols,
+		at, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		var currentStatus string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
+		if err2 == sql.ErrNoRows {
+			return domain.Subscription{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.Subscription{}, err2
+		}
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot end trial on %s subscription", currentStatus))
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	items, err := listItemsTx(ctx, tx, sub.ID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	sub.Items = items
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
 type transitionSpec struct {
 	targetStatus  string
 	allowedFrom   []string
@@ -599,7 +651,7 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
 		LEFT JOIN test_clocks tc ON tc.id = s.test_clock_id
-		WHERE s.status = 'active'
+		WHERE s.status IN ('active', 'trialing')
 		  AND s.livemode = $1
 		  AND s.next_billing_at <= COALESCE(tc.frozen_time, $2)
 		ORDER BY s.next_billing_at ASC LIMIT $3
