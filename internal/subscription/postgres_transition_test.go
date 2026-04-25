@@ -404,3 +404,165 @@ func seedActiveSubscription(t *testing.T, db *postgres.DB, tenantID, custExt, pl
 	}
 	return sub.ID
 }
+
+// TestScheduleAndFireCancellation_Roundtrip exercises the full schedule →
+// clear → re-schedule → fire pipeline against postgres. The contract tested:
+// (1) ScheduleCancellation persists CancelAt and CancelAtPeriodEnd and a
+// SELECT round-trips the same values, (2) ClearScheduledCancellation wipes
+// both fields, (3) FireScheduledCancellation flips status to canceled,
+// stamps canceled_at to the supplied `at` (test-clock parity), nulls out
+// next_billing_at, and clears the schedule fields, and (4) firing on an
+// already-canceled sub returns ErrInvalidState — the engine relies on this
+// to detect concurrent immediate-cancel races and treat them as no-ops.
+func TestScheduleAndFireCancellation_Roundtrip(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := context.Background()
+
+	store := subscription.NewPostgresStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "Sub Schedule Cancel")
+	subID := seedActiveSubscription(t, db, tenantID, "cus_sched", "plan_sched", "sub-sched")
+
+	cancelAt := time.Now().UTC().Add(30 * 24 * time.Hour).Truncate(time.Microsecond)
+
+	// 1. Schedule with timestamp + flag both set so we exercise both columns.
+	scheduled, err := store.ScheduleCancellation(ctx, tenantID, subID, &cancelAt, true)
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	if !scheduled.CancelAtPeriodEnd {
+		t.Error("CancelAtPeriodEnd should round-trip true")
+	}
+	if scheduled.CancelAt == nil || !scheduled.CancelAt.Equal(cancelAt) {
+		t.Errorf("CancelAt round-trip: got %v, want %v", scheduled.CancelAt, cancelAt)
+	}
+
+	// SELECT path: another Get hits the read columns directly.
+	read, err := store.Get(ctx, tenantID, subID)
+	if err != nil {
+		t.Fatalf("get after schedule: %v", err)
+	}
+	if !read.CancelAtPeriodEnd || read.CancelAt == nil {
+		t.Errorf("schedule fields not visible to Get: %+v", read)
+	}
+
+	// 2. Clear wipes both columns.
+	cleared, err := store.ClearScheduledCancellation(ctx, tenantID, subID)
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if cleared.CancelAtPeriodEnd || cleared.CancelAt != nil {
+		t.Errorf("clear left schedule fields set: %+v", cleared)
+	}
+
+	// 3. Re-schedule and fire.
+	if _, err := store.ScheduleCancellation(ctx, tenantID, subID, nil, true); err != nil {
+		t.Fatalf("re-schedule: %v", err)
+	}
+	fireAt := time.Now().UTC().Truncate(time.Microsecond)
+	fired, err := store.FireScheduledCancellation(ctx, tenantID, subID, fireAt)
+	if err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if fired.Status != domain.SubscriptionCanceled {
+		t.Errorf("status: got %q, want canceled", fired.Status)
+	}
+	if fired.CanceledAt == nil || !fired.CanceledAt.Equal(fireAt) {
+		t.Errorf("canceled_at: got %v, want %v (test-clock parity)", fired.CanceledAt, fireAt)
+	}
+	if fired.NextBillingAt != nil {
+		t.Error("next_billing_at must be nil on canceled sub")
+	}
+	if fired.CancelAtPeriodEnd || fired.CancelAt != nil {
+		t.Errorf("schedule fields not cleared on fire: %+v", fired)
+	}
+
+	// 4. Firing again must return ErrInvalidState — the engine uses this to
+	// no-op when an immediate-cancel API call won the race.
+	_, err = store.FireScheduledCancellation(ctx, tenantID, subID, fireAt)
+	if err == nil {
+		t.Fatal("expected ErrInvalidState firing on already-canceled sub, got nil")
+	}
+}
+
+// TestPauseCollection_Roundtrip exercises the full set → re-set → clear
+// pipeline against postgres. The contract tested: (1) SetPauseCollection
+// persists behavior + resumes_at and a SELECT round-trips both, (2) a second
+// Set replaces both columns (no merge), (3) a Set with nil ResumesAt clears
+// the timestamp column, (4) ClearPauseCollection wipes both columns and is
+// idempotent, and (5) Set on a canceled sub is rejected.
+func TestPauseCollection_Roundtrip(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := context.Background()
+
+	store := subscription.NewPostgresStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "Sub Pause Collection")
+	subID := seedActiveSubscription(t, db, tenantID, "cus_pc", "plan_pc", "sub-pc")
+
+	resumesAt := time.Now().UTC().Add(7 * 24 * time.Hour).Truncate(time.Microsecond)
+
+	// 1. Set behavior + resumes_at, both columns round-trip.
+	paused, err := store.SetPauseCollection(ctx, tenantID, subID, domain.PauseCollection{
+		Behavior:  domain.PauseCollectionKeepAsDraft,
+		ResumesAt: &resumesAt,
+	})
+	if err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if paused.PauseCollection == nil {
+		t.Fatal("PauseCollection must be non-nil after set")
+	}
+	if paused.PauseCollection.Behavior != domain.PauseCollectionKeepAsDraft {
+		t.Errorf("behavior: got %q, want %q", paused.PauseCollection.Behavior, domain.PauseCollectionKeepAsDraft)
+	}
+	if paused.PauseCollection.ResumesAt == nil || !paused.PauseCollection.ResumesAt.Equal(resumesAt) {
+		t.Errorf("resumes_at round-trip: got %v, want %v", paused.PauseCollection.ResumesAt, resumesAt)
+	}
+
+	// SELECT path: another Get hits the read columns directly.
+	read, err := store.Get(ctx, tenantID, subID)
+	if err != nil {
+		t.Fatalf("get after set: %v", err)
+	}
+	if read.PauseCollection == nil || read.PauseCollection.ResumesAt == nil {
+		t.Errorf("pause_collection not visible to Get: %+v", read.PauseCollection)
+	}
+
+	// 2. Re-set with nil ResumesAt clears the timestamp column.
+	paused2, err := store.SetPauseCollection(ctx, tenantID, subID, domain.PauseCollection{
+		Behavior: domain.PauseCollectionKeepAsDraft,
+	})
+	if err != nil {
+		t.Fatalf("re-set: %v", err)
+	}
+	if paused2.PauseCollection == nil {
+		t.Fatal("PauseCollection should still be non-nil after re-set")
+	}
+	if paused2.PauseCollection.ResumesAt != nil {
+		t.Errorf("resumes_at should be nil after re-set without it, got %v", paused2.PauseCollection.ResumesAt)
+	}
+
+	// 3. Clear wipes both columns.
+	cleared, err := store.ClearPauseCollection(ctx, tenantID, subID)
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if cleared.PauseCollection != nil {
+		t.Errorf("clear left pause_collection set: %+v", cleared.PauseCollection)
+	}
+
+	// 4. Clear again is idempotent — returns the unchanged sub.
+	if _, err := store.ClearPauseCollection(ctx, tenantID, subID); err != nil {
+		t.Fatalf("idempotent clear: %v", err)
+	}
+
+	// 5. Set on a canceled sub is rejected.
+	if _, err := store.CancelAtomic(ctx, tenantID, subID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	_, err = store.SetPauseCollection(ctx, tenantID, subID, domain.PauseCollection{
+		Behavior: domain.PauseCollectionKeepAsDraft,
+	})
+	if err == nil {
+		t.Fatal("expected error setting pause_collection on canceled sub, got nil")
+	}
+}

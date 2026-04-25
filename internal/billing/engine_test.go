@@ -87,6 +87,34 @@ func (m *mockSubs) UpdateBillingCycle(_ context.Context, _, id string, start, en
 	return nil
 }
 
+func (m *mockSubs) FireScheduledCancellation(_ context.Context, _, id string, at time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status != domain.SubscriptionActive {
+		return domain.Subscription{}, errs.ErrInvalidState
+	}
+	s.Status = domain.SubscriptionCanceled
+	atCopy := at
+	s.CanceledAt = &atCopy
+	s.NextBillingAt = nil
+	s.CancelAt = nil
+	s.CancelAtPeriodEnd = false
+	m.subs[id] = s
+	return s, nil
+}
+
+func (m *mockSubs) ClearPauseCollection(_ context.Context, _, id string) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	s.PauseCollection = nil
+	m.subs[id] = s
+	return s, nil
+}
+
 // ApplyDuePendingItemPlansAtomic mirrors the postgres store: for every item on
 // the subscription whose pending change is due (effective_at <= now), swap
 // plan_id ← pending_plan_id and clear the pending fields in one pass. Returns
@@ -1510,3 +1538,335 @@ func (z *zeroDiscountApplier) RedeemForInvoice(_ context.Context, _ string, req 
 		Redemption: domain.CouponRedemption{ID: "cpr_zero", DiscountCents: 0},
 	}, nil
 }
+
+// TestRunCycle_CancelAtPeriodEnd_FiresAtBoundary locks in the schedule-cancel
+// behaviour: when a sub has cancel_at_period_end=true and the cycle scan
+// observes effectiveNow >= period end, the engine generates the final invoice
+// for the just-ended period AND transitions status to canceled — instead of
+// rolling next_billing_at to a future date that would never be reached.
+func TestRunCycle_CancelAtPeriodEnd_FiresAtBoundary(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+				CancelAtPeriodEnd:         true,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {
+				ID: "pln_1", Name: "Pro", Currency: "USD",
+				BillingInterval: domain.BillingMonthly,
+				BaseAmountCents: 4900,
+			},
+		},
+	}
+	invoices := &mockInvoices{}
+	dispatcher := &capturingEventDispatcher{}
+	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine.SetEventDispatcher(dispatcher)
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("got %d invoices, want 1 (final invoice for just-ended period)", len(invoices.invoices))
+	}
+
+	updated := subs.subs["sub_1"]
+	if updated.Status != domain.SubscriptionCanceled {
+		t.Errorf("status: got %q, want canceled", updated.Status)
+	}
+	if updated.CanceledAt == nil {
+		t.Error("canceled_at must be set after scheduled cancel fires")
+	}
+	if updated.CancelAtPeriodEnd {
+		t.Error("cancel_at_period_end must be cleared after firing")
+	}
+	if updated.NextBillingAt != nil {
+		t.Error("next_billing_at must be nil on canceled sub")
+	}
+
+	var got string
+	for _, ev := range dispatcher.events {
+		if ev.eventType == domain.EventSubscriptionCanceled {
+			got = ev.eventType
+			if ev.payload["triggered_by"] != "schedule" {
+				t.Errorf("triggered_by: got %v, want schedule", ev.payload["triggered_by"])
+			}
+			break
+		}
+	}
+	if got == "" {
+		types := make([]string, 0, len(dispatcher.events))
+		for _, ev := range dispatcher.events {
+			types = append(types, ev.eventType)
+		}
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionCanceled, types)
+	}
+}
+
+// TestRunCycle_CancelAt_FiresWhenTimestampReached covers the timestamp-based
+// schedule. Setting cancel_at to the period boundary should fire the cancel
+// at the same point cancel_at_period_end would, but via the timestamp path.
+func TestRunCycle_CancelAt_FiresWhenTimestampReached(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	cancelAt := periodEnd
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+				CancelAt:                  &cancelAt,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {
+				ID: "pln_1", Name: "Pro", Currency: "USD",
+				BillingInterval: domain.BillingMonthly,
+				BaseAmountCents: 4900,
+			},
+		},
+	}
+	invoices := &mockInvoices{}
+	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	updated := subs.subs["sub_1"]
+	if updated.Status != domain.SubscriptionCanceled {
+		t.Errorf("status: got %q, want canceled", updated.Status)
+	}
+	if updated.CancelAt != nil {
+		t.Error("cancel_at must be cleared after firing")
+	}
+}
+
+// TestShouldFireScheduledCancel covers the predicate's edge cases directly.
+// Boundary equality matters: the period-end transition must fire when
+// effectiveNow equals period_end, not just strictly past it, otherwise a sub
+// that gets billed at the exact boundary tick would skip its cancel.
+func TestShouldFireScheduledCancel(t *testing.T) {
+	t0 := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		sub       domain.Subscription
+		periodEnd time.Time
+		now       time.Time
+		want      bool
+	}{
+		{
+			name:      "no schedule, never fires",
+			sub:       domain.Subscription{},
+			periodEnd: t0,
+			now:       t0,
+			want:      false,
+		},
+		{
+			name:      "at_period_end, before boundary",
+			sub:       domain.Subscription{CancelAtPeriodEnd: true},
+			periodEnd: t0,
+			now:       t0.Add(-time.Second),
+			want:      false,
+		},
+		{
+			name:      "at_period_end, exactly at boundary",
+			sub:       domain.Subscription{CancelAtPeriodEnd: true},
+			periodEnd: t0,
+			now:       t0,
+			want:      true,
+		},
+		{
+			name:      "at_period_end, past boundary",
+			sub:       domain.Subscription{CancelAtPeriodEnd: true},
+			periodEnd: t0,
+			now:       t0.Add(time.Hour),
+			want:      true,
+		},
+		{
+			name:      "cancel_at, before timestamp",
+			sub:       domain.Subscription{CancelAt: &t0},
+			periodEnd: t0.Add(time.Hour),
+			now:       t0.Add(-time.Second),
+			want:      false,
+		},
+		{
+			name:      "cancel_at, exactly at timestamp",
+			sub:       domain.Subscription{CancelAt: &t0},
+			periodEnd: t0.Add(time.Hour),
+			now:       t0,
+			want:      true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldFireScheduledCancel(tt.sub, tt.periodEnd, tt.now); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunCycle_PauseCollection_GeneratesDraft locks in the Stripe-parity
+// behavior: a sub with pause_collection set still has its cycle advanced and
+// an invoice generated, but the invoice is created as draft (which keeps it
+// out of finalize/charge/dunning). Distinct from a hard pause
+// (status=paused), which excludes the sub from GetDueBilling — the sub here
+// is still active.
+func TestRunCycle_PauseCollection_GeneratesDraft(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+				PauseCollection: &domain.PauseCollection{
+					Behavior: domain.PauseCollectionKeepAsDraft,
+				},
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {
+				ID: "pln_1", Name: "Pro", Currency: "USD",
+				BillingInterval: domain.BillingMonthly,
+				BaseAmountCents: 4900,
+			},
+		},
+	}
+	invoices := &mockInvoices{}
+	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("got %d invoices, want 1 (cycle should still emit invoice during pause_collection)", len(invoices.invoices))
+	}
+	got := invoices.invoices[0]
+	if got.Status != domain.InvoiceDraft {
+		t.Errorf("invoice status: got %q, want %q (pause_collection forces draft)", got.Status, domain.InvoiceDraft)
+	}
+	if !subs.cycleUpdated["sub_1"] {
+		t.Error("billing cycle should still advance during pause_collection")
+	}
+
+	updated := subs.subs["sub_1"]
+	if updated.PauseCollection == nil {
+		t.Error("PauseCollection must remain set when no resumes_at is configured")
+	}
+}
+
+// TestRunCycle_PauseCollection_AutoResumesWhenResumesAtPasses verifies the
+// cycle scan auto-clears pause_collection when resumes_at <= effectiveNow.
+// After the clear, the rest of the billing run treats the sub as fully
+// resumed: the invoice is finalized (not draft), and a
+// subscription.collection_resumed event fires with triggered_by="schedule"
+// so analytics can distinguish auto-resume from operator-triggered resume.
+func TestRunCycle_PauseCollection_AutoResumesWhenResumesAtPasses(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	resumesAt := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC) // earlier than periodEnd (= "now")
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+				PauseCollection: &domain.PauseCollection{
+					Behavior:  domain.PauseCollectionKeepAsDraft,
+					ResumesAt: &resumesAt,
+				},
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {
+				ID: "pln_1", Name: "Pro", Currency: "USD",
+				BillingInterval: domain.BillingMonthly,
+				BaseAmountCents: 4900,
+			},
+		},
+	}
+	invoices := &mockInvoices{}
+	dispatcher := &capturingEventDispatcher{}
+	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine.SetEventDispatcher(dispatcher)
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("got %d invoices, want 1", len(invoices.invoices))
+	}
+	got := invoices.invoices[0]
+	if got.Status != domain.InvoiceFinalized {
+		t.Errorf("invoice status after auto-resume: got %q, want %q (pause cleared, treat as normal)", got.Status, domain.InvoiceFinalized)
+	}
+
+	updated := subs.subs["sub_1"]
+	if updated.PauseCollection != nil {
+		t.Errorf("PauseCollection should be cleared after auto-resume, got %+v", updated.PauseCollection)
+	}
+
+	var resumeEvent map[string]any
+	for _, ev := range dispatcher.events {
+		if ev.eventType == domain.EventSubscriptionCollectionResumed {
+			resumeEvent = ev.payload
+			break
+		}
+	}
+	if resumeEvent == nil {
+		types := make([]string, 0, len(dispatcher.events))
+		for _, ev := range dispatcher.events {
+			types = append(types, ev.eventType)
+		}
+		t.Fatalf("expected %s event, got types=%v", domain.EventSubscriptionCollectionResumed, types)
+	}
+	if resumeEvent["triggered_by"] != "schedule" {
+		t.Errorf("triggered_by: got %v, want schedule", resumeEvent["triggered_by"])
+	}
+}
+

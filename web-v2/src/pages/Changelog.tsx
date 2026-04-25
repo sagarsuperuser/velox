@@ -17,6 +17,31 @@ const entries: {
   bullets?: string[]
 }[] = [
   {
+    date: '2026-04-25',
+    title: 'Pause collection (Stripe parity)',
+    tag: 'feature',
+    body: 'Subscriptions can now have collection paused as a state distinct from a hard pause: the cycle keeps running, but invoices generate as drafts and skip finalize/charge/dunning until resumed. Use this for collections holds, payment-method updates, or temporary courtesy without losing usage continuity. Stripe-equivalent pause_collection field; v1 supports the keep_as_draft mode.',
+    bullets: [
+      'PUT /v1/subscriptions/{id}/pause-collection with {behavior:"keep_as_draft", resumes_at?:<timestamp>}; DELETE /v1/subscriptions/{id}/pause-collection clears it.',
+      'Auto-resume: when resumes_at passes, the cycle scan clears the pause and fires subscription.collection_resumed with triggered_by="schedule" so analytics can distinguish from operator-triggered resume.',
+      'Dashboard pause button now opens a "Pause subscription" (hard freeze) vs "Pause collection only" choice; a blue banner with one-click Resume surfaces any active collection pause.',
+      'New webhooks: subscription.collection_paused and subscription.collection_resumed.',
+      'Distinct from the hard pause (status=paused): hard pause halts metering and billing entirely; collection pause keeps the cycle but suppresses charges. Pick by intent — usage hold vs collections hold.',
+    ],
+  },
+  {
+    date: '2026-04-25',
+    title: 'Scheduled subscription cancellation (Stripe parity)',
+    tag: 'feature',
+    body: 'Subscriptions can now be canceled at the end of the current billing period instead of immediately, matching Stripe\'s cancel_at_period_end and cancel_at fields. The current period bills as normal; the engine flips the sub to canceled at the boundary and emits subscription.canceled with triggered_by="schedule". The action is reversible until it fires.',
+    bullets: [
+      'POST /v1/subscriptions/{id}/schedule-cancel with {at_period_end:true} or {cancel_at:<timestamp>}; DELETE /v1/subscriptions/{id}/scheduled-cancel undoes it.',
+      'Dashboard cancel button now opens a "at period end" vs "immediately" choice; a banner with one-click Undo surfaces any active schedule.',
+      'New webhooks: subscription.cancel_scheduled and subscription.cancel_cleared. The terminal subscription.canceled event fires with triggered_by="schedule" so analytics can distinguish scheduled from immediate cancels.',
+      'Test-clock parity: canceled_at honors the subscription\'s test clock so time-travel tests land deterministic timestamps.',
+    ],
+  },
+  {
     date: '2026-04-24',
     title: 'Design-partner readiness: hosted invoice page, branded emails, webhook rotation grace',
     tag: 'feature',

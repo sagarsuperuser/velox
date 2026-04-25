@@ -190,6 +190,10 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/{id}/pause", h.pause)
 	r.Post("/{id}/resume", h.resume)
 	r.Post("/{id}/cancel", h.cancel)
+	r.Post("/{id}/schedule-cancel", h.scheduleCancel)
+	r.Delete("/{id}/scheduled-cancel", h.clearScheduledCancel)
+	r.Put("/{id}/pause-collection", h.pauseCollection)
+	r.Delete("/{id}/pause-collection", h.resumeCollection)
 
 	// Items — Stripe-style per-item mutation. Quantity and plan changes land
 	// on the same PATCH (body discriminates), pending-change clear has its own
@@ -330,6 +334,141 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCanceled, sub, nil)
+
+	respond.JSON(w, r, http.StatusOK, sub)
+}
+
+// scheduleCancel records a soft-cancel intent. Body must set exactly one of
+// {at_period_end:true, cancel_at:<RFC3339>}. The current period is unaffected;
+// the billing engine flips the sub to canceled when the boundary fires.
+// Re-calling this endpoint replaces any prior schedule (so a caller can
+// switch from at_period_end to a specific date by issuing a new request).
+func (h *Handler) scheduleCancel(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	var input ScheduleCancelInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	sub, err := h.svc.ScheduleCancel(r.Context(), tenantID, id, input)
+	if err != nil {
+		respond.FromError(w, r, err, "subscription")
+		return
+	}
+
+	if h.auditLogger != nil {
+		meta := map[string]any{
+			"action":               "cancel_scheduled",
+			"customer_id":          sub.CustomerID,
+			"cancel_at_period_end": sub.CancelAtPeriodEnd,
+		}
+		if sub.CancelAt != nil {
+			meta["cancel_at"] = sub.CancelAt.UTC()
+		}
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, meta)
+	}
+
+	extra := map[string]any{"cancel_at_period_end": sub.CancelAtPeriodEnd}
+	if sub.CancelAt != nil {
+		extra["cancel_at"] = sub.CancelAt.UTC()
+	}
+	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCancelScheduled, sub, extra)
+
+	respond.JSON(w, r, http.StatusOK, sub)
+}
+
+// pauseCollection sets the Stripe-parity collection-pause state. Distinct
+// from POST /pause (which hard-pauses the subscription via status). Body
+// must include behavior; v1 only accepts "keep_as_draft". resumes_at is
+// optional — when set, the cycle scan auto-clears the pause at the start
+// of that period.
+func (h *Handler) pauseCollection(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	var input PauseCollectionInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	sub, err := h.svc.PauseCollection(r.Context(), tenantID, id, input)
+	if err != nil {
+		respond.FromError(w, r, err, "subscription")
+		return
+	}
+
+	if h.auditLogger != nil {
+		meta := map[string]any{
+			"action":      "collection_paused",
+			"customer_id": sub.CustomerID,
+			"behavior":    string(input.Behavior),
+		}
+		if sub.PauseCollection != nil && sub.PauseCollection.ResumesAt != nil {
+			meta["resumes_at"] = sub.PauseCollection.ResumesAt.UTC()
+		}
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, meta)
+	}
+
+	extra := map[string]any{"behavior": string(input.Behavior)}
+	if sub.PauseCollection != nil && sub.PauseCollection.ResumesAt != nil {
+		extra["resumes_at"] = sub.PauseCollection.ResumesAt.UTC()
+	}
+	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCollectionPaused, sub, extra)
+
+	respond.JSON(w, r, http.StatusOK, sub)
+}
+
+// resumeCollection clears the collection-pause state. Idempotent —
+// clearing a row that has no active pause returns 200 with the unchanged
+// subscription. Returns 404 only when the subscription itself doesn't
+// exist.
+func (h *Handler) resumeCollection(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := h.svc.ResumeCollection(r.Context(), tenantID, id)
+	if err != nil {
+		respond.FromError(w, r, err, "subscription")
+		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+			"action":      "collection_resumed",
+			"customer_id": sub.CustomerID,
+		})
+	}
+
+	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCollectionResumed, sub, nil)
+
+	respond.JSON(w, r, http.StatusOK, sub)
+}
+
+// clearScheduledCancel removes any prior schedule. Idempotent — clearing a
+// row that has no pending cancel returns 200 with the unchanged subscription.
+// Returns 404 only when the subscription itself doesn't exist.
+func (h *Handler) clearScheduledCancel(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := h.svc.ClearScheduledCancel(r.Context(), tenantID, id)
+	if err != nil {
+		respond.FromError(w, r, err, "subscription")
+		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+			"action":      "cancel_cleared",
+			"customer_id": sub.CustomerID,
+		})
+	}
+
+	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCancelCleared, sub, nil)
 
 	respond.JSON(w, r, http.StatusOK, sub)
 }
@@ -1098,8 +1237,20 @@ func describeSubscriptionAction(action string, meta map[string]any) (string, str
 		return "Subscription canceled" + by, "canceled"
 	case domain.AuditActionUpdate:
 		// Item-level mutations (plan change, quantity change, add, remove)
-		// all land on AuditActionUpdate today with a metadata discriminator.
-		// Read the most-useful field if present; otherwise stay generic.
+		// and the cancel-schedule mutations all land on AuditActionUpdate
+		// with a metadata discriminator. Read the most-useful field if
+		// present; otherwise stay generic.
+		if a, ok := meta["action"].(string); ok {
+			switch a {
+			case "cancel_scheduled":
+				if v, ok := meta["cancel_at_period_end"].(bool); ok && v {
+					return "Cancellation scheduled at period end", "warning"
+				}
+				return "Cancellation scheduled", "warning"
+			case "cancel_cleared":
+				return "Scheduled cancellation cleared", "info"
+			}
+		}
 		if t, ok := meta["change_type"].(string); ok && t != "" {
 			switch t {
 			case "plan":

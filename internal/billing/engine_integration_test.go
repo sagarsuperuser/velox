@@ -38,6 +38,14 @@ func (a *subStoreAdapter) ApplyDuePendingItemPlansAtomic(ctx context.Context, te
 	return a.store.ApplyDuePendingItemPlansAtomic(ctx, tenantID, id, now)
 }
 
+func (a *subStoreAdapter) FireScheduledCancellation(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error) {
+	return a.store.FireScheduledCancellation(ctx, tenantID, id, at)
+}
+
+func (a *subStoreAdapter) ClearPauseCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	return a.store.ClearPauseCollection(ctx, tenantID, id)
+}
+
 // pricingStoreAdapter wraps pricing.PostgresStore to implement billing.PricingReader
 type pricingStoreAdapter struct {
 	store *pricing.PostgresStore

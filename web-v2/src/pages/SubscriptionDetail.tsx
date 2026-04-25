@@ -49,7 +49,9 @@ export default function SubscriptionDetailPage() {
   const queryClient = useQueryClient()
 
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
+  const [showCancelChoice, setShowCancelChoice] = useState(false)
   const [showPauseConfirm, setShowPauseConfirm] = useState(false)
+  const [showPauseChoice, setShowPauseChoice] = useState(false)
   const [itemDialog, setItemDialog] = useState<ItemDialogState>(null)
 
   const { data: sub, isLoading, error: loadError, refetch } = useQuery({
@@ -129,13 +131,45 @@ export default function SubscriptionDetailPage() {
     onError: (err) => showApiError(err, 'Failed to cancel'),
   })
 
+  const scheduleCancelMutation = useMutation({
+    mutationFn: () => api.scheduleSubscriptionCancel(id!, { at_period_end: true }),
+    onSuccess: () => { invalidateAll(); toast.success('Cancellation scheduled at period end'); setShowCancelChoice(false) },
+    onError: (err) => showApiError(err, 'Failed to schedule cancellation'),
+  })
+
+  const clearScheduledCancelMutation = useMutation({
+    mutationFn: () => api.clearScheduledSubscriptionCancel(id!),
+    onSuccess: () => { invalidateAll(); toast.success('Scheduled cancellation cleared') },
+    onError: (err) => showApiError(err, 'Failed to clear scheduled cancellation'),
+  })
+
+  const pauseCollectionMutation = useMutation({
+    mutationFn: () => api.pauseSubscriptionCollection(id!, { behavior: 'keep_as_draft' }),
+    onSuccess: () => { invalidateAll(); toast.success('Collection paused — invoices will draft only'); setShowPauseChoice(false) },
+    onError: (err) => showApiError(err, 'Failed to pause collection'),
+  })
+
+  const resumeCollectionMutation = useMutation({
+    mutationFn: () => api.resumeSubscriptionCollection(id!),
+    onSuccess: () => { invalidateAll(); toast.success('Collection resumed') },
+    onError: (err) => showApiError(err, 'Failed to resume collection'),
+  })
+
   const cancelPendingMutation = useMutation({
     mutationFn: (itemID: string) => api.cancelPendingItemChange(id!, itemID),
     onSuccess: () => { invalidateAll(); toast.success('Pending plan change canceled') },
     onError: (err) => showApiError(err, 'Failed to cancel pending change'),
   })
 
-  const acting = activateMutation.isPending || pauseMutation.isPending || resumeMutation.isPending || cancelMutation.isPending
+  const acting =
+    activateMutation.isPending ||
+    pauseMutation.isPending ||
+    resumeMutation.isPending ||
+    cancelMutation.isPending ||
+    scheduleCancelMutation.isPending ||
+    clearScheduledCancelMutation.isPending ||
+    pauseCollectionMutation.isPending ||
+    resumeCollectionMutation.isPending
 
   const loading = isLoading
   const error = loadError instanceof Error ? loadError.message : loadError ? String(loadError) : null
@@ -198,10 +232,10 @@ export default function SubscriptionDetailPage() {
           )}
           {sub.status === 'active' && (
             <>
-              <Button variant="outline" className="border-amber-300 text-amber-600 hover:bg-amber-50" onClick={() => setShowPauseConfirm(true)} disabled={acting}>
+              <Button variant="outline" className="border-amber-300 text-amber-600 hover:bg-amber-50" onClick={() => setShowPauseChoice(true)} disabled={acting}>
                 Pause
               </Button>
-              <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelConfirm(true)} disabled={acting}>
+              <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelChoice(true)} disabled={acting}>
                 Cancel
               </Button>
             </>
@@ -222,6 +256,56 @@ export default function SubscriptionDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Scheduled cancellation banner. Surfaces both modes (at_period_end
+          and explicit cancel_at) with an obvious Undo so an operator who
+          set this in error can clear it without guessing the API surface. */}
+      {(sub.cancel_at_period_end || sub.cancel_at) && (
+        <div className="mb-6 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 flex items-center justify-between">
+          <div className="text-sm text-amber-900">
+            <span className="font-medium">Cancellation scheduled</span>
+            {sub.cancel_at_period_end && sub.current_billing_period_end && (
+              <> — at end of current period ({formatDate(sub.current_billing_period_end)})</>
+            )}
+            {sub.cancel_at && !sub.cancel_at_period_end && (
+              <> — on {formatDateTime(sub.cancel_at)}</>
+            )}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-amber-400 text-amber-900 hover:bg-amber-100"
+            onClick={() => clearScheduledCancelMutation.mutate()}
+            disabled={acting}
+          >
+            Undo
+          </Button>
+        </div>
+      )}
+
+      {/* Collection-paused banner. Distinct from the hard pause (status=paused)
+          — sub stays active but invoices generate as drafts and skip
+          finalize/charge/dunning until resumed. */}
+      {sub.pause_collection && (
+        <div className="mb-6 rounded-md border border-blue-300 bg-blue-50 px-4 py-3 flex items-center justify-between">
+          <div className="text-sm text-blue-900">
+            <span className="font-medium">Collection paused</span>
+            {' — invoices will generate as drafts and skip charge until resumed'}
+            {sub.pause_collection.resumes_at && (
+              <> (auto-resumes {formatDateTime(sub.pause_collection.resumes_at)})</>
+            )}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-blue-400 text-blue-900 hover:bg-blue-100"
+            onClick={() => resumeCollectionMutation.mutate()}
+            disabled={acting}
+          >
+            Resume collection
+          </Button>
+        </div>
+      )}
 
       {/* Subscription Timeline */}
       {(() => {
@@ -681,6 +765,91 @@ export default function SubscriptionDetailPage() {
         onConfirm={() => cancelMutation.mutate()}
         loading={cancelMutation.isPending}
       />
+
+      {/* Cancel Choice — Stripe-parity: pick between "at period end" (soft,
+          reversible until the boundary fires) and "immediately" (the
+          existing destructive cancel, gated by the typed-confirm above). */}
+      <AlertDialog open={showCancelChoice} onOpenChange={setShowCancelChoice}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel Subscription</AlertDialogTitle>
+            <AlertDialogDescription>
+              Choose when this subscription should stop billing.
+              {sub.current_billing_period_end && (
+                <> The current period ends on {formatDate(sub.current_billing_period_end)}.</>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2 py-2">
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={() => scheduleCancelMutation.mutate()}
+              disabled={acting}
+            >
+              <div className="text-left">
+                <div className="font-medium">Cancel at period end</div>
+                <div className="text-xs text-muted-foreground">Customer keeps access until the current period ends. Reversible.</div>
+              </div>
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full justify-start border-destructive text-destructive hover:bg-destructive/10"
+              onClick={() => { setShowCancelChoice(false); setShowCancelConfirm(true) }}
+              disabled={acting}
+            >
+              <div className="text-left">
+                <div className="font-medium">Cancel immediately</div>
+                <div className="text-xs text-muted-foreground">Stops billing right now. Cannot be undone.</div>
+              </div>
+            </Button>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={acting}>Back</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Pause Choice — Stripe-parity: hard pause halts the cycle entirely
+          (status=paused, no metering, no invoices), collection pause keeps
+          the cycle running but drafts invoices and skips charge/dunning. */}
+      <AlertDialog open={showPauseChoice} onOpenChange={setShowPauseChoice}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Pause Subscription</AlertDialogTitle>
+            <AlertDialogDescription>
+              Choose how this subscription should be paused.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2 py-2">
+            <Button
+              variant="outline"
+              className="w-full justify-start h-auto py-3"
+              onClick={() => { setShowPauseChoice(false); setShowPauseConfirm(true) }}
+              disabled={acting}
+            >
+              <div className="text-left">
+                <div className="font-medium">Pause subscription</div>
+                <div className="text-xs text-muted-foreground whitespace-normal">Freezes the cycle. No usage metering, no invoices generated.</div>
+              </div>
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full justify-start h-auto py-3"
+              onClick={() => pauseCollectionMutation.mutate()}
+              disabled={acting}
+            >
+              <div className="text-left">
+                <div className="font-medium">Pause collection only</div>
+                <div className="text-xs text-muted-foreground whitespace-normal">Cycle continues, but invoices generate as drafts and skip charge until resumed.</div>
+              </div>
+            </Button>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={acting}>Back</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Add Item */}
       {itemDialog?.kind === 'add' && plansData && (

@@ -40,6 +40,35 @@ type Store interface {
 	ResumeAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error)
 	CancelAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error)
 
+	// ScheduleCancellation persists a future cancel intent. cancelAt is a
+	// nullable timestamp; cancelAtPeriodEnd is the soft-cancel flag. Both
+	// may be set in the same call (the boundary that fires first wins);
+	// the service layer rejects "schedule both at once" so callers don't
+	// pass them together in practice.
+	ScheduleCancellation(ctx context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool) (domain.Subscription, error)
+
+	// ClearScheduledCancellation clears any cancel_at and cancel_at_period_end
+	// on the row. Idempotent.
+	ClearScheduledCancellation(ctx context.Context, tenantID, id string) (domain.Subscription, error)
+
+	// FireScheduledCancellation atomically transitions a sub to canceled when
+	// its scheduled cancel boundary has been crossed. Called by the billing
+	// engine cycle scan. Returns errs.InvalidState if the row was no longer
+	// active by the time the UPDATE ran.
+	FireScheduledCancellation(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
+
+	// SetPauseCollection writes the (behavior, resumes_at) pair onto the row.
+	// Distinct from PauseAtomic — pause_collection keeps the cycle running
+	// but neuters the financial side; the row's status field is not touched.
+	// Permitted on any non-terminal status (active, paused, draft); a paused
+	// (hard) sub can also have collection paused, and clearing one without
+	// the other is supported. Service layer enforces behavior whitelist.
+	SetPauseCollection(ctx context.Context, tenantID, id string, pc domain.PauseCollection) (domain.Subscription, error)
+
+	// ClearPauseCollection nulls the pause_collection_* columns. Idempotent
+	// — clearing an already-cleared row returns the unchanged subscription.
+	ClearPauseCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error)
+
 	// ---- Subscription items ----
 
 	// ListItems returns all items for a subscription ordered by created_at.

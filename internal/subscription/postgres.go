@@ -26,6 +26,8 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 
 const subCols = `id, tenant_id, code, display_name, customer_id, status, billing_time,
 	trial_start_at, trial_end_at, started_at, activated_at, canceled_at,
+	cancel_at, COALESCE(cancel_at_period_end, false),
+	pause_collection_behavior, pause_collection_resumes_at,
 	current_billing_period_start, current_billing_period_end, next_billing_at,
 	usage_cap_units, COALESCE(overage_action,'charge'),
 	COALESCE(test_clock_id,''),
@@ -53,7 +55,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 	id := postgres.NewID("vlx_sub")
 	now := time.Now().UTC()
 
-	err = tx.QueryRowContext(ctx, `
+	err = scanSubRow(tx.QueryRowContext(ctx, `
 		INSERT INTO subscriptions (id, tenant_id, code, display_name, customer_id, status,
 			billing_time, trial_start_at, trial_end_at, started_at,
 			current_billing_period_start, current_billing_period_end, next_billing_at,
@@ -68,7 +70,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 		postgres.NullableTime(sub.CurrentBillingPeriodEnd),
 		postgres.NullableTime(sub.NextBillingAt),
 		sub.UsageCapUnits, sub.OverageAction, sub.TestClockID, now,
-	).Scan(scanSubDest(&sub)...)
+	), &sub)
 
 	if err != nil {
 		if postgres.UniqueViolationConstraint(err) != "" {
@@ -118,8 +120,7 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Su
 	defer postgres.Rollback(tx)
 
 	var sub domain.Subscription
-	err = tx.QueryRowContext(ctx, `SELECT `+subCols+` FROM subscriptions WHERE id = $1`, id).
-		Scan(scanSubDest(&sub)...)
+	err = scanSubRow(tx.QueryRowContext(ctx, `SELECT `+subCols+` FROM subscriptions WHERE id = $1`, id), &sub)
 	if err == sql.ErrNoRows {
 		return domain.Subscription{}, errs.ErrNotFound
 	}
@@ -171,7 +172,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.S
 	var subs []domain.Subscription
 	for rows.Next() {
 		var sub domain.Subscription
-		if err := rows.Scan(scanSubDest(&sub)...); err != nil {
+		if err := scanSubRow(rows, &sub); err != nil {
 			return nil, 0, err
 		}
 		subs = append(subs, sub)
@@ -201,7 +202,7 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 	defer postgres.Rollback(tx)
 
 	now := time.Now().UTC()
-	err = tx.QueryRowContext(ctx, `
+	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions SET status = $1, activated_at = $2, canceled_at = $3,
 			trial_start_at = $4, trial_end_at = $5,
 			usage_cap_units = $6, overage_action = COALESCE(NULLIF($7,''),'charge'),
@@ -212,7 +213,7 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 		postgres.NullableTime(sub.TrialStartAt), postgres.NullableTime(sub.TrialEndAt),
 		sub.UsageCapUnits, sub.OverageAction,
 		now, sub.ID,
-	).Scan(scanSubDest(&sub)...)
+	), &sub)
 
 	if err == sql.ErrNoRows {
 		return domain.Subscription{}, errs.ErrNotFound
@@ -256,6 +257,246 @@ func (s *PostgresStore) CancelAtomic(ctx context.Context, tenantID, id string) (
 		setCanceledAt: true,
 		wrongStateMsg: "can only cancel active or paused subscriptions, current status: %s",
 	})
+}
+
+// ScheduleCancellation persists the soft-cancel intent. Either field (or
+// both) may be set; the row stores them and the billing cycle scan applies
+// whichever boundary fires first. Returns the updated subscription with
+// hydrated items so the handler can echo the same shape it returns
+// elsewhere.
+//
+// The UPDATE is unconditional on status because callers can legitimately
+// schedule a cancel against a paused subscription (Stripe allows the same).
+// Only canceled/archived subs are rejected — there's nothing to schedule
+// once the sub has already terminated.
+func (s *PostgresStore) ScheduleCancellation(ctx context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET cancel_at = $1, cancel_at_period_end = $2, updated_at = $3
+		WHERE id = $4 AND status NOT IN ('canceled','archived')
+		RETURNING `+subCols,
+		postgres.NullableTime(cancelAt), cancelAtPeriodEnd, now, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		var currentStatus string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
+		if err2 == sql.ErrNoRows {
+			return domain.Subscription{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.Subscription{}, err2
+		}
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot schedule cancellation on %s subscription", currentStatus))
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	items, err := listItemsTx(ctx, tx, sub.ID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	sub.Items = items
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+// ClearScheduledCancellation undoes a prior schedule. Idempotent — a row
+// with both fields already cleared returns unchanged. Returns errs.ErrNotFound
+// if the subscription doesn't exist; status is not checked because clearing
+// a schedule on a canceled sub would be a no-op anyway and surfacing
+// not-found there would mask the real "you already canceled" state.
+func (s *PostgresStore) ClearScheduledCancellation(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET cancel_at = NULL, cancel_at_period_end = false, updated_at = $1
+		WHERE id = $2
+		RETURNING `+subCols,
+		now, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	items, err := listItemsTx(ctx, tx, sub.ID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	sub.Items = items
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+// FireScheduledCancellation transitions a subscription with a due cancel
+// schedule to canceled in one statement. Differs from CancelAtomic in that
+// (a) it accepts the engine's effectiveNow as the canceled_at timestamp so
+// the audit trail stays consistent under test clocks, and (b) it clears
+// the schedule fields so a subsequent cycle tick is a no-op rather than a
+// confusing re-fire attempt. Returns errs.ErrNotFound if the row vanished
+// or InvalidState if status was not active by the time the UPDATE ran (a
+// concurrent immediate-cancel API call winning the race).
+func (s *PostgresStore) FireScheduledCancellation(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET status = 'canceled',
+		    canceled_at = $1,
+		    cancel_at = NULL,
+		    cancel_at_period_end = false,
+		    updated_at = $1
+		WHERE id = $2 AND status = 'active'
+		RETURNING `+subCols,
+		at, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		var currentStatus string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
+		if err2 == sql.ErrNoRows {
+			return domain.Subscription{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.Subscription{}, err2
+		}
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("scheduled cancel cannot fire on %s subscription", currentStatus))
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	items, err := listItemsTx(ctx, tx, sub.ID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	sub.Items = items
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+// SetPauseCollection writes (behavior, resumes_at) onto the row. Rejects
+// rows in canceled/archived since collection-pause on a terminated sub has
+// no meaning — the engine wouldn't observe the row anyway, but failing
+// loudly here keeps the API honest. Active and paused (hard) are both
+// allowed: a hard-paused sub can simultaneously have pause_collection
+// configured for the moment status flips back to active.
+func (s *PostgresStore) SetPauseCollection(ctx context.Context, tenantID, id string, pc domain.PauseCollection) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET pause_collection_behavior = $1,
+		    pause_collection_resumes_at = $2,
+		    updated_at = $3
+		WHERE id = $4 AND status NOT IN ('canceled','archived')
+		RETURNING `+subCols,
+		string(pc.Behavior), postgres.NullableTime(pc.ResumesAt), now, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		var currentStatus string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
+		if err2 == sql.ErrNoRows {
+			return domain.Subscription{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.Subscription{}, err2
+		}
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot pause collection on %s subscription", currentStatus))
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	items, err := listItemsTx(ctx, tx, sub.ID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	sub.Items = items
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+// ClearPauseCollection nulls both pause_collection_* columns. Idempotent —
+// runs even on a row that already has them null, returning the unchanged
+// subscription. Returns errs.ErrNotFound if the row doesn't exist; status
+// is not checked because clearing a no-op pause on a terminated sub is
+// itself a no-op.
+func (s *PostgresStore) ClearPauseCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET pause_collection_behavior = NULL,
+		    pause_collection_resumes_at = NULL,
+		    updated_at = $1
+		WHERE id = $2
+		RETURNING `+subCols,
+		now, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	items, err := listItemsTx(ctx, tx, sub.ID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	sub.Items = items
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
 }
 
 type transitionSpec struct {
@@ -303,7 +544,7 @@ func (s *PostgresStore) transitionAtomic(ctx context.Context, tenantID, id strin
 	)
 
 	var sub domain.Subscription
-	err = tx.QueryRowContext(ctx, query, args...).Scan(scanSubDest(&sub)...)
+	err = scanSubRow(tx.QueryRowContext(ctx, query, args...), &sub)
 	if err == sql.ErrNoRows {
 		// Row either doesn't exist or is in a disallowed status. Re-query to
 		// distinguish and build a precise error.
@@ -372,7 +613,7 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 	var subs []domain.Subscription
 	for rows.Next() {
 		var sub domain.Subscription
-		if err := rows.Scan(scanSubDest(&sub)...); err != nil {
+		if err := scanSubRow(rows, &sub); err != nil {
 			return nil, err
 		}
 		subs = append(subs, sub)
@@ -745,17 +986,44 @@ func splitTopLevelCommas(s string) []string {
 	return append(out, s[start:])
 }
 
-func scanSubDest(s *domain.Subscription) []any {
-	return []any{
-		&s.ID, &s.TenantID, &s.Code, &s.DisplayName, &s.CustomerID,
-		&s.Status, &s.BillingTime, &s.TrialStartAt, &s.TrialEndAt, &s.StartedAt,
-		&s.ActivatedAt, &s.CanceledAt,
-		&s.CurrentBillingPeriodStart,
-		&s.CurrentBillingPeriodEnd, &s.NextBillingAt,
-		&s.UsageCapUnits, &s.OverageAction,
-		&s.TestClockID,
-		&s.CreatedAt, &s.UpdatedAt,
+// rowScanner abstracts *sql.Row and *sql.Rows so scanSubRow works for both
+// QueryRowContext and the per-row loop in QueryContext.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanSubRow scans subCols into sub. Handles fields that need post-processing
+// — currently the nullable (behavior, resumes_at) pair that composes into
+// the *PauseCollection field on the domain struct.
+func scanSubRow(row rowScanner, sub *domain.Subscription) error {
+	var pauseBehavior sql.NullString
+	var pauseResumesAt sql.NullTime
+	dest := []any{
+		&sub.ID, &sub.TenantID, &sub.Code, &sub.DisplayName, &sub.CustomerID,
+		&sub.Status, &sub.BillingTime, &sub.TrialStartAt, &sub.TrialEndAt, &sub.StartedAt,
+		&sub.ActivatedAt, &sub.CanceledAt,
+		&sub.CancelAt, &sub.CancelAtPeriodEnd,
+		&pauseBehavior, &pauseResumesAt,
+		&sub.CurrentBillingPeriodStart,
+		&sub.CurrentBillingPeriodEnd, &sub.NextBillingAt,
+		&sub.UsageCapUnits, &sub.OverageAction,
+		&sub.TestClockID,
+		&sub.CreatedAt, &sub.UpdatedAt,
 	}
+	if err := row.Scan(dest...); err != nil {
+		return err
+	}
+	if pauseBehavior.Valid {
+		pc := &domain.PauseCollection{
+			Behavior: domain.PauseCollectionBehavior(pauseBehavior.String),
+		}
+		if pauseResumesAt.Valid {
+			t := pauseResumesAt.Time
+			pc.ResumesAt = &t
+		}
+		sub.PauseCollection = pc
+	}
+	return nil
 }
 
 func scanItemDest(it *domain.SubscriptionItem) []any {

@@ -991,3 +991,270 @@ func eventTypes(events []capturedEvent) []string {
 	}
 	return out
 }
+
+// TestHandler_ScheduleCancel_FiresEvent covers the soft-cancel handler surface
+// end-to-end: the at_period_end body is accepted, the row picks up
+// CancelAtPeriodEnd=true, status remains active (schedule must not flip
+// status), and the dispatcher receives subscription.cancel_scheduled with the
+// right payload. Audit logging is wired in handler.go and exercised in the
+// integration tests; here we focus on the contract a UI client depends on.
+func TestHandler_ScheduleCancel_FiresEvent(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetEventDispatcher(dispatcher)
+
+	body := bytes.NewBufferString(`{"at_period_end": true}`)
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/"+subID+"/schedule-cancel", body)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+
+	rr := httptest.NewRecorder()
+	h.scheduleCancel(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+
+	var got domain.Subscription
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.CancelAtPeriodEnd {
+		t.Error("response must reflect cancel_at_period_end=true")
+	}
+	if got.Status != domain.SubscriptionActive {
+		t.Errorf("status: got %q, want active (schedule must not flip status)", got.Status)
+	}
+
+	ev, ok := dispatcher.firstOfType(domain.EventSubscriptionCancelScheduled)
+	if !ok {
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionCancelScheduled, eventTypes(dispatcher.events))
+	}
+	if ev.payload["cancel_at_period_end"] != true {
+		t.Errorf("payload cancel_at_period_end: got %v, want true", ev.payload["cancel_at_period_end"])
+	}
+}
+
+// TestHandler_ScheduleCancel_RejectsBadInput verifies the validation chain
+// surfaces 400 cleanly: empty body and both fields together both fail at the
+// service layer, and the handler must translate that into a 4xx — never a
+// silent 200 with an unset schedule.
+func TestHandler_ScheduleCancel_RejectsBadInput(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+	h := NewHandler(svc)
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"empty input", `{}`},
+		{"both fields set", `{"at_period_end": true, "cancel_at": "2099-01-01T00:00:00Z"}`},
+		{"past timestamp", `{"cancel_at": "2020-01-01T00:00:00Z"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/subscriptions/"+subID+"/schedule-cancel", bytes.NewBufferString(tc.body))
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("id", subID)
+			req = req.WithContext(context.WithValue(
+				context.WithValue(ctx, chi.RouteCtxKey, rctx),
+				auth.TestTenantIDKey(), tenantID,
+			))
+			rr := httptest.NewRecorder()
+			h.scheduleCancel(rr, req)
+			if rr.Code < 400 || rr.Code >= 500 {
+				t.Errorf("status: got %d, want 4xx. body=%s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestHandler_PauseCollection_FiresEvent covers the pause-collection PUT
+// surface: the keep_as_draft body is accepted, the row picks up
+// PauseCollection, status remains active, and the dispatcher receives
+// subscription.collection_paused with the right payload.
+func TestHandler_PauseCollection_FiresEvent(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetEventDispatcher(dispatcher)
+
+	body := bytes.NewBufferString(`{"behavior": "keep_as_draft"}`)
+	req := httptest.NewRequest(http.MethodPut, "/subscriptions/"+subID+"/pause-collection", body)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+
+	rr := httptest.NewRecorder()
+	h.pauseCollection(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+
+	var got domain.Subscription
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.PauseCollection == nil {
+		t.Fatal("PauseCollection must be set on response")
+	}
+	if got.PauseCollection.Behavior != domain.PauseCollectionKeepAsDraft {
+		t.Errorf("behavior: got %q, want %q", got.PauseCollection.Behavior, domain.PauseCollectionKeepAsDraft)
+	}
+	if got.Status != domain.SubscriptionActive {
+		t.Errorf("status: got %q, want active (collection-pause must not flip status)", got.Status)
+	}
+
+	ev, ok := dispatcher.firstOfType(domain.EventSubscriptionCollectionPaused)
+	if !ok {
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionCollectionPaused, eventTypes(dispatcher.events))
+	}
+	if ev.payload["behavior"] != "keep_as_draft" {
+		t.Errorf("payload behavior: got %v, want keep_as_draft", ev.payload["behavior"])
+	}
+}
+
+// TestHandler_PauseCollection_RejectsBadInput verifies the validation chain
+// surfaces 400 cleanly: empty behavior and unsupported behavior both fail at
+// the service layer.
+func TestHandler_PauseCollection_RejectsBadInput(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+	h := NewHandler(svc)
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"empty body", `{}`},
+		{"unsupported behavior", `{"behavior": "mark_uncollectible"}`},
+		{"past resumes_at", `{"behavior": "keep_as_draft", "resumes_at": "2020-01-01T00:00:00Z"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/subscriptions/"+subID+"/pause-collection", bytes.NewBufferString(tc.body))
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("id", subID)
+			req = req.WithContext(context.WithValue(
+				context.WithValue(ctx, chi.RouteCtxKey, rctx),
+				auth.TestTenantIDKey(), tenantID,
+			))
+			rr := httptest.NewRecorder()
+			h.pauseCollection(rr, req)
+			if rr.Code < 400 || rr.Code >= 500 {
+				t.Errorf("status: got %d, want 4xx. body=%s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestHandler_ResumeCollection_FiresEvent covers the inverse: a sub with
+// pause_collection set can have it cleared via DELETE, and the resumed event
+// fires.
+func TestHandler_ResumeCollection_FiresEvent(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+	if _, err := svc.PauseCollection(ctx, tenantID, subID, PauseCollectionInput{
+		Behavior: domain.PauseCollectionKeepAsDraft,
+	}); err != nil {
+		t.Fatalf("seed pause: %v", err)
+	}
+
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetEventDispatcher(dispatcher)
+
+	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/"+subID+"/pause-collection", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+	rr := httptest.NewRecorder()
+	h.resumeCollection(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+
+	var got domain.Subscription
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.PauseCollection != nil {
+		t.Errorf("PauseCollection should be cleared, got %+v", got.PauseCollection)
+	}
+
+	if _, ok := dispatcher.firstOfType(domain.EventSubscriptionCollectionResumed); !ok {
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionCollectionResumed, eventTypes(dispatcher.events))
+	}
+}
+
+// TestHandler_ClearScheduledCancel_FiresEvent covers the inverse: a sub with a
+// scheduled cancel can have it cleared via DELETE, and the cleared event fires.
+func TestHandler_ClearScheduledCancel_FiresEvent(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+	if _, err := svc.ScheduleCancel(ctx, tenantID, subID, ScheduleCancelInput{AtPeriodEnd: true}); err != nil {
+		t.Fatalf("seed schedule: %v", err)
+	}
+
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetEventDispatcher(dispatcher)
+
+	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/"+subID+"/scheduled-cancel", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", subID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+	rr := httptest.NewRecorder()
+	h.clearScheduledCancel(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+
+	var got domain.Subscription
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.CancelAtPeriodEnd {
+		t.Error("cancel_at_period_end should be cleared")
+	}
+
+	if _, ok := dispatcher.firstOfType(domain.EventSubscriptionCancelCleared); !ok {
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionCancelCleared, eventTypes(dispatcher.events))
+	}
+}
