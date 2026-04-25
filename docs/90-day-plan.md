@@ -14,6 +14,19 @@
 - Self-host one-shot install (Helm or Compose, fresh VM → working tenant): under **1 hour** by week 9
 - GitHub stars: 100+ by day 90 (proxy for OSS narrative resonance, not the goal itself)
 
+## Gap-analysis alignment
+
+This plan executes the wedge from `docs/positioning.md` — not full Stripe parity. Most Tier 1 Stripe-parity gaps are deferred. **Four Tier 1 items are in scope** because they fall naturally out of the wedge work:
+
+| Tier 1 gap | In-plan home |
+|---|---|
+| Decimal quantities | Week 2 — ships with multi-dim meters |
+| Aggregate usage modes (`max`, `last_during_period`, `last_ever`) | Week 2 — expressed as multi-dim meter aggregations |
+| `POST /v1/invoices/create_preview` | Week 5 — the engine behind the cost dashboard's projected bill |
+| Billing thresholds + Billing alerts | Week 5 — explicit deliverables |
+
+Everything else from the gap analysis (Schedules, Quotes, Promotion Codes, `add_invoice_items`, cross-resource search, Customer Balance ledger, lookup keys, `mark_uncollectible`/`void` pause modes, plus all Tier 2 items) stays in the strategic backlog. See "Out of scope" at the bottom for the full deferred list.
+
 ---
 
 ## Phase 1 — Wedge clarity + AI-native foundation (Days 1–30)
@@ -29,10 +42,12 @@ Goal: ship the AI-native primitives that justify the positioning. Without these,
 
 ### Week 2 (May 2–8) — Multi-dimensional meters
 - [ ] Schema migration: `usage_events.dimensions JSONB`, GIN index on dimensions
+- [ ] **Decimal quantities** — `value` accepts NUMERIC, not just BIGINT (GPU-hour fractions, partial-token edge cases). _Stripe Tier 1 gap, hoisted here — maps to Stripe's `quantity_decimal`._
 - [ ] Service layer: aggregate over arbitrary dimension subsets (`SUM(value) GROUP BY dimensions->>'model'`)
+- [ ] **Aggregation modes per pricing rule** — `sum` (default), `count`, `last_during_period`, `last_ever`, `max`. _Stripe Tier 1 gap (their legacy Plan `aggregate_usage` enum), expressed as a per-rule choice instead of a per-meter one — strictly more expressive._
 - [ ] Handler: `POST /v1/usage_events` with `{meter, customer, dimensions, value, timestamp, idempotency_key}`
 - [ ] Pricing rules: `pricing_rule.dimension_match JSONB` with subset-match semantics; rule resolution at finalize
-- [ ] Tests: aggregation correctness, pricing rule precedence, partial-dimension match
+- [ ] Tests: aggregation correctness, pricing rule precedence, partial-dimension match, decimal value handling, all five aggregation modes
 - [ ] Benchmark: 50k events/sec sustained ingest on a single tenant
 
 ### Week 3 (May 9–15) — Pricing recipes
@@ -54,9 +69,13 @@ Goal: ship the AI-native primitives that justify the positioning. Without these,
 
 Goal: punch above weight on operator UX so demo calls land. Start outreach.
 
-### Week 5 (May 23–29) — Embeddable cost dashboard (the AI-native sticky feature)
-- [ ] React component: `<VeloxCostDashboard tenantKey customerId />`
-- [ ] Renders: current period usage by dimension, projected bill, top usage drivers, alert threshold
+### Week 5 (May 23–29) — Cost dashboard + the engine behind it
+The wedge's sticky feature, plus the two Stripe Tier 1 gaps it depends on. Dense week — if slip happens, the engine + thresholds/alerts ship first (independently useful), the dashboard component bleeds into Week 6.
+
+- [ ] **`POST /v1/invoices/create_preview`** — computes a draft invoice for an in-progress period without committing. Powers (a) the cost dashboard's "projected bill" line, (b) plan-change confirmation dialogs, (c) the operator plan-migration preview in Week 6. _Stripe Tier 1 gap, hoisted because the dashboard depends on it._
+- [ ] **Billing thresholds** — `subscription.billing_thresholds.usage_gte` (per-item) + `amount_gte` (per-subscription). Crossing a threshold finalizes the invoice early with `billing_reason="threshold"`. _Stripe Tier 1 gap, hoisted — it's the "stop-the-bleeding" surface AI-usage buyers expect._
+- [ ] **Billing alerts** — `POST /v1/billing/alerts` with `recurrence` (`one_time` / `per_period`); fires `billing.alert.triggered` webhook + dashboard notification. _Stripe Tier 1 gap._
+- [ ] React component: `<VeloxCostDashboard tenantKey customerId />` — current period usage by dimension, projected bill (powered by `create_preview`), top usage drivers, alert threshold visualization
 - [ ] Public iframe-able URL with secure token (reuses public-token pattern from hosted invoice)
 - [ ] Theming via CSS variables; dark mode by default
 - [ ] Documented embed snippet at `/docs/embeds/cost-dashboard`
@@ -126,7 +145,7 @@ Goal: prove the self-host pillar works end-to-end. Get one partner to production
 
 ## Out of scope (deferred to next 90 days)
 
-These are real Stripe-parity gaps but they don't serve the wedge. Each is a quarter-long initiative on its own; revisit after design-partner traction is real.
+These are real Stripe-parity gaps but they don't serve the wedge. (For the four Tier 1 items that **are** in scope, see "Gap-analysis alignment" near the top.) Each below is a quarter-long initiative on its own; revisit after design-partner traction is real.
 
 - Subscription Schedules / Phases
 - Quotes
