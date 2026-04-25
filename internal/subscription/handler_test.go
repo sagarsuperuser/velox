@@ -1347,3 +1347,115 @@ func TestHandler_EndTrial_RejectsNonTrialingSub(t *testing.T) {
 		t.Errorf("expected non-2xx for end-trial on active sub, got %d. body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+// TestHandler_ExtendTrial_FiresEvent covers the happy path: POST
+// /extend-trial pushes trial_end_at later, fires
+// subscription.trial_extended with triggered_by="operator".
+func TestHandler_ExtendTrial_FiresEvent(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	now := time.Now().UTC()
+	trialEnd := now.Add(14 * 24 * time.Hour)
+	periodStart := now
+	periodEnd := trialEnd.Add(30 * 24 * time.Hour)
+	sub, err := store.Create(ctx, tenantID, domain.Subscription{
+		Code: "sub-trial-ext", DisplayName: "Trial Sub", CustomerID: "cus_1",
+		Status:                    domain.SubscriptionTrialing,
+		BillingTime:               domain.BillingTimeCalendar,
+		TrialStartAt:              &periodStart,
+		TrialEndAt:                &trialEnd,
+		StartedAt:                 &periodStart,
+		CurrentBillingPeriodStart: &periodStart,
+		CurrentBillingPeriodEnd:   &periodEnd,
+		Items:                     []domain.SubscriptionItem{{PlanID: "plan_pro", Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	svc := NewService(store, nil)
+	dispatcher := &capturingDispatcher{}
+	h := NewHandler(svc)
+	h.SetEventDispatcher(dispatcher)
+
+	// RFC3339 strips sub-second precision on round-trip; truncate so the
+	// equality assertion below holds.
+	newEnd := trialEnd.Add(7 * 24 * time.Hour).Truncate(time.Second)
+	body, _ := json.Marshal(map[string]any{"trial_end": newEnd.Format(time.RFC3339)})
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/"+sub.ID+"/extend-trial", bytes.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", sub.ID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+	rr := httptest.NewRecorder()
+	h.extendTrial(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+
+	var got domain.Subscription
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != domain.SubscriptionTrialing {
+		t.Errorf("status should remain trialing, got %q", got.Status)
+	}
+	if got.TrialEndAt == nil || !got.TrialEndAt.Equal(newEnd) {
+		t.Errorf("trial_end_at: got %v, want %v", got.TrialEndAt, newEnd)
+	}
+
+	ev, ok := dispatcher.firstOfType(domain.EventSubscriptionTrialExtended)
+	if !ok {
+		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionTrialExtended, eventTypes(dispatcher.events))
+	}
+	if ev.payload["triggered_by"] != "operator" {
+		t.Errorf("triggered_by: got %v, want operator", ev.payload["triggered_by"])
+	}
+}
+
+// TestHandler_ExtendTrial_RejectsShorten locks in the "extend-only"
+// guard: passing a trial_end before the existing trial_end_at returns
+// non-2xx — operators must use end-trial to shorten.
+func TestHandler_ExtendTrial_RejectsShorten(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+	store := newMemStore()
+	now := time.Now().UTC()
+	trialEnd := now.Add(14 * 24 * time.Hour)
+	periodStart := now
+	periodEnd := trialEnd.Add(30 * 24 * time.Hour)
+	sub, err := store.Create(ctx, tenantID, domain.Subscription{
+		Code: "sub-shrink", CustomerID: "cus_1",
+		Status:                    domain.SubscriptionTrialing,
+		BillingTime:               domain.BillingTimeCalendar,
+		TrialStartAt:              &periodStart,
+		TrialEndAt:                &trialEnd,
+		CurrentBillingPeriodStart: &periodStart,
+		CurrentBillingPeriodEnd:   &periodEnd,
+		Items:                     []domain.SubscriptionItem{{PlanID: "plan_pro", Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	svc := NewService(store, nil)
+	h := NewHandler(svc)
+
+	earlier := trialEnd.Add(-time.Hour) // before current trial_end_at
+	body, _ := json.Marshal(map[string]any{"trial_end": earlier.Format(time.RFC3339)})
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/"+sub.ID+"/extend-trial", bytes.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", sub.ID)
+	req = req.WithContext(context.WithValue(
+		context.WithValue(ctx, chi.RouteCtxKey, rctx),
+		auth.TestTenantIDKey(), tenantID,
+	))
+	rr := httptest.NewRecorder()
+	h.extendTrial(rr, req)
+	if rr.Code == http.StatusOK {
+		t.Errorf("expected non-2xx when shrinking trial, got %d. body=%s", rr.Code, rr.Body.String())
+	}
+}

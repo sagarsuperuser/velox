@@ -18,6 +18,19 @@ const entries: {
 }[] = [
   {
     date: '2026-04-25',
+    title: 'Trial extension (Stripe parity)',
+    tag: 'feature',
+    body: 'Operators can now push a trialing subscription\'s trial_end_at later — useful when sales/ops grant a customer extra trial time before the auto-flip-and-bill fires. Pairs with End trial now (the early-end direction): together they cover both sides of the trial-window adjustment that Stripe exposes through subscription.update.',
+    bullets: [
+      'POST /v1/subscriptions/{id}/extend-trial with {trial_end:<timestamp>}; new value must be in the future and strictly after the current trial_end_at.',
+      'Atomic UPDATE WHERE status=\'trialing\' closes the race between the operator extension and the cycle-scan auto-flip — only one wins.',
+      'Extension-only by design: shrinking would bypass the operator-intent that End trial now captures, so the service rejects values at-or-before the current trial_end_at.',
+      'New webhook: subscription.trial_extended with triggered_by="operator".',
+      'Dashboard surfaces an "Extend trial" button on trialing subs; the dialog seeds with current + 7 days.',
+    ],
+  },
+  {
+    date: '2026-04-25',
     title: 'Trial state machine (Stripe parity)',
     tag: 'feature',
     body: 'Subscriptions started with a trial now enter a real status="trialing" state, distinct from active. The billing engine runs a proper trial state machine: while the trial is active it skips billing and advances the cycle; when the trial elapses it atomically flips to active, stamps activated_at, and bills the period. Operators can also end the trial early from the dashboard.',

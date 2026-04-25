@@ -78,6 +78,14 @@ type Store interface {
 	// EndTrial action.
 	ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
 
+	// ExtendTrial atomically updates trial_end_at on a 'trialing' row.
+	// Returns errs.InvalidState if the row's status is not 'trialing' at
+	// UPDATE time (operator already ended the trial, or the row was never
+	// trialing). The service layer is responsible for rejecting newTrialEnd
+	// values that don't make sense (in the past, or before the existing
+	// trial_end_at — those callers should use EndTrial instead).
+	ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd time.Time) (domain.Subscription, error)
+
 	// ---- Subscription items ----
 
 	// ListItems returns all items for a subscription ordered by created_at.

@@ -239,6 +239,22 @@ func (m *memStore) ActivateAfterTrial(_ context.Context, tenantID, id string, at
 	return s, nil
 }
 
+func (m *memStore) ExtendTrial(_ context.Context, tenantID, id string, newTrialEnd time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status != domain.SubscriptionTrialing {
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot extend trial on %s subscription", s.Status))
+	}
+	t := newTrialEnd
+	s.TrialEndAt = &t
+	s.UpdatedAt = time.Now().UTC()
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
+	return s, nil
+}
+
 func (m *memStore) ListItems(_ context.Context, tenantID, subscriptionID string) ([]domain.SubscriptionItem, error) {
 	s, ok := m.subs[subscriptionID]
 	if !ok || s.TenantID != tenantID {
@@ -1073,6 +1089,74 @@ func TestEndTrial(t *testing.T) {
 		}
 		if _, err := svc.EndTrial(context.Background(), "t1", sub.ID); err == nil {
 			t.Error("second EndTrial on already-active should error")
+		}
+	})
+}
+
+func TestExtendTrial(t *testing.T) {
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+
+	mkTrialingSvc := func() (*Service, domain.Subscription) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, err := svc.Create(context.Background(), "t1", CreateInput{
+			Code: "sub-trial", DisplayName: "Trial", CustomerID: "c",
+			Items:     []CreateItemInput{{PlanID: "p"}},
+			TrialDays: 14,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		return svc, sub
+	}
+
+	t.Run("pushes trial_end_at later", func(t *testing.T) {
+		svc, sub := mkTrialingSvc()
+		original := *sub.TrialEndAt
+		newEnd := original.AddDate(0, 0, 14) // +14 days
+
+		out, err := svc.ExtendTrial(context.Background(), "t1", sub.ID, newEnd)
+		if err != nil {
+			t.Fatalf("ExtendTrial: %v", err)
+		}
+		if out.TrialEndAt == nil || !out.TrialEndAt.Equal(newEnd) {
+			t.Errorf("trial_end_at: got %v, want %v", out.TrialEndAt, newEnd)
+		}
+		if out.Status != domain.SubscriptionTrialing {
+			t.Errorf("status should remain trialing, got %q", out.Status)
+		}
+	})
+
+	t.Run("rejects trial_end in the past", func(t *testing.T) {
+		svc, sub := mkTrialingSvc()
+		past := now.AddDate(0, 0, -1)
+		if _, err := svc.ExtendTrial(context.Background(), "t1", sub.ID, past); err == nil {
+			t.Error("expected error for past trial_end")
+		}
+	})
+
+	t.Run("rejects trial_end at or before current trial_end_at", func(t *testing.T) {
+		svc, sub := mkTrialingSvc()
+		// Same as current — not strictly after.
+		if _, err := svc.ExtendTrial(context.Background(), "t1", sub.ID, *sub.TrialEndAt); err == nil {
+			t.Error("expected error for non-extending trial_end")
+		}
+		// Strictly before current trial_end_at but still in the future.
+		earlier := sub.TrialEndAt.Add(-time.Hour)
+		if _, err := svc.ExtendTrial(context.Background(), "t1", sub.ID, earlier); err == nil {
+			t.Error("expected error when shrinking trial_end")
+		}
+	})
+
+	t.Run("rejects when sub is not trialing", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, _ := svc.Create(context.Background(), "t1", CreateInput{
+			Code: "sub-active", DisplayName: "Active", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p"}},
+			StartNow: true,
+		})
+		future := now.AddDate(0, 0, 30)
+		if _, err := svc.ExtendTrial(context.Background(), "t1", sub.ID, future); err == nil {
+			t.Error("expected error when extending trial on non-trialing sub")
 		}
 	})
 }

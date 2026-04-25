@@ -521,6 +521,33 @@ func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Sub
 	return s.store.ActivateAfterTrial(ctx, tenantID, id, now)
 }
 
+// ExtendTrial pushes a trialing subscription's trial_end_at later. Used
+// when sales/ops grant an existing free-trial customer more time before
+// the auto-flip-and-bill fires. newTrialEnd must be strictly in the
+// future (compared to the service clock) and strictly after the current
+// trial_end_at — shrinking a trial bypasses the operator-intent that
+// EndTrial captures, and setting a past timestamp would make the next
+// cycle scan flip the sub immediately, which is what EndTrial is for.
+// The store atomic enforces status='trialing' so this can't race the
+// cycle-scan auto-flip.
+func (s *Service) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd time.Time) (domain.Subscription, error) {
+	now := s.clock.Now()
+	if !newTrialEnd.After(now) {
+		return domain.Subscription{}, errs.Invalid("trial_end", "must be in the future")
+	}
+	current, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if current.Status != domain.SubscriptionTrialing {
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot extend trial on %s subscription", current.Status))
+	}
+	if current.TrialEndAt != nil && !newTrialEnd.After(*current.TrialEndAt) {
+		return domain.Subscription{}, errs.Invalid("trial_end", "must be after the current trial_end_at — use end-trial to shorten")
+	}
+	return s.store.ExtendTrial(ctx, tenantID, id, newTrialEnd.UTC())
+}
+
 func beginningOfMonth(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
 }

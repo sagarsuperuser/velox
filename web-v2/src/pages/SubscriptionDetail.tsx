@@ -52,6 +52,8 @@ export default function SubscriptionDetailPage() {
   const [showCancelChoice, setShowCancelChoice] = useState(false)
   const [showPauseConfirm, setShowPauseConfirm] = useState(false)
   const [showPauseChoice, setShowPauseChoice] = useState(false)
+  const [showExtendTrial, setShowExtendTrial] = useState(false)
+  const [extendTrialDate, setExtendTrialDate] = useState('')
   const [itemDialog, setItemDialog] = useState<ItemDialogState>(null)
 
   const { data: sub, isLoading, error: loadError, refetch } = useQuery({
@@ -161,6 +163,17 @@ export default function SubscriptionDetailPage() {
     onError: (err) => showApiError(err, 'Failed to end trial'),
   })
 
+  const extendTrialMutation = useMutation({
+    mutationFn: (trialEnd: string) => api.extendSubscriptionTrial(id!, { trial_end: trialEnd }),
+    onSuccess: () => {
+      invalidateAll()
+      toast.success('Trial extended')
+      setShowExtendTrial(false)
+      setExtendTrialDate('')
+    },
+    onError: (err) => showApiError(err, 'Failed to extend trial'),
+  })
+
   const cancelPendingMutation = useMutation({
     mutationFn: (itemID: string) => api.cancelPendingItemChange(id!, itemID),
     onSuccess: () => { invalidateAll(); toast.success('Pending plan change canceled') },
@@ -176,7 +189,8 @@ export default function SubscriptionDetailPage() {
     clearScheduledCancelMutation.isPending ||
     pauseCollectionMutation.isPending ||
     resumeCollectionMutation.isPending ||
-    endTrialMutation.isPending
+    endTrialMutation.isPending ||
+    extendTrialMutation.isPending
 
   const loading = isLoading
   const error = loadError instanceof Error ? loadError.message : loadError ? String(loadError) : null
@@ -249,6 +263,15 @@ export default function SubscriptionDetailPage() {
           )}
           {sub.status === 'trialing' && (
             <>
+              <Button variant="outline" onClick={() => {
+                const seed = sub.trial_end_at ? new Date(sub.trial_end_at) : new Date()
+                seed.setDate(seed.getDate() + 7)
+                seed.setSeconds(0, 0)
+                setExtendTrialDate(seed.toISOString().slice(0, 16))
+                setShowExtendTrial(true)
+              }} disabled={acting}>
+                Extend trial
+              </Button>
               <Button variant="outline" className="border-primary text-primary hover:bg-primary/10" onClick={() => endTrialMutation.mutate()} disabled={acting}>
                 End trial now
               </Button>
@@ -867,6 +890,46 @@ export default function SubscriptionDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Extend Trial — pushes trial_end_at later. The backend rejects values
+          before the current trial_end_at, so the dialog seeds with current+7d
+          and surfaces any server validation error inline via toast. */}
+      <Dialog open={showExtendTrial} onOpenChange={setShowExtendTrial}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Extend trial</DialogTitle>
+            <DialogDescription>
+              Push the trial end date later. Must be after the current trial end
+              {sub.trial_end_at && <> ({formatDate(sub.trial_end_at)})</>}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="extend-trial-date">New trial end</Label>
+            <Input
+              id="extend-trial-date"
+              type="datetime-local"
+              value={extendTrialDate}
+              onChange={(e) => setExtendTrialDate(e.target.value)}
+              disabled={acting}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowExtendTrial(false)} disabled={acting}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!extendTrialDate) return
+                const iso = new Date(extendTrialDate).toISOString()
+                extendTrialMutation.mutate(iso)
+              }}
+              disabled={acting || !extendTrialDate}
+            >
+              Extend
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Item */}
       {itemDialog?.kind === 'add' && plansData && (
