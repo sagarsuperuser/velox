@@ -1899,8 +1899,8 @@ func TestRunCycle_PauseCollection_AutoResumesWhenResumesAtPasses(t *testing.T) {
 // has not yet elapsed. No invoice generated; next_billing_at advances.
 func TestRunCycle_Trial_Active_SkipsBillingAndAdvancesCycle(t *testing.T) {
 	periodStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-	periodEnd := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)        // past, so cycle scan picks it up
-	trialEnd := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)         // far-future: trial still active at scan time
+	periodEnd := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC) // past, so cycle scan picks it up
+	trialEnd := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)  // far-future: trial still active at scan time
 
 	subs := &mockSubs{
 		subs: map[string]domain.Subscription{
@@ -1948,8 +1948,8 @@ func TestRunCycle_Trial_Active_SkipsBillingAndAdvancesCycle(t *testing.T) {
 // normally.
 func TestRunCycle_Trial_Ended_AutoActivatesAndBills(t *testing.T) {
 	periodStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-	periodEnd := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)        // past, so cycle scan picks it up
-	trialEnd := time.Date(2026, 2, 15, 0, 0, 0, 0, time.UTC)        // past: trial elapsed before now
+	periodEnd := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC) // past, so cycle scan picks it up
+	trialEnd := time.Date(2026, 2, 15, 0, 0, 0, 0, time.UTC) // past: trial elapsed before now
 
 	subs := &mockSubs{
 		subs: map[string]domain.Subscription{
@@ -2013,4 +2013,3 @@ func TestRunCycle_Trial_Ended_AutoActivatesAndBills(t *testing.T) {
 		t.Errorf("triggered_by: got %v, want schedule", trialEndedEvent["triggered_by"])
 	}
 }
-

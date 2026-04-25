@@ -61,18 +61,18 @@ type SubscriptionItem struct {
 }
 
 type Subscription struct {
-	ID                        string                  `json:"id"`
-	TenantID                  string                  `json:"tenant_id,omitempty"`
-	Code                      string                  `json:"code"`
-	DisplayName               string                  `json:"display_name"`
-	CustomerID                string                  `json:"customer_id"`
-	Status                    SubscriptionStatus      `json:"status"`
-	BillingTime               SubscriptionBillingTime `json:"billing_time"`
-	TrialStartAt              *time.Time              `json:"trial_start_at,omitempty"`
-	TrialEndAt                *time.Time              `json:"trial_end_at,omitempty"`
-	StartedAt                 *time.Time              `json:"started_at,omitempty"`
-	ActivatedAt               *time.Time              `json:"activated_at,omitempty"`
-	CanceledAt                *time.Time              `json:"canceled_at,omitempty"`
+	ID           string                  `json:"id"`
+	TenantID     string                  `json:"tenant_id,omitempty"`
+	Code         string                  `json:"code"`
+	DisplayName  string                  `json:"display_name"`
+	CustomerID   string                  `json:"customer_id"`
+	Status       SubscriptionStatus      `json:"status"`
+	BillingTime  SubscriptionBillingTime `json:"billing_time"`
+	TrialStartAt *time.Time              `json:"trial_start_at,omitempty"`
+	TrialEndAt   *time.Time              `json:"trial_end_at,omitempty"`
+	StartedAt    *time.Time              `json:"started_at,omitempty"`
+	ActivatedAt  *time.Time              `json:"activated_at,omitempty"`
+	CanceledAt   *time.Time              `json:"canceled_at,omitempty"`
 	// CancelAt is a future timestamp at which the billing cycle should
 	// transition the subscription to canceled. Distinct from CanceledAt
 	// (past-tense, set only when the cancel has fired). Nil means no
@@ -90,13 +90,13 @@ type Subscription struct {
 	// GetDueBilling entirely). Nil means collection is running normally.
 	PauseCollection           *PauseCollection `json:"pause_collection,omitempty"`
 	CurrentBillingPeriodStart *time.Time       `json:"current_billing_period_start,omitempty"`
-	CurrentBillingPeriodEnd   *time.Time              `json:"current_billing_period_end,omitempty"`
-	NextBillingAt             *time.Time              `json:"next_billing_at,omitempty"`
-	UsageCapUnits             *int64                  `json:"usage_cap_units,omitempty"` // Max usage units per billing period (nil = unlimited)
-	OverageAction             string                  `json:"overage_action,omitempty"`  // "block" or "charge" (default: charge)
-	TestClockID               string                  `json:"test_clock_id,omitempty"`   // Test mode only — attached simulator clock
-	CreatedAt                 time.Time               `json:"created_at"`
-	UpdatedAt                 time.Time               `json:"updated_at"`
+	CurrentBillingPeriodEnd   *time.Time       `json:"current_billing_period_end,omitempty"`
+	NextBillingAt             *time.Time       `json:"next_billing_at,omitempty"`
+	UsageCapUnits             *int64           `json:"usage_cap_units,omitempty"` // Max usage units per billing period (nil = unlimited)
+	OverageAction             string           `json:"overage_action,omitempty"`  // "block" or "charge" (default: charge)
+	TestClockID               string           `json:"test_clock_id,omitempty"`   // Test mode only — attached simulator clock
+	CreatedAt                 time.Time        `json:"created_at"`
+	UpdatedAt                 time.Time        `json:"updated_at"`
 
 	// Items is populated by store reads that hydrate the subscription with
 	// its current priced lines. Writes through Store.Create require a
