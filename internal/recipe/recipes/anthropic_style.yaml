@@ -1,0 +1,186 @@
+key: anthropic_style
+version: 1.0.0
+name: Anthropic-style AI inference
+summary: |
+  Per-token billing across model × operation × cached. Eight pricing rules,
+  one multi-dim meter, monthly billing. Designed for inference platforms
+  reselling LLM API access.
+description: |
+  Models the public Anthropic pricing page: claude-3.5-sonnet,
+  claude-3-opus, claude-3-sonnet, and claude-3-haiku, billed
+  per-million-tokens with separate rates for input vs output and a
+  cache-discount on input.
+
+  Eight pricing rules cover (4 models × 2 operations) — rather than two
+  rules per model, the cache discount is expressed by a separate higher-
+  priority rule that claims `cached: true` events. A non-cached rule with
+  `cached: false` would over-claim if dimension keys are missing on
+  events; using a positive priority on the cached variant lets uncached
+  events fall through cleanly.
+
+  All amounts are in cents per million tokens. Operators override
+  `currency`, the customer-facing `plan_name`, and the slug `plan_code`
+  at instantiation; the rest is fixed for v1.
+
+overridable:
+  - key: currency
+    type: string
+    default: USD
+    enum: [USD, EUR, GBP]
+  - key: plan_name
+    type: string
+    default: AI API
+    max_length: 80
+  - key: plan_code
+    type: string
+    default: ai_api_pro
+    pattern: '^[a-z][a-z0-9_]*$'
+
+products:
+  - code: ai_api
+    name: '{{ .plan_name }}'
+    description: Token-based AI inference billing (multi-model, multi-operation)
+
+meters:
+  - key: tokens
+    name: Tokens
+    unit: tokens
+    aggregation: sum
+
+rating_rules:
+  # Claude 3.5 Sonnet — $3.00 / $15.00 per million; cached input $0.30
+  - key: claude35_sonnet_input
+    name: Claude 3.5 Sonnet input (uncached)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 300
+  - key: claude35_sonnet_input_cached
+    name: Claude 3.5 Sonnet input (cached)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 30
+  - key: claude35_sonnet_output
+    name: Claude 3.5 Sonnet output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 1500
+
+  # Claude 3 Opus — $15 / $75 per million
+  - key: claude3_opus_input
+    name: Claude 3 Opus input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 1500
+  - key: claude3_opus_output
+    name: Claude 3 Opus output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 7500
+
+  # Claude 3 Sonnet — $3 / $15 per million
+  - key: claude3_sonnet_input
+    name: Claude 3 Sonnet input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 300
+  - key: claude3_sonnet_output
+    name: Claude 3 Sonnet output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 1500
+
+  # Claude 3 Haiku — $0.25 / $1.25 per million
+  - key: claude3_haiku_input
+    name: Claude 3 Haiku input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 25
+  - key: claude3_haiku_output
+    name: Claude 3 Haiku output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 125
+
+pricing_rules:
+  # Cached rule wins via priority=200 over the uncached input variant.
+  - meter: tokens
+    rating_rule: claude35_sonnet_input_cached
+    dimension_match: { model: claude-3.5-sonnet, operation: input, cached: true }
+    aggregation_mode: sum
+    priority: 200
+  - meter: tokens
+    rating_rule: claude35_sonnet_input
+    dimension_match: { model: claude-3.5-sonnet, operation: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: claude35_sonnet_output
+    dimension_match: { model: claude-3.5-sonnet, operation: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: claude3_opus_input
+    dimension_match: { model: claude-3-opus, operation: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: claude3_opus_output
+    dimension_match: { model: claude-3-opus, operation: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: claude3_sonnet_input
+    dimension_match: { model: claude-3-sonnet, operation: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: claude3_sonnet_output
+    dimension_match: { model: claude-3-sonnet, operation: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: claude3_haiku_input
+    dimension_match: { model: claude-3-haiku, operation: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: claude3_haiku_output
+    dimension_match: { model: claude-3-haiku, operation: output }
+    aggregation_mode: sum
+    priority: 100
+
+plans:
+  - code: '{{ .plan_code }}'
+    name: '{{ .plan_name }}'
+    currency: '{{ .currency }}'
+    billing_interval: monthly
+    base_amount_cents: 0
+    meters: [tokens]
+
+dunning:
+  policy:
+    name: AI default retry
+    max_retries: 4
+    intervals_hours: [24, 72, 168, 336]
+    final_action: void
+
+webhook:
+  events:
+    - invoice.finalized
+    - invoice.paid
+    - invoice.payment_failed
+    - subscription.updated
+    - subscription.canceled
+  url_placeholder: 'https://example.com/webhooks/velox'
+
+sample_data:
+  customer:
+    external_id: demo-customer
+    display_name: Demo Customer
+    email: demo@example.com
+  subscription:
+    plan: '{{ .plan_code }}'
+    trial_days: 14
