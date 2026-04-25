@@ -36,7 +36,7 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 		origin = string(domain.UsageOriginAPI)
 	}
 
-	props, err := propertiesJSON(event.Properties)
+	props, err := propertiesJSON(event.Dimensions)
 	if err != nil {
 		return domain.UsageEvent{}, err
 	}
@@ -52,7 +52,7 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 		props, postgres.NullableString(event.IdempotencyKey),
 		event.Timestamp, origin,
 	).Scan(&event.ID, &event.TenantID, &event.CustomerID, &event.MeterID,
-		&event.SubscriptionID, &event.Quantity, propertiesScanner{&event.Properties},
+		&event.SubscriptionID, &event.Quantity, propertiesScanner{&event.Dimensions},
 		&event.IdempotencyKey, &event.Timestamp, &event.Origin)
 
 	if err != nil {
@@ -102,7 +102,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	for rows.Next() {
 		var e domain.UsageEvent
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.MeterID,
-			&e.SubscriptionID, &e.Quantity, propertiesScanner{&e.Properties},
+			&e.SubscriptionID, &e.Quantity, propertiesScanner{&e.Dimensions},
 			&e.IdempotencyKey, &e.Timestamp); err != nil {
 			return nil, 0, err
 		}

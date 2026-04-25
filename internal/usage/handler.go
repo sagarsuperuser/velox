@@ -108,7 +108,7 @@ func (h *Handler) resolve(ctx context.Context, tenantID string, evt apiEvent) (I
 		CustomerID:     cust.ID,
 		MeterID:        meter.ID,
 		Quantity:       evt.Quantity,
-		Properties:     dims,
+		Dimensions:     dims,
 		IdempotencyKey: evt.IdempotencyKey,
 	}
 

@@ -54,6 +54,19 @@ func (h *Handler) OverrideRoutes() chi.Router {
 	return r
 }
 
+// MeterPricingRuleRoutes is the sub-router for
+// /v1/meters/{meter_id}/pricing-rules. Reads use the read perm; upsert and
+// delete need write. Pattern mirrors coupon.CustomerAssignmentRoutes so
+// the router can compose perms in the same place — see router.go.
+func (h *Handler) MeterPricingRuleRoutes(requireRead, requireWrite func(http.Handler) http.Handler) chi.Router {
+	r := chi.NewRouter()
+	r.With(requireRead).Get("/", h.listMeterPricingRules)
+	r.With(requireWrite).Post("/", h.upsertMeterPricingRule)
+	r.With(requireRead).Get("/{id}", h.getMeterPricingRule)
+	r.With(requireWrite).Delete("/{id}", h.deleteMeterPricingRule)
+	return r
+}
+
 func (h *Handler) createOverride(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 
@@ -281,4 +294,79 @@ func (h *Handler) updatePlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, plan)
+}
+
+// ---------------------------------------------------------------------------
+// Meter Pricing Rules — N-rules-per-meter dispatch.
+// ---------------------------------------------------------------------------
+
+// listMeterPricingRules returns every pricing rule attached to a meter,
+// sorted by priority-DESC / created-at-ASC (the store enforces the order).
+func (h *Handler) listMeterPricingRules(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	meterID := chi.URLParam(r, "meter_id")
+
+	rules, err := h.svc.ListMeterPricingRulesByMeter(r.Context(), tenantID, meterID)
+	if err != nil {
+		respond.FromError(w, r, err, "meter_pricing_rule")
+		return
+	}
+	if rules == nil {
+		rules = []domain.MeterPricingRule{}
+	}
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": rules})
+}
+
+// upsertMeterPricingRule creates or updates the rule identified by
+// (meter_id, rating_rule_version_id). The URL meter_id wins over any
+// meter_id in the body so the route surface is unambiguous.
+func (h *Handler) upsertMeterPricingRule(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	meterID := chi.URLParam(r, "meter_id")
+
+	var input UpsertMeterPricingRuleInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+	input.MeterID = meterID
+
+	rule, err := h.svc.UpsertMeterPricingRule(r.Context(), tenantID, input)
+	if err != nil {
+		respond.FromError(w, r, err, "meter_pricing_rule")
+		return
+	}
+	respond.JSON(w, r, http.StatusCreated, rule)
+}
+
+func (h *Handler) getMeterPricingRule(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	rule, err := h.svc.GetMeterPricingRule(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "meter_pricing_rule")
+		return
+	}
+	if err != nil {
+		respond.InternalError(w, r)
+		slog.ErrorContext(r.Context(), "get meter pricing rule", "error", err)
+		return
+	}
+	respond.JSON(w, r, http.StatusOK, rule)
+}
+
+func (h *Handler) deleteMeterPricingRule(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	if err := h.svc.DeleteMeterPricingRule(r.Context(), tenantID, id); err != nil {
+		if errors.Is(err, errs.ErrNotFound) {
+			respond.NotFound(w, r, "meter_pricing_rule")
+			return
+		}
+		respond.FromError(w, r, err, "meter_pricing_rule")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
