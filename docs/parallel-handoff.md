@@ -88,3 +88,31 @@
   - Open questions 1–7 in `docs/design-recipes.md` — flag any to resolve before Week 3 implementation starts (May 9).
   - Track B's quantity-vs-value question: resolved as `quantity` canonical, no `value` alias. Documented in `docs/design-multi-dim-meters.md` "Wire-contract conventions" callout.
 - **Next session (Track A):** depending on human direction — (a) drive PR #20 to merge once CI is green, then start Week 3 recipes implementation Monday; (b) Week 1 docs polish if human wants those locked first; (c) `create_preview` design doc for Week 5 if human wants the next RFC pre-staged for Track B.
+
+#### End-of-turn (Track B — Week 2 frontend, in-flight)
+Continuing the same day. PR #19 (Week 1 docs) is open and unmerged; new branch `feat/track-b-week2` is stacked on top of it. Will rebase to `main` once #19 lands.
+
+- **Shipped (3 commits on `feat/track-b-week2`):**
+  - `6cc492f feat(web): multi-dim pricing rules section on meter detail` — `MeterDetail.tsx` gets a "Dimension-matched rules" card with a chips-table of `priority / dimension_match / aggregation_mode / rating_rule / created`, an "Add rule" dialog (key/value dimension builder, rating-rule selector, all 5 aggregation modes), and typed-confirm delete. The original "Pricing Rule" card was renamed "Default pricing rule" with a copy clarifying it's the fallback for events not claimed by a higher-priority dimension-matched rule. Backed by new `api.{list,create,delete}MeterPricingRule` calls; falls back to empty list when the backend endpoint isn't deployed yet.
+  - `7d8260d feat(web): surface dimensions on usage events table + filter` — `UsageEvents.tsx` gets a conditional Dimensions column (only shows when at least one event in view carries them, or a filter is active), a `key=value` text filter bound to a `dimensions=` query param, and stats/breakdowns now read the new decimal `value` field with fallback to legacy integer `quantity`. CSV export includes the dimensions JSON column.
+  - `20059c4 feat(web): /onboarding wizard scaffold (5-step quickstart)` — new `/onboarding` route with a Stripe/Linear-style 5-step wizard skeleton: pick template → connect Stripe → tax → branding → send first invoice. Step state in `?step=`. Body content uses real deep-links into existing settings/customer/invoice pages so it's usable today; template picker wires up to recipes API in Week 3.
+- **API contract additions** (in `web-v2/src/lib/api.ts`):
+  - New types: `MeterPricingRule`, `MeterAggregationMode` (union of 5 modes), `CustomerUsageBreakdown`
+  - `UsageEvent.value?: string` (decimal string) and `UsageEvent.dimensions?: Record<string, string|number|boolean>` — both optional during the multi-dim transition
+  - New methods: `listMeterPricingRules`, `createMeterPricingRule`, `deleteMeterPricingRule`, `customerUsageBreakdown`
+- **Path-naming choice (worth flagging to Track A):** I went with **hyphens** for the new endpoints (`/v1/meters/{id}/pricing-rules`) for consistency with the rest of the API (`/v1/credit-notes`, `/v1/rating-rules`, `/v1/audit-log`). The design doc currently says underscores. If Track A is firm on underscores, they should rename existing endpoints too — anything else creates dual conventions in the same surface.
+- **Build verification:**
+  - `tsc -b` passes — only pre-existing errors on `HostedInvoice.tsx:512` (Button asChild prop) and `Webhooks.tsx:243` (setState narrowing). Both predate this branch — confirmed via diff against `origin/main`.
+  - `vite build` succeeds in ~600ms; no new bundles broke chunking.
+  - Visual verification not done — dev server requires Postgres + bootstrap; deferred to next session against Track A's actual multi-dim backend on May 8.
+- **Messages for Track A (scannable copy for the human to convey):**
+  1. Update `docs/design-multi-dim-meters.md` paths to **hyphens** (or rename existing endpoints to underscores). Pick one.
+  2. Pick a stance on `quantity` vs `value` in `UsageEvent` responses; document in design doc. I have both as optional — Stripe-style transition keeps both, response prefers `value`.
+  3. Start `docs/design-recipes.md` next so I can scaffold the recipe-picker UI in Week 3 against a real contract instead of mocking.
+  4. After multi-dim backend ships May 8, manually click through `/meters/:id` (Pricing Rules section) and `/usage` (Dimensions column) to confirm rules and event dimensions render.
+  5. Glance at PR #19 (README + blog) — examples lifted directly from the design doc; if implementation diverges, those copy fragments need follow-up.
+- **Blocking Track A on:** nothing
+- **Track A can pick up from this work:** OpenAPI spec update, recipe RFC, multi-dim backend implementation. Path/field naming feedback is the only thing I'd love resolved before Track A's PR opens.
+- **Next session (Track B):** rebase on `origin/main` once #19 merges, then either (a) extend with embeddable cost dashboard scaffold (Week 5 work, but its API contract is in the design doc as `GET /v1/customers/{id}/usage`), or (b) start the recipe-picker UI once Track A drops a recipes RFC. (a) is unblocked today; (b) waits for Track A.
+
+**Wall-clock duration:** Week 2 in-flight = 21:46 → 23:45 IST (≈ 2h 0m); cumulative for the day = 21:09 → 23:45 (≈ 2h 36m).
