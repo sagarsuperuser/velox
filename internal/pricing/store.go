@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
@@ -9,11 +10,13 @@ import (
 type Store interface {
 	// Rating rules
 	CreateRatingRule(ctx context.Context, tenantID string, rule domain.RatingRuleVersion) (domain.RatingRuleVersion, error)
+	CreateRatingRuleTx(ctx context.Context, tx *sql.Tx, tenantID string, rule domain.RatingRuleVersion) (domain.RatingRuleVersion, error)
 	GetRatingRule(ctx context.Context, tenantID, id string) (domain.RatingRuleVersion, error)
 	ListRatingRules(ctx context.Context, filter RatingRuleFilter) ([]domain.RatingRuleVersion, error)
 
 	// Meters
 	CreateMeter(ctx context.Context, tenantID string, m domain.Meter) (domain.Meter, error)
+	CreateMeterTx(ctx context.Context, tx *sql.Tx, tenantID string, m domain.Meter) (domain.Meter, error)
 	GetMeter(ctx context.Context, tenantID, id string) (domain.Meter, error)
 	GetMeterByKey(ctx context.Context, tenantID, key string) (domain.Meter, error)
 	ListMeters(ctx context.Context, tenantID string) ([]domain.Meter, error)
@@ -21,6 +24,7 @@ type Store interface {
 
 	// Plans
 	CreatePlan(ctx context.Context, tenantID string, p domain.Plan) (domain.Plan, error)
+	CreatePlanTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.Plan) (domain.Plan, error)
 	GetPlan(ctx context.Context, tenantID, id string) (domain.Plan, error)
 	ListPlans(ctx context.Context, tenantID string) ([]domain.Plan, error)
 	UpdatePlan(ctx context.Context, tenantID string, p domain.Plan) (domain.Plan, error)
@@ -33,6 +37,7 @@ type Store interface {
 	// Meter pricing rules — N-rules-per-meter dispatch via dimension_match.
 	// See docs/design-multi-dim-meters.md.
 	UpsertMeterPricingRule(ctx context.Context, tenantID string, rule domain.MeterPricingRule) (domain.MeterPricingRule, error)
+	UpsertMeterPricingRuleTx(ctx context.Context, tx *sql.Tx, tenantID string, rule domain.MeterPricingRule) (domain.MeterPricingRule, error)
 	GetMeterPricingRule(ctx context.Context, tenantID, id string) (domain.MeterPricingRule, error)
 	ListMeterPricingRulesByMeter(ctx context.Context, tenantID, meterID string) ([]domain.MeterPricingRule, error)
 	DeleteMeterPricingRule(ctx context.Context, tenantID, id string) error

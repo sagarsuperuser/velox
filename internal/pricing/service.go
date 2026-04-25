@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"regexp"
 	"strings"
@@ -424,4 +425,33 @@ func (s *Service) ListMeterPricingRulesByMeter(ctx context.Context, tenantID, me
 // finalize cycles.
 func (s *Service) DeleteMeterPricingRule(ctx context.Context, tenantID, id string) error {
 	return s.store.DeleteMeterPricingRule(ctx, tenantID, id)
+}
+
+// ---------------------------------------------------------------------------
+// Tx variants — used by recipe.Service to compose pricing inserts inside a
+// single cross-domain transaction. Validation is intentionally skipped here
+// because the recipe template layer already validated the inputs against
+// the recipe schema; re-validating in the recipe path would only duplicate
+// what the template parser already enforced.
+// ---------------------------------------------------------------------------
+
+// CreateRatingRuleTx forwards to the store's tx-aware insert. Caller owns
+// the *sql.Tx and is responsible for Commit/Rollback.
+func (s *Service) CreateRatingRuleTx(ctx context.Context, tx *sql.Tx, tenantID string, rule domain.RatingRuleVersion) (domain.RatingRuleVersion, error) {
+	return s.store.CreateRatingRuleTx(ctx, tx, tenantID, rule)
+}
+
+// CreateMeterTx forwards to the store's tx-aware insert.
+func (s *Service) CreateMeterTx(ctx context.Context, tx *sql.Tx, tenantID string, m domain.Meter) (domain.Meter, error) {
+	return s.store.CreateMeterTx(ctx, tx, tenantID, m)
+}
+
+// CreatePlanTx forwards to the store's tx-aware insert.
+func (s *Service) CreatePlanTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.Plan) (domain.Plan, error) {
+	return s.store.CreatePlanTx(ctx, tx, tenantID, p)
+}
+
+// UpsertMeterPricingRuleTx forwards to the store's tx-aware upsert.
+func (s *Service) UpsertMeterPricingRuleTx(ctx context.Context, tx *sql.Tx, tenantID string, rule domain.MeterPricingRule) (domain.MeterPricingRule, error) {
+	return s.store.UpsertMeterPricingRuleTx(ctx, tx, tenantID, rule)
 }
