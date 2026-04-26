@@ -37,6 +37,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
 	"github.com/sagarsuperuser/velox/internal/paymentmethods"
+	"github.com/sagarsuperuser/velox/internal/planmigration"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -447,6 +448,23 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		billing.NewPreviewService(engine, customerStore, subStore),
 	)
 
+	// Plan migration tool: operator-initiated bulk swaps of plan_id across
+	// many subscriptions. Reuses billing.PreviewService for the per-customer
+	// before/after preview, subStore for the cohort + per-item mutations,
+	// pricingSvc for plan currency/name lookups, and auditLogger for both
+	// the cohort summary entry and per-customer plan_changed entries.
+	// Mounted at /v1/admin/plan_migrations below.
+	planMigrationStore := planmigration.NewPostgresStore(db)
+	planMigrationSvc := planmigration.NewService(
+		planMigrationStore,
+		billing.NewPreviewService(engine, customerStore, subStore),
+		subStore,
+		subStore,
+		pricingSvc,
+		auditLogger,
+	)
+	planMigrationH := planmigration.NewHandler(planMigrationSvc)
+
 	// Billing alerts: operator-defined spend/usage thresholds with a
 	// background evaluator that fires `billing.alert.triggered` via the
 	// webhook outbox atomically with the alert state mutation. Mounted
@@ -772,6 +790,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// invoice ID. See docs/design-create-preview.md.
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices/create_preview", createPreviewH.Routes())
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices", invoiceH.Routes())
+		// Plan migration tool — operator-only bulk plan swap. Both preview
+		// and commit are write-grade (cohort can be sensitive even when no
+		// DB mutation occurs), so PermSubscriptionWrite gates the whole
+		// subtree. See internal/planmigration.
+		r.With(auth.Require(auth.PermSubscriptionWrite)).Mount("/admin/plan_migrations", planMigrationH.Routes())
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/credit-notes", creditNoteH.Routes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/price-overrides", pricingH.OverrideRoutes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/coupons", couponH.Routes())

@@ -395,6 +395,21 @@ export const api = {
     apiRequest<BillingAlert>('POST', '/billing/alerts', data),
   archiveBillingAlert: (id: string) =>
     apiRequest<BillingAlert>('POST', `/billing/alerts/${id}/archive`),
+
+  // Plan migrations — operator-initiated bulk plan swaps. preview is a
+  // read-only dry-run; commit applies the swap and emits one cohort audit
+  // entry plus per-customer subscription.plan_changed entries.
+  previewPlanMigration: (data: PlanMigrationPreviewRequest) =>
+    apiRequest<PlanMigrationPreviewResponse>('POST', '/admin/plan_migrations/preview', data),
+  commitPlanMigration: (data: PlanMigrationCommitRequest) =>
+    apiRequest<PlanMigrationCommitResponse>('POST', '/admin/plan_migrations/commit', data),
+  listPlanMigrations: (params?: { limit?: number; cursor?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.limit) qs.set('limit', String(params.limit))
+    if (params?.cursor) qs.set('cursor', params.cursor)
+    const q = qs.toString()
+    return apiRequest<PlanMigrationListResponse>('GET', `/admin/plan_migrations${q ? '?' + q : ''}`)
+  },
 }
 
 // Types
@@ -1172,6 +1187,84 @@ export interface CreateBillingAlertRequest {
     usage_gte?: string
   }
   recurrence: BillingAlertRecurrence
+}
+
+// Plan migration tool types — wire shapes for /v1/admin/plan_migrations.
+
+export interface PlanMigrationCustomerFilter {
+  // "all"  → every active subscription on from_plan_id for the tenant
+  // "ids"  → only subscriptions whose customer_id is in `ids`
+  // "tag"  → reserved (server rejects with code "filter_type_unsupported")
+  type: 'all' | 'ids' | 'tag'
+  ids?: string[]
+  value?: string
+}
+
+export interface PlanMigrationPreviewRequest {
+  from_plan_id: string
+  to_plan_id: string
+  customer_filter: PlanMigrationCustomerFilter
+}
+
+export interface PlanMigrationCustomerPreview {
+  customer_id: string
+  current_plan_id: string
+  target_plan_id: string
+  // before / after are billing PreviewResult shapes — we only render totals
+  // and a single delta in the dashboard table, so the embedded structure is
+  // typed loosely here to avoid coupling the table to the engine schema.
+  before: { totals: Array<{ currency: string; amount_cents: number }>; lines?: unknown[] }
+  after: { totals: Array<{ currency: string; amount_cents: number }>; lines?: unknown[] }
+  delta_amount_cents: number
+  currency: string
+}
+
+export interface PlanMigrationTotal {
+  currency: string
+  before_amount_cents: number
+  after_amount_cents: number
+  delta_amount_cents: number
+}
+
+export interface PlanMigrationPreviewResponse {
+  previews: PlanMigrationCustomerPreview[]
+  totals: PlanMigrationTotal[]
+  warnings: string[]
+}
+
+export interface PlanMigrationCommitRequest {
+  from_plan_id: string
+  to_plan_id: string
+  customer_filter: PlanMigrationCustomerFilter
+  idempotency_key: string
+  effective: 'immediate' | 'next_period'
+}
+
+export interface PlanMigrationCommitResponse {
+  migration_id: string
+  applied_count: number
+  audit_log_id: string
+  idempotent_replay?: boolean
+}
+
+export interface PlanMigrationListItem {
+  migration_id: string
+  from_plan_id: string
+  to_plan_id: string
+  effective: 'immediate' | 'next_period'
+  applied_at: string
+  applied_by: string
+  applied_by_type: string
+  applied_count: number
+  customer_filter: PlanMigrationCustomerFilter
+  totals: PlanMigrationTotal[]
+  idempotency_key: string
+  audit_log_id?: string
+}
+
+export interface PlanMigrationListResponse {
+  migrations: PlanMigrationListItem[]
+  next_cursor: string
 }
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {
