@@ -20,6 +20,17 @@ const entries: {
 }[] = [
   {
     date: '2026-04-27',
+    title: 'GDPR data export verified for multi-dim usage events',
+    tag: 'feature',
+    body: 'Last open Week 10 readiness checkbox closed. GET /v1/customers/{id}/export now returns the customer\'s raw usage_events rows including the per-event dimensions JSONB payload that multi-dim meters use to dispatch pricing rules at finalize time. The previous shape carried only an unpopulated usage_summary map and dropped dimensions entirely — meaning a reissued export could not be reconciled against the original invoice line items, which is precisely the right GDPR Art. 20 codifies. A new focused integration test seeds two events with mixed string/bool dimensions (region, model, cached) and asserts exact-match round-trip through the export so any future schema change that drops or renames the field fires before the regression ships.',
+    bullets: [
+      'Cap of 10,000 most-recent events per export with usage_events_truncated=true on overflow, so a high-volume customer can\'t OOM the API process while still surfacing partial data + the truncation flag (callers fall back to the streaming /usage-events list endpoint paginated for the same customer).',
+      'Tenant-level pricing metadata (meter_pricing_rules, billing_alerts, meter definitions) remains intentionally out of scope — that\'s the operator\'s commercial pricing strategy, not the data subject\'s personal data, and including it would leak operator config without serving any GDPR right. The data subject can reconstruct what each event was billed for via the invoice line items (which ARE included).',
+      'Wiring change: GDPRService now takes a usage.Store dependency alongside customers / invoices / credits / subscriptions — same coordinator pattern the existing service already uses for cross-domain reads.',
+    ],
+  },
+  {
+    date: '2026-04-27',
     title: 'Encryption-at-rest verification guide — Week 10 compliance docs continued',
     tag: 'docs',
     body: 'Second of the Week 10 compliance docs ships at docs/ops/encryption-at-rest.md — the operator-facing reference for what Velox encrypts at rest, with which keys, and how to prove on a running install that the encryption is in effect. Documents the application-layer encryption surface (customer email + display_name, billing-profile legal_name + email + phone + tax_id all AES-256-GCM under VELOX_ENCRYPTION_KEY; outbound webhook signing secrets primary + secondary; per-tenant Stripe secret API key + webhook signing secret) and the customers.email_bidx HMAC-SHA256 blind index under VELOX_EMAIL_BIDX_KEY that lets the magic-link flow look up a customer by email without decrypting the ciphertext column. Companion sections enumerate what\'s hashed (API keys SHA-256 + 16-byte per-key salt, passwords Argon2id PHC m=64MiB t=3 p=4, sessions / password-reset / portal magic-link / payment-update tokens all SHA-256) and what\'s plaintext on purpose (hosted-invoice public_token by URL-share design, Stripe publishable key by Stripe\'s data classification, key prefix / last4 columns for dashboard display).',

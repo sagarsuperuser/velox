@@ -113,7 +113,7 @@ Goal: prove the self-host pillar works end-to-end. Get one partner to production
 - [ ] Encryption-at-rest verification (webhook secrets, API keys, customer email/PII): single doc tying it together
 - [ ] Audit log retention guide (recommended retention windows, S3 archival pattern)
 - [ ] SOC2 control mapping doc (`docs/compliance/soc2-mapping.md`)
-- [ ] GDPR data export + deletion verified end-to-end against the multi-dim usage_events table
+- [x] GDPR data export + deletion verified end-to-end against the multi-dim usage_events table
 
 ### Week 11 (Jul 4–10) — Migration FROM Stripe
 - [ ] Importer: customers, subscriptions, products, prices, finalized invoice history
