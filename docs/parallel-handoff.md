@@ -733,3 +733,42 @@ Three lanes returned after digest PR #35 was written; this addendum closes the b
 ### Next session pickup
 - **Auto-dispatchable** (no user input): Week 7 leftovers — bulk operations (`sub cancel --all-paused`, etc.), one-off invoice composer with full UI, dashboard page for plan-migrations history.
 - **User-decision items** (unchanged from primary digest): real AWS cold-install run, RFC-fork greenlight (collection_method largest), migration 0054/0020/0015 rewrite timing.
+
+---
+
+## 2026-04-26 (Sun) — End-of-day digest, closeout
+
+After the addendum, the user authorized completing the Week 7 leftovers and (separately) the migration safety rewrites. Five more PRs landed; this section closes the day.
+
+### PRs merged
+
+| # | Title | Notes |
+|---|---|---|
+| #40 | One-off invoice composer (Week 7) | Drawer on customer detail page; reuses `POST /v1/invoices` + line-items + send. Backend tweak: `invoices.subscription_id` made nullable (migration `0060_invoice_subscription_optional`); `Service.Create` defaults billing-period to `now()` when zero. |
+| #41 | Bulk operations admin tool (Week 7) | `POST /v1/admin/bulk_actions/{apply_coupon,schedule_cancel}` + list + detail; mirrors plan_migration's `customer_filter` JSONB + `idempotency_key` UNIQUE. Migration `0061_bulk_actions` (renumbered from 0060 after #40 took it). Multi-select on `/customers` page wired to a drawer. |
+| #42 | Plan-migrations history page (Week 7) | Frontend-only; list at `/plan-migrations/history` + detail at `/plan-migrations/:id`. Status derived client-side (`Committed` / `Partial` from `applied_count` vs `totals` — list endpoint has no `status` column today). Empty state is industry-grade (no seed-demo button). |
+| #43 | Migration 0015 NOT VALID + VALIDATE (hardening) | Mechanical 60-FK rewrite. Lock on `audit_log` dropped from 8.8s → **0ms** (below 50ms harness sample-floor). No runner changes needed — validation switches from `AccessExclusive` to `ShareUpdateExclusive` even within a single tx. |
+| #44 | Migration runner no-tx primitive + 0054 GIN retrofit (hardening) | New header `-- velox:no-transaction` on `.up.sql` lifts the BEGIN/COMMIT wrap. Runner re-implements `golang-migrate`'s advisory-lock id derivation so multi-replica boots still serialize. Used to move `0054`'s GIN index out into a new `0062_usage_events_gin_concurrent` with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` — **0ms AccessExclusiveLock**. |
+
+### Day's totals
+
+**18 PRs merged.** The original primary digest covered the first 7 (Week 5–Tier-2 prep + self-host paper artifacts + Stripe gap analysis). The addendum closed PRs #36–#38 (Week 6 + operator CLI). This closeout adds five more (Week 7 leftovers + migration hardening).
+
+### Migration safety status (post-PR #44)
+
+| Migration | Original lock | Current state |
+|---|---|---|
+| 0015 (`fk_explicit_restrict`) | 8.8s on `audit_log` | ✅ **FIXED** in PR #43 (NOT VALID + VALIDATE) |
+| 0054 GIN index | part of 53.5s on `usage_events` | ✅ **FIXED** in PR #44 (`0062` CONCURRENTLY) |
+| 0054 column rewrite (BIGINT→NUMERIC) | full 53.5s on `usage_events` | ⏸ DEFERRED — needs backfill machinery; speculative for pre-launch Velox. No-tx primitive available when revisited. |
+| 0020 (`test_mode`) | 14.4s on `invoices` | ⏸ DEFERRED — needs split into per-UNIQUE `CREATE UNIQUE INDEX CONCURRENTLY` swaps. Same primitive available when revisited. |
+
+### Scars / lessons (from this batch)
+
+1. **Migration collisions repeat** — Lane A (bulk ops) initially used 0060; Lane B (invoice composer) merged first taking 0060; Lane A renumbered to 0061 at merge time. Memory `feedback_migration_numbering` keeps proving its value: pick from `origin/main` AFTER `git fetch`, not from local branch.
+2. **golang-migrate has no per-file no-tx flag** — `x-no-tx-wrap` is sqlite-only; the v4 postgres driver always wraps in BEGIN/COMMIT. Hybrid runner approach (extract no-tx files, exec via autocommit, manually update `schema_migrations` with the same advisory-lock id) is small and contained — preferable to forking the library.
+3. **Local branch delete keeps failing in worktrees** — `'main' is already used by worktree at ...` when running `gh pr merge --delete-branch` from any subagent worktree. Workaround stays the same: server-side merge succeeds, then `gh api -X DELETE repos/.../git/refs/heads/<branch>` cleans up the remote ref. Should add a small wrapper script if this keeps coming up.
+
+### Next session pickup
+- **Pre-Phase-3 follow-ups** (eligible for autonomous dispatch when relevant): retrofit 0054 column rewrite + 0020 UNIQUE swaps using the new no-tx primitive, IF a tenant accumulates real-world data scale before cutover. Otherwise these stay deferred; the safety-findings doc explains the trade-off.
+- **User-decision items** (unchanged): real AWS cold-install run, RFC-fork greenlight, Phase-3 cutover go/no-go.
