@@ -10,17 +10,19 @@
 --      fractions without a per-tenant scale convention. Maps to Stripe's
 --      quantity_decimal (Tier 1 parity gap).
 --
---   2. GIN index on usage_events.properties.
---      Pricing-rule resolution is a JSONB subset-match (`properties @> {...}`)
---      executed at finalize time across the period's events. GIN over JSONB
---      is the canonical Postgres index for this; without it, every finalize
---      becomes a sequential scan over the period.
---
---   3. New meter_pricing_rules table. N rules per meter, each carrying
+--   2. New meter_pricing_rules table. N rules per meter, each carrying
 --      a dimension_match JSONB filter, an aggregation_mode, and a priority.
 --      Each event is claimed by the highest-priority matching rule (no
 --      double-count). Default rule has dimension_match='{}' which matches
 --      everything; priority=0 keeps it last so specific rules win first.
+--
+-- The GIN index on usage_events.properties used to live here as
+-- `CREATE INDEX … USING GIN (properties)`. It has been hoisted to its own
+-- migration (0062) using `CREATE INDEX CONCURRENTLY` to avoid the 53.5s
+-- AccessExclusiveLock on `usage_events` measured by the populated-DB
+-- safety harness — see docs/migration-safety-findings.md ("Already fixed"
+-- section). The retrofit is safe for already-deployed instances because
+-- 0062 uses `IF NOT EXISTS`.
 --
 -- Backward compatibility:
 --   - meters.aggregation column is left in place but becomes advisory; the
@@ -28,13 +30,13 @@
 --     A separate cleanup migration may deprecate it once all consumers move.
 --   - quantity column rename: BIGINT -> NUMERIC is a metadata-only change
 --     when no rows exist (pre-launch), and a rewrite when rows exist. We
---     are pre-launch / local-only, so this is effectively free.
+--     are pre-launch / local-only, so this is effectively free. The
+--     production-safe rework into ADD COLUMN + backfill + rename is
+--     DEFERRED until after Phase 3 cutover (needs backfill machinery; see
+--     docs/migration-safety-findings.md "0054 — column rewrite — DEFERRED").
 
 ALTER TABLE usage_events
     ALTER COLUMN quantity TYPE NUMERIC(38, 12) USING quantity::numeric;
-
-CREATE INDEX idx_usage_events_properties_gin
-    ON usage_events USING GIN (properties);
 
 CREATE TABLE meter_pricing_rules (
     id                      TEXT PRIMARY KEY DEFAULT 'vlx_mpr_' || encode(gen_random_bytes(12), 'hex'),

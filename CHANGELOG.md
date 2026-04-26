@@ -813,6 +813,47 @@ Two surfaces mirror this file:
 
 ### Fixed
 
+- **Migration runner — no-transaction primitive + 0054 GIN moved to CONCURRENTLY (`0062`)** (2026-04-26) —
+  Phase 3 prep (Week 9). The original 0054 created the
+  `idx_usage_events_properties_gin` GIN index inline as
+  `CREATE INDEX … USING GIN (properties)` — a non-concurrent build that
+  holds an `AccessExclusiveLock` on `usage_events` for the whole
+  duration. The populated-DB safety harness
+  (`docs/migration-safety-findings.md`) bundled this lock into the
+  53.5s 0054 measurement on 5M rows. CONCURRENTLY is the canonical
+  fix, but `CREATE INDEX CONCURRENTLY` cannot run inside a transaction
+  block, and `golang-migrate`'s postgres driver in v4.19.1 does not
+  support a per-file `x-no-tx-wrap` flag (only the sqlite drivers do).
+  The runner in `internal/platform/migrate/migrate.go` now detects an
+  opt-out header `-- velox:no-transaction` in the first 5 lines of a
+  migration file. Files with the header are pulled out of the library
+  path and applied via our own `db.ExecContext` after splitting on `;`
+  so each statement runs in PG autocommit. golang-migrate's
+  `pg_advisory_lock` is held across our applies too, so concurrent
+  replicas booting against the same DB serialize through the
+  same numeric lock id whether the step is library-driven or no-tx.
+  Migrations without the header are unchanged — the hybrid runner is
+  inert when no pending file opts in. The GIN portion of 0054 has been
+  removed from `0054_multi_dim_meters.up.sql`; new migration
+  `0062_usage_events_gin_concurrent.up.sql` carries the header and
+  runs `CREATE INDEX CONCURRENTLY IF NOT EXISTS …` so already-deployed
+  instances that ran the pre-retrofit shape of 0054 treat 0062 as a
+  no-op metadata bump. The matching down (`DROP INDEX CONCURRENTLY IF
+  EXISTS …`) is also no-tx. Safety harness re-run at the small preset
+  records `up,62,*ms,0` — no `AccessExclusiveLock` observed on
+  `usage_events`. The roundtrip test
+  (`internal/platform/migrate/roundtrip_test.go`) plus a new focused
+  integration test (`notx_integration_test.go`) verify schema parity
+  after up+down+up. Unit tests cover the header detector, the SQL
+  splitter (single quotes, doubled-quote escapes, double-quoted
+  identifiers, dollar-quoted bodies including tagged variants, line
+  comments, block comments), and the advisory-lock id derivation.
+  Out of scope on this PR: 0054's column rewrite (BIGINT→NUMERIC) and
+  0020's 13 UNIQUE swaps — both DEFERRED in
+  `docs/migration-safety-findings.md` because they need backfill
+  machinery / many-step rewrites and Velox is pre-launch with near-zero
+  rows in the affected tables. Re-evaluate during Phase 3 cutover.
+
 - **Migration 0015 (fk_explicit_restrict) — eliminates 8.8s `AccessExclusiveLock` on `audit_log`** (2026-04-26) —
   Phase 3 prep (Week 9). The migration that makes every FK's `ON DELETE`
   policy explicit (60 FKs across ~30 tables) was written for an empty
