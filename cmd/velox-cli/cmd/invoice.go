@@ -107,8 +107,8 @@ func runInvoiceSend(ctx context.Context, w io.Writer, c *client.Client, p invoic
 		if p.format == output.FormatJSON {
 			return output.JSON(w, preview)
 		}
-		fmt.Fprintf(w, "DRY RUN: would POST %s with email=%q\n", path, p.email)
-		return nil
+		_, err := fmt.Fprintf(w, "DRY RUN: would POST %s with email=%q\n", path, p.email)
+		return err
 	}
 
 	body := map[string]string{"email": p.email}
@@ -123,6 +123,6 @@ func runInvoiceSend(ctx context.Context, w io.Writer, c *client.Client, p invoic
 	if status == "" {
 		status = "ok"
 	}
-	fmt.Fprintf(w, "invoice %s sent to %s (%s)\n", p.invoiceID, p.email, status)
-	return nil
+	_, err := fmt.Fprintf(w, "invoice %s sent to %s (%s)\n", p.invoiceID, p.email, status)
+	return err
 }

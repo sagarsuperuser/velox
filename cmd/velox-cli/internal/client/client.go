@@ -111,7 +111,7 @@ func (c *Client) do(req *http.Request, method, path string, out any) error {
 	if err != nil {
 		return fmt.Errorf("velox api: %s %s: %w", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -140,7 +140,9 @@ func runSubList(ctx context.Context, w io.Writer, c *client.Client, p subListPar
 		return err
 	}
 	if len(resp.Data) == 0 {
-		fmt.Fprintln(w, "(no subscriptions matched)")
+		if _, err := fmt.Fprintln(w, "(no subscriptions matched)"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
