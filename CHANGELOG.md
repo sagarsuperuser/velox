@@ -53,6 +53,38 @@ Two surfaces mirror this file:
   contract for all three endpoints. See `docs/90-day-plan.md` Week 6 + Week 6
   in `docs/parallel-handoff.md` Track A.
 
+- **Operator CLI — `velox-cli` with `sub list` + `invoice send`** (2026-04-26) —
+  Week 7 lane lands a single-binary CLI under `cmd/velox-cli/` that
+  hits the same `/v1/*` HTTP surface external integrations use, so
+  it's a faithful proxy for the public API rather than a DB-coupled
+  back door. Auth is a platform API key from `VELOX_API_KEY` (or
+  `--api-key`) — the CLI never writes the key to disk. Two
+  subcommands shipped:
+  - `velox-cli sub list` — `GET /v1/subscriptions` with `--customer`,
+    `--plan`, `--status`, `--limit`, `--output text|json`. Text
+    output is hand-rolled aligned columns
+    (`ID  CUSTOMER  PLAN  STATUS  CURRENT_PERIOD_END`); JSON
+    pass-through for `jq` piping.
+  - `velox-cli invoice send` — `POST /v1/invoices/{id}/send` with
+    `--invoice`, `--email`, `--dry-run`, `--output text|json`.
+    `--dry-run` short-circuits before the network call so an
+    operator can verify the request shape against a wrong tenant
+    without firing an email.
+  - Cobra (`github.com/spf13/cobra v1.10.2`) for command structure;
+    no tablewriter or other formatting libs — hand-rolled columns
+    are fine for v1. Single static binary; no runtime config files.
+  - `make cli` builds `./bin/velox-cli`. README at
+    `cmd/velox-cli/README.md` covers install + auth + first-command
+    walkthrough.
+  - 11 unit tests against `httptest`-backed servers pin behavior:
+    text formatting, JSON pass-through, query-param mapping, empty
+    list friendly message, 401 surfacing, dry-run-no-network,
+    auth-header presence, content-type round-trip, decode-error
+    surfacing, query-string encoding, default-base-URL trimming.
+  - **Deferred:** `import-from-stripe` (Week 11, after the bigger
+    importer RFC); bulk operations and a one-off invoice composer
+    (later Week 7 lanes).
+
 - **Self-host paper artifacts — Helm chart + Terraform AWS module** (2026-04-26) —
   the Week 9 follow-up to the Compose lane lands two structurally
   validated deploy targets, both pinned to the env-var schema the
