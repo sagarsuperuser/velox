@@ -10,6 +10,7 @@ import (
 	"github.com/stripe/stripe-go/v82"
 
 	"github.com/sagarsuperuser/velox/internal/billing"
+	"github.com/sagarsuperuser/velox/internal/billingalert"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
@@ -411,4 +412,37 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 		return "", fmt.Errorf("checkout session: %w", err)
 	}
 	return sess.URL, nil
+}
+
+// billingAlertSubscriptionListerAdapter bridges *subscription.PostgresStore →
+// billingalert.SubscriptionLister. The billingalert package keeps its
+// own ListFilter shape so it doesn't import the subscription package
+// directly — same pattern create_preview's preview package uses for
+// CustomerLookup, etc.
+type billingAlertSubscriptionListerAdapter struct {
+	store *subscription.PostgresStore
+}
+
+func (a *billingAlertSubscriptionListerAdapter) List(ctx context.Context, filter billingalert.SubscriptionListFilter) ([]domain.Subscription, int, error) {
+	return a.store.List(ctx, subscription.ListFilter{
+		TenantID:   filter.TenantID,
+		CustomerID: filter.CustomerID,
+	})
+}
+
+// billingAlertLockerAdapter bridges *postgres.DB → billingalert.Locker.
+// The billingalert package defines its own Locker / Lock interfaces so
+// the evaluator can be unit-tested without a real Postgres — same
+// rationale billing has its own. We can't reuse billing.NewPostgresLocker
+// because the Lock interface types differ across packages.
+type billingAlertLockerAdapter struct {
+	db *postgres.DB
+}
+
+func (a *billingAlertLockerAdapter) TryAdvisoryLock(ctx context.Context, key int64) (billingalert.Lock, bool, error) {
+	lock, ok, err := a.db.TryAdvisoryLock(ctx, key)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return lock, true, nil
 }
