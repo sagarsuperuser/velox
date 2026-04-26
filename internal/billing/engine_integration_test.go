@@ -52,6 +52,10 @@ func (a *subStoreAdapter) ActivateAfterTrial(ctx context.Context, tenantID, id s
 	return a.store.ActivateAfterTrial(ctx, tenantID, id, at)
 }
 
+func (a *subStoreAdapter) ListWithThresholds(ctx context.Context, livemode bool, limit int) ([]domain.Subscription, error) {
+	return a.store.ListWithThresholds(ctx, livemode, limit)
+}
+
 // pricingStoreAdapter wraps pricing.PostgresStore to implement billing.PricingReader
 type pricingStoreAdapter struct {
 	store *pricing.PostgresStore

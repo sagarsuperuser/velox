@@ -68,6 +68,64 @@ Two surfaces mirror this file:
   atomicity-on-rollback verifying the alert-state-update is rolled
   back when outbox enqueue fails, RLS isolation). Migration 0057.
 
+- **Billing thresholds — Stripe Tier 1 parity hard-cap mid-cycle finalize** (2026-04-26) —
+  the fourth flagship developer-experience surface alongside customer-usage,
+  recipes, and create_preview (per `docs/design-billing-thresholds.md`,
+  `docs/positioning.md` pillar 1.4). Configures a per-subscription
+  hard cap on running cycle subtotal (`amount_gte`, integer cents) and/or
+  per-subscription-item quantity caps (`item_thresholds[]` with
+  `usage_gte` as a NUMERIC(38,12) decimal string, ADR-005). When usage
+  pushes the running total past any configured cap, the engine emits an
+  early-finalize invoice with `billing_reason='threshold'` mid-cycle —
+  the same charge-and-dunning chain a natural-cycle invoice goes
+  through, just before the period boundary. `reset_billing_cycle` (default
+  true, matching Stripe) controls whether the cycle resets after fire so
+  the next bill starts from fire-time, or whether the original cycle
+  continues with residual usage. PATCH `/v1/subscriptions/{id}/billing-thresholds`
+  with `{amount_gte, reset_billing_cycle?, item_thresholds[]}` writes the
+  configuration; DELETE clears it. Rejects multi-currency subs at the
+  handler layer (it's the only layer with a PlanReader), terminal subs at
+  the service layer, foreign / duplicate / blank `subscription_item_id` and
+  non-numeric / negative `usage_gte` values across both layers — so the
+  store sees only validated input. Engine path: a new `Engine.ScanThresholds`
+  tick runs in the scheduler between auto-charge retry and the natural
+  cycle scan (Step 0.5), pulling candidates via
+  `subs.ListWithThresholds(ctx, livemode, batch)` then calling
+  `evaluateThresholds` over the partial cycle window. Reuses
+  `previewWithWindow` so the running subtotal is the same figure the cycle
+  would bill — preview math == invoice math by construction (same
+  guarantee as create_preview). Per-item caps sum quantities across each
+  item's plan meters via `usage.AggregateByPricingRules` (the same
+  priority+claim LATERAL JOIN the cycle scan and customer-usage already
+  use), so multi-dim tenants get the same canonical aggregation. Idempotency
+  seam: a partial unique index on
+  `invoices(tenant_id, subscription_id, billing_period_start) WHERE
+  billing_reason='threshold'` makes a re-tick after a transient failure a
+  no-op — the second `CreateInvoiceWithLineItems` lands on
+  `errs.ErrAlreadyExists` and short-circuits without losing the row.
+  Skips terminal/trialing subs and `pause_collection` rows so the scan
+  doesn't emit a draft that can't be charged. Webhook event
+  `subscription.threshold_crossed` fires before the optional cycle reset.
+  Snake-case JSON, always-array slices, decimal-as-string usage_gte
+  enforced by `TestWireShape_SnakeCase`. Tests: 12 unit cases on the
+  service validation (empty body, negative amount, terminal sub, foreign
+  / duplicate / blank `subscription_item_id`, non-numeric / negative
+  `usage_gte`, default + explicit `reset_billing_cycle`), 7 unit cases
+  on `evaluateThresholds` + `ScanThresholds` (amount-cross, item-cross,
+  below-amount, below-item, terminal-sub gate, paused-collection gate,
+  no-candidates fast path), 6 integration cases against real Postgres
+  (amount-cross fires early with cycle reset, item-usage-cross fires,
+  re-tick idempotent, below-threshold no-fire, no-config-skipped,
+  reset_billing_cycle=false keeps cycle), plus 3 wire-shape cases on
+  the input + domain JSON contracts. Migration `0056_subscription_billing_thresholds`
+  adds two columns on `subscriptions` (`billing_threshold_amount_gte`,
+  `billing_threshold_reset_cycle`), a `subscription_item_thresholds`
+  table with RLS, the `billing_reason` column on `invoices` with a
+  CHECK constraint covering `'subscription_cycle' | 'subscription_create' |
+  'manual' | 'threshold' | NULL`, and the partial unique index. Cycle-scan
+  invoices now stamp `billing_reason='subscription_cycle'` so the
+  threshold reason isn't an outlier.
+
 - **Create-preview endpoint — Stripe Tier 1 parity for `Invoice.upcoming`** (2026-04-26) —
   the third flagship developer-experience surface alongside customer-usage
   and recipes (per `docs/design-create-preview.md`, `docs/positioning.md`

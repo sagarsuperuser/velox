@@ -11,6 +11,24 @@ const (
 	InvoiceVoided    InvoiceStatus = "voided"
 )
 
+// InvoiceBillingReason classifies the trigger that produced an invoice.
+// Mirrors Stripe's invoice.billing_reason. Persisted as nullable on
+// the invoices table — legacy rows pre-FEAT-Week5c are NULL.
+//
+// SubscriptionCycle is the natural-cycle end invoice the cycle scan
+// emits at period boundaries. SubscriptionCreate is the prorated
+// initial invoice when a subscription starts mid-cycle. Manual is an
+// operator-initiated standalone invoice. Threshold is the hard-cap
+// early finalize fired by the threshold scan tick.
+type InvoiceBillingReason string
+
+const (
+	BillingReasonSubscriptionCycle  InvoiceBillingReason = "subscription_cycle"
+	BillingReasonSubscriptionCreate InvoiceBillingReason = "subscription_create"
+	BillingReasonManual             InvoiceBillingReason = "manual"
+	BillingReasonThreshold          InvoiceBillingReason = "threshold"
+)
+
 type InvoicePaymentStatus string
 
 const (
@@ -119,6 +137,13 @@ type Invoice struct {
 	SourcePlanChangedAt      *time.Time     `json:"source_plan_changed_at,omitempty"`
 	SourceSubscriptionItemID string         `json:"source_subscription_item_id,omitempty"`
 	SourceChangeType         ItemChangeType `json:"source_change_type,omitempty"`
+
+	// BillingReason classifies the trigger that produced this invoice.
+	// Stamped at create time and never mutated. Threshold-fired invoices
+	// (BillingReasonThreshold) participate in the partial unique index
+	// on (tenant, subscription, billing_period_start) so the threshold
+	// scan re-tick is idempotent under retry.
+	BillingReason InvoiceBillingReason `json:"billing_reason,omitempty"`
 }
 
 // ItemChangeType classifies per-item proration artifacts so the dedup index

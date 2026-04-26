@@ -69,6 +69,27 @@ type Store interface {
 	// — clearing an already-cleared row returns the unchanged subscription.
 	ClearPauseCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error)
 
+	// SetBillingThresholds writes the (amount_gte, reset_cycle, item_thresholds)
+	// triple onto the row in one transaction. Replaces the full item_thresholds
+	// set — the per-item rows for any item not in the new slice are deleted.
+	// Rejects rows in canceled/archived since a threshold on a terminated sub
+	// has no meaning. The service layer is responsible for validating that
+	// every subscription_item_id in t.ItemThresholds belongs to this
+	// subscription.
+	SetBillingThresholds(ctx context.Context, tenantID, id string, t domain.BillingThresholds) (domain.Subscription, error)
+
+	// ClearBillingThresholds nulls the amount_gte column and deletes every
+	// row in subscription_item_thresholds for this subscription. Idempotent
+	// — clearing on a sub that has no threshold returns the unchanged
+	// subscription.
+	ClearBillingThresholds(ctx context.Context, tenantID, id string) (domain.Subscription, error)
+
+	// ListWithThresholds returns subscriptions in the given livemode partition
+	// that have at least one threshold configured (amount or per-item) and are
+	// in active or trialing status. Used by the threshold scan tick. Result is
+	// hydrated with items + thresholds.
+	ListWithThresholds(ctx context.Context, livemode bool, limit int) ([]domain.Subscription, error)
+
 	// ActivateAfterTrial atomically transitions a subscription from
 	// 'trialing' to 'active'. Sets activated_at = `at` if the column is
 	// still NULL (preserves the original activation timestamp on

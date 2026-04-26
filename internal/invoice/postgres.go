@@ -33,7 +33,7 @@ const invCols = `id, tenant_id, customer_id, subscription_id, invoice_number, st
 	tax_provider, tax_calculation_id, COALESCE(tax_transaction_id,''),
 	tax_reverse_charge, tax_exempt_reason,
 	tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason,
-	COALESCE(public_token,'')`
+	COALESCE(public_token,''), COALESCE(billing_reason,'')`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -62,8 +62,8 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
-			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
+			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, billing_reason)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, inv.SubscriptionID, inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -79,6 +79,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 		postgres.NullableString(string(inv.SourceChangeType)),
 		inv.TaxProvider, inv.TaxCalculationID, inv.TaxReverseCharge, inv.TaxExemptReason,
 		string(taxStatus), postgres.NullableTime(inv.TaxDeferredAt), inv.TaxRetryCount, inv.TaxPendingReason,
+		postgres.NullableString(string(inv.BillingReason)),
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
@@ -772,8 +773,8 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
-			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
+			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, billing_reason)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, inv.SubscriptionID, inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -790,6 +791,7 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 		postgres.NullableString(string(inv.SourceChangeType)),
 		inv.TaxProvider, inv.TaxCalculationID, inv.TaxReverseCharge, inv.TaxExemptReason,
 		string(taxStatus), postgres.NullableTime(inv.TaxDeferredAt), inv.TaxRetryCount, inv.TaxPendingReason,
+		postgres.NullableString(string(inv.BillingReason)),
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
@@ -971,7 +973,7 @@ func scanInvDest(inv *domain.Invoice) []any {
 		&inv.TaxProvider, &inv.TaxCalculationID, &inv.TaxTransactionID,
 		&inv.TaxReverseCharge, &inv.TaxExemptReason,
 		(*string)(&inv.TaxStatus), &inv.TaxDeferredAt, &inv.TaxRetryCount, &inv.TaxPendingReason,
-		&inv.PublicToken,
+		&inv.PublicToken, (*string)(&inv.BillingReason),
 	}
 }
 
