@@ -14,6 +14,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 	"github.com/sagarsuperuser/velox/internal/testutil"
+	"github.com/sagarsuperuser/velox/internal/usage"
 )
 
 // newGDPRServiceForTest wires a GDPRService against real postgres stores.
@@ -25,6 +26,7 @@ func newGDPRServiceForTest(db *postgres.DB) *customer.GDPRService {
 		invoice.NewPostgresStore(db),
 		credit.NewPostgresStore(db),
 		subscription.NewPostgresStore(db),
+		usage.NewPostgresStore(db),
 		nil,
 	)
 }
