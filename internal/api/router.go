@@ -160,7 +160,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	subSvc := subscription.NewService(subStore, clk)
 	subH := subscription.NewHandler(subSvc)
 	// Proration deps are wired below after creditSvc + invoiceStore are available
-	usageH := usage.NewHandler(usage.NewService(usageStore), customerStore, pricingSvc)
+	usageSvc := usage.NewService(usageStore)
+	usageH := usage.NewHandler(usageSvc, customerStore, pricingSvc)
+	customerUsageH := usage.NewCustomerUsageHandler(
+		usage.NewCustomerUsageService(usageSvc, customerStore, subStore, pricingSvc),
+	)
 	settingsStore := tenant.NewSettingsStore(db)
 	creditStore := credit.NewPostgresStore(db)
 	creditSvc := credit.NewService(creditStore)
@@ -693,6 +697,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Mount("/customers/{id}/coupon", couponH.CustomerAssignmentRoutes(
 			auth.Require(auth.PermCustomerRead),
 			auth.Require(auth.PermCustomerWrite),
+		))
+		// Customer-scoped usage view — composes usage aggregation with
+		// customer / subscription / pricing reads. PermUsageRead so the
+		// dashboard's read-only secret-tier key can call it without
+		// inheriting customer write capability.
+		r.Mount("/customers/{id}/usage", customerUsageH.CustomerUsageRoutes(
+			auth.Require(auth.PermUsageRead),
 		))
 		r.With(auth.Require(auth.PermPricingRead)).Mount("/meters", pricingH.MeterRoutes())
 		// Meter-scoped pricing rule subtree. Mounted as a sibling of
