@@ -18,22 +18,23 @@
 
 | Migration | Up duration (5M events) | Hot-table lock | Risk |
 |-----------|-------------------------|----------------|------|
-| **0054 multi_dim_meters** | 53.5s | `usage_events` 53.5s | **CRITICAL** — full table rewrite of largest table (BIGINT→NUMERIC) + non-concurrent GIN index |
-| **0020 test_mode** | 14.5s | `invoices` 14.4s | **HIGH** — adds livemode column + drops/re-adds 13 UNIQUE constraints across 32 tables in one step |
+| **0054 multi_dim_meters — GIN index** | n/a (now `0062`) | **0ms** (CONCURRENTLY) | ✅ **FIXED** — moved to `0062_usage_events_gin_concurrent` via the new `velox:no-transaction` runner primitive; see "Already fixed" below |
+| **0054 multi_dim_meters — column rewrite** | 53.5s | `usage_events` ~53s | **DEFERRED** — `ALTER COLUMN quantity TYPE NUMERIC` is a full-table rewrite that needs ADD COLUMN + backfill machinery to do non-blocking. Velox is pre-launch; tenants accumulate <1M usage_events. Re-evaluate during Phase 3 cutover if any tenant crosses 1M. Recipe still below. |
+| **0020 test_mode** | 14.5s | `invoices` 14.4s | **DEFERRED** — `ADD COLUMN livemode` is fast-default; the slow part is 13 `DROP CONSTRAINT … ADD UNIQUE` swaps that build new indexes under AccessExclusiveLock. Production-safe rework is `CREATE UNIQUE INDEX CONCURRENTLY` then attach via `ALTER TABLE … ADD CONSTRAINT … USING INDEX` — pattern-identical to the GIN fix in `0062`. Pre-launch and currently inert (zero rows in 32 tables that would rebuild); pull forward to a follow-up lane before Phase 3 if any of those 32 tables crosses 100k rows. |
 | **0015 fk_explicit_restrict** | ~~8.9s~~ → 0.26s (small) | ~~`audit_log` 8.8s~~ → **0ms** | ✅ **FIXED** — rewritten to NOT VALID + VALIDATE; see "Already fixed" below |
 | **0017 usage_events_origin** | 1.3s | (no lock observed >50ms) | MEDIUM — fast-default but CHECK validates every row |
 | **0014 tax_rate_bp_bigint** | 0.75s | (no lock observed >50ms) | LOW — comment claims metadata-only, actual is small but non-zero |
 
-The down direction is symmetrically painful: rolling back 0054 took 49.8s and
+The down direction is symmetrically painful: rolling back the original 0054 took 49.8s and
 held an `AccessExclusiveLock` on `meter_pricing_rules` for the entire window.
+After this PR, the GIN portion's down (`DROP INDEX CONCURRENTLY`) holds no
+AccessExclusiveLock; the column-revert is still in scope as deferred.
 
-**Net effect on production:** running these migrations against a real database
-with ≥5M usage_events would freeze writes to `usage_events` for ~minute (0054)
-and to `invoices` for ~15s (0020). 0015 was the third blocker (9s lock on
-`audit_log`) and has now been fixed (NOT VALID + VALIDATE rewrite, lock drops
-to 0ms — see "Already fixed" below). Before Phase 3, **0054 and 0020 must
-still be reworked into multi-step non-blocking variants** (recipes below).
-The remaining 53 migrations are safe.
+**Net effect on production:** the GIN portion of 0054 (was: ~minute lock on
+`usage_events`) is fixed by `0062` — concurrent ingest is no longer blocked.
+0054's column rewrite and 0020's UNIQUE swaps remain deferred (rationale per
+row above). 0015 was the third blocker and was fixed in PR #43. The remaining
+58 migrations are safe.
 
 ---
 
@@ -116,6 +117,49 @@ hardware.
 
 ### Already fixed
 
+#### 0054 GIN portion — `usage_events.properties` — ✅ FIXED (2026-04-26)
+
+The original 0054 created the GIN index in-line:
+
+```sql
+CREATE INDEX idx_usage_events_properties_gin
+    ON usage_events USING GIN (properties);
+```
+
+That non-CONCURRENTLY shape held an `AccessExclusiveLock` on `usage_events`
+for the full duration of the index build (one chunk of the 53.5s figure
+above; the rest was the column rewrite). On a populated production
+database that means ingestion freezes while the index builds.
+
+The retrofit ships in two pieces:
+
+1. **Runner primitive — `-- velox:no-transaction` header.** A migration
+   file may opt out of the runner's transaction wrap by carrying that
+   exact line in the first 5 lines. The runner detects the header,
+   pulls the file out of golang-migrate's library path, and applies
+   each statement via `db.ExecContext` so PostgreSQL runs it in
+   autocommit. The `pg_advisory_lock` golang-migrate uses for boot-time
+   ordering is held across the no-tx apply too, so concurrent replicas
+   still serialize correctly. Implementation in
+   `internal/platform/migrate/migrate.go`; unit + integration tests in
+   the same package.
+2. **0062_usage_events_gin_concurrent.** A new migration with the
+   header, body `CREATE INDEX CONCURRENTLY IF NOT EXISTS …`. The
+   `IF NOT EXISTS` is required so already-deployed instances that ran
+   the pre-retrofit shape of 0054 (and therefore have the index from
+   then) treat 0062 as a no-op metadata bump. Down also uses
+   CONCURRENTLY for the symmetric `DROP INDEX`.
+
+The original 0054 was edited in place to remove the index creation —
+already-deployed instances skip 0062 because of `IF NOT EXISTS`, and
+fresh databases pick the index up from 0062. The roundtrip test in
+`internal/platform/migrate/roundtrip_test.go` verifies up+down+up
+produces an identical schema. Safety-harness re-run at the small preset
+records `up,62,*ms,0,,` — no `AccessExclusiveLock` observed on
+`usage_events`. Process notes: this is a mechanical fix
+identical in spirit to the 0015 NOT VALID + VALIDATE rewrite;
+pattern-reusable for any future GIN/BRIN/B-tree concurrency need.
+
 #### 0015 — `fk_explicit_restrict` — ✅ FIXED (2026-04-26)
 
 Originally drops + re-adds every FK in the schema as `ON DELETE RESTRICT`.
@@ -142,16 +186,14 @@ runs inside golang-migrate's outer transaction.
 
 ### Top risks
 
-#### 0054 — `multi_dim_meters` — CRITICAL
+#### 0054 — `multi_dim_meters` — column rewrite — DEFERRED
 
-Two operations on `usage_events`, the largest table in the schema:
+After the GIN-portion fix lands (see "Already fixed" above), 0054 reduces
+to one operation on `usage_events`:
 
 ```sql
 ALTER TABLE usage_events
     ALTER COLUMN quantity TYPE NUMERIC(38, 12) USING quantity::numeric;
-
-CREATE INDEX idx_usage_events_properties_gin
-    ON usage_events USING GIN (properties);
 ```
 
 - **Up duration.** 53.5s at 5M rows. AccessExclusive on `usage_events`
@@ -161,28 +203,35 @@ CREATE INDEX idx_usage_events_properties_gin
 - **Why it hurts.** `ALTER COLUMN ... TYPE NUMERIC USING ::numeric` is a
   full table rewrite — Postgres must rewrite every row, every index, every
   toast pointer. Concurrent writes are blocked. The migration's own comment
-  (line 30) acknowledges this:
+  acknowledges this:
   > _quantity column rename: BIGINT -> NUMERIC is a metadata-only change
   > when no rows exist (pre-launch), and a rewrite when rows exist._
-  This was a conscious "we're pre-launch" decision. After Phase 3 we are
-  not pre-launch and the migration must be reworked.
-- **Recommended fix (production-safe variant).** Three migrations:
+  This was a conscious "we're pre-launch" decision and remains valid
+  for now: Velox is local-only and `usage_events` carries near-zero
+  rows in dev/test environments.
+- **Why DEFERRED.** Fixing this requires backfill machinery — an
+  application-level batch loop that walks `usage_events` in chunks and
+  writes through to a shadow column. We don't have that infrastructure
+  yet, and per the project's no-speculative-backfill rule
+  (`feedback_no_speculative_backfill.md`) we don't build it before a
+  real tenant has rows that justify it. **Re-evaluate during Phase 3
+  cutover** if any tenant accumulates >1M usage_events before any other
+  tenant. At that point this becomes its own slice with the recipe
+  below as the spec.
+- **Recommended fix (production-safe variant, when needed).** Three
+  migrations + one backfill cmd:
   1. **0054a** — `ADD COLUMN quantity_decimal NUMERIC(38, 12)` (no rewrite).
-  2. **0054b** — Backfill loop in application code: batches of 10k rows
+  2. **backfill** — Application-level loop: batches of 10k rows
      `UPDATE usage_events SET quantity_decimal = quantity::numeric WHERE
      quantity_decimal IS NULL LIMIT 10000` until zero rows match.
-  3. **0054c** — Once backfill is complete and verified:
+  3. **0054b** — Once backfill is complete and verified:
      `ALTER TABLE usage_events RENAME COLUMN quantity TO quantity_legacy;
       ALTER TABLE usage_events RENAME COLUMN quantity_decimal TO quantity;
       ALTER TABLE usage_events ALTER COLUMN quantity SET NOT NULL;`
      (the `SET NOT NULL` is a constraint validation, not a rewrite, and is
      fast on a column where every row has a value already).
-- **GIN index fix.** `CREATE INDEX CONCURRENTLY idx_usage_events_properties_gin`
-  — must run outside a transaction, so this requires either a "no-tx"
-  migration flag (golang-migrate supports this via a header comment) or
-  applying it with a small custom runner. CONCURRENTLY does not block writes.
 
-#### 0020 — `test_mode` — HIGH
+#### 0020 — `test_mode` — DEFERRED
 
 ```sql
 ALTER TABLE api_keys ADD COLUMN livemode BOOLEAN NOT NULL DEFAULT true;
@@ -200,12 +249,21 @@ ALTER TABLE customers ADD UNIQUE (tenant_id, livemode, external_id);
   builds a new index, which is a non-concurrent index build that holds
   `AccessExclusiveLock` for the duration. Stacked across 13 tables, this
   adds up.
-- **Recommended fix.** Split into two migrations:
+- **Why DEFERRED.** Same as 0054's column rewrite: pre-launch and
+  currently inert (zero rows in 32 tables that would rebuild). The fix
+  itself is mechanical — pattern-identical to the GIN retrofit shipped
+  here for 0062 — but doing it before there are real tenants with real
+  rows would be speculative. Pull forward to a follow-up lane before
+  Phase 3 if any of the 32 tables crosses 100k rows.
+- **Recommended fix (production-safe variant, when needed).** Split
+  into two migrations:
   1. **0020a** — All `ADD COLUMN livemode BOOLEAN NOT NULL DEFAULT true`
      (fast-default metadata-only on every table). RLS-policy rewrites
      also go here (DDL on `pg_policy`, no table lock).
-  2. **0020b** — Per UNIQUE swap, a separate migration:
+  2. **0020b** — Per UNIQUE swap, a separate migration with the
+     `velox:no-transaction` header (the same primitive 0062 uses):
      ```
+     -- velox:no-transaction
      CREATE UNIQUE INDEX CONCURRENTLY new_uniq_idx
          ON customers (tenant_id, livemode, external_id);
      ALTER TABLE customers
@@ -214,11 +272,8 @@ ALTER TABLE customers ADD UNIQUE (tenant_id, livemode, external_id);
              UNIQUE USING INDEX new_uniq_idx;
      ```
      `CREATE INDEX CONCURRENTLY` does not block writes. The DROP+ADD
-     CONSTRAINT step is fast-metadata once the index exists.
-
-  The 13 swaps don't all need separate migrations — group them in one
-  migration that uses `CREATE UNIQUE INDEX CONCURRENTLY` + ATTACH. CI
-  remains green; production rollout is an order of magnitude safer.
+     CONSTRAINT step is fast-metadata once the index exists. Group
+     all 13 swaps in one no-tx migration.
 
 ### Medium risks
 
@@ -366,10 +421,15 @@ is overkill except as a one-off pre-launch sanity check.
 
 ## Recommended follow-ups (separate PR, not this one)
 
-1. **0054 rework** — split the `usage_events.quantity` rewrite + GIN index
-   into 0058a/b/c per the recipe above. **Single most important fix.**
-2. **0020 rework** — split into 0059a (column adds, fast-default) +
-   0059b (per-UNIQUE swap via CREATE INDEX CONCURRENTLY).
+1. ~~**0054 GIN index**~~ — done via `0062_usage_events_gin_concurrent`
+   plus the new `velox:no-transaction` runner primitive (this PR). See
+   "Already fixed" above. The matching column rewrite (BIGINT→NUMERIC)
+   stays DEFERRED — see the 0054 column-rewrite section above.
+2. **0020 rework** — DEFERRED until a real tenant has rows in any of the
+   32 tables that rebuild. Recipe is mechanical: split into 0020a
+   (column adds, fast-default) + 0020b (per-UNIQUE swap via
+   `velox:no-transaction` + `CREATE UNIQUE INDEX CONCURRENTLY`, then
+   attach via `ALTER TABLE … ADD CONSTRAINT … USING INDEX`).
 3. ~~**0015 rework**~~ — done in-place via NOT VALID + VALIDATE
    (PR [#43](https://github.com/sagarsuperuser/velox/pull/43)). See
    "Already fixed" above.
