@@ -400,3 +400,41 @@ Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. 
 - **Open for human review:**
   - PR to be opened on `feat/backend-week5d-billing-alerts` once final commit lands.
 - **Next session (Track A):** drive PR to green, self-merge per authorization (CI green AND `TestWireShape_SnakeCase` + integration suite — both conditions met), then queue the next blocker per 90-day plan.
+
+---
+
+## 2026-04-26 (Sun) — Track A: billing thresholds backend (Week 5c)
+
+### Track A
+- **Branch:** `feat/backend-week5c-billing-thresholds` (off `main` post-create_preview merge).
+- **Goal:** close the Stripe Tier 1 parity gap on **billing thresholds** (Stripe's `subscription.billing_thresholds`). Mid-cycle hard-cap finalize: when usage crosses a configured `amount_gte` (cents) or per-item `usage_gte` (decimal), engine emits an early-finalize invoice with `billing_reason='threshold'` instead of waiting for the cycle boundary. Same charge-and-dunning flow as a natural-cycle invoice — just earlier. Configurable `reset_billing_cycle` (default true, Stripe-parity) controls whether the cycle resets after fire.
+- **Shipped (7 commits):**
+  - **`docs/design-billing-thresholds.md`** — RFC with wire shape (snake-case, `usage_gte` as JSON string, always-array `item_thresholds`), engine path, idempotency seam (partial unique index on `invoices(tenant, sub, billing_period_start) WHERE billing_reason='threshold'`), error codes, test plan.
+  - **Migration `0056_subscription_billing_thresholds`** — two columns on `subscriptions` (`billing_threshold_amount_gte`, `billing_threshold_reset_cycle`), `subscription_item_thresholds` table with RLS, `billing_reason` column on `invoices` + CHECK constraint covering `subscription_cycle | subscription_create | manual | threshold | NULL`, partial unique index for idempotency.
+  - **`internal/domain` types** — `SubscriptionItemThreshold`, `BillingThresholds`, `InvoiceBillingReason` enum (`subscription_cycle | subscription_create | manual | threshold`), `EventSubscriptionThresholdCrossed = "subscription.threshold_crossed"`.
+  - **`internal/subscription` store + service + handler** — `SetBillingThresholds`, `ClearBillingThresholds`, `ListWithThresholds` on the `Store` interface; postgres impls with `hydrateThresholds` over the new aux table; service rejects empty body / negative amount / terminal sub / foreign / duplicate / blank `subscription_item_id` / non-numeric / negative `usage_gte`; handler exposes `PUT /v1/subscriptions/{id}/billing-thresholds` and `DELETE /v1/subscriptions/{id}/billing-thresholds`. Multi-currency rejection lives at the handler (only layer with a `PlanReader`).
+  - **`internal/billing/threshold_scan.go`** — `Engine.ScanThresholds` entry, `Engine.scanOneThreshold` per-sub gate (skips terminal/trialing/paused-collection), `Engine.evaluateThresholds` reuses `previewWithWindow` over the partial cycle for running-subtotal + line items + per-item-cap quantity sum via `usage.AggregateByPricingRules`, `Engine.fireThreshold` composes the same coupon → tax → credit → auto-charge chain as `billSubscription` and stamps `BillingReason: domain.BillingReasonThreshold`. Idempotent skip on `errs.ErrAlreadyExists` from the partial unique index.
+  - **`internal/billing/scheduler.go` Step 0.5** — `s.engine.ScanThresholds(ctx, s.batch)` runs between auto-charge retry and the natural cycle scan, so a threshold-fired invoice and (when `reset_billing_cycle=true`) the cycle advance both land on the same tick.
+  - **`internal/invoice/postgres.go`** — `billing_reason` column read + write through `Create` and `CreateWithLineItems`; `invCols` extended; `scanInvDest` extended.
+  - **Cycle-scan invoices now stamp `BillingReason: domain.BillingReasonSubscriptionCycle`** so the threshold reason isn't an outlier — every invoice now has a non-null reason after this lands.
+- **Tests (all green; full suite: `go test -p 1 ./... -short=false`):**
+  - 12 unit cases on `Service.SetBillingThresholds` validation paths + 2 cases on `ClearBillingThresholds` idempotency.
+  - 7 unit cases on `evaluateThresholds` + `ScanThresholds` (amount-cross, item-cross, below-amount, below-item, terminal-sub gate, paused-collection gate, no-candidates fast path).
+  - 6 integration cases against real Postgres (amount-cross fires early with cycle reset, item-usage-cross fires, re-tick idempotent via partial unique index, below-threshold no-fire, no-config-skipped, reset_billing_cycle=false keeps cycle).
+  - 3 wire-shape cases in `TestWireShape_SnakeCase` (input shape, domain shape, empty `item_thresholds[]` always-array).
+  - All pre-existing tests pass.
+- **Decisions made inline (per `feedback_feat8_autonomy`):**
+  - **Reuse `previewWithWindow` for the running subtotal:** preview math == invoice math by construction (same guarantee as create_preview). The threshold scan and cycle scan agree on what "running total" means.
+  - **Per-item caps sum across each item's plan meters:** Velox items don't have Stripe's 1:1 item-to-price model — items reference a plan, plans reference meters. So per-item cap = sum of all meter quantities under the item's plan during the partial cycle. Same priority+claim resolver via `AggregateByPricingRules`.
+  - **Idempotency seam = partial unique index, not application-level lock:** keeps the invariant in the schema; a re-tick after a transient crash lands on `errs.ErrAlreadyExists` and short-circuits without losing the row.
+  - **Multi-currency rejection at handler, not service:** service stays currency-agnostic; the handler is the only layer with a `PlanReader` to look up the items' plans' currencies.
+  - **`reset_billing_cycle` defaults to `true` in service when caller omits the field** (Stripe parity, matches the column default in migration).
+- **Test status:**
+  - `go test ./... -short`: pass (54 packages).
+  - `go test -p 1 ./... -short=false`: pass (full integration suite).
+- **Blocking Track B on:** nothing.
+- **Track B can pick up:**
+  - **Billing thresholds UI** — render `subscription.billing_thresholds` on `SubscriptionDetail.tsx` and add a "Configure thresholds" dialog calling `PATCH /v1/subscriptions/{id}/billing-thresholds`. The wire shape is locked by `TestWireShape_SnakeCase` (snake_case keys, `usage_gte` as decimal string, always-array `item_thresholds`).
+  - **Threshold-crossed timeline event** — `subscription.threshold_crossed` webhook is dispatched on every fire; surface in the dashboard activity feed.
+- **Open for human review:** PR to be opened on `feat/backend-week5c-billing-thresholds` once final commit lands.
+- **Next session (Track A):** drive PR to green, self-merge per authorization (CI green AND `TestWireShape_SnakeCase` in suite — both conditions met), then continue Week 5d (billing alerts) — sibling agent already running on `feat/backend-week5d-billing-alerts` with migration 0057.

@@ -32,6 +32,20 @@ const entries: {
   },
   {
     date: '2026-04-26',
+    title: 'Billing thresholds — Stripe Tier 1 hard-cap mid-cycle finalize',
+    tag: 'feature',
+    body: 'PATCH /v1/subscriptions/{id}/billing-thresholds configures a per-subscription hard cap on the running cycle subtotal (amount_gte, integer cents) and/or per-item quantity caps (item_thresholds[] with usage_gte as a NUMERIC(38,12) decimal string). When usage pushes the running total past any configured cap, the engine emits an early-finalize invoice with billing_reason=threshold mid-cycle — same charge-and-dunning chain a natural-cycle invoice goes through, just before the period boundary. reset_billing_cycle (default true, matching Stripe) controls whether the cycle resets after fire so the next bill starts from fire-time, or whether the original cycle continues with residual usage.',
+    bullets: [
+      'Engine path reuses the create_preview previewWithWindow over the partial cycle — running subtotal is the same figure the cycle scan would bill (preview math == invoice math, by construction).',
+      'Per-item caps sum quantities across each item\'s plan meters via usage.AggregateByPricingRules — the same priority+claim LATERAL JOIN the cycle scan and customer-usage already use, so multi-dim tenants get the canonical aggregation.',
+      'Idempotency seam: a partial unique index on invoices(tenant, sub, billing_period_start) WHERE billing_reason=threshold makes a re-tick after a transient failure a no-op — the second insert lands on errs.ErrAlreadyExists and short-circuits without losing the row.',
+      'Skips terminal/trialing subs and pause_collection rows so the scan doesn\'t emit a draft that can\'t be charged. Webhook event subscription.threshold_crossed fires before the optional cycle reset.',
+      'Service rejects multi-currency subs at the handler layer (only layer with a PlanReader), terminal subs at the service layer, and foreign / duplicate / blank subscription_item_id and non-numeric / negative usage_gte across both — the store sees only validated input.',
+      '12 service-validation unit cases + 7 evaluateThresholds/ScanThresholds unit cases + 6 integration cases against real Postgres (amount-cross fires early, item-cross fires, re-tick idempotent, below-threshold no-fire, no-config-skipped, reset_billing_cycle=false) + 3 wire-shape cases on JSON contracts.',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Create-preview endpoint — Stripe Tier 1 invoice.upcoming parity',
     tag: 'feature',
     body: 'POST /v1/invoices/create_preview returns the same totals the cycle scan would bill — without writing a row. Multi-dim aware by construction: the preview path runs through usage.AggregateByPricingRules (LATERAL JOIN with priority + claim across the five aggregation modes), so a meter with cached-input vs uncached vs output rules previews into the same buckets the invoice will land in. Mounted under PermInvoiceRead. Both the in-app debug surface (/v1/billing/preview/{id}) and the new Tier 1 surface return one shape so TypeScript clients and dashboards share one type.',
