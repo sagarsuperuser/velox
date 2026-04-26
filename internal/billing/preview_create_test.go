@@ -161,10 +161,10 @@ func TestPickPrimarySubscription(t *testing.T) {
 	lateEnd := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name     string
-		subs     []domain.Subscription
-		wantOk   bool
-		wantID   string
+		name   string
+		subs   []domain.Subscription
+		wantOk bool
+		wantID string
 	}{
 		{
 			name:   "empty input returns false",
