@@ -5,8 +5,88 @@ metadata:
   labels:
     {{- include "velox.labels" . | nindent 4 }}
 data:
-  RUN_MIGRATIONS_ON_BOOT: {{ .Values.config.runMigrations | quote }}
-  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  # ---- Core runtime ----
   APP_ENV: {{ .Values.config.appEnv | quote }}
-  PORT: "8080"
-  CORS_ALLOWED_ORIGINS: {{ .Values.config.corsOrigins | quote }}
+  PORT: {{ .Values.config.port | quote }}
+  RUN_MIGRATIONS_ON_BOOT: {{ .Values.config.runMigrations | quote }}
+  {{- with .Values.config.corsAllowedOrigins }}
+  CORS_ALLOWED_ORIGINS: {{ . | quote }}
+  {{- end }}
+
+  # ---- Database — split shape (host/port/name/user). Password is in
+  # the Secret. URL form is also handled in the Secret to keep all
+  # password-bearing strings out of the ConfigMap entirely.
+  {{- if .Values.externalDatabase.host }}
+  DB_HOST: {{ .Values.externalDatabase.host | quote }}
+  DB_PORT: {{ .Values.externalDatabase.port | quote }}
+  DB_NAME: {{ .Values.externalDatabase.name | quote }}
+  DB_USER: {{ .Values.externalDatabase.user | quote }}
+  {{- with .Values.config.db.sslMode }}
+  DB_SSLMODE: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+
+  # ---- DB pool tuning (optional — empty falls back to binary defaults)
+  {{- with .Values.config.db.maxOpenConns }}
+  DB_MAX_OPEN_CONNS: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.db.maxIdleConns }}
+  DB_MAX_IDLE_CONNS: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.db.connMaxLifetimeMin }}
+  DB_CONN_MAX_LIFETIME_MIN: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.db.connMaxIdleTimeSec }}
+  DB_CONN_MAX_IDLE_TIME_SEC: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.db.pingTimeoutSec }}
+  DB_PING_TIMEOUT_SEC: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.db.queryTimeoutMs }}
+  DB_QUERY_TIMEOUT_MS: {{ . | quote }}
+  {{- end }}
+
+  # ---- Public URLs rendered into emails / portal redirects
+  {{- with .Values.config.hostedInvoiceBaseUrl }}
+  HOSTED_INVOICE_BASE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.paymentUpdateUrl }}
+  PAYMENT_UPDATE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.paymentUpdateReturnUrl }}
+  PAYMENT_UPDATE_RETURN_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.customerPortalUrl }}
+  CUSTOMER_PORTAL_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.stripeCheckoutSuccessUrl }}
+  STRIPE_CHECKOUT_SUCCESS_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.stripeCheckoutCancelUrl }}
+  STRIPE_CHECKOUT_CANCEL_URL: {{ . | quote }}
+  {{- end }}
+
+  # ---- Dashboard URLs for outbound emails
+  {{- with .Values.config.dashboardUrl }}
+  VELOX_DASHBOARD_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.dashboardPasswordResetUrl }}
+  VELOX_DASHBOARD_PASSWORD_RESET_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.dashboardInviteUrl }}
+  VELOX_DASHBOARD_INVITE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.cookieDomain }}
+  VELOX_COOKIE_DOMAIN: {{ . | quote }}
+  {{- end }}
+
+  # ---- Operational tunables
+  {{- with .Values.config.billingAlertsInterval }}
+  VELOX_BILLING_ALERTS_INTERVAL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.otelEndpoint }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.otelServiceName }}
+  OTEL_SERVICE_NAME: {{ . | quote }}
+  {{- end }}

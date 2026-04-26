@@ -1,0 +1,34 @@
+# Velox terraform AWS module — example tfvars
+#
+# Copy to terraform.tfvars and fill in the required values.
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Sensitive values (db_password) are tagged sensitive=true so they're
+# redacted in plan output, but they're still readable in
+# terraform.tfvars itself — keep that file out of git.
+
+# Required ----------------------------------------------------
+
+region      = "us-east-1"
+db_password = "replace-me-with-a-long-random-string"
+key_name    = "velox-dev" # an existing AWS EC2 key pair name
+
+# Recommended overrides ---------------------------------------
+
+# Replace with the operator's office IP / VPN range. Default is a
+# documentation-only block so apply will fail closed.
+ssh_allowed_cidrs = ["203.0.113.42/32"]
+
+# Velox image to deploy. Pin in production; "0.1.0" is the chart
+# default.
+velox_image_tag = "0.1.0"
+
+# Optional overrides ------------------------------------------
+
+# vpc_cidr                 = "10.30.0.0/16"
+# ec2_instance_type        = "t3.small"
+# rds_instance_class       = "db.t3.small"
+# rds_allocated_storage_gb = 20
+# postgres_engine_version  = "16.4"
+# environment              = "dev"
+# tags                     = { CostCenter = "engineering" }

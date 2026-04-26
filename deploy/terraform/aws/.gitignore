@@ -1,0 +1,11 @@
+# Local state and plan caches — never committed.
+# (Per HashiCorp, .terraform.lock.hcl IS committed so we don't ignore it.)
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan
+crash.log
+
+# Real values — keep secrets out of git.
+terraform.tfvars
+*.auto.tfvars
