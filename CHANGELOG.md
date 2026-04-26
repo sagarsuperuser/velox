@@ -68,6 +68,59 @@ Two surfaces mirror this file:
   form — one consistent shape lets dashboards iterate without branching
   on cardinality.
 
+- **Recipes picker UI — discoverable pricing installation** (2026-04-26) —
+  the dashboard surface for the recipes feature (Track A backend
+  entry below). New `/recipes` page (`web-v2/src/pages/Recipes.tsx`)
+  lists the five built-ins as cards with a creates-summary chip
+  strip (`{meters, rating_rules, pricing_rules, plans,
+  dunning_policies, webhook_endpoints}`); each card opens a
+  configure dialog that renders the overrides form from
+  `recipe.overridable[]` (string / number / boolean fields with
+  `enum`, `max_length`, and `pattern` honored). Preview button
+  posts `/v1/recipes/{key}/preview` and renders the would-be graph
+  inline (truncated past 5 items per object class) plus any
+  warnings; Install posts `/v1/recipes/instantiate` and navigates
+  to the first `created_objects.plan_ids` so the new catalog is
+  one click away. Sidebar entry added under Configuration
+  (`Sparkles` icon) and the onboarding wizard's step 1
+  ("Pick a pricing template") now fetches `/v1/recipes` live and
+  deep-links into the picker. New TS types in
+  `web-v2/src/lib/api.ts`: `Recipe`, `RecipeDetail`,
+  `RecipeOverrideSchema` (`{key, type, default?, enum?, max_length?,
+  pattern?}` — collapsed from the design's `string[]` +
+  `Record<key, schema>` split into a single self-describing array,
+  matches PR #25's actual wire shape), `RecipePreview`,
+  `RecipeInstance`, `RecipeCreatesSummary`. Falls back to an empty
+  list when the backend endpoint isn't reachable so the page stays
+  usable on pre-recipes builds.
+
+- **Multi-dimensional meter dashboard surfaces** (2026-04-26) — the
+  operator-side complement to the Week 2 multi-dim meters engine
+  (Track A entry below). `web-v2/src/pages/MeterDetail.tsx` gets a
+  "Dimension-matched rules" card: chips-table over each rule's
+  `dimension_match` keys, the aggregation mode (one of `sum`,
+  `count`, `last_during_period`, `last_ever`, `max`), priority,
+  and rating-rule reference. "Add rule" dialog walks the operator
+  through a dynamic key/value dimension builder + select for the
+  five aggregation modes + rating-rule selector + priority input;
+  delete is gated through the `TypedConfirmDialog` (type
+  `delete` to confirm — same pattern as void-invoice). The
+  default-rule card was renamed "Default pricing rule" with a
+  fallback-explainer subtitle so operators understand the
+  priority+claim relationship. `web-v2/src/pages/UsageEvents.tsx`
+  gets a conditional `Dimensions` column (only shown when at least
+  one event in view carries them, or a filter is active), a
+  `key=value` text filter that flows through to the
+  `dimensions=` query param, and a CSV export that now carries the
+  dimensions JSON column. The decimal-precision `quantity` field
+  is now read as a string-encoded NUMERIC end-to-end —
+  `eventQuantity()` coerces to `number` only at chart math; raw
+  display preserves trailing-zero precision (`1234.567890123456`).
+  TS types added: `MeterPricingRule`, `MeterAggregationMode` union,
+  plus `api.{listMeterPricingRules, createMeterPricingRule,
+  deleteMeterPricingRule}` client methods (all hyphen paths,
+  matching the rest of `/v1/*`).
+
 - **Pricing recipes — one-call billing setup** (2026-04-26) — the
   developer-experience flagship that turns Week 2's multi-dim meter
   engine into a 30-second quickstart (per `docs/design-recipes.md`,

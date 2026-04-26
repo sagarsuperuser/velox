@@ -32,6 +32,19 @@ const entries: {
   },
   {
     date: '2026-04-26',
+    title: 'Recipes — point-and-click pricing installation',
+    tag: 'feature',
+    body: 'The recipes feature gets a discoverable UI. /recipes lists the five built-in templates with a creates-summary on each card; the configure dialog walks operators through overrides → preview → install in three clicks. Same atomic POST /v1/recipes/{key}/instantiate under the hood.',
+    bullets: [
+      'Recipe cards show key + version, summary, and a "creates" chip strip (e.g. 1 meter · 9 pricing rules · 1 plan). An "Installed" badge surfaces tenants who have already instantiated.',
+      'Configure dialog renders the overrides form from the recipe\'s own schema — string / number / boolean inputs, with enum, max_length, and pattern honored from the YAML.',
+      'Preview button hits POST /v1/recipes/{key}/preview and renders generated objects + warnings inline so the operator sees exactly what will land before committing.',
+      'Install navigates to the first created plan so the new catalog is one click away.',
+      'Sidebar entry under Configuration with the Sparkles icon. Onboarding wizard step 1 also fetches /v1/recipes live and deep-links into the picker.',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Recipes API wire shape — snake_case + creates summary + preview wrapper',
     tag: 'fix',
     body: 'Three drifts between the recipes API design doc and the Week 3 implementation are fixed so the picker UI lights up cleanly: PascalCase JSON keys are now snake_case (matching the rest of /v1/*), each list/detail entry carries a creates: {meters, rating_rules, pricing_rules, plans, dunning_policies, webhook_endpoints} count summary, and POST /v1/recipes/{key}/preview now wraps its response as {key, version, objects: {…}, warnings: []} per the spec. Data shape only — no behavior change to instantiate / uninstall.',
@@ -40,6 +53,19 @@ const entries: {
       'GET /v1/recipes and GET /v1/recipes/{key} now include a creates summary so the picker UI renders "1 meter · 9 pricing rules · monthly billing" chips without a follow-up preview call.',
       'POST /v1/recipes/{key}/preview returns {key, version, objects: {meters, rating_rules, pricing_rules, plans, dunning_policies, webhook_endpoints}, warnings: []} per the spec — previously inlined every array at the top level. dunning_policies and webhook_endpoints are 0-or-1-length slices for uniform iteration.',
       'New TestWireShape_SnakeCase regression test pins all three contracts so future drift trips CI before reaching the dashboard.',
+    ],
+  },
+  {
+    date: '2026-04-26',
+    title: 'Multi-dimensional meters in the dashboard',
+    tag: 'feature',
+    body: 'Two operator surfaces light up the multi-dim meter engine. Meter detail pages now expose dimension-matched pricing rules end-to-end, and the usage events log surfaces dimensions inline with key=value chips and a dimension filter. Operators can build, inspect, and audit AI-style multi-rule pricing without touching the API.',
+    bullets: [
+      'Meter detail (/meters/:id) gets a "Dimension-matched rules" section with a chips-table view of each rule\'s dimension_match, aggregation mode, priority, and rating rule.',
+      '"Add rule" dialog walks operators through dimension key/value pairs, rating-rule selector, and one of five aggregation modes (sum, count, last_during_period, last_ever, max). Typed-confirm delete on each rule.',
+      'Usage events (/usage) gets a Dimensions column that conditionally appears when at least one event in view carries dimensions. New key=value text filter narrows the list.',
+      'CSV export now includes the full dimensions JSON column, and stats / meter-breakdowns read the decimal-precision quantity field with no truncation.',
+      'Default pricing rule on each meter is now labeled clearly as the fallback for events not claimed by a higher-priority dimension-matched rule.',
     ],
   },
   {
