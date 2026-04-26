@@ -240,20 +240,20 @@ func (h *Handler) replayEventV2(w http.ResponseWriter, r *http.Request) {
 //
 // Snake_case throughout — pinned by TestWireShape_WebhookEventDeliveries.
 type DeliveryView struct {
-	ID                    string     `json:"id"`
-	EventID               string     `json:"event_id"`
-	EndpointID            string     `json:"endpoint_id"`
-	AttemptNo             int        `json:"attempt_no"`
-	Status                string     `json:"status"`
-	StatusCode            int        `json:"status_code"`
-	ResponseBody          string     `json:"response_body"`
-	Error                 string     `json:"error"`
-	RequestPayloadSHA256  string     `json:"request_payload_sha256"`
-	AttemptedAt           time.Time  `json:"attempted_at"`
-	CompletedAt           *time.Time `json:"completed_at"`
-	NextRetryAt           *time.Time `json:"next_retry_at"`
-	IsReplay              bool       `json:"is_replay"`
-	ReplayEventID         string     `json:"replay_event_id"`
+	ID                   string     `json:"id"`
+	EventID              string     `json:"event_id"`
+	EndpointID           string     `json:"endpoint_id"`
+	AttemptNo            int        `json:"attempt_no"`
+	Status               string     `json:"status"`
+	StatusCode           int        `json:"status_code"`
+	ResponseBody         string     `json:"response_body"`
+	Error                string     `json:"error"`
+	RequestPayloadSHA256 string     `json:"request_payload_sha256"`
+	AttemptedAt          time.Time  `json:"attempted_at"`
+	CompletedAt          *time.Time `json:"completed_at"`
+	NextRetryAt          *time.Time `json:"next_retry_at"`
+	IsReplay             bool       `json:"is_replay"`
+	ReplayEventID        string     `json:"replay_event_id"`
 }
 
 // DeliveriesResponse wraps the timeline. We surface root_event_id so

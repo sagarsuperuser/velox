@@ -16,13 +16,13 @@ import (
 // time:
 //
 //   - status        — the pub/sub-side aggregate ("dispatched" /
-//                     "pending" / "failed"). The dashboard renders this
-//                     directly; clicking the row fetches the per-attempt
-//                     timeline via /v1/webhook_events/{id}/deliveries.
+//     "pending" / "failed"). The dashboard renders this
+//     directly; clicking the row fetches the per-attempt
+//     timeline via /v1/webhook_events/{id}/deliveries.
 //   - last_attempt_at — best-effort time of the most recent dispatch
-//                     attempt seen by the bus. NULL on the initial
-//                     "snapshot" frames sent at connect time when the
-//                     event hasn't been dispatched yet.
+//     attempt seen by the bus. NULL on the initial
+//     "snapshot" frames sent at connect time when the
+//     event hasn't been dispatched yet.
 type StreamFrame struct {
 	EventID         string     `json:"event_id"`
 	EventType       string     `json:"event_type"`

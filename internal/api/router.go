@@ -832,18 +832,18 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		))
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/billing", billingH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/webhook-endpoints", webhookOutH.Routes())
-			// Week 6 real-time event UI — replay + deliveries-timeline live
-			// here (the SSE stream itself mounts ABOVE /v1 because chi's
-			// 30s middleware.Timeout would kill long-lived streams). Uses
-			// underscore (webhook_events) on purpose so the shape matches
-			// Stripe's /v1/events convention and doesn't collide with the
-			// legacy /webhook-endpoints/events path.
-			//
-			// PermAPIKeyRead is sufficient for both read (deliveries) and
-			// replay — replay is state-mutating but is functionally a
-			// re-issue of an already-emitted event, the same posture the
-			// legacy /webhook-endpoints/events/{id}/replay surface takes.
-			r.With(auth.Require(auth.PermAPIKeyRead)).Mount("/webhook_events", webhookOutH.EventRoutes())
+		// Week 6 real-time event UI — replay + deliveries-timeline live
+		// here (the SSE stream itself mounts ABOVE /v1 because chi's
+		// 30s middleware.Timeout would kill long-lived streams). Uses
+		// underscore (webhook_events) on purpose so the shape matches
+		// Stripe's /v1/events convention and doesn't collide with the
+		// legacy /webhook-endpoints/events path.
+		//
+		// PermAPIKeyRead is sufficient for both read (deliveries) and
+		// replay — replay is state-mutating but is functionally a
+		// re-issue of an already-emitted event, the same posture the
+		// legacy /webhook-endpoints/events/{id}/replay surface takes.
+		r.With(auth.Require(auth.PermAPIKeyRead)).Mount("/webhook_events", webhookOutH.EventRoutes())
 		r.With(auth.Require(auth.PermAPIKeyRead)).Mount("/audit-log", auditH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings/stripe", tenantStripeH.Routes())
