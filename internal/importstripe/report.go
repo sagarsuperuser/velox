@@ -12,10 +12,10 @@ import (
 type Action string
 
 const (
-	ActionInsert          Action = "insert"
-	ActionSkipEquivalent  Action = "skip-equivalent"
-	ActionSkipDivergent   Action = "skip-divergent"
-	ActionError           Action = "error"
+	ActionInsert         Action = "insert"
+	ActionSkipEquivalent Action = "skip-equivalent"
+	ActionSkipDivergent  Action = "skip-divergent"
+	ActionError          Action = "error"
 )
 
 // Resource identifies the kind of Stripe object an action applies to.
@@ -49,10 +49,10 @@ type Report struct {
 	w *csv.Writer
 	// Counts of each Action observed. Used by the CLI to print the summary
 	// and decide on exit code (non-zero Errors -> exit 1).
-	Inserted        int
-	SkippedEquiv    int
+	Inserted         int
+	SkippedEquiv     int
 	SkippedDivergent int
-	Errored         int
+	Errored          int
 }
 
 // NewReport opens a CSV report on out. The header row is written immediately.
