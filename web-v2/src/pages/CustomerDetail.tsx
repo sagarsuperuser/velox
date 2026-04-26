@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Customer, type BillingProfile, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride, type CustomerCouponAssignment } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
+import { CostDashboard } from '@/components/CostDashboard'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
@@ -121,18 +122,6 @@ export default function CustomerDetailPage() {
     enabled: !!id,
   })
 
-  const { data: usageSummary } = useQuery({
-    queryKey: ['customer-usage', id, allSubs],
-    queryFn: () => {
-      const activeSub = allSubs?.find(s => s.status === 'active' && s.current_billing_period_start && s.current_billing_period_end)
-      if (activeSub) {
-        return api.usageSummary(id!, activeSub.current_billing_period_start!, activeSub.current_billing_period_end!)
-      }
-      return api.usageSummary(id!)
-    },
-    enabled: !!id && allSubs !== undefined,
-  })
-
   const { data: paymentSetup } = useQuery({
     queryKey: ['customer-payment-status', id],
     queryFn: () => api.getPaymentStatus(id!).catch(() => ({ customer_id: '', setup_status: 'missing' } as PaymentSetup)),
@@ -233,8 +222,6 @@ export default function CustomerDetailPage() {
       </Layout>
     )
   }
-
-  const activeSub = allSubs?.find(s => s.status === 'active' && s.current_billing_period_start && s.current_billing_period_end)
 
   return (
     <Layout>
@@ -629,39 +616,13 @@ export default function CustomerDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Usage This Period */}
-      <Card className="mt-6">
-        <CardHeader>
-          <div>
-            <CardTitle className="text-sm">Usage This Period</CardTitle>
-            {activeSub && (
-              <p className="text-sm text-muted-foreground mt-0.5">
-                {formatDate(activeSub.current_billing_period_start!)} -- {formatDate(activeSub.current_billing_period_end!)}
-              </p>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          {usageSummary && Object.keys(usageSummary.meters).length > 0 ? (
-            <div className="divide-y divide-border">
-              {Object.entries(usageSummary.meters).map(([meter, qty]) => {
-                const m = meterMap[meter]
-                return (
-                  <div key={meter} className="flex items-center justify-between px-6 py-3">
-                    <div>
-                      <p className="text-sm text-foreground">{m?.name || meter}</p>
-                      {m?.unit && <p className="text-sm text-muted-foreground">{m.unit}</p>}
-                    </div>
-                    <span className="text-sm font-semibold text-foreground tabular-nums">{qty.toLocaleString()}</span>
-                  </div>
-                )
-              })}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground text-center py-8">No usage recorded</p>
-          )}
-        </CardContent>
-      </Card>
+      {/* Usage This Period — multi-dim cost dashboard backed by
+          GET /v1/customers/{id}/usage. Replaces the old quantity-only summary.
+          Component is self-contained so the same surface drops into a future
+          public iframe-able route once token-based access lands. */}
+      <div className="mt-6">
+        <CostDashboard customerId={id!} />
+      </div>
 
       {/* Payment Method */}
       <Card className="mt-6">

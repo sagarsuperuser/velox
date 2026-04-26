@@ -1,0 +1,253 @@
+import { useState, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { api, formatCents, formatDate } from '@/lib/api'
+import type { CustomerUsageMeter, CustomerUsageRule } from '@/lib/api'
+import { cn } from '@/lib/utils'
+
+import { Card, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ChevronDown, ChevronRight, Activity, AlertTriangle, Loader2 } from 'lucide-react'
+
+type PeriodPreset = 'current' | 'last_30d' | 'last_90d'
+
+const PRESETS: { value: PeriodPreset; label: string }[] = [
+  { value: 'current', label: 'Current cycle' },
+  { value: 'last_30d', label: 'Last 30 days' },
+  { value: 'last_90d', label: 'Last 90 days' },
+]
+
+function presetToParams(p: PeriodPreset): { from?: string; to?: string } | undefined {
+  if (p === 'current') return undefined
+  const now = new Date()
+  const days = p === 'last_30d' ? 30 : 90
+  const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString()
+  return { from, to: now.toISOString() }
+}
+
+export function CostDashboard({ customerId }: { customerId: string }) {
+  const [preset, setPreset] = useState<PeriodPreset>('current')
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['customer-usage', customerId, preset],
+    queryFn: async () => {
+      try {
+        return await api.customerUsage(customerId, presetToParams(preset))
+      } catch (err) {
+        // 400 customer_has_no_subscription is the documented "no current cycle"
+        // state — surface it as an empty result, not a hard error. Same pattern
+        // for 404. Real network/auth errors fall through to the error UI.
+        if (err && typeof err === 'object' && 'status' in err) {
+          const s = (err as { status: number }).status
+          if (s === 400 || s === 404) return null
+        }
+        throw err
+      }
+    },
+  })
+
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="p-6 text-center">
+          <p className="text-sm text-destructive mb-3">{(error as Error).message}</p>
+          <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Header + period switcher */}
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold text-foreground">Usage this period</h2>
+          {data?.period && (
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {formatDate(data.period.from)} → {formatDate(data.period.to)} · {data.period.source === 'current_billing_cycle' ? 'current billing cycle' : 'explicit window'}
+            </p>
+          )}
+        </div>
+        <Tabs value={preset} onValueChange={(v) => setPreset(v as PeriodPreset)}>
+          <TabsList>
+            {PRESETS.map(p => (
+              <TabsTrigger key={p.value} value={p.value} className="text-xs">{p.label}</TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      </div>
+
+      {isLoading ? (
+        <Card><CardContent className="p-8 flex justify-center"><Loader2 size={20} className="animate-spin text-muted-foreground" /></CardContent></Card>
+      ) : !data ? (
+        <Card>
+          <CardContent className="p-8 text-center">
+            <Activity size={20} className="mx-auto text-muted-foreground mb-3" />
+            <p className="text-sm text-muted-foreground">
+              No usage to show for this period. {preset === 'current'
+                ? "Customer doesn't have an active subscription, or the cycle hasn't started yet."
+                : 'Try a different window.'}
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          {/* Subscription / cycle context */}
+          {data.subscriptions.length > 0 && (
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                  {data.subscriptions.map(sub => (
+                    <CycleHeader key={sub.id} sub={sub} />
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Big number — totals (one per currency) */}
+          <Card>
+            <CardContent className="px-6 py-5">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Cycle-to-date charges</p>
+              <div className="mt-2 flex flex-wrap items-baseline gap-x-6 gap-y-2">
+                {data.totals.length === 0 ? (
+                  <p className="text-3xl font-semibold text-foreground tabular-nums">{formatCents(0)}</p>
+                ) : (
+                  data.totals.map(t => (
+                    <div key={t.currency} className="flex items-baseline gap-2">
+                      <span className="text-3xl font-semibold text-foreground tabular-nums">{formatCents(t.amount_cents, t.currency)}</span>
+                      {data.totals.length > 1 && <span className="text-xs text-muted-foreground uppercase">{t.currency}</span>}
+                    </div>
+                  ))
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Warnings */}
+          {data.warnings.length > 0 && (
+            <Card className="border-amber-200 dark:border-amber-900">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300 text-xs font-medium mb-2">
+                  <AlertTriangle size={12} />
+                  {data.warnings.length} warning{data.warnings.length !== 1 ? 's' : ''}
+                </div>
+                <ul className="text-xs text-amber-700 dark:text-amber-300 space-y-1">
+                  {data.warnings.map((w, i) => (
+                    <li key={i}>
+                      <span className="font-mono">{w.code}</span> · {w.message}
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Per-meter cards */}
+          {data.meters.length === 0 ? (
+            <Card>
+              <CardContent className="p-8 text-center">
+                <p className="text-sm text-muted-foreground">No metered usage in this period.</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-2">
+              {data.meters.map(m => <MeterRow key={m.meter_id} meter={m} />)}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function CycleHeader({ sub }: { sub: { plan_name: string; current_period_start: string; current_period_end: string } }) {
+  const { plan_name, current_period_start, current_period_end } = sub
+  const start = new Date(current_period_start).getTime()
+  const end = new Date(current_period_end).getTime()
+  const now = Date.now()
+  const totalDays = Math.max(1, Math.round((end - start) / 86_400_000))
+  const daysIn = Math.max(0, Math.min(totalDays, Math.round((now - start) / 86_400_000)))
+  const pct = totalDays > 0 ? Math.min(100, (daysIn / totalDays) * 100) : 0
+  return (
+    <div className="flex items-center gap-3 min-w-0">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-foreground truncate">{plan_name}</p>
+        <p className="text-xs text-muted-foreground tabular-nums">
+          Day {daysIn} of {totalDays} · {pct.toFixed(0)}% through
+        </p>
+      </div>
+      <div className="w-24 h-1.5 rounded-full bg-muted overflow-hidden">
+        <div className="h-full bg-primary rounded-full" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function MeterRow({ meter }: { meter: CustomerUsageMeter }) {
+  const [expanded, setExpanded] = useState(false)
+  const hasMultipleRules = meter.rules.length > 1
+  const totalQty = useMemo(() => Number(meter.total_quantity), [meter.total_quantity])
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <button
+          type="button"
+          className={cn(
+            'w-full px-5 py-4 flex items-center gap-4 text-left transition-colors',
+            hasMultipleRules ? 'cursor-pointer hover:bg-muted/30' : 'cursor-default',
+          )}
+          onClick={() => hasMultipleRules && setExpanded(e => !e)}
+          disabled={!hasMultipleRules}
+        >
+          {hasMultipleRules ? (
+            expanded ? <ChevronDown size={14} className="text-muted-foreground shrink-0" /> : <ChevronRight size={14} className="text-muted-foreground shrink-0" />
+          ) : <span className="w-3.5" />}
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-foreground truncate">{meter.meter_name}</p>
+            <p className="text-xs text-muted-foreground font-mono">
+              {totalQty.toLocaleString(undefined, { maximumFractionDigits: 6 })} {meter.unit}
+              {hasMultipleRules && <span className="ml-2 text-muted-foreground">· {meter.rules.length} rules</span>}
+            </p>
+          </div>
+          <p className="text-sm font-semibold text-foreground tabular-nums shrink-0">
+            {formatCents(meter.total_amount_cents, meter.currency)}
+          </p>
+        </button>
+
+        {expanded && hasMultipleRules && (
+          <div className="border-t border-border bg-muted/20">
+            {meter.rules.map(r => <RuleRow key={r.rating_rule_version_id} rule={r} unit={meter.unit} currency={meter.currency} />)}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function RuleRow({ rule, unit, currency }: { rule: CustomerUsageRule; unit: string; currency: string }) {
+  const qty = Number(rule.quantity)
+  return (
+    <div className="px-5 py-2.5 flex items-center gap-4 text-xs border-b border-border last:border-b-0">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Badge variant="secondary" className="font-mono">{rule.rule_key}</Badge>
+          {rule.dimension_match && Object.entries(rule.dimension_match).map(([k, v]) => (
+            <span key={k} className="inline-flex items-center font-mono bg-muted px-1.5 py-0.5 rounded text-foreground/80">
+              {k}=<span className="text-foreground">{String(v)}</span>
+            </span>
+          ))}
+        </div>
+        <p className="text-muted-foreground font-mono mt-1">
+          {qty.toLocaleString(undefined, { maximumFractionDigits: 6 })} {unit}
+        </p>
+      </div>
+      <p className="font-semibold text-foreground tabular-nums shrink-0">
+        {formatCents(rule.amount_cents, currency)}
+      </p>
+    </div>
+  )
+}

@@ -125,18 +125,12 @@ export const api = {
     apiRequest<MeterPricingRule>('POST', `/meters/${meterId}/pricing-rules`, data),
   deleteMeterPricingRule: (meterId: string, ruleId: string) =>
     apiRequest<{ status: string }>('DELETE', `/meters/${meterId}/pricing-rules/${ruleId}`),
-  customerUsageBreakdown: (
-    customerId: string,
-    params: { event_name: string; period_start: string; period_end: string; group_by?: string[] },
-  ) => {
+  customerUsage: (customerId: string, params?: { from?: string; to?: string }) => {
     const qs = new URLSearchParams()
-    qs.set('event_name', params.event_name)
-    qs.set('period_start', params.period_start)
-    qs.set('period_end', params.period_end)
-    if (params.group_by && params.group_by.length > 0) {
-      qs.set('group_by', params.group_by.join(','))
-    }
-    return apiRequest<CustomerUsageBreakdown>('GET', `/customers/${customerId}/usage?${qs.toString()}`)
+    if (params?.from) qs.set('from', params.from)
+    if (params?.to) qs.set('to', params.to)
+    const q = qs.toString()
+    return apiRequest<CustomerUsage>('GET', `/customers/${customerId}/usage${q ? '?' + q : ''}`)
   },
   listPlans: () =>
     apiRequest<{ data: Plan[] }>('GET', '/plans'),
@@ -630,19 +624,57 @@ export interface MeterPricingRule {
   created_at: string
 }
 
-export interface CustomerUsageBreakdown {
+// CustomerUsage — response of GET /v1/customers/{id}/usage. Designed against
+// docs/design-customer-usage.md. `totals` is modeled as an array unconditionally
+// (single-currency tenants get a length-1 array) so the client doesn't need a
+// polymorphic discriminator — flagged this preference to Track A in the RFC
+// review; if the backend keeps a polymorphic single-currency shape we adapt here.
+export interface CustomerUsage {
   customer_id: string
-  event_name: string
-  period_start: string
-  period_end: string
-  group_by: string[]
-  buckets: {
-    dimensions: Record<string, string | number | boolean>
-    rule_id: string | null
-    aggregation_mode: MeterAggregationMode
-    quantity: string
-    projected_amount_cents: number
-  }[]
+  period: {
+    from: string
+    to: string
+    source: 'current_billing_cycle' | 'explicit'
+  }
+  subscriptions: CustomerUsageSubscription[]
+  meters: CustomerUsageMeter[]
+  totals: { currency: string; amount_cents: number }[]
+  warnings: CustomerUsageWarning[]
+}
+
+export interface CustomerUsageSubscription {
+  id: string
+  plan_id: string
+  plan_name: string
+  currency: string
+  current_period_start: string
+  current_period_end: string
+}
+
+export interface CustomerUsageMeter {
+  meter_id: string
+  meter_key: string
+  meter_name: string
+  unit: string
+  currency: string
+  total_quantity: string
+  total_amount_cents: number
+  rules: CustomerUsageRule[]
+}
+
+export interface CustomerUsageRule {
+  rating_rule_version_id: string
+  rule_key: string
+  dimension_match?: Record<string, string | number | boolean>
+  quantity: string
+  amount_cents: number
+}
+
+export interface CustomerUsageWarning {
+  code: string
+  message: string
+  subscription_id?: string
+  meter_id?: string
 }
 
 export interface RecipeCreatesSummary {
