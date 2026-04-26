@@ -36,6 +36,14 @@ type WebhookEvent struct {
 	EventType string         `json:"event_type"`
 	Payload   map[string]any `json:"payload"`
 	CreatedAt time.Time      `json:"created_at"`
+	// ReplayOfEventID is set when this row was produced by an operator
+	// clicking "Replay" on an earlier event in the dashboard. It points
+	// back to the event the operator was looking at — not to the most
+	// recent replay clone — so the audit chain stays single-pivot
+	// (original → many clones, never original → A → B → …). The list-
+	// deliveries endpoint stitches the original and its clones into one
+	// unified attempt timeline.
+	ReplayOfEventID *string `json:"replay_of_event_id,omitempty"`
 }
 
 type DeliveryStatus string

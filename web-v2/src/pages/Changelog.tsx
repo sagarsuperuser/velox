@@ -18,6 +18,20 @@ const entries: {
 }[] = [
   {
     date: '2026-04-26',
+    title: 'Real-time webhook event UI — SSE live-tail + replay + payload diff',
+    tag: 'feature',
+    body: 'The Webhook Events page now streams every dispatched event in real time. GET /v1/webhook_events/stream is a Server-Sent Events feed: a snapshot of the last 50 events on connect (so the page renders state, not blank), then live frames as Service.Dispatch / replay / deliver-result publishes them, with a 15s heartbeat keeping idle proxies from dropping the long-lived socket. Tenant scoping holds two ways — the snapshot path runs under RLS, and the in-process EventBus is keyed by tenant_id so cross-tenant frames never reach the connection. Drift on the wire shape (event_id, event_type, customer_id, status, last_attempt_at, created_at, livemode, replay_of_event_id) is gated by TestWireShape_WebhookEventsStream_SnakeCase before merge.',
+    bullets: [
+      'Replay button on every row clones the event into a fresh webhook_events row tagged replay_of_event_id=<root> and re-dispatches to every matching active endpoint. POST /v1/webhook_events/{id}/replay returns {event_id, replay_of, status: "queued"} so the dashboard can highlight the new clone in the live tail and toast the audit pivot.',
+      'Replay tree uses a single-pivot rule: clones always point at the root original, never chain. Replaying a clone collapses to the original, so the deliveries timeline stays a flat WHERE id = $1 OR replay_of_event_id = $1 walk — no recursive CTEs, no chained-replay foot-guns.',
+      'Per-event timeline at GET /v1/webhook_events/{id}/deliveries stitches the original plus every replay clone into one ordered list with attempt_no, status, status_code, response_body (4KB-truncated), error, request_payload_sha256, attempted_at, completed_at, next_retry_at, is_replay, replay_event_id. The diff view uses the SHA-256 to flag "payload identical to previous" (the common Stripe-style replay case) vs "payload differs" so an unexpected mutation is immediately visible.',
+      'Critical wiring detail: the global middleware.Timeout(30s) was lifted off the router root and applied per route block, because a 30s cap would kill any open SSE socket. The stream route mounts on a sibling path ABOVE /v1 with the same auth (session-or-API-key + rate-limit + PermAPIKeyRead) but specifically WITHOUT the timeout — long-lived EventSource connections need to run indefinitely.',
+      'Migration 0058 adds replay_of_event_id TEXT REFERENCES webhook_events(id) ON DELETE SET NULL plus a partial index for the timeline-walk query. Frontend mounts a new page at /webhooks/events with a connection-status pill, row-level Replay button, and an expandable per-event timeline that lazy-fetches deliveries on first expand. Buffer caps at 200 frames; rows dedupe by event_id so pending → succeeded flips a single row in place.',
+      'Wire-shape regression tests pin all three contracts (TestWireShape_WebhookEventsStream_SnakeCase, TestWireShape_WebhookEventReplay, TestWireShape_WebhookEventDeliveries) — drift fails CI before it can break the dashboard. Legacy /v1/webhook-endpoints/events/* surface stays unchanged for backwards compatibility; this is purely additive.',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Operator CLI — velox-cli with `sub list` and `invoice send`',
     tag: 'feature',
     body: 'Week 7 ships a single-binary operator CLI under cmd/velox-cli/ that talks to the same /v1/* HTTP surface any external integration uses — no direct DB coupling, no runtime config files. Auth is a platform API key from VELOX_API_KEY (or --api-key) and the CLI never writes the key to disk. Two subcommands land: velox-cli sub list (GET /v1/subscriptions with --customer / --plan / --status / --limit / --output text|json filters) and velox-cli invoice send (POST /v1/invoices/{id}/send with --invoice / --email / --dry-run / --output). The CLI is a thin client by design — keeps the public API surface honest and unblocks operator workflows without coupling them to internal schema.',

@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -39,6 +40,7 @@ var retryBackoffs = [maxAttempts]time.Duration{
 type Service struct {
 	store       Store
 	client      HTTPClient
+	bus         *EventBus
 	syncDeliver bool // When true, deliver synchronously (for tests)
 }
 
@@ -51,7 +53,29 @@ func NewService(store Store, client HTTPClient) *Service {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &Service{store: store, client: client}
+	return &Service{store: store, client: client, bus: NewEventBus()}
+}
+
+// EventBus exposes the in-memory pub/sub backing the SSE stream. The
+// handler subscribes per-request; the service publishes frames from
+// Dispatch and the deliver path. Returns the same instance for the
+// lifetime of the service so multiple handlers / cmd-side workers
+// share one fan-out.
+func (s *Service) EventBus() *EventBus { return s.bus }
+
+// publishFrameForEventID looks up the event row and emits a status-
+// transition frame to the SSE bus. Used from the failure paths where
+// the caller has only the delivery (not the full event) in hand.
+// Best-effort: a missed publish doesn't block delivery semantics.
+func (s *Service) publishFrameForEventID(ctx context.Context, tenantID, eventID, status string, lastAttemptAt *time.Time) {
+	if s.bus == nil || eventID == "" {
+		return
+	}
+	ev, err := s.store.GetEvent(ctx, tenantID, eventID)
+	if err != nil {
+		return
+	}
+	s.bus.Publish(tenantID, FrameFromEvent(ev, status, lastAttemptAt))
 }
 
 // NewTestService creates a service with synchronous delivery (no goroutines).
@@ -245,6 +269,14 @@ func (s *Service) Dispatch(ctx context.Context, tenantID, eventType string, payl
 		return fmt.Errorf("create event: %w", err)
 	}
 
+	// Publish a "pending" frame to the SSE bus the moment the event row
+	// commits — the dashboard renders it immediately, then transitions
+	// to "succeeded"/"failed" when the deliver goroutine publishes a
+	// follow-up frame after the HTTP attempt completes.
+	if s.bus != nil {
+		s.bus.Publish(tenantID, FrameFromEvent(event, "pending", nil))
+	}
+
 	endpoints, err := s.store.ListEndpoints(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("list endpoints: %w", err)
@@ -332,6 +364,14 @@ func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.Webhoo
 	_, _ = s.store.UpdateDelivery(ctx, tenantID, delivery)
 	mw.RecordWebhookDelivery("succeeded")
 
+	// Publish the post-attempt frame so the live tail flips the row
+	// from "pending" to "succeeded". The dashboard's table is keyed by
+	// event_id so the second frame replaces the first in-place.
+	if s.bus != nil {
+		now := time.Now().UTC()
+		s.bus.Publish(tenantID, FrameFromEvent(event, string(delivery.Status), &now))
+	}
+
 	slog.Info("webhook delivered",
 		"endpoint_id", ep.ID,
 		"event_type", event.EventType,
@@ -357,6 +397,10 @@ func (s *Service) scheduleRetryOrFail(ctx context.Context, tenantID string, d do
 		// Only count permanent failures — per-attempt retries are transient
 		// and would drown the alert's success-rate denominator.
 		mw.RecordWebhookDelivery("failed")
+		// SSE: the dashboard row for this event flips to "failed".
+		// Lookup-by-id rather than a struct passthrough so we re-read
+		// the event_type/customer_id without bloating the delivery row.
+		s.publishFrameForEventID(ctx, tenantID, d.WebhookEventID, "failed", &now)
 		slog.Error("webhook delivery permanently failed",
 			"delivery_id", d.ID,
 			"endpoint_id", d.WebhookEndpointID,
@@ -435,47 +479,102 @@ func (s *Service) ListEvents(ctx context.Context, tenantID string, limit int) ([
 	return s.store.ListEvents(ctx, tenantID, limit)
 }
 
+// GetEvent fetches a single event by id (tenant-scoped via RLS at the
+// store layer). Surfaced for the SSE handler's deliveries-list path so
+// it can resolve the replay root before walking the timeline.
+func (s *Service) GetEvent(ctx context.Context, tenantID, id string) (domain.WebhookEvent, error) {
+	return s.store.GetEvent(ctx, tenantID, id)
+}
+
 // ListDeliveries returns deliveries for a specific event.
 func (s *Service) ListDeliveries(ctx context.Context, tenantID, eventID string) ([]domain.WebhookDelivery, error) {
 	return s.store.ListDeliveries(ctx, tenantID, eventID)
 }
 
-// Replay re-delivers a webhook event to all matching active endpoints.
-func (s *Service) Replay(ctx context.Context, tenantID, eventID string) error {
-	events, err := s.store.ListEvents(ctx, tenantID, 1000)
+// ReplayResult is the response shape for POST /v1/webhook_events/{id}/replay.
+// Returned to the dashboard so the live tail can highlight the new row
+// and the Toast confirms what the operator just queued.
+type ReplayResult struct {
+	// EventID is the freshly-minted webhook_events row that's been
+	// queued for delivery. The dashboard's SSE tail will pick it up
+	// within a tick.
+	EventID string `json:"event_id"`
+	// ReplayOf is the ID of the original event whose payload was
+	// cloned. The dashboard groups the original + all replays under
+	// this pivot so the Deliveries timeline shows the full audit
+	// chain.
+	ReplayOf string `json:"replay_of"`
+	// Status is "queued" — the deliver fan-out runs asynchronously, so
+	// at response time we can only confirm the clone landed and
+	// matched at least one endpoint.
+	Status string `json:"status"`
+}
+
+// Replay clones an existing webhook event into a fresh row (with
+// replay_of_event_id pointing at the original) and dispatches it to
+// every matching active endpoint. The clone is what gets delivered, so
+// the original's deliveries are never mutated — every replay produces
+// a brand-new row in the timeline. A second replay of the same
+// original event is therefore not idempotent in the DB-row sense (it
+// creates another clone), but is idempotent in the audit-trail sense:
+// the original delivery history is preserved and the operator sees N
+// distinct replay attempts on the timeline.
+func (s *Service) Replay(ctx context.Context, tenantID, eventID string) (ReplayResult, error) {
+	original, err := s.store.GetEvent(ctx, tenantID, eventID)
 	if err != nil {
-		return err
+		if errors.Is(err, errs.ErrNotFound) {
+			return ReplayResult{}, fmt.Errorf("%w: webhook event", errs.ErrNotFound)
+		}
+		return ReplayResult{}, fmt.Errorf("get event: %w", err)
 	}
 
-	var event *domain.WebhookEvent
-	for i := range events {
-		if events[i].ID == eventID {
-			event = &events[i]
-			break
-		}
+	clone, err := s.store.CreateReplayEvent(ctx, tenantID, eventID)
+	if err != nil {
+		return ReplayResult{}, fmt.Errorf("create replay event: %w", err)
 	}
-	if event == nil {
-		return fmt.Errorf("%w: webhook event", errs.ErrNotFound)
+
+	// Pivot ID: the audit chain points at the *root* original. If the
+	// operator clicked Replay on a clone, the store's CreateReplayEvent
+	// already collapsed that to root — surface that root in the
+	// response so the dashboard groups consistently.
+	rootID := eventID
+	if clone.ReplayOfEventID != nil && *clone.ReplayOfEventID != "" {
+		rootID = *clone.ReplayOfEventID
+	}
+
+	// Publish the immediate "pending" frame for the clone so the
+	// dashboard shows the new row before the deliver fan-out lands.
+	if s.bus != nil {
+		s.bus.Publish(tenantID, FrameFromEvent(clone, "pending", nil))
 	}
 
 	endpoints, err := s.store.ListEndpoints(ctx, tenantID)
 	if err != nil {
-		return err
+		return ReplayResult{}, fmt.Errorf("list endpoints: %w", err)
 	}
 
 	for _, ep := range endpoints {
-		if !ep.Active || ep.Livemode != event.Livemode || !matchesEvent(ep.Events, event.EventType) {
+		if !ep.Active || ep.Livemode != clone.Livemode || !matchesEvent(ep.Events, clone.EventType) {
 			continue
 		}
 		if s.syncDeliver {
-			s.deliver(ctx, tenantID, ep, *event)
+			s.deliver(ctx, tenantID, ep, clone)
 		} else {
-			go s.deliver(context.Background(), tenantID, ep, *event)
+			go s.deliver(context.Background(), tenantID, ep, clone)
 		}
 	}
 
-	slog.Info("webhook event replayed", "event_id", eventID, "event_type", event.EventType)
-	return nil
+	slog.Info("webhook event replayed",
+		"event_id", clone.ID,
+		"replay_of", rootID,
+		"event_type", clone.EventType,
+	)
+	_ = original // referenced for not-found semantics above
+	return ReplayResult{
+		EventID:  clone.ID,
+		ReplayOf: rootID,
+		Status:   "queued",
+	}, nil
 }
 
 // RetryPendingDeliveries picks up deliveries due for retry and re-attempts them.

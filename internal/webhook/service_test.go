@@ -117,6 +117,46 @@ func (m *memStore) ListEvents(_ context.Context, tenantID string, limit int) ([]
 	return result, nil
 }
 
+func (m *memStore) GetEvent(_ context.Context, tenantID, id string) (domain.WebhookEvent, error) {
+	for _, e := range m.events {
+		if e.ID == id && e.TenantID == tenantID {
+			return e, nil
+		}
+	}
+	return domain.WebhookEvent{}, errs.ErrNotFound
+}
+
+func (m *memStore) CreateReplayEvent(ctx context.Context, tenantID, originalEventID string) (domain.WebhookEvent, error) {
+	for _, e := range m.events {
+		if e.ID == originalEventID && e.TenantID == tenantID {
+			rootID := originalEventID
+			if e.ReplayOfEventID != nil && *e.ReplayOfEventID != "" {
+				rootID = *e.ReplayOfEventID
+			}
+			clone := domain.WebhookEvent{
+				EventType:       e.EventType,
+				Payload:         e.Payload,
+				ReplayOfEventID: &rootID,
+			}
+			created, err := m.CreateEvent(ctx, tenantID, clone)
+			if err != nil {
+				return domain.WebhookEvent{}, err
+			}
+			created.ReplayOfEventID = &rootID
+			// Persist the replay pointer on the in-memory copy so
+			// downstream filters (ListDeliveries replay-tree walk) see
+			// it on subsequent reads.
+			for i := range m.events {
+				if m.events[i].ID == created.ID {
+					m.events[i].ReplayOfEventID = &rootID
+				}
+			}
+			return created, nil
+		}
+	}
+	return domain.WebhookEvent{}, errs.ErrNotFound
+}
+
 func (m *memStore) CreateDelivery(_ context.Context, tenantID string, d domain.WebhookDelivery) (domain.WebhookDelivery, error) {
 	d.ID = fmt.Sprintf("vlx_whd_%d", len(m.deliveries)+1)
 	d.TenantID = tenantID
@@ -136,9 +176,18 @@ func (m *memStore) UpdateDelivery(_ context.Context, _ string, d domain.WebhookD
 }
 
 func (m *memStore) ListDeliveries(_ context.Context, _, eventID string) ([]domain.WebhookDelivery, error) {
+	// Build the replay-tree set: the eventID itself plus every event
+	// whose replay_of points back at it. Mirrors the postgres store's
+	// JOIN-based walk so behavior parity holds in unit tests.
+	tree := map[string]struct{}{eventID: {}}
+	for _, e := range m.events {
+		if e.ReplayOfEventID != nil && *e.ReplayOfEventID == eventID {
+			tree[e.ID] = struct{}{}
+		}
+	}
 	var result []domain.WebhookDelivery
 	for _, d := range m.deliveries {
-		if d.WebhookEventID == eventID {
+		if _, ok := tree[d.WebhookEventID]; ok {
 			result = append(result, d)
 		}
 	}
@@ -474,12 +523,19 @@ func TestReplay(t *testing.T) {
 
 	// Replay the event
 	eventID := store.events[0].ID
-	err := svc.Replay(ctx, "t1", eventID)
+	res, err := svc.Replay(ctx, "t1", eventID)
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
+	// Replay clones the event into a fresh row tagged replay_of=eventID.
+	if res.EventID == "" {
+		t.Errorf("replay result missing event_id")
+	}
+	if res.ReplayOf != eventID {
+		t.Errorf("replay result replay_of: got %q want %q", res.ReplayOf, eventID)
+	}
 
-	// Should have 2 deliveries now (original + replay)
+	// Should have 2 deliveries now (original + replay clone's delivery)
 	if len(store.deliveries) != 2 {
 		t.Errorf("deliveries after replay: got %d, want 2", len(store.deliveries))
 	}
@@ -488,7 +544,7 @@ func TestReplay(t *testing.T) {
 func TestReplay_NotFound(t *testing.T) {
 	svc := NewTestService(newMemStore(), &mockHTTPClient{statusCode: 200})
 
-	err := svc.Replay(context.Background(), "t1", "nonexistent")
+	_, err := svc.Replay(context.Background(), "t1", "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent event")
 	}
