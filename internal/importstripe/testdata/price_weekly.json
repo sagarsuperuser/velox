@@ -1,0 +1,22 @@
+{
+  "id": "price_weekly01",
+  "object": "price",
+  "active": true,
+  "billing_scheme": "per_unit",
+  "created": 1701000000,
+  "currency": "usd",
+  "livemode": true,
+  "metadata": {},
+  "nickname": "Weekly",
+  "product": {
+    "id": "prod_NfJG2N4m6X",
+    "object": "product"
+  },
+  "recurring": {
+    "interval": "week",
+    "interval_count": 1,
+    "usage_type": "licensed"
+  },
+  "type": "recurring",
+  "unit_amount": 999
+}

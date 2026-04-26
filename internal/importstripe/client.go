@@ -60,3 +60,57 @@ func (s *StripeSource) IterateCustomers(ctx context.Context, fn func(*stripe.Cus
 	}
 	return nil
 }
+
+func (s *StripeSource) IterateProducts(ctx context.Context, fn func(*stripe.Product) error) error {
+	if s == nil || s.client == nil {
+		return errors.New("importstripe: nil StripeSource")
+	}
+	params := &stripe.ProductListParams{}
+	params.Limit = stripe.Int64(s.pageSize)
+	if s.since > 0 {
+		params.Created = stripe.Int64(s.since)
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: s.since}
+	}
+	for prod, err := range s.client.V1Products.List(ctx, params) {
+		if err != nil {
+			return fmt.Errorf("stripe list products: %w", err)
+		}
+		if prod == nil || prod.Deleted {
+			continue
+		}
+		if err := fn(prod); err != nil {
+			if errors.Is(err, ErrStopIteration) {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *StripeSource) IteratePrices(ctx context.Context, fn func(*stripe.Price) error) error {
+	if s == nil || s.client == nil {
+		return errors.New("importstripe: nil StripeSource")
+	}
+	params := &stripe.PriceListParams{}
+	params.Limit = stripe.Int64(s.pageSize)
+	if s.since > 0 {
+		params.Created = stripe.Int64(s.since)
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: s.since}
+	}
+	for price, err := range s.client.V1Prices.List(ctx, params) {
+		if err != nil {
+			return fmt.Errorf("stripe list prices: %w", err)
+		}
+		if price == nil || price.Deleted {
+			continue
+		}
+		if err := fn(price); err != nil {
+			if errors.Is(err, ErrStopIteration) {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
+}

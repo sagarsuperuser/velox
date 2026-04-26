@@ -1,16 +1,20 @@
 // Command velox-import migrates Stripe data into a Velox tenant.
 //
-// Phase 0 supports `--resource=customers` only. The CLI surface is forward-
-// compatible with later phases (subscriptions, products+prices, invoices)
-// — see docs/design-stripe-importer.md.
+// Phase 0 supports `--resource=customers`; Phase 1 adds `products` and
+// `prices`. The CLI surface is forward-compatible with later phases
+// (subscriptions, invoices) — see docs/design-stripe-importer.md.
 //
 // Typical usage:
 //
 //	DATABASE_URL=postgres://... velox-import \
 //	  --tenant=ten_xxxx \
 //	  --api-key=sk_test_xxxx \
-//	  --resource=customers \
+//	  --resource=customers,products,prices \
 //	  --dry-run
+//
+// Resources are processed in dependency order regardless of the input
+// order: customers → products → prices. Subscriptions / invoices come in
+// later slices.
 package main
 
 import (
@@ -31,6 +35,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/importstripe"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/pricing"
 )
 
 func main() {
@@ -39,7 +44,7 @@ func main() {
 	tenantID := flag.String("tenant", "", "target Velox tenant id (required)")
 	apiKey := flag.String("api-key", "", "source Stripe secret key (required)")
 	since := flag.String("since", "", "import customers created on/after this RFC3339 or YYYY-MM-DD timestamp (optional)")
-	resources := flag.String("resource", "customers", "comma-separated list of resources to import (Phase 0: customers only)")
+	resources := flag.String("resource", "customers", "comma-separated list of resources to import (supported: customers, products, prices)")
 	output := flag.String("output", "", "CSV report output path (default: ./velox-import-<timestamp>.csv)")
 	dryRun := flag.Bool("dry-run", false, "skip DB writes; report what would happen")
 	livemodeFlag := flag.String("livemode-default", "", "true/false override for livemode (default: derived from api-key prefix)")
@@ -61,13 +66,19 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
-	if !resourceSet["customers"] {
-		fatal("--resource must include 'customers' (Phase 0 only supports customers)")
-	}
+	// Phase 0+1 currently support customers, products, prices. Other
+	// recognised values (subscriptions, invoices) parse cleanly but we
+	// warn-and-skip until those phases land.
 	for r := range resourceSet {
-		if r != "customers" {
-			fmt.Fprintf(os.Stderr, "warning: resource %q is recognised but not implemented in Phase 0; skipping\n", r)
+		switch r {
+		case "customers", "products", "prices":
+			// supported
+		default:
+			fmt.Fprintf(os.Stderr, "warning: resource %q is recognised but not implemented yet; skipping\n", r)
 		}
+	}
+	if !resourceSet["customers"] && !resourceSet["products"] && !resourceSet["prices"] {
+		fatal("--resource must include at least one of: customers, products, prices")
 	}
 
 	sinceUnix, err := parseSince(*since)
@@ -92,8 +103,10 @@ func main() {
 
 	db := postgres.NewDB(pool, 10*time.Second)
 
-	store := customer.NewPostgresStore(db)
-	svc := customer.NewService(store)
+	customerStore := customer.NewPostgresStore(db)
+	customerSvc := customer.NewService(customerStore)
+	pricingStore := pricing.NewPostgresStore(db)
+	pricingSvc := pricing.NewService(pricingStore)
 
 	out, err := os.Create(outputPath)
 	if err != nil {
@@ -108,23 +121,54 @@ func main() {
 
 	source := importstripe.NewStripeSource(*apiKey, sinceUnix)
 
-	importer := &importstripe.CustomerImporter{
-		Source:   source,
-		Service:  svc,
-		Lookup:   store,
-		Report:   report,
-		TenantID: *tenantID,
-		Livemode: livemode,
-		DryRun:   *dryRun,
-	}
-
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	// Velox's RLS policy reads livemode from app.livemode; tag the ctx so
-	// every customer.Service call lands under the right mode.
+	// every Service call lands under the right mode.
 	ctx = postgres.WithLivemode(ctx, livemode)
 
-	runErr := importer.Run(ctx)
+	// Run resources in strict dependency order regardless of the order
+	// they appeared on the command line. customers → products → prices.
+	// Each importer writes its own rows into the shared report; the
+	// summary at the end aggregates across all of them.
+	var runErr error
+	if resourceSet["customers"] && runErr == nil {
+		imp := &importstripe.CustomerImporter{
+			Source:   source,
+			Service:  customerSvc,
+			Lookup:   customerStore,
+			Report:   report,
+			TenantID: *tenantID,
+			Livemode: livemode,
+			DryRun:   *dryRun,
+		}
+		runErr = imp.Run(ctx)
+	}
+	if resourceSet["products"] && runErr == nil {
+		imp := &importstripe.ProductImporter{
+			Source:   source,
+			Service:  pricingSvc,
+			Lookup:   pricingStore,
+			Report:   report,
+			TenantID: *tenantID,
+			Livemode: livemode,
+			DryRun:   *dryRun,
+		}
+		runErr = imp.Run(ctx)
+	}
+	if resourceSet["prices"] && runErr == nil {
+		imp := &importstripe.PriceImporter{
+			Source:      source,
+			RuleService: pricingSvc,
+			PlanService: pricingSvc,
+			Lookup:      pricingStore,
+			Report:      report,
+			TenantID:    *tenantID,
+			Livemode:    livemode,
+			DryRun:      *dryRun,
+		}
+		runErr = imp.Run(ctx)
+	}
 
 	if err := report.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to flush report: %v\n", err)

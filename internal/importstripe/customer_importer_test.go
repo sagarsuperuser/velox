@@ -27,6 +27,16 @@ func (f *fakeSource) IterateCustomers(ctx context.Context, fn func(*stripe.Custo
 	return nil
 }
 
+// IterateProducts / IteratePrices are no-op for the customer-only tests.
+// Source widened in Phase 1; Phase 0 tests opt out by yielding nothing.
+func (f *fakeSource) IterateProducts(ctx context.Context, fn func(*stripe.Product) error) error {
+	return nil
+}
+
+func (f *fakeSource) IteratePrices(ctx context.Context, fn func(*stripe.Price) error) error {
+	return nil
+}
+
 // fakeStore is the minimal CustomerService + CustomerLookup stand-in used
 // by the unit-level driver tests. It models customers in two parallel maps
 // (id -> Customer, id -> BillingProfile) keyed by Velox id, plus a

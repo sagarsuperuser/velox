@@ -1,0 +1,18 @@
+{
+  "id": "price_onetime01",
+  "object": "price",
+  "active": true,
+  "billing_scheme": "per_unit",
+  "created": 1701000000,
+  "currency": "usd",
+  "livemode": true,
+  "metadata": {},
+  "nickname": "One-time setup fee",
+  "product": {
+    "id": "prod_NfJG2N4m6X",
+    "object": "product"
+  },
+  "recurring": null,
+  "type": "one_time",
+  "unit_amount": 9900
+}
