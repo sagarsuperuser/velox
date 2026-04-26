@@ -669,7 +669,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	})
 
 	r.Use(mw.SecurityHeaders())
-	r.Use(middleware.Timeout(30 * time.Second))
+	// NOTE: middleware.Timeout(30s) used to live here as a global cap,
+	// but the Week 6 SSE stream needs an unbounded connection lifetime
+	// — clients tail webhook events for hours. Push the timeout DOWN
+	// to each authenticated route block instead, and skip it on the
+	// SSE block. The unauthenticated public surfaces (health, metrics,
+	// auth/login) don't need a 30s cap; their handlers complete in ms
+	// or fail fast on their own.
 
 	// Public
 	r.Get("/health", handleHealth)
@@ -678,7 +684,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 
 	// Bootstrap — one-time setup (no auth, only works when no tenants exist)
 	bootstrapH := tenant.NewBootstrapHandler(db)
-	r.Mount("/v1/bootstrap", bootstrapH.Routes())
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.Timeout(30 * time.Second))
+		r.Mount("/v1/bootstrap", bootstrapH.Routes())
+	})
 
 	// Dashboard auth — email+password login, logout, password reset. Public
 	// because the caller is pre-session; rate-limited to slow credential
@@ -686,11 +695,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// toggle) and requires the cookie issued by /v1/auth/login.
 	r.Route("/v1/auth", func(r chi.Router) {
 		r.Use(rateLimiter.Middleware())
+		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/", dashauthH.Routes())
 	})
 	r.Route("/v1/session", func(r chi.Router) {
 		r.Use(session.Middleware(sessionSvc))
 		r.Use(rateLimiter.Middleware())
+		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/", dashauthH.SessionRoutes())
 	})
 
@@ -701,15 +712,22 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	r.Route("/v1/members", func(r chi.Router) {
 		r.Use(session.Middleware(sessionSvc))
 		r.Use(rateLimiter.Middleware())
+		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/", membersH.Routes())
 	})
 
 	// Stripe webhooks — no API key auth (verified by signature)
-	r.Mount("/v1/webhooks", webhookH.Routes())
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.Timeout(30 * time.Second))
+		r.Mount("/v1/webhooks", webhookH.Routes())
+	})
 
 	// Public payment update — no auth (validated by token)
 	if publicPaymentH != nil {
-		r.Mount("/v1/public/payment-updates", publicPaymentH.Routes())
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Timeout(30 * time.Second))
+			r.Mount("/v1/public/payment-updates", publicPaymentH.Routes())
+		})
 	}
 
 	// Public hosted invoice — Stripe-equivalent hosted_invoice_url.
@@ -719,6 +737,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// API — see hostedInvoiceRL above.
 	r.Route("/v1/public/invoices", func(r chi.Router) {
 		r.Use(hostedInvoiceRL.Middleware())
+		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/", hostedInvoiceH.Routes())
 	})
 
@@ -730,6 +749,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// probing emails hits the same 100/min ceiling as any other caller.
 	r.Route("/v1/public/customer-portal", func(r chi.Router) {
 		r.Use(rateLimiter.Middleware())
+		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/", publicPortalH.Routes())
 	})
 
@@ -737,7 +757,22 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	r.Route("/v1/tenants", func(r chi.Router) {
 		r.Use(auth.Middleware(authSvc))
 		r.Use(auth.Require(auth.PermTenantWrite))
+		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/", tenantH.Routes())
+	})
+
+	// Real-time webhook event SSE stream — mounted ABOVE the /v1 route
+	// block so it skips the global 30s middleware.Timeout (which would
+	// kill any long-lived EventSource connection at 30s). We re-apply
+	// the same auth chain that /v1/* gets (session-or-API-key, rate
+	// limit, perm check) but specifically NOT idempotency / audit log
+	// (no value on a streaming GET) and NOT the Timeout. The stream
+	// is GET-only and read-only; no body to idempotency-key, nothing
+	// to audit beyond the existing access log.
+	r.Route("/v1/webhook_events/stream", func(r chi.Router) {
+		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
+		r.Use(rateLimiter.Middleware())
+		r.With(auth.Require(auth.PermAPIKeyRead)).Get("/", webhookOutH.StreamHandler())
 	})
 
 	// Tenant-scoped routes — accept either dashboard session cookie OR
@@ -749,6 +784,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Use(rateLimiter.Middleware()) // After auth so tenant ID is available for bucket key
 		r.Use(mw.Idempotency(db))
 		r.Use(mw.AuditLog(db, settingsStore))
+		// Per-request timeout for ordinary CRUD endpoints. The SSE
+		// stream lives above this block (it's mounted on a sibling
+		// /v1/webhook_events/stream route) so it doesn't inherit the
+		// 30s cap — long-lived EventSource connections need to run
+		// indefinitely.
+		r.Use(middleware.Timeout(30 * time.Second))
 
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/api-keys", authH.Routes())
 		r.With(auth.Require(auth.PermCustomerRead)).Mount("/customers", customerH.Routes())
@@ -814,6 +855,18 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		))
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/billing", billingH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/webhook-endpoints", webhookOutH.Routes())
+		// Week 6 real-time event UI — replay + deliveries-timeline live
+		// here (the SSE stream itself mounts ABOVE /v1 because chi's
+		// 30s middleware.Timeout would kill long-lived streams). Uses
+		// underscore (webhook_events) on purpose so the shape matches
+		// Stripe's /v1/events convention and doesn't collide with the
+		// legacy /webhook-endpoints/events path.
+		//
+		// PermAPIKeyRead is sufficient for both read (deliveries) and
+		// replay — replay is state-mutating but is functionally a
+		// re-issue of an already-emitted event, the same posture the
+		// legacy /webhook-endpoints/events/{id}/replay surface takes.
+		r.With(auth.Require(auth.PermAPIKeyRead)).Mount("/webhook_events", webhookOutH.EventRoutes())
 		r.With(auth.Require(auth.PermAPIKeyRead)).Mount("/audit-log", auditH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings/stripe", tenantStripeH.Routes())
@@ -857,6 +910,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Use(portalSvc.Middleware())
 		r.Use(rateLimiter.Middleware())
 		r.Use(mw.Idempotency(db))
+		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/payment-methods", paymentMethodsH.Routes())
 		r.Mount("/", portalAPI.Routes())
 	})

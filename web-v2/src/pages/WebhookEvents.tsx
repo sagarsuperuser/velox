@@ -1,0 +1,410 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { Activity, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
+
+import {
+  api,
+  formatDateTime,
+  formatRelativeTime,
+  type WebhookEventStreamFrame,
+  type WebhookDeliveryView,
+} from '@/lib/api'
+import { showApiError } from '@/lib/formErrors'
+import { Layout } from '@/components/Layout'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import { EmptyState } from '@/components/EmptyState'
+
+// Live-tail buffer cap. The dashboard's table re-renders on every frame
+// flip; capping at 200 keeps the list snappy on a busy production tenant
+// without forcing the operator to refresh to see history (the SSE
+// snapshot path on connect already returns the last 50, so 200 in the
+// buffer means roughly 4× recent history is visible at any time).
+const MAX_BUFFER = 200
+
+// Connection-status pill states. The SSE handler reconnects automatically
+// on transient disconnects; we surface the status so the operator knows
+// the difference between "no events lately" and "we lost the stream".
+type StreamStatus = 'connecting' | 'live' | 'reconnecting' | 'error'
+
+export default function WebhookEventsPage() {
+  // Buffer of frames keyed by event_id. We dedupe on event_id because the
+  // bus can emit two frames for the same event (pending → succeeded), and
+  // the snapshot path can race with the first live frame; collapsing in
+  // place is what keeps the row from flickering or duplicating.
+  const [frames, setFrames] = useState<WebhookEventStreamFrame[]>([])
+  const [status, setStatus] = useState<StreamStatus>('connecting')
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const eventSourceRef = useRef<EventSource | null>(null)
+
+  useEffect(() => {
+    // EventSource opens with credentials: 'include' on same-origin reqs
+    // by default in the browsers we support. We're cookie-authed so this
+    // is the only thing we need to do — no Authorization header.
+    const es = new EventSource('/v1/webhook_events/stream', { withCredentials: true })
+    eventSourceRef.current = es
+    setStatus('connecting')
+
+    es.addEventListener('open', () => setStatus('live'))
+
+    es.addEventListener('webhook_event', (ev: MessageEvent) => {
+      try {
+        const frame = JSON.parse(ev.data) as WebhookEventStreamFrame
+        setFrames(prev => {
+          // Replace by event_id; new event_ids prepend so newest renders
+          // at the top. Cap to MAX_BUFFER to bound DOM / memory growth.
+          const idx = prev.findIndex(f => f.event_id === frame.event_id)
+          if (idx >= 0) {
+            const next = [...prev]
+            next[idx] = frame
+            return next
+          }
+          return [frame, ...prev].slice(0, MAX_BUFFER)
+        })
+      } catch (err) {
+        // Bad frame JSON shouldn't break the stream — log and move on.
+        console.error('parse webhook_event frame', err, ev.data)
+      }
+    })
+
+    es.addEventListener('error', () => {
+      // EventSource auto-reconnects; surface the in-between state so the
+      // operator knows the data freshness might be stale. readyState
+      // CLOSED (2) means the browser gave up; CONNECTING (0) means it's
+      // attempting reconnection.
+      if (es.readyState === EventSource.CLOSED) {
+        setStatus('error')
+      } else {
+        setStatus('reconnecting')
+      }
+    })
+
+    return () => {
+      es.close()
+      eventSourceRef.current = null
+    }
+  }, [])
+
+  // Sort by created_at desc as a stability guard — the buffer is mostly
+  // ordered by arrival but a snapshot frame interleaved with a live one
+  // can swap places on dedupe. Newest-first matches Stripe's events page
+  // and is what operators expect when scanning incidents.
+  const sortedFrames = useMemo(() => {
+    return [...frames].sort((a, b) => {
+      const ta = new Date(a.created_at).getTime()
+      const tb = new Date(b.created_at).getTime()
+      return tb - ta
+    })
+  }, [frames])
+
+  const handleReplay = async (id: string) => {
+    try {
+      const res = await api.replayWebhookEventV2(id)
+      toast.success(`Replayed event \u2014 clone ${res.event_id.slice(0, 12)}\u2026 queued`)
+      // The clone will arrive on the SSE stream within a tick; expand
+      // the original row so the operator can watch the new attempt land
+      // on the deliveries timeline.
+      setExpanded(id)
+    } catch (err) {
+      showApiError(err, 'Failed to replay event')
+    }
+  }
+
+  return (
+    <Layout>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-foreground">Webhook Events</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Real-time tail of every event dispatched to your endpoints. Click a row to see per-attempt delivery history and replay.
+          </p>
+        </div>
+        <ConnectionPill status={status} count={sortedFrames.length} />
+      </div>
+
+      <Card className="mt-6">
+        <CardContent className="p-0">
+          {sortedFrames.length === 0 ? (
+            <EmptyState
+              icon={Activity}
+              title={status === 'live' ? 'Waiting for events' : 'Connecting'}
+              description={
+                status === 'live'
+                  ? 'No webhook events yet. Trigger an event from your account and it will appear here in real time.'
+                  : 'Establishing live-tail connection\u2026'
+              }
+            />
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-8"></TableHead>
+                  <TableHead>Event</TableHead>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>When</TableHead>
+                  <TableHead className="text-right"></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sortedFrames.map(frame => {
+                  const isExpanded = expanded === frame.event_id
+                  return (
+                    <FrameRows
+                      key={frame.event_id}
+                      frame={frame}
+                      expanded={isExpanded}
+                      onToggle={() => setExpanded(isExpanded ? null : frame.event_id)}
+                      onReplay={() => handleReplay(frame.event_id)}
+                    />
+                  )
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </Layout>
+  )
+}
+
+// FrameRows renders the summary row + (when expanded) the per-attempt
+// deliveries timeline. Split into its own component so each row can lazy-
+// fetch its deliveries only when expanded — a tenant with hundreds of
+// events in the tail shouldn't fire a deliveries query for every row.
+function FrameRows({
+  frame,
+  expanded,
+  onToggle,
+  onReplay,
+}: {
+  frame: WebhookEventStreamFrame
+  expanded: boolean
+  onToggle: () => void
+  onReplay: () => void
+}) {
+  return (
+    <>
+      <TableRow
+        className="cursor-pointer hover:bg-accent/40"
+        onClick={onToggle}
+      >
+        <TableCell className="w-8 text-muted-foreground">
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </TableCell>
+        <TableCell>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">{frame.event_type}</Badge>
+            {frame.replay_of_event_id && (
+              <Badge variant="secondary" className="text-xs">replay</Badge>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground font-mono mt-1">
+            {frame.event_id}
+          </div>
+        </TableCell>
+        <TableCell className="font-mono text-sm text-muted-foreground">
+          {frame.customer_id || '\u2014'}
+        </TableCell>
+        <TableCell>
+          <StatusBadge status={frame.status} />
+        </TableCell>
+        <TableCell className="text-muted-foreground" title={formatDateTime(frame.created_at)}>
+          {formatRelativeTime(frame.created_at)}
+        </TableCell>
+        <TableCell className="text-right">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={e => {
+              e.stopPropagation()
+              onReplay()
+            }}
+          >
+            <RefreshCw size={12} className="mr-1.5" />
+            Replay
+          </Button>
+        </TableCell>
+      </TableRow>
+      {expanded && (
+        <TableRow className="bg-muted/30">
+          <TableCell colSpan={6} className="p-0">
+            <DeliveryTimeline eventID={frame.event_id} />
+          </TableCell>
+        </TableRow>
+      )}
+    </>
+  )
+}
+
+// DeliveryTimeline fetches the per-attempt history for a given event and
+// renders a stripped-down timeline. The diff view ("payload identical"
+// flag) compares request_payload_sha256 across attempts — Stripe-style
+// replays don't mutate the payload, so this collapses to "identical" in
+// the common case.
+function DeliveryTimeline({ eventID }: { eventID: string }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['webhook-deliveries', eventID],
+    queryFn: () => api.listWebhookDeliveries(eventID),
+  })
+
+  if (isLoading) {
+    return (
+      <div className="px-6 py-4 text-sm text-muted-foreground">
+        Loading delivery history{'\u2026'}
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div className="px-6 py-4 text-sm text-destructive">
+        Failed to load delivery history.
+      </div>
+    )
+  }
+  const deliveries = data?.deliveries ?? []
+  if (deliveries.length === 0) {
+    return (
+      <div className="px-6 py-4 text-sm text-muted-foreground">
+        No delivery attempts yet {'\u2014'} the event is queued.
+      </div>
+    )
+  }
+  return (
+    <div className="px-6 py-4">
+      <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-3">
+        Delivery Timeline ({deliveries.length} {deliveries.length === 1 ? 'attempt' : 'attempts'})
+      </h3>
+      <ol className="space-y-3">
+        {deliveries.map((d, i) => (
+          <li key={d.id} className="border border-border rounded-md bg-card">
+            <DeliveryRow delivery={d} prevSha={i > 0 ? deliveries[i - 1].request_payload_sha256 : null} />
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
+function DeliveryRow({
+  delivery,
+  prevSha,
+}: {
+  delivery: WebhookDeliveryView
+  prevSha: string | null
+}) {
+  const [showBody, setShowBody] = useState(false)
+  // Diff signal: identical vs different vs first attempt. We don't render
+  // the actual JSON diff here (clones share an identical payload by
+  // construction in v1); we render the verdict so the operator can spot
+  // an unexpected payload mutation immediately.
+  const diffLabel =
+    prevSha == null ? 'first attempt'
+      : prevSha === delivery.request_payload_sha256 ? 'payload identical to previous'
+      : 'payload differs from previous'
+
+  return (
+    <div className="p-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-sm">Attempt #{delivery.attempt_no}</span>
+            <StatusBadge status={delivery.status} />
+            {delivery.is_replay && (
+              <Badge variant="secondary" className="text-xs">replay clone</Badge>
+            )}
+            {delivery.status_code > 0 && (
+              <Badge variant="outline" className="font-mono text-xs">HTTP {delivery.status_code}</Badge>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground mt-1 font-mono break-all">
+            endpoint {delivery.endpoint_id}
+          </div>
+          <div className="text-xs text-muted-foreground mt-1" title={formatDateTime(delivery.attempted_at)}>
+            attempted {formatRelativeTime(delivery.attempted_at)}
+            {delivery.completed_at && (
+              <>
+                {' \u00b7 completed '}{formatRelativeTime(delivery.completed_at)}
+              </>
+            )}
+            {delivery.next_retry_at && (
+              <>
+                {' \u00b7 next retry '}{formatRelativeTime(delivery.next_retry_at)}
+              </>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground mt-1">
+            <span className="font-mono" title={delivery.request_payload_sha256}>
+              {'sha256 '}{delivery.request_payload_sha256.slice(0, 16)}{'\u2026'}
+            </span>
+            {' \u00b7 '}{diffLabel}
+          </div>
+          {delivery.error && (
+            <div className="text-xs text-destructive mt-1 break-words">
+              {delivery.error}
+            </div>
+          )}
+        </div>
+        {(delivery.response_body || delivery.error) && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs shrink-0"
+            onClick={() => setShowBody(prev => !prev)}
+          >
+            {showBody ? 'Hide body' : 'Show body'}
+          </Button>
+        )}
+      </div>
+      {showBody && (delivery.response_body || delivery.error) && (
+        <pre className="mt-3 p-2 bg-muted rounded text-xs font-mono whitespace-pre-wrap break-all max-h-48 overflow-auto">
+          {delivery.response_body || delivery.error}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function StatusBadge({ status }: { status: string }) {
+  // Map service-side status strings to the dashboard variants. Anything
+  // we don't recognize falls through to the neutral 'outline' so a future
+  // server-side status (e.g. "throttled") doesn't crash the render.
+  const variant: 'default' | 'secondary' | 'destructive' | 'success' | 'outline' =
+    status === 'succeeded' || status === 'delivered'
+      ? 'success'
+      : status === 'failed'
+      ? 'destructive'
+      : status === 'pending'
+      ? 'secondary'
+      : 'outline'
+  return <Badge variant={variant}>{status}</Badge>
+}
+
+function ConnectionPill({ status, count }: { status: StreamStatus; count: number }) {
+  const label =
+    status === 'live' ? `Live \u00b7 ${count} ${count === 1 ? 'event' : 'events'}`
+      : status === 'connecting' ? 'Connecting\u2026'
+      : status === 'reconnecting' ? 'Reconnecting\u2026'
+      : 'Disconnected'
+  const dotClass =
+    status === 'live' ? 'bg-emerald-500'
+      : status === 'connecting' || status === 'reconnecting' ? 'bg-amber-500 animate-pulse'
+      : 'bg-destructive'
+  return (
+    <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted px-3 py-1.5 rounded-full shrink-0">
+      <span className={`w-2 h-2 rounded-full ${dotClass}`} />
+      <span>{label}</span>
+    </div>
+  )
+}

@@ -34,6 +34,13 @@ type Store interface {
 	// Events
 	CreateEvent(ctx context.Context, tenantID string, event domain.WebhookEvent) (domain.WebhookEvent, error)
 	ListEvents(ctx context.Context, tenantID string, limit int) ([]domain.WebhookEvent, error)
+	GetEvent(ctx context.Context, tenantID, id string) (domain.WebhookEvent, error)
+	// CreateReplayEvent clones an existing event into a fresh event row
+	// with replay_of_event_id pointing back at the original. The clone
+	// goes through the normal Dispatch fan-out so each subscribed
+	// endpoint produces its own delivery row — visible alongside the
+	// original's deliveries on the dashboard timeline.
+	CreateReplayEvent(ctx context.Context, tenantID, originalEventID string) (domain.WebhookEvent, error)
 
 	// Deliveries
 	CreateDelivery(ctx context.Context, tenantID string, d domain.WebhookDelivery) (domain.WebhookDelivery, error)

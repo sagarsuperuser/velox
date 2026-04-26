@@ -600,6 +600,48 @@ None — all 7 self-merged on green CI per `feedback_continuous_autonomy`.
 
 ---
 
+## 2026-04-26 (Sun) — Week 6 Track A: Real-time webhook event UI
+
+### Track A — `feat/webhook-event-ui`
+
+- **Shipped:**
+  - **Migration `0058_webhook_event_replay`** — adds `replay_of_event_id TEXT REFERENCES webhook_events(id) ON DELETE SET NULL` plus a partial index `WHERE replay_of_event_id IS NOT NULL` for the timeline-walk query. Picked next-from-origin/main per `feedback_migration_numbering`.
+  - **`internal/webhook/eventbus.go`** — in-memory pub/sub the SSE handler subscribes against. Per-tenant fan-out (subscribers map keyed by tenant_id), 32-frame buffer per subscriber, non-blocking send (slow subscribers drop frames silently rather than back-pressuring the dispatcher). `StreamFrame` is the snake_case wire shape (`event_id`, `event_type`, `customer_id`, `status`, `last_attempt_at`, `created_at`, `livemode`, `replay_of_event_id`).
+  - **`internal/webhook/sse.go`** — chi handler at `GET /v1/webhook_events/stream`. Snapshot of last 50 events on connect, then EventBus subscribe, with a 15s heartbeat comment line keeping idle proxies (nginx 60s, ALB) from dropping the long-lived socket. Headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `X-Accel-Buffering: no`.
+  - **`internal/webhook/handler.go` `EventRoutes()`** — mounts `/stream`, `/{id}/deliveries`, `/{id}/replay` in that registration order so chi's specificity-by-registration-order rule picks the literal `/stream` route over the `/{id}` capture. `replayEventV2` returns `{event_id, replay_of, status: "queued"}`; `listDeliveriesEnriched` returns `{root_event_id, deliveries: [DeliveryView]}` with `attempt_no`, `request_payload_sha256`, `is_replay`, `replay_event_id` per row.
+  - **`internal/webhook/service.go` `Replay()`** — clones the event into a fresh row tagged `replay_of_event_id=<root>` via the new `Store.CreateReplayEvent`, publishes the immediate "pending" frame, then re-dispatches to every matching active endpoint. Single-pivot rule enforced at the store layer: replaying a clone collapses to the original root, so the chain is always one hop and `ListDeliveries` stays a flat `WHERE id = $1 OR replay_of_event_id = $1` walk.
+  - **Critical wiring fix in `internal/api/router.go`** — the global `middleware.Timeout(30 * time.Second)` was lifted off the router root and applied per route block, because a 30s cap would kill any open SSE socket. The stream route mounts on a sibling path ABOVE `/v1` (`r.Route("/v1/webhook_events/stream", …)`) with the same auth (`session.MiddlewareOrAPIKey` + rate-limit + `auth.Require(auth.PermAPIKeyRead)`) but specifically WITHOUT the timeout. Replay + deliveries mount inside the `/v1` block (they're short-lived RPCs and benefit from the 30s cap).
+  - **Three wire-shape regression tests** (`internal/webhook/wire_shape_test.go`):
+    - `TestWireShape_WebhookEventsStream_SnakeCase` — connects to the SSE handler, parses the first frame, asserts all 8 snake_case keys present, no PascalCase / camelCase leaks, `last_attempt_at` and `replay_of_event_id` are present-as-null on snapshot frames.
+    - `TestWireShape_WebhookEventReplay` — POSTs to `/{id}/replay`, asserts `{event_id, replay_of, status}` shape, status is `"queued"`, `replay_of` matches the original ID, `event_id` is a fresh distinct clone ID.
+    - `TestWireShape_WebhookEventDeliveries` — GETs `/{id}/deliveries`, asserts the `{root_event_id, deliveries[]}` envelope plus all 14 per-row keys (`id`, `event_id`, `endpoint_id`, `attempt_no`, `status`, `status_code`, `response_body`, `error`, `request_payload_sha256`, `attempted_at`, `completed_at`, `next_retry_at`, `is_replay`, `replay_event_id`), all snake_case, no leaks.
+  - **`web-v2/src/pages/WebhookEvents.tsx`** — new page at `/webhooks/events` with a connection-status pill (live / connecting / reconnecting / disconnected), per-row Replay button, and an expandable timeline that lazy-fetches deliveries on first expand. Buffer caps at 200 frames; rows dedupe by `event_id` so `pending → succeeded` flips a single row in place. Connection auto-reconnects via EventSource's built-in retry; the pill colors transition appropriately.
+  - **`web-v2/src/lib/api.ts`** — added `replayWebhookEventV2`, `listWebhookDeliveries`, `WebhookEventStreamFrame`, `WebhookDeliveryView`, `WebhookDeliveriesResponse` types. SSE EventSource opens directly from the page (not via the apiRequest wrapper) because cookies ride automatically on same-origin and the wrapper would only complicate the close/reconnect lifecycle.
+  - **`web-v2/src/main.tsx`** — registered route `/webhooks/events` (lazy-loaded). The legacy `/webhooks` page gains an "Open Live Tail" button on the Events tab linking to the new page.
+  - **CHANGELOG.md and `web-v2/src/pages/Changelog.tsx`** — both updated with the 2026-04-26 entry per `feedback_changelog_discipline`.
+
+- **Discipline notes:**
+  - **No bypass of single-pivot rule.** The store's `CreateReplayEvent` collapses to root before insert, so the `replay_of_event_id` column is always 1-hop. ListDeliveries is therefore a flat WHERE clause, not a recursive CTE, and the timeline always roots at the original event regardless of which clone the operator clicked Replay on.
+  - **Tenant isolation holds two ways:** (1) the snapshot `ListEvents` runs under the caller's RLS tx, (2) the `EventBus` subscriber map is keyed by tenant_id so cross-tenant frames never reach the connection. A future Track-Z RLS leak in `webhook_events` would still not leak via SSE because the bus side holds independently.
+  - **chi/v5 sibling-mount precedence respected.** `/stream` is registered before `/{id}/deliveries` and `/{id}/replay` in `EventRoutes()` so the literal route wins. Documented in code comments alongside the comparable `/invoices/create_preview` precedent.
+  - **In-memory bus, not DB polling.** Documented inline: "We do NOT poll the DB on a tick — the EventBus is in-memory and source-of-truth-adjacent." The OutboxDispatcher's success path doesn't currently publish frames (it ends up calling `Service.Dispatch` which does), so multi-replica SSE works as long as the tenant's HTTP traffic and dispatcher land on the same replica. v1 sizing is single-replica per CLAUDE.md, so this is correct for now; a v2 multi-replica deployment would route SSE through Postgres LISTEN/NOTIFY (one-line swap inside `EventBus.Publish`).
+  - **Wire-shape regression tests are the merge gate** per `feedback_continuous_autonomy`. All three pass; full webhook test suite green.
+
+- **Wall-clock budget:** ≤90 min per the user prompt. Backend (~40 min) + wire-shape tests (~15 min) + frontend (~20 min) + handoff/changelog/PR (~15 min) — within budget.
+
+- **Sibling lane:** `feat/plan-migration-tool` is running in parallel (background subagent `a7c1e41d6e284e7ed`). No file overlap — Track A owns `internal/webhook/`, `web-v2/src/pages/WebhookEvents.tsx`, migration `0058_webhook_event_replay`, and the SSE-route block in `internal/api/router.go`. The plan-migration lane owns its own files. No coordination required.
+
+- **Blocking Track B on:** nothing.
+- **Track B can pick up:** the dashboard could grow per-customer drilldowns on top of the new live tail (filter the EventSource by `customer_id` query param) — a small follow-up slice once Track A's PR merges.
+
+- **Open for human review:**
+  - **Multi-replica SSE.** The in-memory bus is correct for single-replica v1, but the moment Velox runs multiple API replicas, the SSE connection lands on one and dispatch lands on another. Documented as a v2 follow-up; the swap is one-line inside `EventBus.Publish` (Postgres LISTEN/NOTIFY).
+  - **Replay-button audit log.** Currently the Replay action is logged via the Service's standard slog `webhook event replayed` line. If we want a dedicated `audit_log` row (similar to credit-grant or invoice-finalize), that's a small follow-up — flagged for the next operator-actions pass.
+
+- **Next session:** open PR `feat(webhook): real-time event UI with SSE tail + replay (Week 6)`, drive CI green, self-merge per `feedback_continuous_autonomy`. After merge, the next Week 6 deliverable (plan-migration tool) is already in flight on the sibling lane.
+
+---
+
 ## 2026-04-26 (Sun) — Track A: Week 7 operator CLI (`velox-cli sub list` + `invoice send`)
 
 ### Track A
@@ -644,7 +686,7 @@ None — all 7 self-merged on green CI per `feedback_continuous_autonomy`.
 ### Track A
 - **Worktree:** `.claude/worktrees/agent-a7c1e41d` on `feat/plan-migration-tool` off `origin/main` (parallel with Track A's `feat/webhook-event-ui` lane).
 - **Shipped (Week 6 deliverable #2):**
-  - Migration `0058_plan_migrations` — new `plan_migrations` history table with `customer_filter` JSONB always-object, `totals` JSONB always-array, FORCE-RLS on `(tenant_id, livemode)`, BEFORE-INSERT `set_livemode` trigger from migration 0021, hot-read index `(tenant_id, created_at DESC)`, UNIQUE `(tenant_id, idempotency_key)` for atomic replay dedupe.
+  - Migration `0059_plan_migrations` — new `plan_migrations` history table with `customer_filter` JSONB always-object, `totals` JSONB always-array, FORCE-RLS on `(tenant_id, livemode)`, BEFORE-INSERT `set_livemode` trigger from migration 0021, hot-read index `(tenant_id, created_at DESC)`, UNIQUE `(tenant_id, idempotency_key)` for atomic replay dedupe. (Renumbered 0058→0059 during merge to resolve collision with sibling lane's `0058_webhook_event_replay` migration.)
   - `internal/planmigration/store.go` — `Store` interface (`Insert`, `GetByIdempotencyKey`, `SetAuditLogID`, `UpdateAppliedCount`, `List`) + `PostgresStore` against the new table. JSONB columns hydrate via `migrationFilterScanner` / `migrationTotalsScanner` (always-array idiom: empty input → `[]MigrationTotal{}`). Cursor pagination uses limit+1 fetch with stable `(created_at, id)` ordering.
   - `internal/planmigration/service.go` — orchestrator. `Preview` walks the cohort and runs `billing.PreviewService.CreatePreview` for each customer's `before`; `previewAfter` substitutes the from-plan's `base_fee` lines with the to-plan's base amount and re-aggregates totals (pragmatic approximation, with explicit warning that usage rates aren't re-priced under this surface). `Commit` flow: idempotency lookup → preview → `Insert` migration row (concurrent replays race on the UNIQUE constraint and lose to `errs.ErrAlreadyExists`, which we recover from by re-fetching) → swap `subscription_items.plan_id` (immediate via `subStore.ApplyItemPlanImmediately`) or schedule (`subStore.SetItemPendingPlan` for `next_period`) → emit per-customer `subscription.plan_changed` audit + cohort `plan.migration_committed` audit.
   - `internal/planmigration/handler.go` — three HTTP endpoints under `/v1/admin/plan_migrations`: `POST /preview`, `POST /commit`, `GET /`. Wire shapes locked in snake_case. Actor identity pulled via `auth.KeyID()` to populate `applied_by` + `applied_by_type` (falls back to `"system"` for unauthenticated test contexts).

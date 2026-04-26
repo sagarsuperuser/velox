@@ -344,6 +344,23 @@ export const api = {
   listWebhookEvents: () => apiRequest<{ data: WebhookEvent[] }>('GET', '/webhook-endpoints/events'),
   replayWebhookEvent: (id: string) => apiRequest<{ status: string }>('POST', `/webhook-endpoints/events/${id}/replay`),
 
+  // Week 6 real-time event UI. Replay returns the freshly-cloned event so
+  // the UI can highlight it in the live tail; deliveries-list returns the
+  // full per-attempt timeline for the expand-row diff view. The SSE stream
+  // is NOT wired here — EventSource is opened directly from the page
+  // because cookies ride automatically on same-origin requests and the
+  // wrapper would only complicate the close/reconnect lifecycle.
+  replayWebhookEventV2: (id: string) =>
+    apiRequest<{ event_id: string; replay_of: string; status: string }>(
+      'POST',
+      `/webhook_events/${id}/replay`,
+    ),
+  listWebhookDeliveries: (id: string) =>
+    apiRequest<WebhookDeliveriesResponse>(
+      'GET',
+      `/webhook_events/${id}/deliveries`,
+    ),
+
   // Analytics
   addInvoiceLineItem: (invoiceId: string, data: { description: string; line_type: string; quantity: number; unit_amount_cents: number }) =>
     apiRequest<LineItem>('POST', `/invoices/${invoiceId}/line-items`, data),
@@ -1044,6 +1061,53 @@ export interface WebhookEvent {
   event_type: string
   payload: Record<string, unknown>
   created_at: string
+  // Week 6: replay-tree pivot. Original events leave this nil; replay
+  // clones point at the root original (single-pivot rule — the chain is
+  // collapsed at create time so it's always one hop). Optional in the TS
+  // type because legacy events written before migration 0058 don't carry
+  // it.
+  replay_of_event_id?: string | null
+}
+
+// SSE-shaped projection of a webhook event the live tail consumes via
+// EventSource on /v1/webhook_events/stream. Snake_case keys pinned by
+// TestWireShape_WebhookEventsStream_SnakeCase.
+export interface WebhookEventStreamFrame {
+  event_id: string
+  event_type: string
+  customer_id: string
+  status: string  // "pending" | "succeeded" | "failed"
+  last_attempt_at: string | null
+  created_at: string
+  livemode: boolean
+  replay_of_event_id: string | null
+}
+
+// Per-attempt timeline row served by GET /v1/webhook_events/{id}/deliveries.
+// Each row carries everything the dashboard's expandable timeline shows
+// plus the request_payload_sha256 the diff viewer uses to flag "payload
+// identical between attempts" (Stripe-style replay's common case). Keys
+// pinned by TestWireShape_WebhookEventDeliveries.
+export interface WebhookDeliveryView {
+  id: string
+  event_id: string
+  endpoint_id: string
+  attempt_no: number
+  status: string  // "pending" | "succeeded" | "failed"
+  status_code: number
+  response_body: string
+  error: string
+  request_payload_sha256: string
+  attempted_at: string
+  completed_at: string | null
+  next_retry_at: string | null
+  is_replay: boolean
+  replay_event_id: string
+}
+
+export interface WebhookDeliveriesResponse {
+  root_event_id: string
+  deliveries: WebhookDeliveryView[]
 }
 
 export interface ApiKeyInfo {
