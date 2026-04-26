@@ -229,27 +229,14 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
         {/* Overrides */}
         <div>
           <Label className="text-xs uppercase tracking-wide text-muted-foreground">Overrides</Label>
-          {detail?.overridable_schema && Object.keys(detail.overridable_schema).length > 0 ? (
+          {recipe.overridable.length > 0 ? (
             <div className="space-y-3 mt-2">
-              {Object.entries(detail.overridable_schema).map(([key, schema]) => (
+              {recipe.overridable.map(schema => (
                 <OverrideField
-                  key={key}
-                  fieldKey={key}
+                  key={schema.key}
                   schema={schema}
-                  value={overrides[key] ?? schema.default ?? ''}
-                  onChange={(v) => setOverride(key, v)}
-                />
-              ))}
-            </div>
-          ) : recipe.overridable.length > 0 ? (
-            <div className="space-y-3 mt-2">
-              {recipe.overridable.map(key => (
-                <OverrideField
-                  key={key}
-                  fieldKey={key}
-                  schema={{ type: 'string' }}
-                  value={overrides[key] ?? ''}
-                  onChange={(v) => setOverride(key, v)}
+                  value={overrides[schema.key] ?? schema.default ?? ''}
+                  onChange={(v) => setOverride(schema.key, v)}
                 />
               ))}
             </div>
@@ -317,36 +304,31 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
 }
 
 function OverrideField({
-  fieldKey,
   schema,
   value,
   onChange,
 }: {
-  fieldKey: string
   schema: RecipeOverrideSchema
   value: string | number | boolean
   onChange: (v: string | number | boolean) => void
 }) {
+  const id = `override-${schema.key}`
   if (schema.type === 'boolean') {
     return (
       <div className="flex items-center justify-between">
-        <Label htmlFor={`override-${fieldKey}`} className="font-mono text-sm">{fieldKey}</Label>
-        <Switch
-          id={`override-${fieldKey}`}
-          checked={!!value}
-          onCheckedChange={onChange}
-        />
+        <Label htmlFor={id} className="font-mono text-sm">{schema.key}</Label>
+        <Switch id={id} checked={!!value} onCheckedChange={onChange} />
       </div>
     )
   }
   return (
     <div>
       <div className="flex items-center justify-between">
-        <Label htmlFor={`override-${fieldKey}`} className="font-mono text-sm">{fieldKey}</Label>
+        <Label htmlFor={id} className="font-mono text-sm">{schema.key}</Label>
         {schema.description && <span className="text-xs text-muted-foreground">{schema.description}</span>}
       </div>
       <Input
-        id={`override-${fieldKey}`}
+        id={id}
         type={schema.type === 'number' ? 'number' : 'text'}
         value={String(value)}
         onChange={(e) => {
@@ -354,6 +336,8 @@ function OverrideField({
           onChange(schema.type === 'number' ? Number(raw) : raw)
         }}
         className="mt-1.5 font-mono"
+        maxLength={schema.max_length}
+        pattern={schema.pattern}
       />
     </div>
   )

@@ -655,26 +655,28 @@ export interface RecipeCreatesSummary {
   webhook_endpoints: number
 }
 
+export interface RecipeOverrideSchema {
+  key: string
+  type: 'string' | 'number' | 'boolean'
+  default?: string | number | boolean
+  description?: string
+  enum?: (string | number)[]
+  max_length?: number
+  pattern?: string
+}
+
 export interface Recipe {
   key: string
   version: string
   name: string
   summary: string
   creates: RecipeCreatesSummary
-  overridable: string[]
+  overridable: RecipeOverrideSchema[]
   instantiated?: { id: string; instantiated_at: string } | null
-}
-
-export interface RecipeOverrideSchema {
-  type: 'string' | 'number' | 'boolean'
-  default?: string | number | boolean
-  description?: string
-  enum?: (string | number)[]
 }
 
 export interface RecipeDetail extends Recipe {
   description: string
-  overridable_schema: Record<string, RecipeOverrideSchema>
 }
 
 export interface RecipePreview {
