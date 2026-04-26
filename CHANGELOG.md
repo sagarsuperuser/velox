@@ -20,6 +20,44 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **One-off invoice composer — 30-second draft + send from customer page** (2026-04-26) —
+  Week 7 ships a primary "New invoice" button at the top-right of every
+  customer detail page that opens a drawer composing an invoice without a
+  parent subscription. Three field groups: a currency selector (defaults to
+  the customer's billing-profile currency, falls back to USD); a
+  line-items grid with description / type (`add_on` / `base_fee` / `usage`)
+  / quantity / `unit_amount_cents` / a computed total + a remove button per
+  row; and a memo Textarea. Two terminal actions: "Save draft" creates the
+  invoice in `draft` status and routes to the invoice detail page; "Save &
+  send" runs the same draft path then immediately calls finalize +
+  `send_email` so the customer receives a hosted-invoice link in the same
+  click. Validation is inline before submit — at least one line item,
+  description required per line, integer `quantity > 0`, integer
+  `unit_amount_cents > 0`. Subtotal renders live as the lines change; tax
+  is shown as "Calculated at finalize" (carries the v1 PaymentIntent-only
+  tax-neutral posture — the tenant's Stripe account holds the
+  registration). On success the dashboard toasts the invoice number, the
+  customer's invoices tab refetches, and the toast carries a "View
+  invoice" action that deep-links to the invoice page. Partial failures
+  surface the invoice number alongside the failed step's error so the
+  operator can recover from the invoice-detail surface (e.g. "draft
+  created INV-0042 but finalize failed: <reason>").
+- **Backend: invoices.subscription_id is now optional** —
+  Migration 0060 drops the NOT NULL constraint on `invoices.subscription_id`
+  so the new composer (and any future ad-hoc charge path) can write a draft
+  without a parent subscription. The partial unique idempotency index on
+  `(tenant_id, subscription_id, billing_period_start) WHERE
+  billing_reason='cycle'` already treats NULLs as distinct, so two one-off
+  drafts coexist for the same period without colliding with cycle invoices.
+  `Service.Create` no longer rejects empty `subscription_id` and now
+  defaults `billing_period_start` / `billing_period_end` to "now" when both
+  are zero (one-off invoices have no canonical cycle window). Default
+  `line_type` for `AddLineItem` flips from `"manual"` to `add_on` so the
+  CHECK constraint on `invoice_line_items.line_type` (added migration 0017,
+  set: `base_fee` / `usage` / `add_on` / `discount` / `tax`) accepts the
+  default. Backwards-compatible: cycle-invoice creation paths still pass
+  `subscription_id` and the column reads identically when present.
+
 - **Plan migration tool — bulk plan swaps with preview + commit** (2026-04-26) —
   Week 6 deliverable #2 ships an operator-facing surface for moving a cohort of
   subscribers from one plan to another. Three endpoints under

@@ -1,11 +1,11 @@
-import { useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useMemo, useState } from 'react'
+import { useNavigate, useParams, Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, type Customer, type BillingProfile, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride, type CustomerCouponAssignment } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Customer, type BillingProfile, type Invoice, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride, type CustomerCouponAssignment } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { CostDashboard } from '@/components/CostDashboard'
@@ -30,7 +30,8 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 
-import { Loader2, Pencil, CreditCard, Archive, Wand2, Ticket } from 'lucide-react'
+import { Loader2, Pencil, CreditCard, Archive, Wand2, Ticket, FilePlus2, Plus, Trash2 } from 'lucide-react'
+import { Textarea } from '@/components/ui/textarea'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 import { Combobox } from '@/components/Combobox'
@@ -70,12 +71,14 @@ type BillingProfileData = z.infer<typeof billingProfileSchema>
 export default function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
 
   const [showEditCustomer, setShowEditCustomer] = useState(false)
   const [showEditBilling, setShowEditBilling] = useState(false)
   const [showCreateSub, setShowCreateSub] = useState(false)
   const [showDunningOverride, setShowDunningOverride] = useState(false)
   const [showAssignCoupon, setShowAssignCoupon] = useState(false)
+  const [showNewInvoice, setShowNewInvoice] = useState(false)
   const [settingUpPayment, setSettingUpPayment] = useState(false)
 
   const { data: customer, isLoading, error: loadError, refetch } = useQuery({
@@ -255,6 +258,12 @@ export default function CustomerDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {!isArchived && (
+            <Button size="sm" onClick={() => setShowNewInvoice(true)}>
+              <FilePlus2 size={14} className="mr-1.5" />
+              New invoice
+            </Button>
+          )}
           {!isArchived && (
             <Button variant="outline" size="sm" onClick={() => setShowEditCustomer(true)}>
               <Pencil size={14} className="mr-1.5" />
@@ -813,6 +822,39 @@ export default function CustomerDetailPage() {
             setShowAssignCoupon(false)
             queryClient.invalidateQueries({ queryKey: ['customer-coupon', id] })
             toast.success('Discount applied')
+          }}
+        />
+      )}
+
+      {/* One-off Invoice Composer (Week 7). Drawer-styled dialog —
+          create a draft invoice, attach line items, optionally finalize+send.
+          Backed by POST /v1/invoices, POST /v1/invoices/{id}/line-items,
+          POST /v1/invoices/{id}/finalize, POST /v1/invoices/{id}/send. */}
+      {showNewInvoice && id && customer && (
+        <NewInvoiceDialog
+          customerId={id}
+          customer={customer}
+          billingProfile={billingProfile ?? null}
+          onClose={() => setShowNewInvoice(false)}
+          onCreated={({ invoice, sent }) => {
+            setShowNewInvoice(false)
+            queryClient.invalidateQueries({ queryKey: ['customer-overview', id] })
+            queryClient.invalidateQueries({ queryKey: ['invoices'] })
+            if (sent) {
+              toast.success(`Invoice ${invoice.invoice_number} sent`, {
+                action: {
+                  label: 'View invoice',
+                  onClick: () => navigate(`/invoices/${invoice.id}`),
+                },
+              })
+            } else {
+              toast.success(`Draft ${invoice.invoice_number} saved`, {
+                action: {
+                  label: 'View invoice',
+                  onClick: () => navigate(`/invoices/${invoice.id}`),
+                },
+              })
+            }
           }}
         />
       )}
@@ -1388,6 +1430,393 @@ function DunningOverrideDialog({ customerId, override, onClose, onSaved, onDelet
             </div>
           </div>
         </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/* ─── One-off Invoice Composer ────────────────────────────────── */
+
+// Fixed catalog of line types the operator can pick from. Mirrors the DB
+// CHECK on invoice_line_items.line_type. tax/discount are intentionally
+// disabled in the composer — those flow through tax provider + coupon
+// surfaces, not the manual line editor.
+const COMPOSER_LINE_TYPES: { value: string; label: string }[] = [
+  { value: 'add_on', label: 'Add-on / one-off charge' },
+  { value: 'base_fee', label: 'Base fee' },
+  { value: 'usage', label: 'Usage' },
+]
+
+type ComposerLine = {
+  description: string
+  quantity: string         // string-bound input; coerced at submit time
+  unit_amount_cents: string  // string-bound; cent values, no decimals
+  line_type: string
+}
+
+const blankLine = (): ComposerLine => ({
+  description: '',
+  quantity: '1',
+  unit_amount_cents: '',
+  line_type: 'add_on',
+})
+
+function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCreated }: {
+  customerId: string
+  customer: Customer
+  billingProfile: BillingProfile | null
+  onClose: () => void
+  onCreated: (result: { invoice: Invoice; sent: boolean }) => void
+}) {
+  // Default currency: prefer the customer's billing profile currency, else
+  // tenant default (USD here is a placeholder until the tenant settings query
+  // is plumbed; the operator can switch in one click).
+  const initialCurrency = (billingProfile?.currency || 'USD').toUpperCase()
+  const [currency, setCurrency] = useState(initialCurrency)
+  const [memo, setMemo] = useState('')
+  const [lines, setLines] = useState<ComposerLine[]>([blankLine()])
+  const [errors, setErrors] = useState<{
+    lines?: Record<number, { description?: string; quantity?: string; unit_amount_cents?: string }>
+    form?: string
+  }>({})
+  const [submitting, setSubmitting] = useState<null | 'draft' | 'send'>(null)
+
+  const currencySymbol = getCurrencySymbol(currency)
+
+  const subtotalCents = useMemo(() => {
+    return lines.reduce((acc, l) => {
+      const q = Number(l.quantity)
+      const u = Number(l.unit_amount_cents)
+      if (!Number.isFinite(q) || !Number.isFinite(u) || q <= 0 || u < 0) return acc
+      return acc + Math.round(q) * Math.round(u)
+    }, 0)
+  }, [lines])
+
+  const updateLine = (idx: number, patch: Partial<ComposerLine>) => {
+    setLines(prev => prev.map((l, i) => (i === idx ? { ...l, ...patch } : l)))
+    // Clear inline error for the field being edited so the user gets
+    // immediate feedback that the issue is resolved.
+    setErrors(prev => {
+      if (!prev.lines?.[idx]) return prev
+      const lineErrs = { ...prev.lines[idx] }
+      for (const k of Object.keys(patch)) delete lineErrs[k as keyof typeof lineErrs]
+      return { ...prev, lines: { ...prev.lines, [idx]: lineErrs } }
+    })
+  }
+
+  const addLine = () => setLines(prev => [...prev, blankLine()])
+  const removeLine = (idx: number) => setLines(prev => prev.filter((_, i) => i !== idx))
+
+  // validate returns sanitized lines suitable for the API. Returns null on
+  // any validation failure (errors are surfaced via setErrors).
+  const validate = (): { description: string; line_type: string; quantity: number; unit_amount_cents: number }[] | null => {
+    const lineErrors: Record<number, { description?: string; quantity?: string; unit_amount_cents?: string }> = {}
+    const cleaned: { description: string; line_type: string; quantity: number; unit_amount_cents: number }[] = []
+    if (lines.length === 0) {
+      setErrors({ form: 'Add at least one line item.' })
+      return null
+    }
+    lines.forEach((l, i) => {
+      const errs: { description?: string; quantity?: string; unit_amount_cents?: string } = {}
+      const desc = l.description.trim()
+      if (!desc) errs.description = 'Description is required'
+      const qty = Number(l.quantity)
+      if (!Number.isFinite(qty) || !Number.isInteger(qty) || qty <= 0) {
+        errs.quantity = 'Whole number greater than 0'
+      }
+      const unit = Number(l.unit_amount_cents)
+      if (!Number.isFinite(unit) || !Number.isInteger(unit) || unit < 0) {
+        errs.unit_amount_cents = 'Whole cents, 0 or more'
+      }
+      // Backend currently rejects unit_amount_cents <= 0. Surface that
+      // upfront so the user fixes it before the round-trip.
+      if (Number.isInteger(unit) && unit === 0) {
+        errs.unit_amount_cents = 'Must be greater than 0'
+      }
+      if (Object.keys(errs).length > 0) {
+        lineErrors[i] = errs
+      } else {
+        cleaned.push({
+          description: desc,
+          line_type: l.line_type || 'add_on',
+          quantity: qty,
+          unit_amount_cents: unit,
+        })
+      }
+    })
+    if (Object.keys(lineErrors).length > 0) {
+      setErrors({ lines: lineErrors })
+      return null
+    }
+    setErrors({})
+    return cleaned
+  }
+
+  // submit creates the draft invoice, attaches every line item in sequence,
+  // and (when finalize=true) finalizes + sends. Failure at any step leaves
+  // the operator with whatever has already been persisted (the draft + any
+  // committed line items) so they can recover by opening the invoice in the
+  // detail view.
+  const submit = async (action: 'draft' | 'send') => {
+    const cleaned = validate()
+    if (!cleaned) return
+    setSubmitting(action)
+    let invoice: Invoice | null = null
+    try {
+      invoice = await api.createInvoice({
+        customer_id: customerId,
+        currency: currency,
+        memo: memo.trim() || undefined,
+      })
+
+      for (const line of cleaned) {
+        await api.addInvoiceLineItem(invoice.id, line)
+      }
+
+      let sent = false
+      if (action === 'send') {
+        invoice = await api.finalizeInvoice(invoice.id)
+        const recipient = billingProfile?.email || customer.email
+        if (recipient) {
+          // Best-effort send: a transient SMTP failure shouldn't unwind a
+          // successfully finalized invoice. Operators can resend from the
+          // invoice detail page if the email never lands.
+          try {
+            await api.sendInvoiceEmail(invoice.id, recipient)
+            sent = true
+          } catch (sendErr) {
+            toast.warning(
+              `Invoice finalized, but email to ${recipient} failed. Resend from the invoice detail page.`,
+            )
+          }
+        } else {
+          toast.warning('Invoice finalized, but no email is on file. Add one to send.')
+        }
+      }
+
+      onCreated({ invoice, sent })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create invoice'
+      // Partial-success messaging: if we got an invoice ID but failed mid-flight
+      // (line item add, finalize, etc.) tell the operator what survived so they
+      // can pick it up from the invoice detail page.
+      if (invoice) {
+        setErrors({
+          form: `Draft ${invoice.invoice_number} created, but a later step failed: ${message}. Open the invoice detail page to continue.`,
+        })
+      } else {
+        setErrors({ form: message })
+      }
+    } finally {
+      setSubmitting(null)
+    }
+  }
+
+  const isBusy = submitting !== null
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !isBusy) onClose() }}>
+      <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>New invoice</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-6">
+          {/* Customer summary — confirm the operator is invoicing the right
+              account before they commit lines. */}
+          <div className="rounded-md border border-border bg-muted/40 px-4 py-3 flex items-center justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">{customer.display_name}</p>
+              <p className="text-xs text-muted-foreground truncate">{customer.email || 'No email on file'}</p>
+            </div>
+            <Badge variant="outline">{customer.external_id}</Badge>
+          </div>
+
+          {/* Currency */}
+          <div className="space-y-2">
+            <Label htmlFor="composer-currency">Currency</Label>
+            <Select value={currency} onValueChange={(v) => setCurrency((v ?? 'USD').toUpperCase())}>
+              <SelectTrigger id="composer-currency" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {GEO_CURRENCIES.map(c => (
+                  <SelectItem key={c.code} value={c.code}>
+                    {c.symbol} {c.code} \u2014 {c.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {billingProfile?.currency && billingProfile.currency.toUpperCase() === currency && (
+              <p className="text-xs text-muted-foreground">From customer billing profile.</p>
+            )}
+          </div>
+
+          {/* Line items */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label>Line items</Label>
+              <Button type="button" variant="outline" size="sm" onClick={addLine} disabled={isBusy}>
+                <Plus size={14} className="mr-1.5" />
+                Add line
+              </Button>
+            </div>
+
+            <div className="rounded-md border border-border overflow-hidden">
+              <div className="grid grid-cols-[1fr_120px_140px_160px_44px] gap-0 bg-muted/40 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                <div className="px-3 py-2">Description</div>
+                <div className="px-3 py-2">Type</div>
+                <div className="px-3 py-2">Qty</div>
+                <div className="px-3 py-2">Unit ({currencySymbol.trim() || currency})</div>
+                <div className="px-3 py-2"></div>
+              </div>
+              <div className="divide-y divide-border">
+                {lines.map((line, idx) => {
+                  const lineErrs = errors.lines?.[idx] || {}
+                  const qty = Number(line.quantity)
+                  const unit = Number(line.unit_amount_cents)
+                  const totalCents = Number.isFinite(qty) && Number.isFinite(unit) && qty > 0 && unit >= 0
+                    ? Math.round(qty) * Math.round(unit)
+                    : 0
+                  return (
+                    <div key={idx} className="grid grid-cols-[1fr_120px_140px_160px_44px] items-start gap-0">
+                      <div className="px-3 py-2 space-y-1">
+                        <Input
+                          placeholder="Implementation services"
+                          value={line.description}
+                          onChange={e => updateLine(idx, { description: e.target.value })}
+                          aria-invalid={!!lineErrs.description}
+                          maxLength={500}
+                          disabled={isBusy}
+                        />
+                        {lineErrs.description && <p className="text-xs text-destructive">{lineErrs.description}</p>}
+                      </div>
+                      <div className="px-3 py-2">
+                        <Select value={line.line_type} onValueChange={v => updateLine(idx, { line_type: v ?? 'add_on' })}>
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {COMPOSER_LINE_TYPES.map(t => (
+                              <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="px-3 py-2 space-y-1">
+                        <Input
+                          type="number"
+                          inputMode="numeric"
+                          min={1}
+                          step={1}
+                          placeholder="1"
+                          value={line.quantity}
+                          onChange={e => updateLine(idx, { quantity: e.target.value })}
+                          aria-invalid={!!lineErrs.quantity}
+                          disabled={isBusy}
+                        />
+                        {lineErrs.quantity && <p className="text-xs text-destructive">{lineErrs.quantity}</p>}
+                      </div>
+                      <div className="px-3 py-2 space-y-1">
+                        <Input
+                          type="number"
+                          inputMode="numeric"
+                          min={0}
+                          step={1}
+                          placeholder="2500"
+                          value={line.unit_amount_cents}
+                          onChange={e => updateLine(idx, { unit_amount_cents: e.target.value })}
+                          aria-invalid={!!lineErrs.unit_amount_cents}
+                          disabled={isBusy}
+                        />
+                        {lineErrs.unit_amount_cents
+                          ? <p className="text-xs text-destructive">{lineErrs.unit_amount_cents}</p>
+                          : <p className="text-xs text-muted-foreground">= {formatCents(totalCents, currency)}</p>}
+                      </div>
+                      <div className="px-3 py-2 flex justify-center">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Remove line ${idx + 1}`}
+                          onClick={() => removeLine(idx)}
+                          disabled={isBusy || lines.length === 1}
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Amounts are in cents (e.g. 2500 = {formatCents(2500, currency)}). Tax is applied per the tenant's tax provider when the invoice finalizes.
+            </p>
+          </div>
+
+          {/* Memo */}
+          <div className="space-y-2">
+            <Label htmlFor="composer-memo">Memo (optional)</Label>
+            <Textarea
+              id="composer-memo"
+              placeholder="Notes for the customer — appears on the invoice PDF."
+              value={memo}
+              onChange={e => setMemo(e.target.value)}
+              maxLength={2000}
+              disabled={isBusy}
+            />
+          </div>
+
+          <Separator />
+
+          {/* Subtotal — read-only client-computed sum of lines. Tax is server-
+              computed at finalize and reflected on the invoice detail page;
+              we don't preview tax here because the tax provider is
+              tenant-configurable and a wrong preview is worse than no
+              preview. */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Subtotal</span>
+              <span className="text-sm font-medium text-foreground">{formatCents(subtotalCents, currency)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Tax</span>
+              <span className="text-sm text-muted-foreground">Calculated at finalize</span>
+            </div>
+            <div className="flex items-center justify-between border-t border-border pt-2">
+              <span className="text-sm font-semibold text-foreground">Total (before tax)</span>
+              <span className="text-sm font-semibold text-foreground">{formatCents(subtotalCents, currency)}</span>
+            </div>
+          </div>
+
+          {errors.form && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {errors.form}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose} disabled={isBusy}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => submit('draft')}
+            disabled={isBusy}
+          >
+            {submitting === 'draft'
+              ? <><Loader2 size={14} className="animate-spin mr-2" />Saving draft...</>
+              : 'Save draft'}
+          </Button>
+          <Button type="button" onClick={() => submit('send')} disabled={isBusy}>
+            {submitting === 'send'
+              ? <><Loader2 size={14} className="animate-spin mr-2" />Finalizing...</>
+              : 'Save & send'}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

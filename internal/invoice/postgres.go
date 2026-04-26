@@ -21,7 +21,7 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
-const invCols = `id, tenant_id, customer_id, subscription_id, invoice_number, status,
+const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoice_number, status,
 	payment_status, currency, subtotal_cents, discount_cents, tax_amount_cents, tax_rate_bp,
 	COALESCE(tax_name,''), COALESCE(tax_country,''), COALESCE(tax_id,''),
 	total_amount_cents, amount_due_cents, amount_paid_cents, credits_applied_cents,
@@ -65,7 +65,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, billing_reason)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
 		RETURNING `+invCols,
-		id, tenantID, inv.CustomerID, inv.SubscriptionID, inv.InvoiceNumber,
+		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
 		inv.SubtotalCents, inv.DiscountCents, inv.TaxAmountCents, inv.TaxName,
 		inv.TaxCountry, inv.TaxID,
@@ -776,7 +776,7 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, billing_reason)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40)
 		RETURNING `+invCols,
-		id, tenantID, inv.CustomerID, inv.SubscriptionID, inv.InvoiceNumber,
+		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
 		inv.SubtotalCents, inv.DiscountCents, inv.TaxAmountCents, inv.TaxRateBP,
 		inv.TaxName,

@@ -18,6 +18,20 @@ const entries: {
 }[] = [
   {
     date: '2026-04-26',
+    title: 'One-off invoice composer — 30-second draft + send from customer page',
+    tag: 'feature',
+    body: 'Operators can now bill an ad-hoc charge in under 30 seconds without standing up a subscription first. The customer detail page gains a primary New invoice button at top-right; clicking it opens a drawer with a currency selector (defaults to the customer\'s billing-profile currency, falls back to USD), a line-items grid (description / type / quantity / unit_amount_cents / computed total + remove button), an Add line button, and a memo. Subtotal is live; tax is shown as "Calculated at finalize" so the v1 PaymentIntent-only tax-neutral posture stays explicit. Two actions terminate the flow: Save draft creates the invoice and routes to the invoice page; Save & send creates → finalizes → sends the hosted-invoice email in a single click.',
+    bullets: [
+      'Inline validation gates submit: at least one line, description required per line, integer quantity > 0, integer unit_amount_cents > 0. Errors render under the offending field — no modal-of-errors at submit time.',
+      'Backend: migration 0060 makes invoices.subscription_id nullable so a one-off invoice can be created without a parent subscription. The existing partial unique idempotency index on (tenant_id, subscription_id, billing_period_start) WHERE billing_reason=\'cycle\' already treats NULLs as distinct, so one-off drafts coexist with cycle invoices for the same period without collision. Service.Create no longer rejects empty subscription_id and now defaults billing_period_start / billing_period_end to "now" when both are zero (one-off invoices have no canonical cycle window).',
+      'Default line_type for AddLineItem flips from "manual" to add_on so the CHECK constraint on invoice_line_items.line_type (set: base_fee / usage / add_on / discount / tax) accepts the default. The composer\'s type selector exposes only add_on / base_fee / usage; discount and tax remain reserved for the engine.',
+      'Submit flow: createInvoice → addInvoiceLineItem per line → (Send branch) finalizeInvoice → sendInvoiceEmail (best-effort). Partial-success errors surface the invoice number alongside the failed step\'s reason so the operator can recover from the invoice-detail surface (e.g. "draft INV-0042 created but finalize failed: <reason>").',
+      'On success the dashboard toasts the invoice number, the customer\'s invoices tab refetches via the existing react-query key invalidation, and the toast carries a "View invoice" action button that deep-links to the invoice detail page.',
+      'Snake_case payload throughout: customer_id, currency, billing_period_start/end, net_payment_term_days, memo on the create call; description, line_type, quantity, unit_amount_cents on the per-line addInvoiceLineItem call. Totals always render as an array on read, matching the existing wire-shape conventions across the rest of the API.',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Plan migration tool — bulk plan swaps with preview + commit',
     tag: 'feature',
     body: 'Operators can now move a cohort of subscribers from one plan to another in a single guarded action. Three endpoints under /v1/admin/plan_migrations gated by PermSubscriptionWrite: POST /preview reuses billing.PreviewService per-customer to produce a before / after / delta table; POST /commit accepts an idempotency_key plus an effective of "immediate" (proration-aware swap of subscription_items.plan_id, stamps plan_changed_at) or "next_period" (sets pending_plan_id + pending_plan_effective_at), returning migration_id / applied_count / audit_log_id (replays of the same key short-circuit via UNIQUE (tenant_id, idempotency_key) without re-mutating); GET / paginates past migrations in reverse-chronological order. The dashboard ships at /plan-migrations with a three-step flow.',
