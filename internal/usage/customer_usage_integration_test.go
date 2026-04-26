@@ -236,14 +236,14 @@ func TestCustomerUsage_MultiDimDimensionMatchEcho(t *testing.T) {
 
 	if _, err := f.pricingSvc.UpsertMeterPricingRule(ctx, f.tenantID, pricing.UpsertMeterPricingRuleInput{
 		MeterID: meter.ID, RatingRuleVersionID: rrvIn.ID,
-		DimensionMatch: map[string]any{"operation": "input"},
+		DimensionMatch:  map[string]any{"operation": "input"},
 		AggregationMode: domain.AggSum, Priority: 10,
 	}); err != nil {
 		t.Fatalf("upsert mpr input: %v", err)
 	}
 	if _, err := f.pricingSvc.UpsertMeterPricingRule(ctx, f.tenantID, pricing.UpsertMeterPricingRuleInput{
 		MeterID: meter.ID, RatingRuleVersionID: rrvOut.ID,
-		DimensionMatch: map[string]any{"operation": "output"},
+		DimensionMatch:  map[string]any{"operation": "output"},
 		AggregationMode: domain.AggSum, Priority: 10,
 	}); err != nil {
 		t.Fatalf("upsert mpr output: %v", err)
