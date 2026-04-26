@@ -120,10 +120,21 @@ env-var schema. Pick by what your team already operates.
 
 ## Compliance posture
 
-Compliance docs land in Week 10 of the
+Compliance docs are landing in Week 10 of the
 [90-day plan](90-day-plan.md): encryption-at-rest verification,
 audit-log retention guide, SOC 2 control mapping, GDPR data
-export/deletion. Until then, the operationally relevant facts are:
+export/deletion.
+
+Available now:
+
+- [docs/ops/audit-log-retention.md](ops/audit-log-retention.md) —
+  what the audit log captures, regime-by-regime retention
+  recommendations (SOC 2 / GDPR / PCI-DSS / HIPAA / SOX), prune +
+  S3 archive pattern, and the restore path. The Velox default is
+  18 months in the live `audit_log` table with archived exports
+  retained per the regime that applies.
+
+The other operationally relevant facts:
 
 - Customer PII is encrypted at rest with `VELOX_ENCRYPTION_KEY` (AES-GCM)
 - API keys are stored as SHA-256 hashes; plaintext is never recoverable
@@ -131,6 +142,12 @@ export/deletion. Until then, the operationally relevant facts are:
   non-superuser so the policies are enforced (see
   `deploy/compose/postgres-init.sql`)
 - Webhook signing uses HMAC-SHA256 (inbound Stripe + outbound)
+- The audit log is append-only by DB trigger
+  ([migration `0011_audit_append_only`](../internal/platform/migrate/sql/0011_audit_append_only.up.sql))
+  so no compromised code path or stray ORM call can rewrite or erase
+  evidence. Per-tenant fail-closed posture (`tenant_settings.audit_fail_closed`)
+  forces a 503 on audit-write failure rather than silently flushing
+  the handler response.
 
 ## Help
 

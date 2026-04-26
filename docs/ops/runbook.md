@@ -13,6 +13,7 @@ and the triage steps to get them back on track.
 - [Incident playbooks](#incident-playbooks)
 - [Communication](#communication)
 - [Rollback procedures](#rollback-procedures)
+- [Compliance](#compliance)
 - [Post-mortem template](#post-mortem-template)
 
 ---
@@ -657,6 +658,25 @@ Flags live in `tenant_settings.feature_flags` (per-tenant) and, for global
 flags, in environment variables. Flip the flag via the settings API or
 restart pods with the env var unset. Confirm traffic patterns recover before
 concluding.
+
+---
+
+## Compliance
+
+Compliance posture has its own set of operator docs. They cover what
+evidence Velox produces, how long to retain it, and the regime-specific
+reasoning behind each retention window.
+
+- [audit-log-retention.md](./audit-log-retention.md) — what the audit
+  log captures, recommended retention by compliance regime (SOC 2 / GDPR
+  / PCI-DSS / HIPAA / SOX), the prune-and-archive pattern (batched
+  DELETE that doesn't lock the hot table, S3 lifecycle to Glacier with
+  optional Object Lock), and how to restore a window from archive into
+  a side query table. Pairs with the `VeloxAuditWriteErrors` alert and
+  the `velox_audit_write_errors_total{tenant_id}` metric above.
+- Encryption-at-rest verification, SOC 2 control mapping, and
+  GDPR data export — landing in the rest of Week 10 of the
+  [90-day plan](../90-day-plan.md).
 
 ---
 
