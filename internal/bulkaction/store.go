@@ -89,7 +89,7 @@ type TargetError struct {
 }
 
 // Action types — keep in sync with the CHECK constraint in
-// migration 0060_bulk_actions.up.sql.
+// migration 0061_bulk_actions.up.sql.
 const (
 	ActionApplyCoupon    = "apply_coupon"
 	ActionScheduleCancel = "schedule_cancel"
