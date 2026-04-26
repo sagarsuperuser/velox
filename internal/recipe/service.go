@@ -73,12 +73,48 @@ func NewService(
 }
 
 // RecipeListItem is one entry in the GET /v1/recipes response — the
-// canonical recipe metadata plus the per-tenant installation record (or
-// nil when uninstalled). The dashboard uses Instantiated to flip the CTA
-// from "Install" to "Manage / Uninstall".
+// canonical recipe metadata plus per-tenant installation state and a
+// creates summary so the picker UI can render "1 meter · 9 pricing
+// rules · monthly billing" without an extra preview round-trip. The
+// dashboard uses Instantiated to flip the CTA from "Install" to
+// "Manage / Uninstall".
 type RecipeListItem struct {
 	domain.Recipe
+	Creates      RecipeCreates          `json:"creates"`
 	Instantiated *domain.RecipeInstance `json:"instantiated,omitempty"`
+}
+
+// RecipeCreates is the per-role count of objects a recipe will produce
+// when instantiated. Surfaced on list + detail responses so the
+// dashboard can render summary chips without round-tripping preview.
+// Counts mirror the shape of domain.CreatedObjects (which is per-ID),
+// scaled down to integers for display.
+type RecipeCreates struct {
+	Meters           int `json:"meters"`
+	RatingRules      int `json:"rating_rules"`
+	PricingRules     int `json:"pricing_rules"`
+	Plans            int `json:"plans"`
+	DunningPolicies  int `json:"dunning_policies"`
+	WebhookEndpoints int `json:"webhook_endpoints"`
+}
+
+// countCreates derives a RecipeCreates summary from a parsed recipe.
+// Optional sections (DunningPolicy, Webhook) count as 1 when present, 0
+// when absent — they're singletons in the YAML schema, not slices.
+func countCreates(r domain.Recipe) RecipeCreates {
+	c := RecipeCreates{
+		Meters:       len(r.Meters),
+		RatingRules:  len(r.RatingRules),
+		PricingRules: len(r.PricingRules),
+		Plans:        len(r.Plans),
+	}
+	if r.DunningPolicy != nil {
+		c.DunningPolicies = 1
+	}
+	if r.Webhook != nil {
+		c.WebhookEndpoints = 1
+	}
+	return c
 }
 
 // ListRecipes returns every recipe in the registry tagged with this
@@ -88,7 +124,7 @@ func (s *Service) ListRecipes(ctx context.Context, tenantID string) ([]RecipeLis
 	recipes := s.registry.List()
 	out := make([]RecipeListItem, 0, len(recipes))
 	for _, r := range recipes {
-		item := RecipeListItem{Recipe: r}
+		item := RecipeListItem{Recipe: r, Creates: countCreates(r)}
 		inst, err := s.store.GetByKey(ctx, tenantID, r.Key)
 		switch {
 		case err == nil:
@@ -104,14 +140,24 @@ func (s *Service) ListRecipes(ctx context.Context, tenantID string) ([]RecipeLis
 	return out, nil
 }
 
+// RecipeDetail is the GET /v1/recipes/{key} response. Same fields as a
+// list item plus the long-form description and full overridable_schema
+// (already on the embedded domain.Recipe). Wrapping rather than
+// returning bare domain.Recipe lets us co-emit the creates summary so
+// the dashboard's picker drawer renders chips without a preview call.
+type RecipeDetail struct {
+	domain.Recipe
+	Creates RecipeCreates `json:"creates"`
+}
+
 // GetRecipe returns the rendered-with-defaults form of a recipe so the
 // dashboard can populate the override form. No DB I/O; pure registry.
-func (s *Service) GetRecipe(key string) (domain.Recipe, error) {
+func (s *Service) GetRecipe(key string) (RecipeDetail, error) {
 	r, ok := s.registry.Get(key)
 	if !ok {
-		return domain.Recipe{}, errs.ErrNotFound
+		return RecipeDetail{}, errs.ErrNotFound
 	}
-	return r, nil
+	return RecipeDetail{Recipe: r, Creates: countCreates(r)}, nil
 }
 
 // ListInstances returns the recipe_instances rows for the tenant.
@@ -119,20 +165,83 @@ func (s *Service) ListInstances(ctx context.Context, tenantID string) ([]domain.
 	return s.store.List(ctx, tenantID)
 }
 
-// Preview renders a recipe with caller-supplied overrides and returns the
-// resolved domain.Recipe — same graph Instantiate would build, minus the
-// IDs. Pure in-memory; no DB writes, no transactions. Cheap enough to
-// call on every override-form keystroke.
-func (s *Service) Preview(_ context.Context, recipeKey string, overrides map[string]any) (domain.Recipe, error) {
+// PreviewResult is the wire shape of POST /v1/recipes/{key}/preview.
+// `objects` groups the would-be-created entities by role so the
+// dashboard's preview panel renders one collapsible card per type.
+// `warnings` surfaces non-fatal conditions (currency-vs-Stripe-account
+// mismatches, placeholder webhook URLs, etc.); empty array in v1 — slot
+// is in place so the contract stays stable when richer warnings land.
+type PreviewResult struct {
+	Key      string         `json:"key"`
+	Version  string         `json:"version"`
+	Objects  PreviewObjects `json:"objects"`
+	Warnings []string       `json:"warnings"`
+}
+
+// PreviewObjects mirrors the recipe's object-graph sections. Optional
+// pieces (DunningPolicy, Webhook) are emitted as 0-or-1-length slices so
+// the wire shape is uniform — picker UI iterates without null guards.
+// Empty arrays are emitted (no `omitempty`) for the same reason.
+type PreviewObjects struct {
+	Meters           []domain.RecipeMeter         `json:"meters"`
+	RatingRules      []domain.RecipeRatingRule    `json:"rating_rules"`
+	PricingRules     []domain.RecipePricingRule   `json:"pricing_rules"`
+	Plans            []domain.RecipePlan          `json:"plans"`
+	DunningPolicies  []domain.RecipeDunningPolicy `json:"dunning_policies"`
+	WebhookEndpoints []domain.RecipeWebhook       `json:"webhook_endpoints"`
+}
+
+// Preview renders a recipe with caller-supplied overrides and returns
+// the would-be-created object graph. Pure in-memory; no DB writes, no
+// transactions. Cheap enough to call on every override-form keystroke.
+func (s *Service) Preview(_ context.Context, recipeKey string, overrides map[string]any) (PreviewResult, error) {
 	r, ok := s.registry.Get(recipeKey)
 	if !ok {
-		return domain.Recipe{}, errs.ErrNotFound
+		return PreviewResult{}, errs.ErrNotFound
 	}
 	rendered, err := renderRecipe(r, overrides)
 	if err != nil {
-		return domain.Recipe{}, errs.Invalid("overrides", err.Error())
+		return PreviewResult{}, errs.Invalid("overrides", err.Error())
 	}
-	return rendered, nil
+	return previewResultFrom(rendered), nil
+}
+
+// previewResultFrom converts a rendered domain.Recipe into the public
+// preview wire shape. Slices default to non-nil so the JSON encoder
+// emits `[]` rather than `null` — picker UI maps without guards.
+func previewResultFrom(r domain.Recipe) PreviewResult {
+	out := PreviewResult{
+		Key:     r.Key,
+		Version: r.Version,
+		Objects: PreviewObjects{
+			Meters:           r.Meters,
+			RatingRules:      r.RatingRules,
+			PricingRules:     r.PricingRules,
+			Plans:            r.Plans,
+			DunningPolicies:  []domain.RecipeDunningPolicy{},
+			WebhookEndpoints: []domain.RecipeWebhook{},
+		},
+		Warnings: []string{},
+	}
+	if out.Objects.Meters == nil {
+		out.Objects.Meters = []domain.RecipeMeter{}
+	}
+	if out.Objects.RatingRules == nil {
+		out.Objects.RatingRules = []domain.RecipeRatingRule{}
+	}
+	if out.Objects.PricingRules == nil {
+		out.Objects.PricingRules = []domain.RecipePricingRule{}
+	}
+	if out.Objects.Plans == nil {
+		out.Objects.Plans = []domain.RecipePlan{}
+	}
+	if r.DunningPolicy != nil {
+		out.Objects.DunningPolicies = []domain.RecipeDunningPolicy{*r.DunningPolicy}
+	}
+	if r.Webhook != nil {
+		out.Objects.WebhookEndpoints = []domain.RecipeWebhook{*r.Webhook}
+	}
+	return out
 }
 
 // InstantiateOptions controls one-off knobs for Instantiate. Force is
