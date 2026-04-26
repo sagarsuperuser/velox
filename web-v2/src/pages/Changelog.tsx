@@ -32,6 +32,20 @@ const entries: {
   },
   {
     date: '2026-04-26',
+    title: 'Operator CLI — velox-cli with `sub list` and `invoice send`',
+    tag: 'feature',
+    body: 'Week 7 ships a single-binary operator CLI under cmd/velox-cli/ that talks to the same /v1/* HTTP surface any external integration uses — no direct DB coupling, no runtime config files. Auth is a platform API key from VELOX_API_KEY (or --api-key) and the CLI never writes the key to disk. Two subcommands land: velox-cli sub list (GET /v1/subscriptions with --customer / --plan / --status / --limit / --output text|json filters) and velox-cli invoice send (POST /v1/invoices/{id}/send with --invoice / --email / --dry-run / --output). The CLI is a thin client by design — keeps the public API surface honest and unblocks operator workflows without coupling them to internal schema.',
+    bullets: [
+      'sub list: hand-rolled aligned columns (ID  CUSTOMER  PLAN  STATUS  CURRENT_PERIOD_END), or --output json for jq piping. Multi-item subs comma-join plan_ids in the PLAN column; an empty list still prints the header row plus a friendly "(no subscriptions matched)" note so a typo on --status doesn\'t look like a server outage.',
+      'invoice send: --dry-run short-circuits before the network call so an operator can verify the request shape against a wrong tenant without firing a real email; both text and JSON dry-run output are structurally compatible with the live response so a downstream pipe doesn\'t care which mode produced the bytes.',
+      'Cobra (github.com/spf13/cobra v1.10.2) for command structure — battle-tested over a custom flag parser per the prefer-battle-tested-libs principle. No tablewriter or other formatting libs; hand-rolled aligned columns keep the dependency surface minimal for v1.',
+      'make cli builds ./bin/velox-cli. README at cmd/velox-cli/README.md walks install, env vars (VELOX_API_KEY / VELOX_API_URL), and a first-command example. Single static binary; nothing to package beyond the binary itself.',
+      '11 unit tests against httptest-backed servers pin behavior: text formatting + json pass-through, query-param mapping, empty list friendly message, 401 surfacing, dry-run-no-network, auth-header presence, content-type round-trip, decode-error loudness, query-string encoding (spaces, etc.), default-base-URL trimming. The CLI is a consumer of the API surface so no wire-shape regression test is needed (none of the server contracts change).',
+      'Deferred to follow-up lanes: import-from-stripe (Week 11, after the importer RFC), bulk operations, and a one-off invoice composer with full UI (later Week 7 work).',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Self-host paper artifacts — Helm chart + Terraform AWS module',
     tag: 'feature',
     body: 'Two more deploy targets land alongside the Compose path: a Helm chart at deploy/helm/velox/ for users who already operate Kubernetes (kind / k3s / EKS / GKE / AKS), and a Terraform module at deploy/terraform/aws/ for one-shot AWS installs. Both are paper artifacts — structurally validated (helm lint and terraform validate pass clean) but not yet drilled on a real AWS account, which is a separate user-decision lane (cost: ~$30-50/mo at default sizing, ~$1-2 for an apply/destroy validation run). Both pin to the same env-var schema the Compose .env.example exercises; no invented keys.',

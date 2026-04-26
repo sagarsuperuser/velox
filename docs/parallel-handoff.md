@@ -639,3 +639,44 @@ None — all 7 self-merged on green CI per `feedback_continuous_autonomy`.
   - **Replay-button audit log.** Currently the Replay action is logged via the Service's standard slog `webhook event replayed` line. If we want a dedicated `audit_log` row (similar to credit-grant or invoice-finalize), that's a small follow-up — flagged for the next operator-actions pass.
 
 - **Next session:** open PR `feat(webhook): real-time event UI with SSE tail + replay (Week 6)`, drive CI green, self-merge per `feedback_continuous_autonomy`. After merge, the next Week 6 deliverable (plan-migration tool) is already in flight on the sibling lane.
+
+---
+
+## 2026-04-26 (Sun) — Track A: Week 7 operator CLI (`velox-cli sub list` + `invoice send`)
+
+### Track A
+- **Branch:** `feat/operator-cli` off `main` at `f126fcb` (post-digest).
+- **Sibling lanes running in parallel:** `feat/webhook-event-ui` (touches `web-v2/`, `internal/webhook/`, `cmd/velox/main.go`) and `feat/plan-migration-tool` (touches `web-v2/`, `internal/admin/`, `cmd/velox/main.go`). Disjoint from this lane — only likely overlap is `CHANGELOG.md` + `web-v2/src/pages/Changelog.tsx` (resolve via "keep both" + force-with-lease if hit).
+- **Scope (locked):** Week 7 CLI per the 90-day plan, **minus** `import-from-stripe` (deferred to Week 11 after the larger import RFC).
+- **Architecture (locked):** CLI is an HTTP API client, not a DB client. Auth via platform API key from `VELOX_API_KEY` env or `--api-key` flag. Hits the same `/v1/*` surface external integrations use — keeps the public API honest as the operator surface.
+
+#### Shipped
+- `cmd/velox-cli/main.go` — entry point, cobra root.
+- `cmd/velox-cli/cmd/root.go` — root command, persistent `--api-key` / `--api-url` flags, env-var fallback (`VELOX_API_KEY` / `VELOX_API_URL`), `version` subcommand wired via cobra `Version`.
+- `cmd/velox-cli/cmd/sub.go` — `sub list` against `GET /v1/subscriptions` with `--customer`, `--plan`, `--status`, `--limit`, `--output text|json`. Text columns: `ID  CUSTOMER  PLAN  STATUS  CURRENT_PERIOD_END`. Multi-item subs comma-join `plan_id`s in the PLAN column; nil `current_billing_period_end` renders as `—`.
+- `cmd/velox-cli/cmd/invoice.go` — `invoice send` against `POST /v1/invoices/{id}/send` with `--invoice`, `--email`, `--dry-run`, `--output`. The server endpoint requires an `email` field in the JSON body, so `--email` is required unless `--dry-run`. Dry-run short-circuits before the network call so an operator can verify request shape without firing a real email.
+- `cmd/velox-cli/internal/client/client.go` — minimal `net/http` wrapper, Bearer auth, JSON encode/decode, `*APIError` carries the raw body for non-2xx so the operator sees what the server actually said.
+- `cmd/velox-cli/internal/output/output.go` — hand-rolled aligned-column table writer (last column unpadded so output is grep-friendly) + `output.JSON` for two-space-indent JSON output.
+- `cmd/velox-cli/README.md` — install + auth + first-command walkthrough.
+- `Makefile` — added `cli` target: `go build -o bin/velox-cli ./cmd/velox-cli`.
+- `CHANGELOG.md` `[Unreleased]` Added entry; `web-v2/src/pages/Changelog.tsx` Linear-style entry dated 2026-04-26.
+
+#### Tests (all passing)
+- `cmd/velox-cli/cmd/sub_test.go`: `TestSubList` (text_default, text_with_filters, json_passthrough), `TestSubList_Empty`, `TestSubList_APIError`.
+- `cmd/velox-cli/cmd/invoice_test.go`: `TestInvoiceSend` (text_default, json_output, dry_run_text, dry_run_json, server_validation_error).
+- `cmd/velox-cli/internal/client/client_test.go`: `TestAuthHeaderSent`, `TestPostBodyAndHeaders`, `TestAPIErrorOnNon2xx`, `TestDecodeErrorSurfaces`, `TestQueryStringEncoding`, `TestNewTrimsTrailingSlash`, `TestNewDefaultBaseURL`.
+- 11 unit tests total against `httptest`-backed servers. No wire-shape regression test required (no new server surface — CLI is a consumer).
+
+#### Dependencies
+- Added `github.com/spf13/cobra v1.10.2` (with transitive `inconshreveable/mousetrap`, `spf13/pflag`).
+- No tablewriter or other formatting libs — hand-rolled columns are fine for v1.
+
+#### Track B can pick up
+- Bulk operations (e.g. `sub cancel --all-paused`, `invoice retry --since=`).
+- One-off invoice composer (full UI under `web-v2/`, plus a possible `velox-cli invoice create` once the schema is firm).
+- `import-from-stripe` once the Week 11 RFC lands.
+
+#### Open for human review
+- None — CLI is a thin client over existing API surface; no API contract changes.
+
+- **Wall-clock budget:** ≤90 min (per task brief). Slice was small enough that the budget held with comfortable margin.
