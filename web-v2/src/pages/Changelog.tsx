@@ -18,6 +18,18 @@ const entries: {
 }[] = [
   {
     date: '2026-04-26',
+    title: 'Recipes API wire shape — snake_case + creates summary + preview wrapper',
+    tag: 'fix',
+    body: 'Three drifts between the recipes API design doc and the Week 3 implementation are fixed so the picker UI lights up cleanly: PascalCase JSON keys are now snake_case (matching the rest of /v1/*), each list/detail entry carries a creates: {meters, rating_rules, pricing_rules, plans, dunning_policies, webhook_endpoints} count summary, and POST /v1/recipes/{key}/preview now wraps its response as {key, version, objects: {…}, warnings: []} per the spec. Data shape only — no behavior change to instantiate / uninstall.',
+    bullets: [
+      'JSON tags added to domain.Recipe — keys are key, version, name, summary, description, overridable, meters, rating_rules, pricing_rules, plans, dunning_policy, webhook (was PascalCase). Optional sections use omitempty so wire output stays tight.',
+      'GET /v1/recipes and GET /v1/recipes/{key} now include a creates summary so the picker UI renders "1 meter · 9 pricing rules · monthly billing" chips without a follow-up preview call.',
+      'POST /v1/recipes/{key}/preview returns {key, version, objects: {meters, rating_rules, pricing_rules, plans, dunning_policies, webhook_endpoints}, warnings: []} per the spec — previously inlined every array at the top level. dunning_policies and webhook_endpoints are 0-or-1-length slices for uniform iteration.',
+      'New TestWireShape_SnakeCase regression test pins all three contracts so future drift trips CI before reaching the dashboard.',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Pricing recipes — one-call billing setup',
     tag: 'feature',
     body: 'Five built-in recipes (anthropic_style, openai_style, replicate_style, b2b_saas_pro, marketplace_gmv) collapse a multi-day Stripe-Billing-style onboarding into a single API call. POST /v1/recipes/{key}/instantiate atomically builds the full graph — meters, multi-dim pricing rules, plan, dunning policy, webhook endpoint — under one transaction; partial state never reaches the tenant. Designed to make the multi-dimensional meter engine immediately usable: a 12-rule anthropic_style setup goes from ~30 manual API calls to one POST.',
