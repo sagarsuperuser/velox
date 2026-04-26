@@ -20,6 +20,19 @@ const entries: {
 }[] = [
   {
     date: '2026-04-26',
+    title: 'Stripe importer — Phase 0 (customers)',
+    tag: 'feature',
+    body: 'New CLI velox-import migrates a source Stripe account into a Velox tenant. Reads via --api-key=sk_..., writes via DATABASE_URL — never the other direction. Phase 0 ships the customer importer end-to-end: Stripe Customer → domain.Customer + CustomerBillingProfile, with full mapping of address, currency, tax_exempt status, and the first tax_id. Each row resolves to one of four outcomes (insert, skip-equivalent, skip-divergent, error) written to a CSV report, so the same input rerun produces only skip-equivalent rows — the CLI is safe to invoke nightly during a parallel-run cutover. Subscriptions, products+prices, and finalized invoices are sketched in the design doc (docs/design-stripe-importer.md) and queued for Phase 1–2.',
+    bullets: [
+      '--dry-run walks the full pipeline (mapping, lookup, diff) but skips DB writes, so operators can preview what an import will do before flipping the switch. The CSV is identical in shape to a real run.',
+      '--livemode-default=true|false overrides the auto-derived mode for restricted keys without the standard sk_live_/sk_test_ prefix. The importer cross-checks each Stripe customer\'s livemode field and refuses to import on disagreement (clear error in the CSV; pipeline continues).',
+      'skip-divergent: when a row already exists in Velox with mapped fields that disagree with Stripe, Phase 0 reports the diff in the CSV (sorted, deterministic; field-level "address_line1 stripe=… velox=…" entries) but does NOT overwrite. Phase 2 will add an --update-on-conflict flag for explicit overwrites.',
+      'Multi-tax-ID Stripe customers import the first entry only and surface a note in the report so the lossy translation is visible to operators (Phase 2 may extend Velox\'s model). Default payment methods + sources are out of scope — those need Stripe Connect or a dedicated migration agreement.',
+      'Coverage: 10 unit tests across mapper variants (full / minimal / blank / multi-tax / tax-exempt enums) and driver outcomes (insert / skip-equivalent / skip-divergent / dry-run / livemode-mismatch / empty-id), 2 integration tests against real Postgres exercising the full insert + idempotent rerun + divergence-detection paths through RLS.',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Audit log retention guide — Week 10 compliance docs starting',
     tag: 'docs',
     body: 'Week 10 of the 90-day plan (compliance + audit posture) kicks off with docs/ops/audit-log-retention.md — the operator-facing reference for what the audit log captures, how long to keep it, and how to prune + archive without locking the hot table. Documents every column on the audit_log table (including the request_id added in migration 0030 and the BEFORE UPDATE OR DELETE immutability trigger from migration 0011), the live event-type inventory (catch-all middleware verbs + every handler-explicit auditLogger.Log call across credit / coupon / subscription / invoice / credit-note / GDPR / plan-migration / bulk-action), and what\'s deliberately NOT recorded (bootstrap, inbound Stripe webhooks, GETs, failed mutations).',

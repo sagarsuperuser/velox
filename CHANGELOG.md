@@ -20,6 +20,31 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Stripe importer — Phase 0 (customers)** (2026-04-26) —
+  Week 7 risk-mitigation called for starting the importer in parallel rather
+  than waiting until Week 11; this is the catch-up slice that pins down the
+  surface and ships the customer importer end-to-end. New CLI `velox-import`
+  reads a source Stripe account via `--api-key=sk_...` and writes to a Velox
+  tenant via `DATABASE_URL` — never the other direction. New domain package
+  `internal/importstripe/` with `Source` (Stripe SDK iterator), pure
+  `mapCustomer` (`stripe.Customer` → `domain.Customer` + `CustomerBillingProfile`),
+  `CustomerImporter` driver, and a CSV `Report` writer. Each row resolves to
+  one of four outcomes: `insert`, `skip-equivalent`, `skip-divergent`, or
+  `error`; the same Stripe id rerun produces only `skip-equivalent` so the
+  CLI is safe to invoke nightly during a parallel-run cutover. `--dry-run`
+  walks the full pipeline (mapping, lookup, diff) but skips DB writes;
+  `--livemode-default=true|false` overrides the auto-derived mode for
+  restricted keys without the standard `sk_live_/sk_test_` prefix.
+  Multi-tax-ID Stripe customers import the first entry and surface a note in
+  the CSV (Phase 2 may extend the Velox model). Payment methods and
+  subscriptions on the customer are deferred — Phase 2 imports payment
+  methods (Stripe Connect-blocker), Phase 1 imports subscriptions. Coverage:
+  10 unit tests (mapper variants + driver outcomes), 2 integration tests
+  against real Postgres (insert / skip-equivalent / skip-divergent /
+  dry-run paths through RLS). Design lives in `docs/design-stripe-importer.md`
+  with sketches for Phases 1–2 (subscriptions, products+prices, finalized
+  invoices) and the Phase 4 cutover playbook outline.
+
 - **Audit log retention guide — compliance posture for Week 10** (2026-04-26) —
   Week 10 compliance docs kicking off with `docs/ops/audit-log-retention.md`,
   the operator-facing reference for what the audit log captures, how long
