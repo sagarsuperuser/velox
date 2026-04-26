@@ -1,0 +1,42 @@
+{
+  "id": "cus_NfJG2N4m6X",
+  "object": "customer",
+  "address": {
+    "city": "San Francisco",
+    "country": "us",
+    "line1": "1 Market St",
+    "line2": "Suite 400",
+    "postal_code": "94105",
+    "state": "CA"
+  },
+  "balance": 0,
+  "created": 1701000000,
+  "currency": "usd",
+  "default_source": null,
+  "delinquent": false,
+  "description": "",
+  "email": "alice@example.com",
+  "invoice_prefix": "ABC123",
+  "livemode": true,
+  "metadata": {},
+  "name": "Acme Co",
+  "phone": "+1-415-555-0123",
+  "preferred_locales": ["en"],
+  "shipping": null,
+  "tax_exempt": "none",
+  "tax_ids": {
+    "object": "list",
+    "data": [
+      {
+        "id": "txi_001",
+        "object": "tax_id",
+        "country": "DE",
+        "created": 1701000000,
+        "type": "eu_vat",
+        "value": "DE123456789"
+      }
+    ],
+    "has_more": false,
+    "url": "/v1/customers/cus_NfJG2N4m6X/tax_ids"
+  }
+}
