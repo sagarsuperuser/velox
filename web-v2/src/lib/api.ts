@@ -460,6 +460,29 @@ export const api = {
     }
     return null
   },
+
+  // Bulk operations (Week 7) — operator-initiated cohort actions across
+  // many customers. Both apply_coupon and schedule_cancel commit
+  // synchronously and return per-target success/failure counts. v1
+  // surfaces apply_coupon + schedule_cancel only; the wire shape is
+  // open-ended so future action types extend without breaking clients.
+  bulkActions: {
+    applyCoupon: (data: BulkActionApplyCouponRequest) =>
+      apiRequest<BulkActionCommitResponse>('POST', '/admin/bulk_actions/apply_coupon', data),
+    scheduleCancel: (data: BulkActionScheduleCancelRequest) =>
+      apiRequest<BulkActionCommitResponse>('POST', '/admin/bulk_actions/schedule_cancel', data),
+    list: (params?: { limit?: number; cursor?: string; status?: string; action_type?: string }) => {
+      const qs = new URLSearchParams()
+      if (params?.limit) qs.set('limit', String(params.limit))
+      if (params?.cursor) qs.set('cursor', params.cursor)
+      if (params?.status) qs.set('status', params.status)
+      if (params?.action_type) qs.set('action_type', params.action_type)
+      const q = qs.toString()
+      return apiRequest<BulkActionListResponse>('GET', `/admin/bulk_actions${q ? '?' + q : ''}`)
+    },
+    get: (id: string) =>
+      apiRequest<BulkActionDetail>('GET', `/admin/bulk_actions/${id}`),
+  },
 }
 
 // Types
@@ -1361,6 +1384,84 @@ export interface PlanMigrationListItem {
 
 export interface PlanMigrationListResponse {
   migrations: PlanMigrationListItem[]
+  next_cursor: string
+}
+
+// Bulk operations (Week 7) — wire shapes for /v1/admin/bulk_actions.
+// Same idempotency-key + customer-filter pattern as plan migrations,
+// generalised to any action type (apply_coupon, schedule_cancel today;
+// release_payment_hold etc. follow). Always-snake_case + always-array
+// errors[] are non-negotiable; see internal/bulkaction/wire_shape_test.go.
+
+export type BulkActionType = 'apply_coupon' | 'schedule_cancel'
+
+export type BulkActionStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'partial'
+  | 'failed'
+
+export interface BulkActionCustomerFilter {
+  // "all"  → every customer for the tenant
+  // "ids"  → only customers whose id is in `ids`
+  // "tag"  → reserved (server rejects with code "filter_type_unsupported")
+  type: 'all' | 'ids' | 'tag'
+  ids?: string[]
+  value?: string
+}
+
+export interface BulkActionApplyCouponRequest {
+  idempotency_key: string
+  customer_filter: BulkActionCustomerFilter
+  coupon_code: string
+}
+
+export interface BulkActionScheduleCancelRequest {
+  idempotency_key: string
+  customer_filter: BulkActionCustomerFilter
+  // Exactly one of at_period_end / cancel_at must be set; the server
+  // rejects both-set or both-unset with a 422.
+  at_period_end?: boolean
+  cancel_at?: string
+}
+
+export interface BulkActionTargetError {
+  customer_id: string
+  error: string
+}
+
+export interface BulkActionCommitResponse {
+  bulk_action_id: string
+  status: BulkActionStatus
+  target_count: number
+  succeeded_count: number
+  failed_count: number
+  errors: BulkActionTargetError[]
+  idempotent_replay?: boolean
+}
+
+export interface BulkActionListItem {
+  bulk_action_id: string
+  action_type: BulkActionType
+  status: BulkActionStatus
+  target_count: number
+  succeeded_count: number
+  failed_count: number
+  customer_filter: BulkActionCustomerFilter
+  params: Record<string, unknown>
+  idempotency_key: string
+  created_by: string
+  created_at: string
+  completed_at?: string
+}
+
+export interface BulkActionDetail extends BulkActionListItem {
+  errors: BulkActionTargetError[]
+}
+
+export interface BulkActionListResponse {
+  bulk_actions: BulkActionListItem[]
   next_cursor: string
 }
 

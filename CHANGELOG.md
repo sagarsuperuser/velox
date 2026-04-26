@@ -20,6 +20,48 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Bulk operations — apply coupon + schedule cancel across cohorts** (2026-04-26) —
+  Week 7 ships an operator surface for running an action across many customers
+  in a single guarded run. New domain package `internal/bulkaction/` with
+  store / service / handler mounted under `/v1/admin/bulk_actions` (gated by
+  `PermSubscriptionWrite`). Two action types in v1: `POST /apply_coupon`
+  (attaches a coupon to every customer in the cohort) and
+  `POST /schedule_cancel` (schedules cancellation on every active subscription
+  each customer owns); both share the same `idempotency_key` +
+  `customer_filter` shape so the dashboard's drawer renders either outcome
+  with one component. `GET /` paginates past runs in reverse-chronological
+  order; `GET /{id}` returns the detail row including the full per-target
+  `errors[]` array. Idempotency is two-layered: at the cohort level, replay
+  of the same key short-circuits via `UNIQUE (tenant_id, idempotency_key)`
+  on `bulk_actions`; at the per-target level, each customer's assignment /
+  cancel call uses a derived key `<bulk_key>:<customer_id>` so a partial
+  failure mid-run is safe to retry without re-applying to already-succeeded
+  customers. Migration `0061_bulk_actions` adds the `bulk_actions` table
+  (`customer_filter` JSONB, `params` JSONB, `errors` JSONB always-array,
+  `target_count` / `succeeded_count` / `failed_count`, `status` CHECK in
+  `('pending','running','completed','partial','failed')`, `action_type`
+  CHECK in `('apply_coupon','schedule_cancel')`) plus the standard
+  FORCE-RLS policy on `(tenant_id, livemode)` and the BEFORE-INSERT
+  `set_livemode_from_session` trigger inherited from migration 0021. The
+  audit log gains `bulk_action.completed` (one cohort summary per run) and
+  per-action `customer.coupon_assigned` / `subscription.cancel_scheduled`
+  entries metadata-tagged with `bulk_action_id` so CS reps can answer
+  "why was my coupon applied?" without joining tables. The dashboard ships
+  at `/bulk-actions` — a tabbed configurator (Apply coupon / Schedule
+  cancel) with a shared cohort selector (All / IDs), an idempotency-key
+  confirm modal, and a recent-runs sidebar. The Customers page gains a
+  multi-select checkbox column plus a "Bulk actions" dropdown that routes
+  to `/bulk-actions` pre-scoped to the selection via `location.state` (no
+  IDs leak to the URL). `customer_filter.type=tag` is reserved (the wire
+  shape accepts it so frontend mocks compile, but the service rejects with
+  code `filter_type_unsupported` pending a customer-tag schema). The
+  cohort size is capped server-side at 500 per run so a misclick can't
+  fan out to a 5,000-tenant deployment. Wire-shape regression tests
+  (`TestWireShape_BulkActions_SnakeCase` with subtests for commit / list /
+  detail) pin the always-snake_case + always-array errors[] contract;
+  service tests cover happy path / partial failure / idempotent replay /
+  filter validation / two-mode-switch validation across both actions.
+
 - **Plan migrations history dashboard — list + detail with audit trail** (2026-04-26) —
   Week 7 wraps a UI around the already-live `GET /v1/admin/plan_migrations`
   endpoint (PR #36): a history page at `/plan-migrations/history` lists every
