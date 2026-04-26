@@ -234,3 +234,28 @@ Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. 
   - PR (this work, `feat/backend-week3-recipes`) — to be opened next.
   - The 7 open questions in `docs/design-recipes.md` — most settled by the implementation; worth a short doc pass to reflect the actual v1 decisions before closing the design as "shipped".
 - **Next session (Track A):** open the PR for review, then either (a) drive it to merge + start Week 4 (`create_preview` design / billing-cycle hardening per 90-day plan), or (b) wait for Track B to ship the recipe picker so we can iterate on API ergonomics with real UI feedback.
+
+---
+
+## 2026-04-26 (Sun) — Track A response: recipes wire-shape fix + customer-usage RFC pre-stage
+
+### Track A
+- **Picked up after merges:** Track B reported three wire-shape drifts during fresh smoke testing of the merged recipes backend (PascalCase JSON keys, missing `creates` summary on list/detail, missing `objects` wrapper + `warnings` on preview). All three fixed in this slice — data shape only, no behavior change to `Instantiate` / `Uninstall`.
+- **Shipped:**
+  - **JSON tags on `domain.Recipe`** — top-level fields (`Key`, `Version`, `Name`, `Summary`, `Description`, `Overridable`, `Meters`, `RatingRules`, `PricingRules`, `Plans`, `DunningPolicy`, `Webhook`, `SampleData`) were missing tags entirely, so the encoder fell back to PascalCase. Added snake_case tags with `omitempty` on `description` / `dunning_policy` / `webhook`. `SampleData` is now `json:"-"` — it's a seed hint, not part of the public API surface.
+  - **`creates` summary on list + detail.** New `RecipeCreates` struct (`{meters, rating_rules, pricing_rules, plans, dunning_policies, webhook_endpoints}` integer counts), `countCreates(domain.Recipe)` helper, `Creates` field added to `RecipeListItem`, and a new `RecipeDetail` wrapper for `GetRecipe` so detail also carries the summary. Picker UI renders "1 meter · 9 pricing rules · monthly billing" chips without a follow-up preview call.
+  - **`PreviewResult` wrapper** — `Service.Preview` now returns `{key, version, objects: {meters, rating_rules, pricing_rules, plans, dunning_policies, webhook_endpoints}, warnings: []}` per the design spec. `dunning_policies` and `webhook_endpoints` are 0-or-1-length slices for uniform iteration. All object slices default to non-nil so the JSON encoder emits `[]` not `null`. `warnings` is empty in v1 — slot in place for the design's non-fatal-condition shape (currency-vs-Stripe mismatch, placeholder webhook URLs).
+  - **Regression test** — new `TestWireShape_SnakeCase` (3 sub-tests) marshals real responses from `ListRecipes`, `GetRecipe`, and `Preview`, then asserts every required snake_case key is present and no PascalCase key leaks. Drift here trips CI before reaching the dashboard.
+  - **`docs/design-customer-usage.md`** pre-staged (per Track B's standing ask). Same RFC structure as `design-recipes.md`: motivation grounded in cost-transparency wedge, goals + non-goals, today's-surface map (composition over invention — `usage.AggregateForBillingPeriod`, `customer.Store.Get`, `subscription.Store.List`, `pricing.ComputeAmountCents` all already exist), wire-contract example responses for default-cycle and explicit-window, internals sketch, integration test list (multi-dim parity, RLS, plan transitions, closed-cycle parity), 8 open questions with proposed answers, Track B unblock section with mockable contract + dashboard layout suggestions.
+  - CHANGELOG entries on both surfaces (per `feedback_changelog_discipline`): `CHANGELOG.md` Unreleased > Fixed entry describing all three drifts + regression test, plus `web-v2/src/pages/Changelog.tsx` Linear-style fix entry dated 2026-04-26.
+- **Decisions made inline (per `feedback_feat8_autonomy`):**
+  - Kept the heavy meters/rating_rules/etc. arrays at top level on `GET /v1/recipes` rather than removing them. Track B's report flagged the missing `creates` and accepted "either re-add the creates summary or update the doc" — adding `creates` is the lower-risk path; removing the arrays would force Track B to re-architect the picker if it's already consuming them. Can revisit in v2 if the response weight becomes a real concern.
+  - `omitempty` on `description` / `dunning_policy` / `webhook` (recipe-level) but **not** on `objects.meters` / `objects.dunning_policies` / etc. (preview-level). Reason: recipe-level optionals are sometimes-absent fields the client can reasonably skip; preview-level slices are always-present-but-possibly-empty arrays the picker iterates without null guards. Different semantics, different convention.
+  - For multi-currency plans (rare today), the design-customer-usage RFC's `totals` becomes an array of `{currency, amount_cents}`. Single-currency cases keep the scalar shape. Documented in the open-question section so it surfaces in review rather than getting buried.
+- **Blocking Track B on:** nothing. Picker UI types should match the spec now; smoke-test against the new shape and ping if anything else drifts.
+- **Track B can start:**
+  - Re-run the picker smoke test against the fixed contract; flag any further mismatches.
+  - **Cost-dashboard scaffold (Week 5)** — `docs/design-customer-usage.md` is the contract to mock against. Same parallel-work pattern as recipes (MSW handlers seeded from the example response, then swap to real API at Track A integration time). Design's "Track B unblock" section has the dashboard layout suggestions.
+- **Open for human review:**
+  - PR for the recipes wire-shape fix (to be opened next).
+  - `docs/design-customer-usage.md` open questions (8) — most have proposed answers; please flag any you want resolved before Week 5 implementation begins.
