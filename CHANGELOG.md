@@ -20,6 +20,54 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Customer usage endpoint — one call answers "what did this customer use?"** (2026-04-26) —
+  the second flagship developer-experience surface, alongside recipes (per
+  `docs/design-customer-usage.md`, `docs/positioning.md` pillar 1.4). `GET
+  /v1/customers/{id}/usage` collapses "show me what this customer used and
+  owes" into one read. With no params it returns the customer's current
+  billing cycle by default; `?from=&to=` (RFC 3339, both required if either
+  is supplied, ≤ 1 year) overrides for historical or audit windows.
+  Response includes per-meter aggregates (`total_quantity` as a precise
+  decimal string, `total_amount_cents` as integer cents), per-rule
+  breakdowns for multi-dim meters with `dimension_match` echoed from the
+  meter pricing rule (the canonical pricing identity, not the events
+  seen), per-currency `totals[]`, and a `subscriptions[]` block carrying
+  plan name + cycle bounds so a dashboard renders "Plan: AI API Pro ·
+  cycle Apr 1 → May 1" without follow-up calls. The endpoint is
+  composition, not new aggregation logic — the priority+claim LATERAL
+  JOIN already shipped in Week 2 lives in
+  `usage.AggregateByPricingRules`; this surface walks the customer's
+  subscribed plans → meters, calls the same store path the cycle scan
+  uses, then prices each rule bucket through
+  `domain.ComputeAmountCents`. Same code → dashboard math == invoice
+  math. RLS-by-construction: cross-tenant customer IDs surface as 404
+  via the standard `BeginTx(TxTenant, …)` lookup. Errors:
+  `customer_has_no_subscription` (400, coded) when the caller passes no
+  period and the customer has zero active subs; `400` for partial
+  bounds, `from >= to`, or window > 1 year. Mounted at
+  `/v1/customers/{id}/usage` as a sibling of `/customers` (matches the
+  `/customers/{id}/coupon` precedent) behind `PermUsageRead` so a
+  read-only secret key powers the dashboard without inheriting customer
+  write capability. Snake-case JSON keys, struct-tag enforced; empty
+  list fields emit `[]` not `null` so clients iterate without null
+  guards. Composition uses three narrow interfaces local to the usage
+  package (`CustomerLookup`, `SubscriptionLister`, `PricingReader`) so
+  the customer-usage code owns no cross-domain state. Tests: nine unit
+  cases (period resolution table-driven, single-meter flat parity,
+  multi-currency totals roll-up, multi-dim dimension-match echo, flat
+  meter omits `dimension_match`, customer-not-found propagation,
+  blank-customer validation, aggregation-mode mapping, wire-shape
+  empty-arrays regression) plus four integration cases against real
+  Postgres (single-meter parity with in-cycle vs. outside-cycle event
+  filtering, multi-dim parity matching `usage.AggregateByPricingRules`
+  exactly, cross-tenant 404 via RLS, no-sub + explicit window). Track B
+  can swap their cost-dashboard scaffold from MSW mocks to the live API
+  at integration time. **Note on totals shape:** `totals` always emits
+  an array even when there's only one currency (one entry per distinct
+  currency), instead of the design RFC's "scalar when single currency"
+  form — one consistent shape lets dashboards iterate without branching
+  on cardinality.
+
 - **Pricing recipes — one-call billing setup** (2026-04-26) — the
   developer-experience flagship that turns Week 2's multi-dim meter
   engine into a 30-second quickstart (per `docs/design-recipes.md`,
