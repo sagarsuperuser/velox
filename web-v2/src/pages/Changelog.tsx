@@ -1,12 +1,13 @@
 import { PublicLayout, PublicPageHeader } from '@/components/PublicLayout'
 
-type Tag = 'feature' | 'improvement' | 'fix' | 'security'
+type Tag = 'feature' | 'improvement' | 'fix' | 'security' | 'hardening'
 
 const tagClass: Record<Tag, string> = {
   feature: 'bg-primary/10 text-primary',
   improvement: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
   fix: 'bg-amber-500/10 text-amber-600 dark:text-amber-500',
   security: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-500',
+  hardening: 'bg-purple-500/10 text-purple-600 dark:text-purple-400',
 }
 
 const entries: {
@@ -16,6 +17,18 @@ const entries: {
   body: string
   bullets?: string[]
 }[] = [
+  {
+    date: '2026-04-26',
+    title: 'Migration 0015 rewritten — eliminates 8.8s lock on audit_log',
+    tag: 'hardening',
+    body: 'Phase 3 prep (Week 9): the migration that makes every foreign key\'s ON DELETE policy explicit (60 FKs across ~30 tables) used to validate every existing row under AccessExclusiveLock — measured at 8.8s on audit_log at the medium scale (5M usage_events, 100k audit_log) per docs/migration-safety-findings.md. That window blocked every concurrent INSERT/UPDATE/DELETE on the table. Rewritten in-place to the standard NOT VALID + VALIDATE two-step on every FK so validation moves to ShareUpdateExclusiveLock (PG 9.4+) and concurrent writes proceed unblocked. Re-running the safety harness shows the AccessExclusiveLock disappear (0ms observed at the small preset, down from 8.8s). No schema diff; the constraint shape is unchanged once VALIDATE completes. The migration roundtrip test stays green.',
+    bullets: [
+      'New shape per FK: DROP CONSTRAINT (fast metadata) → ADD CONSTRAINT … NOT VALID (fast metadata; new rows checked, existing rows not yet) → VALIDATE CONSTRAINT (verifies existing rows under ShareUpdateExclusiveLock — concurrent INSERT/UPDATE/DELETE proceed unblocked).',
+      'No runner changes needed. The whole sequence still runs inside golang-migrate\'s outer transaction; the AccessExclusiveLock concern is the validation pass, not the transactional wrapping. With NOT VALID + VALIDATE inside one tx, no AccessExclusiveLock is held during validation.',
+      'The matching down.sql got the same rewrite so rollbacks don\'t freeze writes either (the original down was symmetrically painful — 6.7s lock on audit_log).',
+      'Two production blockers remain — 0054 (CRITICAL, full table rewrite of usage_events on the BIGINT→NUMERIC quantity widening + non-concurrent GIN index) and 0020 (HIGH, 13 UNIQUE rebuilds across 32 tables on the test_mode livemode column). Both are separate follow-up lanes; this PR validates the NOT VALID + VALIDATE pattern on the smallest of the three.',
+    ],
+  },
   {
     date: '2026-04-26',
     title: 'Bulk operations — apply coupon + schedule cancel across cohorts',

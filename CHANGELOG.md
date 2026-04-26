@@ -813,6 +813,35 @@ Two surfaces mirror this file:
 
 ### Fixed
 
+- **Migration 0015 (fk_explicit_restrict) — eliminates 8.8s `AccessExclusiveLock` on `audit_log`** (2026-04-26) —
+  Phase 3 prep (Week 9). The migration that makes every FK's `ON DELETE`
+  policy explicit (60 FKs across ~30 tables) was written for an empty
+  database: each `ALTER TABLE T DROP CONSTRAINT c, ADD CONSTRAINT c
+  FOREIGN KEY ...` was atomic but validated every existing row under
+  `AccessExclusiveLock`. On the populated-DB safety harness
+  (`docs/migration-safety-findings.md`) it held an
+  `AccessExclusiveLock` on `audit_log` for 8.8s up / 6.7s down at the
+  medium scale (5M usage_events, 100k audit_log). Rewritten in-place to
+  the standard NOT VALID + VALIDATE two-step on every FK: `DROP
+  CONSTRAINT` (fast metadata) → `ADD CONSTRAINT … NOT VALID` (fast
+  metadata, new rows checked) → `VALIDATE CONSTRAINT` (verifies
+  existing rows under `ShareUpdateExclusiveLock`, PG 9.4+, concurrent
+  INSERT/UPDATE/DELETE proceed unblocked). The whole sequence still
+  runs inside golang-migrate's outer transaction — no runner changes,
+  no migration split, no schema diff (the constraint shape is
+  unchanged once VALIDATE completes). Re-running the safety harness at
+  the small preset shows 0015 up at 0.26s with no `AccessExclusiveLock`
+  observed (down from 8.8s); the down direction is symmetric. The
+  roundtrip test (`internal/platform/migrate/roundtrip_test.go`) stays
+  green — schema after up+down+up matches the original. The matching
+  `0015_fk_explicit_restrict.down.sql` got the same NOT VALID +
+  VALIDATE rewrite so rollbacks don't freeze writes either.
+  Migration-safety findings doc moves 0015 out of "Top risks" into a
+  new "Already fixed" subsection; remaining production blockers are
+  0054 (CRITICAL, full table rewrite of `usage_events`) and 0020
+  (HIGH, 13 UNIQUE rebuilds across 32 tables) — separate follow-up
+  lanes.
+
 - **Recipes API wire shape — snake_case + creates summary + preview wrapper**
   (2026-04-26) — three drifts between `docs/design-recipes.md` and the
   Week 3 implementation surfaced during Track B's first integration

@@ -20,7 +20,7 @@
 |-----------|-------------------------|----------------|------|
 | **0054 multi_dim_meters** | 53.5s | `usage_events` 53.5s | **CRITICAL** — full table rewrite of largest table (BIGINT→NUMERIC) + non-concurrent GIN index |
 | **0020 test_mode** | 14.5s | `invoices` 14.4s | **HIGH** — adds livemode column + drops/re-adds 13 UNIQUE constraints across 32 tables in one step |
-| **0015 fk_explicit_restrict** | 8.9s | `audit_log` 8.8s | **HIGH** — DROP + ADD CONSTRAINT on every FK in the schema (no NOT VALID escape hatch) |
+| **0015 fk_explicit_restrict** | ~~8.9s~~ → 0.26s (small) | ~~`audit_log` 8.8s~~ → **0ms** | ✅ **FIXED** — rewritten to NOT VALID + VALIDATE; see "Already fixed" below |
 | **0017 usage_events_origin** | 1.3s | (no lock observed >50ms) | MEDIUM — fast-default but CHECK validates every row |
 | **0014 tax_rate_bp_bigint** | 0.75s | (no lock observed >50ms) | LOW — comment claims metadata-only, actual is small but non-zero |
 
@@ -28,11 +28,12 @@ The down direction is symmetrically painful: rolling back 0054 took 49.8s and
 held an `AccessExclusiveLock` on `meter_pricing_rules` for the entire window.
 
 **Net effect on production:** running these migrations against a real database
-with ≥5M usage_events would freeze writes to `usage_events` for ~minute (0054),
-to `invoices` for ~15s (0020), and to `audit_log` for ~9s (0015) — i.e. every
-ingest, finalize, and audit-write API call would queue or 504 during that
-window. Before Phase 3, **0054, 0020, and 0015 must be reworked into multi-step
-non-blocking variants** (recipes below). The remaining 53 migrations are safe.
+with ≥5M usage_events would freeze writes to `usage_events` for ~minute (0054)
+and to `invoices` for ~15s (0020). 0015 was the third blocker (9s lock on
+`audit_log`) and has now been fixed (NOT VALID + VALIDATE rewrite, lock drops
+to 0ms — see "Already fixed" below). Before Phase 3, **0054 and 0020 must
+still be reworked into multi-step non-blocking variants** (recipes below).
+The remaining 53 migrations are safe.
 
 ---
 
@@ -113,6 +114,32 @@ hardware.
 
 ## Per-migration findings
 
+### Already fixed
+
+#### 0015 — `fk_explicit_restrict` — ✅ FIXED (2026-04-26)
+
+Originally drops + re-adds every FK in the schema as `ON DELETE RESTRICT`.
+60 FKs total across ~30 tables. The atomic `DROP CONSTRAINT … ADD CONSTRAINT
+FOREIGN KEY …` shape validated every existing row under `AccessExclusiveLock`
+— measured at 8.9s up / 6.8s down on `audit_log` at the medium scale. The
+migration has been rewritten in-place to use the standard NOT VALID +
+VALIDATE two-step on every FK so validation moves to
+`ShareUpdateExclusiveLock` (PG 9.4+) — concurrent INSERT/UPDATE/DELETE
+proceed unblocked. No runner-flag changes needed; the whole sequence still
+runs inside golang-migrate's outer transaction.
+
+- **Before (medium, 5M events).** Up 8.9s, AccessExclusive on `audit_log`
+  for 8.8s. Down 6.8s, AccessExclusive on `audit_log` for 6.7s.
+- **After (small, 500k events — same harness, same hot-table sampler).**
+  Up 0.26s, **no `AccessExclusiveLock` observed**. Down 0.24s, **no
+  `AccessExclusiveLock` observed**. The lock-time floor is the harness's
+  50ms sample interval; the actual hold time is below that.
+- **Process note.** The original migration was correct for an empty
+  database (atomic drop+add inside one statement). NOT VALID + VALIDATE
+  is the standard production rewrite once tables are populated. Phase 3
+  prep applied in PR
+  [#43](https://github.com/sagarsuperuser/velox/pull/43).
+
 ### Top risks
 
 #### 0054 — `multi_dim_meters` — CRITICAL
@@ -192,40 +219,6 @@ ALTER TABLE customers ADD UNIQUE (tenant_id, livemode, external_id);
   The 13 swaps don't all need separate migrations — group them in one
   migration that uses `CREATE UNIQUE INDEX CONCURRENTLY` + ATTACH. CI
   remains green; production rollout is an order of magnitude safer.
-
-#### 0015 — `fk_explicit_restrict` — HIGH
-
-Drops + re-adds every FK in the schema as `ON DELETE RESTRICT`. 60 FKs
-total across ~30 tables.
-
-- **Up duration.** 8.9s. AccessExclusive on `audit_log` for 8.8s.
-- **Down duration.** 6.8s. AccessExclusive on `audit_log` for 6.7s.
-- **Why it hurts.** `ALTER TABLE ... ADD CONSTRAINT FOREIGN KEY` validates
-  every existing row by default. On a 100k+ row table with a referenced
-  parent that is not pre-loaded into memory, the validation does a full
-  index scan. With 60 FKs across many tables, the scan time stacks up.
-  Audit log was the worst because it's our largest "tall" table after
-  usage_events.
-- **Recommended fix.** Use `NOT VALID` + `VALIDATE` two-step:
-  ```sql
-  -- Migration 0015a (fast — no row check)
-  ALTER TABLE audit_log
-      DROP CONSTRAINT audit_log_tenant_id_fkey,
-      ADD CONSTRAINT audit_log_tenant_id_fkey
-          FOREIGN KEY (tenant_id) REFERENCES tenants(id)
-          ON DELETE RESTRICT NOT VALID;
-
-  -- Migration 0015b (acquires SHARE UPDATE EXCLUSIVE, not EXCLUSIVE —
-  -- writes proceed during validation)
-  ALTER TABLE audit_log VALIDATE CONSTRAINT audit_log_tenant_id_fkey;
-  ```
-  `VALIDATE CONSTRAINT` only takes `ShareUpdateExclusiveLock` (PG 9.4+),
-  not `AccessExclusive`. Concurrent INSERT, UPDATE, DELETE proceed
-  unblocked. The validation runs in the background.
-- **Process note.** This migration was originally written before we had
-  populated tables; the "drop+add atomically" idiom from its comment
-  (line 11) is correct for that pre-launch case. Once we have data,
-  NOT VALID + VALIDATE is the standard production rewrite.
 
 ### Medium risks
 
@@ -377,8 +370,9 @@ is overkill except as a one-off pre-launch sanity check.
    into 0058a/b/c per the recipe above. **Single most important fix.**
 2. **0020 rework** — split into 0059a (column adds, fast-default) +
    0059b (per-UNIQUE swap via CREATE INDEX CONCURRENTLY).
-3. **0015 rework** — switch to `NOT VALID + VALIDATE` so FK rebuilds don't
-   `AccessExclusive`-lock writes.
+3. ~~**0015 rework**~~ — done in-place via NOT VALID + VALIDATE
+   (PR [#43](https://github.com/sagarsuperuser/velox/pull/43)). See
+   "Already fixed" above.
 4. **Add a shell hook** to `Makefile` (`make migrate-safety-medium`)
    wrapping `scripts/migration-safety-test.sh medium` so this pass is
    one-line invocable.
