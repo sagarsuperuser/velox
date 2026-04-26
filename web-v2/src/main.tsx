@@ -144,6 +144,7 @@ const RecipesPage = lazy(() => import('@/pages/Recipes'))
 const PlanMigrationPage = lazy(() => import('@/pages/PlanMigration'))
 const PlanMigrationsHistoryPage = lazy(() => import('@/pages/PlanMigrationsHistory'))
 const PlanMigrationDetailPage = lazy(() => import('@/pages/PlanMigrationDetail'))
+const BulkActionsPage = lazy(() => import('@/pages/BulkActions'))
 
 const App = () => (
   <ErrorBoundary>
@@ -169,6 +170,7 @@ const App = () => (
               <Route path="/plan-migrations" element={<ProtectedRoute><PlanMigrationPage /></ProtectedRoute>} />
               <Route path="/plan-migrations/history" element={<ProtectedRoute><PlanMigrationsHistoryPage /></ProtectedRoute>} />
               <Route path="/plan-migrations/:id" element={<ProtectedRoute><PlanMigrationDetailPage /></ProtectedRoute>} />
+              <Route path="/bulk-actions" element={<ProtectedRoute><BulkActionsPage /></ProtectedRoute>} />
               <Route path="/customers" element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
               <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
               <Route path="/dunning" element={<ProtectedRoute><DunningPage /></ProtectedRoute>} />
