@@ -1,0 +1,22 @@
+{
+  "id": "price_eur_year01",
+  "object": "price",
+  "active": true,
+  "billing_scheme": "per_unit",
+  "created": 1701000000,
+  "currency": "eur",
+  "livemode": true,
+  "metadata": {},
+  "nickname": "Premium EUR Yearly",
+  "product": {
+    "id": "prod_NfJG2N4m6X",
+    "object": "product"
+  },
+  "recurring": {
+    "interval": "year",
+    "interval_count": 1,
+    "usage_type": "licensed"
+  },
+  "type": "recurring",
+  "unit_amount": 49900
+}
