@@ -307,11 +307,13 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, tenantID string, event 
 
 	// The 0021 trigger sets livemode from app.livemode — read it back so
 	// callers (dispatcher) can pass the same mode through when delivering.
+	// replay_of_event_id is NULL for fresh events; CreateReplayEvent below
+	// is the only path that populates it.
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO webhook_events (id, tenant_id, event_type, payload, created_at)
-		VALUES ($1,$2,$3,$4,$5)
+		INSERT INTO webhook_events (id, tenant_id, event_type, payload, created_at, replay_of_event_id)
+		VALUES ($1,$2,$3,$4,$5,$6)
 		RETURNING livemode
-	`, id, tenantID, event.EventType, payloadJSON, now).Scan(&event.Livemode)
+	`, id, tenantID, event.EventType, payloadJSON, now, postgres.NullableStringPtr(event.ReplayOfEventID)).Scan(&event.Livemode)
 	if err != nil {
 		return domain.WebhookEvent{}, err
 	}
@@ -319,6 +321,98 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, tenantID string, event 
 		return domain.WebhookEvent{}, err
 	}
 	return event, nil
+}
+
+// CreateReplayEvent clones an existing event row into a new event whose
+// replay_of_event_id points at the original. The clone reuses the
+// original's event_type and payload byte-for-byte (so the diff viewer
+// can verify "payload identical, only timestamps differ" — Stripe's
+// "Resend" semantics).
+func (s *PostgresStore) CreateReplayEvent(ctx context.Context, tenantID, originalEventID string) (domain.WebhookEvent, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.WebhookEvent{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Resolve the original. Tenant scoping comes via RLS; the row will be
+	// invisible if it belongs to another tenant.
+	var (
+		eventType   string
+		payloadJSON []byte
+		origReplay  sql.NullString
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT event_type, payload, replay_of_event_id
+		FROM webhook_events WHERE id = $1
+	`, originalEventID).Scan(&eventType, &payloadJSON, &origReplay)
+	if err == sql.ErrNoRows {
+		return domain.WebhookEvent{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.WebhookEvent{}, err
+	}
+
+	// Single-pivot rule: replays-of-replays still point at the *root*
+	// original event, never at an intermediate clone. Keeps the
+	// list-deliveries query a flat WHERE id = $1 OR replay_of = $1.
+	rootID := originalEventID
+	if origReplay.Valid && origReplay.String != "" {
+		rootID = origReplay.String
+	}
+
+	id := postgres.NewID("vlx_whevt")
+	now := time.Now().UTC()
+	clone := domain.WebhookEvent{
+		ID:              id,
+		TenantID:        tenantID,
+		EventType:       eventType,
+		ReplayOfEventID: &rootID,
+		CreatedAt:       now,
+	}
+	_ = json.Unmarshal(payloadJSON, &clone.Payload)
+
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO webhook_events (id, tenant_id, event_type, payload, created_at, replay_of_event_id)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		RETURNING livemode
+	`, id, tenantID, eventType, payloadJSON, now, rootID).Scan(&clone.Livemode)
+	if err != nil {
+		return domain.WebhookEvent{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.WebhookEvent{}, err
+	}
+	return clone, nil
+}
+
+// GetEvent returns a single event by id (tenant-scoped via RLS).
+func (s *PostgresStore) GetEvent(ctx context.Context, tenantID, id string) (domain.WebhookEvent, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.WebhookEvent{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var e domain.WebhookEvent
+	var payloadJSON []byte
+	var replayOf sql.NullString
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, livemode, event_type, payload, created_at, replay_of_event_id
+		FROM webhook_events WHERE id = $1
+	`, id).Scan(&e.ID, &e.TenantID, &e.Livemode, &e.EventType, &payloadJSON, &e.CreatedAt, &replayOf)
+	if err == sql.ErrNoRows {
+		return domain.WebhookEvent{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.WebhookEvent{}, err
+	}
+	_ = json.Unmarshal(payloadJSON, &e.Payload)
+	if replayOf.Valid {
+		s := replayOf.String
+		e.ReplayOfEventID = &s
+	}
+	return e, nil
 }
 
 func (s *PostgresStore) ListEvents(ctx context.Context, tenantID string, limit int) ([]domain.WebhookEvent, error) {
@@ -333,7 +427,7 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID string, limit i
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, livemode, event_type, payload, created_at
+		SELECT id, tenant_id, livemode, event_type, payload, created_at, replay_of_event_id
 		FROM webhook_events ORDER BY created_at DESC LIMIT $1
 	`, limit)
 	if err != nil {
@@ -345,10 +439,15 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID string, limit i
 	for rows.Next() {
 		var e domain.WebhookEvent
 		var payloadJSON []byte
-		if err := rows.Scan(&e.ID, &e.TenantID, &e.Livemode, &e.EventType, &payloadJSON, &e.CreatedAt); err != nil {
+		var replayOf sql.NullString
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.Livemode, &e.EventType, &payloadJSON, &e.CreatedAt, &replayOf); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(payloadJSON, &e.Payload)
+		if replayOf.Valid {
+			s := replayOf.String
+			e.ReplayOfEventID = &s
+		}
 		events = append(events, e)
 	}
 	return events, rows.Err()
@@ -486,12 +585,20 @@ func (s *PostgresStore) ListDeliveries(ctx context.Context, tenantID, eventID st
 	}
 	defer postgres.Rollback(tx)
 
+	// Replay-tree walk: an operator clicking the dashboard's Replay
+	// button on event A produces clone B (replay_of=A), which gets its
+	// own deliveries. The dashboard expects ALL deliveries — original +
+	// every replay clone — stitched into one timeline. We pull both
+	// arms in a single query so the unified ORDER BY created_at ASC is
+	// applied across the whole tree without an in-memory merge.
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, livemode, webhook_endpoint_id, webhook_event_id, status,
-			COALESCE(http_status_code, 0), COALESCE(response_body,''), COALESCE(error_message,''),
-			attempt_count, next_retry_at, created_at, completed_at
-		FROM webhook_deliveries WHERE webhook_event_id = $1
-		ORDER BY created_at DESC
+		SELECT d.id, d.tenant_id, d.livemode, d.webhook_endpoint_id, d.webhook_event_id, d.status,
+			COALESCE(d.http_status_code, 0), COALESCE(d.response_body,''), COALESCE(d.error_message,''),
+			d.attempt_count, d.next_retry_at, d.created_at, d.completed_at
+		FROM webhook_deliveries d
+		JOIN webhook_events e ON e.id = d.webhook_event_id
+		WHERE e.id = $1 OR e.replay_of_event_id = $1
+		ORDER BY d.created_at ASC
 	`, eventID)
 	if err != nil {
 		return nil, err

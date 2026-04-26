@@ -251,6 +251,20 @@ func NullableString(v string) any {
 	return v
 }
 
+// NullableStringPtr converts a *string into a sql-friendly value: nil
+// (becomes SQL NULL) when the pointer is nil or points at an empty
+// string, otherwise the dereferenced value. Saves callers from juggling
+// sql.NullString for optional reference columns.
+func NullableStringPtr(v *string) any {
+	if v == nil {
+		return nil
+	}
+	if strings.TrimSpace(*v) == "" {
+		return nil
+	}
+	return *v
+}
+
 func NullableFloat64(v *float64) any {
 	if v == nil {
 		return nil
