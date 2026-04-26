@@ -20,6 +20,70 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Real-time webhook event UI with SSE live-tail + replay (Week 6 Track A)** (2026-04-26) —
+  the dashboard's Webhook Events page now streams every dispatched event
+  in real time via Server-Sent Events at
+  `GET /v1/webhook_events/stream`. The handler emits a snapshot of the
+  most recent 50 events on connect (so a freshly-opened tab renders the
+  current state, not a blank table), then subscribes to an in-process
+  `EventBus` so any subsequent `Service.Dispatch` / replay / deliver-
+  result publishes a frame within goroutine-scheduling latency. A 15s
+  heartbeat comment line keeps idle proxies (nginx 60s default, AWS ALB)
+  from dropping the long-lived connection. Tenant scoping holds two
+  ways: the snapshot path runs under the caller's RLS tx, and the
+  EventBus subscriber map is keyed by tenant_id so cross-tenant frames
+  never reach this socket. The frame shape (`event_id`, `event_type`,
+  `customer_id`, `status`, `last_attempt_at`, `created_at`, `livemode`,
+  `replay_of_event_id`) is pinned by
+  `TestWireShape_WebhookEventsStream_SnakeCase` — drift fails CI before
+  it can break the dashboard. Critical wiring: the global
+  `middleware.Timeout(30s)` was lifted off the router root and applied
+  per route block instead, because a 30s cap would kill any open SSE
+  socket; the stream route mounts on a sibling path ABOVE `/v1` with
+  the same auth (session-or-API-key + rate-limit + `PermAPIKeyRead`)
+  but specifically WITHOUT the timeout middleware. The new
+  `POST /v1/webhook_events/{id}/replay` endpoint clones an event into a
+  fresh `webhook_events` row tagged `replay_of_event_id=<root>` and re-
+  dispatches to every matching active endpoint; clones always point at
+  the **root** original (single-pivot rule: replaying a clone collapses
+  to the original, never chains), so the audit timeline stays a flat
+  `WHERE id = $1 OR replay_of_event_id = $1` walk. Replay returns
+  `{event_id, replay_of, status: "queued"}` (pinned by
+  `TestWireShape_WebhookEventReplay`) so the dashboard can highlight
+  the new clone in the live tail and toast the audit pivot. The
+  companion `GET /v1/webhook_events/{id}/deliveries` endpoint stitches
+  the original event plus every replay clone into one ordered timeline
+  (`{root_event_id, deliveries: [{attempt_no, status, status_code,
+  response_body, error, request_payload_sha256, attempted_at,
+  completed_at, next_retry_at, is_replay, replay_event_id}]}` — pinned
+  by `TestWireShape_WebhookEventDeliveries`). `request_payload_sha256`
+  on each row drives the dashboard's diff view: Stripe-style replays
+  don't mutate the payload, so the verdict collapses to "payload
+  identical to previous" in the common case and surfaces an unexpected
+  mutation when something goes wrong. Response bodies are truncated to
+  4KB before hitting the wire so a misbehaving receiver returning a
+  megabyte HTML page can't blow out the deliveries-list payload size.
+  Migration `0058_webhook_event_replay` adds the
+  `replay_of_event_id TEXT REFERENCES webhook_events(id) ON DELETE SET
+  NULL` column plus a partial index `WHERE replay_of_event_id IS NOT
+  NULL` for the timeline-walk query — picked next-from-origin/main per
+  the migration-numbering policy. The frontend mounts a new page at
+  `/webhooks/events` (`web-v2/src/pages/WebhookEvents.tsx`) with a
+  connection-status pill (live / connecting / reconnecting /
+  disconnected — the browser auto-reconnects EventSource), a row-level
+  Replay button, and an expandable per-event timeline that lazy-fetches
+  the deliveries on first expand. Buffer caps at 200 frames in memory
+  (4× the snapshot) so the table stays snappy on a busy tenant; rows
+  are deduped by `event_id` so the `pending → succeeded` transition
+  flips a single row in place rather than spawning a duplicate. The
+  legacy `/v1/webhook-endpoints/events/*` path stays as-is (still
+  returns `{status: "replayed"}` for backwards compatibility) — this
+  is purely an additive surface alongside it. v1 sizing is single-
+  replica per CLAUDE.md so the in-memory bus is correct; a future
+  multi-replica deployment would route SSE through Postgres
+  LISTEN/NOTIFY (one-line swap inside the bus) — explicitly noted as
+  out-of-scope for v1.
+
 - **Self-host paper artifacts — Helm chart + Terraform AWS module** (2026-04-26) —
   the Week 9 follow-up to the Compose lane lands two structurally
   validated deploy targets, both pinned to the env-var schema the

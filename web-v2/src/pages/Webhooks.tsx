@@ -568,6 +568,13 @@ function EventsTab() {
   }
 
   return (
+    <>
+      <div className="flex justify-end mt-4">
+        <Button size="sm" variant="outline" onClick={() => { window.location.href = '/webhooks/events' }}>
+          <Activity size={14} className="mr-2" />
+          Open Live Tail
+        </Button>
+      </div>
     <Card className="mt-4">
       <CardContent className="p-0">
         {errorMsg ? (
@@ -611,5 +618,6 @@ function EventsTab() {
         )}
       </CardContent>
     </Card>
+    </>
   )
 }
