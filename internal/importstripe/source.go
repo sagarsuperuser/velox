@@ -20,6 +20,15 @@ type Source interface {
 	// order, oldest first. The callback may return ErrStopIteration to halt
 	// early; any other error halts and is returned to the caller.
 	IterateCustomers(ctx context.Context, fn func(*stripe.Customer) error) error
+
+	// IterateProducts yields every non-deleted Stripe product in creation
+	// order, oldest first. Same semantics as IterateCustomers — early-stop
+	// via ErrStopIteration, all other errors halt and propagate.
+	IterateProducts(ctx context.Context, fn func(*stripe.Product) error) error
+
+	// IteratePrices yields every non-deleted Stripe price in creation order,
+	// oldest first. Same semantics as IterateCustomers.
+	IteratePrices(ctx context.Context, fn func(*stripe.Price) error) error
 }
 
 // ErrStopIteration is a sentinel returned from a Source callback to halt

@@ -1,0 +1,12 @@
+{
+  "id": "prod_minimal01",
+  "object": "product",
+  "active": true,
+  "created": 1701000000,
+  "description": null,
+  "livemode": false,
+  "metadata": {},
+  "name": "Basic",
+  "type": "service",
+  "updated": 1701000000
+}

@@ -1,0 +1,26 @@
+{
+  "id": "price_tiered01",
+  "object": "price",
+  "active": true,
+  "billing_scheme": "tiered",
+  "created": 1701000000,
+  "currency": "usd",
+  "livemode": true,
+  "metadata": {},
+  "nickname": "Tiered Plan",
+  "product": {
+    "id": "prod_NfJG2N4m6X",
+    "object": "product"
+  },
+  "recurring": {
+    "interval": "month",
+    "interval_count": 1,
+    "usage_type": "metered"
+  },
+  "tiers": [
+    {"flat_amount": 0, "unit_amount": 100, "up_to": 1000},
+    {"flat_amount": 0, "unit_amount": 80, "up_to": null}
+  ],
+  "tiers_mode": "graduated",
+  "type": "recurring"
+}

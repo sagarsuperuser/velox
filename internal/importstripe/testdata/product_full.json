@@ -1,0 +1,23 @@
+{
+  "id": "prod_NfJG2N4m6X",
+  "object": "product",
+  "active": true,
+  "created": 1701000000,
+  "description": "Premium plan for SaaS customers",
+  "images": ["https://example.com/img1.png"],
+  "livemode": true,
+  "marketing_features": [
+    {"name": "Unlimited seats"},
+    {"name": "Priority support"}
+  ],
+  "metadata": {"tier": "premium"},
+  "name": "Premium",
+  "package_dimensions": null,
+  "shippable": null,
+  "statement_descriptor": "ACME PREMIUM",
+  "tax_code": null,
+  "type": "service",
+  "unit_label": "seat",
+  "updated": 1701000000,
+  "url": "https://example.com/premium"
+}

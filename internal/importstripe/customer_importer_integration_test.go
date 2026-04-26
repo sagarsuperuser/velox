@@ -31,6 +31,16 @@ func (f *fakeIntegrationSource) IterateCustomers(ctx context.Context, fn func(*s
 	return nil
 }
 
+// IterateProducts / IteratePrices are no-op for the customer integration
+// test. The Source interface widened in Phase 1.
+func (f *fakeIntegrationSource) IterateProducts(ctx context.Context, fn func(*stripe.Product) error) error {
+	return nil
+}
+
+func (f *fakeIntegrationSource) IteratePrices(ctx context.Context, fn func(*stripe.Price) error) error {
+	return nil
+}
+
 // TestCustomerImporter_EndToEndPostgres drives the importer against a real
 // Postgres database. Single test, three phases — keeps RLS/encryption setup
 // cost amortised across all the assertions we care about (insert, idempotent
