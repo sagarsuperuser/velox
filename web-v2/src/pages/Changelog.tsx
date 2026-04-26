@@ -18,6 +18,20 @@ const entries: {
 }[] = [
   {
     date: '2026-04-26',
+    title: 'Plan migration tool — bulk plan swaps with preview + commit',
+    tag: 'feature',
+    body: 'Operators can now move a cohort of subscribers from one plan to another in a single guarded action. Three endpoints under /v1/admin/plan_migrations gated by PermSubscriptionWrite: POST /preview reuses billing.PreviewService per-customer to produce a before / after / delta table; POST /commit accepts an idempotency_key plus an effective of "immediate" (proration-aware swap of subscription_items.plan_id, stamps plan_changed_at) or "next_period" (sets pending_plan_id + pending_plan_effective_at), returning migration_id / applied_count / audit_log_id (replays of the same key short-circuit via UNIQUE (tenant_id, idempotency_key) without re-mutating); GET / paginates past migrations in reverse-chronological order. The dashboard ships at /plan-migrations with a three-step flow.',
+    bullets: [
+      'Cohort selection: customer_filter.type="all" picks every active subscription on from_plan_id; type="ids" narrows to a list. Tag-based filters are reserved (the wire shape accepts them so frontend mocks compile, but the service rejects with code filter_type_unsupported pending a customer-tag schema).',
+      'Cross-currency guard: the service rejects a from→to plan pair with mismatched currency at validateCommon time with code currency_mismatch — a before/after delta in different currencies would be apples-to-oranges, and the dashboard surfaces the error inline before the operator hits Preview.',
+      'History table plan_migrations (migration 0059) snapshots the cohort summary at commit: customer_filter JSONB always-object, totals JSONB always-array of {currency, before_amount_cents, after_amount_cents, delta_amount_cents}, applied_by + applied_by_type from the auth context, FORCE-RLS on (tenant_id, livemode), BEFORE-INSERT set_livemode trigger so test-mode commits land livemode=false without callers setting the column.',
+      'Audit log gains TWO new event types: plan.migration_committed (one cohort summary entry per commit; metadata carries from_plan_id, to_plan_id, effective, customer_filter, applied_count, totals, idempotency_key) and subscription.plan_changed (per-customer entry so CS reps can answer "why did my plan change?" tickets without joining tables).',
+      'Three wire-shape regression tests pin the always-snake_case contract: TestWireShape_PlanMigrationPreview_SnakeCase asserts previews[].{customer_id, current_plan_id, target_plan_id, before, after, delta_amount_cents, currency} and totals[].{currency, before_amount_cents, after_amount_cents, delta_amount_cents}; commit and list pin migration_id / applied_count / audit_log_id and migrations[] / next_cursor respectively. No PascalCase leakage; warnings is always an array (never null); customer_filter is always an object.',
+      'Three-step UI: configure (pick from / to / filter / effective) → preview (cohort table with delta column highlighting + warnings panel + cohort total) → commit (modal with auto-generated idempotency key from crypto.randomUUID, editable for retry scenarios). A recent-migrations sidebar surfaces the last 10 runs with their effective mode and applied count.',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Real-time webhook event UI — SSE live-tail + replay + payload diff',
     tag: 'feature',
     body: 'The Webhook Events page now streams every dispatched event in real time. GET /v1/webhook_events/stream is a Server-Sent Events feed: a snapshot of the last 50 events on connect (so the page renders state, not blank), then live frames as Service.Dispatch / replay / deliver-result publishes them, with a 15s heartbeat keeping idle proxies from dropping the long-lived socket. Tenant scoping holds two ways — the snapshot path runs under RLS, and the in-process EventBus is keyed by tenant_id so cross-tenant frames never reach the connection. Drift on the wire shape (event_id, event_type, customer_id, status, last_attempt_at, created_at, livemode, replay_of_event_id) is gated by TestWireShape_WebhookEventsStream_SnakeCase before merge.',
