@@ -1,6 +1,6 @@
 import { PublicLayout, PublicPageHeader } from '@/components/PublicLayout'
 
-type Tag = 'feature' | 'improvement' | 'fix' | 'security' | 'hardening'
+type Tag = 'feature' | 'improvement' | 'fix' | 'security' | 'hardening' | 'docs'
 
 const tagClass: Record<Tag, string> = {
   feature: 'bg-primary/10 text-primary',
@@ -8,6 +8,7 @@ const tagClass: Record<Tag, string> = {
   fix: 'bg-amber-500/10 text-amber-600 dark:text-amber-500',
   security: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-500',
   hardening: 'bg-purple-500/10 text-purple-600 dark:text-purple-400',
+  docs: 'bg-slate-500/10 text-slate-600 dark:text-slate-400',
 }
 
 const entries: {
@@ -17,6 +18,20 @@ const entries: {
   body: string
   bullets?: string[]
 }[] = [
+  {
+    date: '2026-04-26',
+    title: 'Audit log retention guide — Week 10 compliance docs starting',
+    tag: 'docs',
+    body: 'Week 10 of the 90-day plan (compliance + audit posture) kicks off with docs/ops/audit-log-retention.md — the operator-facing reference for what the audit log captures, how long to keep it, and how to prune + archive without locking the hot table. Documents every column on the audit_log table (including the request_id added in migration 0030 and the BEFORE UPDATE OR DELETE immutability trigger from migration 0011), the live event-type inventory (catch-all middleware verbs + every handler-explicit auditLogger.Log call across credit / coupon / subscription / invoice / credit-note / GDPR / plan-migration / bulk-action), and what\'s deliberately NOT recorded (bootstrap, inbound Stripe webhooks, GETs, failed mutations).',
+    bullets: [
+      'Regime-by-regime retention table with reasoning for SOC 2 Type 2 (12-18 months covering a Type 2 cycle), GDPR (storage-limitation principle balanced against the accountability principle, with the audit log as personal-data nuance), PCI-DSS (1 year / 3 months immediate per Requirement 10.5.1 — Velox holds tokens not cards but rotate / payment-method audit rows touch the PCI boundary), HIPAA (6 years for tenants with flow-through BAAs), and SOX / financial (7 years archived). Velox default: 18 months in the live audit_log table, indefinite archived to S3 with a 7-year bucket-lifecycle expiry that covers the conservative SOC 2 / SOX upper bound.',
+      'Partition vs batched-DELETE decision: Velox ships unpartitioned today; revisit when a deployment crosses ~5M rows/month sustained. Includes a copy-pasteable prune script using the same "don\'t lock the hot table" discipline that migration 0015 used — 10k-row batches, FOR UPDATE SKIP LOCKED, pg_sleep(0.1) between batches, DROP TRIGGER / CREATE TRIGGER bracketing the prune so the immutability invariant is restored automatically.',
+      'Archival pattern: COPY (SELECT ... WHERE created_at < cutoff) TO STDOUT | gzip | aws s3 cp with content-MD5 verification. S3 lifecycle JSON included — Glacier IR at 90 days, Deep Archive at 365 days, expiration at 2555 days (~7 years). For SOX / regulated finance tenants, S3 Object Lock in compliance mode is recommended on the bucket — the storage-layer equivalent of the audit_log_immutable_trg trigger.',
+      'Restore path uses a separate audit_log_archive side table (CREATE TABLE LIKE audit_log INCLUDING DEFAULTS plus an archived_from_key text column) so a restore for an auditor window never touches the live table. Idempotent COPY with ON CONFLICT (id) DO NOTHING means re-runs are safe; DROP TABLE audit_log_archive when the audit closes.',
+      'Querying section cites the existing dashboard API (GET /v1/audit-log + /filters in internal/audit/handler.go, web-v2/src/lib/api.ts::listAuditLog) and provides ad-hoc SQL recipes: every action by actor X in the last 30 days, every change to subscription Y, every API-key rotation in 90 days (PCI-relevant), every gdpr.delete ever, and tracing a customer-supplied Velox-Request-Id header back to a row via the request_id column.',
+      'Configuration knobs section documents the only audit knob that exists today (tenant_settings.audit_fail_closed — per-tenant choice between fail-open and 503 audit_error on write failure) and explicitly flags the not-implemented future knobs: VELOX_AUDIT_RETENTION_DAYS (global default), VELOX_AUDIT_ARCHIVE_BUCKET (consumed by a future in-binary archive worker), tenant_settings.audit_retention_days (per-tenant override needed for HIPAA flow-through). Cross-refs added from docs/ops/runbook.md (new Compliance section) and docs/self-host.md (Compliance posture section now lists the doc + the append-only DB trigger fact). Three more Week 10 docs still pending: encryption-at-rest verification, SOC 2 control mapping, GDPR data export + deletion.',
+    ],
+  },
   {
     date: '2026-04-26',
     title: 'Migration runner — no-transaction primitive + 0054 GIN moved to CONCURRENTLY (0062)',

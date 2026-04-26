@@ -20,6 +20,56 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Audit log retention guide — compliance posture for Week 10** (2026-04-26) —
+  Week 10 compliance docs kicking off with `docs/ops/audit-log-retention.md`,
+  the operator-facing reference for what the audit log captures, how long
+  to keep it, and how to prune + archive without locking the hot table.
+  Covers the full `audit_log` schema (every column documented including the
+  `request_id` added in migration `0030_audit_request_context` and the
+  immutability trigger from migration `0011_audit_append_only`), the live
+  inventory of recorded event types from the catch-all middleware
+  (`internal/api/middleware/audit.go`) plus every handler-explicit
+  `auditLogger.Log(...)` call (credit / coupon / subscription / invoice /
+  credit-note / GDPR / plan-migration / bulk-action), and the explicit
+  list of what's NOT recorded (bootstrap, inbound Stripe webhooks, GETs,
+  failed mutations) with rationale. Regime-by-regime retention table with
+  reasoning: SOC 2 Type 2 (12-18 months covering a Type 2 cycle), GDPR
+  (storage-limitation balance against accountability principle, with the
+  audit log as personal-data nuance), PCI-DSS (1 year minimum / 3 months
+  immediate per Requirement 10.5.1, applied to API-key-rotation /
+  payment-method audit rows that touch the boundary), HIPAA (6 years for
+  flow-through tenants), SOX / financial (7 years archived). Velox default
+  is **18 months in the live `audit_log` table, indefinite archived to S3**
+  with a 7-year bucket-lifecycle expiry that covers the conservative SOC 2
+  / SOX upper bound. Operational sections: a partition-vs-batched-DELETE
+  decision (Velox ships unpartitioned; revisit at ~5M rows/month sustained),
+  a copy-pasteable batched-DELETE prune script using the same NOT-VALID +
+  VALIDATE-style "don't lock the hot table" discipline that migration 0015
+  used (10k-row batches, `FOR UPDATE SKIP LOCKED`, `pg_sleep(0.1)` between
+  batches, `DROP TRIGGER` / `CREATE TRIGGER` bracketing the prune so the
+  immutability invariant is restored automatically), a cron line for
+  monthly cadence, the `COPY (... WHERE created_at < ...) TO STDOUT |
+  gzip | aws s3 cp` archive pattern with content-MD5 verification, an
+  S3 lifecycle JSON moving objects to Glacier IR at 90 days and Deep
+  Archive at 365 days with a 7-year (2555-day) expiration, and a side
+  `audit_log_archive` table restore path for auditor windows that doesn't
+  touch the live table. Querying section cites the existing dashboard API
+  (`GET /v1/audit-log` + `/filters`, `internal/audit/handler.go`,
+  `web-v2/src/lib/api.ts::listAuditLog`) and provides ad-hoc SQL recipes:
+  every action by actor X in the last 30 days, every change to subscription
+  Y, every API-key rotation in the last 90 days (PCI-relevant), every
+  `gdpr.delete` ever, and tracing a customer's `Velox-Request-Id` header
+  back to a row via the `request_id` column. Configuration knobs section
+  documents the only knob that exists today (`tenant_settings.audit_fail_closed`)
+  and flags the future ones as not-implemented (`VELOX_AUDIT_RETENTION_DAYS`,
+  `VELOX_AUDIT_ARCHIVE_BUCKET`, `tenant_settings.audit_retention_days`).
+  Cross-references added: `docs/ops/runbook.md` gains a Compliance section
+  in the table of contents pointing at the new doc; `docs/self-host.md`
+  links the new doc from its Compliance posture section and now mentions
+  the append-only DB trigger and per-tenant fail-closed posture as live
+  facts. Three more Week 10 docs (encryption-at-rest verification, SOC 2
+  control mapping, GDPR data export + deletion) still pending.
+
 - **Bulk operations — apply coupon + schedule cancel across cohorts** (2026-04-26) —
   Week 7 ships an operator surface for running an action across many customers
   in a single guarded run. New domain package `internal/bulkaction/` with
