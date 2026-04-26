@@ -377,10 +377,20 @@ func TestCreate(t *testing.T) {
 		}
 	})
 
-	t.Run("missing subscription_id", func(t *testing.T) {
-		_, err := svc.Create(ctx, "t1", CreateInput{CustomerID: "c"})
-		if err == nil {
-			t.Fatal("expected error")
+	t.Run("one-off invoice — subscription_id optional", func(t *testing.T) {
+		// Operator-issued one-off invoices (composer on the customer page)
+		// have no parent subscription. Create must succeed, persist an empty
+		// SubscriptionID, and default the billing window to the clock so the
+		// NOT NULL period columns get sane values.
+		inv, err := svc.Create(ctx, "t1", CreateInput{CustomerID: "c", Currency: "USD"})
+		if err != nil {
+			t.Fatalf("expected one-off create to succeed, got %v", err)
+		}
+		if inv.SubscriptionID != "" {
+			t.Errorf("subscription_id: got %q, want empty", inv.SubscriptionID)
+		}
+		if inv.BillingPeriodStart.IsZero() || inv.BillingPeriodEnd.IsZero() {
+			t.Errorf("billing period must default to clock now when omitted")
 		}
 	})
 }

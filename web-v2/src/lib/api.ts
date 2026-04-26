@@ -152,6 +152,19 @@ export const api = {
     apiRequest<{ data: Invoice[]; total: number }>('GET', `/invoices${params ? '?' + params : ''}`),
   getInvoice: (id: string) =>
     apiRequest<{ invoice: Invoice; line_items: LineItem[] }>('GET', `/invoices/${id}`),
+  // Creates a draft invoice. Cycle invoices originate from the billing engine
+  // and pass subscription_id; one-off invoices issued from the customer-page
+  // composer omit it (backend allows null after migration 0060). Default
+  // billing window is "now" when omitted, default net term is 30 days.
+  createInvoice: (data: {
+    customer_id: string
+    subscription_id?: string
+    currency?: string
+    billing_period_start?: string
+    billing_period_end?: string
+    net_payment_term_days?: number
+    memo?: string
+  }) => apiRequest<Invoice>('POST', '/invoices', data),
   finalizeInvoice: (id: string) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/finalize`),
   voidInvoice: (id: string) =>

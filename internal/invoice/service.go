@@ -79,9 +79,11 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	if input.CustomerID == "" {
 		return domain.Invoice{}, errs.Required("customer_id")
 	}
-	if input.SubscriptionID == "" {
-		return domain.Invoice{}, errs.Required("subscription_id")
-	}
+	// SubscriptionID is OPTIONAL: cycle invoices carry a subscription, one-off
+	// invoices (operator composer, ad-hoc charges) do not. The DB column is
+	// nullable as of migration 0060; the cycle-idempotency partial unique
+	// index ignores NULLs so two one-off invoices can coexist for the same
+	// (customer, period) without colliding.
 
 	currency := strings.ToUpper(strings.TrimSpace(input.Currency))
 	if currency == "" {
@@ -94,6 +96,18 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	}
 
 	now := s.clock.Now()
+	// One-off invoices that omit a billing window default to "now → now" so
+	// the NOT NULL period columns get sane values. Cycle invoices always
+	// pass an explicit window from the engine.
+	periodStart := input.BillingPeriodStart
+	periodEnd := input.BillingPeriodEnd
+	if periodStart.IsZero() {
+		periodStart = now
+	}
+	if periodEnd.IsZero() {
+		periodEnd = now
+	}
+
 	invoiceNumber, err := s.numberer.NextInvoiceNumber(ctx, tenantID)
 	if err != nil {
 		return domain.Invoice{}, fmt.Errorf("allocate invoice number: %w", err)
@@ -108,8 +122,8 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		Status:             domain.InvoiceDraft,
 		PaymentStatus:      domain.PaymentPending,
 		Currency:           currency,
-		BillingPeriodStart: input.BillingPeriodStart,
-		BillingPeriodEnd:   input.BillingPeriodEnd,
+		BillingPeriodStart: periodStart,
+		BillingPeriodEnd:   periodEnd,
 		IssuedAt:           &issuedAt,
 		DueAt:              &dueAt,
 		NetPaymentTermDays: netDays,
@@ -257,7 +271,12 @@ func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, i
 
 	lineType := strings.TrimSpace(input.LineType)
 	if lineType == "" {
-		lineType = "manual"
+		// add_on is the default for operator-added line items (one-off invoice
+		// composer, ad-hoc charges). Engine-driven cycle invoices always pass
+		// an explicit type (base_fee / usage). The DB CHECK accepts only:
+		// base_fee, usage, add_on, discount, tax — so the previous "manual"
+		// fallback would have been rejected by Postgres on insert.
+		lineType = string(domain.LineTypeAddOn)
 	}
 
 	amountCents := input.Quantity * input.UnitAmountCents
