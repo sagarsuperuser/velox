@@ -350,3 +350,53 @@ Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. 
 - **Open for human review:**
   - PR to be opened on `feat/backend-week5b-create-preview` once final commit lands.
 - **Next session (Track A):** drive PR to green, self-merge per authorization (CI green AND `TestWireShape_SnakeCase` in suite — both conditions met), then start Week 5/6 next blocker per 90-day plan.
+
+---
+
+## 2026-04-26 (Sun) — Track A: billing alerts (Week 5d)
+
+### Track A
+- **Branch:** `feat/backend-week5d-billing-alerts` in worktree `agent-a52ca468` (parallel slice; sibling worktree `agent-a42df1cd` shipping Week 5c billing thresholds, owns migration 0056).
+- **Goal:** ship Stripe Tier 1 "Billing Alerts" — operator-configurable thresholds that fire `billing.alert.triggered` over the existing webhook outbox + dashboard notification when a customer's cycle spend (or per-meter usage) crosses a limit. Atomic by construction: trigger insert + alert state mutation + outbox enqueue all commit in one tx; UNIQUE (alert_id, period_from) gives per-period idempotency across replica races.
+- **Shipped:**
+  - **Migration `0057_billing_alerts`** — two new mode-aware tables (`billing_alerts`, `billing_alert_triggers`), partial index `idx_billing_alerts_evaluator` on `status IN ('active','triggered_for_period')` to bound the per-tick scan, hot-read indexes for dashboard list (`tenant_id, customer_id, status`) and trigger-history (`alert_id, triggered_at DESC`). Standard tenant + livemode RLS policy, plus the BEFORE INSERT livemode-from-session trigger from migration 0021 wired to both new tables (regression entry added to `TestRLSIsolation_AllModeAwareTablesHaveLivemodePredicate`). Migration number coordinated with the parallel Week 5c agent that owns 0056 — both branches cleanly stack on `main` without conflict.
+  - **`internal/billingalert/`** — full new domain package: `domain.go` (BillingAlert, BillingAlertTrigger, BillingAlertStatus, BillingAlertRecurrence types), `service.go` (validation + Create/Get/List/Archive), `postgres.go` (Store impl with FireInTx for tx-passing across the evaluator commit boundary, ListCandidates under TxBypass for cross-tenant scan), `evaluator.go` (background goroutine with leader-election advisory lock `LockKeyBillingAlertEvaluator`, dimension-match logic, primary-subscription pick, threshold-cross detection, atomic fire path), `handler.go` (four /v1/billing/alerts endpoints with chi pattern precedence — `/{id}/archive` registered before `/{id}` so chi picks the more-specific route).
+  - **`internal/api/router.go` wiring** — new `BillingAlertEvaluator *billingalert.Evaluator` field on `Server`, full DI: store → service → handler → evaluator. Mount `/billing/alerts` BEFORE `/billing` so chi picks the more-specific pattern (otherwise `/billing/{id}` would catch `alerts` as an ID). Two new adapter types in `internal/api/adapters.go`: `billingAlertSubscriptionListerAdapter` (bridges `subscription.PostgresStore` → `billingalert.SubscriptionLister`) and `billingAlertLockerAdapter` (bridges `*postgres.DB` → `billingalert.Locker`). Evaluator interval configurable via `VELOX_BILLING_ALERTS_INTERVAL` env var.
+  - **`cmd/velox/main.go`** — evaluator goroutine spawn after the email dispatcher block, gated by `if server.BillingAlertEvaluator != nil` so test code that constructs partial servers still boots cleanly.
+  - **`internal/testutil/db.go`** — added `billing_alert_triggers, billing_alerts` to the TRUNCATE list in FK-safe order (between `webhook_endpoints` and `tenants`).
+  - **24 unit tests:**
+    - **`wire_shape_test.go` (the merge gate):** 5 sub-tests covering snake_case throughout, dimensions as always-object `{}`, threshold always emits both keys (one as null), `usage_gte` as decimal-as-string per ADR-005, no PascalCase leaks.
+    - **`service_test.go`:** table-driven validation (12 cases: title required + ≤200 chars, customer required, recurrence in `{one_time, per_period}`, threshold required, threshold-both-set rejection, amount > 0, quantity > 0, `usage_without_meter`, `dimensions_without_meter`, `dimensions_too_many_keys` (>16), `dimensions_non_scalar_value`); plus happy-path Create, customer-not-found, meter-not-found, list-status-validation, get-requires-id, archive-idempotent.
+    - **`evaluator_test.go`:** `TestDimensionsMatch` (12 cases — empty filter matches anything, exact match, subset match, JSON int-vs-float64 normalisation, bool match, etc.), `TestShouldFire` (7 cases — amount/quantity above/at/below thresholds, no-threshold-set), `TestPickPrimarySubscription` (4 cases — picks active + latest cycle, treats trialing as active, excludes canceled), `TestBuildEventPayload` (+ nil dimensions case), `TestEqualAny` (11 cases), `TestMapMeterAggregation` (6 cases).
+  - **9 integration tests against real Postgres (`integration_test.go`):**
+    - `TestEvaluator_FiresOnceForOneTime` — happy path: 100 events × qty=10 × 1¢ = 1000c crosses 500c threshold, fires once, transitions to terminal `triggered`, emits exactly 1 outbox row, second tick is a no-op.
+    - `TestEvaluator_FiresPerPeriodAndRearms` — fires in cycle 1, transitions to `triggered_for_period`, evaluator sees the next cycle's roll, re-arms to `active` and fires again on cross.
+    - `TestEvaluator_DoubleFireIdempotent` — UNIQUE (alert_id, period_from) catches the duplicate insert from a simulated replica race; the loser's tx rolls back cleanly with `ErrAlreadyFired`.
+    - `TestEvaluator_ArchivedSkipped` — partial index excludes archived; archived alert with crossed threshold doesn't fire.
+    - `TestEvaluator_BelowThresholdNoFire` — non-zero usage below cap is a no-op.
+    - `TestEvaluator_NoSubscription` — customer with no active sub surfaces a structured warning, doesn't fire.
+    - `TestEvaluator_MultiTenantIsolation` — two tenants with identical alerts don't cross-fire; each only sees its own customer's events.
+    - `TestEvaluator_AtomicityOnRollback` — `fakeOutbox` simulates an enqueue failure; assertion: trigger row NOT inserted (count unchanged), alert state NOT mutated. Proves the all-or-nothing tx contract.
+    - `TestCreateAlert_RLS` — tenant B's secret key against tenant A's customer ID 404s at the customer existence check.
+- **Decisions made inline (per `feedback_feat8_autonomy`):**
+  - **Bundle alert state + trigger insert + outbox enqueue in one tx** (over a saga). Single tx is the simplest correct semantics for "fire exactly once, with the webhook"; UNIQUE constraint plus tx-rollback gives both halves of the contract.
+  - **Bypass RLS for the evaluator's candidate scan** (`ListCandidates` under `TxBypass`). The evaluator is cross-tenant by design (one leader per cluster); the partial index keeps it bounded.
+  - **`Routes(read, write)` per-method middleware** (over a single `RequireAny([read, write])` middleware). `auth.RequireAny` doesn't exist; refactoring the auth package was out of scope. Per-method `r.With(read).Get(...)` matches the chi idiom and keeps per-route gating explicit.
+  - **`billingAlertLockerAdapter`** rather than reusing `billing.Locker` directly. The two `Locker` interfaces in different packages have different shapes (`Lock(ctx, key int64) (release func(), error)` vs `Lock(ctx, key int64, fn func(ctx) error) error`); the adapter is two lines of glue and avoids leaking domain dependencies between billing and billingalert.
+  - **Migration 0057 (skipping 0056)** because the parallel Week 5c agent (worktree `agent-a42df1cd`) owns 0056. Coordinated via `feedback_migration_numbering` discipline (pick next number from `origin/main`, not local branch — but in parallel-slice mode, picking the *next-next* number ensures both branches stack cleanly on main without conflict).
+- **Test status:**
+  - `go test -short ./...`: all packages pass (40+ packages green).
+  - `go test -p 1 ./internal/billingalert/... -short=false -count=1`: all 24 unit + 9 integration tests pass against real Postgres.
+  - `TestRLSIsolation_AllModeAwareTablesHaveLivemodePredicate` updated with `billing_alerts` + `billing_alert_triggers` and passes.
+  - `TestWireShape_SnakeCase` (the merge gate) passes.
+  - Note: shared `velox_test` DB across worktrees can race during concurrent test runs (the parallel Week 5c agent doing the same `go test -p 1`); failures of the form `relation "tenants" does not exist` are transient infrastructure when both agents run simultaneously, not code regressions. CI uses an isolated DB per job so won't hit this.
+- **`web-v2/src/lib/api.ts`** — new types (`BillingAlert`, `BillingAlertFilter`, `BillingAlertThreshold`, `CreateBillingAlertRequest`, `BillingAlertStatus`, `BillingAlertRecurrence`) plus four methods (`listBillingAlerts`, `getBillingAlert`, `createBillingAlert`, `archiveBillingAlert`). Snake_case throughout, dimensions typed as `Record<string, unknown>` to mirror the always-object shape, `usage_gte` typed as `string` to honor decimal-as-string.
+- **CHANGELOG.md** comprehensive entry at top of `[Unreleased]/Added`.
+- **`web-v2/src/pages/Changelog.tsx`** — Linear-style feature entry dated 2026-04-26 with 6 bullets (recurrence semantics, threshold contract, filter contract, atomicity guarantee, mode-aware regression coverage, test summary).
+- **Blocking Track B on:** nothing.
+- **Track B can pick up:**
+  - **Billing alerts CRUD UI** — call `api.listBillingAlerts({customer_id})` on the customer detail page, render a "Spend alerts" section with a create-alert dialog. The four endpoints + types are wired and ready.
+  - **`billing.alert.triggered` event surface in the webhook events viewer** — already routes through the existing webhook outbox so the events log will pick it up automatically; just needs a friendly icon + summary line for the new event type.
+- **Open for human review:**
+  - PR to be opened on `feat/backend-week5d-billing-alerts` once final commit lands.
+- **Next session (Track A):** drive PR to green, self-merge per authorization (CI green AND `TestWireShape_SnakeCase` + integration suite — both conditions met), then queue the next blocker per 90-day plan.
