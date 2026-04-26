@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -28,6 +30,7 @@ const subCols = `id, tenant_id, code, display_name, customer_id, status, billing
 	trial_start_at, trial_end_at, started_at, activated_at, canceled_at,
 	cancel_at, COALESCE(cancel_at_period_end, false),
 	pause_collection_behavior, pause_collection_resumes_at,
+	billing_threshold_amount_gte, COALESCE(billing_threshold_reset_cycle, true),
 	current_billing_period_start, current_billing_period_end, next_billing_at,
 	usage_cap_units, COALESCE(overage_action,'charge'),
 	COALESCE(test_clock_id,''),
@@ -128,11 +131,9 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Su
 		return domain.Subscription{}, err
 	}
 
-	items, err := listItemsTx(ctx, tx, sub.ID)
-	if err != nil {
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
-	sub.Items = items
 	return sub, nil
 }
 
@@ -185,11 +186,9 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.S
 	// acceptable on the list path at the default 50-row page size; if list
 	// growth becomes hot, batch this into one IN() query.
 	for i := range subs {
-		items, err := listItemsTx(ctx, tx, subs[i].ID)
-		if err != nil {
+		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
 			return nil, 0, err
 		}
-		subs[i].Items = items
 	}
 	return subs, total, nil
 }
@@ -222,11 +221,9 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 		return domain.Subscription{}, err
 	}
 
-	items, err := listItemsTx(ctx, tx, sub.ID)
-	if err != nil {
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
-	sub.Items = items
 
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
@@ -300,11 +297,9 @@ func (s *PostgresStore) ScheduleCancellation(ctx context.Context, tenantID, id s
 		return domain.Subscription{}, err
 	}
 
-	items, err := listItemsTx(ctx, tx, sub.ID)
-	if err != nil {
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
-	sub.Items = items
 
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
@@ -340,11 +335,9 @@ func (s *PostgresStore) ClearScheduledCancellation(ctx context.Context, tenantID
 		return domain.Subscription{}, err
 	}
 
-	items, err := listItemsTx(ctx, tx, sub.ID)
-	if err != nil {
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
-	sub.Items = items
 
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
@@ -394,11 +387,9 @@ func (s *PostgresStore) FireScheduledCancellation(ctx context.Context, tenantID,
 		return domain.Subscription{}, err
 	}
 
-	items, err := listItemsTx(ctx, tx, sub.ID)
-	if err != nil {
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
-	sub.Items = items
 
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
@@ -445,11 +436,9 @@ func (s *PostgresStore) SetPauseCollection(ctx context.Context, tenantID, id str
 		return domain.Subscription{}, err
 	}
 
-	items, err := listItemsTx(ctx, tx, sub.ID)
-	if err != nil {
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
-	sub.Items = items
 
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
@@ -487,11 +476,9 @@ func (s *PostgresStore) ClearPauseCollection(ctx context.Context, tenantID, id s
 		return domain.Subscription{}, err
 	}
 
-	items, err := listItemsTx(ctx, tx, sub.ID)
-	if err != nil {
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
-	sub.Items = items
 
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
@@ -539,11 +526,9 @@ func (s *PostgresStore) ActivateAfterTrial(ctx context.Context, tenantID, id str
 		return domain.Subscription{}, err
 	}
 
-	items, err := listItemsTx(ctx, tx, sub.ID)
-	if err != nil {
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
-	sub.Items = items
 
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
@@ -588,11 +573,9 @@ func (s *PostgresStore) ExtendTrial(ctx context.Context, tenantID, id string, ne
 		return domain.Subscription{}, err
 	}
 
-	items, err := listItemsTx(ctx, tx, sub.ID)
-	if err != nil {
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
-	sub.Items = items
 
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
@@ -663,11 +646,9 @@ func (s *PostgresStore) transitionAtomic(ctx context.Context, tenantID, id strin
 		return domain.Subscription{}, err
 	}
 
-	items, err := listItemsTx(ctx, tx, sub.ID)
-	if err != nil {
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
-	sub.Items = items
 
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
@@ -724,11 +705,9 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 	}
 
 	for i := range subs {
-		items, err := listItemsTx(ctx, tx, subs[i].ID)
-		if err != nil {
+		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
 			return nil, err
 		}
-		subs[i].Items = items
 	}
 	return subs, nil
 }
@@ -1007,8 +986,234 @@ func (s *PostgresStore) RemoveItem(ctx context.Context, tenantID, itemID string)
 }
 
 // ---------------------------------------------------------------------------
+// Billing thresholds
+// ---------------------------------------------------------------------------
+
+// SetBillingThresholds writes the (amount_gte, reset_cycle, item_thresholds)
+// triple onto the row in one transaction. Replaces the per-item threshold
+// set: any item_thresholds row not in the new slice is deleted, present
+// rows are upserted by primary key (subscription_item_id).
+//
+// Rejects rows in canceled/archived since a threshold on a terminal
+// subscription has no meaning — the engine wouldn't observe it anyway,
+// but the API surface should be consistent. Service layer is responsible
+// for validating that every t.ItemThresholds[i].SubscriptionItemID
+// belongs to this subscription.
+func (s *PostgresStore) SetBillingThresholds(ctx context.Context, tenantID, id string, t domain.BillingThresholds) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+
+	// Update the parent subscription columns in the same tx as the per-item
+	// upserts so a partial commit can't leave amount_gte set without the
+	// item rows the caller intended.
+	var amountArg sql.NullInt64
+	if t.AmountGTE > 0 {
+		amountArg = sql.NullInt64{Int64: t.AmountGTE, Valid: true}
+	}
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET billing_threshold_amount_gte = $1,
+		    billing_threshold_reset_cycle = $2,
+		    updated_at = $3
+		WHERE id = $4 AND status NOT IN ('canceled','archived')
+		RETURNING `+subCols,
+		amountArg, t.ResetBillingCycle, now, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		var currentStatus string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
+		if err2 == sql.ErrNoRows {
+			return domain.Subscription{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.Subscription{}, err2
+		}
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot set billing threshold on %s subscription", currentStatus))
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	// Replace the per-item set in one statement: DELETE everything not in the
+	// new slice, then UPSERT each new row. This pattern preserves the
+	// (subscription_item_id) PK across calls and lets idempotent re-set
+	// converge to the same state without churn.
+	keepIDs := make([]string, 0, len(t.ItemThresholds))
+	for _, it := range t.ItemThresholds {
+		keepIDs = append(keepIDs, it.SubscriptionItemID)
+	}
+	if len(keepIDs) > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM subscription_item_thresholds
+			WHERE subscription_id = $1 AND NOT (subscription_item_id = ANY($2::text[]))
+		`, id, keepIDs); err != nil {
+			return domain.Subscription{}, fmt.Errorf("delete stale item thresholds: %w", err)
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM subscription_item_thresholds WHERE subscription_id = $1
+		`, id); err != nil {
+			return domain.Subscription{}, fmt.Errorf("clear item thresholds: %w", err)
+		}
+	}
+
+	for _, it := range t.ItemThresholds {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO subscription_item_thresholds (subscription_id, subscription_item_id, tenant_id, usage_gte, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $5)
+			ON CONFLICT (subscription_item_id) DO UPDATE
+			SET usage_gte = EXCLUDED.usage_gte,
+			    updated_at = EXCLUDED.updated_at
+		`, id, it.SubscriptionItemID, tenantID, it.UsageGTE.String(), now); err != nil {
+			return domain.Subscription{}, fmt.Errorf("upsert item threshold for %s: %w", it.SubscriptionItemID, err)
+		}
+	}
+
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
+		return domain.Subscription{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+// ClearBillingThresholds nulls the amount_gte column, resets reset_cycle
+// to its default (true), and deletes every per-item threshold row for
+// this subscription. Idempotent — clearing on a sub with no threshold
+// returns the unchanged subscription.
+func (s *PostgresStore) ClearBillingThresholds(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET billing_threshold_amount_gte = NULL,
+		    billing_threshold_reset_cycle = TRUE,
+		    updated_at = $1
+		WHERE id = $2
+		RETURNING `+subCols,
+		now, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM subscription_item_thresholds WHERE subscription_id = $1
+	`, id); err != nil {
+		return domain.Subscription{}, fmt.Errorf("clear item thresholds: %w", err)
+	}
+
+	// Reset BillingThresholds to nil since both amount and per-item are
+	// now cleared. scanSubRow already left it nil (column became NULL),
+	// but be explicit to keep hydrate from re-allocating an empty struct.
+	sub.BillingThresholds = nil
+
+	items, err := listItemsTx(ctx, tx, sub.ID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	sub.Items = items
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+// ListWithThresholds returns active or trialing subscriptions in the
+// given livemode partition that have at least one threshold configured
+// (amount_gte set, OR at least one row in subscription_item_thresholds).
+// Used by the threshold scan tick. Result is hydrated with items +
+// thresholds so the caller can run the cycle math without a second
+// round-trip per row.
+//
+// Uses TxBypass + explicit livemode filter for the same reason as
+// GetDueBilling: the scheduler is cross-tenant and the per-tenant
+// downstream calls (usage aggregation, plan reads) carry their own
+// tenant context.
+func (s *PostgresStore) ListWithThresholds(ctx context.Context, livemode bool, limit int) ([]domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
+		WHERE s.status IN ('active', 'trialing')
+		  AND s.livemode = $1
+		  AND (s.billing_threshold_amount_gte IS NOT NULL
+		       OR EXISTS (SELECT 1 FROM subscription_item_thresholds sit WHERE sit.subscription_id = s.id))
+		ORDER BY s.id ASC
+		LIMIT $2
+	`, livemode, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var subs []domain.Subscription
+	for rows.Next() {
+		var sub domain.Subscription
+		if err := scanSubRow(rows, &sub); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i := range subs {
+		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
+			return nil, err
+		}
+	}
+	return subs, nil
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// hydrateSubChildrenTx hydrates a subscription's items + billing thresholds
+// inside a single transaction. Replaces the historic listItemsTx + manual
+// item assignment pattern at most call sites — feature additions like
+// thresholds should land here, not be duplicated at every read path.
+//
+// Threshold hydration only runs when the row has amount_gte set OR there
+// is at least one row in subscription_item_thresholds. Pure no-threshold
+// subs pay one extra LEFT JOIN'd EXISTS check, which is index-supported
+// (idx_subscription_item_thresholds_subscription) and effectively free.
+func hydrateSubChildrenTx(ctx context.Context, tx *sql.Tx, sub *domain.Subscription) error {
+	items, err := listItemsTx(ctx, tx, sub.ID)
+	if err != nil {
+		return err
+	}
+	sub.Items = items
+	return hydrateThresholds(ctx, tx, sub)
+}
 
 // listItemsTx reads a subscription's items inside an existing transaction so
 // callers on the hot load path don't pay a second BEGIN/COMMIT. Returns items
@@ -1095,16 +1300,22 @@ type rowScanner interface {
 
 // scanSubRow scans subCols into sub. Handles fields that need post-processing
 // — currently the nullable (behavior, resumes_at) pair that composes into
-// the *PauseCollection field on the domain struct.
+// the *PauseCollection field on the domain struct, plus the (amount_gte,
+// reset_cycle) pair that composes into BillingThresholds. Per-item
+// thresholds are hydrated separately by hydrateThresholds since they
+// live in an aux table.
 func scanSubRow(row rowScanner, sub *domain.Subscription) error {
 	var pauseBehavior sql.NullString
 	var pauseResumesAt sql.NullTime
+	var thresholdAmountGTE sql.NullInt64
+	var thresholdResetCycle bool
 	dest := []any{
 		&sub.ID, &sub.TenantID, &sub.Code, &sub.DisplayName, &sub.CustomerID,
 		&sub.Status, &sub.BillingTime, &sub.TrialStartAt, &sub.TrialEndAt, &sub.StartedAt,
 		&sub.ActivatedAt, &sub.CanceledAt,
 		&sub.CancelAt, &sub.CancelAtPeriodEnd,
 		&pauseBehavior, &pauseResumesAt,
+		&thresholdAmountGTE, &thresholdResetCycle,
 		&sub.CurrentBillingPeriodStart,
 		&sub.CurrentBillingPeriodEnd, &sub.NextBillingAt,
 		&sub.UsageCapUnits, &sub.OverageAction,
@@ -1124,6 +1335,78 @@ func scanSubRow(row rowScanner, sub *domain.Subscription) error {
 		}
 		sub.PauseCollection = pc
 	}
+	// BillingThresholds is partially populated here from the columns on the
+	// row. ItemThresholds is filled in by hydrateThresholds because it lives
+	// in an aux table. We always allocate the struct when amount_gte is set
+	// or the row's reset_cycle has been explicitly toggled away from default,
+	// and let hydrateThresholds add the items if any exist. When the caller
+	// skips hydrateThresholds entirely (rare — see ListWithThresholds for the
+	// only such site), the struct is nil-or-amount-only, which is the same
+	// shape pre-hydrate.
+	if thresholdAmountGTE.Valid {
+		sub.BillingThresholds = &domain.BillingThresholds{
+			AmountGTE:         thresholdAmountGTE.Int64,
+			ResetBillingCycle: thresholdResetCycle,
+			ItemThresholds:    []domain.SubscriptionItemThreshold{},
+		}
+	}
+	return nil
+}
+
+// hydrateThresholds fills sub.BillingThresholds.ItemThresholds from the
+// aux table. Called after scanSubRow on a hot read path (Get, List, the
+// scan tick) when the caller wants the full threshold view. Two cases:
+//
+//   - sub.BillingThresholds is non-nil from scanSubRow because amount_gte
+//     was set: append item rows (if any) to the existing slice.
+//
+//   - sub.BillingThresholds is nil because amount_gte was NULL: if any
+//     item rows exist, allocate a new struct with the aux rows; otherwise
+//     leave nil.
+//
+// Empty aux rows + NULL amount_gte means no thresholds — sub stays nil.
+func hydrateThresholds(ctx context.Context, tx *sql.Tx, sub *domain.Subscription) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT subscription_item_id, usage_gte
+		FROM subscription_item_thresholds
+		WHERE subscription_id = $1
+		ORDER BY subscription_item_id ASC
+	`, sub.ID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var items []domain.SubscriptionItemThreshold
+	for rows.Next() {
+		var t domain.SubscriptionItemThreshold
+		var usageGTE string
+		if err := rows.Scan(&t.SubscriptionItemID, &usageGTE); err != nil {
+			return err
+		}
+		dec, err := decimal.NewFromString(usageGTE)
+		if err != nil {
+			return fmt.Errorf("parse usage_gte for item %s: %w", t.SubscriptionItemID, err)
+		}
+		t.UsageGTE = dec
+		items = append(items, t)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		// No per-item thresholds. Leave existing struct as-is (which may
+		// have an amount-only threshold from scanSubRow), or nil.
+		return nil
+	}
+	if sub.BillingThresholds == nil {
+		sub.BillingThresholds = &domain.BillingThresholds{
+			ResetBillingCycle: true, // default mirrors the column default
+			ItemThresholds:    items,
+		}
+		return nil
+	}
+	sub.BillingThresholds.ItemThresholds = items
 	return nil
 }
 
