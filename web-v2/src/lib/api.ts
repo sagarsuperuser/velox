@@ -249,6 +249,14 @@ export const api = {
     apiRequest<SubscriptionItem>('DELETE', `/subscriptions/${id}/items/${itemID}/pending-change`),
   invoicePreview: (subscriptionId: string) =>
     apiRequest<InvoicePreview>('GET', `/billing/preview/${subscriptionId}`),
+  // Stripe Tier 1 parity for Invoice.upcoming. Same shape as the debug
+  // route above; composes against customer + subscription + period.
+  // Pass {customer_id} and the server picks the primary active sub +
+  // current cycle. Pass {customer_id, subscription_id} to preview a
+  // specific sub. Pass {customer_id, period: {from, to}} to preview an
+  // explicit window. See docs/design-create-preview.md.
+  createInvoicePreview: (data: { customer_id: string; subscription_id?: string; period?: { from: string; to: string } }) =>
+    apiRequest<InvoicePreview>('POST', '/invoices/create_preview', data),
 
   // Billing profile
   getBillingProfile: (customerId: string) =>
@@ -814,16 +822,43 @@ export interface StripeProviderCredentials {
   updated_at: string
 }
 
+// InvoicePreview is the response shape for both /v1/billing/preview/{id}
+// (in-app debug route) and /v1/invoices/create_preview (Stripe Tier 1
+// surface). Per-(meter, rule) lines mean multi-dim meters render one row
+// per rule with dimension_match echoed; totals[] is always-array (one
+// entry per distinct currency, even when there's only one) so a single
+// reader handles both shapes. quantity is a decimal STRING per ADR-005
+// — fractional AI-usage primitives (GPU-hours, cached-token ratios)
+// round-trip without precision loss.
 export interface InvoicePreview {
   customer_id: string
   subscription_id: string
   plan_name: string
-  currency: string
   billing_period_start: string
   billing_period_end: string
-  lines: { line_type: string; description: string; meter_id?: string; quantity: number; unit_amount_cents: number; amount_cents: number; pricing_mode?: string }[]
-  subtotal_cents: number
+  lines: InvoicePreviewLine[]
+  totals: InvoicePreviewTotal[]
+  warnings: string[]
   generated_at: string
+}
+
+export interface InvoicePreviewLine {
+  line_type: string
+  description: string
+  meter_id?: string
+  rating_rule_version_id?: string
+  rule_key?: string
+  dimension_match?: Record<string, unknown>
+  currency: string
+  quantity: string
+  unit_amount_cents: number
+  amount_cents: number
+  pricing_mode?: string
+}
+
+export interface InvoicePreviewTotal {
+  currency: string
+  amount_cents: number
 }
 
 export interface CustomerDunningOverride {

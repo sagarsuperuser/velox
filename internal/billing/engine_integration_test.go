@@ -88,6 +88,10 @@ func (a *pricingStoreAdapter) GetOverride(ctx context.Context, tenantID, custome
 	return a.store.GetOverride(ctx, tenantID, customerID, ruleID)
 }
 
+func (a *pricingStoreAdapter) ListMeterPricingRulesByMeter(ctx context.Context, tenantID, meterID string) ([]domain.MeterPricingRule, error) {
+	return a.store.ListMeterPricingRulesByMeter(ctx, tenantID, meterID)
+}
+
 // usageStoreAdapter wraps usage.PostgresStore to implement billing.UsageAggregator
 type usageStoreAdapter struct {
 	store *usage.PostgresStore
@@ -99,6 +103,10 @@ func (a *usageStoreAdapter) AggregateForBillingPeriod(ctx context.Context, tenan
 
 func (a *usageStoreAdapter) AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	return a.store.AggregateForBillingPeriodByAgg(ctx, tenantID, customerID, meters, from, to)
+}
+
+func (a *usageStoreAdapter) AggregateByPricingRules(ctx context.Context, tenantID, customerID, meterID string, defaultMode domain.AggregationMode, from, to time.Time) ([]domain.RuleAggregation, error) {
+	return a.store.AggregateByPricingRules(ctx, tenantID, customerID, meterID, defaultMode, from, to)
 }
 
 // invoiceStoreAdapter wraps invoice.PostgresStore to implement billing.InvoiceWriter

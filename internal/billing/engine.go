@@ -158,18 +158,29 @@ type SubscriptionReader interface {
 // decimal.Decimal so fractional AI-usage primitives (GPU-hours, cached-token
 // ratios) round-trip without precision loss; the engine converts to cents
 // at the multiplication step.
+//
+// AggregateByPricingRules is the multi-dim-aware path (priority+claim
+// LATERAL JOIN across the 5 aggregation modes). The cycle scan, the
+// customer-usage endpoint, and the create_preview surface all call it —
+// preview math == invoice math by construction.
 type UsageAggregator interface {
 	AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error)
 	AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]decimal.Decimal, error)
+	AggregateByPricingRules(ctx context.Context, tenantID, customerID, meterID string, defaultMode domain.AggregationMode, from, to time.Time) ([]domain.RuleAggregation, error)
 }
 
 // PricingReader reads plan, rating rule, and override data.
+//
+// ListMeterPricingRulesByMeter is needed by the preview path to echo each
+// rule's DimensionMatch (the canonical pricing identity) onto the
+// per-rule preview line.
 type PricingReader interface {
 	GetPlan(ctx context.Context, tenantID, id string) (domain.Plan, error)
 	GetMeter(ctx context.Context, tenantID, id string) (domain.Meter, error)
 	GetRatingRule(ctx context.Context, tenantID, id string) (domain.RatingRuleVersion, error)
 	GetLatestRuleByKey(ctx context.Context, tenantID, ruleKey string) (domain.RatingRuleVersion, error)
 	GetOverride(ctx context.Context, tenantID, customerID, ruleID string) (domain.CustomerPriceOverride, error)
+	ListMeterPricingRulesByMeter(ctx context.Context, tenantID, meterID string) ([]domain.MeterPricingRule, error)
 }
 
 // InvoiceWriter creates invoices and line items.

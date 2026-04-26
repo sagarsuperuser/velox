@@ -18,6 +18,20 @@ const entries: {
 }[] = [
   {
     date: '2026-04-26',
+    title: 'Create-preview endpoint — Stripe Tier 1 invoice.upcoming parity',
+    tag: 'feature',
+    body: 'POST /v1/invoices/create_preview returns the same totals the cycle scan would bill — without writing a row. Multi-dim aware by construction: the preview path runs through usage.AggregateByPricingRules (LATERAL JOIN with priority + claim across the five aggregation modes), so a meter with cached-input vs uncached vs output rules previews into the same buckets the invoice will land in. Mounted under PermInvoiceRead. Both the in-app debug surface (/v1/billing/preview/{id}) and the new Tier 1 surface return one shape so TypeScript clients and dashboards share one type.',
+    bullets: [
+      'No-writes guarantee: preview never inserts an invoice or line; integration test counts invoice + invoice_line rows before/after and asserts zero diff.',
+      'Period defaults to the customer\'s active subscription cycle; explicit ?from=&to= bounds (RFC 3339) override; partial bounds are rejected (must be both or neither). customer_has_no_subscription returns as a coded error so the UI prompts for an explicit window.',
+      'Subscription resolution: explicit subscription_id is honored and cross-customer subscription IDs are rejected with 404; otherwise the engine picks the customer\'s active/trialing subscription with the latest cycle start.',
+      'Always-array totals shape: response carries totals: [{currency, cents}] even for single-currency tenants, with multi-currency just adding entries — same wire shape as customer-usage so dashboards iterate uniformly.',
+      'Route ordering: /invoices/create_preview is mounted before /invoices/{id} so chi picks the more-specific pattern (otherwise "create_preview" would be captured as an invoice ID).',
+      '16 unit tests + 7 integration tests pin the contract: single-meter parity (1000c for 100 events × qty=10 × 1¢), multi-dim dimension echo (3500c across two rules), no-writes row-count diff, cross-tenant 404 via RLS, no-sub coded error, cross-customer subscription rejection, plus a TestWireShape_SnakeCase regression test that asserts all 9 top-level keys are snake_case and lines/totals/warnings always marshal as arrays (never null).',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Customer usage endpoint — one call answers "what did this customer use?"',
     tag: 'feature',
     body: 'GET /v1/customers/{id}/usage composes customer + active subscriptions + pricing into a single response: per-meter quantities, per-rule cents, multi-currency totals, and the period that produced them. Same code path the cycle scan uses to bill — dashboard math is invoice math, by construction. Default period follows the customer\'s current cycle; explicit ?from=&to= bounds (RFC 3339) override, capped at one year. Mounts as a sibling under /v1/customers/{id}, behind PermUsageRead.',

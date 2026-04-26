@@ -432,6 +432,14 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	subH.SetProrationTaxApplier(&prorationTaxApplierAdapter{engine: engine})
 
 	billingH := billing.NewHandler(engine, subStore)
+	// create_preview composes customer / subscription resolution on top of
+	// the engine's preview path. Mounted at /v1/invoices/create_preview
+	// (Stripe-equivalent), gated by PermInvoiceRead — read-only, no DB
+	// writes. Sibling-mounted ahead of /invoices below so chi picks the
+	// more-specific pattern (otherwise /{id} captures "create_preview").
+	createPreviewH := billing.NewCreatePreviewHandler(
+		billing.NewPreviewService(engine, customerStore, subStore),
+	)
 	analyticsH := analytics.NewHandler(db)
 
 	// Customer portal sessions — operators mint a session for a customer
@@ -722,6 +730,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// keys (publishable keys are read-only).
 		r.With(auth.Require(auth.PermUsageWrite)).Post("/usage-events/backfill", usageH.Backfill)
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-events", usageH.Routes())
+		// create_preview must mount BEFORE /invoices because chi tries
+		// patterns in registration order — once /invoices is mounted with
+		// /{id}/... children, "create_preview" would be claimed as an
+		// invoice ID. See docs/design-create-preview.md.
+		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices/create_preview", createPreviewH.Routes())
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices", invoiceH.Routes())
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/credit-notes", creditNoteH.Routes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/price-overrides", pricingH.OverrideRoutes())

@@ -20,6 +20,68 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Create-preview endpoint — Stripe Tier 1 parity for `Invoice.upcoming`** (2026-04-26) —
+  the third flagship developer-experience surface alongside customer-usage
+  and recipes (per `docs/design-create-preview.md`, `docs/positioning.md`
+  pillar 1.4). `POST /v1/invoices/create_preview` answers "what is my
+  next bill going to look like?" with the same line set the cycle scan
+  would emit if billing fired right now — so dashboard projected-bill
+  math == invoice math by construction. Body is `{customer_id,
+  subscription_id?, period?}`; `subscription_id` defaults to the
+  customer's primary active or trialing sub (most-recent-cycle wins),
+  and `period` defaults to that sub's current billing cycle. Response
+  carries one line per `(meter, rule)` pair — multi-dim meters surface
+  one line per rule with `dimension_match` echoed from the meter
+  pricing rule (the canonical pricing identity), single-rule meters
+  keep the one-line-per-meter shape. `quantity` marshals as a precise
+  decimal string (NUMERIC(38,12) round-trip per ADR-005) so fractional
+  AI-usage primitives (GPU-hours, cached-token ratios) don't lose
+  precision; amounts are integer cents. `totals[]` is always-array
+  (one entry per distinct currency, even when there's only one) — same
+  shape customer-usage uses, so a single TS type set covers both
+  surfaces. The big shift here: the existing `Engine.Preview` wired
+  against `usage.AggregateForBillingPeriod` (not multi-dim aware) is
+  replaced with the priority+claim LATERAL JOIN path
+  (`usage.AggregateByPricingRules`) the cycle scan and customer-usage
+  already use. Multi-dim tenants were silently looking at wrong
+  projected-bill numbers in the in-app debug route; that gap is closed.
+  RLS-by-construction: cross-tenant customer IDs return 404 at the
+  customer lookup. No DB writes — the integration test asserts row
+  counts of `invoices` and `invoice_line_items` are unchanged
+  before/after the call. Errors: `404` for unknown customer or
+  subscription; `422 invalid_request` for cross-customer subscription
+  IDs; `422 customer_has_no_subscription` (coded, symmetric with
+  customer-usage) when implicit pick has zero active subs; `422` for
+  partial period bounds, `from >= to`, or unparseable RFC 3339.
+  Mounted at `/v1/invoices/create_preview` as a sibling of `/invoices`
+  (registered first so chi picks the more-specific pattern, otherwise
+  `/{id}` would capture `create_preview` as an invoice ID) behind
+  `PermInvoiceRead`. Snake-case JSON keys, struct-tag enforced; empty
+  list fields emit `[]` not `null` (regression-tested by
+  `TestWireShape_SnakeCase` — the merge gate). Service composes
+  through three narrow interfaces local to the billing package
+  (`CustomerLookup`, `SubscriptionLister`, plus the engine's existing
+  `PricingReader`/`UsageAggregator` extended with
+  `ListMeterPricingRulesByMeter` + `AggregateByPricingRules`) so the
+  preview owns no cross-domain state. Tests: 16 unit cases (period
+  resolution table-driven, primary-sub pick table-driven, explicit-ID
+  happy path + cross-customer rejection + 404 propagation, blank
+  customer ID, customer-not-found, JSON-decode edge cases, totals
+  roll-up multi-currency stable order, blank-currency exclusion,
+  wire-shape full + empty-slices regression) plus seven integration
+  cases against real Postgres (single-meter flat parity matching
+  customer-usage exactly, multi-dim parity matching the LATERAL JOIN,
+  no-writes assertion via row-count diff, cross-tenant 404,
+  `customer_has_no_subscription` coded error, explicit-subscription
+  wrong-customer rejection). Existing `/v1/billing/preview/{id}` debug
+  route now returns the new shape too (consistent line composition;
+  `web-v2` `SubscriptionDetail.tsx` updated to use `totals[]` per-row
+  rendering, `lib/api.ts` `InvoicePreview` retyped — `quantity` is now
+  a string, top-level `subtotal_cents`/`currency` removed). v2
+  deferred: inline `invoice_items` overlay (modeling "+$50 charge"),
+  plan-change overlay (Week 5c will own it), coupon/credit/tax
+  application (engine still doesn't reproduce these in preview).
+
 - **Customer usage endpoint — one call answers "what did this customer use?"** (2026-04-26) —
   the second flagship developer-experience surface, alongside recipes (per
   `docs/design-customer-usage.md`, `docs/positioning.md` pillar 1.4). `GET
