@@ -511,3 +511,44 @@ Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. 
 - **Next session (Track A):** open PR `feat: self-host quickstart (Compose + backup + docs)`, drive CI green (test + lint + frontend + docker), self-merge per `feedback_continuous_autonomy`. Then queue the cold-install-on-AWS lane.
 
 **Wall-clock duration:** 17:48 → 19:08 IST (≈ 1h 20m, well within the ≤90-min time-box).
+
+---
+
+## 2026-04-26 (Sun) — Track A, Week 9 follow-up: Helm chart + Terraform AWS module (paper artifacts)
+
+### Track A
+- **Branch:** `feat/self-host-helm-terraform` off `main` (8ab8425, post Compose-lane merge).
+- **Goal:** the second slice of the Week 9 self-host playbook — paper artifacts (Helm + Terraform) validated structurally only. Real AWS cold-install is deliberately a separate user-decision lane.
+- **Shipped:**
+  - **`deploy/helm/velox/`** — generic-Kubernetes Helm chart (kind / k3s / EKS / GKE / AKS). Chart.yaml bumped to chart version 0.2.0 / appVersion 0.1.0. `values.yaml` mirrors `deploy/compose/.env.example` field-for-field (Grep-verified end-to-end against `internal/config/config.go` + 18 `os.Getenv` callsites — same source of truth as the Compose lane). Single-replica default with `externalPostgres` (matches v1 posture; chart does NOT bundle Postgres on purpose). HPA gated behind `autoscaling.enabled` (default false), Ingress gated behind `ingress.enabled` (default false). New ServiceAccount template (dedicated SA, no API token mount). Secret template skips itself entirely when `secrets.existingSecret` points at an externally-managed Secret (ESO / sealed-secrets path). Deployment ships pod + container security contexts (runAsNonRoot, readOnlyRootFilesystem, drop-ALL caps, RuntimeDefault seccomp), checksum-based config/secret roll, configurable probe timings. README walks install / upgrade / destroy + sizing + the differences-from-Compose section.
+  - **`deploy/terraform/aws/`** — single-VPC + single-EC2 (`t3.small`) + RDS Postgres (`db.t3.small`) + S3 backup bucket + minimal IAM. Architecture decision locked: NOT EKS, NOT autoscaling, NOT multi-AZ. `versions.tf` (Terraform ≥1.5, AWS provider ≥5.0 <7.0, default tags), `variables.tf` with `db_password` validated min-16-chars + sensitive, `ssh_allowed_cidrs` defaulting to RFC 5737 documentation block (fail-closed by design — apply succeeds but operator must override). `main.tf` with two-AZ public + two-AZ private subnet layout (RDS demands ≥2 AZs in a subnet group), EC2 in public-a only, RDS in the private subnet group with security-group ingress restricted to the EC2 SG. S3 bucket is versioned + AES256 SSE + Block Public Access on + lifecycle rule (base/ → Glacier IR at 30d → Deep Archive at 90d → expire at 365d; wal/ expires at 14d). EC2 IAM instance profile has read/write to the backup bucket plus `AmazonSSMManagedInstanceCore`. IMDSv2-required, encrypted root volume. `user-data.sh.tftpl` installs Docker + Compose plugin, clones the repo at `velox_repo_ref`, generates `.env` with random `VELOX_ENCRYPTION_KEY` + `VELOX_BOOTSTRAP_TOKEN` and a `DATABASE_URL` pointing at the RDS endpoint, then runs `docker compose up -d nginx velox-api` from `deploy/compose/` (reuses the Compose lane's stack — does not reinvent it). README walks install / upgrade / destroy + cost estimate + the explicit "what this does NOT do" list.
+  - **`docs/self-host.md`** — replaced "coming soon" placeholders with real cross-links to all three deploy paths (Compose / Helm / Terraform), added a "choosing between the three install shapes" section, replaced the "what's not here yet" section to call out cold-install-on-real-AWS as the remaining follow-up.
+  - **`docs/self-host/postgres-backup.md`** — added a "Wiring the Terraform-provisioned S3 bucket" section explaining the `terraform output -raw s3_backup_bucket` recovery, the `/usr/local/bin/velox-wal-ship.sh` wrapper the user-data script writes, and the lifecycle policy already on the bucket. Notes that the default Terraform path uses RDS (which manages backups itself); the WAL recipe is for the rarer case where you swap in self-managed Postgres on the EC2 host.
+  - **CHANGELOG.md `[Unreleased]` Added entry** + **`web-v2/src/pages/Changelog.tsx` dated 2026-04-26 entry** per `feedback_changelog_discipline`.
+- **Validation results:**
+  - `helm lint deploy/helm/velox/` → `1 chart(s) linted, 0 chart(s) failed`. Only INFO is "icon is recommended" (cosmetic).
+  - `helm template` default render → 5 manifests (ServiceAccount, Secret, ConfigMap, Service, Deployment), parses clean through `yaml.safe_load_all`.
+  - `helm template` with `ingress.enabled=true autoscaling.enabled=true` → 7 manifests (adds HorizontalPodAutoscaler + Ingress), parses clean.
+  - `terraform init -backend=false` → providers downloaded, lock file written.
+  - `terraform validate` → `Success! The configuration is valid.`
+  - `terraform fmt -check` → silent (clean).
+  - `terraform plan` (no AWS API state — `-refresh=false`) → 28 resources to add, no errors.
+- **Decisions made inline (per `feedback_feat8_autonomy`):**
+  - **No Postgres subchart in Helm** — bundling stateful Postgres in the API release is an anti-pattern at production scale. Bring-your-own-Postgres matches the v1 single-VM-plus-RDS posture and the chart docs say so explicitly.
+  - **Terraform module deliberately ships HTTP-only on port 80** — TLS termination is the operator's choice (ALB / Cloudflare in front, or certbot on the host). Baking certbot into user-data forces wrong choices for ALB users.
+  - **`ssh_allowed_cidrs` defaults to RFC 5737 documentation block** — fail-closed-ish. Apply succeeds but operator must override before SSH works. Better than default-open-to-internet.
+  - **EC2 user-data generates encryption key + bootstrap token locally and logs to `/var/log/velox-bootstrap.log`** — keeps secrets out of Terraform state. Operator recovers the bootstrap token via SSH on first launch and rotates the file. Documented in the module README.
+  - **Skipped `helm package` and the chart-museum push** — out of scope. The chart is consumed via `helm install ./deploy/helm/velox`; if/when there's a chart repo, that's a separate slice.
+  - **Reused the existing Helm chart skeleton** at `deploy/helm/velox/` rather than rewriting from scratch — was a 0.1.0 stub left by an earlier slice. Bumped to 0.2.0 with the comprehensive env-var schema, ServiceAccount template, and external-secret support.
+- **Real AWS cold-install — what the next user-decision lane needs:**
+  - **Three required inputs:** AWS region preference (e.g. `us-east-1` vs `eu-west-1` vs `ap-south-1`), an EC2 SSH key pair name uploaded out-of-band, a strong `db_password` (≥16 chars).
+  - **One recommended override:** `ssh_allowed_cidrs` set to the operator's IP / VPN range (default is RFC 5737 documentation block — fail-closed).
+  - **Cost expectation:** ~$30-50/mo if left running 24/7, OR ~$1-2 for a destroy-after-validation run (both EC2 and RDS bill per second).
+  - **Likely friction surfaces:** RDS SSL cert chain (the binary uses pgx with `sslmode=require` by default — the system trust store on Amazon Linux 2023 should cover RDS's CA, but worth verifying); IMDSv2 token requirements for any custom `aws s3 cp` work; first-boot timing if RDS comes up after user-data starts (Terraform `depends_on` should handle it but worth watching the cloud-init log for `connection refused` retries).
+- **Wall-clock budget:** ≤90 min per user prompt. This entry is being written at the end of the lane.
+- **Blocking Track B on:** nothing.
+- **Track B can pick up:** nothing — this is infra/docs only.
+- **Open for human review:**
+  - **Architecture decision** — single-EC2 + RDS for v1 (NOT EKS) is locked per the user prompt. If you want to revisit (e.g. start with EKS-via-Terraform from day one), say so before any cold-install lane runs.
+  - **`db.t3.small` default sizing** — fine for design-partner volumes; bump to `db.t3.medium` or `db.m6i.large` before the first production cutover. Documented in the module README.
+- **Next session (Track A):** open PR `feat: self-host Helm chart + Terraform AWS module (paper artifacts)`, drive CI green (no wire-shape regression test required — no API surface change), self-merge per `feedback_continuous_autonomy`. Then the cold-install-on-AWS lane is the next user-decision item.
