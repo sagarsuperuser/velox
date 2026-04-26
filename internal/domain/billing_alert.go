@@ -60,18 +60,18 @@ type BillingAlertFilter struct {
 // state machine driven by the evaluator; LastTriggeredAt and
 // LastPeriodStart are nil until the alert fires for the first time.
 type BillingAlert struct {
-	ID                string                 `json:"id"`
-	TenantID          string                 `json:"tenant_id,omitempty"`
-	CustomerID        string                 `json:"customer_id"`
-	Title             string                 `json:"title"`
-	Filter            BillingAlertFilter     `json:"filter"`
-	Threshold         BillingAlertThreshold  `json:"threshold"`
-	Recurrence        BillingAlertRecurrence `json:"recurrence"`
-	Status            BillingAlertStatus     `json:"status"`
-	LastTriggeredAt   *time.Time             `json:"last_triggered_at"`
-	LastPeriodStart   *time.Time             `json:"last_period_start"`
-	CreatedAt         time.Time              `json:"created_at"`
-	UpdatedAt         time.Time              `json:"updated_at"`
+	ID              string                 `json:"id"`
+	TenantID        string                 `json:"tenant_id,omitempty"`
+	CustomerID      string                 `json:"customer_id"`
+	Title           string                 `json:"title"`
+	Filter          BillingAlertFilter     `json:"filter"`
+	Threshold       BillingAlertThreshold  `json:"threshold"`
+	Recurrence      BillingAlertRecurrence `json:"recurrence"`
+	Status          BillingAlertStatus     `json:"status"`
+	LastTriggeredAt *time.Time             `json:"last_triggered_at"`
+	LastPeriodStart *time.Time             `json:"last_period_start"`
+	CreatedAt       time.Time              `json:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at"`
 }
 
 // BillingAlertTrigger is one historical fire event for an alert. The
