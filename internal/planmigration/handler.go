@@ -58,11 +58,7 @@ type wireCustomerFilter struct {
 }
 
 func (w wireCustomerFilter) toDomain() CustomerFilter {
-	return CustomerFilter{
-		Type:  w.Type,
-		IDs:   w.IDs,
-		Value: w.Value,
-	}
+	return CustomerFilter(w)
 }
 
 // wirePreviewRequest is POST /preview's input.
@@ -148,24 +144,11 @@ type wireListResponse struct {
 func toWirePreviewResponse(r PreviewResult) wirePreviewResponse {
 	previews := make([]wireCustomerPreview, 0, len(r.Previews))
 	for _, p := range r.Previews {
-		previews = append(previews, wireCustomerPreview{
-			CustomerID:       p.CustomerID,
-			CurrentPlanID:    p.CurrentPlanID,
-			TargetPlanID:     p.TargetPlanID,
-			Before:           p.Before,
-			After:            p.After,
-			DeltaAmountCents: p.DeltaAmountCents,
-			Currency:         p.Currency,
-		})
+		previews = append(previews, wireCustomerPreview(p))
 	}
 	totals := make([]wireMigrationTotal, 0, len(r.Totals))
 	for _, t := range r.Totals {
-		totals = append(totals, wireMigrationTotal{
-			Currency:          t.Currency,
-			BeforeAmountCents: t.BeforeAmountCents,
-			AfterAmountCents:  t.AfterAmountCents,
-			DeltaAmountCents:  t.DeltaAmountCents,
-		})
+		totals = append(totals, wireMigrationTotal(t))
 	}
 	warnings := r.Warnings
 	if warnings == nil {
@@ -181,27 +164,18 @@ func toWirePreviewResponse(r PreviewResult) wirePreviewResponse {
 func toWireListItem(m Migration) wireMigrationListItem {
 	totals := make([]wireMigrationTotal, 0, len(m.Totals))
 	for _, t := range m.Totals {
-		totals = append(totals, wireMigrationTotal{
-			Currency:          t.Currency,
-			BeforeAmountCents: t.BeforeAmountCents,
-			AfterAmountCents:  t.AfterAmountCents,
-			DeltaAmountCents:  t.DeltaAmountCents,
-		})
+		totals = append(totals, wireMigrationTotal(t))
 	}
 	return wireMigrationListItem{
-		MigrationID:   m.ID,
-		FromPlanID:    m.FromPlanID,
-		ToPlanID:      m.ToPlanID,
-		Effective:     m.Effective,
-		AppliedAt:     m.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
-		AppliedBy:     m.AppliedBy,
-		AppliedByType: m.AppliedByType,
-		AppliedCount:  m.AppliedCount,
-		CustomerFilter: wireCustomerFilter{
-			Type:  m.CustomerFilter.Type,
-			IDs:   m.CustomerFilter.IDs,
-			Value: m.CustomerFilter.Value,
-		},
+		MigrationID:    m.ID,
+		FromPlanID:     m.FromPlanID,
+		ToPlanID:       m.ToPlanID,
+		Effective:      m.Effective,
+		AppliedAt:      m.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		AppliedBy:      m.AppliedBy,
+		AppliedByType:  m.AppliedByType,
+		AppliedCount:   m.AppliedCount,
+		CustomerFilter: wireCustomerFilter(m.CustomerFilter),
 		Totals:         totals,
 		IdempotencyKey: m.IdempotencyKey,
 		AuditLogID:     m.AuditLogID,
@@ -286,13 +260,7 @@ func (h *Handler) commit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := wireCommitResponse{
-		MigrationID:      result.MigrationID,
-		AppliedCount:     result.AppliedCount,
-		AuditLogID:       result.AuditLogID,
-		IdempotentReplay: result.IdempotentReplay,
-	}
-	respond.JSON(w, r, http.StatusOK, resp)
+	respond.JSON(w, r, http.StatusOK, wireCommitResponse(result))
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
