@@ -1,8 +1,12 @@
-.PHONY: build run test lint migrate dev clean
+.PHONY: build run test lint migrate dev clean cli
 
 # Build the velox binary
 build:
 	go build -o bin/velox ./cmd/velox
+
+# Build the operator CLI binary (Week 7)
+cli:
+	go build -o bin/velox-cli ./cmd/velox-cli
 
 # Run the server locally
 run: build
