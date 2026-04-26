@@ -18,6 +18,20 @@ const entries: {
 }[] = [
   {
     date: '2026-04-26',
+    title: 'Self-host quickstart — Docker Compose stack + Postgres backup recipe',
+    tag: 'feature',
+    body: 'Five minutes from a fresh VM to a working Velox tenant. deploy/compose/ ships a three-service stack (postgres + velox-api + nginx) with RUN_MIGRATIONS_ON_BOOT=true so the first boot applies all migrations and starts serving — no separate setup step. The .env.example mirrors the binary\'s real env-var schema (internal/config/config.go plus 18 per-package os.Getenv callsites); three required keys (POSTGRES_PASSWORD, VELOX_ENCRYPTION_KEY, VELOX_BOOTSTRAP_TOKEN), everything else is commented with safe defaults. APP_ENV=production is the default so the encryption-key fatal check, secure cookies, and HSTS are on the moment a real operator runs it. Backup story is a real PITR recipe (pg_basebackup + WAL archiving) with a quarterly restore drill — not pg_dump-and-pray.',
+    bullets: [
+      'docs/self-host.md is the new top-level landing page: pick the install shape (Compose today; Helm + Terraform AWS module flagged for the follow-up Week 9 lane, no fake links), required env-vars, sizing table for eval / single-tenant prod / multi-replica, TLS guidance.',
+      'nginx is the reverse proxy (battle-tested over bespoke), HTTP-only on :80 so the local quickstart works with curl. Production TLS guidance: managed LB (ALB / Cloudflare) in front, or certbot on the host — both routes documented in the README.',
+      'postgres-init.sql creates the non-superuser velox_app runtime role so RLS is actually enforced. Superusers and DB owners bypass policies; without the role, the binary falls back to admin with a loud warning per cmd/velox/main.go:openAppPool. Documented troubleshooting steps cover the upgrade-existing-volume case where init.d won\'t re-run.',
+      'docs/self-host/postgres-backup.md is a tested PITR recipe — pg_basebackup + WAL archiving, S3 layout, retention recommendation (7 daily / 4 weekly / 12 monthly across hot / cool / cold S3 tiers), and an explicit quarterly restore-drill procedure. Every Postgres reference links to the real postgresql.org/docs/16/ manual chapter.',
+      'velox-api healthcheck calls the binary\'s own version subcommand because the image is distroless (no shell, no curl). nginx in front does the HTTP-level liveness probe via /health; readiness through /health/ready surfaces DB + scheduler health.',
+      'Helm chart, Terraform AWS module, and a non-Velox-engineer cold-install drill on real AWS are deferred to a follow-up Week 9 lane — explicitly called out in docs/self-host.md so operators don\'t hunt for missing pages.',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Billing alerts — Stripe Tier 1 alert thresholds with webhook delivery',
     tag: 'feature',
     body: 'Operator-configurable thresholds that fire a webhook + dashboard notification when a customer\'s cycle spend (or per-meter usage) crosses a limit. Four endpoints under /v1/billing/alerts (create, get, list, archive); a background evaluator leader-elects via Postgres advisory lock, scans armed alerts, aggregates the customer\'s current cycle through the same LATERAL JOIN the cycle scan uses (so alert math = invoice math by construction), and on threshold cross fires billing.alert.triggered through the webhook outbox in the same tx as the alert state mutation. UNIQUE (alert_id, period_from) gives per-period idempotency across replica races. Mounted under PermInvoiceRead / PermInvoiceWrite.',

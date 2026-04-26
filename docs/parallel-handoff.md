@@ -477,4 +477,37 @@ Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. 
 - **Sibling work (parallel):** `feat/migration-safety-pass` populated-DB migration safety pass running concurrently. No code-surface conflict; only `docs/parallel-handoff.md` (this entry) and possibly `CHANGELOG.md` (no entry made by this slice — docs-only). Per user instruction, prefer "keep both" on conflict.
 - **Next session (Track A):** open PR `docs(stripe): Tier 2 gap analysis + Phase-3 inclusion recommendations`, drive CI green (lint + frontend + test trivial for docs-only), self-merge per `feedback_continuous_autonomy`. Then queue whichever Phase-3 RFC the user greenlights.
 
+---
+
+## 2026-04-26 (Sun) — Track A, Week 9 self-host quickstart (Compose lane)
+
+### Track A
+- **Shipped (single-VM Compose path of Week 9 self-host playbook):**
+  - `deploy/compose/docker-compose.yml` — three-service stack (postgres + velox-api + nginx), `RUN_MIGRATIONS_ON_BOOT=true` so migrations land on first boot. velox-api healthcheck uses the binary's own `version` subcommand (image is distroless, no shell or curl). Worker is intentionally not split out — the v1 scheduler + outbox dispatchers run in-process inside `velox serve`.
+  - `deploy/compose/.env.example` — env-var template strictly mirroring `internal/config/config.go` and the per-package `os.Getenv` calls (Grep-verified end-to-end). Three required keys (`POSTGRES_PASSWORD`, `VELOX_ENCRYPTION_KEY`, `VELOX_BOOTSTRAP_TOKEN`); everything else commented with safe defaults. Did not invent any new keys.
+  - `deploy/compose/nginx.conf` — single-upstream reverse proxy on `:80`, `/metrics` allowlisted to RFC1918 ranges, 30s+5s proxy timeouts to match the binary's `WriteTimeout` plus headroom. HTTP-only on purpose so the local quickstart works with `curl`; TLS guidance lives in the README.
+  - `deploy/compose/postgres-init.sql` — creates the non-superuser `velox_app` runtime role so RLS is actually enforced (superusers and DB owners bypass policies). `cmd/velox/main.go:deriveAppURL` swaps creds to that role; without the role, the binary falls back to admin with a loud warning.
+  - `deploy/compose/README.md` — copy-pasteable 5-minute path: clone → `.env` → `docker compose up -d` → `/health` → `POST /v1/bootstrap`. Operating cheat-sheet, troubleshooting (encryption-key fatal, missing `velox_app` role, scheduler-degraded readiness), TLS guidance.
+  - `docs/self-host/postgres-backup.md` — `pg_basebackup` + WAL-archive PITR recipe, S3 layout, retention recommendation (7 daily / 4 weekly / 12 monthly), and a quarterly restore drill. References real Postgres docs URLs only (`postgresql.org/docs/16/...`); no hallucinated paths.
+  - `docs/self-host.md` — top-level landing page. Compose path is the canonical v1; Helm + Terraform sections explicitly say "coming in a follow-up Week 9 lane" with no fake links. Required-config table mirrors `.env.example`. Sizing table for eval / single-tenant prod / multi-replica.
+  - CHANGELOG.md `[Unreleased]` entry + dated 2026-04-26 entry on `web-v2/src/pages/Changelog.tsx`.
+- **Cold-install validation status:** YAML syntactically validated (`python3 -c yaml.safe_load`); env-var schema cross-checked against `internal/config/config.go` and 18 separate `os.Getenv` callsites. **Live `docker compose up` was blocked by the agent sandbox** — `docker` and `go` exec are denied even with sandbox-disable. The Compose stack itself is structurally complete and the wire-up matches the existing `docker-compose.yml` at the repo root which is already exercised in CI; the cold-install drill has to happen on a real host.
+- **Decisions made inline (per `feedback_feat8_autonomy`):**
+  - Skipped a separate `velox-worker` service — the binary doesn't have a worker subcommand and the scheduler/outbox loops run in-process. Splitting is a refactor, not a deploy concern; flagged as future work in `docs/self-host.md`.
+  - Held to nginx (per `feedback_prefer_battle_tested_libs`) and used `:80` HTTP only; managed-LB / certbot guidance in the README rather than baking certbot into the stack (would force volume mounts + a renewal sidecar that's wrong for ALB users).
+  - Ran the Compose path under `APP_ENV=production` by default — turns on the encryption-key fatal check + secure cookies, which is what self-host operators actually want. Eval users override to `local` if they want.
+  - Saved Helm + Terraform AWS module + cold-install on real AWS for a follow-up lane per the user prompt.
+- **Blocking Track B on:** nothing.
+- **Track B can pick up:** nothing — this is infra/docs only.
+- **Follow-up Week 9 lane should pick up first (in this order):**
+  1. **Cold-install on real AWS** — spin up an EC2 t3.small + RDS db.t3.micro from the AWS console, follow `deploy/compose/README.md` byte-for-byte, capture friction (firewall? sec-groups? RDS SSL? IAM auth?). This is the highest-signal deliverable and what the 90-day plan's "non-Velox engineer" bullet actually exercises.
+  2. **Helm chart at `deploy/helm/velox/`** — already partially scaffolded under `deploy/helm/velox/`; finish + smoke-test against a kind cluster. Reuse the env-var schema from `.env.example`.
+  3. **Terraform AWS module at `deploy/terraform/aws/`** — VPC + EC2 + RDS + S3 backup bucket. Anchor on the single-VM model (one box + RDS), not EKS, per the user's prompt and `feedback_no_overengineering`.
+  4. After cold-install: any friction discovered feeds back into `deploy/compose/README.md` + `docs/self-host.md` first, then docs/ops/ runbooks if the gap is operational.
+- **Cold-install findings (sandbox-blocked, so theoretical):** none — actual findings will emerge from the AWS lane.
+- **Open for human review:**
+  - The decision to default `APP_ENV=production` in the Compose stack — does the eval-friendliness loss outweigh the security-defaults gain? Override is one line in `.env`.
+  - The retention defaults in `docs/self-host/postgres-backup.md` (7d hot / 4w cool / 12m cold) — fine for early production, but a real partner with compliance constraints will redline.
+- **Next session (Track A):** open PR `feat: self-host quickstart (Compose + backup + docs)`, drive CI green (test + lint + frontend + docker), self-merge per `feedback_continuous_autonomy`. Then queue the cold-install-on-AWS lane.
+
 **Wall-clock duration:** 17:48 → 19:08 IST (≈ 1h 20m, well within the ≤90-min time-box).

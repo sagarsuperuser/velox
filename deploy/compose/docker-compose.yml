@@ -1,0 +1,120 @@
+# Velox single-VM self-host stack
+#
+# Three containers behind one nginx reverse proxy:
+#   nginx       :80    -> velox-api:8080
+#   velox-api   :8080  -> postgres:5432
+#   postgres    :5432  (no host port — internal only)
+#
+# Migrations run on first boot via RUN_MIGRATIONS_ON_BOOT=true.
+# A separate worker binary is intentionally not split out: in v1 the
+# scheduler and outbox dispatchers run inside the same `velox serve`
+# process (see cmd/velox/main.go). Splitting workers is a future lane.
+#
+# Quickstart: copy .env.example -> .env, edit secrets, then
+#   docker compose up -d
+#   curl http://localhost/health
+#
+# Tear down (and wipe data): docker compose down -v
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-velox}
+      POSTGRES_USER: ${POSTGRES_USER:-velox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — see .env.example}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-velox} -d ${POSTGRES_DB:-velox}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  velox-api:
+    image: ${VELOX_IMAGE:-ghcr.io/sagarsuperuser/velox:latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Core
+      APP_ENV: ${APP_ENV:-production}
+      PORT: "8080"
+      RUN_MIGRATIONS_ON_BOOT: "true"
+      # Database — admin URL; the binary derives a velox_app role URL for RLS.
+      DATABASE_URL: postgres://${POSTGRES_USER:-velox}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-velox}?sslmode=disable
+      # Pool tuning (defaults from internal/config/config.go)
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-20}
+      DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-5}
+      DB_CONN_MAX_LIFETIME_MIN: ${DB_CONN_MAX_LIFETIME_MIN:-30}
+      DB_CONN_MAX_IDLE_TIME_SEC: ${DB_CONN_MAX_IDLE_TIME_SEC:-120}
+      DB_PING_TIMEOUT_SEC: ${DB_PING_TIMEOUT_SEC:-5}
+      DB_QUERY_TIMEOUT_MS: ${DB_QUERY_TIMEOUT_MS:-5000}
+      # Encryption-at-rest (mandatory in production — refuses to start without it)
+      VELOX_ENCRYPTION_KEY: ${VELOX_ENCRYPTION_KEY}
+      # Bootstrap token for POST /v1/bootstrap
+      VELOX_BOOTSTRAP_TOKEN: ${VELOX_BOOTSTRAP_TOKEN}
+      # Optional — rate limiting fails open without Redis
+      REDIS_URL: ${REDIS_URL:-}
+      # Optional — Stripe webhook signing
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      # Optional — outbound email (SMTP). Velox enqueues to email_outbox
+      # regardless; the dispatcher noops when SMTP_HOST is unset.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-billing@example.com}
+      # Optional — public URLs the engine renders into invoice emails / portal redirects
+      HOSTED_INVOICE_BASE_URL: ${HOSTED_INVOICE_BASE_URL:-}
+      PAYMENT_UPDATE_URL: ${PAYMENT_UPDATE_URL:-}
+      PAYMENT_UPDATE_RETURN_URL: ${PAYMENT_UPDATE_RETURN_URL:-}
+      CUSTOMER_PORTAL_URL: ${CUSTOMER_PORTAL_URL:-}
+      STRIPE_CHECKOUT_SUCCESS_URL: ${STRIPE_CHECKOUT_SUCCESS_URL:-}
+      STRIPE_CHECKOUT_CANCEL_URL: ${STRIPE_CHECKOUT_CANCEL_URL:-}
+      # Optional — dashboard email links
+      VELOX_DASHBOARD_URL: ${VELOX_DASHBOARD_URL:-}
+      VELOX_DASHBOARD_PASSWORD_RESET_URL: ${VELOX_DASHBOARD_PASSWORD_RESET_URL:-}
+      VELOX_DASHBOARD_INVITE_URL: ${VELOX_DASHBOARD_INVITE_URL:-}
+      # Optional — cookie domain for dashboard sessions in production
+      VELOX_COOKIE_DOMAIN: ${VELOX_COOKIE_DOMAIN:-}
+      # Optional — CORS origins (comma-separated)
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      # Optional — /metrics auth
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Optional — OpenTelemetry export
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-velox}
+      # Optional — billing alert evaluator interval (e.g. 5m)
+      VELOX_BILLING_ALERTS_INTERVAL: ${VELOX_BILLING_ALERTS_INTERVAL:-}
+    healthcheck:
+      # The image is distroless (no shell, no curl); use the binary's own
+      # zero-arg `version` exit-0 as a process-level liveness probe. The
+      # nginx layer in front does the HTTP-level check.
+      test: ["CMD", "/usr/local/bin/velox", "version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - velox-api
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  pgdata:
