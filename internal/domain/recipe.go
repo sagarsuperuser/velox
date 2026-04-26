@@ -44,21 +44,26 @@ type CreatedObjects struct {
 // at process boot from the embedded FS and held in the registry; never
 // mutated after load. Render() applies overrides and produces a
 // RenderedRecipe ready for instantiation.
+//
+// JSON tags use snake_case to match the rest of /v1/* and the wire
+// contract in docs/design-recipes.md. SampleData is omitted from JSON
+// because it's an internal-only seed hint, not part of the public
+// API surface.
 type Recipe struct {
-	Key         string
-	Version     string
-	Name        string
-	Summary     string
-	Description string
-	Overridable []RecipeOverride
+	Key         string           `json:"key"`
+	Version     string           `json:"version"`
+	Name        string           `json:"name"`
+	Summary     string           `json:"summary"`
+	Description string           `json:"description,omitempty"`
+	Overridable []RecipeOverride `json:"overridable"`
 
-	Meters        []RecipeMeter
-	RatingRules   []RecipeRatingRule
-	PricingRules  []RecipePricingRule
-	Plans         []RecipePlan
-	DunningPolicy *RecipeDunningPolicy
-	Webhook       *RecipeWebhook
-	SampleData    *RecipeSampleData
+	Meters        []RecipeMeter        `json:"meters"`
+	RatingRules   []RecipeRatingRule   `json:"rating_rules"`
+	PricingRules  []RecipePricingRule  `json:"pricing_rules"`
+	Plans         []RecipePlan         `json:"plans"`
+	DunningPolicy *RecipeDunningPolicy `json:"dunning_policy,omitempty"`
+	Webhook       *RecipeWebhook       `json:"webhook,omitempty"`
+	SampleData    *RecipeSampleData    `json:"-"`
 }
 
 // RecipeOverride is one override key declared in a recipe's `overridable`

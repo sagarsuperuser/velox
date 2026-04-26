@@ -277,10 +277,10 @@ func TestService_Instantiate_PreviewParity(t *testing.T) {
 		t.Fatalf("Instantiate: %v", err)
 	}
 
-	if got, want := len(inst.CreatedObjects.RatingRuleIDs), len(previewed.RatingRules); got != want {
+	if got, want := len(inst.CreatedObjects.RatingRuleIDs), len(previewed.Objects.RatingRules); got != want {
 		t.Errorf("rating-rule count drift: instantiate=%d, preview=%d", got, want)
 	}
-	if got, want := len(inst.CreatedObjects.PricingRuleIDs), len(previewed.PricingRules); got != want {
+	if got, want := len(inst.CreatedObjects.PricingRuleIDs), len(previewed.Objects.PricingRules); got != want {
 		t.Errorf("pricing-rule count drift: instantiate=%d, preview=%d", got, want)
 	}
 	plans, err := f.pricingSvc.ListPlans(ctx, tenantID)
