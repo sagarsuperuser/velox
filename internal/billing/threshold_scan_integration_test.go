@@ -25,13 +25,13 @@ import (
 // index, ListWithThresholds candidate query, and CreateInvoiceWithLineItems
 // are all exercised end-to-end.
 type thresholdFixture struct {
-	db        *postgres.DB
-	tenantID  string
-	subStore  *subscription.PostgresStore
-	subSvc    *subscription.Service
-	usageSvc  *usage.Service
-	invStore  *invoice.PostgresStore
-	engine    *billing.Engine
+	db       *postgres.DB
+	tenantID string
+	subStore *subscription.PostgresStore
+	subSvc   *subscription.Service
+	usageSvc *usage.Service
+	invStore *invoice.PostgresStore
+	engine   *billing.Engine
 
 	// Seed-by-default test data
 	customerID string

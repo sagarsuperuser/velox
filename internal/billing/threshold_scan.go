@@ -36,6 +36,7 @@ type thresholdEval struct {
 // resolved (charge + dunning entry) on the same tick it's emitted.
 //
 // Invariants:
+//
 //   - Idempotent under retry. The partial unique index on
 //     invoices(tenant_id, subscription_id, billing_period_start) WHERE
 //     billing_reason='threshold' guarantees at most one threshold invoice
@@ -450,13 +451,13 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	// effects.
 	if e.events != nil {
 		payload := map[string]any{
-			"subscription_id":   sub.ID,
-			"customer_id":       sub.CustomerID,
-			"invoice_id":        inv.ID,
-			"running_subtotal":  eval.RunningSubtotal,
-			"crossed_amount":    eval.CrossedAmount,
-			"crossed_item_id":   eval.CrossedItemID,
-			"reset_cycle":       sub.BillingThresholds.ResetBillingCycle,
+			"subscription_id":  sub.ID,
+			"customer_id":      sub.CustomerID,
+			"invoice_id":       inv.ID,
+			"running_subtotal": eval.RunningSubtotal,
+			"crossed_amount":   eval.CrossedAmount,
+			"crossed_item_id":  eval.CrossedItemID,
+			"reset_cycle":      sub.BillingThresholds.ResetBillingCycle,
 		}
 		if err := e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionThresholdCrossed, payload); err != nil {
 			slog.Error("threshold scan: dispatch subscription.threshold_crossed failed",
