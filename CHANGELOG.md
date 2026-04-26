@@ -20,6 +20,37 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Plan migrations history dashboard — list + detail with audit trail** (2026-04-26) —
+  Week 7 wraps a UI around the already-live `GET /v1/admin/plan_migrations`
+  endpoint (PR #36): a history page at `/plan-migrations/history` lists every
+  committed bulk plan swap with `applied_at`, schedule (`immediate` /
+  `next_period`), source → target plan IDs, items updated, cohort delta
+  highlighted by sign, status badge (`Committed` / `Partial` derived
+  client-side from `applied_count` against `totals`), and a truncated
+  copyable `idempotency_key`. Cursor-based pagination via `useInfiniteQuery`
+  accumulates rows on a "Load more" button — matches the existing
+  coupon-redemption pattern. Filters: status (`committed` / `partial`) and
+  schedule (`immediate` / `next_period`); date range is a backlog item until
+  the list endpoint accepts server-side filter params (today's surface only
+  takes `limit` / `cursor`). The detail page at `/plan-migrations/:id`
+  shows the full record: applied_at + applied_by + items + schedule key
+  metrics, migration parameters (from / to plan, customer filter with full
+  ID list when `type="ids"`, idempotency key), the always-array `totals`
+  table per currency with before / after / delta, per-item errors surfaced
+  from the cohort audit metadata's `item_errors[]`, and an audit trail
+  combining the `plan.migration_committed` cohort entry with the
+  `subscription.plan_changed` per-customer entries (filtered client-side via
+  `metadata.plan_migration_id`). Empty state explains what the page is for
+  and links to `/plan-migrations` (preview / commit) and `/docs/api`. The
+  existing PlanMigration page gains a "View history" button in the header
+  and a "View all migrations" link in the recent-migrations sidebar; rows
+  in that sidebar deep-link to the new detail page. No backend changes —
+  purely a UI wrap. Detail lookup uses a client-side scan of paginated list
+  responses (≤5 pages × 100) since the server doesn't yet expose
+  `GET /admin/plan_migrations/{id}`; this is fine for v1 cohort-event
+  volumes and explicitly flagged in the API client comment for a future
+  server-side detail endpoint.
+
 - **One-off invoice composer — 30-second draft + send from customer page** (2026-04-26) —
   Week 7 ships a primary "New invoice" button at the top-right of every
   customer detail page that opens a drawer composing an invoice without a

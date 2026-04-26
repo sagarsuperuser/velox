@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ArrowRight, Loader2, Users, Wand2, AlertTriangle, CheckCircle2, History } from 'lucide-react'
@@ -194,11 +195,19 @@ export default function PlanMigrationPage() {
               impact before committing. Per-customer changes are recorded in the audit log.
             </p>
           </div>
-          {step !== 'configure' && (
-            <Button variant="outline" onClick={reset}>
-              Start over
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            <Link to="/plan-migrations/history">
+              <Button variant="outline">
+                <History className="h-4 w-4 mr-2" />
+                View history
+              </Button>
+            </Link>
+            {step !== 'configure' && (
+              <Button variant="outline" onClick={reset}>
+                Start over
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Step indicator */}
@@ -499,24 +508,40 @@ export default function PlanMigrationPage() {
                 {recent.length === 0 ? (
                   <p className="text-xs text-muted-foreground">No prior migrations.</p>
                 ) : (
-                  <ul className="space-y-3">
-                    {recent.map((m) => (
-                      <li key={m.migration_id} className="border-b last:border-b-0 pb-3 last:pb-0">
-                        <div className="text-xs font-mono text-muted-foreground truncate">
-                          {m.from_plan_id} → {m.to_plan_id}
-                        </div>
-                        <div className="flex items-center gap-2 mt-1">
-                          <Badge variant="secondary">{m.effective}</Badge>
-                          <span className="text-xs text-muted-foreground">
-                            {m.applied_count} item{m.applied_count === 1 ? '' : 's'}
-                          </span>
-                        </div>
-                        <div className="text-xs text-muted-foreground mt-1">
-                          {formatDateTime(m.applied_at)}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    <ul className="space-y-3">
+                      {recent.map((m) => (
+                        <li key={m.migration_id} className="border-b last:border-b-0 pb-3 last:pb-0">
+                          <Link
+                            to={`/plan-migrations/${m.migration_id}`}
+                            className="block hover:bg-muted/40 -mx-2 px-2 py-1 rounded transition-colors"
+                          >
+                            <div className="text-xs font-mono text-muted-foreground truncate">
+                              {m.from_plan_id} → {m.to_plan_id}
+                            </div>
+                            <div className="flex items-center gap-2 mt-1">
+                              <Badge variant="secondary">{m.effective}</Badge>
+                              <span className="text-xs text-muted-foreground">
+                                {m.applied_count} item{m.applied_count === 1 ? '' : 's'}
+                              </span>
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-1">
+                              {formatDateTime(m.applied_at)}
+                            </div>
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="mt-3 pt-3 border-t">
+                      <Link
+                        to="/plan-migrations/history"
+                        className="text-xs text-primary hover:underline flex items-center gap-1"
+                      >
+                        View all migrations
+                        <ArrowRight className="h-3 w-3" />
+                      </Link>
+                    </div>
+                  </>
                 )}
               </CardContent>
             </Card>

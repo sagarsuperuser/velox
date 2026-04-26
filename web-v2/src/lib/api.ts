@@ -440,6 +440,26 @@ export const api = {
     const q = qs.toString()
     return apiRequest<PlanMigrationListResponse>('GET', `/admin/plan_migrations${q ? '?' + q : ''}`)
   },
+  // Detail lookup: the server doesn't expose GET /admin/plan_migrations/{id}
+  // (the list endpoint is the only read surface), so we walk pages of the
+  // list until we find the row. Migrations are infrequent operator events,
+  // so the typical hit is page 1; the cap (5 pages × 100 rows) is a defence
+  // against an attempt to fetch a deleted/unknown id rather than a real
+  // performance constraint. Returns null when not found.
+  getPlanMigration: async (id: string): Promise<PlanMigrationListItem | null> => {
+    let cursor: string | undefined = undefined
+    for (let i = 0; i < 5; i++) {
+      const res: PlanMigrationListResponse = await apiRequest<PlanMigrationListResponse>(
+        'GET',
+        `/admin/plan_migrations?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+      )
+      const hit = (res.migrations ?? []).find((m) => m.migration_id === id)
+      if (hit) return hit
+      if (!res.next_cursor) return null
+      cursor = res.next_cursor
+    }
+    return null
+  },
 }
 
 // Types
