@@ -7,9 +7,9 @@ shape that matches where you operate today.
 
 | Shape | Use when | Status |
 |---|---|---|
-| **Docker Compose on a single VM** | Evaluating, dev/staging, low-volume production (≤ 1k events/sec) | Ships today — see below |
-| **Helm chart on Kubernetes** | You already run K8s and want to scale horizontally | Coming in a follow-up Week 9 lane |
-| **Terraform module for AWS** | You want a one-shot VPC + EC2 + RDS deploy | Coming in a follow-up Week 9 lane |
+| **Docker Compose on a single VM** | Evaluating, dev/staging, low-volume production (≤ 1k events/sec) | Ships today — [`deploy/compose/README.md`](../deploy/compose/README.md) |
+| **Helm chart on Kubernetes** | You already run K8s and want to scale horizontally | Ships today — [`deploy/helm/velox/README.md`](../deploy/helm/velox/README.md) |
+| **Terraform module for AWS** | You want a one-shot VPC + EC2 + RDS deploy | Ships today — [`deploy/terraform/aws/README.md`](../deploy/terraform/aws/README.md) |
 
 Velox itself is one Go binary plus Postgres. Both Compose and the
 Helm/Terraform paths reach the same end state — same image, same
@@ -92,9 +92,9 @@ Velox is lightweight; the baseline targets are:
 | Single-tenant production (~1k events/sec) | 2 GB | 2 | 4 GB managed Postgres |
 | Multi-tenant SaaS (≥10k events/sec) | Multi-replica K8s | 4+ per replica | Sized to writes per second; partition `usage_events` |
 
-For multi-replica deployments use the Helm chart (coming) — the v1
-scheduler is leader-elected via Postgres advisory locks, so multiple
-API replicas safely coexist without zombie locks (see
+For multi-replica deployments use the [Helm chart](../deploy/helm/velox/README.md) —
+the v1 scheduler is leader-elected via Postgres advisory locks, so
+multiple API replicas safely coexist without zombie locks (see
 `internal/billing/postgres_locker.go`).
 
 ## Versioning
@@ -104,16 +104,19 @@ Velox is pre-1.0 (`0.MINOR.PATCH`). Pin `VELOX_IMAGE` to a tag in
 release log lives at [`CHANGELOG.md`](../CHANGELOG.md); customer-facing
 rollups are at the dashboard `/changelog` page.
 
+## Choosing between the three install shapes
+
+- **Compose on a single VM** is the v1 reference — the simplest shape, lowest cost, fewest moving parts. [`deploy/compose/README.md`](../deploy/compose/README.md). Best for: evaluation, single-tenant production at modest volume, anyone who doesn't already operate K8s.
+- **Helm on Kubernetes** if you already run K8s. [`deploy/helm/velox/README.md`](../deploy/helm/velox/README.md). Targets generic K8s (kind / k3s / EKS / GKE / AKS); does NOT bundle Postgres — bring your own (RDS / Cloud SQL / Supabase / Neon).
+- **Terraform on AWS** if you want a one-shot AWS install with no manual clicking. [`deploy/terraform/aws/README.md`](../deploy/terraform/aws/README.md). Provisions VPC + EC2 + RDS Postgres + S3 backup bucket; runs the Compose stack on the EC2 host. Cost: ~$30-50/mo at default sizing if left running 24/7, or ~$1-2 for an apply/destroy validation run.
+
+All three reach the same end state: same image, same migrations, same
+env-var schema. Pick by what your team already operates.
+
 ## What's not here yet
 
-- **Helm chart for Kubernetes** — Week 9 follow-up. The
-  [`deploy/k8s/`](../deploy/k8s/) directory has working raw manifests
-  in the meantime.
-- **Terraform AWS module** — Week 9 follow-up. Will provision VPC + a
-  single EC2 + managed RDS for the simplest production shape.
-- **Cold-install on real AWS** — Week 9 follow-up. The Compose path is
-  validated locally; the next lane will run a non-Velox engineer through
-  it on a fresh AWS account and capture friction.
+- **Cold-install on real AWS** — the Terraform module is structurally validated (`terraform init -backend=false && terraform validate` passes clean), but a non-Velox-engineer drill on a fresh AWS account is a separate Week 9 follow-up lane. Real-account friction (firewall rules, RDS SSL handshake, IAM trust quirks) only surfaces when you actually `terraform apply`.
+- **Multi-AZ RDS, ALB-fronted TLS, Route 53 wiring** — out of scope for the v1 module on purpose. Standard upgrade path: flip `multi_az = true` on the `aws_db_instance` resource, add an `aws_lb` in front, point a Route 53 zone at it.
 
 ## Compliance posture
 

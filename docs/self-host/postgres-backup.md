@@ -228,6 +228,57 @@ The full chapter on this is
 [Recovery Configuration](https://www.postgresql.org/docs/16/runtime-config-wal.html#RUNTIME-CONFIG-WAL-ARCHIVE-RECOVERY)
 and the [PITR walkthrough](https://www.postgresql.org/docs/16/continuous-archiving.html#BACKUP-PITR-RECOVERY).
 
+## Wiring the Terraform-provisioned S3 bucket
+
+If you stood up the install with `deploy/terraform/aws/`, the module
+already created a versioned, encrypted backup bucket and wired the
+EC2 instance profile with read/write IAM. Two changes plug the
+backup recipe into it:
+
+1. **Discover the bucket name.**
+
+   ```bash
+   cd deploy/terraform/aws
+   terraform output -raw s3_backup_bucket
+   # velox-backups-a1b2c3d4
+   ```
+
+2. **Use the host's `velox-wal-ship.sh` for `archive_command`.** The
+   user-data script wrote a wrapper at `/usr/local/bin/velox-wal-ship.sh`
+   that calls `aws s3 cp` with the EC2 instance-profile credentials.
+   Wire it in `postgresql.conf`:
+
+   ```conf
+   archive_mode = on
+   archive_command = '/usr/local/bin/velox-wal-ship.sh %p %f'
+   ```
+
+   `%p` is the absolute path to the WAL segment Postgres has
+   prepared, `%f` is the segment's filename — the wrapper expects
+   that arg order. The script exits non-zero on any failure so
+   Postgres won't recycle a WAL it hasn't actually shipped.
+
+3. **Take base backups straight to S3** (the IAM role allows it):
+
+   ```bash
+   BUCKET=$(cd /opt/velox/deploy/terraform/aws && terraform output -raw s3_backup_bucket)
+   TS=$(date -u +%Y%m%dT%H%M%SZ)
+   pg_basebackup --pgdata=/tmp/base-${TS} --format=tar --gzip --wal-method=stream
+   aws s3 sync /tmp/base-${TS} "s3://${BUCKET}/base/${TS}/" --storage-class STANDARD_IA
+   rm -rf /tmp/base-${TS}
+   ```
+
+The Terraform module's S3 lifecycle rules handle retention
+automatically: `base/` tiers to Glacier Instant Retrieval at 30 days,
+Deep Archive at 90 days, expires at 365 days; `wal/` expires at 14
+days. Override in `main.tf` if your RTO/RPO needs differ.
+
+> **Note** — the default install on the Terraform path uses **RDS**,
+> which manages backups itself. The bucket + WAL recipe above is for
+> the rarer case where you swap the bundled `postgres` container in
+> for the RDS endpoint and run Postgres on the EC2 host yourself. The
+> bucket exists either way; it costs pennies empty.
+
 ## What this doesn't cover
 
 - **Logical backups for cross-version migrations** — use `pg_dump

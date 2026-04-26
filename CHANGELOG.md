@@ -20,6 +20,62 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Self-host paper artifacts — Helm chart + Terraform AWS module** (2026-04-26) —
+  the Week 9 follow-up to the Compose lane lands two structurally
+  validated deploy targets, both pinned to the env-var schema the
+  Compose stack already exercises (no invented keys). `deploy/helm/velox/`
+  is a generic-Kubernetes chart (kind / k3s / EKS / GKE / AKS): a
+  single-replica deployment by default (the v1 scheduler is
+  leader-elected via Postgres advisory locks so multi-replica is safe
+  but not required), Service / ConfigMap / Secret / ServiceAccount,
+  optional Ingress and HorizontalPodAutoscaler templates gated behind
+  `ingress.enabled` / `autoscaling.enabled` (both default off — most
+  operators front Velox with their existing ALB/Cloudflare/nginx and
+  v1 sizing makes HPA premature). The chart does **not** bundle
+  Postgres on purpose — bring your own (RDS / Cloud SQL / Supabase /
+  Neon) via either `externalDatabase.url` or the split
+  `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER` shape; password always lives
+  in the Secret. ESO / sealed-secrets users can point
+  `secrets.existingSecret` at a pre-existing Secret and the chart
+  skips the Secret template. `helm lint` passes clean; `helm template`
+  parses through `yaml.safe_load_all` for both default values (5
+  manifests) and full values with ingress + autoscaling on (7
+  manifests). `deploy/terraform/aws/` is a single-VPC + single-EC2
+  (`t3.small`) + RDS Postgres (`db.t3.small`) + S3 backup bucket
+  module. Architecture decision is locked: NOT EKS, NOT autoscaling,
+  NOT multi-AZ. Two-AZ public + two-AZ private subnet layout (RDS
+  demands ≥2 AZs in a subnet group even for single-AZ instances), EC2
+  in public-a only, RDS in the private subnet group with security
+  group ingress restricted to the EC2 SG. The S3 bucket ships with
+  versioning + AES256 SSE + Block Public Access on + a lifecycle rule
+  that tiers `base/` to Glacier Instant Retrieval at 30 days, Deep
+  Archive at 90 days, expires at 365 days, and expires `wal/` at 14
+  days. EC2 cloud-init installs Docker + the Compose plugin, clones
+  the repo at `velox_repo_ref`, generates a `.env` with a random
+  `VELOX_ENCRYPTION_KEY` + `VELOX_BOOTSTRAP_TOKEN` and a
+  `DATABASE_URL` pointing at the RDS endpoint, then runs `docker
+  compose up -d nginx velox-api` from `deploy/compose/` (reuses the
+  Compose lane's stack — does not reinvent it). EC2 IAM instance
+  profile has read/write to the backup bucket plus
+  `AmazonSSMManagedInstanceCore` for Session Manager fallback.
+  IMDSv2-required, encrypted root volume, default `ssh_allowed_cidrs`
+  is the RFC 5737 documentation block (fail-closed; operator must set
+  their own CIDR before apply). `terraform init -backend=false &&
+  terraform validate` passes clean; `terraform plan` shows 28
+  resources to add and `terraform fmt -check` is silent. Cost
+  estimate at default sizing: ~$30-50/mo if left running 24/7, ~$1-2
+  for an apply/destroy validation run. Both new modules ship with
+  copy-pasteable READMEs that walk install / upgrade / destroy and
+  call out the limitations (no Route 53, no TLS, no multi-AZ — all v2
+  follow-ups). `docs/self-host.md` replaces the earlier "coming soon"
+  placeholders with real cross-links to all three deploy paths;
+  `docs/self-host/postgres-backup.md` gains a section on wiring the
+  Terraform-provisioned S3 bucket as the WAL archive target via the
+  user-data-installed `/usr/local/bin/velox-wal-ship.sh` wrapper.
+  Live `terraform apply` against a real AWS account is a separate
+  user-decision lane on purpose — paper artifacts ship clean here so
+  the cold-install drill picks up against a known-validated module.
+
 - **Self-host quickstart — Docker Compose stack + Postgres PITR guide + landing page** (2026-04-26) —
   the single-VM path of Week 9's self-host playbook ships. `deploy/compose/`
   drops a three-service stack (postgres + velox-api + nginx) wired to

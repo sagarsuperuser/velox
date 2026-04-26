@@ -18,6 +18,20 @@ const entries: {
 }[] = [
   {
     date: '2026-04-26',
+    title: 'Self-host paper artifacts — Helm chart + Terraform AWS module',
+    tag: 'feature',
+    body: 'Two more deploy targets land alongside the Compose path: a Helm chart at deploy/helm/velox/ for users who already operate Kubernetes (kind / k3s / EKS / GKE / AKS), and a Terraform module at deploy/terraform/aws/ for one-shot AWS installs. Both are paper artifacts — structurally validated (helm lint and terraform validate pass clean) but not yet drilled on a real AWS account, which is a separate user-decision lane (cost: ~$30-50/mo at default sizing, ~$1-2 for an apply/destroy validation run). Both pin to the same env-var schema the Compose .env.example exercises; no invented keys.',
+    bullets: [
+      'Helm chart: single-replica deployment by default (Postgres advisory-lock leader election makes multi-replica safe but not required), Service / ConfigMap / Secret / ServiceAccount, optional Ingress and HorizontalPodAutoscaler templates gated behind ingress.enabled and autoscaling.enabled (both default off). No bundled Postgres — bring your own (RDS / Cloud SQL / Supabase / Neon) via externalDatabase.url or the split DB_HOST/DB_PORT/DB_NAME/DB_USER shape with password in the Secret.',
+      'Helm chart supports External Secrets Operator / sealed-secrets users via secrets.existingSecret — point at a pre-existing Secret and the chart skips its own Secret template entirely. helm template renders 5 manifests under defaults, 7 with ingress + autoscaling on; both parse through yaml.safe_load_all clean.',
+      'Terraform AWS module: single-VPC + single-EC2 (t3.small) + RDS Postgres (db.t3.small) + S3 backup bucket. Architecture is locked at NOT EKS, NOT autoscaling, NOT multi-AZ — boring + cheap is the v1 posture. Two AZ subnet layout because RDS demands ≥2 AZs in a subnet group; EC2 lives in public-a only, RDS in the private subnet group, RDS SG ingress restricted to the EC2 SG.',
+      'S3 backup bucket ships hardened: versioning + AES256 SSE + Block Public Access on + lifecycle rule tiering base/ to Glacier Instant Retrieval at 30 days, Deep Archive at 90 days, expires at 365 days; wal/ expires at 14 days. EC2 IAM instance profile has read/write to the bucket plus AmazonSSMManagedInstanceCore for Session Manager fallback. IMDSv2-required, encrypted root volume.',
+      'EC2 cloud-init installs Docker + the Compose plugin, clones the repo at velox_repo_ref, generates a .env with random VELOX_ENCRYPTION_KEY and VELOX_BOOTSTRAP_TOKEN plus a DATABASE_URL pointing at the RDS endpoint, then runs docker compose up -d nginx velox-api from deploy/compose/. The Terraform module reuses the Compose lane\'s work — does not reinvent the stack.',
+      'docs/self-host.md replaces the earlier "coming soon" placeholders with real cross-links; docs/self-host/postgres-backup.md gains a section on wiring the Terraform-provisioned S3 bucket as the WAL archive target via the user-data-installed /usr/local/bin/velox-wal-ship.sh wrapper. Both new modules ship with copy-pasteable READMEs walking install / upgrade / destroy + cost estimate + the explicit "what this does NOT do" list (no Route 53, no TLS, no multi-AZ — all v2 follow-ups).',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Self-host quickstart — Docker Compose stack + Postgres backup recipe',
     tag: 'feature',
     body: 'Five minutes from a fresh VM to a working Velox tenant. deploy/compose/ ships a three-service stack (postgres + velox-api + nginx) with RUN_MIGRATIONS_ON_BOOT=true so the first boot applies all migrations and starts serving — no separate setup step. The .env.example mirrors the binary\'s real env-var schema (internal/config/config.go plus 18 per-package os.Getenv callsites); three required keys (POSTGRES_PASSWORD, VELOX_ENCRYPTION_KEY, VELOX_BOOTSTRAP_TOKEN), everything else is commented with safe defaults. APP_ENV=production is the default so the encryption-key fatal check, secure cookies, and HSTS are on the moment a real operator runs it. Backup story is a real PITR recipe (pg_basebackup + WAL archiving) with a quarterly restore drill — not pg_dump-and-pray.',
