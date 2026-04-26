@@ -131,17 +131,21 @@ func TestHandler_ScheduleCancel_HTTPLevel(t *testing.T) {
 
 func TestHandler_List_HTTPLevel(t *testing.T) {
 	store := newFakeStore()
-	store.Insert(context.Background(), "tenant_a", Action{
+	if _, err := store.Insert(context.Background(), "tenant_a", Action{
 		IdempotencyKey: "k1",
 		ActionType:     ActionApplyCoupon,
 		Status:         StatusCompleted,
 		Params:         map[string]any{"coupon_code": "X"},
-	})
-	store.Insert(context.Background(), "tenant_a", Action{
+	}); err != nil {
+		t.Fatalf("seed insert k1: %v", err)
+	}
+	if _, err := store.Insert(context.Background(), "tenant_a", Action{
 		IdempotencyKey: "k2",
 		ActionType:     ActionScheduleCancel,
 		Status:         StatusFailed,
-	})
+	}); err != nil {
+		t.Fatalf("seed insert k2: %v", err)
+	}
 	svc := NewService(store, &fakeCustomers{}, nil, nil, &fakeAssigner{}, nil)
 	h := NewHandler(svc)
 

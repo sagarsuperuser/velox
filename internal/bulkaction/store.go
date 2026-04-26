@@ -290,7 +290,7 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string, filter ListFi
 		where += fmt.Sprintf(` AND (created_at, id) < (
 			SELECT created_at, id FROM bulk_actions WHERE id = $%d LIMIT 1)`, idx)
 		args = append(args, filter.Cursor)
-		idx++
+		// idx not incremented further; nothing follows in this filter chain.
 	}
 	whereClause := ""
 	if where != "" {
