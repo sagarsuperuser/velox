@@ -136,9 +136,7 @@ export function CostDashboard({ customerId }: { customerId: string }) {
                 </div>
                 <ul className="text-xs text-amber-700 dark:text-amber-300 space-y-1">
                   {data.warnings.map((w, i) => (
-                    <li key={i}>
-                      <span className="font-mono">{w.code}</span> · {w.message}
-                    </li>
+                    <li key={i}>{w}</li>
                   ))}
                 </ul>
               </CardContent>

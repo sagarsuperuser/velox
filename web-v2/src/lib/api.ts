@@ -624,11 +624,11 @@ export interface MeterPricingRule {
   created_at: string
 }
 
-// CustomerUsage — response of GET /v1/customers/{id}/usage. Designed against
-// docs/design-customer-usage.md. `totals` is modeled as an array unconditionally
-// (single-currency tenants get a length-1 array) so the client doesn't need a
-// polymorphic discriminator — flagged this preference to Track A in the RFC
-// review; if the backend keeps a polymorphic single-currency shape we adapt here.
+// CustomerUsage — response of GET /v1/customers/{id}/usage. Live shape from
+// internal/usage/customer_usage.go (PR #26). `totals` is unconditionally an
+// array (single-currency tenants get length 1) so the client iterates without
+// branching. `warnings` is a plain string list — the backend opted for human
+// messages rather than structured codes since dashboards just render them.
 export interface CustomerUsage {
   customer_id: string
   period: {
@@ -639,7 +639,7 @@ export interface CustomerUsage {
   subscriptions: CustomerUsageSubscription[]
   meters: CustomerUsageMeter[]
   totals: { currency: string; amount_cents: number }[]
-  warnings: CustomerUsageWarning[]
+  warnings: string[]
 }
 
 export interface CustomerUsageSubscription {
@@ -668,13 +668,6 @@ export interface CustomerUsageRule {
   dimension_match?: Record<string, string | number | boolean>
   quantity: string
   amount_cents: number
-}
-
-export interface CustomerUsageWarning {
-  code: string
-  message: string
-  subscription_id?: string
-  meter_id?: string
 }
 
 export interface RecipeCreatesSummary {
