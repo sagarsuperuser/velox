@@ -18,6 +18,20 @@ const entries: {
 }[] = [
   {
     date: '2026-04-26',
+    title: 'Customer usage endpoint — one call answers "what did this customer use?"',
+    tag: 'feature',
+    body: 'GET /v1/customers/{id}/usage composes customer + active subscriptions + pricing into a single response: per-meter quantities, per-rule cents, multi-currency totals, and the period that produced them. Same code path the cycle scan uses to bill — dashboard math is invoice math, by construction. Default period follows the customer\'s current cycle; explicit ?from=&to= bounds (RFC 3339) override, capped at one year. Mounts as a sibling under /v1/customers/{id}, behind PermUsageRead.',
+    bullets: [
+      'Per-meter aggregate echoes the rule\'s match expression (canonical pricing identity), not the observed event values — so dimension_match in the response is the bucket the cycle scan would price into.',
+      'Always-array totals shape: response carries totals: [{currency, cents}] even for single-currency tenants, so clients iterate uniformly. Multi-currency subs (rare today, real for cross-region tenants) just add entries.',
+      'Period resolution honors the customer\'s active subscription cycle by default; partial bounds (only from or only to) anchor on it; missing-cycle + missing-bounds returns customer_has_no_subscription so the dashboard can prompt for an explicit window.',
+      'Cross-tenant isolation by RLS: tenant B\'s key against tenant A\'s customer ID 404s at the customer lookup — no leak via the usage scan.',
+      'Narrow per-domain interfaces (CustomerLookup, SubscriptionLister, PricingReader) keep the new CustomerUsageService composable from the existing usage.Service without breaking its callers; tests fake the seams without touching the DB.',
+      '9 unit tests + 4 integration tests pin the contracts: single-meter parity with the cycle scan (1000c for 100 events × qty=10 × 1¢), multi-dim dimension echo (3500c across two rules), cross-tenant 404, and no-sub explicit-window recovery.',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Recipes API wire shape — snake_case + creates summary + preview wrapper',
     tag: 'fix',
     body: 'Three drifts between the recipes API design doc and the Week 3 implementation are fixed so the picker UI lights up cleanly: PascalCase JSON keys are now snake_case (matching the rest of /v1/*), each list/detail entry carries a creates: {meters, rating_rules, pricing_rules, plans, dunning_policies, webhook_endpoints} count summary, and POST /v1/recipes/{key}/preview now wraps its response as {key, version, objects: {…}, warnings: []} per the spec. Data shape only — no behavior change to instantiate / uninstall.',
