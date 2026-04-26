@@ -152,6 +152,14 @@ type SubscriptionReader interface {
 	// level: re-running on a row already 'active' returns InvalidState
 	// (caller swallows it as benign).
 	ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
+
+	// ListWithThresholds returns active+trialing subscriptions in the given
+	// livemode partition that have at least one billing threshold configured
+	// (amount or per-item). Drives the threshold scan tick — each row is
+	// rated against its current partial-cycle running totals to decide
+	// whether to fire an early finalize. Hydrated with Items and
+	// BillingThresholds so the scan doesn't issue per-sub follow-up reads.
+	ListWithThresholds(ctx context.Context, livemode bool, limit int) ([]domain.Subscription, error)
 }
 
 // UsageAggregator aggregates usage events for a billing period. Returns
@@ -1207,6 +1215,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		IssuedAt:           &now,
 		DueAt:              &dueAt,
 		NetPaymentTermDays: netDays,
+		BillingReason:      domain.BillingReasonSubscriptionCycle,
 	}, lineItems)
 	if err != nil {
 		// Idempotency: if this invoice already exists (UNIQUE violation on the

@@ -262,6 +262,18 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		}
 	}
 
+	// 0.5 Billing thresholds — Stripe-parity hard-cap scan. Runs before the
+	// natural cycle so a threshold-fired invoice and (when reset_billing_cycle
+	// is true) the cycle advance both land on this tick. The partial unique
+	// index on invoices(tenant, sub, billing_period_start) WHERE
+	// billing_reason='threshold' makes this idempotent under retry.
+	if fired, tErrs := s.engine.ScanThresholds(ctx, s.batch); fired > 0 || len(tErrs) > 0 {
+		slog.Info("threshold scan", "mode", mode, "fired", fired, "errors", len(tErrs))
+		for _, err := range tErrs {
+			slog.Error("threshold scan error", "mode", mode, "error", err)
+		}
+	}
+
 	// 1. Billing cycle — generate invoices
 	generated, errs := s.engine.RunCycle(ctx, s.batch)
 	if len(errs) > 0 {

@@ -364,6 +364,51 @@ func (m *memStore) RemoveItem(_ context.Context, tenantID, itemID string) error 
 	return nil
 }
 
+// SetBillingThresholds is a minimal in-memory implementation matching the
+// store contract: stores the BillingThresholds struct on the row and rejects
+// terminal subs. The handler tests don't exercise this path; integration
+// tests against real Postgres cover the full behaviour.
+func (m *memStore) SetBillingThresholds(_ context.Context, tenantID, id string, t domain.BillingThresholds) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status == domain.SubscriptionCanceled || s.Status == domain.SubscriptionArchived {
+		return domain.Subscription{}, errs.InvalidState("cannot configure billing thresholds on terminated subscription")
+	}
+	bt := t
+	s.BillingThresholds = &bt
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
+	return s, nil
+}
+
+func (m *memStore) ClearBillingThresholds(_ context.Context, tenantID, id string) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	s.BillingThresholds = nil
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
+	return s, nil
+}
+
+func (m *memStore) ListWithThresholds(_ context.Context, _ bool, _ int) ([]domain.Subscription, error) {
+	var out []domain.Subscription
+	for _, s := range m.subs {
+		if s.BillingThresholds == nil {
+			continue
+		}
+		if s.Status != domain.SubscriptionActive && s.Status != domain.SubscriptionTrialing {
+			continue
+		}
+		s.Items = m.hydrateItems(s.ID)
+		out = append(out, s)
+	}
+	return out, nil
+}
+
 func (m *memStore) hydrateItems(subID string) []domain.SubscriptionItem {
 	var out []domain.SubscriptionItem
 	for _, it := range m.items {

@@ -161,6 +161,14 @@ func (m *mockSubs) ApplyDuePendingItemPlansAtomic(_ context.Context, _, id strin
 	return applied, nil
 }
 
+func (m *mockSubs) ListWithThresholds(_ context.Context, _ bool, _ int) ([]domain.Subscription, error) {
+	// Engine unit tests focus on the natural cycle; the threshold scan path
+	// is exercised via threshold_scan_test.go (which uses its own mock that
+	// returns the configured candidate set). Returning empty here keeps
+	// existing tests compatible without exercising the threshold path.
+	return nil, nil
+}
+
 type mockUsage struct {
 	totals map[string]int64 // meterID -> quantity (test inputs stay int for readability)
 }
