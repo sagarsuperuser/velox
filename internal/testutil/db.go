@@ -91,6 +91,7 @@ func cleanDB(t *testing.T, pool *sql.DB) {
 				coupon_redemptions, coupons, customer_dunning_overrides,
 				customer_price_overrides, webhook_deliveries, webhook_events,
 				webhook_endpoints, idempotency_keys, audit_log, tenant_settings,
+				billing_alert_triggers, billing_alerts,
 				tenants
 			CASCADE;
 		EXCEPTION WHEN undefined_table THEN

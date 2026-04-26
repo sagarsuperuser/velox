@@ -226,6 +226,7 @@ func TestRLSIsolation_AllModeAwareTablesHaveLivemodePredicate(t *testing.T) {
 		"test_clocks", "usage_events",
 		"webhook_deliveries", "webhook_endpoints", "webhook_events", "webhook_outbox",
 		"payment_methods", "customer_portal_sessions", "customer_portal_magic_links",
+		"billing_alerts", "billing_alert_triggers",
 	}
 
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")

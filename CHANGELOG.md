@@ -20,6 +20,54 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Billing alerts — Stripe Tier 1 parity for "Billing Alerts"** (2026-04-26) —
+  the operator-configurable threshold surface that fires a webhook +
+  dashboard notification when a customer's cycle spend (or per-meter
+  usage) crosses a limit. Four endpoints: `POST /v1/billing/alerts` with
+  `{ title, customer_id, filter: { meter_id?, dimensions? }, threshold:
+  { amount_gte? | usage_gte? }, recurrence: "one_time" | "per_period" }`,
+  `GET /v1/billing/alerts/{id}`, `GET /v1/billing/alerts?customer_id=…
+  &status=…&limit=…&offset=…`, and `POST /v1/billing/alerts/{id}/archive`
+  for soft-disable. Mounted under `PermInvoiceRead` / `PermInvoiceWrite`
+  at `/v1/billing/alerts`; the path is registered before `/billing` so
+  chi picks the more-specific pattern. A background evaluator (interval
+  configurable via `VELOX_BILLING_ALERTS_INTERVAL`) leader-elects via
+  Postgres advisory lock `LockKeyBillingAlertEvaluator`, scans armed
+  alerts via the partial index `idx_billing_alerts_evaluator` (predicate
+  `status IN ('active','triggered_for_period')`), aggregates the
+  customer's current cycle through the same `AggregateByPricingRules`
+  LATERAL JOIN the cycle scan and customer-usage already use (so
+  alert-firing math == invoice math by construction), and on threshold
+  cross fires a `billing.alert.triggered` webhook through the outbox in
+  the same tx as the trigger insert + alert state mutation — the
+  `UNIQUE (alert_id, period_from)` index gives per-period idempotency
+  across replica races and evaluator retries. `recurrence: one_time`
+  transitions to a terminal `triggered` status; `recurrence:
+  per_period` transitions to `triggered_for_period` and re-arms when
+  the next cycle begins. Wire shape is snake_case throughout
+  (regression-gated by `TestWireShape_SnakeCase`), `dimensions` is
+  always-object `{}` (no null guard needed in dashboard rendering),
+  `threshold` always emits both `amount_gte` and `usage_gte` keys with
+  one as `null`, and `usage_gte` is decimal-as-string per ADR-005
+  (NUMERIC(38,12) round-trip preserved). Service-layer validation
+  enforces title required + ≤200 chars, recurrence in
+  `{one_time, per_period}`, exactly one threshold field set with
+  amount > 0 / quantity > 0, dimensions only valid when meter_id is set,
+  ≤ 16 dimension keys, scalar values only (string / number / bool).
+  Two new mode-aware tables (`billing_alerts`, `billing_alert_triggers`)
+  ship with the standard tenant + livemode RLS policy from migration
+  0020 and the BEFORE INSERT livemode-from-session trigger from
+  migration 0021 (added to the regression list in
+  `TestRLSIsolation_AllModeAwareTablesHaveLivemodePredicate`). Tests:
+  24 unit cases (handler validation table, service validation table,
+  evaluator dimension-match / should-fire / primary-sub-pick tables,
+  payload-build, meter-aggregation map) plus 9 integration cases
+  against real Postgres (one-time-fire, per-period-fire-and-rearm,
+  double-fire-idempotent, archived-skipped, below-threshold-no-fire,
+  no-subscription-warning, multi-tenant-isolation,
+  atomicity-on-rollback verifying the alert-state-update is rolled
+  back when outbox enqueue fails, RLS isolation). Migration 0057.
+
 - **Create-preview endpoint — Stripe Tier 1 parity for `Invoice.upcoming`** (2026-04-26) —
   the third flagship developer-experience surface alongside customer-usage
   and recipes (per `docs/design-create-preview.md`, `docs/positioning.md`

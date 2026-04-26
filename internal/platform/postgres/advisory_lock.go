@@ -12,10 +12,11 @@ import (
 // namespaced high enough (>1e7) to not collide with any key the golang-migrate
 // library picks when it hashes schema names.
 const (
-	LockKeyBillingScheduler int64 = 76540001
-	LockKeyDunningScheduler int64 = 76540002
-	LockKeyOutboxDispatcher int64 = 76540003
-	LockKeyEmailDispatcher  int64 = 76540004
+	LockKeyBillingScheduler      int64 = 76540001
+	LockKeyDunningScheduler      int64 = 76540002
+	LockKeyOutboxDispatcher      int64 = 76540003
+	LockKeyEmailDispatcher       int64 = 76540004
+	LockKeyBillingAlertEvaluator int64 = 76540005
 )
 
 // AdvisoryLock is a held Postgres session-scoped advisory lock. Release MUST

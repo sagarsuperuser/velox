@@ -376,6 +376,25 @@ export const api = {
   // API key, no need to re-paste secret/publishable.
   setStripeWebhookSecret: (mode: 'live' | 'test', webhook_secret: string) =>
     apiRequest<StripeProviderCredentials>('PATCH', `/settings/stripe/${mode}/webhook`, { webhook_secret }),
+
+  // Billing alerts: operator-configured thresholds that fire a webhook +
+  // dashboard notification when a customer's cycle spend crosses a limit.
+  // Wire snake_case, dimensions as always-object {}, decimal as string per ADR-005.
+  listBillingAlerts: (params?: { customer_id?: string; status?: BillingAlertStatus; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams()
+    if (params?.customer_id) q.set('customer_id', params.customer_id)
+    if (params?.status) q.set('status', params.status)
+    if (params?.limit != null) q.set('limit', String(params.limit))
+    if (params?.offset != null) q.set('offset', String(params.offset))
+    const qs = q.toString()
+    return apiRequest<{ data: BillingAlert[]; total: number }>('GET', `/billing/alerts${qs ? '?' + qs : ''}`)
+  },
+  getBillingAlert: (id: string) =>
+    apiRequest<BillingAlert>('GET', `/billing/alerts/${id}`),
+  createBillingAlert: (data: CreateBillingAlertRequest) =>
+    apiRequest<BillingAlert>('POST', '/billing/alerts', data),
+  archiveBillingAlert: (id: string) =>
+    apiRequest<BillingAlert>('POST', `/billing/alerts/${id}/archive`),
 }
 
 // Types
@@ -1103,6 +1122,56 @@ export interface UsageAnalyticsResponse {
   data: UsagePoint[]
   top_meters: TopMeterUsage[]
   totals: { events: number; quantity: number }
+}
+
+// Billing alerts. Mirrors internal/billingalert/handler.go wireAlert.
+// dimensions is always an object ({} when absent); threshold always has
+// both keys present (one as null) so the dashboard can read both
+// without a conditional null guard.
+export type BillingAlertStatus = 'active' | 'triggered' | 'triggered_for_period' | 'archived'
+export type BillingAlertRecurrence = 'one_time' | 'per_period'
+
+export interface BillingAlertFilter {
+  meter_id?: string
+  dimensions: Record<string, unknown>
+}
+
+export interface BillingAlertThreshold {
+  // BIGINT cents, e.g. 100_00 for $100. Mutually exclusive with usage_gte.
+  amount_gte: number | null
+  // Decimal-as-string per ADR-005 (NUMERIC(38,12) preserves precision over
+  // the wire). Mutually exclusive with amount_gte.
+  usage_gte: string | null
+}
+
+export interface BillingAlert {
+  id: string
+  title: string
+  customer_id: string
+  filter: BillingAlertFilter
+  threshold: BillingAlertThreshold
+  recurrence: BillingAlertRecurrence
+  status: BillingAlertStatus
+  last_triggered_at: string | null
+  last_period_start: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateBillingAlertRequest {
+  title: string
+  customer_id: string
+  // Optional: omit for "all meters / all dimensions" semantics.
+  filter?: {
+    meter_id?: string
+    dimensions?: Record<string, unknown>
+  }
+  // Exactly one of amount_gte / usage_gte must be set. usage_gte is decimal-as-string.
+  threshold: {
+    amount_gte?: number
+    usage_gte?: string
+  }
+  recurrence: BillingAlertRecurrence
 }
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {

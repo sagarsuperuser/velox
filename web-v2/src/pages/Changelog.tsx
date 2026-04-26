@@ -18,6 +18,20 @@ const entries: {
 }[] = [
   {
     date: '2026-04-26',
+    title: 'Billing alerts — Stripe Tier 1 alert thresholds with webhook delivery',
+    tag: 'feature',
+    body: 'Operator-configurable thresholds that fire a webhook + dashboard notification when a customer\'s cycle spend (or per-meter usage) crosses a limit. Four endpoints under /v1/billing/alerts (create, get, list, archive); a background evaluator leader-elects via Postgres advisory lock, scans armed alerts, aggregates the customer\'s current cycle through the same LATERAL JOIN the cycle scan uses (so alert math = invoice math by construction), and on threshold cross fires billing.alert.triggered through the webhook outbox in the same tx as the alert state mutation. UNIQUE (alert_id, period_from) gives per-period idempotency across replica races. Mounted under PermInvoiceRead / PermInvoiceWrite.',
+    bullets: [
+      'Two recurrence modes: one_time transitions to a terminal triggered status (fires once, ever); per_period transitions to triggered_for_period each cycle and re-arms when the next cycle begins.',
+      'Threshold contract: exactly one of amount_gte (BIGINT cents) or usage_gte (decimal-as-string per ADR-005) — DB CHECK + service validation both enforce. Wire shape always emits both keys with one as null so the dashboard reads both fields without a conditional null guard.',
+      'Filter contract: optional meter_id (alert fires on aggregate when omitted), plus optional dimensions object (always-object {} idiom — no null guard) for multi-dim meters. Service-layer validation: ≤16 dimension keys, scalar values only, dimensions only valid when meter_id is set.',
+      'Atomicity guarantee: trigger insert + alert state mutation + outbox enqueue all commit in one tx. If the outbox enqueue fails (simulated in TestEvaluator_AtomicityOnRollback), the entire tx rolls back so no double-emission and no half-fired state survives a partial failure.',
+      'Mode-aware tables (billing_alerts, billing_alert_triggers) ship with the standard tenant + livemode RLS policy from migration 0020 and the BEFORE INSERT livemode-from-session trigger from migration 0021. New regression entries in TestRLSIsolation_AllModeAwareTablesHaveLivemodePredicate.',
+      '24 unit tests + 9 integration tests against real Postgres pin the behavior: one-time-fire, per-period-fire-and-rearm, double-fire-idempotent (UNIQUE constraint), archived-skipped, below-threshold-no-fire, no-subscription-warning, multi-tenant RLS isolation, atomicity-on-rollback, and a TestWireShape_SnakeCase merge gate.',
+    ],
+  },
+  {
+    date: '2026-04-26',
     title: 'Create-preview endpoint — Stripe Tier 1 invoice.upcoming parity',
     tag: 'feature',
     body: 'POST /v1/invoices/create_preview returns the same totals the cycle scan would bill — without writing a row. Multi-dim aware by construction: the preview path runs through usage.AggregateByPricingRules (LATERAL JOIN with priority + claim across the five aggregation modes), so a meter with cached-input vs uncached vs output rules previews into the same buckets the invoice will land in. Mounted under PermInvoiceRead. Both the in-app debug surface (/v1/billing/preview/{id}) and the new Tier 1 surface return one shape so TypeScript clients and dashboards share one type.',

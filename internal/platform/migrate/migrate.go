@@ -163,6 +163,34 @@ func Rollback(dsn string, steps int) (uint, error) {
 	return v, nil
 }
 
+// EmbeddedMigrationCount returns the number of .up.sql files in the embedded
+// migrations directory. Differs from EmbeddedLatestVersion when version
+// numbers are non-contiguous (e.g. one branch skipped a number to
+// coordinate with a sibling parallel branch). The migrate library's
+// Steps(-N) operates on a per-file basis, so callers that want to roll
+// back "every applied migration" should use this count, not the latest
+// version number.
+func EmbeddedMigrationCount() (int, error) {
+	entries, err := sqlFS.ReadDir("sql")
+	if err != nil {
+		return 0, fmt.Errorf("read embedded migrations: %w", err)
+	}
+
+	var n int
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if migrationFilenamePattern.MatchString(entry.Name()) {
+			n++
+		}
+	}
+	if n == 0 {
+		return 0, fmt.Errorf("no up-migrations found in embedded fs")
+	}
+	return n, nil
+}
+
 // EmbeddedLatestVersion returns the highest migration version packaged into
 // this binary. Used by CheckSchemaReady to compare against the database's
 // current version.

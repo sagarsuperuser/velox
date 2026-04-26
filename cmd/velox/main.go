@@ -191,6 +191,19 @@ func serve() {
 		}()
 	}
 
+	// Billing alerts evaluator: scans armed alerts on a tick, fires
+	// `billing.alert.triggered` via the webhook outbox atomically with
+	// the alert state mutation. Leader-gated by
+	// LockKeyBillingAlertEvaluator so multi-replica deploys don't
+	// double-emit. See docs/design-billing-alerts.md.
+	if server.BillingAlertEvaluator != nil {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			server.BillingAlertEvaluator.Start(ctx)
+		}()
+	}
+
 	go func() {
 		slog.Info("listening", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
