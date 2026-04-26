@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -546,6 +548,118 @@ func (s *Service) ExtendTrial(ctx context.Context, tenantID, id string, newTrial
 		return domain.Subscription{}, errs.Invalid("trial_end", "must be after the current trial_end_at — use end-trial to shorten")
 	}
 	return s.store.ExtendTrial(ctx, tenantID, id, newTrialEnd.UTC())
+}
+
+// ItemThresholdInput is one configured per-item usage cap on a subscription.
+// UsageGTE arrives as a JSON string from the wire so meter quantities that
+// can be fractional (cached-token ratios, GPU-hours) round-trip without
+// float drift. The service parses it into shopspring/decimal before handing
+// off to the store.
+type ItemThresholdInput struct {
+	SubscriptionItemID string `json:"subscription_item_id"`
+	UsageGTE           string `json:"usage_gte"`
+}
+
+// BillingThresholdsInput is the PATCH body shape for /v1/subscriptions/{id}
+// when setting thresholds. AmountGTE is integer cents; ItemThresholds is the
+// always-array of per-item caps. Either AmountGTE or ItemThresholds (or both)
+// must be set — a body with neither is rejected as no-op.
+//
+// ResetBillingCycle defaults to true at PATCH time when omitted (matches the
+// migration column default and Stripe's reset_billing_cycle behavior). The
+// pointer-on-field shape lets the handler distinguish "not supplied" (apply
+// default) from "explicitly false".
+type BillingThresholdsInput struct {
+	AmountGTE         int64                `json:"amount_gte,omitempty"`
+	ResetBillingCycle *bool                `json:"reset_billing_cycle,omitempty"`
+	ItemThresholds    []ItemThresholdInput `json:"item_thresholds,omitempty"`
+}
+
+// SetBillingThresholds writes (amount_gte, reset_cycle, item_thresholds) onto
+// a subscription. Validates: at least one of amount_gte or item_thresholds is
+// supplied (a body with neither is a no-op masquerade); amount_gte > 0 if
+// supplied; usage_gte parses as a non-negative decimal; every
+// subscription_item_id in item_thresholds belongs to this subscription;
+// duplicate item ids are rejected so the underlying PK doesn't surface as a
+// mid-tx integrity error. Multi-currency rejection happens upstream at the
+// handler (the only layer with a PlanReader).
+//
+// Replaces the full set on every call: per-item rows for any item not in the
+// new slice are deleted by the store. Idempotent — calling with the same
+// input replaces the row's columns and aux rows with the same values.
+func (s *Service) SetBillingThresholds(ctx context.Context, tenantID, id string, input BillingThresholdsInput) (domain.Subscription, error) {
+	if input.AmountGTE == 0 && len(input.ItemThresholds) == 0 {
+		return domain.Subscription{}, errs.Invalid("billing_thresholds",
+			"at least one of amount_gte or item_thresholds must be set; to clear use DELETE")
+	}
+	if input.AmountGTE < 0 {
+		return domain.Subscription{}, errs.Invalid("amount_gte", "must be > 0")
+	}
+
+	sub, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if sub.Status == domain.SubscriptionCanceled || sub.Status == domain.SubscriptionArchived {
+		return domain.Subscription{}, errs.InvalidState(
+			fmt.Sprintf("cannot configure billing thresholds on %s subscriptions", sub.Status))
+	}
+
+	itemIDs := make(map[string]struct{}, len(sub.Items))
+	for _, it := range sub.Items {
+		itemIDs[it.ID] = struct{}{}
+	}
+
+	parsed := make([]domain.SubscriptionItemThreshold, 0, len(input.ItemThresholds))
+	seen := make(map[string]struct{}, len(input.ItemThresholds))
+	for i, t := range input.ItemThresholds {
+		if t.SubscriptionItemID == "" {
+			return domain.Subscription{}, errs.Required(fmt.Sprintf("item_thresholds[%d].subscription_item_id", i))
+		}
+		if _, dup := seen[t.SubscriptionItemID]; dup {
+			return domain.Subscription{}, errs.Invalid("item_thresholds",
+				fmt.Sprintf("duplicate subscription_item_id %q", t.SubscriptionItemID))
+		}
+		seen[t.SubscriptionItemID] = struct{}{}
+		if _, ok := itemIDs[t.SubscriptionItemID]; !ok {
+			return domain.Subscription{}, errs.Invalid(
+				fmt.Sprintf("item_thresholds[%d].subscription_item_id", i),
+				fmt.Sprintf("item %q does not belong to this subscription", t.SubscriptionItemID))
+		}
+		usage, derr := decimal.NewFromString(strings.TrimSpace(t.UsageGTE))
+		if derr != nil {
+			return domain.Subscription{}, errs.Invalid(
+				fmt.Sprintf("item_thresholds[%d].usage_gte", i),
+				"must be a numeric string (e.g. \"1000\" or \"3.14\")")
+		}
+		if usage.IsNegative() {
+			return domain.Subscription{}, errs.Invalid(
+				fmt.Sprintf("item_thresholds[%d].usage_gte", i),
+				"must be >= 0")
+		}
+		parsed = append(parsed, domain.SubscriptionItemThreshold{
+			SubscriptionItemID: t.SubscriptionItemID,
+			UsageGTE:           usage,
+		})
+	}
+
+	resetCycle := true
+	if input.ResetBillingCycle != nil {
+		resetCycle = *input.ResetBillingCycle
+	}
+
+	return s.store.SetBillingThresholds(ctx, tenantID, id, domain.BillingThresholds{
+		AmountGTE:         input.AmountGTE,
+		ResetBillingCycle: resetCycle,
+		ItemThresholds:    parsed,
+	})
+}
+
+// ClearBillingThresholds removes any threshold configuration on a
+// subscription. Idempotent — clearing on a sub that has no threshold returns
+// the unchanged subscription.
+func (s *Service) ClearBillingThresholds(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	return s.store.ClearBillingThresholds(ctx, tenantID, id)
 }
 
 func beginningOfMonth(t time.Time) time.Time {

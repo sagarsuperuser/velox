@@ -197,6 +197,11 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/{id}/end-trial", h.endTrial)
 	r.Post("/{id}/extend-trial", h.extendTrial)
 
+	// Billing thresholds — Stripe-parity hard-cap config. PUT writes the full
+	// (amount, reset, items) triple; DELETE clears it. Idempotent.
+	r.Put("/{id}/billing-thresholds", h.setBillingThresholds)
+	r.Delete("/{id}/billing-thresholds", h.clearBillingThresholds)
+
 	// Items — Stripe-style per-item mutation. Quantity and plan changes land
 	// on the same PATCH (body discriminates), pending-change clear has its own
 	// DELETE so client code can target it without a PATCH body shape.
@@ -518,6 +523,103 @@ func (h *Handler) resumeCollection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCollectionResumed, sub, nil)
+
+	respond.JSON(w, r, http.StatusOK, sub)
+}
+
+// setBillingThresholds writes the Stripe-parity hard-cap config onto a
+// subscription. Body shape:
+//
+//	{
+//	  "amount_gte": 50000,                    // optional, integer cents
+//	  "reset_billing_cycle": true,            // optional, defaults true
+//	  "item_thresholds": [                    // optional, always-array
+//	    {"subscription_item_id": "si_xxx", "usage_gte": "1000"}
+//	  ]
+//	}
+//
+// At least one of amount_gte or item_thresholds must be supplied. Returns
+// 422 on validation failure (terminal sub, unknown item id, negative
+// usage_gte, multi-currency item set, etc).
+//
+// Replaces the full set on every call: the per-item rows for any item not
+// in the new slice are deleted by the store.
+func (h *Handler) setBillingThresholds(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	var input BillingThresholdsInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	// Multi-currency check happens here because plan currency lookups need
+	// h.plans, which the service doesn't have. We hydrate the sub's items,
+	// fetch each item's plan, and reject when the set spans more than one
+	// currency. A threshold expressed in cents only makes sense against a
+	// single-currency line set.
+	if h.plans != nil {
+		sub, gerr := h.svc.Get(r.Context(), tenantID, id)
+		if gerr == nil && len(sub.Items) > 0 {
+			seen := make(map[string]struct{}, 2)
+			for _, it := range sub.Items {
+				p, perr := h.plans.GetPlan(r.Context(), tenantID, it.PlanID)
+				if perr != nil {
+					continue
+				}
+				if p.Currency != "" {
+					seen[p.Currency] = struct{}{}
+				}
+			}
+			if len(seen) > 1 {
+				respond.Error(w, r, http.StatusUnprocessableEntity, "validation_error",
+					"billing thresholds are not supported on multi-currency subscriptions",
+					"billing_thresholds")
+				return
+			}
+		}
+	}
+
+	sub, err := h.svc.SetBillingThresholds(r.Context(), tenantID, id, input)
+	if err != nil {
+		respond.FromError(w, r, err, "subscription")
+		return
+	}
+
+	if h.auditLogger != nil {
+		meta := map[string]any{
+			"action":               "billing_thresholds_set",
+			"customer_id":          sub.CustomerID,
+			"amount_gte":           input.AmountGTE,
+			"item_threshold_count": len(input.ItemThresholds),
+		}
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, meta)
+	}
+
+	respond.JSON(w, r, http.StatusOK, sub)
+}
+
+// clearBillingThresholds removes any threshold configuration on a
+// subscription. Idempotent — clearing on a sub that has no threshold returns
+// 200 with the unchanged subscription. Returns 404 only when the
+// subscription itself doesn't exist.
+func (h *Handler) clearBillingThresholds(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := h.svc.ClearBillingThresholds(r.Context(), tenantID, id)
+	if err != nil {
+		respond.FromError(w, r, err, "subscription")
+		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+			"action":      "billing_thresholds_cleared",
+			"customer_id": sub.CustomerID,
+		})
+	}
 
 	respond.JSON(w, r, http.StatusOK, sub)
 }
