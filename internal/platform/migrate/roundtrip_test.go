@@ -91,9 +91,12 @@ func TestMigrationRoundTrip(t *testing.T) {
 	}
 }
 
-// countAppliedMigrations reads schema_migrations via a direct connection so
-// we know how many Steps(-N) to request without assuming contiguous version
-// integers.
+// countAppliedMigrations counts the number of .up.sql files in the embedded
+// migrations directory. The migrate library's Steps(-N) treats each .up.sql
+// as one step regardless of its version-number gap, so we need the file
+// count, not the latest version number — these can diverge when a branch
+// intentionally skips a number to coordinate with a sibling parallel
+// branch (e.g. one branch owns 0056, the other 0057, both stack on main).
 func countAppliedMigrations(dsn string) (int, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -101,18 +104,7 @@ func countAppliedMigrations(dsn string) (int, error) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// The golang-migrate schema_migrations table holds exactly one row (the
-	// current version). To count applied steps we enumerate the embedded
-	// migration files — the library's Steps(-N) treats each .up.sql as one
-	// step regardless of version-number gaps.
-	latest, err := migrate.EmbeddedLatestVersion()
-	if err != nil {
-		return 0, err
-	}
-	// Assumes contiguous 1..N numbering, which Velox enforces in the sql/
-	// directory. If we ever skip numbers intentionally, switch to counting
-	// the files directly.
-	return int(latest), nil
+	return migrate.EmbeddedMigrationCount()
 }
 
 func rewriteDBName(t *testing.T, dsn, newName string) string {
