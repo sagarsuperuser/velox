@@ -20,6 +20,39 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Plan migration tool — bulk plan swaps with preview + commit** (2026-04-26) —
+  Week 6 deliverable #2 ships an operator-facing surface for moving a cohort of
+  subscribers from one plan to another. Three endpoints under
+  `/v1/admin/plan_migrations` gated by `PermSubscriptionWrite`:
+  `POST /preview` runs the existing `billing.PreviewService` per-customer to
+  produce a before / after / delta table (cohort scoped to subscriptions on
+  `from_plan_id`, optionally narrowed by `customer_filter.type=ids`);
+  `POST /commit` accepts an `idempotency_key` and an `effective` of
+  `"immediate"` (proration-aware, swaps `subscription_items.plan_id` and stamps
+  `plan_changed_at`) or `"next_period"` (sets `pending_plan_id` +
+  `pending_plan_effective_at`), returning `migration_id` /
+  `applied_count` / `audit_log_id` (replay of the same key short-circuits via
+  `UNIQUE (tenant_id, idempotency_key)` without re-mutation); `GET /` paginates
+  past migrations in reverse-chronological order. The history table
+  `plan_migrations` (migration 0059) snapshots the cohort summary —
+  `customer_filter` JSONB, `totals` JSONB always-array of currency-keyed
+  before/after/delta cents, `applied_by` + `applied_by_type` from auth
+  context, FORCE-RLS on `(tenant_id, livemode)`, BEFORE-INSERT
+  `set_livemode` trigger inherited from migration 0021. Audit log gains TWO
+  new event types: `plan.migration_committed` (one cohort summary entry per
+  commit, links via `metadata.plan_migration_id`) and
+  `subscription.plan_changed` (per-customer entry so CS reps can answer
+  "why did my plan change?" tickets without joining tables). The dashboard
+  ships at `/plan-migrations` — a three-step flow (configure plans + filter
+  + effective → preview cohort table with delta highlighting → commit modal
+  with auto-generated idempotency key). Cross-currency migrations reject at
+  the service layer with code `currency_mismatch`; `customer_filter.type=tag`
+  is reserved (the wire shape accepts it so frontend mocks compile but the
+  service rejects with code `filter_type_unsupported` pending a
+  customer-tag schema). Wire-shape regression tests pin the always-snake_case
+  contract for all three endpoints. See `docs/90-day-plan.md` Week 6 + Week 6
+  in `docs/parallel-handoff.md` Track A.
+
 - **Real-time webhook event UI with SSE live-tail + replay (Week 6 Track A)** (2026-04-26) —
   the dashboard's Webhook Events page now streams every dispatched event
   in real time via Server-Sent Events at

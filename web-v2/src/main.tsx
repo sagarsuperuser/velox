@@ -141,6 +141,7 @@ const PrivacyPage = lazy(() => import('@/pages/Privacy'))
 const DPAPage = lazy(() => import('@/pages/DPA'))
 const OnboardingPage = lazy(() => import('@/pages/Onboarding'))
 const RecipesPage = lazy(() => import('@/pages/Recipes'))
+const PlanMigrationPage = lazy(() => import('@/pages/PlanMigration'))
 
 const App = () => (
   <ErrorBoundary>
@@ -163,6 +164,7 @@ const App = () => (
               <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
               <Route path="/onboarding" element={<ProtectedRoute><OnboardingPage /></ProtectedRoute>} />
               <Route path="/recipes" element={<ProtectedRoute><RecipesPage /></ProtectedRoute>} />
+              <Route path="/plan-migrations" element={<ProtectedRoute><PlanMigrationPage /></ProtectedRoute>} />
               <Route path="/customers" element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
               <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
               <Route path="/dunning" element={<ProtectedRoute><DunningPage /></ProtectedRoute>} />

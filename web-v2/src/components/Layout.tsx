@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
   Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3, Ticket,
   Sun, Moon, Search, TrendingUp, UsersRound, ChevronsUpDown, BookOpen, Activity,
-  Sparkles, MessageSquareWarning, type LucideIcon,
+  Sparkles, MessageSquareWarning, Wand2, type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useDarkMode } from '@/hooks/useDarkMode'
@@ -38,6 +38,7 @@ const billingNav = [
 
 const configNav = [
   { to: '/pricing', icon: Tag, label: 'Pricing' },
+  { to: '/plan-migrations', icon: Wand2, label: 'Plan migration' },
   { to: '/recipes', icon: Sparkles, label: 'Recipes' },
   { to: '/coupons', icon: Ticket, label: 'Coupons' },
   { to: '/credits', icon: Wallet, label: 'Credits' },
