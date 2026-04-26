@@ -213,6 +213,36 @@ Two surfaces mirror this file:
 
 ### Fixed
 
+- **Recipes API wire shape — snake_case + creates summary + preview wrapper**
+  (2026-04-26) — three drifts between `docs/design-recipes.md` and the
+  Week 3 implementation surfaced during Track B's first integration
+  pass and are now fixed. `domain.Recipe` was missing `json:"…"` tags
+  on its top-level fields, so `GET /v1/recipes`, `GET
+  /v1/recipes/{key}`, and `POST /v1/recipes/{key}/preview` were
+  emitting PascalCase keys (`Key`, `Version`, `Meters`,
+  `RatingRules`, `DunningPolicy`, …) inconsistent with the rest of
+  `/v1/*`; tags added with `omitempty` on `description` /
+  `dunning_policy` / `webhook` to keep wire output tight when
+  recipes don't declare those sections. `SampleData` is now `json:"-"`
+  — it's a seed hint for `seed_sample_data=true`, not part of the
+  public API surface. `RecipeListItem` and the new
+  `RecipeDetail` wrapper carry a `creates: {meters, rating_rules,
+  pricing_rules, plans, dunning_policies, webhook_endpoints}` count
+  object so the picker UI renders summary chips ("1 meter · 9
+  pricing rules · monthly billing") without a follow-up preview
+  call. `Service.Preview` now returns
+  `PreviewResult{key, version, objects: {…}, warnings: []}` per the
+  design spec — previously it inlined every object array at the top
+  level. `objects.dunning_policies` and `objects.webhook_endpoints`
+  are 0-or-1-length slices for uniform iteration, all object slices
+  default to non-nil so JSON emits `[]` not `null`, and `warnings`
+  is the same shape recipes.preview spec'd for non-fatal conditions
+  (currency-vs-Stripe-account mismatch, placeholder webhook URLs) —
+  empty array in v1, slot in place. New `TestWireShape_SnakeCase`
+  unit test pins all three contracts so future regressions trip CI
+  before reaching the dashboard. No behavior change to
+  `Instantiate` / `Uninstall`; data shape only.
+
 - **Hosted invoice Checkout metadata** — `velox_invoice_id` is now
   propagated to both the Checkout Session and the underlying
   PaymentIntent, so `payment_intent.succeeded` webhooks route hosted-
