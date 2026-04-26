@@ -21,6 +21,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/billingalert"
+	"github.com/sagarsuperuser/velox/internal/bulkaction"
 	"github.com/sagarsuperuser/velox/internal/coupon"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
@@ -465,6 +466,24 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	)
 	planMigrationH := planmigration.NewHandler(planMigrationSvc)
 
+	// Bulk operations (Week 7) — operator-initiated cohort actions
+	// (apply coupon, schedule cancel) over many customers. Reuses
+	// customer.Store for the cohort, subscription.Store for active-sub
+	// resolution, subSvc.ScheduleCancel for the per-sub cancel mutation,
+	// couponSvc.AssignToCustomer for the per-customer attach, and
+	// auditLogger for the cohort summary + per-target entries. Mounted at
+	// /v1/admin/bulk_actions below.
+	bulkActionStore := bulkaction.NewPostgresStore(db)
+	bulkActionSvc := bulkaction.NewService(
+		bulkActionStore,
+		customerStore,
+		subStore,
+		&bulkActionSubCancellerAdapter{svc: subSvc},
+		&bulkActionCouponAssignerAdapter{svc: couponSvc},
+		auditLogger,
+	)
+	bulkActionH := bulkaction.NewHandler(bulkActionSvc)
+
 	// Billing alerts: operator-defined spend/usage thresholds with a
 	// background evaluator that fires `billing.alert.triggered` via the
 	// webhook outbox atomically with the alert state mutation. Mounted
@@ -836,6 +855,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// DB mutation occurs), so PermSubscriptionWrite gates the whole
 		// subtree. See internal/planmigration.
 		r.With(auth.Require(auth.PermSubscriptionWrite)).Mount("/admin/plan_migrations", planMigrationH.Routes())
+		// Bulk operations (Week 7) — operator-initiated cohort actions
+		// (apply coupon, schedule cancel). Same write-grade auth posture
+		// as plan migrations: cohort selection is sensitive even when no
+		// DB mutation lands. See internal/bulkaction.
+		r.With(auth.Require(auth.PermSubscriptionWrite)).Mount("/admin/bulk_actions", bulkActionH.Routes())
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/credit-notes", creditNoteH.Routes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/price-overrides", pricingH.OverrideRoutes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/coupons", couponH.Routes())
@@ -1004,4 +1028,32 @@ func (t tenantNameLookup) Name(ctx context.Context, tenantID string) (string, er
 		return "", err
 	}
 	return v.Name, nil
+}
+
+// bulkActionSubCancellerAdapter narrows subscription.Service to the single
+// ScheduleCancel call bulkaction.Service consumes. Keeps the bulkaction
+// package free of subscription-handler imports.
+type bulkActionSubCancellerAdapter struct {
+	svc *subscription.Service
+}
+
+func (a *bulkActionSubCancellerAdapter) ScheduleCancel(ctx context.Context, tenantID, id string, input subscription.ScheduleCancelInput) (domain.Subscription, error) {
+	return a.svc.ScheduleCancel(ctx, tenantID, id, input)
+}
+
+// bulkActionCouponAssignerAdapter narrows coupon.Service to the single
+// AssignToCustomer call bulkaction.Service consumes. Translates the
+// bulkaction-local CouponAssignInput shape into coupon.AssignInput so
+// the bulkaction package doesn't import its sibling.
+type bulkActionCouponAssignerAdapter struct {
+	svc *coupon.Service
+}
+
+func (a *bulkActionCouponAssignerAdapter) AssignToCustomer(ctx context.Context, tenantID string, input bulkaction.CouponAssignInput) error {
+	_, err := a.svc.AssignToCustomer(ctx, tenantID, coupon.AssignInput{
+		Code:           input.Code,
+		CustomerID:     input.CustomerID,
+		IdempotencyKey: input.IdempotencyKey,
+	})
+	return err
 }
