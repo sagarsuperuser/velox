@@ -3,6 +3,7 @@ package recipe
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -118,17 +119,23 @@ func TestService_Preview_RendersTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Preview: %v", err)
 	}
-	if len(rendered.Plans) != 1 {
-		t.Fatalf("expected 1 plan, got %d", len(rendered.Plans))
+	if rendered.Key != "anthropic_style" {
+		t.Errorf("Key: got %q, want anthropic_style", rendered.Key)
 	}
-	if got := rendered.Plans[0].Code; got != "ai_eur" {
+	if len(rendered.Objects.Plans) != 1 {
+		t.Fatalf("expected 1 plan, got %d", len(rendered.Objects.Plans))
+	}
+	if got := rendered.Objects.Plans[0].Code; got != "ai_eur" {
 		t.Errorf("plan.code: got %q, want ai_eur", got)
 	}
-	if got := rendered.Plans[0].Currency; got != "EUR" {
+	if got := rendered.Objects.Plans[0].Currency; got != "EUR" {
 		t.Errorf("plan.currency: got %q, want EUR", got)
 	}
-	if got := rendered.RatingRules[0].Currency; got != "EUR" {
+	if got := rendered.Objects.RatingRules[0].Currency; got != "EUR" {
 		t.Errorf("rating_rule.currency: got %q, want EUR", got)
+	}
+	if rendered.Warnings == nil {
+		t.Error("Warnings must be non-nil so JSON serializes as [] not null")
 	}
 }
 
@@ -206,6 +213,108 @@ func TestService_Instantiate_UnknownRecipe(t *testing.T) {
 	if !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
+}
+
+// TestWireShape_SnakeCase pins the JSON contract Track B's picker UI
+// depends on. Drift here (e.g. dropping a json:"…" tag and falling back
+// to PascalCase) breaks the dashboard at runtime, so we assert the
+// snake_case field names + creates summary + preview wrapper directly.
+func TestWireShape_SnakeCase(t *testing.T) {
+	svc := NewService(nil, newMemStore(), loadRegistry(t), nil, nil, nil)
+
+	t.Run("ListRecipes", func(t *testing.T) {
+		items, err := svc.ListRecipes(context.Background(), "t1")
+		if err != nil {
+			t.Fatalf("ListRecipes: %v", err)
+		}
+		blob, err := json.Marshal(items[0])
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(blob, &raw); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		for _, k := range []string{"key", "version", "name", "summary", "overridable", "meters", "rating_rules", "pricing_rules", "plans", "creates"} {
+			if _, ok := raw[k]; !ok {
+				t.Errorf("list response missing %q key (raw=%v)", k, raw)
+			}
+		}
+		for _, k := range []string{"Key", "Version", "Name", "Summary", "RatingRules", "PricingRules", "DunningPolicy"} {
+			if _, ok := raw[k]; ok {
+				t.Errorf("list response should not have PascalCase key %q", k)
+			}
+		}
+		creates, ok := raw["creates"].(map[string]any)
+		if !ok {
+			t.Fatalf("creates not an object: %T", raw["creates"])
+		}
+		for _, k := range []string{"meters", "rating_rules", "pricing_rules", "plans", "dunning_policies", "webhook_endpoints"} {
+			if _, ok := creates[k]; !ok {
+				t.Errorf("creates missing %q", k)
+			}
+		}
+	})
+
+	t.Run("GetRecipe", func(t *testing.T) {
+		detail, err := svc.GetRecipe("anthropic_style")
+		if err != nil {
+			t.Fatalf("GetRecipe: %v", err)
+		}
+		blob, err := json.Marshal(detail)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(blob, &raw); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		for _, k := range []string{"key", "version", "name", "summary", "description", "creates"} {
+			if _, ok := raw[k]; !ok {
+				t.Errorf("detail response missing %q (raw keys=%v)", k, mapKeys(raw))
+			}
+		}
+	})
+
+	t.Run("Preview", func(t *testing.T) {
+		out, err := svc.Preview(context.Background(), "anthropic_style", nil)
+		if err != nil {
+			t.Fatalf("Preview: %v", err)
+		}
+		blob, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(blob, &raw); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		for _, k := range []string{"key", "version", "objects", "warnings"} {
+			if _, ok := raw[k]; !ok {
+				t.Errorf("preview response missing %q (raw keys=%v)", k, mapKeys(raw))
+			}
+		}
+		objects, ok := raw["objects"].(map[string]any)
+		if !ok {
+			t.Fatalf("objects not an object: %T", raw["objects"])
+		}
+		for _, k := range []string{"meters", "rating_rules", "pricing_rules", "plans", "dunning_policies", "webhook_endpoints"} {
+			if _, ok := objects[k]; !ok {
+				t.Errorf("preview.objects missing %q", k)
+			}
+		}
+		if _, isSlice := raw["warnings"].([]any); !isSlice {
+			t.Errorf("warnings must marshal as JSON array, got %T", raw["warnings"])
+		}
+	})
+}
+
+func mapKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func TestRatingRuleFromRecipe(t *testing.T) {
