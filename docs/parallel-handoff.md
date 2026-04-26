@@ -290,3 +290,27 @@ Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. 
   - PR for the customer-usage backend (`feat/backend-week5-customer-usage`) — to be opened next.
   - The always-array `totals` deviation from the RFC — flag if you'd rather match the spec's scalar-when-single shape.
 - **Next session (Track A):** open the PR, drive to merge, then either (a) start Week 5's other half (`create_preview` invoice preview design + implementation) per 90-day plan, or (b) Week 6 dunning hardening if human prefers; both unblocked.
+
+---
+
+## 2026-04-26 (Sun) — third update, Track B Week 5 prep
+
+### Track B
+- **Branch:** `feat/track-b-week5-prep` (off `main` post-PR-#24/#23 merge), pushed.
+- **Re-smoke of recipes API (PR #25):** snake_case ✓, `creates` summary ✓, `{key, version, objects, warnings}` preview wrapper ✓, `instantiated` field present (null on fresh tenant) ✓. Two contract suggestions raised in PR review and addressed Track-B-side this slice (see commits below).
+- **Shipped (2 commits):**
+  - `34dfc83 refactor(web): adapt recipes TS to PR #25 wire shape` — collapsed `Recipe.overridable: string[]` + `RecipeDetail.overridable_schema: Record<key, schema>` into a single `RecipeOverrideSchema[]` with `key` embedded (matches PR #25's actual wire shape — strictly better than the original RFC). `OverrideField` reads `schema.key`; dropped the redundant `fieldKey` prop. Added `max_length` and `pattern` to the schema type since the live response carries them.
+  - `c6bcafb feat(web): cost-dashboard scaffold against design-customer-usage RFC` — new `<CostDashboard customerId />` component, new `api.customerUsage(customerId, {from?, to?})` method, new `CustomerUsage*` types. Replaces the old quantity-only "Usage This Period" card on `CustomerDetail.tsx` with the multi-dim cost view (cycle progress, totals, per-meter expand-to-rules, warnings). Self-contained so the same component drops into a future public iframe-able route once token-based access lands.
+- **Two flags for Track A on PR #25 + RFC:**
+  1. **PR #25 / `docs/design-recipes.md` should reflect the new `overridable` shape.** Doc says `overridable: string[]` + separate `overridable_schema: dict`. Implementation collapses both into `overridable: [{key, type, default, enum?, max_length?, pattern?}, ...]` — better, single source of truth, my TS already matches. Doc update needed for downstream consumers.
+  2. **`docs/design-customer-usage.md` `totals` field — request to make it always-array.** RFC currently spec'd `totals: {amount_cents, currency}` for single-currency and `totals: [...]` polymorphic for multi-currency. My TS models it as `totals: [{currency, amount_cents}]` unconditionally (single-currency tenants get a length-1 array). Removes the polymorphic discriminator on the client. If Track A keeps the polymorphic shape on the wire, I'll patch in a thin adapter — but the always-array shape is strictly cheaper for clients and costs nothing on the wire. **Asking for confirmation before Track A starts implementation.**
+- **8 open questions on `docs/design-customer-usage.md`:** all of Track A's proposed answers I'd accept (no objections). Cosmetic note: example response shows `meter_id: "vlx_mtr_tokens"` (semantic) but real meter IDs are random hex; flagging so doc readers don't assume IDs encode meter keys.
+- **Build verification:** `tsc -b` clean (only pre-existing errors); `vite build` ~565ms with new lazy chunk for the customer-usage component.
+- **Blocking Track A on:** confirmation of the always-array `totals` shape, ideally before Week 5 implementation kicks off so I don't have to write an adapter post-hoc.
+- **Track A can pick up from this work:** Week 5 implementation against the RFC (with `totals` shape decision), then `create_preview` for the projected-bill line on the dashboard (currently absent — UI math will extrapolate from elapsed-vs-total cycle once we have it).
+- **Next session (Track B):**
+  - Once `GET /v1/customers/{id}/usage` is live, click-test the dashboard end-to-end against a real `anthropic_style` tenant.
+  - Add a "projected bill" line to the dashboard when `create_preview` ships (Week 5 explicit deliverable).
+  - The standalone iframe-able route (`/cost-dashboard?customer_id=…&token=…`) lands once Track A wires public-token access.
+
+**Wall-clock:** 00:30 → 01:25 IST 2026-04-26 (≈ 55m).
