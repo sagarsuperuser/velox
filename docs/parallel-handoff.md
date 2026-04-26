@@ -438,3 +438,43 @@ Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. 
   - **Threshold-crossed timeline event** — `subscription.threshold_crossed` webhook is dispatched on every fire; surface in the dashboard activity feed.
 - **Open for human review:** PR to be opened on `feat/backend-week5c-billing-thresholds` once final commit lands.
 - **Next session (Track A):** drive PR to green, self-merge per authorization (CI green AND `TestWireShape_SnakeCase` in suite — both conditions met), then continue Week 5d (billing alerts) — sibling agent already running on `feat/backend-week5d-billing-alerts` with migration 0057.
+
+---
+
+## 2026-04-26 (Sun) — Track A: Stripe Tier 2 gap analysis (post-Tier-1-merge hardening pass)
+
+### Track A
+- **Branch:** `docs/stripe-tier2-gap-analysis` in worktree `agent-a18dc8bf` (off `main` at `7adf96b`, post-Week-5c+5d merges).
+- **Type:** docs-only (≤90-min time-boxed). No code changes; no RFCs forked yet (RFC suggestions surfaced in the doc for the user to greenlight).
+- **Goal:** with Tier 1 closed today (customer-usage, create_preview, billing thresholds, billing alerts), enumerate what's still missing in **Tier 2** and recommend Phase-3 inclusion before design-partner outreach (Week 8) and the first production cutover (Weeks 9–12).
+- **Shipped:**
+  - **`docs/stripe-tier2-gap-analysis.md`** — single deliverable. Three sections:
+    1. **Tier 2 surface enumeration** — 14 features each cited against a Stripe doc URL, verified via WebFetch. Covers Subscription Schedules, billing-cycle anchor + `proration_behavior`, upgrade/downgrade preview, Customer Balance, Promotion Codes, cancel semantics, `pause_collection` 3-mode behavior, Payment Links, Quotes, Revenue Recognition, manual Tax Rates, `add_lines` / `add_invoice_items`, `collection_method=send_invoice`, Customer Portal.
+    2. **Velox state per feature** — every claim cited to a Velox file/function (Grep-verified). Classified PRESENT / PARTIAL / ABSENT.
+    3. **Gap prioritization + tiering** — effort × blast × wedge-fit table, then bucketed into Must-fix-before-Week-8, Must-fix-before-cutover (Phase 3), Defer-to-v2.
+- **Key findings (full detail in the doc):**
+  - **5 PARTIAL gaps + 6 ABSENT gaps** identified. Of the 11, only **4 are Phase-3-must** (proration_behavior knob, pause_collection's missing 2 behaviors, collection_method=send_invoice + days_until_due, mark_uncollectible/paid_out_of_band invoice verbs). Total Phase-3 budget estimate: ~3–4 weeks.
+  - **`collection_method=send_invoice` is the single largest production-cutover risk.** B2B AI buyers' enterprise customers will require NET-30 invoicing, not auto-charge. Production-blocking for the Week 12 cutover. Needs RFC.
+  - **`pause_collection` migration `0052` already documents its own gap** in a SQL comment ("v1 supports only behavior='keep_as_draft'; mark_uncollectible/void"). Next pass on pause should finish the comment.
+  - **Velox's prepaid `credit` ledger is more sophisticated than Stripe Customer Balance** for the AI-native usage-credit pattern. Customer Balance is a generic-SaaS A/R primitive — defer.
+  - **Item-scoped pending plan changes are finer-grained than Stripe Phases for the multi-item case** but coarser for ramp pricing across stages. Subscription Schedules stay deferred per `docs/positioning.md` non-goal.
+  - **No bug found.** Investigation surfaced one piece of self-documenting incomplete migration (pause behaviors) but no incorrect behavior in shipped code.
+- **RFC-fork suggestions (for user to greenlight before any implementation):**
+  - `docs/design-collection-method.md` — `send_invoice` + `days_until_due` + dunning-reminder-vs-retry split + `paid_out_of_band` verb. Largest Phase-3 inclusion item.
+  - `docs/design-proration-behavior.md` — small (~1 page) RFC to lock wire shape before threading the knob through `Service.UpdateItem` + operator dashboard + Stripe importer.
+  - `docs/design-payment-links.md` — only if Week 8 stretch goal is taken; otherwise defer.
+- **Decisions made inline (per `feedback_feat8_autonomy`):**
+  - **Time-boxed at ≤90 min** per the user prompt; bailed on a deeper Customer Balance investigation when it became clear the `credit` ledger covers the wedge case better.
+  - **Defaulted to "defer-to-v2" for anything not HIGH wedge fit + LOW/MED effort,** per `feedback_no_overengineering` and `docs/positioning.md` anti-positioning section. Promotion Codes, Schedules, Quotes, Revenue Recognition, manual Tax Rates catalogue, Customer Balance, standalone InvoiceItem, arbitrary billing_cycle_anchor — all explicit defers with rationale.
+  - **Did not author the three RFC forks inline** — out of scope per "no new RFCs in this slice." Surfaced as suggestions for the user to greenlight.
+- **WebFetch URLs that 404'd at fetch time:** `docs.stripe.com/billing/quotes`, `docs.stripe.com/api/payment_links`, `docs.stripe.com/billing/customer/credit-grants`, `docs.stripe.com/billing/subscriptions/pause`, `docs.stripe.com/api/credit_grants`, `docs.stripe.com/billing/invoices/connect`. All worked around with sibling URLs (`docs.stripe.com/quotes`, `docs.stripe.com/payment-links/api`, etc.). Documented in the verification-notes section of the doc.
+- **Blocking Track B on:** nothing.
+- **Track B can pick up:** nothing from this slice — it's docs-only research. The 4 Phase-3 inclusion items each need their own backend slice + UI follow-up; sequencing waits on the user's tier review of the doc.
+- **Open for human review:**
+  - The 4 Phase-3 must-fix items + total-budget estimate (≈3–4 weeks across Weeks 9–12). Confirm or re-tier before any RFC starts.
+  - The 3 suggested RFC forks (`collection-method`, `proration-behavior`, `payment-links`). Greenlight or push back.
+  - The 8 defer-to-v2 items. Any of these need to be promoted earlier?
+- **Sibling work (parallel):** `feat/migration-safety-pass` populated-DB migration safety pass running concurrently. No code-surface conflict; only `docs/parallel-handoff.md` (this entry) and possibly `CHANGELOG.md` (no entry made by this slice — docs-only). Per user instruction, prefer "keep both" on conflict.
+- **Next session (Track A):** open PR `docs(stripe): Tier 2 gap analysis + Phase-3 inclusion recommendations`, drive CI green (lint + frontend + test trivial for docs-only), self-merge per `feedback_continuous_autonomy`. Then queue whichever Phase-3 RFC the user greenlights.
+
+**Wall-clock duration:** 17:48 → 19:08 IST (≈ 1h 20m, well within the ≤90-min time-box).
