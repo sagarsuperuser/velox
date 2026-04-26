@@ -20,6 +20,41 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Self-host quickstart — Docker Compose stack + Postgres PITR guide + landing page** (2026-04-26) —
+  the single-VM path of Week 9's self-host playbook ships. `deploy/compose/`
+  drops a three-service stack (postgres + velox-api + nginx) wired to
+  `RUN_MIGRATIONS_ON_BOOT=true` so a fresh VM is one `docker compose up
+  -d` away from a working tenant: nginx terminates HTTP on `:80`, proxies
+  to `velox-api:8080` with 35s timeouts matching the binary's
+  `WriteTimeout`, and gates `/metrics` to RFC1918 ranges. The
+  `postgres-init.sql` creates the non-superuser `velox_app` runtime role
+  so the RLS policies are actually enforced (superusers and database
+  owners bypass policies; without the role, the binary falls back to
+  admin with a loud warning per `cmd/velox/main.go:openAppPool`). The
+  `.env.example` mirrors `internal/config/config.go` and every per-package
+  `os.Getenv` callsite end-to-end — three required keys
+  (`POSTGRES_PASSWORD`, `VELOX_ENCRYPTION_KEY`,
+  `VELOX_BOOTSTRAP_TOKEN`), everything else commented with the binary's
+  own defaults. The velox-api healthcheck calls the binary's `version`
+  subcommand because the image is distroless (no shell, no curl); the
+  HTTP-level liveness probe lives on nginx in front. The stack
+  defaults to `APP_ENV=production` so the encryption-key fatal check,
+  secure cookies, and HSTS protections are on the moment a real
+  operator runs it. `docs/self-host/postgres-backup.md` walks
+  `pg_basebackup` + WAL archiving for PITR with retention
+  recommendations (7 daily / 4 weekly / 12 monthly across hot / cool /
+  cold S3 tiers) and a quarterly restore drill — every recipe links to
+  the real Postgres 16 manual chapter (no hallucinated URLs). Operator
+  guidance includes a copy-pasteable backup script, a tested restore
+  procedure, and explicit notes on what's *not* covered (logical
+  cross-version dumps, HA, encryption-key escrow). The new
+  `docs/self-host.md` landing page picks the install shape (Compose
+  today; Helm + Terraform AWS module flagged as a follow-up lane,
+  not fake-linked), surfaces the required env-vars, sizing table, TLS
+  options, and compliance-posture stub. Helm + Terraform + cold-install
+  on real AWS are deferred to a follow-up Week 9 lane per the
+  90-day plan.
+
 - **Billing alerts — Stripe Tier 1 parity for "Billing Alerts"** (2026-04-26) —
   the operator-configurable threshold surface that fires a webhook +
   dashboard notification when a customer's cycle spend (or per-meter
