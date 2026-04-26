@@ -121,9 +121,9 @@ env-var schema. Pick by what your team already operates.
 ## Compliance posture
 
 Compliance docs are landing in Week 10 of the
-[90-day plan](90-day-plan.md): encryption-at-rest verification,
-audit-log retention guide, SOC 2 control mapping, GDPR data
-export/deletion.
+[90-day plan](90-day-plan.md): SOC 2 control mapping and GDPR data
+export/deletion still pending; audit-log retention and encryption-at-rest
+guides shipped.
 
 Available now:
 
@@ -133,6 +133,15 @@ Available now:
   S3 archive pattern, and the restore path. The Velox default is
   18 months in the live `audit_log` table with archived exports
   retained per the regime that applies.
+- [docs/ops/encryption-at-rest.md](ops/encryption-at-rest.md) —
+  what Velox encrypts at the application layer (customer PII,
+  webhook signing secrets, per-tenant Stripe credentials via
+  AES-256-GCM under `VELOX_ENCRYPTION_KEY`), what it hashes (API keys,
+  passwords, sessions, portal tokens), the email blind index for
+  magic-link lookup under `VELOX_EMAIL_BIDX_KEY`, copy-pasteable SQL
+  verification recipes, the honest disclosure that key rotation is
+  **not implemented today**, and the SOC 2 / PCI-DSS / GDPR / HIPAA
+  control mapping.
 
 The other operationally relevant facts:
 
