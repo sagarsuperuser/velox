@@ -660,16 +660,18 @@ export default function SubscriptionDetailPage() {
                 {preview.lines.map((line, i) => (
                   <TableRow key={i}>
                     <TableCell>{line.description}</TableCell>
-                    <TableCell className="text-right">{line.quantity}</TableCell>
-                    <TableCell className="text-right font-medium">{formatCents(line.amount_cents)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{Number(line.quantity).toLocaleString(undefined, { maximumFractionDigits: 6 })}</TableCell>
+                    <TableCell className="text-right font-medium">{formatCents(line.amount_cents, line.currency)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
               <tfoot>
-                <TableRow className="border-t-2">
-                  <TableCell colSpan={2} className="text-right font-semibold">Subtotal</TableCell>
-                  <TableCell className="text-right font-semibold">{formatCents(preview.subtotal_cents)}</TableCell>
-                </TableRow>
+                {preview.totals.map(t => (
+                  <TableRow key={t.currency} className="border-t-2">
+                    <TableCell colSpan={2} className="text-right font-semibold">Subtotal{preview.totals.length > 1 ? ` (${t.currency})` : ''}</TableCell>
+                    <TableCell className="text-right font-semibold">{formatCents(t.amount_cents, t.currency)}</TableCell>
+                  </TableRow>
+                ))}
               </tfoot>
             </Table>
           ) : previewError ? (

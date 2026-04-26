@@ -185,6 +185,23 @@ func (m *mockUsage) AggregateForBillingPeriodByAgg(_ context.Context, _, _ strin
 	return result, nil
 }
 
+// AggregateByPricingRules is a minimal stub — engine_test.go's existing
+// preview tests don't exercise the multi-dim path; the create_preview
+// integration tests cover that against real Postgres. We return one
+// aggregation per known meter so the new preview path produces the same
+// totals the legacy tests expect.
+func (m *mockUsage) AggregateByPricingRules(_ context.Context, _, _, meterID string, _ domain.AggregationMode, _, _ time.Time) ([]domain.RuleAggregation, error) {
+	qty, ok := m.totals[meterID]
+	if !ok {
+		return nil, nil
+	}
+	return []domain.RuleAggregation{{
+		RuleID:              "",
+		RatingRuleVersionID: "",
+		Quantity:            decimal.NewFromInt(qty),
+	}}, nil
+}
+
 type mockPricing struct {
 	plans     map[string]domain.Plan
 	meters    map[string]domain.Meter
@@ -243,6 +260,13 @@ func (m *mockPricing) GetOverride(_ context.Context, _, customerID, ruleID strin
 		return domain.CustomerPriceOverride{}, fmt.Errorf("not found")
 	}
 	return o, nil
+}
+
+// ListMeterPricingRulesByMeter is a no-op stub. The engine unit tests use
+// single-rule meters; per-rule DimensionMatch echo is covered by the
+// create_preview integration tests against real Postgres.
+func (m *mockPricing) ListMeterPricingRulesByMeter(_ context.Context, _, _ string) ([]domain.MeterPricingRule, error) {
+	return nil, nil
 }
 
 type mockInvoices struct {

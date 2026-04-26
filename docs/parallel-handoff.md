@@ -314,3 +314,39 @@ Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. 
   - The standalone iframe-able route (`/cost-dashboard?customer_id=…&token=…`) lands once Track A wires public-token access.
 
 **Wall-clock:** 00:30 → 01:25 IST 2026-04-26 (≈ 55m).
+
+---
+
+## 2026-04-26 (Sun) — Track A: create_preview backend (Week 5b)
+
+### Track A
+- **Branch:** `feat/backend-week5b-create-preview` (off `main` post-customer-usage merge).
+- **Goal:** close the Stripe Tier 1 parity gap (`POST /v1/invoices/create_preview`, formerly `Invoice.upcoming`) and route the existing in-app debug preview path through the same multi-dim-aware aggregator (`usage.AggregateByPricingRules`) so preview math == invoice math by construction across every meter shape.
+- **Shipped:**
+  - **`docs/design-create-preview.md`** — RFC with wire shape, period resolution, subscription resolution rules, error code matrix, no-writes guarantee, route mounting precedence (more-specific before catch-all under chi), 8-item implementation checklist.
+  - **`internal/billing/preview.go` refactor** — preview now walks every active subscription's pricing rules (one `usage.AggregateByPricingRules` call per meter, then `domain.ComputeAmountCents` per rule). New per-line shape echoes the rule's canonical `dimension_match`, quantity is decimal `string` on the wire (shopspring `MarshalJSON`), totals are always-array `[{currency, cents}]` (single-currency tenants get a length-1 array — same precedent as customer-usage so TS clients iterate uniformly).
+  - **`internal/billing/preview_create.go`** — `PreviewService` composing the engine with two narrow per-domain interfaces (`CustomerLookup`, `SubscriptionLister`). `CreatePreview()`: customer existence → subscription resolution (explicit ID with cross-customer rejection vs implicit primary pick: active/trialing, latest cycle start) → period resolution (default → sub's cycle, explicit RFC 3339 bounds override, partial bounds rejected) → `engine.previewWithWindow`. Coded `customer_has_no_subscription` error so the dashboard can prompt for an explicit window.
+  - **`internal/billing/create_preview_handler.go`** — `CreatePreviewHandler` with `Routes()` returning chi router; `decodeCreatePreviewRequest` accepts empty body (defaults to primary sub + cycle), rejects malformed JSON; period parsed via `parseWirePeriod`. Error mapping via `respond.FromError`; `ErrNotFound` surfaces with "customer or subscription" label.
+  - **`internal/api/router.go` wiring** — `createPreviewH := billing.NewCreatePreviewHandler(billing.NewPreviewService(engine, customerStore, subStore))`. Mount precedence: `r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices/create_preview", createPreviewH.Routes())` BEFORE `Mount("/invoices", invoiceH.Routes())` — chi catches "create_preview" as `{id}` otherwise.
+  - **`internal/billing/preview_wire_shape_test.go`** — `TestWireShape_SnakeCase` is the merge gate. "FullyPopulated" subtest asserts all 9 top-level snake_case keys, no PascalCase leaks, lines/totals/warnings as arrays, quantity as JSON string `"1234567.891234"` (chose meaningful digits — shopspring trims trailing zeros, so test value must survive normalization), `dimension_match` as object. "EmptyResultSlicesAreArrays" subtest asserts empty slices marshal as `[]` not `null`.
+  - **16 unit tests (`preview_create_test.go`):** `TestResolveCreatePreviewPeriod` (6 cases), `TestPickPrimarySubscription` (6 cases), `TestPreviewService_ResolveSubscription` (5 cases), `TestCreatePreview_BlankCustomerID`, `TestCreatePreview_CustomerNotFound`, `TestDecodeCreatePreviewRequest` (7 cases), `TestComputePreviewTotals` (4 cases — single-currency, multi-currency split, empty totals, mixed-zero totals).
+  - **7 integration tests (`preview_integration_test.go`) against real Postgres:** `TestCreatePreview_SingleMeterFlatParity` (100 events × qty=10 × 1¢ = 1000c), `TestCreatePreview_MultiDimDimensionMatchEcho` (1000 input @3¢ + 100 output @5¢ = 3500c, both rules echoed), `TestCreatePreview_NoWrites` (count `invoices` + `invoice_lines` rows before/after — zero diff guarantee), `TestCreatePreview_CrossTenantIsolation` (tenant B's key vs tenant A's customer → 404 via RLS), `TestCreatePreview_CustomerHasNoSubscription` (coded error returned), `TestCreatePreview_ExplicitSubscriptionWrongCustomer` (cross-customer subscription ID rejected with 404). All 7 pass in 3.88s.
+  - **TS consumer updates (`web-v2/src/lib/api.ts`)** — replaced old `InvoicePreview` interface with new shape: dropped `subtotal_cents` + top-level `currency`; added `totals[]`, `warnings[]`; broke out `InvoicePreviewLine` and `InvoicePreviewTotal` types; `quantity` is now `string`. Added `createInvoicePreview` API method calling `POST /invoices/create_preview`. **`web-v2/src/pages/SubscriptionDetail.tsx`** updated to use `preview.totals[]` per-row and `Number(line.quantity).toLocaleString()` for the decimal-string field.
+  - **CHANGELOG.md** comprehensive entry at top of [Unreleased]/Added (Stripe Tier 1 parity, multi-dim parity guarantee, no-writes property, error codes, route mounting order, test coverage, in-app debug route shape change with TS consumer updates).
+  - **`web-v2/src/pages/Changelog.tsx`** Linear-style feature entry dated 2026-04-26 with 6 bullets (no-writes, period resolution, subscription resolution, always-array totals, route ordering, test-coverage summary).
+- **Decisions made inline (per `feedback_feat8_autonomy`):**
+  - **Compose `PreviewService` against `Engine` (not reimplement per-meter walk):** the create_preview surface and the existing `/v1/billing/preview/{id}` debug route share one code path. Preview math == invoice math by construction. Three narrow interfaces (`CustomerLookup`, `SubscriptionLister`, plus existing engine seams) keep `PreviewService` cross-domain-clean.
+  - **Mount `/invoices/create_preview` before `/invoices`:** chi-router pattern ordering — without this, the `/invoices/{id}` catch-all captures "create_preview" as an invoice ID and 404s. Tested explicitly in handler test.
+  - **Update existing TS `InvoicePreview` rather than introduce a separate type:** both `/v1/billing/preview/{id}` (debug) and `/v1/invoices/create_preview` (Tier 1) now return the same shape. One type, one rendering path on the dashboard.
+  - **Test fixture quantity `1234567.891234` (not `1000000.000000000000`):** discovered shopspring `decimal.MarshalJSON` trims trailing zeros, so the assertion needs digits that survive normalization. Documented in test comment.
+- **Test status:**
+  - `go test ./internal/billing/... -count=1`: pass (16 unit + handler tests).
+  - `go test -p 1 ./internal/billing/... -short=false -count=1`: pass (7 integration tests in 3.88s).
+  - Full short-mode suite: pass.
+- **Blocking Track B on:** nothing.
+- **Track B can pick up:**
+  - **"Projected bill" line on the cost dashboard** — Week 5 explicit deliverable, now unblocked. Call `api.createInvoicePreview({customer_id})` and render `preview.totals[0].cents` next to the cycle-progress meter; multi-currency tenants get the length-N array.
+  - **Subscription detail preview already wired** — uses the new shape via `SubscriptionDetail.tsx` updates above. Click-test against real tenant after merge.
+- **Open for human review:**
+  - PR to be opened on `feat/backend-week5b-create-preview` once final commit lands.
+- **Next session (Track A):** drive PR to green, self-merge per authorization (CI green AND `TestWireShape_SnakeCase` in suite — both conditions met), then start Week 5/6 next blocker per 90-day plan.
