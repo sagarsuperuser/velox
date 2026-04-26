@@ -1205,3 +1205,227 @@ func TestExtendTrial(t *testing.T) {
 		}
 	})
 }
+
+// TestSetBillingThresholds covers the validation paths the service applies on
+// PATCH. The Postgres store handles the actual write; integration tests
+// exercise that path. These unit tests are the merge gate for the hot config
+// rules — drop a check here and the API would happily accept e.g. duplicate
+// item ids, which would later surface as a mid-tx integrity error.
+func TestSetBillingThresholds(t *testing.T) {
+	ctx := context.Background()
+
+	newSubFixture := func(t *testing.T) (*Service, domain.Subscription) {
+		t.Helper()
+		svc := NewService(newMemStore(), nil)
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-thresh", DisplayName: "Test", CustomerID: "c",
+			Items: []CreateItemInput{
+				{PlanID: "plan_base"},
+				{PlanID: "plan_addon"},
+			},
+			StartNow: true,
+		})
+		if err != nil {
+			t.Fatalf("create sub: %v", err)
+		}
+		return svc, sub
+	}
+
+	t.Run("rejects empty body", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		_, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{})
+		if err == nil {
+			t.Fatal("expected error: empty body must be rejected, not silently no-op")
+		}
+	})
+
+	t.Run("rejects negative amount_gte", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		_, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			AmountGTE: -1,
+		})
+		if err == nil {
+			t.Fatal("expected error for negative amount_gte")
+		}
+	})
+
+	t.Run("rejects unknown subscription", func(t *testing.T) {
+		svc, _ := newSubFixture(t)
+		_, err := svc.SetBillingThresholds(ctx, "t1", "vlx_sub_does_not_exist", BillingThresholdsInput{
+			AmountGTE: 500000,
+		})
+		if err == nil {
+			t.Fatal("expected ErrNotFound for unknown subscription")
+		}
+	})
+
+	t.Run("rejects on canceled sub", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		// Cancel the subscription so we can verify the terminal-state guard.
+		if _, err := svc.Cancel(ctx, "t1", sub.ID); err != nil {
+			t.Fatalf("setup cancel: %v", err)
+		}
+		_, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			AmountGTE: 500000,
+		})
+		if err == nil {
+			t.Fatal("expected error setting threshold on canceled sub")
+		}
+	})
+
+	t.Run("rejects item_thresholds with empty subscription_item_id", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		_, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			ItemThresholds: []ItemThresholdInput{
+				{SubscriptionItemID: "", UsageGTE: "1000"},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for empty subscription_item_id")
+		}
+	})
+
+	t.Run("rejects duplicate subscription_item_id", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		fresh, _ := svc.Get(ctx, "t1", sub.ID)
+		itemID := fresh.Items[0].ID
+		_, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			ItemThresholds: []ItemThresholdInput{
+				{SubscriptionItemID: itemID, UsageGTE: "1000"},
+				{SubscriptionItemID: itemID, UsageGTE: "2000"},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for duplicate subscription_item_id")
+		}
+	})
+
+	t.Run("rejects subscription_item_id not on this subscription", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		_, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			ItemThresholds: []ItemThresholdInput{
+				{SubscriptionItemID: "vlx_subitem_foreign", UsageGTE: "1000"},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for foreign subscription_item_id")
+		}
+	})
+
+	t.Run("rejects non-numeric usage_gte", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		fresh, _ := svc.Get(ctx, "t1", sub.ID)
+		_, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			ItemThresholds: []ItemThresholdInput{
+				{SubscriptionItemID: fresh.Items[0].ID, UsageGTE: "not-a-number"},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for non-numeric usage_gte")
+		}
+	})
+
+	t.Run("rejects negative usage_gte", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		fresh, _ := svc.Get(ctx, "t1", sub.ID)
+		_, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			ItemThresholds: []ItemThresholdInput{
+				{SubscriptionItemID: fresh.Items[0].ID, UsageGTE: "-1"},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for negative usage_gte")
+		}
+	})
+
+	t.Run("accepts amount-only configuration", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		updated, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			AmountGTE: 500000,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if updated.BillingThresholds == nil {
+			t.Fatal("expected BillingThresholds set on updated sub")
+		}
+		if updated.BillingThresholds.AmountGTE != 500000 {
+			t.Errorf("amount_gte: got %d, want 500000", updated.BillingThresholds.AmountGTE)
+		}
+		if !updated.BillingThresholds.ResetBillingCycle {
+			t.Error("reset_billing_cycle should default to true when omitted")
+		}
+	})
+
+	t.Run("accepts item-only configuration", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		fresh, _ := svc.Get(ctx, "t1", sub.ID)
+		updated, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			ItemThresholds: []ItemThresholdInput{
+				{SubscriptionItemID: fresh.Items[0].ID, UsageGTE: "1000.5"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if updated.BillingThresholds == nil {
+			t.Fatal("expected BillingThresholds set on updated sub")
+		}
+		if len(updated.BillingThresholds.ItemThresholds) != 1 {
+			t.Fatalf("expected 1 item threshold, got %d", len(updated.BillingThresholds.ItemThresholds))
+		}
+	})
+
+	t.Run("accepts explicit reset_billing_cycle=false", func(t *testing.T) {
+		svc, sub := newSubFixture(t)
+		falseV := false
+		updated, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			AmountGTE:         500000,
+			ResetBillingCycle: &falseV,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if updated.BillingThresholds.ResetBillingCycle {
+			t.Error("reset_billing_cycle: explicit false should be respected")
+		}
+	})
+}
+
+// TestClearBillingThresholds is idempotent and unconditional — the service
+// delegates straight to the store. We just verify the round-trip wires
+// through correctly and removing a never-set threshold is not an error.
+func TestClearBillingThresholds(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newMemStore(), nil)
+
+	sub, err := svc.Create(ctx, "t1", CreateInput{
+		Code: "sub-clear", DisplayName: "Test", CustomerID: "c",
+		Items:    []CreateItemInput{{PlanID: "plan_base"}},
+		StartNow: true,
+	})
+	if err != nil {
+		t.Fatalf("create sub: %v", err)
+	}
+
+	t.Run("idempotent on never-set", func(t *testing.T) {
+		if _, err := svc.ClearBillingThresholds(ctx, "t1", sub.ID); err != nil {
+			t.Errorf("clearing never-set threshold should be a no-op, got %v", err)
+		}
+	})
+
+	t.Run("clears after set", func(t *testing.T) {
+		if _, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
+			AmountGTE: 500000,
+		}); err != nil {
+			t.Fatalf("set: %v", err)
+		}
+		updated, err := svc.ClearBillingThresholds(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("clear: %v", err)
+		}
+		if updated.BillingThresholds != nil {
+			t.Errorf("BillingThresholds should be nil after clear, got %+v", updated.BillingThresholds)
+		}
+	})
+}
