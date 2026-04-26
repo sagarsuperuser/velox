@@ -20,6 +20,78 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Encryption-at-rest verification guide — Week 10 compliance docs** (2026-04-27) —
+  Second of the Week 10 compliance docs ships at `docs/ops/encryption-at-rest.md`,
+  the operator-facing reference for what Velox encrypts at rest, with which
+  keys, and how to prove on a running install that the encryption is in effect.
+  Covers the application-layer encryption surface — customer email +
+  display name, billing-profile legal name + email + phone + tax id (all
+  AES-256-GCM under `VELOX_ENCRYPTION_KEY` via `internal/customer/postgres.go`),
+  outbound webhook signing secrets primary + secondary
+  (`webhook_endpoints.secret_encrypted` / `secondary_secret_encrypted`),
+  per-tenant Stripe secret API key + webhook signing secret
+  (`stripe_provider_credentials.secret_key_encrypted` /
+  `webhook_secret_encrypted`), and the `customers.email_bidx` HMAC-SHA256
+  blind index under the separate `VELOX_EMAIL_BIDX_KEY` that lets the
+  magic-link flow look up a customer by email without decrypting the
+  ciphertext column. Companion sections enumerate what's hashed (API
+  keys SHA-256 + 16-byte per-key salt, passwords Argon2id PHC m=64MiB
+  t=3 p=4, sessions / password-reset / customer-portal magic-link /
+  payment-update tokens all SHA-256), what's plaintext on purpose
+  (hosted-invoice public_token by URL-share design, Stripe publishable
+  key by Stripe's data classification, key prefix / last4 columns for
+  dashboard display), and the two crypto primitives in
+  `internal/platform/crypto/crypto.go` (`Encryptor` AES-256-GCM with
+  `enc:<base64(nonce||ciphertext)>` envelope and permissive read-side
+  passthrough for migration; `Blinder` HMAC-SHA256 deterministic keyed
+  hash). Seven copy-pasteable verification recipes: customer-PII
+  ciphertext sample, plaintext-row scan across customers + billing
+  profiles, webhook-secret + Stripe-credential envelope check, blind
+  index population check, end-to-end API round-trip via
+  `POST /v1/customers` then `psql` to confirm the row on disk is
+  ciphertext, noop-encryptor detection from log lines + recent-rows
+  SQL, and operator-side storage-layer probes for AWS RDS / GCP
+  Cloud SQL / self-hosted LUKS. Key management section is honest about
+  the gap — **no rotation tooling exists today**, rotating
+  `VELOX_ENCRYPTION_KEY` breaks decryption of every existing `enc:`
+  row with `decrypt: cipher: message authentication failed`, rotating
+  `VELOX_EMAIL_BIDX_KEY` silently changes the HMAC output and breaks
+  magic-link lookup, the proper fix is envelope encryption (DEK/KEK
+  split) and is tracked as long-term work — and exposure-response
+  playbook by threat model (SEV-1 for `VELOX_ENCRYPTION_KEY` leak,
+  SEV-2 for `VELOX_EMAIL_BIDX_KEY` leak alone, SEV-1 for both). What's
+  NOT encrypted section documents Postgres rows generally (covered by
+  operator's storage-layer encryption — RDS / Cloud SQL CMEK / LUKS),
+  audit log entries (plaintext at the application layer with the
+  append-only trigger from migration `0011_audit_append_only` and
+  storage-layer encryption as the second defense; `audit_log.actor_id`
+  may resolve to a person's name and is treated as personal data per
+  the audit-log-retention guide), idempotency keys (shared with the
+  client by design, SHA-256 fingerprint exists from migration `0004`
+  for collision detection only), Stripe customer / payment-method ids
+  (opaque tokens, not PCI cardholder data — card lives in Stripe), IP
+  addresses (`audit_log.ip_address` plaintext for accountability;
+  retention window is the GDPR mitigation), and key prefix / last4
+  columns (display-only fragments for the dashboard). Compliance
+  mapping covers SOC 2 CC6.1 / CC6.7 (encryption in transit + at
+  rest), PCI-DSS Requirement 3 / 3.5 (Velox holds tokens not PANs;
+  the gap is the missing key-rotation tooling), GDPR Article 32
+  (security of processing, with the email blind index cited as
+  textbook **pseudonymisation** in the Art. 4(5) sense), and HIPAA
+  §164.312(a)(2)(iv) for tenants whose own customers are covered
+  entities. Configuration knobs section documents the two implemented
+  env vars (`VELOX_ENCRYPTION_KEY` fatal in production via
+  `internal/config/config.go::validateFatal`, `VELOX_EMAIL_BIDX_KEY`
+  currently `slog.Warn` only — recommended to make fatal in production
+  once magic-link adoption is non-zero) plus four future env vars that
+  the envelope-encryption rebuild would unlock
+  (`VELOX_ENCRYPTION_KEY_ID`, `VELOX_KMS_KEK_ARN`,
+  `VELOX_BLINDER_KEY_ID`, `VELOX_FORCE_ENCRYPTION_PRODUCTION`).
+  Cross-refs added from `docs/ops/runbook.md` (Compliance section now
+  carries the encryption-at-rest entry next to audit-log-retention)
+  and `docs/self-host.md` (Compliance posture now lists both Week 10
+  docs that have shipped). Two more Week 10 docs still pending:
+  SOC 2 control mapping and GDPR data export + deletion.
 - **Stripe importer — Phase 0 (customers)** (2026-04-26) —
   Week 7 risk-mitigation called for starting the importer in parallel rather
   than waiting until Week 11; this is the catch-up slice that pins down the
@@ -44,7 +116,6 @@ Two surfaces mirror this file:
   dry-run paths through RLS). Design lives in `docs/design-stripe-importer.md`
   with sketches for Phases 1–2 (subscriptions, products+prices, finalized
   invoices) and the Phase 4 cutover playbook outline.
-
 - **Audit log retention guide — compliance posture for Week 10** (2026-04-26) —
   Week 10 compliance docs kicking off with `docs/ops/audit-log-retention.md`,
   the operator-facing reference for what the audit log captures, how long

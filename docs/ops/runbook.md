@@ -674,9 +674,20 @@ reasoning behind each retention window.
   optional Object Lock), and how to restore a window from archive into
   a side query table. Pairs with the `VeloxAuditWriteErrors` alert and
   the `velox_audit_write_errors_total{tenant_id}` metric above.
-- Encryption-at-rest verification, SOC 2 control mapping, and
-  GDPR data export — landing in the rest of Week 10 of the
-  [90-day plan](../90-day-plan.md).
+- [encryption-at-rest.md](./encryption-at-rest.md) — what Velox encrypts
+  at the application layer (customer PII, webhook signing secrets,
+  per-tenant Stripe credentials via AES-256-GCM under
+  `VELOX_ENCRYPTION_KEY`), what it hashes (API keys / passwords /
+  sessions / portal tokens / payment-update tokens), the email blind
+  index for magic-link lookup under `VELOX_EMAIL_BIDX_KEY`, copy-pasteable
+  SQL recipes that prove encryption is in effect on a running install,
+  the honest disclosure that key rotation is **not implemented today**
+  with the operational symptoms when either key is rotated, and the
+  SOC 2 / PCI-DSS / GDPR / HIPAA control mapping. Read alongside
+  [secrets-management.md](./secrets-management.md) for the env-var
+  delivery story.
+- SOC 2 control mapping and GDPR data export — landing in the rest of
+  Week 10 of the [90-day plan](../90-day-plan.md).
 
 ---
 
