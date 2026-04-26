@@ -706,3 +706,30 @@ None — all 7 self-merged on green CI per `feedback_continuous_autonomy`.
 - **Build / vet / package tests:** `go build ./...` clean, `go vet ./...` clean, `go test -short ./internal/planmigration/...` + `go test -short ./internal/api/...` both green.
 - **Sibling-lane awareness:** `feat/operator-cli` (PR #37, merged first) touched `CHANGELOG.md` + `web-v2/src/pages/Changelog.tsx` + `docs/parallel-handoff.md`. Resolved via "keep both entries" — both are valid additions to the same date. `feat/webhook-event-ui` (still in flight) was expected to touch `web-v2/src/main.tsx`, `web-v2/src/lib/api.ts`, `web-v2/src/components/Layout.tsx`. My edits to those files are additive (new route below `/recipes`, new exported helpers below `archiveBillingAlert`, new sidebar entry below `/pricing`) so the merge conflict surface should be minimal and resolvable in either order.
 - **Open for user decision:** none — design was agreed (per Week 6 deliverable in `docs/90-day-plan.md`); executed end-to-end per `feedback_feat8_autonomy`.
+
+---
+
+## 2026-04-26 (Sun) — End-of-day digest, addendum
+
+Three lanes returned after digest PR #35 was written; this addendum closes the books.
+
+### Additional PRs merged (Week 6/7)
+
+| # | Title | Reason |
+|---|---|---|
+| #37 | Operator CLI (Week 7) | `velox-cli sub list` + `invoice send`; HTTP-client design (no DB coupling); 11 unit tests |
+| #38 | Webhook event UI (Week 6) | SSE live-tail at `/v1/webhook_events/stream` + replay endpoint + payload-diff timeline; migration 0058 |
+| #36 | Plan migration tool (Week 6) | `/v1/admin/plan_migrations/{preview,commit,list}`; renumbered 0058→0059 to resolve collision with #38 |
+
+### Day's totals
+**13 PRs merged today** (#26, #27 earlier in session; #28–#38 listed in primary digest + this addendum). Cap-at-2 enforced throughout, with one user-authorized 3-lane window for the operator CLI.
+
+### Scars / lessons
+
+1. **Migration number collision** — both #36 and #38 used 0058; resolved at merge time by renumbering plan_migrations to 0059. Memory `feedback_migration_numbering` already documents the pattern; sibling lanes adding migrations in parallel will continue to need this kind of resolution.
+2. **Stream timeout in Lane B** — the plan-migration agent timed out mid-merge resolution. Orchestrator (this session) finished the merge inline. No code lost; the agent had committed everything before dying.
+3. **Local branch deletion blocked when main is checked out elsewhere** — `gh pr merge --delete-branch` failed locally with "main is already used by worktree." Server-side merge succeeded; deleted the remote branch via `gh api`. Cosmetic friction, not a blocker.
+
+### Next session pickup
+- **Auto-dispatchable** (no user input): Week 7 leftovers — bulk operations (`sub cancel --all-paused`, etc.), one-off invoice composer with full UI, dashboard page for plan-migrations history.
+- **User-decision items** (unchanged from primary digest): real AWS cold-install run, RFC-fork greenlight (collection_method largest), migration 0054/0020/0015 rewrite timing.
