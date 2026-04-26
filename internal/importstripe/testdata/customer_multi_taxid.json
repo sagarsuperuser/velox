@@ -1,0 +1,44 @@
+{
+  "id": "cus_multitax01",
+  "object": "customer",
+  "address": {
+    "city": "Berlin",
+    "country": "DE",
+    "line1": "Strasse 1",
+    "line2": "",
+    "postal_code": "10115",
+    "state": ""
+  },
+  "balance": 0,
+  "created": 1701000300,
+  "currency": "eur",
+  "delinquent": false,
+  "description": "",
+  "email": "bob@example.com",
+  "livemode": true,
+  "metadata": {},
+  "name": "Multi-Tax GmbH",
+  "phone": "",
+  "shipping": null,
+  "tax_exempt": "none",
+  "tax_ids": {
+    "object": "list",
+    "data": [
+      {
+        "id": "txi_a",
+        "object": "tax_id",
+        "country": "DE",
+        "type": "eu_vat",
+        "value": "DE111"
+      },
+      {
+        "id": "txi_b",
+        "object": "tax_id",
+        "country": "FR",
+        "type": "eu_vat",
+        "value": "FR222"
+      }
+    ],
+    "has_more": false
+  }
+}

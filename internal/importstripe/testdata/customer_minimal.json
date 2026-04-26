@@ -1,0 +1,17 @@
+{
+  "id": "cus_minimal01",
+  "object": "customer",
+  "address": null,
+  "balance": 0,
+  "created": 1701000100,
+  "currency": "",
+  "delinquent": false,
+  "description": "Internal — sandbox tester",
+  "email": "",
+  "livemode": false,
+  "metadata": {},
+  "name": "",
+  "phone": "",
+  "shipping": null,
+  "tax_exempt": "none"
+}
