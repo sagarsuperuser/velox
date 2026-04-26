@@ -9,7 +9,10 @@
 
 DROP TABLE IF EXISTS meter_pricing_rules;
 
-DROP INDEX IF EXISTS idx_usage_events_properties_gin;
+-- The GIN index originally created here is now owned by migration 0062
+-- (CONCURRENTLY) and dropped by 0062's down. Rolling back through 0054
+-- with both 0062.down and this 0054.down applied in order leaves the
+-- pre-0054 schema, so no cleanup is needed here.
 
 ALTER TABLE usage_events
     ALTER COLUMN quantity TYPE BIGINT USING quantity::bigint;
