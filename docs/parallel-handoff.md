@@ -552,3 +552,48 @@ Track A merged PR #20 (multi-dim backend, 12 commits) into `main` at 18:25:30Z. 
   - **Architecture decision** — single-EC2 + RDS for v1 (NOT EKS) is locked per the user prompt. If you want to revisit (e.g. start with EKS-via-Terraform from day one), say so before any cold-install lane runs.
   - **`db.t3.small` default sizing** — fine for design-partner volumes; bump to `db.t3.medium` or `db.m6i.large` before the first production cutover. Documented in the module README.
 - **Next session (Track A):** open PR `feat: self-host Helm chart + Terraform AWS module (paper artifacts)`, drive CI green (no wire-shape regression test required — no API surface change), self-merge per `feedback_continuous_autonomy`. Then the cold-install-on-AWS lane is the next user-decision item.
+
+---
+
+## 2026-04-26 (Sun) — End-of-day digest
+
+Orchestrator-level summary across all lanes that landed today. Detailed per-lane entries above.
+
+### PRs merged this session (7)
+
+| # | Title | Reason |
+|---|---|---|
+| #28 | `create_preview` endpoint (Week 5b) | Stripe Tier 1 parity — powers cost dashboard's "projected bill" + plan-change preview |
+| #29 | Billing thresholds (Week 5c) | Stripe Tier 1 parity — `usage_gte` / `amount_gte` early-finalize |
+| #30 | Billing alerts (Week 5d) | Stripe Tier 1 parity — `billing.alert.triggered` webhook + dashboard notification |
+| #31 | Stripe Tier 2 gap analysis | 332-line audit; identified 4 Phase-3-must items (~3-4 wk budget) |
+| #32 | Self-host Compose quickstart | Docker Compose + nginx + pg-backup guide + `docs/self-host.md` |
+| #33 | Helm + Terraform paper artifacts | `helm lint` clean, `terraform validate` clean; real AWS cold-install deferred |
+| #34 | Populated-DB migration safety harness | **Surfaced critical finding:** migration 0054 holds 53.5s AccessExclusive lock on usage_events |
+
+### Open PRs
+
+None — all 7 self-merged on green CI per `feedback_continuous_autonomy`.
+
+### Critical findings surfaced today
+
+1. **Migration 0054 is a production-cutover blocker** (`docs/migration-safety-findings.md`). 53.5s AccessExclusive lock on `usage_events` would freeze ingest for nearly a minute on a populated tenant. Concrete fix recipe in the doc: split into add-shadow-column + batched backfill + rename, plus `CREATE INDEX CONCURRENTLY` for the GIN index. Sequence the rewrite with Week 11-12 (Stripe importer + first prod cutover) so it lands before any prod data exists.
+2. **Migrations 0020 (14.4s) and 0015 (8.8s) are HIGH-risk too.** Same week-11-12 bundle.
+3. **`collection_method=send_invoice` is the largest Phase-3 wedge inclusion item** (Tier 2 analysis). B2B AI buyers will require NET-30 invoicing, not auto-charge. Production-blocking for Week 12 cutover. Needs RFC before any code.
+
+### What next session picks up
+
+**Open for user decision (escalation list per `feedback_continuous_autonomy`):**
+1. **Real AWS cold-install lane?** Needs region, SSH key pair, `db_password`, `ssh_allowed_cidrs` override. Cost: ~$1-2 for a destroy-after-validation run. This is the non-Velox-engineer drill the 90-day plan calls for.
+2. **Greenlight any of the 3 RFC forks from Tier 2 analysis?** `collection-method` (largest), `proration-behavior` (smallest), `payment-links` (Week 8 stretch only).
+3. **Migration 0054/0020/0015 rewrite ordering** — bundle with Week 11 importer prep, or earlier?
+
+**Auto-dispatchable next session (no user input needed):**
+- Week 6 deliverables (live event stream UI + plan migration preview tool) — within 90-day plan, design agreed.
+- Week 7 deliverables (bulk operations, one-off invoice composer, operator CLI).
+
+### Right-sizing observations (for memory update)
+
+- 7 PRs in one day works at the **2-active-lane cap** with disciplined slice-sizing. Average lane wall-clock: 13-22 min for paper artifacts, ~95 min for the populated-DB benchmark. The 90-min budget held except for the benchmark, where the actual seed + measure cycle is the dominant cost.
+- The cap is what made it work. Earlier in the day, a 3rd lane attempt was correctly aborted — the orchestration overhead was already non-trivial at N=2.
+- Hardening reinvestment paid off: migration safety surfaced a real production blocker that the plan-as-written would have missed until cutover week.
