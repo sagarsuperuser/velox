@@ -20,6 +20,22 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **GDPR data export verified for multi-dim usage events** (2026-04-27) —
+  Last open Week 10 readiness checkbox closed.
+  `GET /v1/customers/{id}/export` now returns the customer's raw `usage_events`
+  rows (capped at 10,000 most-recent, with `usage_events_truncated=true` when
+  the cap fires) including the per-event `dimensions` JSONB payload that
+  multi-dim meters use to dispatch pricing rules. The previous shape carried
+  only an unpopulated `usage_summary` map and dropped dimensions entirely —
+  meaning a reissued export could not be reconciled against the original
+  invoice line items, which is precisely the right GDPR Art. 20 codifies.
+  Tenant-level pricing metadata (`meter_pricing_rules`, `billing_alerts`,
+  meter definitions) remains intentionally out of scope: it is the operator's
+  commercial pricing strategy, not the data subject's personal data.
+  New focused integration test `TestGDPR_ExportCustomerData_MultiDimUsageEvents`
+  in `internal/customer/gdpr_multidim_integration_test.go` seeds two events
+  with mixed string/bool dimensions and asserts exact-match round-trip
+  through the export.
 - **Encryption-at-rest verification guide — Week 10 compliance docs** (2026-04-27) —
   Second of the Week 10 compliance docs ships at `docs/ops/encryption-at-rest.md`,
   the operator-facing reference for what Velox encrypts at rest, with which
@@ -91,7 +107,7 @@ Two surfaces mirror this file:
   carries the encryption-at-rest entry next to audit-log-retention)
   and `docs/self-host.md` (Compliance posture now lists both Week 10
   docs that have shipped). Two more Week 10 docs still pending:
-  SOC 2 control mapping and GDPR data export + deletion.
+  SOC 2 control mapping (GDPR data export + deletion now done; see entry above).
 - **Stripe importer — Phase 0 (customers)** (2026-04-26) —
   Week 7 risk-mitigation called for starting the importer in parallel rather
   than waiting until Week 11; this is the catch-up slice that pins down the

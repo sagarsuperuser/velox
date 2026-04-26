@@ -12,9 +12,27 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/subscription"
+	"github.com/sagarsuperuser/velox/internal/usage"
 )
 
+// MaxExportedUsageEvents caps the number of usage events returned per export
+// so a high-volume customer can't OOM the API process. The cap is generous
+// (10k) because GDPR Art. 20 requires "the personal data concerning him or
+// her" — so partial exports are non-conforming. If a customer exceeds this,
+// the exporter returns the most recent 10k events and sets
+// UsageEventsTruncated=true so the caller can fall back to the streaming
+// /usage-events list endpoint paginated for the same customer.
+const MaxExportedUsageEvents = 10000
+
 // GDPRExport is the full data export for a customer (right to portability).
+//
+// Note on scope: tenant-level pricing metadata (meter_pricing_rules,
+// billing_alerts, meters themselves) is intentionally NOT included.
+// Those are the operator's pricing configuration, not the data subject's
+// personal data, and including them would leak the operator's commercial
+// pricing strategy without serving any GDPR right. The data subject can
+// reconstruct what each event was billed for via the invoice line items
+// (which ARE included).
 type GDPRExport struct {
 	ExportedAt     time.Time                      `json:"exported_at"`
 	Customer       domain.Customer                `json:"customer"`
@@ -24,7 +42,14 @@ type GDPRExport struct {
 	CreditEntries  []domain.CreditLedgerEntry     `json:"credit_entries"`
 	CreditBalance  *domain.CreditBalance          `json:"credit_balance,omitempty"`
 	Subscriptions  []domain.Subscription          `json:"subscriptions"`
-	UsageSummary   map[string]int64               `json:"usage_summary,omitempty"`
+	// UsageEvents are the raw usage_events rows for this customer including
+	// the per-event Dimensions (multi-dim meters carry their dimensions in
+	// the same `properties` JSONB column the domain model exposes as
+	// Dimensions). The full row is required because pricing-rule resolution
+	// is dimension-aware: without dimensions a downstream replay could not
+	// reconstruct the same per-rule aggregation.
+	UsageEvents          []domain.UsageEvent `json:"usage_events"`
+	UsageEventsTruncated bool                `json:"usage_events_truncated,omitempty"`
 }
 
 // RedactedPaymentSetup contains payment setup data with Stripe IDs redacted
@@ -51,6 +76,7 @@ type GDPRService struct {
 	invoices      invoice.Store
 	credits       credit.Store
 	subscriptions subscription.Store
+	usage         usage.Store
 	auditLogger   *audit.Logger
 }
 
@@ -60,6 +86,7 @@ func NewGDPRService(
 	invoices invoice.Store,
 	credits credit.Store,
 	subscriptions subscription.Store,
+	usageStore usage.Store,
 	auditLogger *audit.Logger,
 ) *GDPRService {
 	return &GDPRService{
@@ -67,6 +94,7 @@ func NewGDPRService(
 		invoices:      invoices,
 		credits:       credits,
 		subscriptions: subscriptions,
+		usage:         usageStore,
 		auditLogger:   auditLogger,
 	}
 }
@@ -145,6 +173,52 @@ func (s *GDPRService) ExportCustomerData(ctx context.Context, tenantID, customer
 		subs = []domain.Subscription{}
 	}
 	export.Subscriptions = subs
+
+	// Usage events — full rows with per-event Dimensions. Multi-dim meters
+	// stash their dimension values on each event (the JSONB `properties`
+	// column the store exposes as Dimensions), so a portable export must
+	// emit those alongside the customer/meter/quantity tuple. Without them,
+	// a reissued export cannot be reconciled against original invoices.
+	//
+	// usage.PostgresStore.List clamps page size to 1000, so we paginate to
+	// reach MaxExportedUsageEvents. We over-fetch by one to detect
+	// truncation without a separate COUNT query and stop as soon as we
+	// either fill the cap or hit a short page.
+	if s.usage != nil {
+		export.UsageEvents = []domain.UsageEvent{}
+		const pageSize = 1000
+		for offset := 0; offset <= MaxExportedUsageEvents; offset += pageSize {
+			page, _, err := s.usage.List(ctx, usage.ListFilter{
+				TenantID:   tenantID,
+				CustomerID: customerID,
+				Limit:      pageSize,
+				Offset:     offset,
+			})
+			if err != nil {
+				return GDPRExport{}, fmt.Errorf("list usage events (offset=%d): %w", offset, err)
+			}
+			if len(page) == 0 {
+				break
+			}
+			// Detect truncation: the offset past the cap exists only to
+			// peek for one extra row. If anything comes back at that
+			// offset, the customer has more events than we exported.
+			if offset >= MaxExportedUsageEvents {
+				export.UsageEventsTruncated = true
+				break
+			}
+			remaining := MaxExportedUsageEvents - len(export.UsageEvents)
+			if len(page) > remaining {
+				page = page[:remaining]
+			}
+			export.UsageEvents = append(export.UsageEvents, page...)
+			if len(page) < pageSize {
+				break
+			}
+		}
+	} else {
+		export.UsageEvents = []domain.UsageEvent{}
+	}
 
 	return export, nil
 }

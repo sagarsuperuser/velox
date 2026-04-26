@@ -608,7 +608,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	)
 
 	// GDPR data export + deletion — wired into customer handler
-	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, auditLogger)
+	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, usageStore, auditLogger)
 	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
 
 	s := &Server{
