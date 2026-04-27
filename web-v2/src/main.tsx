@@ -130,6 +130,7 @@ const PlanDetailPage = lazy(() => import('@/pages/PlanDetail'))
 const MeterDetailPage = lazy(() => import('@/pages/MeterDetail'))
 const DocsPage = lazy(() => import('@/pages/Docs'))
 const DocsQuickstartPage = lazy(() => import('@/pages/DocsQuickstart'))
+const DocsRecipesPage = lazy(() => import('@/pages/DocsRecipes'))
 const DocsWebhooksPage = lazy(() => import('@/pages/DocsWebhooks'))
 const DocsIdempotencyPage = lazy(() => import('@/pages/DocsIdempotency'))
 const DocsApiPage = lazy(() => import('@/pages/DocsApi'))
@@ -199,6 +200,7 @@ const App = () => (
               <Route path="/invoice/:token" element={<HostedInvoicePage />} />
               <Route path="/docs" element={<DocsPage />} />
               <Route path="/docs/quickstart" element={<DocsQuickstartPage />} />
+              <Route path="/docs/recipes" element={<DocsRecipesPage />} />
               <Route path="/docs/webhooks" element={<DocsWebhooksPage />} />
               <Route path="/docs/idempotency" element={<DocsIdempotencyPage />} />
               <Route path="/docs/api" element={<DocsApiPage />} />
