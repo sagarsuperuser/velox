@@ -20,6 +20,31 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Public cost-dashboard token + sanitised read endpoint (backend
+  only).** Operators can now mint a long-lived embed token per customer
+  via `POST /v1/customers/{id}/rotate-cost-dashboard-token` (returns
+  `{token, public_url, customer_id}`); the unauthenticated
+  `GET /v1/public/cost-dashboard/{token}` resolves it and returns a
+  sanitised projection — current billing-period window, per-meter usage,
+  per-currency totals, active subscriptions, and warnings. The
+  projection deliberately omits `email`, `display_name`, `external_id`,
+  `metadata`, and `billing_profile` so the iframe surface can never leak
+  operator-controlled identity even if the URL is shared. Migration
+  0064 adds `customers.cost_dashboard_token` with a partial UNIQUE
+  index (`WHERE cost_dashboard_token IS NOT NULL`); the column carries
+  256 bits of entropy as `vlx_pcd_` + 64 hex chars, so cross-tenant
+  probing is infeasible. Token resolution runs cross-tenant under
+  `TxBypass` because the handler can't know the tenant before resolving
+  the token — once resolved, every downstream read is scoped to that
+  customer's tenant. Rotation invalidates the previous URL atomically
+  (the column is overwritten in-place) and the audit log records the
+  rotation event with a `previous_token_was_unset` flag but never the
+  plaintext token. Customers with no active subscription get an
+  empty-state response (empty arrays, `billing_period.source =
+  no_subscription`) rather than a 5xx, mirroring how Stripe's customer
+  portal handles the "no plan yet" case. The public route is mounted
+  under the same 60/min/IP rate-limit bucket as `/v1/public/invoices/*`
+  with a 30s timeout. Frontend embed lands in a follow-up PR.
 - **DocsRecipes page at `/docs/recipes` — copy-pasteable curl for
   instantiating the five built-in pricing recipes.** New in-app docs
   page rendered by the shared `DocsShell` covers what recipes are, the
