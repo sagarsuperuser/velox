@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -11,6 +12,7 @@ import (
 type Metrics struct {
 	subs     MetricsSubReader
 	invoices MetricsInvoiceReader
+	ttfi     MetricsTTFIReader
 }
 
 type MetricsSubReader interface {
@@ -21,18 +23,34 @@ type MetricsInvoiceReader interface {
 	ListRecent(ctx context.Context, tenantID string, since time.Time, limit int) ([]domain.Invoice, error)
 }
 
-type Dashboard struct {
-	MRRCents            int64          `json:"mrr_cents"`
-	ARRCents            int64          `json:"arr_cents"`
-	ActiveSubscriptions int            `json:"active_subscriptions"`
-	TotalCustomers      int            `json:"total_customers"`
-	RevenueThisMonth    int64          `json:"revenue_this_month_cents"`
-	InvoicesByStatus    map[string]int `json:"invoices_by_status"`
-	GeneratedAt         time.Time      `json:"generated_at"`
+// MetricsTTFIReader feeds the time-to-first-invoice telemetry on the
+// per-tenant dashboard. It reads the audit log + tenants table directly
+// rather than instrumenting the invoice Finalize hot path — keeps the
+// invoice service free of telemetry coupling and lets backfills, deletions,
+// or operator-driven re-finalizes be answered correctly without having to
+// remember to re-emit a metric.
+type MetricsTTFIReader interface {
+	// FirstInvoiceFinalizedAt returns the timestamp of the earliest
+	// invoice.finalize audit log entry for the tenant. Returns nil if
+	// the tenant has never finalized an invoice.
+	FirstInvoiceFinalizedAt(ctx context.Context, tenantID string) (*time.Time, error)
+	// TenantCreatedAt returns the row creation timestamp for the tenant.
+	TenantCreatedAt(ctx context.Context, tenantID string) (time.Time, error)
 }
 
-func NewMetrics(subs MetricsSubReader, invoices MetricsInvoiceReader) *Metrics {
-	return &Metrics{subs: subs, invoices: invoices}
+type Dashboard struct {
+	MRRCents                  int64          `json:"mrr_cents"`
+	ARRCents                  int64          `json:"arr_cents"`
+	ActiveSubscriptions       int            `json:"active_subscriptions"`
+	TotalCustomers            int            `json:"total_customers"`
+	RevenueThisMonth          int64          `json:"revenue_this_month_cents"`
+	InvoicesByStatus          map[string]int `json:"invoices_by_status"`
+	GeneratedAt               time.Time      `json:"generated_at"`
+	TimeToFirstInvoiceSeconds *float64       `json:"time_to_first_invoice_seconds,omitempty"`
+}
+
+func NewMetrics(subs MetricsSubReader, invoices MetricsInvoiceReader, ttfi MetricsTTFIReader) *Metrics {
+	return &Metrics{subs: subs, invoices: invoices, ttfi: ttfi}
 }
 
 // ComputeDashboard calculates MRR, ARR, and billing KPIs for a tenant.
@@ -86,6 +104,27 @@ func (m *Metrics) ComputeDashboard(ctx context.Context, tenantID string, plans m
 		d.InvoicesByStatus[string(inv.Status)]++
 		if inv.Status == domain.InvoicePaid {
 			d.RevenueThisMonth += inv.TotalAmountCents
+		}
+	}
+
+	// Time-to-first-invoice — best-effort. A failure here must not break
+	// the dashboard; operators rely on MRR/ARR being available even when
+	// the audit log query is degraded (e.g. transient DB error, missing
+	// tenant row in a partial bootstrap). We log a warning and move on.
+	if m.ttfi != nil {
+		finalizedAt, ferr := m.ttfi.FirstInvoiceFinalizedAt(ctx, tenantID)
+		if ferr != nil {
+			slog.WarnContext(ctx, "ttfi: failed to read first invoice finalized timestamp",
+				"tenant_id", tenantID, "error", ferr)
+		} else if finalizedAt != nil {
+			createdAt, terr := m.ttfi.TenantCreatedAt(ctx, tenantID)
+			if terr != nil {
+				slog.WarnContext(ctx, "ttfi: failed to read tenant created_at",
+					"tenant_id", tenantID, "error", terr)
+			} else {
+				secs := finalizedAt.Sub(createdAt).Seconds()
+				d.TimeToFirstInvoiceSeconds = &secs
+			}
 		}
 	}
 
