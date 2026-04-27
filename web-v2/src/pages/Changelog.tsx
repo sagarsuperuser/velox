@@ -19,6 +19,12 @@ const entries: {
   bullets?: string[]
 }[] = [
   {
+    date: '2026-04-28',
+    title: 'Spend thresholds — dashboard surface for the Stripe-parity hard cap',
+    tag: 'feature',
+    body: 'New "Spend thresholds" card on the subscription detail page surfaces the Stripe-parity hard cap that the PUT/DELETE /v1/subscriptions/{id}/billing-thresholds backend has shipped since FEAT-7 — closing the Track B half that had been operator-blocked behind curl until now. The card displays the configured subtotal cap (in the subscription\'s currency, e.g. "$1,000.00 (resets cycle on fire)") and each per-item cap mapped to its plan name with the cap quantity rendered as "≥ 1000000 units" (trailing-zero-stripped from the NUMERIC(38,12) wire string per ADR-005, so "1000000.000000000000" surfaces as the readable "1000000"). When unset, the empty-state copy explains the cycle scan is the only invoice-emitting path, so operators understand the default behavior rather than wondering whether a threshold is silently set somewhere. The Set thresholds / Edit dialog takes the subtotal cap in major units (× 100 to integer cents on submit so the operator types "1000.00" rather than 100000), exposes the reset_billing_cycle checkbox with a plain-English description of both modes ("the new cycle starts at fire time" vs "the original cycle continues and a residual invoice fires at the natural cycle end"), and lists every subscription item with a per-item usage_gte text input that round-trips fractional decimals untouched (cached-token ratios, GPU-hours). Validation mirrors the backend layer-for-layer: at-least-one-of (subtotal or any per-item), subtotal must be a positive number, per-item must match /^\\d+(\\.\\d+)?$/. Clear thresholds button on the destructive side wires the DELETE for one-click removal. Edit is hidden on canceled / archived subs because the backend rejects there anyway. The card sits above Properties on the detail page — the threshold state is high-leverage information operators look at often during onboarding and incident response, so it surfaces in the prime visual position rather than buried below ten static rows.',
+  },
+  {
     date: '2026-04-27',
     title: 'Five new public docs pages — Account setup, Errors, Rate limits, Glossary, Troubleshooting',
     tag: 'docs',
