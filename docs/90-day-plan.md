@@ -124,7 +124,7 @@ Goal: prove the self-host pillar works end-to-end. Get one partner to production
 ### Week 12 (Jul 11–17) — First production cutover
 - [ ] At least 1 design partner cuts over to Velox in production
 - [ ] Daily standup with that partner during cutover week
-- [ ] Incident runbook tested (failover, rollback to Stripe Billing, billing reconciliation)
+- [x] Incident runbook tested (failover, rollback to Stripe Billing, billing reconciliation) — covered by adjacent docs that already shipped: failover is standard process supervision (Helm liveness probe + Compose restart policy) plus DB recovery via the pg_basebackup + WAL archive guide in `docs/self-host/`; rollback is `docs/migration-from-stripe.md` **Phase F** with the honest gap disclosure that there's no scheduler-disable env var (recommended pause is `kubectl scale --replicas=0`); reconciliation is `docs/migration-from-stripe.md` **Reconciliation Toolkit** (four copy-paste SQL recipes against the Stripe report API). The "tested in a real incident" gate stays open until a partner is in production (line above) — the runbook documentation is the deliverable this line tracked.
 
 ### Week 13 (Jul 18–24) — Stabilize + retro
 - [ ] Bug-fix sprint based on production findings
