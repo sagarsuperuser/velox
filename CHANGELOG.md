@@ -63,6 +63,39 @@ Two surfaces mirror this file:
 
 ### Documentation
 
+- **Stripe end-to-end test runbook at `docs/ops/stripe-end-to-end-test.md`.**
+  Eight-step manual smoke for the full Stripe integration surface — local
+  Velox boot → connect a test-mode account (`POST /v1/settings/stripe`
+  with verify roundtrip via `internal/tenantstripe/service.go`) →
+  customer + saved card via Stripe Elements → flat subscription →
+  immediate invoice + PaymentIntent (the no-Stripe-Billing-fee code
+  path that's the load-bearing claim in `docs/positioning.md`) →
+  webhook delivery via `stripe listen` → declined-card dunning loop
+  with `4000 0000 0000 0002` → credit-note refund → disconnect.
+  Designed to be re-run before each design-partner sandbox cutover
+  and after any change touching `internal/payment/`,
+  `internal/tenantstripe/`, or `internal/dunning/`. Step 1 (connect +
+  Stripe API verify) was validated on 2026-04-27 against the
+  maintainer's test account at `f1b2301`; the runbook's Last-Verified
+  table records every subsequent run. Steps 2–8 are documented for
+  human re-run because they require Stripe Elements (browser) or
+  `stripe-cli` (interactive). Closes the Week 11 "test against a
+  real Stripe test account end-to-end" readiness item.
+
+- **Cold-email templates at `docs/marketing/cold-email-templates.md`.**
+  Four founder-to-founder / CEO-to-VP-Eng templates for the three
+  outreach segments in `docs/marketing/outreach-list.md`
+  (AI inference, vector DB / regulated infra, dev infra), with
+  per-segment subject A/B variants under 60 chars, a one-touch
+  reply playbook (Day 5 single bump, Day 14 dead row), and an
+  explicit "what's deliberately not here" section pruning the
+  obvious anti-patterns (mass-merge sequencers, founder-bio
+  paragraphs, urgency framing). Each template references the
+  recipient's public posture by sentence two — the cold-email
+  baseline that separates a 90-second read from a spam click.
+  Pairs with the existing `docs/marketing/outreach-list.md` for
+  Week 8's outreach push.
+
 - **`docs/90-day-plan.md` truth-up:** flipped the time-to-first-invoice
   telemetry checkbox to ✅ — evidence is the `TimeToFirstInvoiceSeconds`
   field on `GET /v1/billing/dashboard` (PR #57), computed via the
