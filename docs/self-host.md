@@ -113,6 +113,42 @@ rollups are at the dashboard `/changelog` page.
 All three reach the same end state: same image, same migrations, same
 env-var schema. Pick by what your team already operates.
 
+## Migrating from Stripe Billing
+
+If you run on Stripe Billing today and want to move to Velox without
+missing an invoice, see [`docs/migration-from-stripe.md`](migration-from-stripe.md).
+It covers the full operator playbook:
+
+- **Pre-migration checklist** — Velox tenant provisioned, Stripe
+  restricted key, `VELOX_ENCRYPTION_KEY` + `VELOX_EMAIL_BIDX_KEY`
+  verified, downstream webhook consumers inventoried.
+- **The five importer phases** — `velox-import` reads via
+  `--api-key=rk_live_…`, writes via `DATABASE_URL`. Resources run in
+  strict dependency order regardless of CLI input order: customers
+  (Phase 0) → products → prices (Phase 1) → subscriptions (Phase 2)
+  → finalized invoices (Phase 3). Per-row outcomes are
+  `insert` / `skip-equivalent` / `skip-divergent` / `error` written to
+  a CSV report.
+- **Rehearsal run in test mode** — full pipeline against `sk_test_…`
+  before touching production data; same code paths, isolated by the
+  `livemode` column.
+- **Production parallel-run cutover (T-14 → T+14)** — Phase A Prepare
+  → Phase B Initial backfill → Phase C Parallel run with webhook
+  shadow → Phase D Cutover → Phase E Stabilize → Phase F Rollback.
+  The 14-day parallel window keeps Stripe Billing as the source of
+  truth until reconciliation across customer count / active subs /
+  paid invoices / revenue ties out at the cutover threshold.
+- **Reconciliation toolkit** — copy-pasteable SQL recipes that match
+  Velox totals against the Stripe report API for every reconciliation
+  axis the cutover gates on.
+- **Webhook redirection** — parallel webhook posture during the
+  shadow window, swap-over at T-0, and the rollback procedure if the
+  primary needs to flip back to Stripe.
+- **Known limitations** — Schedules, Quotes, Promotion Codes,
+  multi-item subscriptions, graduated/tiered prices, metered
+  `usage_type`, Connect, and draft/open invoices are out of scope
+  today; each has a documented manual recreation path.
+
 ## What's not here yet
 
 - **Cold-install on real AWS** — the Terraform module is structurally validated (`terraform init -backend=false && terraform validate` passes clean), but a non-Velox-engineer drill on a fresh AWS account is a separate Week 9 follow-up lane. Real-account friction (firewall rules, RDS SSL handshake, IAM trust quirks) only surfaces when you actually `terraform apply`.
