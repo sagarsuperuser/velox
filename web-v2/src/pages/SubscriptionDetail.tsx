@@ -36,6 +36,15 @@ import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
 const statusVariant = statusBadgeVariant
 
+// trimDecimal strips trailing zeros from a fractional decimal string while
+// leaving integers untouched ("1000.000000000000" → "1000", "3.140" → "3.14",
+// "1000" → "1000"). Backend usage_gte arrives as a NUMERIC(38,12) string per
+// ADR-005; surface it without the bookkeeping zeros.
+function trimDecimal(s: string): string {
+  if (!s.includes('.')) return s
+  return s.replace(/0+$/, '').replace(/\.$/, '')
+}
+
 type ItemDialogState =
   | { kind: 'add' }
   | { kind: 'change-plan'; item: SubscriptionItem }
@@ -55,6 +64,7 @@ export default function SubscriptionDetailPage() {
   const [showExtendTrial, setShowExtendTrial] = useState(false)
   const [extendTrialDate, setExtendTrialDate] = useState('')
   const [itemDialog, setItemDialog] = useState<ItemDialogState>(null)
+  const [showThresholdsDialog, setShowThresholdsDialog] = useState(false)
 
   const { data: sub, isLoading, error: loadError, refetch } = useQuery({
     queryKey: ['subscription', id],
@@ -578,6 +588,52 @@ export default function SubscriptionDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Spend Thresholds */}
+      <Card className="mt-6">
+        <CardHeader className="flex flex-row items-start justify-between space-y-0">
+          <div className="space-y-1">
+            <CardTitle className="text-sm">Spend thresholds</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Stripe-parity hard cap. Fires an early invoice the moment the running cycle subtotal or any item's running quantity crosses a configured cap.
+            </p>
+          </div>
+          {sub.status !== 'canceled' && sub.status !== 'archived' && (
+            <Button size="sm" variant="outline" onClick={() => setShowThresholdsDialog(true)}>
+              {sub.billing_thresholds ? 'Edit' : 'Set thresholds'}
+            </Button>
+          )}
+        </CardHeader>
+        <CardContent className={sub.billing_thresholds ? 'p-0' : undefined}>
+          {sub.billing_thresholds ? (
+            <div className="divide-y divide-border">
+              {sub.billing_thresholds.amount_gte != null && (
+                <div className="flex items-center justify-between px-6 py-3">
+                  <span className="text-sm text-muted-foreground w-40 shrink-0">Subtotal cap</span>
+                  <span className="text-sm text-foreground">
+                    {formatCents(sub.billing_thresholds.amount_gte, items[0] ? planById(items[0].plan_id)?.currency : undefined)}
+                    <span className="text-xs text-muted-foreground ml-2">
+                      ({sub.billing_thresholds.reset_billing_cycle ? 'resets cycle on fire' : 'continues cycle on fire'})
+                    </span>
+                  </span>
+                </div>
+              )}
+              {sub.billing_thresholds.item_thresholds.map(t => {
+                const ti = items.find(i => i.id === t.subscription_item_id)
+                const tp = ti ? planById(ti.plan_id) : undefined
+                return (
+                  <div key={t.subscription_item_id} className="flex items-center justify-between px-6 py-3">
+                    <span className="text-sm text-muted-foreground w-40 shrink-0">{tp?.name || t.subscription_item_id}</span>
+                    <span className="text-sm text-foreground">&ge; {trimDecimal(t.usage_gte)} units</span>
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No spend cap configured. The cycle scan is the only invoice-emitting path.</p>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Properties */}
       <Card className="mt-6">
         <CardHeader>
@@ -1001,6 +1057,17 @@ export default function SubscriptionDetailPage() {
           onRemoved={() => { setItemDialog(null); invalidateAll(); toast.success('Item removed') }}
         />
       )}
+
+      {/* Edit Billing Thresholds */}
+      {showThresholdsDialog && (
+        <EditBillingThresholdsDialog
+          subscription={sub}
+          items={items}
+          planById={planById}
+          onClose={() => setShowThresholdsDialog(false)}
+          onSaved={(verb) => { setShowThresholdsDialog(false); invalidateAll(); toast.success(verb) }}
+        />
+      )}
     </Layout>
   )
 }
@@ -1316,5 +1383,179 @@ function RemoveItemConfirm({ subscriptionID, item, plan, onClose, onRemoved }: {
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  )
+}
+
+// EditBillingThresholdsDialog sets or clears the Stripe-parity hard cap. The
+// PUT body is replace-all: any per-item row not in the submitted list is
+// deleted by the store, so we always send the full set the operator sees.
+// amount_gte is captured in major units in the input and converted to integer
+// cents on submit; usage_gte is a decimal-string per ADR-005.
+function EditBillingThresholdsDialog({ subscription, items, planById, onClose, onSaved }: {
+  subscription: Subscription
+  items: SubscriptionItem[]
+  planById: (planID: string) => Plan | undefined
+  onClose: () => void
+  onSaved: (verb: string) => void
+}) {
+  const existing = subscription.billing_thresholds
+  const subCurrency = items[0] ? planById(items[0].plan_id)?.currency : undefined
+
+  const [amountStr, setAmountStr] = useState(
+    existing?.amount_gte != null ? (existing.amount_gte / 100).toFixed(2) : ''
+  )
+  const [resetCycle, setResetCycle] = useState(existing?.reset_billing_cycle ?? true)
+  const [perItem, setPerItem] = useState<Record<string, string>>(() => {
+    const out: Record<string, string> = {}
+    for (const t of existing?.item_thresholds ?? []) {
+      out[t.subscription_item_id] = trimDecimal(t.usage_gte)
+    }
+    return out
+  })
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const body: { amount_gte?: number; reset_billing_cycle?: boolean; item_thresholds?: { subscription_item_id: string; usage_gte: string }[] } = {
+      reset_billing_cycle: resetCycle,
+    }
+
+    const trimmedAmount = amountStr.trim()
+    if (trimmedAmount !== '') {
+      const amt = Number(trimmedAmount)
+      if (!Number.isFinite(amt) || amt <= 0) {
+        toast.error('Subtotal cap must be a positive number')
+        return
+      }
+      body.amount_gte = Math.round(amt * 100)
+    }
+
+    const itemThresholds: { subscription_item_id: string; usage_gte: string }[] = []
+    for (const item of items) {
+      const raw = (perItem[item.id] ?? '').trim()
+      if (raw === '') continue
+      if (!/^\d+(\.\d+)?$/.test(raw)) {
+        toast.error(`Per-item cap for ${planById(item.plan_id)?.name || item.id} must be a non-negative number`)
+        return
+      }
+      itemThresholds.push({ subscription_item_id: item.id, usage_gte: raw })
+    }
+    if (itemThresholds.length > 0) {
+      body.item_thresholds = itemThresholds
+    }
+
+    if (body.amount_gte == null && (body.item_thresholds == null || body.item_thresholds.length === 0)) {
+      toast.error('Set at least one cap (subtotal or per-item)')
+      return
+    }
+
+    setSubmitting(true)
+    try {
+      await api.setSubscriptionBillingThresholds(subscription.id, body)
+      onSaved(existing ? 'Thresholds updated' : 'Thresholds set')
+    } catch (err) {
+      showApiError(err, 'Failed to save thresholds')
+      setSubmitting(false)
+    }
+  }
+
+  const handleClear = async () => {
+    setSubmitting(true)
+    try {
+      await api.clearSubscriptionBillingThresholds(subscription.id)
+      onSaved('Thresholds cleared')
+    } catch (err) {
+      showApiError(err, 'Failed to clear thresholds')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !submitting) onClose() }}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{existing ? 'Edit spend thresholds' : 'Set spend thresholds'}</DialogTitle>
+          <DialogDescription>
+            Configure a hard cap. The billing engine fires an early invoice the moment the running cycle subtotal or any item's running quantity crosses a configured cap. At least one cap is required.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} noValidate className="space-y-5">
+          <div className="space-y-2">
+            <Label htmlFor="amount-gte">Subtotal cap{subCurrency ? ` (${subCurrency.toUpperCase()})` : ''}</Label>
+            <Input
+              id="amount-gte"
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              placeholder="e.g. 1000.00"
+              value={amountStr}
+              onChange={(e) => setAmountStr(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Fires when the running cycle subtotal crosses this amount. Leave blank for no subtotal cap.
+            </p>
+          </div>
+
+          <div className="flex items-start gap-2">
+            <Checkbox
+              id="reset-cycle"
+              checked={resetCycle}
+              onCheckedChange={(v) => setResetCycle(v === true)}
+            />
+            <div className="space-y-1">
+              <Label htmlFor="reset-cycle" className="font-normal">Reset billing cycle on fire</Label>
+              <p className="text-xs text-muted-foreground">
+                When checked (default), the new cycle starts at fire time. When unchecked, the original cycle continues and a residual invoice fires at the natural cycle end.
+              </p>
+            </div>
+          </div>
+
+          {items.length > 0 && (
+            <div className="space-y-2">
+              <Label>Per-item caps</Label>
+              <div className="rounded-md border divide-y divide-border">
+                {items.map(item => {
+                  const plan = planById(item.plan_id)
+                  return (
+                    <div key={item.id} className="flex items-center gap-3 px-3 py-2">
+                      <span className="text-sm text-foreground flex-1 truncate">{plan?.name || item.id}</span>
+                      <Input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="leave blank for none"
+                        className="w-40 h-8 text-sm"
+                        value={perItem[item.id] ?? ''}
+                        onChange={(e) => setPerItem(prev => ({ ...prev, [item.id]: e.target.value }))}
+                      />
+                      <span className="text-xs text-muted-foreground w-10 shrink-0">units</span>
+                    </div>
+                  )
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Fires when any item's running cycle quantity crosses its cap. Decimal allowed (cached-token ratios, GPU-hours).
+              </p>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:justify-between">
+            {existing ? (
+              <Button type="button" variant="destructive" onClick={handleClear} disabled={submitting}>
+                Clear thresholds
+              </Button>
+            ) : <span />}
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>
+              <Button type="submit" disabled={submitting}>
+                {submitting ? (
+                  <><Loader2 size={14} className="animate-spin mr-2" />Saving...</>
+                ) : 'Save'}
+              </Button>
+            </div>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
