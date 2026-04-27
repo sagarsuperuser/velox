@@ -121,9 +121,9 @@ env-var schema. Pick by what your team already operates.
 ## Compliance posture
 
 Compliance docs are landing in Week 10 of the
-[90-day plan](90-day-plan.md): SOC 2 control mapping and GDPR data
-export/deletion still pending; audit-log retention and encryption-at-rest
-guides shipped.
+[90-day plan](90-day-plan.md): GDPR data export/deletion still
+pending; audit-log retention, encryption-at-rest, and SOC 2 control
+mapping guides shipped.
 
 Available now:
 
@@ -142,6 +142,22 @@ Available now:
   verification recipes, the honest disclosure that key rotation is
   **not implemented today**, and the SOC 2 / PCI-DSS / GDPR / HIPAA
   control mapping.
+- [docs/compliance/soc2-mapping.md](compliance/soc2-mapping.md) —
+  SOC 2 Trust Services Criteria control mapping. Walks all five
+  Common Criteria families (CC1 Control Environment, CC2
+  Communication, CC3 Risk Assessment, CC4 Monitoring, CC5 Control
+  Activities, CC6 Logical Access, CC7 System Operations, CC8 Change
+  Management, CC9 Risk Mitigation) plus the optional Availability /
+  Confidentiality / Processing Integrity / Privacy categories.
+  Each criterion has plain-English requirement, how Velox addresses
+  it with code-level evidence pointers (`internal/...path/file.go:line`
+  format), explicit gaps, and the artifacts an auditor would
+  request. Closes with a 17-item gap list ranked by audit impact
+  (key rotation tooling, SECURITY.md, MFA, govulncheck-blocking,
+  SAST, CODE_OF_CONDUCT, CODEOWNERS, status page, image signing —
+  priority list before a Type 1) and a flat evidence index. Pre-
+  launch / pre-audit posture; this is audit-prep input rather than
+  an attestation.
 
 The other operationally relevant facts:
 
