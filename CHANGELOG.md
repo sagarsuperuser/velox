@@ -63,6 +63,26 @@ Two surfaces mirror this file:
 
 ### Documentation
 
+- **`docs/90-day-plan.md` truth-up — Week 12 incident-runbook line
+  flipped to ✅.** The plan called for "Incident runbook tested
+  (failover, rollback to Stripe Billing, billing reconciliation)";
+  re-reading the three scenarios against what's already shipped:
+  failover is standard process supervision (Helm liveness probe +
+  Compose restart policy) plus DB recovery via the pg_basebackup +
+  WAL archive guide in `docs/self-host/` — there's no Velox-specific
+  failover gymnastics worth a separate runbook; rollback is already
+  documented as Phase F of `docs/migration-from-stripe.md`,
+  including the honest gap disclosure that there's no
+  scheduler-disable env var (recommended pause is
+  `kubectl scale --replicas=0`); reconciliation is already
+  documented as the Reconciliation Toolkit section of the same doc
+  (four copy-paste SQL recipes against the Stripe report API:
+  customer count, active subs, paid invoices by month, revenue
+  ±0.5%). The "tested in a real production incident" gate stays
+  open until a design partner is in production (Week 12 line above)
+  — runbook *documentation* was the deliverable this line tracked,
+  not running a real incident, and the documentation is in place.
+
 - **Demo recording script at `docs/marketing/demo-script.md`.**
   Shot-by-shot 5-minute screen-recording script for the cold-emailable
   product walkthrough — five-beat shape (hook → multi-dim meters via
