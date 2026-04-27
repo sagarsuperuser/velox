@@ -68,6 +68,13 @@ type Store interface {
 	// credential (256 bits of entropy, UNIQUE indexed) so cross-tenant
 	// probing isn't feasible. Returns errs.ErrNotFound on miss.
 	GetByPublicToken(ctx context.Context, token string) (domain.Invoice, error)
+
+	// GetByStripeInvoiceID resolves a Stripe invoice id (in_xxx) to its
+	// imported Velox invoice row. Backs the velox-import CLI's idempotency
+	// check — the partial unique index from migration 0063 makes
+	// stripe_invoice_id the dedup key for imported rows. Returns
+	// errs.ErrNotFound when no invoice carries that Stripe id.
+	GetByStripeInvoiceID(ctx context.Context, tenantID, stripeInvoiceID string) (domain.Invoice, error)
 }
 
 type ListFilter struct {

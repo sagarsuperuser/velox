@@ -1,0 +1,54 @@
+{
+  "id": "in_nosub_001",
+  "object": "invoice",
+  "amount_due": 0,
+  "amount_paid": 2500,
+  "amount_remaining": 0,
+  "billing_reason": "manual",
+  "collection_method": "charge_automatically",
+  "created": 1701086400,
+  "currency": "usd",
+  "customer": {
+    "id": "cus_nosub_001",
+    "object": "customer"
+  },
+  "description": "Standalone manual invoice (no subscription)",
+  "lines": {
+    "object": "list",
+    "data": [
+      {
+        "id": "il_nosub_line1",
+        "object": "line_item",
+        "amount": 2500,
+        "currency": "usd",
+        "description": "Manual one-off charge",
+        "quantity": 1,
+        "period": {
+          "start": 1701086400,
+          "end": 1701086400
+        },
+        "pricing": {
+          "type": "price",
+          "price_details": {
+            "price": "price_nosub_001",
+            "product": "prod_nosub_001"
+          },
+          "unit_amount_decimal": "2500"
+        }
+      }
+    ]
+  },
+  "livemode": true,
+  "metadata": {},
+  "number": "ABCD-0049",
+  "paid": true,
+  "period_end": 1701086400,
+  "period_start": 1701086400,
+  "status": "paid",
+  "status_transitions": {
+    "finalized_at": 1701086400,
+    "paid_at": 1701086500
+  },
+  "subtotal": 2500,
+  "total": 2500
+}

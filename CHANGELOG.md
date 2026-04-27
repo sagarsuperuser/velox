@@ -20,6 +20,59 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Stripe importer Phase 3 — finalized invoices** (2026-04-27) —
+  `velox-import` now accepts `--resource=invoices` on top of the Phase
+  0/1/2 slices. Stripe `Invoice` rows in terminal status (`paid`,
+  `void`, `uncollectible`) map onto Velox `invoices` + 1..N
+  `invoice_line_items` rows, inserted atomically via
+  `CreateWithLineItems` so the imported invoice carries Stripe's
+  verbatim totals and `status_transitions` timestamps (`finalized_at` →
+  `issued_at`, `paid_at`, `voided_at`) without re-running Velox's
+  finalize state machine. Drafts and open invoices are out of scope and
+  surface as explanatory `error` rows in the CSV report — operators
+  settle / void / write-off in Stripe and re-import after the status
+  is terminal. Idempotency anchors on a brand-new column
+  `invoices.stripe_invoice_id` (migration `0063_invoices_stripe_invoice_id`)
+  with a partial unique index `WHERE stripe_invoice_id IS NOT NULL` so
+  the dedup applies only to imported rows; Velox-native invoices keep
+  using `invoice_number` (the per-tenant sequential allocator) and
+  never collide. Status mapping: `paid` → Velox `paid` +
+  `payment_status=succeeded`; `void` → Velox `voided` +
+  `payment_status=failed`; `uncollectible` → Velox `voided` +
+  `payment_status=failed` with a CSV note (Velox lacks an
+  `uncollectible` invoice status; voided is the closest terminal
+  state). Billing-reason mapping: `subscription_create`/
+  `subscription_cycle`/`subscription_threshold`/`manual` map directly;
+  `subscription_update` (proration / mid-cycle change-driven) remaps to
+  `manual` with a note; legacy `subscription`, `quote_accept`,
+  `automatic_pending_invoice_item_invoice`, `upcoming`, and
+  empty/unknown values all remap to `manual` with notes preserving the
+  original Stripe distinction. Customer + subscription resolution chain
+  matches earlier phases (`customers.external_id = stripe.customer.id`
+  for the cus lookup; `subscriptions.code = stripe.subscription.id` for
+  the sub lookup); manual invoices with no parent subscription are
+  inserted with empty `subscription_id` (the column is nullable). The
+  Stripe v82 subscription reference is read from
+  `parent.subscription_details.subscription` first, then falls back to
+  `lines[0].subscription` / `lines[0].parent.*.subscription` for older
+  payloads. Out-of-scope Stripe features (discounts,
+  `amount_shipping`, `default_tax_rates`, multi-rate tax splits,
+  hosted-invoice URL) are detected and emitted as CSV notes — never
+  silently dropped or fabricated. Resources still run in strict
+  dependency order regardless of CLI input order: customers → products
+  → prices → subscriptions → invoices. Same per-row outcome model
+  (`insert` / `skip-equivalent` / `skip-divergent` / `error`) and same
+  conservative divergence policy: if Stripe and Velox disagree on any
+  of {status, payment_status, customer, subscription, currency,
+  billing_reason, totals, billing period, paid/voided/issued
+  timestamps}, the importer writes a `skip-divergent` row and never
+  overwrites — operators reconcile manually. New code:
+  `internal/importstripe/mapper_invoice.go`, `invoice_importer.go`
+  plus matching unit tests, driver tests, and an integration test
+  against real Postgres. With Phase 3 shipping, `velox-import` covers
+  the full Stripe Billing migration path end-to-end (customers,
+  catalog, subscriptions, finalized invoices) — a tenant can rehome
+  their state in one CLI run.
 - **Stripe importer Phase 2 — subscriptions** (2026-04-27) —
   `velox-import` now accepts `--resource=subscriptions` on top of the
   Phase 0 (customers) and Phase 1 (products + prices) slices. Stripe

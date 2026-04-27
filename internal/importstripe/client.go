@@ -145,3 +145,49 @@ func (s *StripeSource) IterateSubscriptions(ctx context.Context, fn func(*stripe
 	}
 	return nil
 }
+
+// IterateInvoices yields every finalized Stripe invoice (paid / void /
+// uncollectible) in creation order. Stripe's list API only accepts one
+// status at a time, so we make three sequential sweeps and concatenate
+// the streams. Drafts and open invoices are intentionally excluded —
+// they're not terminal in Stripe and would have to be remapped or
+// dropped on the Velox side; Phase 3 explicitly imports finalized rows
+// only (the importer maps a draft / open invoice to an error CSV row
+// at processOne time, but iterating them at all is wasted bandwidth).
+func (s *StripeSource) IterateInvoices(ctx context.Context, fn func(*stripe.Invoice) error) error {
+	if s == nil || s.client == nil {
+		return errors.New("importstripe: nil StripeSource")
+	}
+	for _, status := range []string{"paid", "void", "uncollectible"} {
+		params := &stripe.InvoiceListParams{}
+		params.Limit = stripe.Int64(s.pageSize)
+		params.Status = stripe.String(status)
+		if s.since > 0 {
+			params.Created = stripe.Int64(s.since)
+			params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: s.since}
+		}
+		// Expand line items so the per-line subscription / period / pricing
+		// sub-objects come back populated rather than as bare ids.
+		params.AddExpand("data.lines.data")
+		stopped := false
+		for inv, err := range s.client.V1Invoices.List(ctx, params) {
+			if err != nil {
+				return fmt.Errorf("stripe list invoices status=%s: %w", status, err)
+			}
+			if inv == nil {
+				continue
+			}
+			if err := fn(inv); err != nil {
+				if errors.Is(err, ErrStopIteration) {
+					stopped = true
+					break
+				}
+				return err
+			}
+		}
+		if stopped {
+			return nil
+		}
+	}
+	return nil
+}

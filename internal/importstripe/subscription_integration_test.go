@@ -47,6 +47,10 @@ func (f *fakeSubscriptionsSource) IterateSubscriptions(ctx context.Context, fn f
 	return nil
 }
 
+func (f *fakeSubscriptionsSource) IterateInvoices(ctx context.Context, fn func(*stripe.Invoice) error) error {
+	return nil
+}
+
 // TestSubscriptionImporter_EndToEndPostgres drives the subscription importer
 // against a real Postgres database. Three phases — insert, idempotent
 // rerun, divergence detection — match the customer/products/prices

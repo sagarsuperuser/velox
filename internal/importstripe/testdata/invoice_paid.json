@@ -1,0 +1,65 @@
+{
+  "id": "in_paid_001",
+  "object": "invoice",
+  "amount_due": 0,
+  "amount_paid": 4999,
+  "amount_remaining": 0,
+  "billing_reason": "subscription_cycle",
+  "collection_method": "charge_automatically",
+  "created": 1701086400,
+  "currency": "usd",
+  "customer": {
+    "id": "cus_paid_001",
+    "object": "customer"
+  },
+  "description": "Monthly subscription invoice",
+  "footer": "Thank you for your business",
+  "lines": {
+    "object": "list",
+    "data": [
+      {
+        "id": "il_paid_line1",
+        "object": "line_item",
+        "amount": 4999,
+        "currency": "usd",
+        "description": "Premium Plan (Nov 2023)",
+        "quantity": 1,
+        "subscription": "sub_paid_001",
+        "period": {
+          "start": 1701000000,
+          "end": 1703678400
+        },
+        "pricing": {
+          "type": "price",
+          "price_details": {
+            "price": "price_paid_001",
+            "product": "prod_paid_001"
+          },
+          "unit_amount_decimal": "4999"
+        }
+      }
+    ]
+  },
+  "livemode": true,
+  "metadata": {},
+  "number": "ABCD-0042",
+  "paid": true,
+  "parent": {
+    "type": "subscription_details",
+    "subscription_details": {
+      "subscription": {
+        "id": "sub_paid_001",
+        "object": "subscription"
+      }
+    }
+  },
+  "period_end": 1703678400,
+  "period_start": 1701000000,
+  "status": "paid",
+  "status_transitions": {
+    "finalized_at": 1701086400,
+    "paid_at": 1701086500
+  },
+  "subtotal": 4999,
+  "total": 4999
+}

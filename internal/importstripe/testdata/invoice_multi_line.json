@@ -1,0 +1,104 @@
+{
+  "id": "in_multi_001",
+  "object": "invoice",
+  "amount_due": 0,
+  "amount_paid": 12500,
+  "amount_remaining": 0,
+  "billing_reason": "subscription_cycle",
+  "collection_method": "charge_automatically",
+  "created": 1701086400,
+  "currency": "usd",
+  "customer": {
+    "id": "cus_multi_001",
+    "object": "customer"
+  },
+  "description": "Multi-line invoice",
+  "lines": {
+    "object": "list",
+    "data": [
+      {
+        "id": "il_multi_line1",
+        "object": "line_item",
+        "amount": 4999,
+        "currency": "usd",
+        "description": "Base subscription",
+        "quantity": 1,
+        "subscription": "sub_multi_001",
+        "period": {
+          "start": 1701000000,
+          "end": 1703678400
+        },
+        "pricing": {
+          "type": "price",
+          "price_details": {
+            "price": "price_multi_base",
+            "product": "prod_multi_base"
+          },
+          "unit_amount_decimal": "4999"
+        }
+      },
+      {
+        "id": "il_multi_line2",
+        "object": "line_item",
+        "amount": 5001,
+        "currency": "usd",
+        "description": "Metered usage",
+        "quantity": 5001,
+        "period": {
+          "start": 1701000000,
+          "end": 1703678400
+        },
+        "pricing": {
+          "type": "price",
+          "price_details": {
+            "price": "price_multi_usage",
+            "product": "prod_multi_usage"
+          },
+          "unit_amount_decimal": "1"
+        }
+      },
+      {
+        "id": "il_multi_line3",
+        "object": "line_item",
+        "amount": 2500,
+        "currency": "usd",
+        "description": "Add-on",
+        "quantity": 1,
+        "period": {
+          "start": 1701000000,
+          "end": 1703678400
+        },
+        "pricing": {
+          "type": "price",
+          "price_details": {
+            "price": "price_multi_addon",
+            "product": "prod_multi_addon"
+          },
+          "unit_amount_decimal": "2500"
+        }
+      }
+    ]
+  },
+  "livemode": true,
+  "metadata": {},
+  "number": "ABCD-0046",
+  "paid": true,
+  "parent": {
+    "type": "subscription_details",
+    "subscription_details": {
+      "subscription": {
+        "id": "sub_multi_001",
+        "object": "subscription"
+      }
+    }
+  },
+  "period_end": 1703678400,
+  "period_start": 1701000000,
+  "status": "paid",
+  "status_transitions": {
+    "finalized_at": 1701086400,
+    "paid_at": 1701086500
+  },
+  "subtotal": 12500,
+  "total": 12500
+}
