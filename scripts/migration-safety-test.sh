@@ -13,7 +13,7 @@
 #   * Quarterly, against the latest migration set, to re-check for drift
 #     as table footprints grow.
 #
-# Findings live in docs/migration-safety-findings.md. After running, diff
+# Findings are tracked in the internal velox-ops repo. After running, diff
 # new CSV against the prior snapshot to spot regressions.
 #
 # Usage:

@@ -13,8 +13,6 @@ Built for two market truths Stripe Billing structurally cannot serve:
 1. **AI/LLM apps need multi-dimensional pricing.** Real model pricing today is `model × operation × cached × tier × context-window`. Stripe's Meter API forces one Meter per dimension combination — six Meters and ugly subscription wiring just to model GPT-4 input/output/cached/uncached. Velox treats dimensions as first-class on the meter.
 2. **Regulated tenants cannot put customer billing data on Stripe's servers.** EU GDPR-strict, India RBI data localization, healthcare-adjacent SaaS, government procurement. Stripe's whole model is "send us the data." Velox runs in your VPC.
 
-See [`docs/positioning.md`](docs/positioning.md) for the full strategic frame and [`docs/90-day-plan.md`](docs/90-day-plan.md) for what's shipping when.
-
 ---
 
 ## The wedge in code
@@ -251,8 +249,6 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 | 12    | First design partner cuts over to Velox in production                           |
 | 13    | Stabilize + public retro                                                         |
 
-Full plan with leading indicators and risks: [`docs/90-day-plan.md`](docs/90-day-plan.md).
-
 ---
 
 ## Tech stack
@@ -280,7 +276,7 @@ Integration tests exercise real Postgres with RLS enforced. Per project conventi
 
 Velox is open source under MIT. We're early and looking for design partners (12 months free hosted access in exchange for weekly check-ins and a co-branded case study). If you run AI inference, a vector DB, or any usage-heavy SaaS at $1M–$50M ARR and Stripe Billing is starting to chafe — open an issue or email `partners@velox.dev`.
 
-For code contributions, see [`CONTRIBUTING.md`](CONTRIBUTING.md) and the design-first / RFC pattern in [`docs/parallel-work.md`](docs/parallel-work.md).
+For code contributions, see [`CONTRIBUTING.md`](CONTRIBUTING.md). Major features land with a design RFC alongside the code — read any `docs/design-*.md` for the pattern.
 
 ---
 

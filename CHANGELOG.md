@@ -9,16 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 features, PATCH for fixes. The public API is stabilising but not yet
 frozen; breaking changes land on MINOR until `1.0.0`.
 
-Two surfaces mirror this file:
+A second surface mirrors this file:
 
 - `web-v2/src/pages/Changelog.tsx` — customer-facing public changelog,
   curated rollups (not every bug fix).
-- `docs/design-partner-readiness-plan.md` — internal planning log, not a
-  release log.
 
 ## [Unreleased]
 
 ### Documentation
+
+- **Public/private repo split for internal-only docs.** Twelve internal
+  planning + marketing docs moved out of the public repo to a private
+  `sagarsuperuser/velox-ops` repo so the public surface only carries
+  material consumers and operators actually need. Removed:
+  `docs/90-day-plan.md`, `docs/positioning.md`, `docs/parallel-work.md`,
+  `docs/parallel-handoff.md`, `docs/design-partner-readiness-plan.md`,
+  `docs/design-partner-onboarding.md`, `docs/phase2-hardening-plan.md`,
+  `docs/stripe-tier2-gap-analysis.md`, `docs/migration-safety-findings.md`,
+  and the three `docs/marketing/` files (cold-email-templates,
+  demo-script, outreach-list). Public repo retains: the design RFCs
+  (`docs/design-*.md`), operator runbooks (`docs/ops/`), compliance
+  mapping (`docs/compliance/`), the customer migration guide, the public
+  blog, and self-host docs. Cross-references in retained docs rewritten
+  to either drop the broken link (where the context is self-contained)
+  or note that the supporting material lives in the internal repo (where
+  an auditor or design partner needs the pointer). README.md trimmed in
+  the same shape — no more "see the 90-day plan" or "see positioning"
+  callouts. Pattern matches Stripe / Vercel / Linear / Supabase /
+  PostHog: strategy and partner playbooks live behind the contributor
+  boundary, not in the public-product surface.
 
 - **Five new public docs pages — Account setup, Errors, Rate limits,
   Glossary, Troubleshooting.** Closes the integration-time gaps the

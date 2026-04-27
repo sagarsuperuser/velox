@@ -291,9 +291,9 @@ correctness, latency, security.
 - [`docs/ops/sla-slo.md`](../ops/sla-slo.md) — the SLO definitions
   for HTTP availability, billing-cycle correctness, payment success
   rate, etc.
-- [`docs/90-day-plan.md`](../90-day-plan.md) — the project's
-  near-term objectives. Closes once Velox-the-company starts
-  producing quarterly OKRs.
+- Near-term execution objectives are tracked in the internal
+  `velox-ops` repo (provided to the auditor on request). Closes once
+  Velox-the-company starts producing quarterly OKRs.
 
 **Gaps.** None code-level. Tenant adds their own customer-facing
 SLAs.
@@ -304,12 +304,12 @@ SLAs.
 exist, what's the impact.
 
 **How Velox addresses it.**
-- [`docs/migration-safety-findings.md`](../migration-safety-findings.md)
-  — operational risk register for the migration runner
-  (lock-acquisition risks measured at three load presets, mitigations
-  documented).
-- [`docs/phase2-hardening-plan.md`](../phase2-hardening-plan.md) — the
-  hardening risk inventory.
+- Operational risk register for the migration runner — lock-acquisition
+  risks measured at three load presets with mitigations documented.
+  Maintained in the internal `velox-ops` repo; provided to the auditor
+  on request.
+- Hardening risk inventory — also maintained in the internal
+  `velox-ops` repo.
 - ADRs in `docs/adr/` carry "consequences" sections that name the
   trade-offs of each architectural decision.
 
@@ -356,8 +356,8 @@ landscape are evaluated for new risks.
 - Each ADR in `docs/adr/` was written precisely for this — see
   ADR-006 ("background scheduler vs message queue") for an example of
   a reasoned change evaluation.
-- The 90-day plan is reviewed at end-of-quarter (per the project
-  cadence in `docs/90-day-plan.md`).
+- Internal execution plans are reviewed at end-of-quarter (cadence
+  documented in the internal `velox-ops` repo).
 
 **Gaps.**
 - No documented "every quarter, here's what changed in our risk
@@ -870,9 +870,9 @@ it's a security incident vs ordinary noise.
   merge.
 - **Implementation.** Zero-downtime migration runner with explicit
   no-transaction support for `CREATE INDEX CONCURRENTLY` —
-  `internal/platform/migrate/migrate.go`. Migration safety findings
-  documented at
-  [`docs/migration-safety-findings.md`](../migration-safety-findings.md).
+  `internal/platform/migrate/migrate.go`. Lock-acquisition findings
+  and mitigation patterns are documented in the internal `velox-ops`
+  repo and reproducible via `scripts/migration-safety-test.sh`.
 
 **Schema drift detection.** Migration runner is the source of truth.
 The embedded migration set (`internal/platform/migrate/sql/*.sql`)
@@ -1129,7 +1129,7 @@ file path or runbook section that produces each.
 | Backup + restore drill | [`docs/ops/backup-recovery.md`](../ops/backup-recovery.md) | RPO=5min, RTO=1h. Quarterly drill log. |
 | CI configuration | `.github/workflows/ci.yml` | Branch-protection screenshot from GitHub. |
 | Migration runner | `internal/platform/migrate/migrate.go` | Roundtrip test in `roundtrip_test.go`. |
-| Migration safety findings | [`docs/migration-safety-findings.md`](../migration-safety-findings.md) | Lock-acquisition measurements + mitigations. |
+| Migration safety findings | Internal `velox-ops` repo (provided on request) + `scripts/migration-safety-test.sh` | Lock-acquisition measurements + mitigations; reproducible via the script. |
 | Architectural decisions | `docs/adr/001` through `006` | Reasoning for each major choice. |
 | Runbook & alerts | [`docs/ops/runbook.md`](../ops/runbook.md) | Severity definitions, alert catalog, playbooks. |
 | SLO definitions | [`docs/ops/sla-slo.md`](../ops/sla-slo.md) | Targets the alerts measure against. |
