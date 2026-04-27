@@ -123,6 +123,7 @@ const UpdatePaymentPage = lazy(() => import('@/pages/UpdatePayment'))
 const CustomerPortalPage = lazy(() => import('@/pages/CustomerPortal'))
 const CustomerPortalLoginPage = lazy(() => import('@/pages/CustomerPortalLogin'))
 const HostedInvoicePage = lazy(() => import('@/pages/HostedInvoice'))
+const PublicCostDashboardPage = lazy(() => import('@/pages/PublicCostDashboard'))
 const CustomerDetailPage = lazy(() => import('@/pages/CustomerDetail'))
 const InvoiceDetailPage = lazy(() => import('@/pages/InvoiceDetail'))
 const SubscriptionDetailPage = lazy(() => import('@/pages/SubscriptionDetail'))
@@ -131,6 +132,7 @@ const MeterDetailPage = lazy(() => import('@/pages/MeterDetail'))
 const DocsPage = lazy(() => import('@/pages/Docs'))
 const DocsQuickstartPage = lazy(() => import('@/pages/DocsQuickstart'))
 const DocsRecipesPage = lazy(() => import('@/pages/DocsRecipes'))
+const DocsEmbedsCostDashboardPage = lazy(() => import('@/pages/DocsEmbedsCostDashboard'))
 const DocsWebhooksPage = lazy(() => import('@/pages/DocsWebhooks'))
 const DocsIdempotencyPage = lazy(() => import('@/pages/DocsIdempotency'))
 const DocsApiPage = lazy(() => import('@/pages/DocsApi'))
@@ -198,9 +200,11 @@ const App = () => (
               <Route path="/customer-portal" element={<CustomerPortalPage />} />
               <Route path="/customer-portal/login" element={<CustomerPortalLoginPage />} />
               <Route path="/invoice/:token" element={<HostedInvoicePage />} />
+              <Route path="/public/cost-dashboard/:token" element={<PublicCostDashboardPage />} />
               <Route path="/docs" element={<DocsPage />} />
               <Route path="/docs/quickstart" element={<DocsQuickstartPage />} />
               <Route path="/docs/recipes" element={<DocsRecipesPage />} />
+              <Route path="/docs/embeds/cost-dashboard" element={<DocsEmbedsCostDashboardPage />} />
               <Route path="/docs/webhooks" element={<DocsWebhooksPage />} />
               <Route path="/docs/idempotency" element={<DocsIdempotencyPage />} />
               <Route path="/docs/api" element={<DocsApiPage />} />

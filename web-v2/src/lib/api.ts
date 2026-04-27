@@ -227,6 +227,37 @@ export const api = {
   updateCustomer: (id: string, data: { display_name?: string; email?: string }) =>
     apiRequest<Customer>('PATCH', `/customers/${id}`, data),
 
+  // Public cost-dashboard embed token (PR #59).
+  // rotate mints (or re-mints) the per-customer token; the prior token is
+  // invalidated on every call — operators surface this as a "regenerate"
+  // when a link leaks. Operator-authed via session cookie.
+  rotateCostDashboardToken: (customerId: string) =>
+    apiRequest<{ token: string; public_url: string }>(
+      'POST',
+      `/customers/${customerId}/rotate-cost-dashboard-token`,
+    ),
+  // Public, unauth fetch of the sanitized dashboard payload. Token IS the
+  // auth — no cookies, no Authorization header, lives in the
+  // hostedInvoiceRL rate-limit bucket on the server. We bypass the
+  // session-credentialed apiRequest wrapper because attaching cookies to
+  // a public route would just confuse RLS scoping; the iframe also runs
+  // on a different origin in production.
+  getPublicCostDashboard: async (token: string): Promise<PublicCostDashboard> => {
+    const res = await fetch(`${API_BASE}/public/cost-dashboard/${encodeURIComponent(token)}`)
+    if (!res.ok) {
+      // 404 surfaces as a typed ApiError so the page can render the
+      // "link no longer valid" empty state without leaking server text.
+      const body = await res.json().catch(() => ({}))
+      const detail = typeof body.error === 'object' ? body.error : null
+      const raw = typeof body.error === 'string' ? body.error : (detail?.message || `HTTP ${res.status}`)
+      throw new ApiError(raw, res.status, {
+        code: detail?.code || undefined,
+        requestId: detail?.request_id || undefined,
+      })
+    }
+    return res.json()
+  },
+
   // Subscription detail
   getSubscription: (id: string) =>
     apiRequest<Subscription>('GET', `/subscriptions/${id}`),
@@ -783,6 +814,56 @@ export interface CustomerUsageRule {
   dimension_match?: Record<string, string | number | boolean>
   quantity: string
   amount_cents: number
+}
+
+// PublicCostDashboard — sanitized payload returned by
+// GET /v1/public/cost-dashboard/{token} (PR #59). Token IS the auth, so
+// the server only includes what's safe for the customer themselves to
+// see in an iframe: identifiers, the active billing window, the cycle
+// usage breakdown, and any threshold alerts they're tracking. No
+// internal IDs beyond customer/tenant, no payment-method details, no
+// dunning state.
+//
+// usage mirrors the operator-side CustomerUsage shape (subscriptions /
+// meters / totals / warnings) so the same presentation component can
+// render both surfaces; period is renamed to billing_period at the
+// envelope level to make the public contract explicit.
+export interface PublicCostDashboard {
+  customer_id: string
+  tenant_id: string
+  currency: string
+  billing_period: {
+    from: string
+    to: string
+    source?: 'current_billing_cycle' | 'explicit'
+  }
+  usage: {
+    subscriptions: CustomerUsageSubscription[]
+    meters: CustomerUsageMeter[]
+    totals: { currency: string; amount_cents: number }[]
+    warnings: string[]
+  }
+  thresholds: PublicCostDashboardThreshold[]
+  // Optional projected-bill for the in-progress cycle. The server
+  // populates this from the same engine that powers
+  // POST /v1/invoices/create_preview. Absent when no active cycle
+  // exists or the engine returned a warning the public page should
+  // not surface.
+  projected_total_amount_cents?: number
+}
+
+export interface PublicCostDashboardThreshold {
+  // Echo of internal/billingalert/handler.go wireAlert — the public
+  // surface only carries the fields a customer needs to see, never the
+  // alert id or recurrence machinery. amount_gte / usage_gte are
+  // mutually exclusive (mirrors BillingAlertThreshold).
+  title: string
+  amount_gte?: number | null
+  usage_gte?: string | null
+  meter_id?: string
+  // 'triggered_for_period' renders as a lit-up state in the embed; any
+  // other value is rendered as a quiet target line.
+  status: 'active' | 'triggered' | 'triggered_for_period' | string
 }
 
 export interface RecipeCreatesSummary {

@@ -14,6 +14,10 @@ const docsNav = [
     ],
   },
   {
+    heading: 'Embeds',
+    items: [{ to: '/docs/embeds/cost-dashboard', label: 'Cost dashboard' }],
+  },
+  {
     heading: 'Reference',
     items: [{ to: '/docs/api', label: 'API reference' }],
   },
