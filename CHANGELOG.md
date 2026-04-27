@@ -74,6 +74,28 @@ A second surface mirrors this file:
 
 ### Added
 
+- **Billing alerts dashboard page (Track B for the
+  `POST/GET/POST archive /v1/billing/alerts` backend that shipped earlier).**
+  New `/billing-alerts` page in the Config nav (between Dunning and the rest)
+  lists every customer-scoped alert with status filter (active / triggered /
+  triggered_for_period / archived / all), threshold rendered as `≥ $X` for
+  amount alerts or `≥ N units` for usage alerts (trailing-zero-stripped from
+  the NUMERIC(38,12) wire string per ADR-005), recurrence column ("one-time"
+  vs "per period"), and last-triggered timestamp. Customer + meter cells link
+  through to detail pages when present, fall back to the raw ID otherwise so
+  alerts never look broken if a customer or meter is renamed mid-flight.
+  New-alert dialog takes title + customer (CustomerCombobox) + optional meter
+  (defaults to "all meters / cycle subtotal") + threshold-kind toggle
+  (amount in major units → ×100 to cents on submit, OR usage as a
+  decimal-string) + recurrence with both modes documented inline. Per-row
+  Archive action with an explicit confirm dialog ("recreate the alert if
+  you need to track this threshold again"). Validation mirrors the backend:
+  exactly-one-of amount_gte / usage_gte (UI enforces via the kind toggle so
+  the operator can never send both), positive numbers, customer required.
+  Closes the Track B half of the billing-alerts feature — backend has been
+  live since FEAT-7 but the dashboard had zero callers of `listBillingAlerts`
+  / `createBillingAlert` / `archiveBillingAlert` until now.
+
 - **Spend thresholds dashboard surface (Track B for the
   `PUT/DELETE /v1/subscriptions/{id}/billing-thresholds` backend that
   shipped earlier).** New "Spend thresholds" card on the subscription
