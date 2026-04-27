@@ -129,14 +129,39 @@ export default function DocsEmbedsCostDashboardPage() {
             the iframe in your own chrome and let the dashboard handle the data.
           </Callout>
 
+          <DocsH2>Typed React wrapper</DocsH2>
+          <p>
+            If your app is React, the repo ships a typed wrapper at{' '}
+            <InlineCode>web-v2/src/components/embeds/VeloxCostDashboard.tsx</InlineCode> that
+            constructs the URL for you and forwards <InlineCode>theme</InlineCode> /{' '}
+            <InlineCode>accent</InlineCode> as React props. Today it renders the same iframe
+            described above — the value is a typed prop interface instead of hand-rolled URL
+            string concatenation:
+          </p>
+          <Code language="tsx">{`import { VeloxCostDashboard } from '@/components/embeds/VeloxCostDashboard'
+
+<VeloxCostDashboard
+  token={token}
+  baseUrl="https://app.velox.dev"
+  theme="dark"
+  accent="#10b981"
+  height={640}
+/>`}</Code>
+          <Callout tone="info">
+            The component lives in the Velox repo, not on npm. Partners willing to vendor the
+            file or fork the repo can use it today; everyone else should embed the iframe
+            directly as shown above. A standalone <InlineCode>@velox/react</InlineCode>{' '}
+            package, plus a non-iframe inline render mode that hits the public JSON endpoint
+            from inside your React tree, is on the v1.1 roadmap.
+          </Callout>
+
           <DocsH2>What's coming in v1.1</DocsH2>
           <p>
-            A typed React component (<InlineCode>{'<VeloxCostDashboard />'}</InlineCode>) for
-            apps that want to skip the iframe entirely. Per-tenant branding settings (logo,
-            additional CSS variables, font family) read straight from the operator's branding
-            page so you don't need to encode them in the URL. The current embed is iframe-only
-            by design — it gets you a working integration in five minutes without any
-            client-side JavaScript.
+            A standalone <InlineCode>@velox/react</InlineCode> npm package (no need to vendor
+            the source), an inline non-iframe render mode that fetches the public JSON endpoint
+            from inside your React tree, and per-tenant branding settings (logo, additional CSS
+            variables, font family) read straight from the operator's branding page so you
+            don't need to encode them in the URL.
           </p>
         </Prose>
       </DocsShell>
