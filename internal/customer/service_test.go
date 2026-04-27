@@ -118,6 +118,40 @@ func (m *memoryStore) MarkEmailBounced(_ context.Context, tenantID, customerID, 
 	return nil
 }
 
+func (m *memoryStore) SetCostDashboardToken(_ context.Context, tenantID, customerID, token string) error {
+	c, ok := m.customers[customerID]
+	if !ok || c.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	if token != "" {
+		// Mirror the partial UNIQUE index: another customer holding
+		// the same token is a collision, not a silent overwrite.
+		for id, other := range m.customers {
+			if id == customerID {
+				continue
+			}
+			if other.CostDashboardToken == token {
+				return fmt.Errorf("set cost dashboard token: collision: %s", token)
+			}
+		}
+	}
+	c.CostDashboardToken = token
+	m.customers[customerID] = c
+	return nil
+}
+
+func (m *memoryStore) GetByCostDashboardToken(_ context.Context, token string) (domain.Customer, error) {
+	if token == "" {
+		return domain.Customer{}, errs.ErrNotFound
+	}
+	for _, c := range m.customers {
+		if c.CostDashboardToken == token {
+			return c, nil
+		}
+	}
+	return domain.Customer{}, errs.ErrNotFound
+}
+
 func TestCustomerService_Create(t *testing.T) {
 	svc := NewService(newMemoryStore())
 	ctx := context.Background()

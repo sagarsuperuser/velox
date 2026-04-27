@@ -173,10 +173,12 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
 			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
+			COALESCE(cost_dashboard_token, ''),
 			created_at, updated_at
 		FROM customers WHERE id = $1
 	`, id).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
 		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
+		&c.CostDashboardToken,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -199,10 +201,12 @@ func (s *PostgresStore) GetByExternalID(ctx context.Context, tenantID, externalI
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
 			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
+			COALESCE(cost_dashboard_token, ''),
 			created_at, updated_at
 		FROM customers WHERE external_id = $1
 	`, externalID).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
 		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
+		&c.CostDashboardToken,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -212,6 +216,76 @@ func (s *PostgresStore) GetByExternalID(ctx context.Context, tenantID, externalI
 		return domain.Customer{}, err
 	}
 	return s.decryptCustomer(c)
+}
+
+// SetCostDashboardToken writes a freshly minted (or empty) cost-dashboard
+// token for the given customer. Empty tokens clear the column — useful
+// if an operator wants to revoke all public access without immediately
+// minting a replacement. Non-empty writes hit the partial UNIQUE index
+// from migration 0064; collisions surface as an error rather than a
+// silent overwrite.
+func (s *PostgresStore) SetCostDashboardToken(ctx context.Context, tenantID, customerID, token string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE customers SET cost_dashboard_token = NULLIF($1, ''), updated_at = NOW()
+		WHERE id = $2
+	`, token, customerID)
+	if err != nil {
+		if postgres.IsUniqueViolation(err) {
+			return fmt.Errorf("set cost dashboard token: collision: %w", err)
+		}
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errs.ErrNotFound
+	}
+	return tx.Commit()
+}
+
+// GetByCostDashboardToken resolves a token to its owning customer
+// cross-tenant. Runs under TxBypass because the caller is unauthenticated
+// at this point — the 256-bit token itself is the only credential we
+// have, and the partial UNIQUE index ensures at most one match. The
+// blind-index pattern in FindByEmailBlindIndex is the closest precedent.
+func (s *PostgresStore) GetByCostDashboardToken(ctx context.Context, token string) (domain.Customer, error) {
+	if token == "" {
+		return domain.Customer{}, errs.ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return domain.Customer{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer postgres.Rollback(tx)
+
+	var c domain.Customer
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
+			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
+			COALESCE(cost_dashboard_token, ''),
+			created_at, updated_at
+		FROM customers WHERE cost_dashboard_token = $1
+	`, token).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
+		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
+		&c.CostDashboardToken,
+		&c.CreatedAt, &c.UpdatedAt)
+
+	if err == sql.ErrNoRows {
+		return domain.Customer{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Customer{}, err
+	}
+	c, err = s.decryptCustomer(c)
+	if err != nil {
+		return domain.Customer{}, err
+	}
+	return c, tx.Commit()
 }
 
 // EmailMatch is the narrow result row from FindByEmailBlindIndex — enough

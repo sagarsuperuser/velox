@@ -22,6 +22,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/billingalert"
 	"github.com/sagarsuperuser/velox/internal/bulkaction"
+	"github.com/sagarsuperuser/velox/internal/costdashboard"
 	"github.com/sagarsuperuser/velox/internal/coupon"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
@@ -170,9 +171,8 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// Proration deps are wired below after creditSvc + invoiceStore are available
 	usageSvc := usage.NewService(usageStore)
 	usageH := usage.NewHandler(usageSvc, customerStore, pricingSvc)
-	customerUsageH := usage.NewCustomerUsageHandler(
-		usage.NewCustomerUsageService(usageSvc, customerStore, subStore, pricingSvc),
-	)
+	customerUsageSvc := usage.NewCustomerUsageService(usageSvc, customerStore, subStore, pricingSvc)
+	customerUsageH := usage.NewCustomerUsageHandler(customerUsageSvc)
 	settingsStore := tenant.NewSettingsStore(db)
 	creditStore := credit.NewPostgresStore(db)
 	creditSvc := credit.NewService(creditStore)
@@ -219,6 +219,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	subH.SetEventDispatcher(eventDispatcher)
 	auditLogger := audit.NewLogger(db)
 	auditH := audit.NewHandler(auditLogger)
+	// Wire audit logging on the customer handler — currently used to
+	// record cost-dashboard token rotations without leaking the
+	// plaintext token into the audit trail.
+	customerH.SetAuditLogger(auditLogger)
 	settingsH := tenant.NewSettingsHandler(settingsStore)
 	stripeClient := payment.NewLiveStripeClient(stripeClients)
 	dunningStore := dunning.NewPostgresStore(db)
@@ -322,6 +326,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients, db: db},
 		BaseURL:     strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
 	})
+
+	// Public cost-dashboard — embeddable customer-facing usage view. The
+	// 256-bit cost_dashboard_token in the URL is the sole credential
+	// (no API key, no session). Operator mints a token via
+	// POST /v1/customers/{id}/rotate-cost-dashboard-token; the iframe
+	// renders against /v1/public/cost-dashboard/{token} below.
+	costDashboardH := costdashboard.New(customerStore, customerUsageSvc)
 
 	// Email sender. When the email outbox is enabled (default), producers
 	// enqueue into email_outbox via OutboxSender instead of calling SMTP
@@ -758,6 +769,16 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Use(hostedInvoiceRL.Middleware())
 		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/", hostedInvoiceH.Routes())
+	})
+
+	// Public cost-dashboard — embeddable customer-facing usage view.
+	// Same auth posture and rate-limit bucket as the hosted-invoice
+	// surface: the 256-bit token in the URL is the sole credential,
+	// 60/min per IP, fail-closed in production.
+	r.Route("/v1/public/cost-dashboard", func(r chi.Router) {
+		r.Use(hostedInvoiceRL.Middleware())
+		r.Use(middleware.Timeout(30 * time.Second))
+		r.Mount("/", costDashboardH.Routes())
 	})
 
 	// Public customer-portal routes (magic-link request + consume). No

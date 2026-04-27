@@ -10,14 +10,16 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 type Handler struct {
-	svc  *Service
-	gdpr *GDPRHandler
+	svc         *Service
+	gdpr        *GDPRHandler
+	auditLogger *audit.Logger
 }
 
 func NewHandler(svc *Service) *Handler {
@@ -27,6 +29,14 @@ func NewHandler(svc *Service) *Handler {
 // SetGDPR attaches the GDPR handler so its routes are served under /customers.
 func (h *Handler) SetGDPR(gh *GDPRHandler) {
 	h.gdpr = gh
+}
+
+// SetAuditLogger wires the audit logger. Currently used by the
+// cost-dashboard token rotate endpoint (record that a rotation happened
+// without leaking the plaintext token into the audit trail). Nil-safe —
+// callers that don't audit just skip the entry.
+func (h *Handler) SetAuditLogger(l *audit.Logger) {
+	h.auditLogger = l
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -39,6 +49,10 @@ func (h *Handler) Routes() chi.Router {
 		r.Put("/", h.upsertBillingProfile)
 		r.Get("/", h.getBillingProfile)
 	})
+	// Cost-dashboard token rotation. Operator-authenticated (api-key
+	// guard sits above the mount in router.go); the public read-side
+	// is mounted separately at /v1/public/cost-dashboard.
+	r.Post("/{id}/rotate-cost-dashboard-token", h.rotateCostDashboardToken)
 	// GDPR endpoints (data export + right to erasure)
 	if h.gdpr != nil {
 		r.Get("/{id}/export", h.gdpr.exportData)
