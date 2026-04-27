@@ -1,0 +1,71 @@
+{
+  "id": "sub_extras_001",
+  "object": "subscription",
+  "billing_cycle_anchor": 1701000000,
+  "cancel_at_period_end": false,
+  "created": 1701000000,
+  "currency": "usd",
+  "customer": {
+    "id": "cus_NfJG2N4m6X",
+    "object": "customer"
+  },
+  "default_tax_rates": [
+    {
+      "id": "txr_001",
+      "object": "tax_rate",
+      "active": true,
+      "country": "US",
+      "display_name": "Sales Tax",
+      "percentage": 8.5
+    }
+  ],
+  "discounts": [
+    {
+      "id": "di_001",
+      "object": "discount",
+      "coupon": {
+        "id": "WELCOME10",
+        "object": "coupon",
+        "percent_off": 10
+      }
+    }
+  ],
+  "items": {
+    "object": "list",
+    "data": [
+      {
+        "id": "si_extras_001",
+        "object": "subscription_item",
+        "created": 1701000000,
+        "current_period_end": 1703678400,
+        "current_period_start": 1701000000,
+        "price": {
+          "id": "price_flat001",
+          "object": "price",
+          "active": true,
+          "billing_scheme": "per_unit",
+          "currency": "usd",
+          "product": {
+            "id": "prod_NfJG2N4m6X",
+            "object": "product"
+          },
+          "type": "recurring",
+          "unit_amount": 4999
+        },
+        "quantity": 1,
+        "subscription": "sub_extras_001"
+      }
+    ]
+  },
+  "livemode": true,
+  "pause_collection": {
+    "behavior": "keep_as_draft",
+    "resumes_at": 1710000000
+  },
+  "schedule": {
+    "id": "sub_sched_001",
+    "object": "subscription_schedule"
+  },
+  "start_date": 1701000000,
+  "status": "active"
+}

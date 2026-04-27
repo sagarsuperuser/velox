@@ -29,6 +29,14 @@ type Source interface {
 	// IteratePrices yields every non-deleted Stripe price in creation order,
 	// oldest first. Same semantics as IterateCustomers.
 	IteratePrices(ctx context.Context, fn func(*stripe.Price) error) error
+
+	// IterateSubscriptions yields every non-deleted Stripe subscription in
+	// creation order, oldest first. Same semantics as IterateCustomers —
+	// early-stop via ErrStopIteration, all other errors halt and propagate.
+	// The default Stripe list omits canceled subscriptions; the importer's
+	// Source impl passes status=all so historical canceled rows surface for
+	// import too.
+	IterateSubscriptions(ctx context.Context, fn func(*stripe.Subscription) error) error
 }
 
 // ErrStopIteration is a sentinel returned from a Source callback to halt

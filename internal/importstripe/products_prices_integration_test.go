@@ -45,6 +45,10 @@ func (f *fakeProductsPricesSource) IteratePrices(ctx context.Context, fn func(*s
 	return nil
 }
 
+func (f *fakeProductsPricesSource) IterateSubscriptions(ctx context.Context, fn func(*stripe.Subscription) error) error {
+	return nil
+}
+
 // TestProductImporter_EndToEndPostgres drives the product importer against
 // a real Postgres database to exercise the create / idempotent-rerun /
 // divergence-detection flow under RLS + the real validation rules.

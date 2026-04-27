@@ -1,20 +1,20 @@
 // Command velox-import migrates Stripe data into a Velox tenant.
 //
 // Phase 0 supports `--resource=customers`; Phase 1 adds `products` and
-// `prices`. The CLI surface is forward-compatible with later phases
-// (subscriptions, invoices) — see docs/design-stripe-importer.md.
+// `prices`; Phase 2 adds `subscriptions`. The CLI surface is forward-
+// compatible with later phases (invoices) — see docs/design-stripe-importer.md.
 //
 // Typical usage:
 //
 //	DATABASE_URL=postgres://... velox-import \
 //	  --tenant=ten_xxxx \
 //	  --api-key=sk_test_xxxx \
-//	  --resource=customers,products,prices \
+//	  --resource=customers,products,prices,subscriptions \
 //	  --dry-run
 //
 // Resources are processed in dependency order regardless of the input
-// order: customers → products → prices. Subscriptions / invoices come in
-// later slices.
+// order: customers → products → prices → subscriptions. Invoices come
+// in a later slice.
 package main
 
 import (
@@ -36,6 +36,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/importstripe"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/pricing"
+	"github.com/sagarsuperuser/velox/internal/subscription"
 )
 
 func main() {
@@ -44,7 +45,7 @@ func main() {
 	tenantID := flag.String("tenant", "", "target Velox tenant id (required)")
 	apiKey := flag.String("api-key", "", "source Stripe secret key (required)")
 	since := flag.String("since", "", "import customers created on/after this RFC3339 or YYYY-MM-DD timestamp (optional)")
-	resources := flag.String("resource", "customers", "comma-separated list of resources to import (supported: customers, products, prices)")
+	resources := flag.String("resource", "customers", "comma-separated list of resources to import (supported: customers, products, prices, subscriptions)")
 	output := flag.String("output", "", "CSV report output path (default: ./velox-import-<timestamp>.csv)")
 	dryRun := flag.Bool("dry-run", false, "skip DB writes; report what would happen")
 	livemodeFlag := flag.String("livemode-default", "", "true/false override for livemode (default: derived from api-key prefix)")
@@ -66,19 +67,19 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
-	// Phase 0+1 currently support customers, products, prices. Other
-	// recognised values (subscriptions, invoices) parse cleanly but we
-	// warn-and-skip until those phases land.
+	// Phase 0+1+2 currently support customers, products, prices,
+	// subscriptions. Other recognised values (invoices) parse cleanly but
+	// we warn-and-skip until those phases land.
 	for r := range resourceSet {
 		switch r {
-		case "customers", "products", "prices":
+		case "customers", "products", "prices", "subscriptions":
 			// supported
 		default:
 			fmt.Fprintf(os.Stderr, "warning: resource %q is recognised but not implemented yet; skipping\n", r)
 		}
 	}
-	if !resourceSet["customers"] && !resourceSet["products"] && !resourceSet["prices"] {
-		fatal("--resource must include at least one of: customers, products, prices")
+	if !resourceSet["customers"] && !resourceSet["products"] && !resourceSet["prices"] && !resourceSet["subscriptions"] {
+		fatal("--resource must include at least one of: customers, products, prices, subscriptions")
 	}
 
 	sinceUnix, err := parseSince(*since)
@@ -107,6 +108,7 @@ func main() {
 	customerSvc := customer.NewService(customerStore)
 	pricingStore := pricing.NewPostgresStore(db)
 	pricingSvc := pricing.NewService(pricingStore)
+	subscriptionStore := subscription.NewPostgresStore(db)
 
 	out, err := os.Create(outputPath)
 	if err != nil {
@@ -128,9 +130,9 @@ func main() {
 	ctx = postgres.WithLivemode(ctx, livemode)
 
 	// Run resources in strict dependency order regardless of the order
-	// they appeared on the command line. customers → products → prices.
-	// Each importer writes its own rows into the shared report; the
-	// summary at the end aggregates across all of them.
+	// they appeared on the command line. customers → products → prices
+	// → subscriptions. Each importer writes its own rows into the shared
+	// report; the summary at the end aggregates across all of them.
 	var runErr error
 	if resourceSet["customers"] && runErr == nil {
 		imp := &importstripe.CustomerImporter{
@@ -166,6 +168,20 @@ func main() {
 			TenantID:    *tenantID,
 			Livemode:    livemode,
 			DryRun:      *dryRun,
+		}
+		runErr = imp.Run(ctx)
+	}
+	if resourceSet["subscriptions"] && runErr == nil {
+		imp := &importstripe.SubscriptionImporter{
+			Source:         source,
+			Store:          subscriptionStore,
+			CustomerLookup: customerStore,
+			RuleLookup:     pricingSvc,
+			PlanLookup:     pricingStore,
+			Report:         report,
+			TenantID:       *tenantID,
+			Livemode:       livemode,
+			DryRun:         *dryRun,
 		}
 		runErr = imp.Run(ctx)
 	}
