@@ -277,6 +277,20 @@ export const api = {
     apiRequest<Subscription>('PUT', `/subscriptions/${id}/pause-collection`, body),
   resumeSubscriptionCollection: (id: string) =>
     apiRequest<Subscription>('DELETE', `/subscriptions/${id}/pause-collection`),
+  // Billing thresholds — Stripe-parity hard-cap config. PUT is replace-all
+  // (omitted item_thresholds rows are deleted by the backend store);
+  // DELETE removes the configuration entirely. The body must contain at
+  // least one of amount_gte or item_thresholds[] — a body with neither is
+  // rejected as a no-op masquerade. usage_gte arrives over the wire as a
+  // decimal-string per ADR-005 to round-trip fractional meter quantities.
+  setSubscriptionBillingThresholds: (id: string, body: {
+    amount_gte?: number
+    reset_billing_cycle?: boolean
+    item_thresholds?: { subscription_item_id: string; usage_gte: string }[]
+  }) =>
+    apiRequest<Subscription>('PUT', `/subscriptions/${id}/billing-thresholds`, body),
+  clearSubscriptionBillingThresholds: (id: string) =>
+    apiRequest<Subscription>('DELETE', `/subscriptions/${id}/billing-thresholds`),
   endSubscriptionTrial: (id: string) =>
     apiRequest<Subscription>('POST', `/subscriptions/${id}/end-trial`),
   extendSubscriptionTrial: (id: string, body: { trial_end: string }) =>
@@ -560,6 +574,25 @@ export interface ItemChangeResult {
   proration?: ProrationDetail
 }
 
+// SubscriptionItemThreshold is one per-item usage cap on a subscription.
+// usage_gte is a decimal-string (e.g. "1000000.000000000000") so meter
+// quantities that can be fractional round-trip without float drift.
+export interface SubscriptionItemThreshold {
+  subscription_item_id: string
+  usage_gte: string
+}
+
+// BillingThresholds is the Stripe-parity hard-cap config attached to a
+// subscription. Either amount_gte alone, item_thresholds[] alone, or both.
+// item_thresholds is always-array (the dashboard's .map() works in all
+// cases). amount_gte is integer cents in the subscription's currency;
+// multi-currency subs reject amount_gte at PUT time.
+export interface BillingThresholds {
+  amount_gte?: number
+  reset_billing_cycle: boolean
+  item_thresholds: SubscriptionItemThreshold[]
+}
+
 export interface Subscription {
   id: string
   code: string
@@ -585,6 +618,11 @@ export interface Subscription {
     behavior: 'keep_as_draft'
     resumes_at?: string
   }
+  // billing_thresholds is the Stripe-parity hard-cap config. Nil/missing
+  // means no cap is configured. When the running cycle subtotal crosses
+  // amount_gte, or any item's running quantity crosses its usage_gte, the
+  // billing engine fires an early finalize.
+  billing_thresholds?: BillingThresholds
   created_at: string
 }
 

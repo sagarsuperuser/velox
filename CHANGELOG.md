@@ -74,6 +74,23 @@ A second surface mirrors this file:
 
 ### Added
 
+- **Spend thresholds dashboard surface (Track B for the
+  `PUT/DELETE /v1/subscriptions/{id}/billing-thresholds` backend that
+  shipped earlier).** New "Spend thresholds" card on the subscription
+  detail page surfaces the configured cap (subtotal cap in the sub's
+  currency, plus the per-item usage caps mapped to plan names) with a
+  hint that explains the reset-billing-cycle flag in plain English.
+  When unset, the empty-state copy explains the cycle scan is the only
+  invoice-emitting path, so operators know the default behavior.
+  `Set thresholds` / `Edit` opens a dialog that takes amount in major
+  units (× 100 to cents on submit) and per-item `usage_gte` as a
+  decimal-string (round-trips fractional meter quantities without float
+  drift, per ADR-005). `Clear thresholds` button on the destructive
+  side wires the DELETE. Validation mirrors backend: at-least-one-of,
+  subtotal must be positive, per-item must be a non-negative number.
+  Edit is hidden on canceled / archived subs (matches the backend
+  reject). Closes the Track B half of the billing-thresholds feature.
+
 - **Typed `<VeloxCostDashboard />` React wrapper at
   `web-v2/src/components/embeds/VeloxCostDashboard.tsx`.** Wraps the
   public iframe with a typed prop interface (`token`, `baseUrl`, `theme`,
