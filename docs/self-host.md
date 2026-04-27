@@ -156,10 +156,8 @@ It covers the full operator playbook:
 
 ## Compliance posture
 
-Compliance docs are landing in Week 10 of the
-[90-day plan](90-day-plan.md): GDPR data export/deletion still
-pending; audit-log retention, encryption-at-rest, and SOC 2 control
-mapping guides shipped.
+Audit-log retention, encryption-at-rest, and SOC 2 control mapping
+guides have shipped. GDPR data export/deletion is still pending.
 
 Available now:
 

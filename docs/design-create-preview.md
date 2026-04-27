@@ -3,8 +3,7 @@
 > **Status:** Draft v1
 > **Owner:** Track A
 > **Last revised:** 2026-04-26
-> **Implementation window:** Week 5b of `docs/90-day-plan.md`
-> **Related:** `docs/design-customer-usage.md` (sibling read surface, same composition pattern), `docs/design-multi-dim-meters.md` (Week 2 dependency — `usage.AggregateByPricingRules` is the engine), `docs/positioning.md` pillar 1.4 (cost transparency)
+> **Related:** `docs/design-customer-usage.md` (sibling read surface, same composition pattern), `docs/design-multi-dim-meters.md` (multi-dim dependency — `usage.AggregateByPricingRules` is the engine)
 
 ## Motivation
 
@@ -264,7 +263,7 @@ Note: the existing `Engine.Preview` exposed `Quantity int64` and the `descriptio
 - [x] Unit tests: subscription resolution, period resolution, multi-dim per-rule lines, no-sub error path.
 - [x] Integration tests: single-meter parity, multi-dim parity, no-writes assertion, cross-tenant 404, no-sub error code.
 - [x] CHANGELOG.md (Track A) + Changelog.tsx (Track B) entries.
-- [x] `docs/parallel-handoff.md` Track A entry for this slice.
+- [x] Track A → Track B handoff note (private velox-ops repo).
 
 ## Track B unblock
 

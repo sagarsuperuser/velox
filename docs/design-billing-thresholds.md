@@ -3,8 +3,7 @@
 > **Status:** Draft v1
 > **Owner:** Track A
 > **Last revised:** 2026-04-26
-> **Implementation window:** Week 5c of `docs/90-day-plan.md`
-> **Related:** `docs/design-create-preview.md` (Week 5b — same composition, same wire conventions), `docs/design-multi-dim-meters.md` (Week 2 dependency — `usage.AggregateByPricingRules`), `docs/positioning.md` pillar 1.5 (early-warning surfaces for cost overruns)
+> **Related:** `docs/design-create-preview.md` (sibling — same composition, same wire conventions), `docs/design-multi-dim-meters.md` (multi-dim dependency — `usage.AggregateByPricingRules`)
 
 ## Motivation
 
@@ -342,7 +341,7 @@ The `item_thresholds` array is an aux table because per-item config doesn't comp
 - [ ] Unit tests for service validation + handler PATCH path + `evaluateThresholds`.
 - [ ] Integration tests covering the seven scenarios listed above.
 - [ ] CHANGELOG.md (Track A) + Changelog.tsx (Track B) entries.
-- [ ] `docs/parallel-handoff.md` Track A entry.
+- [ ] Track A → Track B handoff note (private velox-ops repo).
 
 ## Track B unblock
 

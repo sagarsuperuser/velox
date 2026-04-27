@@ -168,8 +168,8 @@ The decision point is the cardinality of your rate matrix. Below ~6 cells, Strip
 
 ## What we're building
 
-Velox's multi-dim meter implementation lands in `v0.x` on **May 8, 2026** (Week 2 of our [90-day plan](../90-day-plan.md)). The schema, API surface, aggregation semantics, and test plan are public in the [design doc](../design-multi-dim-meters.md). The endpoints in this post are the published contract — you can scaffold against them today.
+Velox's multi-dim meter implementation lands in `v0.x` on **May 8, 2026**. The schema, API surface, aggregation semantics, and test plan are public in the [design doc](../design-multi-dim-meters.md). The endpoints in this post are the published contract — you can scaffold against them today.
 
 If you run an AI product where the rate matrix is starting to outgrow Stripe Billing, or where regulatory pressure (EU GDPR-strict, India RBI data localization, healthcare-adjacent SaaS) means you can't keep customer billing data on Stripe's servers in the first place — we're looking for design partners. Twelve months free hosted access in exchange for a weekly check-in and a co-branded case study. Email `partners@velox.dev` or open an issue on [the repo](https://github.com/sagarsuperuser/velox).
 
-Velox is open source under MIT. The wedge is small and clear: AI-native, self-host first, the layer above PaymentIntent. The full positioning is in [`docs/positioning.md`](../positioning.md).
+Velox is open source under MIT. The wedge is small and clear: AI-native, self-host first, the layer above PaymentIntent.

@@ -203,7 +203,7 @@ The 18-month live default is the tradeoff between **query speed** (the live tabl
 
 Tradeoff:
 
-- **Monthly partitions** (e.g. `audit_log_2026_04`, `audit_log_2026_05`) make pruning trivial: `DROP TABLE audit_log_<old>` is metadata-only, no row scan, no lock on the hot table. Drawback: every audit insert becomes a partition-routing decision, and the FORCE-RLS policies have to be re-applied per partition. The migration to convert an existing populated table to a partitioned one is non-trivial: it's a `CREATE TABLE … PARTITION BY` plus a backfill, and the constraint validation pass on an existing 5M-row table has the same lock problem migration 0015 solved for foreign keys. (See `docs/migration-safety-findings.md` for the measurement methodology and the NOT-VALID + VALIDATE pattern that 0015 used to dodge `AccessExclusiveLock`.)
+- **Monthly partitions** (e.g. `audit_log_2026_04`, `audit_log_2026_05`) make pruning trivial: `DROP TABLE audit_log_<old>` is metadata-only, no row scan, no lock on the hot table. Drawback: every audit insert becomes a partition-routing decision, and the FORCE-RLS policies have to be re-applied per partition. The migration to convert an existing populated table to a partitioned one is non-trivial: it's a `CREATE TABLE … PARTITION BY` plus a backfill, and the constraint validation pass on an existing 5M-row table has the same lock problem migration 0015 solved for foreign keys via the NOT-VALID + VALIDATE pattern that dodges `AccessExclusiveLock`. (Lock-acquisition measurements and reproducible test methodology live in the internal `velox-ops` repo; the script `scripts/migration-safety-test.sh` runs the same probes.)
 - **No partitioning + monthly batched DELETE** is the simpler model for tenants under ~10M `audit_log` rows/year. A single Velox deployment with 100 active tenants writing 1 audit row/sec each generates ~3.15B rows/year — at that scale, partition. Below ~10M rows/year, the batched DELETE strategy keeps lock contention bounded with no schema complexity.
 
 **Velox ships unpartitioned.** When a deployment crosses ~5M rows/month sustained (visible in `pg_class.reltuples` for `audit_log`), revisit and partition. Until then, use the prune pattern below.
@@ -278,7 +278,7 @@ FOR EACH ROW EXECUTE FUNCTION audit_log_immutable();
 VACUUM (VERBOSE, ANALYZE) audit_log;
 ```
 
-The batch size (`LIMIT 10000`), per-batch `pg_sleep(0.1)`, and `FOR UPDATE SKIP LOCKED` mirror the same "don't lock the hot table" discipline that migration 0015 used (see [migration-safety-findings.md](../migration-safety-findings.md)) — concurrent INSERTs proceed unblocked because each prune transaction holds row-level locks on at most 10k rows for ~100ms before yielding.
+The batch size (`LIMIT 10000`), per-batch `pg_sleep(0.1)`, and `FOR UPDATE SKIP LOCKED` mirror the same "don't lock the hot table" discipline that migration 0015 used — concurrent INSERTs proceed unblocked because each prune transaction holds row-level locks on at most 10k rows for ~100ms before yielding. Lock-acquisition measurements are tracked in the internal `velox-ops` repo.
 
 ### Cron / scheduled job
 
@@ -505,5 +505,4 @@ Track these against the Week-10 follow-on ticket once the surrounding compliance
 - [`runbook.md`](./runbook.md#audit-fail-closed-tenants) — the on-call response for `VeloxAuditWriteErrors`. The audit-write metric is `velox_audit_write_errors_total{tenant_id}`.
 - [`api-key-rotation.md`](./api-key-rotation.md) — paired with audit `rotate` action on `api_key`.
 - [`secrets-management.md`](./secrets-management.md) — what's encrypted at rest. Webhook-secret rotations also produce audit `rotate` rows.
-- [`migration-safety-findings.md`](../migration-safety-findings.md) — the lock-avoidance pattern the prune script borrows from migration 0015.
-- `docs/compliance/soc2-mapping.md`, `docs/compliance/gdpr-data-export.md`, encryption-at-rest verification — landing in the rest of Week 10.
+- `docs/compliance/soc2-mapping.md` for the SOC 2 control mapping that consumes audit-log retention. Migration-safety lock-avoidance methodology lives in the internal `velox-ops` repo.
