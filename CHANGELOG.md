@@ -20,6 +20,25 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Design-partner onboarding playbook at `docs/design-partner-onboarding.md`.**
+  Partner-facing lifecycle document covering the 12-month free term, weekly
+  check-in cadence, sandbox-cutover-week-steady-state phases, communication
+  SLAs (< 1 business hour for production incidents, < 4 business hours for
+  bugs), incident-response expectations, mutual exits, and the Day-90
+  co-branded case-study draft. Distinct from the internal
+  `docs/design-partner-readiness-plan.md` (what we ship before invites)
+  vs. this (what happens once a partner signs the LOI). Closes the
+  Week 8 readiness item.
+
+### Documentation
+
+- **`docs/90-day-plan.md` truth-up:** flipped the time-to-first-invoice
+  telemetry checkbox to ✅ — evidence is the `TimeToFirstInvoiceSeconds`
+  field on `GET /v1/billing/dashboard` (PR #57), computed via the
+  audit-log scan of `invoice.finalize` minus `tenants.created_at`. The
+  plan item said "audit-log driven" and that is exactly what
+  `internal/billing/ttfi_postgres.go` reads from.
+
 - **Public cost dashboard embed page at `/public/cost-dashboard/:token`;
   embed snippet documented at `/docs/embeds/cost-dashboard`.**
   Operators mint a per-customer embed URL from the customer detail page
