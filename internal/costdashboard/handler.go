@@ -162,14 +162,14 @@ type publicSubscription struct {
 }
 
 type publicUsageMeter struct {
-	MeterID          string             `json:"meter_id"`
-	MeterKey         string             `json:"meter_key"`
-	MeterName        string             `json:"meter_name"`
-	Unit             string             `json:"unit"`
-	Currency         string             `json:"currency"`
-	TotalQuantity    decimal.Decimal    `json:"total_quantity"`
-	TotalAmountCents int64              `json:"total_amount_cents"`
-	Rules            []publicUsageRule  `json:"rules"`
+	MeterID          string            `json:"meter_id"`
+	MeterKey         string            `json:"meter_key"`
+	MeterName        string            `json:"meter_name"`
+	Unit             string            `json:"unit"`
+	Currency         string            `json:"currency"`
+	TotalQuantity    decimal.Decimal   `json:"total_quantity"`
+	TotalAmountCents int64             `json:"total_amount_cents"`
+	Rules            []publicUsageRule `json:"rules"`
 }
 
 type publicUsageRule struct {

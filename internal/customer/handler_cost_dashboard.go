@@ -24,8 +24,8 @@ import (
 // Mirrors how Stripe returns hosted_invoice_url paths in some test
 // fixtures and how Vercel renders preview URLs.
 type rotateCostDashboardTokenResponse struct {
-	Token     string `json:"token"`
-	PublicURL string `json:"public_url"`
+	Token      string `json:"token"`
+	PublicURL  string `json:"public_url"`
 	CustomerID string `json:"customer_id"`
 }
 
