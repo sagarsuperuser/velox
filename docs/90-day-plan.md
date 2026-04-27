@@ -60,7 +60,7 @@ Goal: ship the AI-native primitives that justify the positioning. Without these,
 ### Week 4 (May 16–22) — Quickstart wizard + 5-min path
 - [x] Onboarding flow: pick template → connect Stripe (test) → tax mode → branding → send first test invoice
 - [x] Sample data: each recipe seeds 1 demo customer + 1 active subscription
-- [ ] Telemetry on time-to-first-invoice (audit-log driven)
+- [x] Telemetry on time-to-first-invoice (audit-log driven) — `TimeToFirstInvoiceSeconds` on `GET /v1/billing/dashboard` computed via `MetricsTTFIReader` (audit-log scan of `invoice.finalize` minus `tenants.created_at`); see `internal/billing/ttfi_postgres.go` (PR #57)
 - [ ] **Demo recording** — 5-minute screen recording walking through wizard → invoice in inbox
 
 ---
@@ -93,7 +93,7 @@ The wedge's sticky feature, plus the two Stripe Tier 1 gaps it depends on. Dense
 - [ ] 50 cold emails sent (week 1 list)
 - [ ] 10+ demo calls scheduled
 - [ ] **3 design partners with signed LOI** (12 months free, co-branded case study, weekly check-in)
-- [ ] Onboarding playbook drafted (`docs/design-partner-onboarding.md`)
+- [x] Onboarding playbook drafted (`docs/design-partner-onboarding.md`) — partner-facing lifecycle from LOI through Day-90 case-study draft
 
 ---
 
