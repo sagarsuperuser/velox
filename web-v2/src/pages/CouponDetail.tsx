@@ -1,9 +1,12 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Coupon, type CouponRedemption, type Plan } from '@/lib/api'
-import { showApiError } from '@/lib/formErrors'
+import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 
@@ -12,15 +15,23 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Checkbox } from '@/components/ui/checkbox'
+import { DatePicker } from '@/components/ui/date-picker'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage,
+} from '@/components/ui/form'
+import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 
-import { Loader2, Archive, ArchiveRestore, Lock, Calculator, CopyPlus } from 'lucide-react'
+import { Loader2, Archive, ArchiveRestore, Lock, Calculator, CopyPlus, Pencil } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 import { CustomerCombobox } from '@/components/CustomerCombobox'
@@ -77,6 +88,7 @@ export default function CouponDetailPage() {
   const queryClient = useQueryClient()
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [unarchiveOpen, setUnarchiveOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
 
   const { data: coupon, isLoading, error: loadError, refetch } = useQuery({
     queryKey: ['coupon', id],
@@ -246,6 +258,12 @@ export default function CouponDetailPage() {
             <CopyPlus size={14} className="mr-1.5" />
             Duplicate
           </Button>
+          {!isArchived && (
+            <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+              <Pencil size={14} className="mr-1.5" />
+              Edit
+            </Button>
+          )}
           {isArchived ? (
             <Button variant="outline" size="sm" onClick={() => setUnarchiveOpen(true)}>
               <ArchiveRestore size={14} className="mr-1.5" />
@@ -533,6 +551,12 @@ export default function CouponDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <EditCouponDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        coupon={coupon}
+      />
     </Layout>
   )
 }
@@ -684,5 +708,243 @@ function CouponPreviewCard({
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+// Edit dialog covers the Stripe-parity mutable subset: name, max_redemptions,
+// expires_at, restrictions. Discount type/value, currency, duration,
+// stackable, plan_ids, and customer_id are write-once at create — changing
+// them after the fact would silently re-price open subscriptions or
+// invalidate redemptions already on file. Operators who need that should
+// archive + create a new coupon (the Duplicate button is right next door).
+const editCouponSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  maxRedemptions: z.string(),
+  expiresAt: z.string(),
+  minAmount: z.string(),
+  firstTimeCustomerOnly: z.boolean(),
+  maxRedemptionsPerCustomer: z.string(),
+})
+
+type EditCouponData = z.infer<typeof editCouponSchema>
+
+function couponToFormValues(c: Coupon): EditCouponData {
+  return {
+    name: c.name ?? '',
+    maxRedemptions: c.max_redemptions !== null ? String(c.max_redemptions) : '',
+    expiresAt: c.expires_at ? c.expires_at.slice(0, 10) : '',
+    minAmount: c.restrictions?.min_amount_cents
+      ? (c.restrictions.min_amount_cents / 100).toFixed(2)
+      : '',
+    firstTimeCustomerOnly: c.restrictions?.first_time_customer_only ?? false,
+    maxRedemptionsPerCustomer: c.restrictions?.max_redemptions_per_customer
+      ? String(c.restrictions.max_redemptions_per_customer)
+      : '',
+  }
+}
+
+function EditCouponDialog({
+  open,
+  onOpenChange,
+  coupon,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  coupon: Coupon
+}) {
+  const queryClient = useQueryClient()
+
+  const form = useForm<EditCouponData>({
+    resolver: zodResolver(editCouponSchema),
+    defaultValues: couponToFormValues(coupon),
+  })
+
+  // Re-seed the form on the open transition so a stale form (operator
+  // closed without saving, then re-opened after the coupon was edited
+  // elsewhere) doesn't show stale values. Keyed on [open, coupon.id]
+  // rather than [coupon] so an unrelated query refetch doesn't
+  // trample mid-edit values.
+  useEffect(() => {
+    if (open) form.reset(couponToFormValues(coupon))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, coupon.id])
+
+  const updateMutation = useMutation({
+    mutationFn: async (data: EditCouponData) => {
+      // Backend uses full-overwrite semantics on `restrictions` — the
+      // wire decoder copies the whole object onto the row. So we always
+      // build the full object from form state; an empty form-state means
+      // {} on the wire, which clears all restrictions in one shot.
+      const restrictions: NonNullable<Parameters<typeof api.updateCoupon>[1]['restrictions']> = {}
+      if (data.minAmount.trim()) {
+        restrictions.min_amount_cents = Math.round(parseFloat(data.minAmount) * 100)
+      }
+      if (data.firstTimeCustomerOnly) {
+        restrictions.first_time_customer_only = true
+      }
+      if (data.maxRedemptionsPerCustomer.trim()) {
+        restrictions.max_redemptions_per_customer = parseInt(data.maxRedemptionsPerCustomer, 10)
+      }
+
+      return api.updateCoupon(coupon.id, {
+        name: data.name.trim(),
+        max_redemptions: data.maxRedemptions.trim() ? parseInt(data.maxRedemptions, 10) : null,
+        expires_at: data.expiresAt.trim() ? new Date(data.expiresAt).toISOString() : null,
+        restrictions,
+      })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['coupon', coupon.id] })
+      queryClient.invalidateQueries({ queryKey: ['coupons'] })
+      toast.success('Coupon updated')
+      onOpenChange(false)
+    },
+    onError: (err) => {
+      applyApiError(form, err, {
+        name: 'name',
+        max_redemptions: 'maxRedemptions',
+        expires_at: 'expiresAt',
+        'restrictions.min_amount_cents': 'minAmount',
+        'restrictions.max_redemptions_per_customer': 'maxRedemptionsPerCustomer',
+      })
+    },
+  })
+
+  const onSubmit = form.handleSubmit((data) => updateMutation.mutate(data))
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Edit Coupon</DialogTitle>
+          <DialogDescription>
+            Update the lifecycle and restriction fields. Discount value, type,
+            duration, and plan/customer scope are write-once — duplicate the
+            coupon if those need to change.
+          </DialogDescription>
+        </DialogHeader>
+        <Form {...form}>
+          <form onSubmit={onSubmit} noValidate className="space-y-4">
+            <FormField
+              control={form.control}
+              name="name"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Name</FormLabel>
+                  <FormControl>
+                    <Input placeholder="Launch Discount" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="maxRedemptions"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Max Redemptions</FormLabel>
+                  <FormControl>
+                    <Input type="number" min="1" step="1" placeholder="Unlimited" {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    Leave empty for unlimited. Currently {coupon.times_redeemed} redeemed.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="expiresAt"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Expiry Date</FormLabel>
+                  <DatePicker
+                    value={field.value}
+                    onChange={field.onChange}
+                    placeholder="No expiration"
+                  />
+                  <FormDescription>Leave empty for no expiration</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <div>
+              <Label className="text-sm font-medium">Restrictions</Label>
+              <p className="text-xs text-muted-foreground mt-0.5 mb-2">
+                Optional — leave empty for no restriction. Clearing all three
+                removes the restrictions block from the coupon.
+              </p>
+              <div className="space-y-3">
+                <FormField
+                  control={form.control}
+                  name="minAmount"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-xs text-muted-foreground">
+                        Minimum purchase{coupon.type === 'fixed_amount' && coupon.currency ? ` (${coupon.currency.toUpperCase()})` : ''}
+                      </FormLabel>
+                      <FormControl>
+                        <Input type="number" min="0" step="0.01" placeholder="e.g. 50.00" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="maxRedemptionsPerCustomer"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-xs text-muted-foreground">Max redemptions per customer</FormLabel>
+                      <FormControl>
+                        <Input type="number" min="1" step="1" placeholder="e.g. 1" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="firstTimeCustomerOnly"
+                  render={({ field }) => (
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={(checked) => field.onChange(!!checked)}
+                        className="mt-0.5"
+                      />
+                      <div className="flex-1">
+                        <div className="text-sm text-foreground">First-time customers only</div>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Redeemable only on a customer&apos;s very first invoice.
+                        </p>
+                      </div>
+                    </label>
+                  )}
+                />
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={updateMutation.isPending}>
+                {updateMutation.isPending ? (
+                  <><Loader2 size={14} className="animate-spin mr-2" /> Saving…</>
+                ) : (
+                  'Save changes'
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
+      </DialogContent>
+    </Dialog>
   )
 }
