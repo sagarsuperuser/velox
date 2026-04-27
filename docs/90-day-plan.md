@@ -55,7 +55,7 @@ Goal: ship the AI-native primitives that justify the positioning. Without these,
 - [x] Built-in recipes: `anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`
 - [x] `POST /v1/recipes/instantiate` — creates products + prices + meters + dunning + webhooks atomically
 - [x] Dashboard UI: pick recipe → preview generated objects → instantiate
-- [ ] Recipes documented at `/docs/recipes` with copy-pasteable curl
+- [x] Recipes documented at `/docs/recipes` with copy-pasteable curl
 
 ### Week 4 (May 16–22) — Quickstart wizard + 5-min path
 - [x] Onboarding flow: pick template → connect Stripe (test) → tax mode → branding → send first test invoice

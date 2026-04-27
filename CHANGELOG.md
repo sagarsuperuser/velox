@@ -20,6 +20,22 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **DocsRecipes page at `/docs/recipes` — copy-pasteable curl for
+  instantiating the five built-in pricing recipes.** New in-app docs
+  page rendered by the shared `DocsShell` covers what recipes are, the
+  five built-in templates (anthropic_style, openai_style,
+  replicate_style, b2b_saas_pro, marketplace_gmv) with per-recipe
+  summaries (number of meters / rating rules / pricing rules / dunning
+  steps / webhook events) plus GitHub permalinks to the YAML, working
+  curl examples for `POST /v1/recipes/{key}/instantiate` against
+  anthropic_style and b2b_saas_pro, the `POST /v1/recipes/{key}/preview`
+  endpoint with response shape, atomicity guarantees (one transaction,
+  full rollback on partial failure, RLS-isolated), idempotency on
+  `(tenant_id, recipe_key)`, and a customisation pointer to
+  `docs/design-recipes.md`. Closes the last unchecked Week 3 item in
+  `docs/90-day-plan.md` ("Recipes documented at /docs/recipes with
+  copy-pasteable curl"). New nav entry in `DocsShell` Guides group plus
+  a discovery card on the docs overview page.
 - **Time-to-first-invoice metric on the per-tenant billing dashboard,
   computed from the audit log.** Operators can see how long each
   tenant took from sign-up to their first finalized invoice via the
