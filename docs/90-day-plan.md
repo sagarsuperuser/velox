@@ -34,32 +34,32 @@ Everything else from the gap analysis (Schedules, Quotes, Promotion Codes, `add_
 Goal: ship the AI-native primitives that justify the positioning. Without these, the wedge is just a slide.
 
 ### Week 1 (Apr 25 – May 1) — Position & narrative
-- [ ] `docs/positioning.md` published (this commit)
-- [ ] `README.md` rewritten to lead with AI-native + self-host
+- [x] `docs/positioning.md` published (this commit)
+- [x] `README.md` rewritten to lead with AI-native + self-host
 - [ ] `velox.dev` hero rewritten (or stand it up if not yet live)
-- [ ] Outreach list: 50 candidate design partners (AI inference, vector DB, dev infra) with named contacts
-- [ ] First long-form post drafted: "Why Stripe Billing's Meter API doesn't fit AI workloads"
+- [x] Outreach list: 50 candidate design partners (AI inference, vector DB, dev infra) with named contacts
+- [x] First long-form post drafted: "Why Stripe Billing's Meter API doesn't fit AI workloads"
 
 ### Week 2 (May 2–8) — Multi-dimensional meters
-- [ ] Schema migration: `usage_events.dimensions JSONB`, GIN index on dimensions
-- [ ] **Decimal quantities** — `value` accepts NUMERIC, not just BIGINT (GPU-hour fractions, partial-token edge cases). _Stripe Tier 1 gap, hoisted here — maps to Stripe's `quantity_decimal`._
-- [ ] Service layer: aggregate over arbitrary dimension subsets (`SUM(value) GROUP BY dimensions->>'model'`)
-- [ ] **Aggregation modes per pricing rule** — `sum` (default), `count`, `last_during_period`, `last_ever`, `max`. _Stripe Tier 1 gap (their legacy Plan `aggregate_usage` enum), expressed as a per-rule choice instead of a per-meter one — strictly more expressive._
-- [ ] Handler: `POST /v1/usage_events` with `{meter, customer, dimensions, value, timestamp, idempotency_key}`
-- [ ] Pricing rules: `pricing_rule.dimension_match JSONB` with subset-match semantics; rule resolution at finalize
-- [ ] Tests: aggregation correctness, pricing rule precedence, partial-dimension match, decimal value handling, all five aggregation modes
-- [ ] Benchmark: 50k events/sec sustained ingest on a single tenant
+- [x] Schema migration: `usage_events.dimensions JSONB`, GIN index on dimensions
+- [x] **Decimal quantities** — `value` accepts NUMERIC, not just BIGINT (GPU-hour fractions, partial-token edge cases). _Stripe Tier 1 gap, hoisted here — maps to Stripe's `quantity_decimal`._
+- [x] Service layer: aggregate over arbitrary dimension subsets (`SUM(value) GROUP BY dimensions->>'model'`)
+- [x] **Aggregation modes per pricing rule** — `sum` (default), `count`, `last_during_period`, `last_ever`, `max`. _Stripe Tier 1 gap (their legacy Plan `aggregate_usage` enum), expressed as a per-rule choice instead of a per-meter one — strictly more expressive._
+- [x] Handler: `POST /v1/usage_events` with `{meter, customer, dimensions, value, timestamp, idempotency_key}`
+- [x] Pricing rules: `pricing_rule.dimension_match JSONB` with subset-match semantics; rule resolution at finalize
+- [x] Tests: aggregation correctness, pricing rule precedence, partial-dimension match, decimal value handling, all five aggregation modes
+- [x] Benchmark: 50k events/sec sustained ingest on a single tenant
 
 ### Week 3 (May 9–15) — Pricing recipes
-- [ ] Recipe definition format (YAML in `internal/recipe/recipes/`)
-- [ ] Built-in recipes: `anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`
-- [ ] `POST /v1/recipes/instantiate` — creates products + prices + meters + dunning + webhooks atomically
-- [ ] Dashboard UI: pick recipe → preview generated objects → instantiate
+- [x] Recipe definition format (YAML in `internal/recipe/recipes/`)
+- [x] Built-in recipes: `anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`
+- [x] `POST /v1/recipes/instantiate` — creates products + prices + meters + dunning + webhooks atomically
+- [x] Dashboard UI: pick recipe → preview generated objects → instantiate
 - [ ] Recipes documented at `/docs/recipes` with copy-pasteable curl
 
 ### Week 4 (May 16–22) — Quickstart wizard + 5-min path
-- [ ] Onboarding flow: pick template → connect Stripe (test) → tax mode → branding → send first test invoice
-- [ ] Sample data: each recipe seeds 1 demo customer + 1 active subscription
+- [x] Onboarding flow: pick template → connect Stripe (test) → tax mode → branding → send first test invoice
+- [x] Sample data: each recipe seeds 1 demo customer + 1 active subscription
 - [ ] Telemetry on time-to-first-invoice (audit-log driven)
 - [ ] **Demo recording** — 5-minute screen recording walking through wizard → invoice in inbox
 
@@ -72,22 +72,22 @@ Goal: punch above weight on operator UX so demo calls land. Start outreach.
 ### Week 5 (May 23–29) — Cost dashboard + the engine behind it
 The wedge's sticky feature, plus the two Stripe Tier 1 gaps it depends on. Dense week — if slip happens, the engine + thresholds/alerts ship first (independently useful), the dashboard component bleeds into Week 6.
 
-- [ ] **`POST /v1/invoices/create_preview`** — computes a draft invoice for an in-progress period without committing. Powers (a) the cost dashboard's "projected bill" line, (b) plan-change confirmation dialogs, (c) the operator plan-migration preview in Week 6. _Stripe Tier 1 gap, hoisted because the dashboard depends on it._
-- [ ] **Billing thresholds** — `subscription.billing_thresholds.usage_gte` (per-item) + `amount_gte` (per-subscription). Crossing a threshold finalizes the invoice early with `billing_reason="threshold"`. _Stripe Tier 1 gap, hoisted — it's the "stop-the-bleeding" surface AI-usage buyers expect._
-- [ ] **Billing alerts** — `POST /v1/billing/alerts` with `recurrence` (`one_time` / `per_period`); fires `billing.alert.triggered` webhook + dashboard notification. _Stripe Tier 1 gap._
+- [x] **`POST /v1/invoices/create_preview`** — computes a draft invoice for an in-progress period without committing. Powers (a) the cost dashboard's "projected bill" line, (b) plan-change confirmation dialogs, (c) the operator plan-migration preview in Week 6. _Stripe Tier 1 gap, hoisted because the dashboard depends on it._
+- [x] **Billing thresholds** — `subscription.billing_thresholds.usage_gte` (per-item) + `amount_gte` (per-subscription). Crossing a threshold finalizes the invoice early with `billing_reason="threshold"`. _Stripe Tier 1 gap, hoisted — it's the "stop-the-bleeding" surface AI-usage buyers expect._
+- [x] **Billing alerts** — `POST /v1/billing/alerts` with `recurrence` (`one_time` / `per_period`); fires `billing.alert.triggered` webhook + dashboard notification. _Stripe Tier 1 gap._
 - [ ] React component: `<VeloxCostDashboard tenantKey customerId />` — current period usage by dimension, projected bill (powered by `create_preview`), top usage drivers, alert threshold visualization
 - [ ] Public iframe-able URL with secure token (reuses public-token pattern from hosted invoice)
 - [ ] Theming via CSS variables; dark mode by default
 - [ ] Documented embed snippet at `/docs/embeds/cost-dashboard`
 
 ### Week 6 (May 30 – Jun 5) — Live event stream + plan migration preview
-- [ ] Real-time webhook event UI (server-sent events, replay button, payload diff for retries)
-- [ ] Plan migration tool: pick old plan → new plan → preview impact across N customers (per-customer before/after invoice) → one-click commit with audit trail
+- [x] Real-time webhook event UI (server-sent events, replay button, payload diff for retries)
+- [x] Plan migration tool: pick old plan → new plan → preview impact across N customers (per-customer before/after invoice) → one-click commit with audit trail
 
 ### Week 7 (Jun 6–12) — Bulk operations + one-off invoice composer
-- [ ] Bulk: apply coupon to N customers, schedule cancel for cohort, plan migrate cohort
-- [ ] One-off invoice composer (target 30-second flow, no leaving customer page)
-- [ ] Operator CLI: `velox sub list`, `velox invoice send`, `velox import-from-stripe`
+- [x] Bulk: apply coupon to N customers, schedule cancel for cohort, plan migrate cohort
+- [x] One-off invoice composer (target 30-second flow, no leaving customer page)
+- [x] Operator CLI: `velox sub list`, `velox invoice send`, `velox import-from-stripe`
 
 ### Week 8 (Jun 13–19) — Outreach intensifies
 - [ ] 50 cold emails sent (week 1 list)
@@ -102,22 +102,22 @@ The wedge's sticky feature, plus the two Stripe Tier 1 gaps it depends on. Dense
 Goal: prove the self-host pillar works end-to-end. Get one partner to production.
 
 ### Week 9 (Jun 20–26) — Self-host playbook
-- [ ] Helm chart for Kubernetes (`charts/velox/`)
-- [ ] Docker Compose for single-VM (`deploy/compose/`)
-- [ ] Postgres backup + restore guide (pg_basebackup + WAL archive)
-- [ ] Terraform module for AWS VPC deploy (`deploy/terraform/aws/`)
-- [ ] Self-host docs page at `/docs/self-host`
+- [x] Helm chart for Kubernetes (`charts/velox/`)
+- [x] Docker Compose for single-VM (`deploy/compose/`)
+- [x] Postgres backup + restore guide (pg_basebackup + WAL archive)
+- [x] Terraform module for AWS VPC deploy (`deploy/terraform/aws/`)
+- [x] Self-host docs page at `/docs/self-host`
 - [ ] **Cold-install test:** non-Velox engineer follows docs from scratch, reports friction
 
 ### Week 10 (Jun 27 – Jul 3) — Compliance + audit posture
-- [ ] Encryption-at-rest verification (webhook secrets, API keys, customer email/PII): single doc tying it together
-- [ ] Audit log retention guide (recommended retention windows, S3 archival pattern)
+- [x] Encryption-at-rest verification (webhook secrets, API keys, customer email/PII): single doc tying it together
+- [x] Audit log retention guide (recommended retention windows, S3 archival pattern)
 - [x] SOC2 control mapping doc (`docs/compliance/soc2-mapping.md`)
 - [x] GDPR data export + deletion verified end-to-end against the multi-dim usage_events table
 
 ### Week 11 (Jul 4–10) — Migration FROM Stripe
-- [ ] Importer: customers, subscriptions, products, prices, finalized invoice history
-- [ ] CLI: `velox import-from-stripe --api-key=... --since=2024-01-01`
+- [x] Importer: customers, subscriptions, products, prices, finalized invoice history
+- [x] CLI: `velox import-from-stripe --api-key=... --since=2024-01-01`
 - [x] Migration guide with cutover playbook (parallel-run window, webhook redirection, reconciliation)
 - [ ] Test against a real Stripe test account end-to-end
 
