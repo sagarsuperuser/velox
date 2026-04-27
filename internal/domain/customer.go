@@ -56,8 +56,14 @@ type Customer struct {
 	EmailStatus        CustomerEmailStatus `json:"email_status,omitempty"`
 	EmailLastBouncedAt *time.Time          `json:"email_last_bounced_at,omitempty"`
 	EmailBounceReason  string              `json:"email_bounce_reason,omitempty"`
-	CreatedAt          time.Time           `json:"created_at"`
-	UpdatedAt          time.Time           `json:"updated_at"`
+	// CostDashboardToken is the credential for the public cost-dashboard
+	// iframe URL. Empty when the operator has never minted a token.
+	// Rotation is the only mutation and invalidates the previous URL.
+	// See internal/customer/cost_dashboard_token.go for the format
+	// (vlx_pcd_<64 hex> = 256 bits of entropy).
+	CostDashboardToken string    `json:"cost_dashboard_token,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type BillingProfileStatus string
