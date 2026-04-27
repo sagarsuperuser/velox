@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -22,6 +23,21 @@ type mockMetricsInvoices struct {
 
 func (m *mockMetricsInvoices) ListRecent(_ context.Context, _ string, _ time.Time, _ int) ([]domain.Invoice, error) {
 	return m.invoices, nil
+}
+
+type mockMetricsTTFI struct {
+	firstFinalizedAt *time.Time
+	firstErr         error
+	tenantCreatedAt  time.Time
+	tenantErr        error
+}
+
+func (m *mockMetricsTTFI) FirstInvoiceFinalizedAt(_ context.Context, _ string) (*time.Time, error) {
+	return m.firstFinalizedAt, m.firstErr
+}
+
+func (m *mockMetricsTTFI) TenantCreatedAt(_ context.Context, _ string) (time.Time, error) {
+	return m.tenantCreatedAt, m.tenantErr
 }
 
 func TestComputeDashboard(t *testing.T) {
@@ -50,7 +66,7 @@ func TestComputeDashboard(t *testing.T) {
 		"pln_yearly":  {ID: "pln_yearly", BaseAmountCents: 59900, BillingInterval: domain.BillingYearly},
 	}
 
-	metrics := NewMetrics(subs, invoices)
+	metrics := NewMetrics(subs, invoices, &mockMetricsTTFI{})
 	d, err := metrics.ComputeDashboard(context.Background(), "t1", plans)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -94,6 +110,7 @@ func TestComputeDashboard_Empty(t *testing.T) {
 	metrics := NewMetrics(
 		&mockMetricsSubs{},
 		&mockMetricsInvoices{},
+		&mockMetricsTTFI{},
 	)
 
 	d, err := metrics.ComputeDashboard(context.Background(), "t1", map[string]domain.Plan{})
@@ -107,4 +124,90 @@ func TestComputeDashboard_Empty(t *testing.T) {
 	if d.ActiveSubscriptions != 0 {
 		t.Errorf("empty subs: got %d, want 0", d.ActiveSubscriptions)
 	}
+	if d.TimeToFirstInvoiceSeconds != nil {
+		t.Errorf("empty ttfi: got %v, want nil", *d.TimeToFirstInvoiceSeconds)
+	}
+}
+
+func TestComputeDashboard_TimeToFirstInvoice(t *testing.T) {
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	finalized := created.Add(72 * time.Hour) // 3 days
+
+	t.Run("populated when audit log has a finalize entry", func(t *testing.T) {
+		ttfi := &mockMetricsTTFI{
+			firstFinalizedAt: &finalized,
+			tenantCreatedAt:  created,
+		}
+		metrics := NewMetrics(&mockMetricsSubs{}, &mockMetricsInvoices{}, ttfi)
+		d, err := metrics.ComputeDashboard(context.Background(), "t1", map[string]domain.Plan{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if d.TimeToFirstInvoiceSeconds == nil {
+			t.Fatalf("TimeToFirstInvoiceSeconds: got nil, want non-nil")
+		}
+		want := (72 * time.Hour).Seconds()
+		if *d.TimeToFirstInvoiceSeconds != want {
+			t.Errorf("TimeToFirstInvoiceSeconds: got %v, want %v", *d.TimeToFirstInvoiceSeconds, want)
+		}
+	})
+
+	t.Run("nil when tenant has never finalized an invoice", func(t *testing.T) {
+		ttfi := &mockMetricsTTFI{
+			firstFinalizedAt: nil,
+			tenantCreatedAt:  created,
+		}
+		metrics := NewMetrics(&mockMetricsSubs{}, &mockMetricsInvoices{}, ttfi)
+		d, err := metrics.ComputeDashboard(context.Background(), "t1", map[string]domain.Plan{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if d.TimeToFirstInvoiceSeconds != nil {
+			t.Errorf("TimeToFirstInvoiceSeconds: got %v, want nil", *d.TimeToFirstInvoiceSeconds)
+		}
+	})
+
+	t.Run("nil and dashboard still computes when audit reader fails", func(t *testing.T) {
+		ttfi := &mockMetricsTTFI{
+			firstErr: errors.New("boom: audit log read failed"),
+		}
+		subs := &mockMetricsSubs{
+			subs: []domain.Subscription{
+				{ID: "sub_1", CustomerID: "cus_1", Status: domain.SubscriptionActive,
+					Items: []domain.SubscriptionItem{{PlanID: "pln", Quantity: 1}}},
+			},
+		}
+		plans := map[string]domain.Plan{
+			"pln": {ID: "pln", BaseAmountCents: 1000, BillingInterval: domain.BillingMonthly},
+		}
+		metrics := NewMetrics(subs, &mockMetricsInvoices{}, ttfi)
+		d, err := metrics.ComputeDashboard(context.Background(), "t1", plans)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if d.TimeToFirstInvoiceSeconds != nil {
+			t.Errorf("TimeToFirstInvoiceSeconds: got %v, want nil on reader error", *d.TimeToFirstInvoiceSeconds)
+		}
+		if d.MRRCents != 1000 {
+			t.Errorf("MRR should still compute when ttfi fails: got %d, want 1000", d.MRRCents)
+		}
+		if d.ActiveSubscriptions != 1 {
+			t.Errorf("ActiveSubscriptions should still compute when ttfi fails: got %d, want 1", d.ActiveSubscriptions)
+		}
+	})
+
+	t.Run("nil when tenant lookup fails after audit log returned a timestamp", func(t *testing.T) {
+		ttfi := &mockMetricsTTFI{
+			firstFinalizedAt: &finalized,
+			tenantErr:        errors.New("boom: tenant row not found"),
+		}
+		metrics := NewMetrics(&mockMetricsSubs{}, &mockMetricsInvoices{}, ttfi)
+		d, err := metrics.ComputeDashboard(context.Background(), "t1", map[string]domain.Plan{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if d.TimeToFirstInvoiceSeconds != nil {
+			t.Errorf("TimeToFirstInvoiceSeconds: got %v, want nil on tenant lookup error", *d.TimeToFirstInvoiceSeconds)
+		}
+	})
 }

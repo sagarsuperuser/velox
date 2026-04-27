@@ -20,6 +20,21 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Time-to-first-invoice metric on the per-tenant billing dashboard,
+  computed from the audit log.** Operators can see how long each
+  tenant took from sign-up to their first finalized invoice via the
+  new `time_to_first_invoice_seconds` field on the billing dashboard
+  payload — derived from the earliest `invoice.finalize` audit-log
+  entry minus `tenants.created_at`. Reading from the audit log keeps
+  the invoice service's Finalize hot path untouched (no per-finalize
+  query overhead) and lets backfills, deletions, or operator-driven
+  re-finalizes be answered correctly. The field is omitted from the
+  response payload (and from any downstream consumer) until the
+  tenant has finalized at least one invoice — that's the "no invoice
+  yet" signal. A read failure on either lookup logs a warning and
+  leaves the field nil rather than failing the dashboard, since
+  MRR/ARR are operator-critical and shouldn't break for a side
+  telemetry signal.
 - **SOC 2 cheap-gap closeout** (2026-04-27) — four of the SOC 2 gap
   items called out in `docs/compliance/soc2-mapping.md` close in a
   single PR. New `SECURITY.md` at the repo root names
