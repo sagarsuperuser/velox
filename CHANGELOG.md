@@ -20,6 +20,42 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Stripe importer Phase 2 — subscriptions** (2026-04-27) —
+  `velox-import` now accepts `--resource=subscriptions` on top of the
+  Phase 0 (customers) and Phase 1 (products + prices) slices. Stripe
+  `Subscription` rows map onto Velox `subscriptions` rows with
+  `subscription.code = stripe_subscription_id` as the import-stable key
+  (so reruns are idempotent without a new migration). Phase 2 handles
+  single-item subscriptions only — multi-item subs surface as `error`
+  rows in the CSV report so operators can recreate them by hand rather
+  than getting silent partial data. The mapper preserves Stripe's
+  `current_period_start/end`, `billing_cycle_anchor`, `start_date`,
+  `trial_start/end`, `cancel_at`, `cancel_at_period_end`, and
+  `canceled_at` verbatim, and translates the seven Stripe statuses into
+  Velox's narrower set: `active`/`trialing`/`canceled`/`paused` map
+  directly, while `past_due` remaps to `active` (Velox tracks dunning on
+  invoices, not subscriptions), and `unpaid`/`incomplete`/
+  `incomplete_expired`/unknown future states all remap to `canceled`
+  with a `Notes` entry surfacing the divergence in the CSV. Customer
+  resolution goes through Velox's stripe-id lookup
+  (`customers.stripe_customer_id = sub.customer.id`); price → plan
+  resolution pulls `item.price.product.id` and looks up the plan whose
+  `code` matches that Stripe product id. Out-of-scope Stripe features
+  (discounts, schedules, `pause_collection`, `default_tax_rates`,
+  `billing_thresholds`) are detected and emitted as CSV notes — the
+  importer never silently drops or fabricates them. Resources run in
+  strict dependency order regardless of CLI input order: customers →
+  products → prices → subscriptions. Per-row outcomes mirror the
+  earlier phases: `insert` / `skip-equivalent` / `skip-divergent` /
+  `error`. Conservative divergence policy: if Stripe and Velox disagree
+  on any of {status, customer, display_name, trial window, cancel
+  window, current period}, the importer writes a `skip-divergent` row
+  and never overwrites — operators reconcile manually. New code:
+  `internal/importstripe/mapper_subscription.go`,
+  `subscription_importer.go` plus matching unit tests, driver tests,
+  and an integration test against real Postgres. With Phase 2 shipping,
+  Velox can now absorb a Stripe Billing tenant's full pricing +
+  subscription state in one CLI run; only invoices remain (Phase 3).
 - **Stripe importer Phase 1 — products + prices** (2026-04-27) —
   `velox-import` now accepts `--resource=products,prices` in addition to the
   Phase 0 customers slice. Stripe `Product` rows map onto Velox `plans`

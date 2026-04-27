@@ -34,6 +34,10 @@ func (f *fakeProductSource) IteratePrices(ctx context.Context, fn func(*stripe.P
 	return nil
 }
 
+func (f *fakeProductSource) IterateSubscriptions(ctx context.Context, fn func(*stripe.Subscription) error) error {
+	return nil
+}
+
 // fakePlanStore is the minimal PlanService + PlanLookup stand-in used by
 // the unit-level driver tests. It models plans by Velox id and supports
 // list-by-tenant; ListPlans returns deterministic order.
