@@ -63,6 +63,26 @@ Two surfaces mirror this file:
 
 ### Documentation
 
+- **Demo recording script at `docs/marketing/demo-script.md`.**
+  Shot-by-shot 5-minute screen-recording script for the cold-emailable
+  product walkthrough — five-beat shape (hook → multi-dim meters via
+  the `anthropic_style` recipe → live `usage_events` ingest with the
+  public cost-dashboard reflecting the tick → PaymentIntent direct,
+  no Stripe Billing fee → Helm install in your VPC → ask + outro).
+  Pre-flight checklist (clean tenant, 1440×900, no-edits one-take
+  rule), 4:30 ± 0:20 length target, captions discipline,
+  re-record cadence (quarterly + on shape changes), and an explicit
+  "what's deliberately not in the script" section pruning the
+  anti-patterns (architecture deep-dive, feature inventory,
+  competitive table, founder bio, pricing). Pairs with
+  `docs/marketing/cold-email-templates.md` — the script is what the
+  recipient sees after replying to one of those templates. Records
+  against the runbook in `docs/ops/stripe-end-to-end-test.md` once
+  the demo tenant is bootstrapped. The plan item that calls for the
+  actual recording (Week 4) stays unchecked because a script is not
+  a video — this PR is leverage for the maintainer to record from,
+  not the recording itself.
+
 - **Stripe end-to-end test runbook at `docs/ops/stripe-end-to-end-test.md`.**
   Eight-step manual smoke for the full Stripe integration surface — local
   Velox boot → connect a test-mode account (`POST /v1/settings/stripe`
