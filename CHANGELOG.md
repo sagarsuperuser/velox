@@ -18,6 +18,41 @@ Two surfaces mirror this file:
 
 ## [Unreleased]
 
+### Documentation
+
+- **Five new public docs pages — Account setup, Errors, Rate limits,
+  Glossary, Troubleshooting.** Closes the integration-time gaps the
+  existing Quickstart / Webhooks / Idempotency / Recipes / Embed pages
+  left open: the post-deploy seven-step setup walkthrough (bootstrap →
+  sign-in & company profile → connect Stripe test → first plan + meter
+  → webhook endpoint → first customer + subscription → trigger billing
+  & verify), the canonical error envelope reference (response shape,
+  HTTP status table, common codes including the full coupon error code
+  list, error-handling code with `switch (error.code)`), the rate-limit
+  contract (per-key 100/min, per-tenant-session 100/min, per-public-IP
+  60/min, response headers, exempt endpoints, retry code, batch-endpoint
+  hint, fail-open-in-dev / fail-closed-in-prod note), the glossary (28
+  terms grouped Core concepts / Billing & lifecycle / Platform &
+  security with stable definitions for tenant / livemode / meter /
+  pricing rule / dimension / RLS / idempotency-key / webhook secret
+  rotation / hosted invoice page / cost dashboard embed / test clock /
+  tax provider), and the troubleshooting runbook (nine integration-time
+  symptoms with Symptom / Why / Check or Fix subsections — webhook
+  events not firing, decimal usage quantity rejected, subscription
+  stuck in trialing, usage event accepted but not on invoice, 422
+  idempotency_error on retry, billing_setup_incomplete on charge,
+  coupon won't apply, bootstrap returns 403, webhook signature fails).
+  Every fact is grounded in the current source: error codes from
+  `internal/api/respond/respond.go` and `internal/errs/domain.go`,
+  coupon codes from `internal/coupon/errors.go`, rate-limit logic from
+  `internal/api/middleware/ratelimit.go`, idempotency contract from
+  `internal/api/middleware/idempotency.go`, bootstrap response shape
+  from `internal/tenant/bootstrap.go`. `DocsShell` nav now groups
+  Guides (Quickstart, Account setup, Pricing recipes, Webhooks,
+  Idempotency & retries, Troubleshooting), Embeds (Cost dashboard),
+  and Reference (API reference, Errors, Rate limits, Glossary). New
+  routes wired into `web-v2/src/main.tsx` as lazy-loaded chunks.
+
 ### Added
 
 - **Typed `<VeloxCostDashboard />` React wrapper at
