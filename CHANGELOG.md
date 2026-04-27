@@ -20,6 +20,57 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Stripe migration guide — Week 11 cutover playbook** (2026-04-27) —
+  `docs/migration-from-stripe.md` ships the operator-facing companion
+  to the four importer phases (PRs #47 / #51 / #52 / #53). Where
+  `docs/design-stripe-importer.md` answers "how does the importer map
+  Stripe objects onto Velox?", this guide answers "I run a SaaS today
+  on Stripe Billing, my customers are charged tomorrow, and I want to
+  be on Velox by month-end without missing an invoice — what's the
+  playbook?". Structured as a 14-day calendar with explicit T-14 /
+  T-7 / T-0 / T+1 / T+14 milestones plus a Phase F rollback playbook
+  for the case the cutover goes wrong. Eight sections: (1)
+  pre-migration checklist (Velox tenant provisioned, Stripe
+  restricted key with read-only scope, `VELOX_ENCRYPTION_KEY` +
+  `VELOX_EMAIL_BIDX_KEY` verified, downstream webhook consumers
+  inventoried, dunning + tax + email + payment-method handover
+  decisions made), (2) the five importer phases recap with the
+  actual `velox-import --resource=…` invocations and the dependency
+  order (customers → products → prices → subscriptions → finalized
+  invoices, enforced regardless of CLI input order), (3) rehearsal
+  run in test mode against `sk_test_…` exercising the same code
+  paths the production run will hit, (4) production parallel-run
+  cutover playbook with Phase A Prepare / B Initial backfill / C
+  Parallel run with webhook shadow / D Cutover / E Stabilize / F
+  Rollback — Phase F documents the honest gap that Velox does not
+  currently ship a scheduler-disable env var, recommends
+  `kubectl scale --replicas=0` on the API deployment as the
+  operational pause, and tracks `VELOX_SCHEDULER_DISABLED` as future
+  work, (5) reconciliation toolkit with copy-pasteable SQL recipes
+  matching Velox totals against the Stripe report API on customer
+  count / active subscriptions / paid invoices / revenue for each
+  reconciliation gate, (6) webhook redirection strategy (parallel
+  webhook posture during T-7 to T-0 with Stripe → ops sink during
+  shadow window, swap-over at T-0, rollback procedure for flipping
+  primary back to Stripe), (7) known limitations table — Schedules,
+  Quotes, Promotion Codes, multi-item subscriptions, graduated /
+  tiered prices, metered `usage_type`, Connect, draft / open
+  invoices, multi-tax-ID customers, default payment methods + sources
+  — each with a documented manual recreation path, (8) FAQ covering
+  parallel-run length, mid-cycle subscription handling, refund
+  reissue, and the "should I import-then-cutover or
+  cutover-then-import?" decision. Cross-refs added from
+  `README.md` (new "Migrating from Stripe Billing" subsection
+  carrying a copy-pasteable `velox-import` invocation),
+  `docs/self-host.md` (new Migrating from Stripe Billing section
+  next to Compliance posture), `docs/ops/runbook.md` (new Migration
+  section in the table of contents and body, alongside Compliance),
+  and `docs/90-day-plan.md` (Week 11 "Migration guide with cutover
+  playbook" checkbox flips to closed). Closes the migration-guide
+  Week 11 readiness item; the importer + CLI rows are de-facto closed
+  by Phase 0/1/2/3 PRs already shipped, leaving only "Test against
+  a real Stripe test account end-to-end" as the remaining Week 11
+  bullet not yet retired.
 - **Stripe importer Phase 3 — finalized invoices** (2026-04-27) —
   `velox-import` now accepts `--resource=invoices` on top of the Phase
   0/1/2 slices. Stripe `Invoice` rows in terminal status (`paid`,

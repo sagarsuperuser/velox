@@ -101,6 +101,31 @@ Five-minute self-host: see [`docs/self-host`](docs/) (Week 9 deliverable — und
 
 ---
 
+## Migrating from Stripe Billing
+
+Already running on Stripe Billing? `velox-import` reads via Stripe's
+restricted-key API, writes via `DATABASE_URL`, and rebuilds an entire
+tenant's customers / products / prices / subscriptions / finalized
+invoices in a single CLI run. Per-row outcomes (`insert` /
+`skip-equivalent` / `skip-divergent` / `error`) are written to a CSV
+report so the same input rerun produces only `skip-equivalent` rows —
+safe to invoke nightly during a parallel-run cutover.
+
+```bash
+velox-import \
+  --api-key=rk_live_…             \  # Stripe restricted key (read-only)
+  --tenant=ten_…                  \  # Velox tenant id
+  --resource=customers,products,prices,subscriptions,invoices \
+  --since=2024-01-01
+```
+
+The full operator playbook — pre-migration checklist, rehearsal run,
+T-14 → T+14 parallel-run cutover, reconciliation toolkit, webhook
+redirection, rollback procedure, and known limitations — lives in
+[`docs/migration-from-stripe.md`](docs/migration-from-stripe.md).
+
+---
+
 ## What Velox is **not**
 
 Stating these loudly so the wrong customers self-select out:

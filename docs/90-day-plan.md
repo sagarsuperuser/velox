@@ -118,7 +118,7 @@ Goal: prove the self-host pillar works end-to-end. Get one partner to production
 ### Week 11 (Jul 4–10) — Migration FROM Stripe
 - [ ] Importer: customers, subscriptions, products, prices, finalized invoice history
 - [ ] CLI: `velox import-from-stripe --api-key=... --since=2024-01-01`
-- [ ] Migration guide with cutover playbook (parallel-run window, webhook redirection, reconciliation)
+- [x] Migration guide with cutover playbook (parallel-run window, webhook redirection, reconciliation)
 - [ ] Test against a real Stripe test account end-to-end
 
 ### Week 12 (Jul 11–17) — First production cutover
