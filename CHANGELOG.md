@@ -74,6 +74,34 @@ A second surface mirrors this file:
 
 ### Added
 
+- **Edit-coupon dialog on the coupon detail page.** Operators can now extend
+  a coupon's expiry, raise the redemption cap, tighten or loosen restrictions,
+  or rename the coupon without archiving and recreating. New Edit button in
+  the coupon detail header (between Duplicate and Archive, hidden on archived
+  coupons since restoring is the intended path back) opens a dialog covering
+  the Stripe-parity mutable subset: `name`, `max_redemptions`, `expires_at`,
+  and the three `restrictions` fields (`min_amount_cents`,
+  `max_redemptions_per_customer`, `first_time_customer_only`). Discount type,
+  discount value, currency, duration, stackability, and plan/customer scope
+  are deliberately excluded from the dialog — changing them after the fact
+  would silently re-price open subscriptions or invalidate redemptions
+  already on the ledger, so the duplicate-and-archive path is the right
+  shape. Form pre-populates from the loaded coupon (max_redemptions empty
+  = unlimited; expires_at empty = no expiration; restrictions block empty =
+  no restrictions). Submit calls the existing `PATCH /v1/coupons/{id}` and
+  always sends the full `restrictions` object — the backend's
+  full-overwrite semantics on that field mean clearing all three sub-fields
+  in the form clears the entire restrictions block in one shot, exactly the
+  behaviour an operator expects when they uncheck everything. Validation
+  mirrors the backend: name required, max_redemptions and
+  max_redemptions_per_customer must be positive integers when set,
+  min_amount must be a positive number with up to two decimal places.
+  Server-side errors surface inline on the offending field via
+  `applyApiError` (with a fallback toast for non-field errors). Closes the
+  Track B gap on `api.updateCoupon` — the method existed in
+  `web-v2/src/lib/api.ts` but had zero callers, blocking operators from
+  any coupon mutation other than archive/unarchive.
+
 - **Billing alerts dashboard page (Track B for the
   `POST/GET/POST archive /v1/billing/alerts` backend that shipped earlier).**
   New `/billing-alerts` page in the Config nav (between Dunning and the rest)
