@@ -34,6 +34,10 @@ func (f *fakePriceSource) IteratePrices(ctx context.Context, fn func(*stripe.Pri
 	return nil
 }
 
+func (f *fakePriceSource) IterateSubscriptions(ctx context.Context, fn func(*stripe.Subscription) error) error {
+	return nil
+}
+
 func TestPriceImporter_FirstRunInsertsFlatPrice(t *testing.T) {
 	store := newFakePlanStore()
 	// Seed a plan with the matching code so the price import has somewhere to land.

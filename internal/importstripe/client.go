@@ -114,3 +114,34 @@ func (s *StripeSource) IteratePrices(ctx context.Context, fn func(*stripe.Price)
 	}
 	return nil
 }
+
+func (s *StripeSource) IterateSubscriptions(ctx context.Context, fn func(*stripe.Subscription) error) error {
+	if s == nil || s.client == nil {
+		return errors.New("importstripe: nil StripeSource")
+	}
+	params := &stripe.SubscriptionListParams{}
+	params.Limit = stripe.Int64(s.pageSize)
+	// Stripe's default list filters out canceled subs; "all" includes every
+	// status so historical canceled rows can be imported too. Operators who
+	// only want active subs can post-filter the CSV.
+	params.Status = stripe.String("all")
+	if s.since > 0 {
+		params.Created = stripe.Int64(s.since)
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: s.since}
+	}
+	for sub, err := range s.client.V1Subscriptions.List(ctx, params) {
+		if err != nil {
+			return fmt.Errorf("stripe list subscriptions: %w", err)
+		}
+		if sub == nil {
+			continue
+		}
+		if err := fn(sub); err != nil {
+			if errors.Is(err, ErrStopIteration) {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
+}
