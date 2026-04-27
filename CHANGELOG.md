@@ -20,6 +20,22 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Public cost dashboard embed page at `/public/cost-dashboard/:token`;
+  embed snippet documented at `/docs/embeds/cost-dashboard`.**
+  Operators mint a per-customer embed URL from the customer detail page
+  (a new "Embed dashboard" button next to the cost dashboard) — the
+  click calls `POST /v1/customers/{id}/rotate-cost-dashboard-token`
+  (PR #59), shows the resulting public URL in a dialog with a Copy
+  button, and offers a Regenerate action that re-mints and invalidates
+  the prior URL. The public route is unauth (token is the auth) and
+  rides the `hostedInvoiceRL` rate-limit bucket so a runaway embed in
+  one tenant cannot starve another. Page renders cycle-to-date
+  charges, the in-progress billing window, threshold alerts the
+  customer is tracking, and the projected total for the cycle when
+  the server populates it. Closes two of the four Week 5 cost-dashboard
+  readiness items in `docs/90-day-plan.md`; the typed React component
+  (`<VeloxCostDashboard tenantKey customerId />`) and CSS-variable
+  theming + dark-mode-by-default remain explicitly deferred to v1.1.
 - **Public cost-dashboard token + sanitised read endpoint (backend
   only).** Operators can now mint a long-lived embed token per customer
   via `POST /v1/customers/{id}/rotate-cost-dashboard-token` (returns
