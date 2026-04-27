@@ -47,6 +47,24 @@ export function CostDashboard({ customerId }: { customerId: string }) {
     },
   })
 
+  // Projected bill — Stripe Tier 1 create_preview powers a "what will the
+  // current cycle invoice look like if we finalized it now?" row. Only
+  // meaningful when preset === 'current' (the engine is cycle-aware; an
+  // explicit 30/90-day window doesn't have an in-progress cycle to
+  // project). Failures are silent — preview is auxiliary signal, the
+  // primary usage view shouldn't error because the engine warned.
+  const { data: projected } = useQuery({
+    queryKey: ['customer-create-preview', customerId, preset],
+    enabled: preset === 'current',
+    queryFn: async () => {
+      try {
+        return await api.createInvoicePreview({ customer_id: customerId })
+      } catch {
+        return null
+      }
+    },
+  })
+
   if (error) {
     return (
       <Card>
@@ -123,6 +141,22 @@ export function CostDashboard({ customerId }: { customerId: string }) {
                   ))
                 )}
               </div>
+              {/* Projected total — surfaced from /v1/invoices/create_preview.
+                  Render only if the engine returned a non-empty totals array
+                  for the current cycle; absent for explicit windows or when
+                  the engine warned (we silently swallowed the error above). */}
+              {preset === 'current' && projected && projected.totals.length > 0 && (
+                <p className="text-xs text-muted-foreground mt-3">
+                  Projected total this period:{' '}
+                  {projected.totals.map((t, i) => (
+                    <span key={t.currency} className="text-foreground font-medium tabular-nums">
+                      {i > 0 && ' · '}
+                      {formatCents(t.amount_cents, t.currency)}
+                      {projected.totals.length > 1 && <span className="ml-1 text-muted-foreground uppercase">{t.currency}</span>}
+                    </span>
+                  ))}
+                </p>
+              )}
             </CardContent>
           </Card>
 
