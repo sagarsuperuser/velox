@@ -45,6 +45,10 @@ func (f *fakeIntegrationSource) IterateSubscriptions(ctx context.Context, fn fun
 	return nil
 }
 
+func (f *fakeIntegrationSource) IterateInvoices(ctx context.Context, fn func(*stripe.Invoice) error) error {
+	return nil
+}
+
 // TestCustomerImporter_EndToEndPostgres drives the importer against a real
 // Postgres database. Single test, three phases — keeps RLS/encryption setup
 // cost amortised across all the assertions we care about (insert, idempotent

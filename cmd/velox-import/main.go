@@ -1,20 +1,20 @@
 // Command velox-import migrates Stripe data into a Velox tenant.
 //
 // Phase 0 supports `--resource=customers`; Phase 1 adds `products` and
-// `prices`; Phase 2 adds `subscriptions`. The CLI surface is forward-
-// compatible with later phases (invoices) — see docs/design-stripe-importer.md.
+// `prices`; Phase 2 adds `subscriptions`; Phase 3 adds `invoices`
+// (finalized only — paid / void / uncollectible). See
+// docs/design-stripe-importer.md.
 //
 // Typical usage:
 //
 //	DATABASE_URL=postgres://... velox-import \
 //	  --tenant=ten_xxxx \
 //	  --api-key=sk_test_xxxx \
-//	  --resource=customers,products,prices,subscriptions \
+//	  --resource=customers,products,prices,subscriptions,invoices \
 //	  --dry-run
 //
 // Resources are processed in dependency order regardless of the input
-// order: customers → products → prices → subscriptions. Invoices come
-// in a later slice.
+// order: customers → products → prices → subscriptions → invoices.
 package main
 
 import (
@@ -34,6 +34,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/config"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/importstripe"
+	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/subscription"
@@ -45,7 +46,7 @@ func main() {
 	tenantID := flag.String("tenant", "", "target Velox tenant id (required)")
 	apiKey := flag.String("api-key", "", "source Stripe secret key (required)")
 	since := flag.String("since", "", "import customers created on/after this RFC3339 or YYYY-MM-DD timestamp (optional)")
-	resources := flag.String("resource", "customers", "comma-separated list of resources to import (supported: customers, products, prices, subscriptions)")
+	resources := flag.String("resource", "customers", "comma-separated list of resources to import (supported: customers, products, prices, subscriptions, invoices)")
 	output := flag.String("output", "", "CSV report output path (default: ./velox-import-<timestamp>.csv)")
 	dryRun := flag.Bool("dry-run", false, "skip DB writes; report what would happen")
 	livemodeFlag := flag.String("livemode-default", "", "true/false override for livemode (default: derived from api-key prefix)")
@@ -67,19 +68,19 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
-	// Phase 0+1+2 currently support customers, products, prices,
-	// subscriptions. Other recognised values (invoices) parse cleanly but
-	// we warn-and-skip until those phases land.
+	// Phase 0+1+2+3 support customers, products, prices, subscriptions,
+	// invoices. Any other recognised value would be warn-and-skipped here;
+	// none currently exist.
 	for r := range resourceSet {
 		switch r {
-		case "customers", "products", "prices", "subscriptions":
+		case "customers", "products", "prices", "subscriptions", "invoices":
 			// supported
 		default:
 			fmt.Fprintf(os.Stderr, "warning: resource %q is recognised but not implemented yet; skipping\n", r)
 		}
 	}
-	if !resourceSet["customers"] && !resourceSet["products"] && !resourceSet["prices"] && !resourceSet["subscriptions"] {
-		fatal("--resource must include at least one of: customers, products, prices, subscriptions")
+	if !resourceSet["customers"] && !resourceSet["products"] && !resourceSet["prices"] && !resourceSet["subscriptions"] && !resourceSet["invoices"] {
+		fatal("--resource must include at least one of: customers, products, prices, subscriptions, invoices")
 	}
 
 	sinceUnix, err := parseSince(*since)
@@ -109,6 +110,7 @@ func main() {
 	pricingStore := pricing.NewPostgresStore(db)
 	pricingSvc := pricing.NewService(pricingStore)
 	subscriptionStore := subscription.NewPostgresStore(db)
+	invoiceStore := invoice.NewPostgresStore(db)
 
 	out, err := os.Create(outputPath)
 	if err != nil {
@@ -182,6 +184,19 @@ func main() {
 			TenantID:       *tenantID,
 			Livemode:       livemode,
 			DryRun:         *dryRun,
+		}
+		runErr = imp.Run(ctx)
+	}
+	if resourceSet["invoices"] && runErr == nil {
+		imp := &importstripe.InvoiceImporter{
+			Source:             source,
+			Store:              invoiceStore,
+			CustomerLookup:     customerStore,
+			SubscriptionLookup: subscriptionStore,
+			Report:             report,
+			TenantID:           *tenantID,
+			Livemode:           livemode,
+			DryRun:             *dryRun,
 		}
 		runErr = imp.Run(ctx)
 	}

@@ -40,6 +40,10 @@ func (f *fakeSubscriptionSource) IterateSubscriptions(ctx context.Context, fn fu
 	return nil
 }
 
+func (f *fakeSubscriptionSource) IterateInvoices(ctx context.Context, fn func(*stripe.Invoice) error) error {
+	return nil
+}
+
 // fakeSubscriptionStore is the minimal SubscriptionStore stand-in used by
 // the unit-level driver tests. Models subs by Velox id with a secondary
 // index from code → id for lookup.
