@@ -136,6 +136,11 @@ const DocsEmbedsCostDashboardPage = lazy(() => import('@/pages/DocsEmbedsCostDas
 const DocsWebhooksPage = lazy(() => import('@/pages/DocsWebhooks'))
 const DocsIdempotencyPage = lazy(() => import('@/pages/DocsIdempotency'))
 const DocsApiPage = lazy(() => import('@/pages/DocsApi'))
+const DocsAccountSetupPage = lazy(() => import('@/pages/DocsAccountSetup'))
+const DocsErrorsPage = lazy(() => import('@/pages/DocsErrors'))
+const DocsRateLimitsPage = lazy(() => import('@/pages/DocsRateLimits'))
+const DocsGlossaryPage = lazy(() => import('@/pages/DocsGlossary'))
+const DocsTroubleshootingPage = lazy(() => import('@/pages/DocsTroubleshooting'))
 const SecurityPage = lazy(() => import('@/pages/Security'))
 const StatusPage = lazy(() => import('@/pages/Status'))
 const ChangelogPage = lazy(() => import('@/pages/Changelog'))
@@ -208,6 +213,11 @@ const App = () => (
               <Route path="/docs/webhooks" element={<DocsWebhooksPage />} />
               <Route path="/docs/idempotency" element={<DocsIdempotencyPage />} />
               <Route path="/docs/api" element={<DocsApiPage />} />
+              <Route path="/docs/account-setup" element={<DocsAccountSetupPage />} />
+              <Route path="/docs/errors" element={<DocsErrorsPage />} />
+              <Route path="/docs/rate-limits" element={<DocsRateLimitsPage />} />
+              <Route path="/docs/glossary" element={<DocsGlossaryPage />} />
+              <Route path="/docs/troubleshooting" element={<DocsTroubleshootingPage />} />
               <Route path="/security" element={<SecurityPage />} />
               <Route path="/status" element={<StatusPage />} />
               <Route path="/changelog" element={<ChangelogPage />} />

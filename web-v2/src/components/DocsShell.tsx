@@ -8,9 +8,11 @@ const docsNav = [
     heading: 'Guides',
     items: [
       { to: '/docs/quickstart', label: 'Quickstart' },
+      { to: '/docs/account-setup', label: 'Account setup' },
       { to: '/docs/recipes', label: 'Pricing recipes' },
       { to: '/docs/webhooks', label: 'Webhooks' },
       { to: '/docs/idempotency', label: 'Idempotency & retries' },
+      { to: '/docs/troubleshooting', label: 'Troubleshooting' },
     ],
   },
   {
@@ -19,7 +21,12 @@ const docsNav = [
   },
   {
     heading: 'Reference',
-    items: [{ to: '/docs/api', label: 'API reference' }],
+    items: [
+      { to: '/docs/api', label: 'API reference' },
+      { to: '/docs/errors', label: 'Errors' },
+      { to: '/docs/rate-limits', label: 'Rate limits' },
+      { to: '/docs/glossary', label: 'Glossary' },
+    ],
   },
 ]
 
