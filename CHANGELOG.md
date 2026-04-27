@@ -63,6 +63,37 @@ Two surfaces mirror this file:
 
 ### Documentation
 
+- **`MANUAL_TEST.md` refresh — 18-migration staleness corrected, 11
+  feature-area gaps closed.** The runbook had drifted to migration 46
+  while `main` is at 64; entire feature areas had no manual test
+  coverage at all. Added: Pricing Recipes section (R1-R5 — list +
+  preview, end-to-end instantiation against `anthropic_style`,
+  idempotency on `(tenant_id, recipe_key)`, atomic rollback on
+  partial failure, dashboard UI flow); Quickstart wizard FLOW U0
+  (5-step `/onboarding` — template → Stripe → tax → branding → first
+  test invoice with TTFI telemetry); Bulk operations FLOW CU9 (apply
+  coupon + schedule cancel with preview-then-commit, idempotency,
+  partial-failure handling, history drawer); FLOWs B13 multi-dim
+  meters / B14 billing thresholds / B15 billing alerts / B16 plan
+  migration tool / I11 invoice preview / I12 one-off invoice
+  composer / W4 live webhook stream / CU8 cost-dashboard embed —
+  each previously had no row in this runbook. Tier 3 picks up FLOW
+  X12 `velox-cli` (sub list / invoice send + JSON wire shape parity
+  with server respond.List), FLOW X13 `velox-import` (4-phase Stripe
+  pull: customers → products+prices → subscriptions → invoices, with
+  idempotency + dry-run + CSV report + SIGINT discipline), and FLOW
+  X14 self-host artifacts (Helm chart, Docker Compose, Terraform AWS
+  single-EC2 + RDS — picker matrix in `deploy/README.md`, migration
+  step explicit per artifact, `docs/self-host/postgres-backup.md`
+  cross-referenced for the recovery path that the Week 12 incident
+  runbook truth-up depends on). FLOW U10 picks up `/docs/recipes`
+  and `/docs/embeds/cost-dashboard` as new public routes
+  (`/docs/self-host` deliberately omitted — that lives under
+  `docs/` as markdown and is not a public web route today). Migration
+  version pointers in S1.1 and the bootstrap section bumped from 35
+  / 46 to 64. Stale flows audited and kept — no removals, all old
+  flows still describe behaviour that ships in `main`.
+
 - **`docs/90-day-plan.md` truth-up — Week 12 incident-runbook line
   flipped to ✅.** The plan called for "Incident runbook tested
   (failover, rollback to Stripe Billing, billing reconciliation)";

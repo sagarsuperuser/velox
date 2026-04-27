@@ -52,7 +52,7 @@ make up
 
 # Terminal 2 — Backend API (runs migrations on boot via RUN_MIGRATIONS_ON_BOOT=true)
 make dev
-# Log should show "migrations: applied N, current version 35"
+# Log should show "migrations: applied N, current version 64"
 # and "using app database connection (RLS enforced)"
 
 # Terminal 3 — Frontend (web-v2)
@@ -106,7 +106,7 @@ signs out. Run this before every merge to main and as a nightly canary.
 
 ### S1.1 Stack comes up clean
 - [ ] `make up` — Postgres + Redis containers start without errors
-- [ ] `make dev` — backend starts, logs show `migrations: applied N, current version 46`
+- [ ] `make dev` — backend starts, logs show `migrations: applied N, current version 64`
   and `using app database connection (RLS enforced)`
 - [ ] `curl http://localhost:8080/health` → `{"status":"ok"}`
 - [ ] `curl http://localhost:8080/health/ready` → 200 with `database: ok`, `scheduler: ok`
@@ -397,6 +397,87 @@ Chronological feed of lifecycle events sourced from the audit log. CS reps land 
 - [ ] When an actor is resolved (API key name, operator email), a second line shows "by {actor_name}" underneath
 - [ ] Nonexistent subscription ID: **404** (not an empty events array — silent-empty masquerade is worse than a clear miss)
 
+## FLOW B13: Multi-dimensional meters
+
+Shipped Week 2. The wedge primitive — events carry `dimensions JSONB` and pricing
+rules match by dimension subsets. Migration 0054 adds the column + GIN index;
+migration 0062 makes the GIN index concurrent.
+
+### Decimal quantities + dimensioned ingest
+
+- [ ] `POST /v1/usage-events` with body `{"meter":"tokens","customer":"<id>","dimensions":{"model":"gpt-4o","operation":"input","cached":true,"tier":1},"value":10000.5,"timestamp":"<iso>","idempotency_key":"k1"}` → 201; `value` stored as NUMERIC (Stripe parity for `quantity_decimal`)
+- [ ] Decimal value is preserved end-to-end: `SELECT value FROM usage_events ORDER BY created_at DESC LIMIT 1;` → `10000.5` (not truncated)
+- [ ] Replay the same body with the same `idempotency_key` → 200 with the original event id; no duplicate row
+
+### Dimension subset matching at finalize
+
+- [ ] Create rating rule keyed `tokens_input` with `dimension_match = {"operation":"input"}`
+- [ ] Ingest events with `{operation:"input"}` and `{operation:"output"}` for the same meter
+- [ ] Run billing → only `operation=input` events priced under `tokens_input`; `operation=output` falls through to the default rule (or remains unpriced if no fallback)
+- [ ] Add a second rule `tokens_input_cached` with `dimension_match = {"operation":"input","cached":true}` → it wins over `tokens_input` for cached input (more-specific match wins)
+
+### Aggregation modes per pricing rule
+
+All five Stripe Tier-1 modes expressed as a per-rule choice:
+
+- [ ] `aggregation = sum` (default) — bills the cumulative quantity over the period
+- [ ] `aggregation = count` — bills the number of events regardless of value
+- [ ] `aggregation = max` — bills the largest single value over the period (e.g., peak concurrent VMs)
+- [ ] `aggregation = last_during_period` — bills the value of the last event in the period (e.g., end-of-period gauge)
+- [ ] `aggregation = last_ever` — bills the value of the last event ever (across all periods, latest snapshot)
+- [ ] Switching a rule's aggregation between cycles re-bills the next cycle correctly without affecting past invoices
+
+### Throughput
+
+- [ ] `cmd/velox-bench` ingests 50k events/sec sustained on a single tenant against a local Postgres (matches the Week 2 plan deliverable)
+
+## FLOW B14: Billing thresholds (per-item + per-subscription)
+
+Shipped Week 5 (migration 0056). Stripe Tier-1 parity for
+`subscription.billing_thresholds`. Crossing a threshold mid-cycle finalizes the
+invoice early with `billing_reason="threshold"`.
+
+### Per-item `usage_gte`
+
+- [ ] PATCH a subscription with `{"billing_thresholds":[{"meter_id":"<m>","usage_gte":10000}]}` → 200
+- [ ] Ingest 9,999 units → no early finalize
+- [ ] Ingest 1 more unit (cumulative 10,000) → invoice auto-finalized within 1 scheduler tick; `billing_reason="threshold"` on the invoice; `billing.alert.triggered` webhook fires (if an alert is configured — see B15)
+- [ ] Verify: subsequent events for the same period start a NEW billing window (the early-finalize closes the period)
+
+### Per-subscription `amount_gte`
+
+- [ ] PATCH a subscription with `{"billing_thresholds":{"amount_gte":50000}}` (i.e., $500) → 200
+- [ ] Ingest enough usage to bring the running total to $499.99 → no finalize
+- [ ] Ingest one more event that crosses $500 → early finalize, same shape as per-item
+
+### Threshold + manual run interaction
+
+- [ ] Cross a threshold, then immediately run `POST /v1/billing/run` → idempotent skip (the scheduler already finalized the period)
+
+## FLOW B15: Billing alerts (`one_time` / `per_period`)
+
+Shipped Week 5 (migration 0057). `POST /v1/billing/alerts` with `recurrence`
+controls whether the alert fires once-ever or once-per-billing-period.
+
+- [ ] `POST /v1/billing/alerts` `{"customer_id":"<c>","meter_id":"<m>","threshold":1000,"recurrence":"one_time"}` → 201
+- [ ] Cross the threshold once → `billing.alert.triggered` webhook + dashboard notification appear
+- [ ] Cross again in the same period → no second fire (one-time)
+- [ ] Repeat with `recurrence:"per_period"` → fires once per billing period (resets at period boundary)
+- [ ] Webhook payload includes: `customer_id`, `meter_id`, `threshold`, `current_value`, `period_start`, `period_end`, `recurrence`
+- [ ] Dashboard notification: bell icon shows unread count; clicking the alert navigates to the customer detail page with the meter highlighted
+
+## FLOW B16: Plan migration tool (operator UI)
+
+Shipped Week 6 (migration 0059). Operator-side bulk plan-change with per-customer
+preview before commit. Driven by `/admin/plan_migrations`.
+
+- [ ] Admin → Plan Migrations → New migration → pick old plan + new plan
+- [ ] Preview shows N customers affected with per-customer before/after invoice projection (powered by `POST /v1/invoices/create_preview` — see I11)
+- [ ] Spot-check 2–3 rows: amounts, proration, billing-period bounds match expectations
+- [ ] One-click commit → all subscriptions move atomically; audit log records one entry per customer with the actor + reason
+- [ ] Re-running the same migration is idempotent — affected count is 0 the second time
+- [ ] Cancel before commit → no DB writes; preview discarded
+
 ## FLOW B11: Tax-ID format validation
 
 `UpsertBillingProfile` normalizes (trim + uppercase) and format-validates `tax_id`
@@ -411,6 +492,58 @@ against `tax_id_type`. Known kinds: GSTIN, EU VAT, AU ABN. Unknown kinds pass th
 - [ ] Malformed: `abn` + `123` → 422 `"invalid ABN format: expected 11 digits"`
 - [ ] Unknown kind: `br_cnpj` + `12.345.678/0001-90` → accepted as-is
 - [ ] Empty `tax_id` → always accepted regardless of kind
+
+---
+
+## Pricing Recipes
+
+Five built-in YAML recipes ship with the binary (`internal/recipe/recipes/`):
+`anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`,
+`marketplace_gmv`. Each defines products + prices + meters + dunning policy +
+webhook endpoint as one atomic graph. Cuts time-to-first-invoice from "read
+docs for an hour" to a single API call.
+
+## FLOW R1: List + preview
+
+- [ ] `GET /v1/recipes` → 5 entries; each has `key`, `name`, `description`, `tags`
+- [ ] `POST /v1/recipes/{key}/preview` for each key → 200 with `products[]`,
+  `prices[]`, `meters[]`, `dunning_policy`, `webhook_endpoints[]` projected (no DB writes)
+- [ ] Unknown key → 404 `"recipe not found"` (no partial state, no log spam)
+
+## FLOW R2: Instantiate end-to-end (`anthropic_style`)
+
+- [ ] `POST /v1/recipes/anthropic_style/instantiate` with `{"livemode": false}` → 201
+- [ ] Response includes IDs for every created resource
+- [ ] DB now contains: 1 product (Claude family), N prices (one per model × cache tier),
+  N meters (input/output/cache_read/cache_write), 1 dunning policy, 1 outbound webhook endpoint
+- [ ] Pricing rules carry `dimension_match` JSONB so meters share a single product
+- [ ] Audit log: one entry per resource created, all with `actor=recipe:anthropic_style`
+- [ ] Repeat for `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv` →
+  each produces a clean graph in <500ms
+
+## FLOW R3: Idempotency on (tenant_id, recipe_key)
+
+- [ ] Instantiate `b2b_saas_pro` once → 201
+- [ ] Instantiate again same tenant → 409 `"recipe already instantiated"`; no duplicate writes
+- [ ] Different tenant, same recipe → 201 (key is per-tenant, not global)
+- [ ] Force re-instantiate via `?force=true` is **not** supported — operator must
+  `DELETE /v1/recipes/{key}/instance` first; verify that endpoint cleans up
+  product+prices+meters+webhook+dunning atomically
+
+## FLOW R4: Atomic rollback on partial failure
+
+- [ ] Inject a failure mid-instantiate (e.g., webhook endpoint URL fails URL validation)
+  → 422; verify **zero** rows created (products, prices, meters all rolled back)
+- [ ] `SELECT * FROM tenant_recipe_instances WHERE tenant_id = ?` → no row
+- [ ] Logs show the single failure reason — not a cascade of unrelated errors
+
+## FLOW R5: Dashboard UI flow
+
+- [ ] `/recipes` → grid of 5 cards with name, description, tag chips, "Preview" button
+- [ ] Click Preview → side panel renders projected resources (read-only table per category)
+- [ ] "Instantiate" button at panel footer; confirm dialog names the side-effects ("creates 4 products + 12 prices + 3 meters + 1 dunning policy + 1 webhook endpoint")
+- [ ] Post-instantiate: redirected to `/products` with the new product IDs visible
+- [ ] Recipe card on `/recipes` now shows "Instantiated 2026-04-27" with link to detail page
 
 ---
 
@@ -486,6 +619,28 @@ Every customer-facing email renders as multipart/alternative (text + HTML) with 
 
 - [ ] Void an invoice, then try to issue a credit note → error `"cannot issue credit note on voided invoice"`
 - [ ] CN is NOT created
+
+## FLOW I11: `POST /v1/invoices/create_preview`
+
+Shipped Week 5. Computes a draft invoice for an in-progress period without
+committing to the DB. Powers the cost dashboard's "projected bill" line, the
+plan-change confirmation dialog, and the operator plan-migration preview (B16).
+
+- [ ] `POST /v1/invoices/create_preview {"subscription_id":"<sub>"}` → 200 with the same shape as a finalized invoice (line items + totals + tax) but `id` is null and no DB row exists
+- [ ] Plan-change confirmation: from a sub detail page, click "Change plan" → preview dialog shows the proration line + new amount due before commit; cancelling the dialog does not write
+- [ ] Cost dashboard reflects the preview: `projected_total_cents` field on the public dashboard projection (FLOW CU8) is populated when the engine returns a value
+
+## FLOW I12: One-off invoice composer
+
+Shipped Week 7 (migration 0060 makes `subscription_id` nullable so off-sub
+invoices are supported). Operator-side 30-second flow on the customer detail
+page — no leaving the page.
+
+- [ ] Customer detail → "New invoice" → composer opens inline (no full-page navigation)
+- [ ] Add 1+ line items (description, qty, unit, amount) → totals tick live
+- [ ] Save as draft → invoice appears in the customer's invoice list with `status=draft`, `subscription_id=null`
+- [ ] Finalize from the draft → goes through the normal Stripe PaymentIntent path
+- [ ] Subscription_id is empty in the DB (`SELECT subscription_id FROM invoices WHERE id=...` → NULL) — confirms migration 0060
 
 ## FLOW I10: Hosted invoice page (public tokenized URL — T0-17)
 
@@ -627,6 +782,20 @@ Stripe-parity dual-signing window. Outbound events are signed with BOTH the new 
 - [ ] Simulate expiry: manually set `secondary_secret_expires_at` in the past via psql → trigger another event → header now carries **one** `v1=` entry, only the new secret verifies
 - [ ] Hard-replace path: `RotateEndpointSecret(..., gracePeriod=0)` skips the secondary entirely (not exposed via UI; library-level test only)
 
+## FLOW W4: Live webhook event stream + replay (Week 6)
+
+Server-sent events at `GET /v1/webhook_events/stream` (auth required, secret
+key with `PermAPIKeyRead` scope). The Webhooks → Events page in the dashboard
+streams new deliveries in real time, lets you replay a delivery, and shows the
+payload diff between retries.
+
+- [ ] Webhooks → Events → page shows recent deliveries with state dot (succeeded/failed/pending)
+- [ ] Trigger any outbound webhook (finalize an invoice, etc.) → new row streams in within ~1 second without a manual refresh (SSE-driven)
+- [ ] Click a delivery → side panel shows request URL, response status, headers, body
+- [ ] Click "Replay" on a failed delivery → fresh attempt fires; new row appears for the replay; original row preserved
+- [ ] Multiple retries on the same event → "Diff" tab shows the payload diff between attempts (useful when the receiver changed shape between retries)
+- [ ] Disconnect Redis or stop the dispatcher → readiness goes degraded; UI still loads but stops streaming new rows (graceful)
+
 ## FLOW W3: Delivery stats
 
 - [ ] Webhooks → Endpoints → Success Rate column
@@ -699,6 +868,40 @@ Endpoints (all bearer-auth, scoped to the session's customer):
 - [ ] Payment Methods tab → attach / detach via Stripe SetupIntent
 - [ ] Cross-customer probe: swap the bearer token for one scoped to a different customer; hitting the first customer's invoice ID → **404** (not 403 — avoids enumeration)
 
+## FLOW CU8: Public cost-dashboard embed (Week 5)
+
+Per-customer iframe-able URL with token auth. Migration 0064 adds
+`customers.cost_dashboard_token` (partial unique, 256-bit `vlx_pcd_` prefix).
+Operator mints, customer's app embeds, no auth handoff.
+
+### Mint + read
+
+- [ ] Customer detail → "Embed dashboard" button → dialog shows the public URL with a Copy button
+- [ ] `POST /v1/customers/{id}/rotate-cost-dashboard-token` (API-key auth) returns `{token, public_url, customer_id}` — token starts with `vlx_pcd_` + 64 hex chars (72 chars total)
+- [ ] `GET /v1/public/cost-dashboard/{token}` (no auth) returns the sanitised projection: `customer_id`, `tenant_id`, `billing_period {from, to, source}`, `subscriptions[]`, `usage[{meter_id, meter_key, meter_name, unit, currency, total_quantity, total_amount_cents, rules[]}]`, `totals[{currency, amount_cents}]`, `thresholds[]` (reserved), `warnings[]`, `projected_total_cents`
+- [ ] Confirm absent: `email`, `display_name`, `external_id`, `metadata`, `billing_profile` (sanitisation contract)
+
+### Public iframe render
+
+- [ ] Open the public URL in incognito (no session) → cycle-to-date charges, in-progress billing window, threshold alerts (if any), projected total render
+- [ ] Customer with no active subscription → empty arrays + `billing_period.source = no_subscription`, NOT a 5xx
+- [ ] `?theme=light` → light theme; `?theme=dark` (or omit) → dark by default
+- [ ] `?accent=#10b981` → cycle progress bar + focus rings repaint to that hex
+- [ ] Invalid hex (`?accent=#zzz` / `?accent=blue` / missing `#`) → silently ignored, default accent stays
+- [ ] First paint already has the right theme (no light-then-dark flash) — `useLayoutEffect` applies before render
+- [ ] Hard-refreshing the iframe stays under the 60/min/IP `hostedInvoiceRL` rate limit; 61+ requests/min/IP from the same source → 429
+
+### Rotation invalidates
+
+- [ ] Rotate the token (call the rotate endpoint again, or use the dashboard "Regenerate" button) → previous URL returns 404 immediately; new URL works
+- [ ] Audit log records the rotation with `previous_token_was_unset` flag; plaintext token is **never** in the audit log
+
+### Typed React wrapper
+
+- [ ] `web-v2/src/components/embeds/VeloxCostDashboard.tsx` renders the iframe via `<VeloxCostDashboard token={t} baseUrl={u} theme="dark" accent="#10b981" />`
+- [ ] Storybook / page that imports the component compiles cleanly with `tsc --noEmit`
+- [ ] URL constructed by the wrapper matches the manual-curl iframe URL byte-for-byte
+
 ## FLOW CU7: Email bounce capture + badge (T0-20 — 🟡 pipeline only)
 
 Pipeline is complete, UI is ready, webhook event defined — but synchronous SMTP 5xx detection covers only a minority of real-world bounces because most providers emit bounces as async NDRs, not synchronous `RCPT TO` failures. Test the pipeline end-to-end with the psql shortcut below; real bounce detection for most partner traffic ships with T1-8 (SES/SendGrid/Postmark webhook handlers) plugging into the same `customer.MarkEmailBounced` seam.
@@ -757,6 +960,25 @@ Shipped in T0-12. URL-only logo (no upload infra); brand accent color applied to
 - [ ] Save → generate an invoice PDF → company name tinted in the brand color, thin 2px accent bar under the header block
 - [ ] Clear the brand color → save → new PDF has neutral palette (no accent bar); output is byte-identical to the pre-migration look
 - [ ] Branded email (T0-16, 2026-04-24): trigger any customer-facing email with `brand_color` set → HTML body renders the 2px accent bar at top, CTA button background uses the brand color, logo + company name in header. See FLOW I6 for the full checklist.
+
+## FLOW CU9: Bulk operations (`/admin/bulk`)
+
+Two action types ship today: `apply_coupon` and `schedule_cancel`. Both are
+preview-then-commit with idempotency keyed on `(tenant_id, idempotency_key)`.
+
+- [ ] `/admin/bulk` → tabbed UI: "Apply coupon" + "Schedule cancel" + "History"
+- [ ] **Apply coupon**: customer filter (status / segment / created_after) → preview shows N matched customers + per-customer projected discount → "Apply" commits;
+  audit log records one parent + N children (one per customer)
+- [ ] Same idempotency key replays → response is the original commit summary; no double-discount
+- [ ] **Schedule cancel**: filter cohort + cancellation date (+ optional `prorate=true`) → preview shows N subscriptions to cancel + projected refund per sub → commit
+- [ ] Cancellation date in the past → 422 `"cancel_at must be in the future"`
+- [ ] **History tab**: every past bulk action with status badge (`pending` / `completed` / `failed` / `partial`), target_count, success_count, failure_count;
+  click row → drawer with per-customer outcome (success / skipped reason / error)
+- [ ] Partial failure (one customer's coupon application fails after others succeeded) → action_status = `partial`; failed customers callable individually via the drawer's "Retry failed" button
+- [ ] Filter API: `GET /v1/bulk-actions?status=&action_type=` cursor-paginates correctly; cross-tenant request 404s
+
+> Plan migration cohort is its own tool (FLOW B16, `/admin/plan_migrations`) —
+> not under bulk actions because the per-customer preview model is richer.
 
 ---
 
@@ -820,6 +1042,23 @@ falls through to `ManualCalculator`. Operators alert on sustained non-zero value
 ---
 
 ## UI / UX
+
+## FLOW U0: Quickstart wizard / TTFI
+
+`/onboarding` — 5-step setup wizard. Goal: time-to-first-invoice (TTFI) under
+5 minutes for a new tenant. Each step persists progress so a refresh resumes.
+
+- [ ] Fresh tenant lands on `/onboarding` automatically post-bootstrap
+- [ ] **Step 1 — Template**: 5 recipe cards (anthropic, openai, replicate,
+  b2b_saas_pro, marketplace_gmv). Pick one → preview panel renders → "Use this template" instantiates (FLOW R2)
+- [ ] **Step 2 — Stripe**: connect tenant Stripe key (S1.3 minus the manual UI dance — wizard inlines it). Failure → step gates; success → green tick + masked key
+- [ ] **Step 3 — Tax**: pick `stripe_tax` vs `manual` (default `manual`); tax registration tax-id field with FLOW B11 validation inline
+- [ ] **Step 4 — Branding**: brand color picker + logo URL (FLOW CU6 inputs); preview chip updates live
+- [ ] **Step 5 — First test invoice**: "Create demo invoice" button → spawns 1 demo customer + 1 active subscription on the recipe's primary plan, ingests one usage event, runs `/v1/billing/run`, opens hosted invoice URL in new tab — total elapsed shown in the success card (target: under 30 seconds end-to-end)
+- [ ] On finish: TTFI telemetry recorded; `GET /v1/billing/dashboard` shows `time_to_first_invoice_seconds` for that tenant
+- [ ] Refresh mid-wizard → resumes on the last incomplete step (state in `tenant_onboarding_state` row)
+- [ ] "Skip wizard" link → marks `onboarding_skipped_at`, lands on `/dashboard` empty state with the same Get Started checklist (U1)
+- [ ] Re-running the wizard after skip is allowed via `/onboarding?force=true`; does **not** create duplicate demo customer (idempotent on `tenant_id`)
 
 ## FLOW U1: Dashboard
 
@@ -920,6 +1159,8 @@ Match is case-insensitive. Used on:
 Added in T0-2 through T0-6. All routes load without `ProtectedRoute` wrapping.
 
 - [ ] `/docs` landing, `/docs/quickstart`, `/docs/webhooks`, `/docs/idempotency` — each renders `DocsShell` layout
+- [ ] `/docs/recipes` — recipe catalog page (5 cards, links to per-recipe detail)
+- [ ] `/docs/embeds/cost-dashboard` — embed integration guide (token mint + iframe snippet + theme/accent params)
 - [ ] `/docs/api` — OpenAPI spec rendered by Scalar, with endpoints browsable
 - [ ] `/security` — Security page renders under `PublicLayout`
 - [ ] `/status` — Status placeholder page
@@ -1071,6 +1312,73 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 - [ ] Response `{accepted: 1000, rejected: 0}`; Usage Events page total matches
 - [ ] Include duplicate idempotency keys → duplicates rejected, rest accepted
 - [ ] Run billing → aggregated correctly
+
+## FLOW X12: Operator CLI (`velox-cli`)
+
+Cobra-based binary at `./cmd/velox-cli`. Two subcommands today: `sub list` and
+`invoice send`. Reads `VELOX_API_URL` + `VELOX_API_KEY` from env (or `--api-url`
+/ `--api-key` flags). Wire shape mirrors server respond.List `{data, total}`
+exactly so `--output json` is byte-identical to the HTTP response.
+
+- [ ] `go build -o /tmp/velox-cli ./cmd/velox-cli && /tmp/velox-cli --help` lists `sub`, `invoice`, `--api-url`, `--api-key`
+- [ ] `velox-cli sub list` → table with columns ID / CUSTOMER / STATUS / PLAN / PERIOD_END
+- [ ] `velox-cli sub list --status=active --limit=10 --output=json` → JSON `{data:[…], total:N}`
+- [ ] `velox-cli sub list --customer=cus_xxx` → only that customer's subs
+- [ ] `velox-cli sub list --plan=plan_xxx` → only that plan's subs
+- [ ] Multi-item subscriptions: PLAN column joins plan IDs with `,`; JSON output preserves the array
+- [ ] Missing API key → exit code 1, stderr `"VELOX_API_KEY (or --api-key) is required"`
+- [ ] Wrong API key → exit code 1, server's 401 message surfaced verbatim
+- [ ] `velox-cli invoice send <inv_id>` → 202 → "Invoice queued for delivery"; `email_outbox` row appears
+- [ ] `velox-cli invoice send <unknown>` → exit code 1, server's 404 surfaced
+- [ ] `velox-cli invoice send <inv_id> --output=json` → `{queued_at, recipient}` JSON
+
+## FLOW X13: Stripe importer (`velox-import`)
+
+Migrates a tenant's Stripe data into Velox in dependency order. Phases land
+incrementally: customers → products+prices → subscriptions → invoices
+(finalized only). Outputs a CSV report per run.
+
+- [ ] `go build -o /tmp/velox-import ./cmd/velox-import && /tmp/velox-import --help` lists `--tenant`, `--api-key`, `--resource`, `--since`, `--dry-run`, `--output`, `--livemode-default`
+- [ ] Missing `--tenant` → exit 1, `"--tenant is required"`
+- [ ] Missing `--api-key` → exit 1, `"--api-key is required"`
+- [ ] **Phase 0 — customers only**: `--resource=customers --since=2026-01-01 --dry-run` →
+  CSV report lists Stripe customer IDs that *would* be imported; no DB writes; `SELECT count(*) FROM customers WHERE tenant_id=?` unchanged
+- [ ] Drop `--dry-run` → customers inserted with `livemode` derived from `sk_test_` vs `sk_live_` prefix; `external_id` = Stripe id
+- [ ] Re-run identical command → idempotent; CSV row marks each as `skipped: already_imported`; no duplicate customers
+- [ ] **Phase 1 — products + prices**: `--resource=customers,products,prices` runs in dependency order regardless of input order; each Stripe price's `lookup_key` becomes `velox.pricing_rule.key`
+- [ ] **Phase 2 — subscriptions**: imports active + trialing only; cancelled / unpaid skipped with reason in CSV; `current_period_end` carried over so first Velox billing run respects Stripe's clock
+- [ ] **Phase 3 — invoices**: only `paid` / `void` / `uncollectible` (finalized) imported; PDFs / hosted URLs not re-fetched (Stripe owns those for legacy)
+- [ ] `--livemode-default=false` overrides the prefix-derived value
+- [ ] CSV output path: defaults to `./velox-import-<timestamp>.csv`; `--output=/tmp/foo.csv` honored
+- [ ] Long-running import handles SIGINT (Ctrl-C) → flushes the CSV row count, exits 130; partial state in DB is consistent (no half-imported subscription)
+
+## FLOW X14: Self-host artifacts (Helm + Compose + Terraform)
+
+Three deploy artifacts ship under `deploy/`:
+
+```
+deploy/helm/velox/      — Kubernetes Helm chart (for operators already on K8s)
+deploy/compose/         — single-host docker-compose stack (postgres + nginx + velox)
+deploy/terraform/aws/   — AWS module: single VPC, single EC2 host, RDS Postgres, S3 backup bucket
+```
+
+The Terraform module is deliberately boring (single-AZ, no autoscaling, no
+ECS) — operators who want HA reach for the Helm chart on EKS instead. See
+`deploy/README.md` for the picker matrix.
+
+- [ ] `helm lint deploy/helm/velox` → 0 errors, 0 warnings
+- [ ] `helm template deploy/helm/velox | kubectl apply --dry-run=client -f -` → no schema errors
+- [ ] `kind create cluster && helm install velox deploy/helm/velox --set image.tag=latest --wait` → pod healthy at `/health`; `kubectl exec` → `/health/ready` returns 200
+- [ ] Helm values surface (see `deploy/helm/velox/values.yaml`): `image.tag`, `env.VELOX_ENCRYPTION_KEY`, `ingress.host`, `replicaCount`, `resources.{requests,limits}`, postgres / redis subchart toggles
+- [ ] `cd deploy/compose && docker compose up -d && curl localhost:8080/health` → `{"status":"ok"}`
+- [ ] Compose: postgres data volume survives `down` / `up` cycle without data loss; `postgres-init.sql` runs only on first boot
+- [ ] Compose: nginx fronts the API on port 80 with the config in `deploy/compose/nginx.conf`
+- [ ] `terraform -chdir=deploy/terraform/aws init && terraform validate` → success
+- [ ] `cp deploy/terraform/aws/terraform.tfvars.example terraform.tfvars`, fill `name_prefix` + `vpc_cidr` + `instance_type` + AMI; `terraform plan` against a sandbox account → resources include VPC, public + private subnets in 2 AZs, IGW, EC2 host (single AZ), RDS Postgres (db subnet group spanning both AZs but single-AZ instance), S3 backup bucket (versioned + SSE + BlockPublicAccess), security groups, IAM role for the EC2 host
+- [ ] `terraform apply` then `curl http://<ec2_public_ip>:8080/health` → `{"status":"ok"}`; `user-data.sh.tftpl` ran the migrations on first boot
+- [ ] `deploy/README.md` opens with the picker matrix (artifact ↔ when to pick it) and copy-paste quickstart for each
+- [ ] Migration step is explicit in each artifact: container image runs `RUN_MIGRATIONS_ON_BOOT=true` on first deploy; documented separately so operators can opt out and run `go run ./cmd/velox migrate` manually
+- [ ] `docs/self-host/postgres-backup.md` is referenced from `deploy/README.md` and from each artifact's README — covers `pg_basebackup` + WAL archive workflow for the recovery path (Week 12 incident-runbook truth-up references this)
 
 ---
 
