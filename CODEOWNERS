@@ -1,0 +1,20 @@
+# CODEOWNERS — required reviewer assignment for pull requests
+#
+# Velox is currently a single-maintainer project. Every PR is owned by
+# the maintainer; CODEOWNERS exists today as the SOC 2 CC8.1 evidence
+# artifact (change management — every change reviewed) and to make the
+# default reviewer assignment automatic. As contributors join, this
+# file should split per-domain ownership rather than carry catch-all
+# `*` ownership only.
+
+* @sagarsuperuser
+
+# When the project grows past one maintainer, expect entries shaped like:
+#
+#   /internal/billing/        @sagarsuperuser @another-maintainer
+#   /internal/payment/        @sagarsuperuser
+#   /internal/customer/       @sagarsuperuser
+#   /web-v2/                  @frontend-maintainer
+#   /docs/compliance/         @sagarsuperuser
+#   /charts/ /deploy/         @ops-maintainer
+#   /.github/                 @sagarsuperuser

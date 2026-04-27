@@ -45,7 +45,6 @@ jobs:
 
       - name: Vulnerability check
         run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
-        continue-on-error: true
 
       - name: Create test database and app user
         run: |

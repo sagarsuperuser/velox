@@ -112,19 +112,19 @@ values are violated.
 
 **How Velox addresses it.**
 - The repository ships a `CONTRIBUTING.md` that names the project's
-  code-style and architecture rules. There is no separate code of
-  conduct file at the time of writing — a `CODE_OF_CONDUCT.md` based
-  on the Contributor Covenant (the de-facto open-source standard) is a
-  small follow-up PR and is listed in the gap section.
+  code-style and architecture rules. A `CODE_OF_CONDUCT.md` at the
+  repo root references Contributor Covenant 2.1 verbatim with
+  `conduct@velox.dev` as the reporting inbox and a separate
+  `conduct-escalation@velox.dev` for concerns about the maintainer.
 - Pull-request review is the integrity-enforcement surface: every
-  change goes through GitHub PR with at least one reviewer. There is
-  no formal CODEOWNERS file today.
+  change goes through GitHub PR with at least one reviewer. A
+  `CODEOWNERS` file at the repo root assigns the maintainer as the
+  default reviewer for every path, with comments outlining how the
+  file should split per-domain ownership as contributors join.
 
 **Gaps.**
-- No `CODE_OF_CONDUCT.md`.
-- No `CODEOWNERS` (PR reviewer-routing is informal).
 - No documented escalation path for an integrity concern raised by a
-  contributor.
+  contributor beyond the conduct-escalation inbox.
 
 **Auditor evidence requested.**
 - The code of conduct file (when added).
@@ -253,13 +253,16 @@ explicit.
 - **Status page**: not yet implemented. The runbook mentions a status
   page in passing (SEV-1 SLA references "status page update within 15
   min") but no status page is wired up. Listed in gaps.
-- **Security disclosure**: there is **no `SECURITY.md`** at the repo
-  root, no email alias for reporting vulnerabilities, no published
-  PGP key. This is the highest-impact CC2.3 gap and should ship
-  before any SOC 2 readiness review. The recommended pattern (mirrors
-  Stripe / GitHub / Linear): a `SECURITY.md` at the repo root naming
-  `security@<domain>`, a coordinated-disclosure window of 90 days,
-  and a `responsibly-disclosed` hall of fame.
+- **Security disclosure**: a `SECURITY.md` at the repo root names
+  `security@velox.dev` as the reporting inbox, sets a 5-business-day
+  triage commitment + 30-day patch-landing target for high/critical,
+  enumerates an explicit in-scope / out-of-scope list (the binary,
+  schema, dashboard, deploy artifacts, encryption-at-rest +
+  audit-log + RLS guarantees in scope; operator deploy environment +
+  third-party services + DoS via traffic flooding out of scope), and
+  carries a safe-harbor clause for good-faith research. No PGP key
+  is published yet — age is mentioned as the future encrypted path
+  once a maintainer key is published at `velox.dev/.well-known/age.txt`.
 
 **Gaps.** Listed inline; bundled into the "top gaps" section at the
 end.
@@ -463,13 +466,12 @@ PagerDuty / Slack endpoints.
   `go mod verify`, `govulncheck`.
 - Migration runner enforces ordered, idempotent schema evolution —
   `internal/platform/migrate/migrate.go`. See CC8.1 below.
-- Vulnerability scanning via `govulncheck` on every CI run
-  (currently `continue-on-error: true` — recommended to make this a
-  hard gate before SOC 2 Type 1 readiness; listed in gaps).
+- Vulnerability scanning via `govulncheck` on every CI run is a
+  hard CI gate (the `continue-on-error: true` qualifier was removed
+  in the SOC 2 cheap-gap closeout; a stdlib or dependency vulnerability
+  with a known fix now blocks merges).
 
 **Gaps.**
-- `govulncheck` is non-blocking today — flip to blocking for SOC 2
-  readiness.
 - No SAST (static application security testing) tool (e.g. Semgrep,
   CodeQL) wired into CI. Recommended addition.
 - No dependency-update bot (Dependabot / Renovate). Recommended.
@@ -725,10 +727,10 @@ encrypted.
 unauthorised software running on production systems.
 
 **How Velox addresses it.**
-- **Dependency scanning** — `govulncheck` runs on every CI run
-  (`.github/workflows/ci.yml:46-48`). Currently
-  `continue-on-error: true` — recommended to make blocking before
-  SOC 2 readiness review.
+- **Dependency scanning** — `govulncheck` is a hard CI gate
+  (`.github/workflows/ci.yml`). The `continue-on-error: true`
+  qualifier was removed in the SOC 2 cheap-gap closeout; a stdlib or
+  module vulnerability with a known fix blocks PR merges.
 - **Module integrity** — `go mod verify` in CI catches a tampered
   `go.sum`.
 - **Container provenance** — images publish from CI to GHCR
@@ -1067,20 +1069,25 @@ The honest list, ranked by audit-impact:
    `VELOX_EMAIL_BIDX_KEY`.** Single largest CC6.7 gap. Documented
    honestly in `encryption-at-rest.md` but not implemented. The
    proper fix is envelope encryption (DEK/KEK split). Tracked.
-2. **`SECURITY.md` + responsible-disclosure email.** Largest CC2.3
-   gap. Cheap to ship — one PR with a `SECURITY.md` and a
-   `security@<domain>` alias.
+2. ~~**`SECURITY.md` + responsible-disclosure email.**~~ **Closed**
+   in the SOC 2 cheap-gap closeout — `SECURITY.md` at repo root with
+   `security@velox.dev`, 30-day patch SLA for high/critical, explicit
+   in/out-of-scope, safe-harbor clause.
 3. **MFA on dashboard login.** Tracked under the WorkOS / Clerk
    integration. CC6.1 gap; auditor flag for any tenant whose
    commitments require MFA.
-4. **`govulncheck` made blocking in CI.** Currently
-   `continue-on-error: true`. Two-character change in
-   `.github/workflows/ci.yml` plus any vuln remediation that surfaces.
+4. ~~**`govulncheck` made blocking in CI.**~~ **Closed** — the
+   `continue-on-error: true` qualifier was removed; `govulncheck` is
+   now a hard CI gate. CI uses Go 1.25.9 (latest patch) and reports
+   no vulnerabilities at time of merge.
 5. **SAST in CI** (Semgrep / CodeQL). CC6.8 gap. Adds dependency-
    scanning's static-analysis sibling.
-6. **`CODE_OF_CONDUCT.md`** at repo root (Contributor Covenant).
-   Cheap CC1.1 close.
-7. **`CODEOWNERS`** for PR routing discipline. Cheap CC5.2 close.
+6. ~~**`CODE_OF_CONDUCT.md`**~~ **Closed** — references Contributor
+   Covenant 2.1 verbatim with `conduct@velox.dev` and a separate
+   `conduct-escalation@velox.dev` for concerns about the maintainer.
+7. ~~**`CODEOWNERS`**~~ **Closed** — added at repo root with the
+   maintainer as default owner; comments outline per-domain
+   ownership splits as contributors join.
 8. **Status page** for external availability comms (CC2.3 gap).
    Recommend Statuspage.io or atlassian's open-source equivalent
    wired to the same metrics that drive PagerDuty.

@@ -20,6 +20,30 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **SOC 2 cheap-gap closeout** (2026-04-27) — four of the SOC 2 gap
+  items called out in `docs/compliance/soc2-mapping.md` close in a
+  single PR. New `SECURITY.md` at the repo root names
+  `security@velox.dev` as the responsible-disclosure inbox with a
+  5-business-day triage SLA, 30-day patch-landing target for
+  high/critical, explicit in-scope (the binary, schema, dashboard,
+  encryption-at-rest + audit-log + RLS guarantees) / out-of-scope
+  (operator deploy, third-party services, DoS via traffic flooding)
+  list, and a safe-harbor clause for good-faith research — closes the
+  largest CC2.3 gap. New `CODE_OF_CONDUCT.md` references Contributor
+  Covenant 2.1 verbatim with `conduct@velox.dev` as the reporting
+  inbox and a separate `conduct-escalation@velox.dev` for concerns
+  about the maintainer — closes CC1.1. New `CODEOWNERS` assigns the
+  maintainer as default reviewer for every path with comments outlining
+  per-domain ownership splits as contributors join — closes CC5.2.
+  `.github/workflows/ci.yml` drops `continue-on-error: true` from the
+  `govulncheck` step so a stdlib or module vulnerability with a known
+  fix now blocks PR merges (CI uses Go 1.25.9 and reports clean at
+  time of merge) — closes CC6.8. `docs/compliance/soc2-mapping.md`
+  updated to flip the four closed items in the "top gaps" list and
+  rewrite the inline narratives in CC1.1 / CC2.3 / CC5.2 / CC6.8 so
+  the doc stays the source of truth on what's done versus what's
+  outstanding.
+
 - **Stripe migration guide — Week 11 cutover playbook** (2026-04-27) —
   `docs/migration-from-stripe.md` ships the operator-facing companion
   to the four importer phases (PRs #47 / #51 / #52 / #53). Where
