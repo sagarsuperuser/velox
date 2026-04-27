@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { ArrowRight, Rocket, Webhook, Repeat, Code2 } from 'lucide-react'
+import { ArrowRight, Rocket, Webhook, Repeat, Code2, Box } from 'lucide-react'
 import { PublicLayout } from '@/components/PublicLayout'
 import { DocsShell, DocsH1, DocsLead, Prose } from '@/components/DocsShell'
 
@@ -9,6 +9,12 @@ const cards = [
     icon: Rocket,
     title: 'Quickstart',
     body: 'Subscribe your first customer in five API calls. Covers keys, plans, subscriptions, and invoice retrieval.',
+  },
+  {
+    to: '/docs/recipes',
+    icon: Box,
+    title: 'Pricing recipes',
+    body: 'Five built-in pricing templates — Anthropic-style tokens, OpenAI, Replicate GPU-time, B2B SaaS, marketplace GMV. Instantiate the full graph in one call.',
   },
   {
     to: '/docs/webhooks',

@@ -8,6 +8,7 @@ const docsNav = [
     heading: 'Guides',
     items: [
       { to: '/docs/quickstart', label: 'Quickstart' },
+      { to: '/docs/recipes', label: 'Pricing recipes' },
       { to: '/docs/webhooks', label: 'Webhooks' },
       { to: '/docs/idempotency', label: 'Idempotency & retries' },
     ],
