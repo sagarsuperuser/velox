@@ -14,6 +14,7 @@ and the triage steps to get them back on track.
 - [Communication](#communication)
 - [Rollback procedures](#rollback-procedures)
 - [Compliance](#compliance)
+- [Migration](#migration)
 - [Post-mortem template](#post-mortem-template)
 
 ---
@@ -698,6 +699,31 @@ reasoning behind each retention window.
   this is audit-prep input, not an attestation.
 - GDPR data export + deletion guide — landing in the rest of
   Week 10 of the [90-day plan](../90-day-plan.md).
+
+## Migration
+
+Operator playbook for moving an existing Stripe Billing tenant onto
+Velox without missing an invoice.
+
+- [`docs/migration-from-stripe.md`](../migration-from-stripe.md) —
+  end-to-end Stripe → Velox cutover guide: pre-migration checklist
+  (Velox tenant provisioned, Stripe restricted key, encryption keys
+  verified, downstream webhook consumers inventoried), the five
+  `velox-import` phases (customers → products → prices →
+  subscriptions → finalized invoices, each with `insert` /
+  `skip-equivalent` / `skip-divergent` / `error` per-row outcomes
+  written to a CSV report), the rehearsal run in test mode, and a
+  T-14 → T+14 parallel-run cutover playbook. Phase F documents
+  rollback options including the honest disclosure that Velox does
+  not currently ship a scheduler-disable env var (recommended pause
+  is `kubectl scale --replicas=0` on the API deployment, tracked as
+  future work). Reconciliation toolkit, webhook redirection
+  strategy, known limitations table (Schedules, Quotes, multi-item
+  subscriptions, graduated/tiered prices, metered usage type,
+  Connect, draft/open invoices — each with a documented manual path),
+  and FAQ. Pairs with the importer design doc
+  [`docs/design-stripe-importer.md`](../design-stripe-importer.md)
+  for the per-resource mapping rules.
 
 ---
 
