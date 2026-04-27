@@ -112,6 +112,18 @@ func (m *memStore) GetByPublicToken(_ context.Context, token string) (domain.Inv
 	return domain.Invoice{}, errs.ErrNotFound
 }
 
+func (m *memStore) GetByStripeInvoiceID(_ context.Context, tenantID, stripeInvoiceID string) (domain.Invoice, error) {
+	if stripeInvoiceID == "" {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	for _, inv := range m.invoices {
+		if inv.TenantID == tenantID && inv.StripeInvoiceID == stripeInvoiceID {
+			return inv, nil
+		}
+	}
+	return domain.Invoice{}, errs.ErrNotFound
+}
+
 func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error) {
 	inv, ok := m.invoices[id]
 	if !ok || inv.TenantID != tenantID {

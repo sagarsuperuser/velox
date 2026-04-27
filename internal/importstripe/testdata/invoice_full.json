@@ -1,0 +1,80 @@
+{
+  "id": "in_full_001",
+  "object": "invoice",
+  "amount_due": 0,
+  "amount_paid": 5499,
+  "amount_remaining": 0,
+  "billing_reason": "subscription_create",
+  "collection_method": "charge_automatically",
+  "created": 1701086400,
+  "currency": "usd",
+  "customer": {
+    "id": "cus_full_001",
+    "object": "customer"
+  },
+  "customer_email": "full@example.com",
+  "customer_name": "Full Customer",
+  "description": "Initial subscription invoice (prorated)",
+  "footer": "Pay within 30 days",
+  "lines": {
+    "object": "list",
+    "data": [
+      {
+        "id": "il_full_line1",
+        "object": "line_item",
+        "amount": 4999,
+        "currency": "usd",
+        "description": "Premium Plan (prorated)",
+        "quantity": 1,
+        "subscription": "sub_full_001",
+        "period": {
+          "start": 1701000000,
+          "end": 1703678400
+        },
+        "pricing": {
+          "type": "price",
+          "price_details": {
+            "price": "price_full_001",
+            "product": "prod_full_001"
+          },
+          "unit_amount_decimal": "4999"
+        }
+      }
+    ]
+  },
+  "livemode": true,
+  "metadata": {
+    "campaign": "launch"
+  },
+  "number": "ABCD-0047",
+  "paid": true,
+  "parent": {
+    "type": "subscription_details",
+    "subscription_details": {
+      "subscription": {
+        "id": "sub_full_001",
+        "object": "subscription"
+      }
+    }
+  },
+  "period_end": 1703678400,
+  "period_start": 1701000000,
+  "status": "paid",
+  "status_transitions": {
+    "finalized_at": 1701086400,
+    "paid_at": 1701086500
+  },
+  "subtotal": 4999,
+  "tax": 500,
+  "total": 5499,
+  "total_taxes": [
+    {
+      "amount": 500,
+      "tax_behavior": "exclusive",
+      "type": "tax_rate_details",
+      "tax_rate_details": {
+        "tax_rate": "txr_001"
+      }
+    }
+  ]
+}

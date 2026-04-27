@@ -41,6 +41,10 @@ func (f *fakeSource) IterateSubscriptions(ctx context.Context, fn func(*stripe.S
 	return nil
 }
 
+func (f *fakeSource) IterateInvoices(ctx context.Context, fn func(*stripe.Invoice) error) error {
+	return nil
+}
+
 // fakeStore is the minimal CustomerService + CustomerLookup stand-in used
 // by the unit-level driver tests. It models customers in two parallel maps
 // (id -> Customer, id -> BillingProfile) keyed by Velox id, plus a

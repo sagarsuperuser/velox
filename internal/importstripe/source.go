@@ -1,8 +1,9 @@
 // Package importstripe imports data from a source Stripe account into Velox.
 //
-// Phase 0 implements customer import only; subsequent phases extend the same
-// Source/Importer/Report surface to subscriptions, products+prices, and
-// finalized invoices. See docs/design-stripe-importer.md for the full plan.
+// Phase 0 implements customer import; Phase 1 adds products + prices;
+// Phase 2 adds subscriptions; Phase 3 adds finalized invoices (paid /
+// void / uncollectible only). See docs/design-stripe-importer.md for the
+// full plan.
 package importstripe
 
 import (
@@ -37,6 +38,17 @@ type Source interface {
 	// Source impl passes status=all so historical canceled rows surface for
 	// import too.
 	IterateSubscriptions(ctx context.Context, fn func(*stripe.Subscription) error) error
+
+	// IterateInvoices yields every Stripe invoice in creation order,
+	// oldest first. Same semantics as IterateCustomers — early-stop via
+	// ErrStopIteration, all other errors halt and propagate. Phase 3
+	// imports finalized invoices only (status in {paid, void,
+	// uncollectible}); the implementation in client.go iterates each
+	// terminal status separately because Stripe's list API only accepts
+	// a single status filter at a time and the all-statuses list would
+	// require post-filtering and burn rate limit on draft / open rows
+	// the importer would skip anyway.
+	IterateInvoices(ctx context.Context, fn func(*stripe.Invoice) error) error
 }
 
 // ErrStopIteration is a sentinel returned from a Source callback to halt

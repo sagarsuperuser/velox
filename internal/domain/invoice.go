@@ -144,6 +144,15 @@ type Invoice struct {
 	// on (tenant, subscription, billing_period_start) so the threshold
 	// scan re-tick is idempotent under retry.
 	BillingReason InvoiceBillingReason `json:"billing_reason,omitempty"`
+
+	// StripeInvoiceID is the source Stripe invoice id (in_xxx) populated by
+	// the velox-import CLI when an invoice was imported from a Stripe
+	// account. Empty for Velox-native invoices. The partial unique index
+	// (idx_invoices_stripe_invoice_id) enforces dedup so the importer is
+	// idempotent on rerun without ever overwriting an existing row. See
+	// migration 0063 for the column + index definition and
+	// internal/importstripe/invoice_importer.go for the lookup path.
+	StripeInvoiceID string `json:"stripe_invoice_id,omitempty"`
 }
 
 // ItemChangeType classifies per-item proration artifacts so the dedup index

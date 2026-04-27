@@ -54,13 +54,21 @@ func TestNoTxMigration_GINIndexBuilt(t *testing.T) {
 		t.Fatalf("expected GIN index idx_usage_events_properties_gin to exist after Up — the no-tx runner did not apply 0062")
 	}
 
-	// Roll back exactly through 0062 (the head of the embedded set right
-	// now). Asserts the no-tx down path runs and the index goes away.
-	if _, err := migrate.Rollback(scratchURL, 1); err != nil {
-		t.Fatalf("Rollback 1: %v", err)
+	// Roll back through 0062 by stepping past every later embedded
+	// migration. Asserts the no-tx down path runs and the index goes
+	// away. Step count derived from EmbeddedLatestVersion so adding
+	// later in-tx migrations doesn't silently strand the GIN behind a
+	// fixed `1`-step rollback.
+	latest, err := migrate.EmbeddedLatestVersion()
+	if err != nil {
+		t.Fatalf("EmbeddedLatestVersion: %v", err)
+	}
+	stepsToBefore0062 := max(int(latest)-61, 1)
+	if _, err := migrate.Rollback(scratchURL, stepsToBefore0062); err != nil {
+		t.Fatalf("Rollback %d: %v", stepsToBefore0062, err)
 	}
 	if indexExists(t, scratchURL, "idx_usage_events_properties_gin") {
-		t.Fatalf("expected GIN index to be gone after rolling back 0062")
+		t.Fatalf("expected GIN index to be gone after rolling back through 0062")
 	}
 
 	// Re-apply: another exercise of the no-tx up path on a non-fresh DB.

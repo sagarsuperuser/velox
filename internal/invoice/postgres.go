@@ -33,7 +33,7 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	tax_provider, tax_calculation_id, COALESCE(tax_transaction_id,''),
 	tax_reverse_charge, tax_exempt_reason,
 	tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason,
-	COALESCE(public_token,''), COALESCE(billing_reason,'')`
+	COALESCE(public_token,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,'')`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -62,8 +62,9 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
-			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, billing_reason)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
+			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, billing_reason,
+			stripe_invoice_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -80,6 +81,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 		inv.TaxProvider, inv.TaxCalculationID, inv.TaxReverseCharge, inv.TaxExemptReason,
 		string(taxStatus), postgres.NullableTime(inv.TaxDeferredAt), inv.TaxRetryCount, inv.TaxPendingReason,
 		postgres.NullableString(string(inv.BillingReason)),
+		postgres.NullableString(inv.StripeInvoiceID),
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
@@ -773,8 +775,9 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
-			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, billing_reason)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40)
+			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, billing_reason,
+			stripe_invoice_id, paid_at, voided_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -792,6 +795,8 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 		inv.TaxProvider, inv.TaxCalculationID, inv.TaxReverseCharge, inv.TaxExemptReason,
 		string(taxStatus), postgres.NullableTime(inv.TaxDeferredAt), inv.TaxRetryCount, inv.TaxPendingReason,
 		postgres.NullableString(string(inv.BillingReason)),
+		postgres.NullableString(inv.StripeInvoiceID),
+		postgres.NullableTime(inv.PaidAt), postgres.NullableTime(inv.VoidedAt),
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
@@ -973,7 +978,7 @@ func scanInvDest(inv *domain.Invoice) []any {
 		&inv.TaxProvider, &inv.TaxCalculationID, &inv.TaxTransactionID,
 		&inv.TaxReverseCharge, &inv.TaxExemptReason,
 		(*string)(&inv.TaxStatus), &inv.TaxDeferredAt, &inv.TaxRetryCount, &inv.TaxPendingReason,
-		&inv.PublicToken, (*string)(&inv.BillingReason),
+		&inv.PublicToken, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
 	}
 }
 
@@ -1037,6 +1042,35 @@ func (s *PostgresStore) GetByPublicToken(ctx context.Context, token string) (dom
 		return domain.Invoice{}, err
 	}
 	return inv, nil
+}
+
+// GetByStripeInvoiceID resolves a Stripe invoice id (in_xxx) to its imported
+// Velox invoice row. Backs the velox-import CLI's idempotency lookup —
+// re-running an import after a finalized invoice has already landed must
+// detect the existing row and emit skip-equivalent (or skip-divergent)
+// rather than ErrAlreadyExists from a unique-violation collision.
+//
+// Empty stripeInvoiceID returns ErrNotFound rather than matching the
+// partial unique index's NULL gap (no Velox-native invoice should match).
+// Runs under TxTenant — the importer always has a tenant in context, and
+// scoping by tenant is the standard RLS posture for this store.
+func (s *PostgresStore) GetByStripeInvoiceID(ctx context.Context, tenantID, stripeInvoiceID string) (domain.Invoice, error) {
+	if stripeInvoiceID == "" {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `SELECT `+invCols+` FROM invoices WHERE stripe_invoice_id = $1`, stripeInvoiceID).
+		Scan(scanInvDest(&inv)...)
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	return inv, err
 }
 
 func buildInvWhere(f ListFilter) (string, []any) {
