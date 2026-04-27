@@ -697,8 +697,7 @@ reasoning behind each retention window.
   priority order before a Type 1), and a flat evidence index an
   auditor can walk straight through. Pre-launch / pre-audit posture:
   this is audit-prep input, not an attestation.
-- GDPR data export + deletion guide — landing in the rest of
-  Week 10 of the [90-day plan](../90-day-plan.md).
+- GDPR data export + deletion guide — pending.
 
 ## Migration
 

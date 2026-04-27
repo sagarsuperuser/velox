@@ -281,8 +281,8 @@ under the Velox repo with the request ID Velox returns in the error envelope
 - **Stripe Connect / Express accounts** — Velox is a self-host product, not a
   marketplace. Connect onboarding is out of scope.
 - **Live mode** — explicitly forbidden in this runbook. Live testing belongs in
-  the design-partner cutover playbook
-  (`docs/design-partner-onboarding.md` → Cutover Week section).
+  the design-partner cutover playbook (maintained in the internal `velox-ops`
+  repo).
 - **Tax** — Stripe Tax integration is exercised separately; see
   `docs/ops/tax-calculation.md`.
 - **Payouts / balance** — Velox does not surface Stripe payouts; the operator's

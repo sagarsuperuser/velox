@@ -3,8 +3,7 @@
 > **Status:** Draft v1
 > **Owner:** Track A
 > **Last revised:** 2026-04-26
-> **Implementation window:** Week 5d of `docs/90-day-plan.md`
-> **Related:** `docs/design-create-preview.md` (sibling — same composition + always-array conventions), `docs/design-customer-usage.md` (the read surface alerts evaluate against), `docs/design-multi-dim-meters.md` (Week 2 dependency — `usage.AggregateByPricingRules` is the trigger evaluator's engine), `docs/positioning.md` pillar 1.4 (cost transparency)
+> **Related:** `docs/design-create-preview.md` (sibling — same composition + always-array conventions), `docs/design-customer-usage.md` (the read surface alerts evaluate against), `docs/design-multi-dim-meters.md` (multi-dim dependency — `usage.AggregateByPricingRules` is the trigger evaluator's engine)
 
 ## Motivation
 
@@ -417,7 +416,7 @@ The wire-shape regression test (`TestWireShape_SnakeCase`) marshals a fully-popu
 - [ ] Wire routes + evaluator goroutine in `internal/api/router.go` and `cmd/velox/main.go`.
 - [ ] Update `web-v2/src/lib/api.ts` — `BillingAlert` types + endpoint methods.
 - [ ] Update `CHANGELOG.md` (Track A) + `web-v2/src/pages/Changelog.tsx` (Track B).
-- [ ] Append entry to `docs/parallel-handoff.md`.
+- [ ] Track A → Track B handoff note (private velox-ops repo).
 
 ## Track B unblock
 

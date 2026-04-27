@@ -3,8 +3,7 @@
 > **Status:** Draft v1
 > **Owner:** Track A
 > **Last revised:** 2026-04-26
-> **Implementation window:** Week 5 of `docs/90-day-plan.md`
-> **Related:** `docs/design-multi-dim-meters.md` (Week 2 dependency), `docs/design-recipes.md` (Week 3 — same wire-contract conventions), `docs/positioning.md` pillar 1.4 (cost transparency)
+> **Related:** `docs/design-multi-dim-meters.md` (multi-dim dependency), `docs/design-recipes.md` (same wire-contract conventions)
 
 ## Motivation
 
@@ -252,7 +251,7 @@ The dashboard shape Track B should aim at:
 - Per-meter cards: `meter_name · total_quantity · total_amount_cents`. Click → expanded view of `rules[]` with dimension chips and per-rule cents.
 - Filters: cycle (default) / last cycle / last 90 days / custom — all map to the same endpoint with different `from`/`to`.
 
-Track B can ship the UI against a mocked API (MSW handlers seeded from the example response above) before Track A finishes the backend, then swap to the real API at integration time. Same parallel-work pattern as recipes (`docs/parallel-work.md` § "Design-first / RFC pattern").
+Track B can ship the UI against a mocked API (MSW handlers seeded from the example response above) before Track A finishes the backend, then swap to the real API at integration time. Same design-first / RFC parallel-work pattern as recipes.
 
 ## Review status
 

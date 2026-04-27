@@ -3,16 +3,15 @@
 > **Status:** Draft v1
 > **Owner:** Track A
 > **Last revised:** 2026-04-25
-> **Implementation window:** Week 2 of `docs/90-day-plan.md` (May 2–8)
-> **Related:** ADR-002 (per-domain), ADR-003 (RLS), ADR-005 (integer cents), `docs/positioning.md`
+> **Related:** ADR-002 (per-domain), ADR-003 (RLS), ADR-005 (integer cents)
 
 ## Motivation
 
 Stripe's Meter API was bolted onto a card-subscription engine. To bill `gpt-4 input cached` vs `gpt-4 input uncached` vs `gpt-4 output` at different rates, you create three Meters with three event names and three pricing rules. For full Anthropic / OpenAI parity (3 models × 4 operations × 2 cache states), you need ~24 Meters. The dimensional structure is encoded in event-name strings instead of data.
 
-Velox's wedge (per `docs/positioning.md`) is **AI-native billing for usage-heavy SaaS**. The minimum-viable expression of that is: **one meter** receives events with arbitrary dimension labels, **many pricing rules** pick out subsets to apply rates. Same data, far fewer meters, far simpler subscription wiring.
+Velox's wedge is **AI-native billing for usage-heavy SaaS**. The minimum-viable expression of that is: **one meter** receives events with arbitrary dimension labels, **many pricing rules** pick out subsets to apply rates. Same data, far fewer meters, far simpler subscription wiring.
 
-This design ships in Week 2. Without it, the wedge is just a slide.
+Without this design, the wedge is just a slide.
 
 ## Goals
 

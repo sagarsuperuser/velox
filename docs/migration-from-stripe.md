@@ -163,10 +163,8 @@ or kept on Stripe for events Velox is not authoritative for
 
 ### Timeline expectation
 
-The 90-day plan's Week-12 row recommends a **2-week parallel-run
-window** (`docs/90-day-plan.md` → Week 12, plus the
-risks-and-mitigations row "First-cutover incident causes partner
-churn — Parallel-run window (both Stripe Billing + Velox running,
+A **2-week parallel-run window** is the
+recommended cutover shape — both Stripe Billing and Velox running,
 Velox dark) for 2 weeks before flipping primary"). Plan on:
 
 | Phase | Window | What's running |
@@ -1204,7 +1202,7 @@ partial import. The full list:
 
 | Stripe feature | Importer behaviour | What to do about it |
 |---|---|---|
-| **Subscription Schedules** (`Subscription.Schedule`, `subscription_schedules`) | Phase 2 emits a CSV note; no schedule object created in Velox | Recreate manually via Velox's subscription change-plan endpoint with `effective_at` for future-dated transitions. Out of scope for v1 per [`docs/90-day-plan.md` → Out of scope](./90-day-plan.md#out-of-scope-deferred-to-next-90-days). |
+| **Subscription Schedules** (`Subscription.Schedule`, `subscription_schedules`) | Phase 2 emits a CSV note; no schedule object created in Velox | Recreate manually via Velox's subscription change-plan endpoint with `effective_at` for future-dated transitions. Out of scope for v1. |
 | **Quotes** | Out of scope; not iterated by the importer | Legacy quotes stay in Stripe for audit. Velox has no Quotes object today. |
 | **Promotion Codes** (vs basic Coupon) | Out of scope | Velox has Coupons, not Promotion Codes. Map your underlying coupon definitions to Velox's coupon model; ignore the public-code surface. |
 | **Connect / multi-party** | Out of scope | Velox is single-tenant per deployment. Connect platforms are not a v1 target. |
@@ -1338,11 +1336,6 @@ reconciliation paths" — out of scope for this guide.
   importer design rationale, mapping tables per resource, idempotency
   + failure handling. Read this for the "why" behind each phase's
   behaviour.
-- [`docs/90-day-plan.md`](./90-day-plan.md) — Week 11 ("Migration
-  FROM Stripe") + Week 12 ("First production cutover"). The 2-week
-  parallel-run window in the cutover playbook above is anchored to
-  the Week-12 row and the risks-and-mitigations entry on cutover
-  incidents.
 - [`docs/ops/runbook.md`](./ops/runbook.md) — operational runbook.
   Phase E's metric checks reference the metrics inventory, and the
   Phase F rollback playbook references the rollback-procedures

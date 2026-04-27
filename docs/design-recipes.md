@@ -3,18 +3,17 @@
 > **Status:** Draft v1
 > **Owner:** Track A
 > **Last revised:** 2026-04-25
-> **Implementation window:** Week 3 of `docs/90-day-plan.md` (May 9–15)
-> **Related:** `docs/design-multi-dim-meters.md` (Week 2 dependency), `docs/positioning.md` (pillar 1.3), ADR-002 (per-domain), ADR-003 (RLS)
+> **Related:** `docs/design-multi-dim-meters.md` (multi-dim meter dependency), ADR-002 (per-domain), ADR-003 (RLS)
 
 ## Motivation
 
 Stripe Billing's onboarding for an AI-native product is a multi-day chore: you create N Meters by hand (one per `model × operation × cached` combination), wire each into a Plan, attach a webhook, configure dunning retry logic, then mock the whole thing for QA. The first invoice is a week away. Buyers leave.
 
-Velox's wedge (per `docs/positioning.md` pillar 1) includes **pricing recipes**: a single API call, ~30 seconds, walks away with a working `anthropic_style` setup — plans, meters, multi-dim pricing rules, dunning, webhook endpoint, sample data. The picker UI in the dashboard means a non-technical CS rep can do the same thing.
+Velox's AI-native wedge includes **pricing recipes**: a single API call, ~30 seconds, walks away with a working `anthropic_style` setup — plans, meters, multi-dim pricing rules, dunning, webhook endpoint, sample data. The picker UI in the dashboard means a non-technical CS rep can do the same thing.
 
-This is the developer-experience flagship that turns the AI-native pillar from a slide into a 5-minute quickstart. Without it, the multi-dim meter machinery from Week 2 is invisible: no prospect builds a 12-rule `anthropic_style` setup by hand to evaluate it. With recipes, evaluation collapses to one POST.
+This is the developer-experience flagship that turns the AI-native pillar from a slide into a 5-minute quickstart. Without it, the multi-dim meter machinery is invisible: no prospect builds a 12-rule `anthropic_style` setup by hand to evaluate it. With recipes, evaluation collapses to one POST.
 
-This design ships in Week 3 and depends on Week 2 multi-dim meters being merged.
+This design depends on multi-dim meters being merged.
 
 ## Goals
 
@@ -525,7 +524,7 @@ The picker UI shape Track B should aim at:
 - "Preview" button → preview modal showing the object graph (collapsible per type)
 - "Instantiate" button → confirmation → success state with deep-links into the created plan / meter / webhook detail pages
 
-Track B can ship the UI against a mocked API (e.g. MSW handlers) before Track A finishes the backend, then swap to the real API at integration time. This is the parallel-work pattern (`docs/parallel-work.md` § "Design-first / RFC pattern").
+Track B can ship the UI against a mocked API (e.g. MSW handlers) before Track A finishes the backend, then swap to the real API at integration time. This is the design-first / RFC parallel-work pattern.
 
 ## Review status
 
