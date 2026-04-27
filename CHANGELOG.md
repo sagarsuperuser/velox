@@ -44,6 +44,121 @@ Two surfaces mirror this file:
   three supported values. Phase 1 subscriptions slice (the missing piece
   before fully migrating from Stripe Billing) is unblocked by this ship
   and lands next.
+- **SOC 2 Trust Services Criteria control mapping — Week 10 compliance docs** (2026-04-27) —
+  Third of the Week 10 compliance docs ships at
+  `docs/compliance/soc2-mapping.md`, the audit-prep companion to the
+  audit-log-retention and encryption-at-rest guides. Maps all five
+  Common Criteria families plus the optional Availability /
+  Confidentiality / Processing Integrity / Privacy categories onto the
+  Velox surface. Each criterion is laid out as plain-English
+  requirement → how Velox addresses it with code-level evidence
+  pointers (`internal/...path/file.go:line` format) → explicit gaps →
+  artifacts an auditor would request. Scope-and-shared-responsibility
+  intro establishes the three-layer model (Velox application
+  controls, tenant deployment controls, downstream sub-service
+  organisations Stripe + cloud provider under the carve-out method)
+  so the rest of the doc stays anchored. CC1 Control Environment
+  notes the project's `CONTRIBUTING.md` and PR-review surface plus
+  the missing `CODE_OF_CONDUCT.md` and `CODEOWNERS` (cheap closes).
+  CC2 Communication and Information walks the public changelog
+  surface (`CHANGELOG.md` + `web-v2/src/pages/Changelog.tsx`),
+  GitHub Issues as the bug surface, and flags the highest-impact
+  gap: no `SECURITY.md` and no `security@<domain>` alias for
+  responsible disclosure. CC3 Risk Assessment cites the SLO doc,
+  the migration-safety findings doc, and the ADR set as risk-register
+  artifacts; flags the missing formal threat model (STRIDE / LINDDUN)
+  as an auditor ask. CC4 Monitoring walks the Prometheus metric
+  inventory, health checks, audit log per request, CI gate, and the
+  quarterly verification cadence for encryption-at-rest + restore
+  drill; flags missing default SIEM-aggregation reference config and
+  no annual pen test. CC5 Control Activities cites the per-domain
+  package architecture (ADR-002), `db.BeginTx(ctx, postgres.TxTenant,
+  tenantID)` as the tenant boundary, branch protection + PR review +
+  CI as the change gate; flags `govulncheck` non-blocking
+  (`continue-on-error: true` in `.github/workflows/ci.yml`) and no
+  SAST as gaps. **CC6 Logical and Physical Access** is the longest
+  section — it walks the three API key types from
+  `internal/auth/permission.go` (platform / secret / publishable, with
+  publishable browser-safe and read-only by policy) plus session-
+  cookie auth, Argon2id password hashing
+  (`internal/user/password.go`), SHA-256 session-ID hashing
+  (`internal/session/token.go:16-31`), RLS with `FORCE ROW LEVEL
+  SECURITY` on 66 tables (search `internal/platform/migrate/sql/0001_schema.up.sql`),
+  livemode separation, the security-headers middleware
+  (`internal/api/middleware/security.go`), the GCRA rate limiter
+  with fail-closed-capable Redis backing
+  (`internal/api/middleware/ratelimit.go`), HMAC-SHA256 webhook
+  signature verification (`internal/webhook/service.go:444`), CORS
+  with credentials enforcement (`internal/api/middleware/cors.go`),
+  and the AES-256-GCM application-layer encryption surface plus the
+  email blind index from the encryption-at-rest sibling doc; flags
+  the missing MFA / SSO (tracked under WorkOS / Clerk integration),
+  coarse API key scopes, and the **single largest CC6.7 gap** —
+  no key-rotation tooling for `VELOX_ENCRYPTION_KEY` or
+  `VELOX_EMAIL_BIDX_KEY` (envelope-encryption rebuild needed). CC7
+  System Operations walks the runbook severity / alert /
+  playbook structure, backup-recovery RPO=5min RTO=1h, and the
+  audit-log archive restore-into-side-table pattern; flags missing
+  quarterly tabletop schedule and customer-notification template.
+  CC8 Change Management cites the migration runner with no-tx
+  support (`internal/platform/migrate/migrate.go`), the up+down
+  migration roundtrip test, branch protection and ADR cadence; no
+  major code-level gaps. CC9 Risk Mitigation has the **vendor
+  inventory table** with mitigation per dependency: Stripe
+  (PaymentIntent-only ADR-001 keeps Velox out of PCI cardholder-
+  data scope, circuit breaker on outbound calls, per-tenant
+  credentials so tenant-A's Stripe issue doesn't cascade),
+  PostgreSQL (PITR + replica), Redis (rate-limiter fail-closed),
+  GHCR / External Secrets Operator / WorkOS-Clerk-planned. Sub-
+  service-organisation reliance documented: when Velox does its own
+  SOC 2, Stripe and the cloud provider are carve-outs whose own
+  SOC 2 Type 2 reports cover what Velox doesn't. Additional-
+  categories section covers Availability A1.1-A1.3 (capacity-
+  planning + backup-recovery + drill cadence), Confidentiality
+  C1.1-C1.2 (the encryption-at-rest data-classification table +
+  GDPR right-to-erasure flow at `internal/customer/gdpr.go`),
+  Processing Integrity PI1.1-PI1.5 (validation middleware,
+  idempotency keys + proration dedup + subscription active-
+  uniqueness invariant + webhook event replay protection, signed
+  outbound webhooks, permission-gated routes, audit-log paper
+  trail), and Privacy P-series (notice/choice tenant-owned,
+  collection limited to what API calls carry, retention by regime
+  per audit-log-retention.md, GDPR access via export and erasure
+  via gdpr.delete audit row). Closes with **top gaps to close
+  before a Type 1**, ranked by audit impact: 1. key rotation
+  tooling, 2. `SECURITY.md`, 3. MFA on dashboard login, 4.
+  `govulncheck` blocking in CI, 5. SAST in CI, 6.
+  `CODE_OF_CONDUCT.md`, 7. `CODEOWNERS`, 8. status page, 9. image
+  signing, 10. threat model doc, 11. customer-breach-notification
+  template, 12. quarterly tabletop schedule, 13. vendor
+  risk-review log, 14. annual pen test (Velox-as-a-company
+  activity), 15. dormant-key sweeper, 16. anomaly detection on
+  audit log volumes, 17. fine-grained API key scopes; items 1-9
+  are the priority list before pursuing a Type 1 walkthrough.
+  Final evidence index is a flat table mapping each
+  auditor-likely-to-request artifact to its file path / runbook
+  section, copy-pasteable for the engagement-letter scoping
+  exercise. Cross-refs added from `docs/ops/runbook.md`
+  (Compliance section now carries the SOC 2 mapping entry next to
+  audit-log-retention and encryption-at-rest) and `docs/self-host.md`
+  (Compliance posture section lists all three shipped Week 10 docs).
+  All four Week 10 readiness items now closed.
+- **GDPR data export verified for multi-dim usage events** (2026-04-27) —
+  Last open Week 10 readiness checkbox closed.
+  `GET /v1/customers/{id}/export` now returns the customer's raw `usage_events`
+  rows (capped at 10,000 most-recent, with `usage_events_truncated=true` when
+  the cap fires) including the per-event `dimensions` JSONB payload that
+  multi-dim meters use to dispatch pricing rules. The previous shape carried
+  only an unpopulated `usage_summary` map and dropped dimensions entirely —
+  meaning a reissued export could not be reconciled against the original
+  invoice line items, which is precisely the right GDPR Art. 20 codifies.
+  Tenant-level pricing metadata (`meter_pricing_rules`, `billing_alerts`,
+  meter definitions) remains intentionally out of scope: it is the operator's
+  commercial pricing strategy, not the data subject's personal data.
+  New focused integration test `TestGDPR_ExportCustomerData_MultiDimUsageEvents`
+  in `internal/customer/gdpr_multidim_integration_test.go` seeds two events
+  with mixed string/bool dimensions and asserts exact-match round-trip
+  through the export.
 - **Encryption-at-rest verification guide — Week 10 compliance docs** (2026-04-27) —
   Second of the Week 10 compliance docs ships at `docs/ops/encryption-at-rest.md`,
   the operator-facing reference for what Velox encrypts at rest, with which

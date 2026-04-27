@@ -686,7 +686,17 @@ reasoning behind each retention window.
   SOC 2 / PCI-DSS / GDPR / HIPAA control mapping. Read alongside
   [secrets-management.md](./secrets-management.md) for the env-var
   delivery story.
-- SOC 2 control mapping and GDPR data export — landing in the rest of
+- [`docs/compliance/soc2-mapping.md`](../compliance/soc2-mapping.md) —
+  SOC 2 Trust Services Criteria control mapping. Maps CC1-CC9 plus
+  the optional Availability / Confidentiality / Processing Integrity /
+  Privacy categories onto the Velox surface, with file-and-line
+  evidence pointers, an honest gap list ranked by audit impact (key
+  rotation tooling, SECURITY.md, MFA, govulncheck-blocking, SAST,
+  CODE_OF_CONDUCT, CODEOWNERS, status page, image signing — in
+  priority order before a Type 1), and a flat evidence index an
+  auditor can walk straight through. Pre-launch / pre-audit posture:
+  this is audit-prep input, not an attestation.
+- GDPR data export + deletion guide — landing in the rest of
   Week 10 of the [90-day plan](../90-day-plan.md).
 
 ---
