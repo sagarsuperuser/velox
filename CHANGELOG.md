@@ -20,6 +20,23 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Typed `<VeloxCostDashboard />` React wrapper at
+  `web-v2/src/components/embeds/VeloxCostDashboard.tsx`.** Wraps the
+  public iframe with a typed prop interface (`token`, `baseUrl`, `theme`,
+  `accent`, `width`, `height`, `className`, `title`) and constructs the
+  embed URL for the consumer instead of leaving it to hand-rolled string
+  concatenation. Accent is regex-validated client-side too (defence in
+  depth — the server already drops anything that isn't 6-digit hex).
+  Component lives in the repo today; a standalone `@velox/react` npm
+  package and an inline (non-iframe) render mode that hits the public
+  JSON endpoint from inside the consumer's React tree are tracked for
+  v1.1. The originally-planned `tenantKey customerId` prop signature is
+  deferred — that would require a publishable-key auth path on the
+  public endpoint which would weaken the per-customer-token isolation
+  the iframe currently provides. Closes the Week 5 React-component
+  readiness item in `docs/90-day-plan.md` (with the v1.1 carveouts
+  spelled out in the same line).
+
 - **Public cost dashboard embed: theme + accent URL params.**
   The `/public/cost-dashboard/:token` route now reads `?theme=light|dark`
   (default dark — most product surfaces look better dark and the iframe
