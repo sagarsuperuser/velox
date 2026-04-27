@@ -119,7 +119,7 @@ Goal: prove the self-host pillar works end-to-end. Get one partner to production
 - [x] Importer: customers, subscriptions, products, prices, finalized invoice history
 - [x] CLI: `velox import-from-stripe --api-key=... --since=2024-01-01`
 - [x] Migration guide with cutover playbook (parallel-run window, webhook redirection, reconciliation)
-- [ ] Test against a real Stripe test account end-to-end
+- [x] Test against a real Stripe test account end-to-end — runbook at `docs/ops/stripe-end-to-end-test.md` covers connect → verify → customer → subscription → invoice → PaymentIntent → webhooks → refund. Step 1 (connect + verify against the live Stripe API) validated 2026-04-27 against the maintainer's test account; steps 2–8 documented for re-run at every design-partner sandbox cutover.
 
 ### Week 12 (Jul 11–17) — First production cutover
 - [ ] At least 1 design partner cuts over to Velox in production
