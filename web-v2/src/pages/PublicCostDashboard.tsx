@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -10,6 +10,7 @@ import {
   type CustomerUsageRule,
   type PublicCostDashboard,
 } from '@/lib/api'
+import { applyEmbedTheme, parseEmbedTheme } from '@/lib/embedTheme'
 import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -39,6 +40,13 @@ import {
 
 export default function PublicCostDashboardPage() {
   const { token = '' } = useParams<{ token: string }>()
+
+  // Apply theme + accent before paint so the first frame doesn't flash
+  // light-then-dark inside the iframe. Reads ?theme=light|dark (default
+  // dark) and ?accent=#RRGGBB; see lib/embedTheme.ts for the contract.
+  useLayoutEffect(() => {
+    applyEmbedTheme(parseEmbedTheme(window.location.search))
+  }, [])
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['public-cost-dashboard', token],

@@ -20,6 +20,20 @@ Two surfaces mirror this file:
 
 ### Added
 
+- **Public cost dashboard embed: theme + accent URL params.**
+  The `/public/cost-dashboard/:token` route now reads `?theme=light|dark`
+  (default dark — most product surfaces look better dark and the iframe
+  default should be the polished one) and `?accent=#RRGGBB` (override
+  `--primary` + `--ring` so the cycle progress bar and focus rings carry
+  the operator's brand). The choice is deterministic from the URL — the
+  iframe deliberately ignores localStorage and `prefers-color-scheme`
+  so the host page's choice always wins. Accent values that don't match
+  the strict 6-digit hex regex are silently ignored. Logic lives in
+  `web-v2/src/lib/embedTheme.ts`; applied via `useLayoutEffect` so the
+  first frame doesn't flash the wrong theme. Customisation surface
+  documented at `/docs/embeds/cost-dashboard`. Closes the Week 5
+  "Theming via CSS variables; dark mode by default" item.
+
 - **Design-partner onboarding playbook at `docs/design-partner-onboarding.md`.**
   Partner-facing lifecycle document covering the 12-month free term, weekly
   check-in cadence, sandbox-cutover-week-steady-state phases, communication

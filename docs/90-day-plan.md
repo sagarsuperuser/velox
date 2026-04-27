@@ -77,7 +77,7 @@ The wedge's sticky feature, plus the two Stripe Tier 1 gaps it depends on. Dense
 - [x] **Billing alerts** — `POST /v1/billing/alerts` with `recurrence` (`one_time` / `per_period`); fires `billing.alert.triggered` webhook + dashboard notification. _Stripe Tier 1 gap._
 - [ ] React component: `<VeloxCostDashboard tenantKey customerId />` — current period usage by dimension, projected bill (powered by `create_preview`), top usage drivers, alert threshold visualization
 - [x] Public iframe-able URL with secure token (reuses public-token pattern from hosted invoice)
-- [ ] Theming via CSS variables; dark mode by default
+- [x] Theming via CSS variables; dark mode by default — `?theme=light|dark` (default dark) and `?accent=#RRGGBB` (override `--primary` + `--ring`); see `web-v2/src/lib/embedTheme.ts` and the docs at `/docs/embeds/cost-dashboard`
 - [x] Documented embed snippet at `/docs/embeds/cost-dashboard`
 
 ### Week 6 (May 30 – Jun 5) — Live event stream + plan migration preview
