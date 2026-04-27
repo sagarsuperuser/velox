@@ -97,29 +97,47 @@ export default function DocsEmbedsCostDashboardPage() {
             refresh cadence — the page is a snapshot, not a live console.
           </Callout>
 
-          <DocsH2>What's customizable today vs. coming in v1.1</DocsH2>
+          <DocsH2>Theming</DocsH2>
           <p>
-            <strong>Today.</strong> The embed renders against the dashboard's existing theme.
-            Light and dark mode track the page's <InlineCode>color-scheme</InlineCode>. There is
-            no per-tenant theming surface — if your customer's app uses a brand colour or a
-            non-default font, wrap the iframe in your own chrome (a card border, a header) and
-            let the dashboard handle the data.
+            <strong>Dark mode by default.</strong> The embed renders dark unless the URL says
+            otherwise. Append <InlineCode>?theme=light</InlineCode> for the light variant — any
+            other value (or no <InlineCode>theme</InlineCode> param at all) keeps the dark
+            default. The choice is deterministic from the URL, not from the host page's{' '}
+            <InlineCode>prefers-color-scheme</InlineCode> or any localStorage state, so the host
+            always wins and refreshes are stable.
           </p>
+          <Code language="html">{`<iframe
+  src="https://app.velox.dev/public/cost-dashboard/vlx_pcd_…?theme=light"
+  width="100%" height="600" frameborder="0" title="Cost dashboard"></iframe>`}</Code>
+
           <p>
-            <strong>v1.1 roadmap.</strong> CSS-variable theming (brand colour, font family,
-            radii) and a dark-mode-by-default render path are tracked on the 90-day plan. When
-            those land, the same URL will accept a{' '}
-            <InlineCode>?theme=dark</InlineCode> hint and read CSS custom properties from the
-            tenant's branding settings without a redeploy. Until then, your iframe is the
-            theming boundary.
+            <strong>Brand colour.</strong> Pass <InlineCode>?accent=#RRGGBB</InlineCode> to
+            override the primary colour (the cycle progress bar and focus rings) with your
+            brand. Only 6-digit hex values are accepted — anything else is ignored and the
+            default purple stays. Combine the two:
           </p>
+          <Code language="html">{`<iframe
+  src="https://app.velox.dev/public/cost-dashboard/vlx_pcd_…?theme=dark&accent=#10b981"
+  width="100%" height="600" frameborder="0" title="Cost dashboard"></iframe>`}</Code>
 
           <Callout tone="info">
-            A typed React component (<InlineCode>{'<VeloxCostDashboard />'}</InlineCode>) for
-            apps that want to skip the iframe entirely is also on the v1.1 roadmap. The current
-            embed is iframe-only by design — it gets you a working integration in five minutes
-            without any client-side JavaScript.
+            The accent variable maps to the <InlineCode>--primary</InlineCode> and{' '}
+            <InlineCode>--ring</InlineCode> CSS custom properties on{' '}
+            <InlineCode>{'<html>'}</InlineCode>. The rest of the palette (background, text,
+            muted) is intentionally not configurable — it's tuned to keep contrast accessible
+            against either theme. If your brand needs more than the accent and theme knobs, wrap
+            the iframe in your own chrome and let the dashboard handle the data.
           </Callout>
+
+          <DocsH2>What's coming in v1.1</DocsH2>
+          <p>
+            A typed React component (<InlineCode>{'<VeloxCostDashboard />'}</InlineCode>) for
+            apps that want to skip the iframe entirely. Per-tenant branding settings (logo,
+            additional CSS variables, font family) read straight from the operator's branding
+            page so you don't need to encode them in the URL. The current embed is iframe-only
+            by design — it gets you a working integration in five minutes without any
+            client-side JavaScript.
+          </p>
         </Prose>
       </DocsShell>
     </PublicLayout>
