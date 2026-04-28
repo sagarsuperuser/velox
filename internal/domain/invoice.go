@@ -219,6 +219,13 @@ type InvoiceLineItem struct {
 	TaxAmountCents      int64               `json:"tax_amount_cents"`
 	TaxJurisdiction     string              `json:"tax_jurisdiction,omitempty"`
 	TaxCode             string              `json:"tax_code,omitempty"`
+	// TaxabilityReason carries the Stripe-canonical structured reason
+	// (e.g. "standard_rated", "reverse_charge", "not_collecting",
+	// "customer_exempt", "product_exempt", "zero_rated"). The dashboard
+	// renders a badge for non-trivial values, and the PDF appends an
+	// exemption legend when at least one line is customer- or
+	// product-exempt. Empty for non-Stripe providers.
+	TaxabilityReason    string              `json:"tax_reason,omitempty"`
 	TotalAmountCents    int64               `json:"total_amount_cents"`
 	Currency            string              `json:"currency"`
 	PricingMode         string              `json:"pricing_mode,omitempty"`

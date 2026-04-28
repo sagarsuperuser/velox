@@ -617,7 +617,14 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 	// Tax treatment legend. Compliance-sensitive disclosure: reverse-charge
 	// invoices must state who accounts for the tax, and exempt invoices
 	// must carry the reason text (EU OSS, nonprofit certificate, etc.).
-	if inv.TaxReverseCharge || inv.TaxExemptReason != "" {
+	// The per-line `taxability_reason` data persisted from Stripe Tax
+	// (issue #4) lets us distinguish customer-exempt and product-exempt
+	// lines from reverse-charge lines and append a separate legend; the
+	// reverse-charge wording itself still comes from the calc-level
+	// inv.TaxReverseCharge so issue #9's India/EU split is preserved
+	// untouched.
+	exemption := exemptionLegend(lineItems)
+	if inv.TaxReverseCharge || inv.TaxExemptReason != "" || exemption != "" {
 		y += 8
 		setFont(true, 8)
 		setColor(80, 80, 80)
@@ -628,6 +635,20 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 			}
 			textAt(margin, y, reverseChargeLegend(inv, supplier, billTo, lineItems))
 			y += 12
+		}
+		if exemption != "" {
+			// Small vertical gap above the per-line exemption legend when a
+			// reverse-charge legend was just rendered, so the two read as
+			// distinct disclosures rather than one wrapped paragraph.
+			if inv.TaxReverseCharge {
+				y += 4
+			}
+			setFont(false, 8)
+			setColor(100, 100, 100)
+			for _, line := range strings.Split(exemption, "\n") {
+				textAt(margin, y, line)
+				y += 12
+			}
 		}
 		if inv.TaxExemptReason != "" {
 			setFont(false, 8)

@@ -630,6 +630,7 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 		lineItems[i].TaxAmountCents = rl.TaxAmountCents
 		lineItems[i].TaxJurisdiction = rl.Jurisdiction
 		lineItems[i].TaxCode = rl.TaxCode
+		lineItems[i].TaxabilityReason = rl.TaxabilityReason
 		lineItems[i].TotalAmountCents = net + rl.TaxAmountCents
 		netSubtotalSum += net
 	}
