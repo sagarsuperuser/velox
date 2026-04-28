@@ -21,10 +21,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { EmptyState } from '@/components/EmptyState'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Box, Loader2, Eye, Sparkles, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { Box, Loader2, Eye, Sparkles, AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react'
 
 export default function RecipesPage() {
   const [selected, setSelected] = useState<Recipe | null>(null)
@@ -163,6 +173,7 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
   const [overrides, setOverrides] = useState<Record<string, string | number | boolean>>({})
   const [seedSample, setSeedSample] = useState(false)
   const [preview, setPreview] = useState<RecipePreview | null>(null)
+  const [uninstallOpen, setUninstallOpen] = useState(false)
 
   const detailQuery = useQuery({
     queryKey: ['recipe', recipe.key],
@@ -203,6 +214,22 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
       }
     },
     onError: (err) => showApiError(err, 'Install failed'),
+  })
+
+  // Uninstall is no-cascade by design (see internal/recipe/service.go::Uninstall):
+  // the recipe_instance row is dropped, but the plans / meters / dunning policy
+  // / webhook endpoint stay because real plans may have live subscriptions and
+  // a silent cascade would lose billing data. The confirm dialog spells this
+  // out so the operator doesn't expect different behaviour.
+  const uninstallMutation = useMutation({
+    mutationFn: () => api.deleteRecipeInstance(recipe.instantiated!.id),
+    onSuccess: () => {
+      toast.success(`Uninstalled ${recipe.name}`)
+      queryClient.invalidateQueries({ queryKey: ['recipes'] })
+      setUninstallOpen(false)
+      onClose()
+    },
+    onError: (err) => showApiError(err, 'Uninstall failed'),
   })
 
   const setOverride = (k: string, v: string | number | boolean) => {
@@ -280,25 +307,87 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
           </div>
         )}
 
-        <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            variant="outline"
-            onClick={() => previewMutation.mutate()}
-            disabled={previewMutation.isPending}
-          >
-            {previewMutation.isPending ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Eye size={14} className="mr-1.5" />}
-            Preview
-          </Button>
-          <Button
-            onClick={() => installMutation.mutate()}
-            disabled={installMutation.isPending || !!recipe.instantiated}
-          >
-            {installMutation.isPending ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Sparkles size={14} className="mr-1.5" />}
-            {recipe.instantiated ? 'Already installed' : 'Install recipe'}
-          </Button>
+        <DialogFooter className="gap-2 sm:justify-between">
+          {recipe.instantiated ? (
+            <Button
+              variant="outline"
+              size="default"
+              onClick={() => setUninstallOpen(true)}
+              className="text-destructive hover:text-destructive"
+            >
+              <Trash2 size={14} className="mr-1.5" />
+              Uninstall
+            </Button>
+          ) : <span />}
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button
+              variant="outline"
+              onClick={() => previewMutation.mutate()}
+              disabled={previewMutation.isPending}
+            >
+              {previewMutation.isPending ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Eye size={14} className="mr-1.5" />}
+              Preview
+            </Button>
+            <Button
+              onClick={() => installMutation.mutate()}
+              disabled={installMutation.isPending || !!recipe.instantiated}
+            >
+              {installMutation.isPending ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Sparkles size={14} className="mr-1.5" />}
+              {recipe.instantiated ? 'Already installed' : 'Install recipe'}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
+
+      {/* Uninstall confirm — spells out the no-cascade behaviour explicitly
+          because operators reasonably expect "Uninstall" to remove what
+          "Install" added. The plans / meters / dunning policy / webhook
+          endpoint stay so existing subscriptions don't lose billing data. */}
+      <AlertDialog open={uninstallOpen} onOpenChange={setUninstallOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Uninstall {recipe.name}?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  This removes the recipe link only. The plans, meters, rating
+                  rules, dunning policy, and webhook endpoint that this recipe
+                  created stay in place — you own those resources once they
+                  exist, exactly like anything created directly via the API.
+                </p>
+                <p>
+                  If you want them gone, archive or delete each one
+                  individually after uninstalling. Cascade-delete is
+                  deliberately not supported because plans may have live
+                  subscriptions, and silent cascade would lose billing data.
+                </p>
+                <p>
+                  After uninstall, the recipe card flips back to
+                  &quot;not installed&quot; and you can re-install with
+                  different overrides — but the original objects will not be
+                  re-used; you&apos;ll get a name collision unless you
+                  archived or renamed them first.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); uninstallMutation.mutate() }}
+              disabled={uninstallMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {uninstallMutation.isPending ? (
+                <><Loader2 size={14} className="mr-1.5 animate-spin" /> Uninstalling…</>
+              ) : (
+                'Uninstall recipe'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   )
 }

@@ -74,6 +74,28 @@ A second surface mirrors this file:
 
 ### Added
 
+- **Recipe uninstall action on the Pricing recipes page.** Recipe cards
+  flagged "Installed" now expose an Uninstall button in the configure
+  dialog footer (left side, destructive-coloured, separate from the
+  install/preview actions on the right). Click → AlertDialog confirms
+  with explicit copy that uninstall is **no-cascade**: the plans, meters,
+  rating rules, dunning policy, and webhook endpoint that the recipe
+  originally created stay in place — only the `recipe_instances` row
+  drops, which flips the card back to "not installed" so the operator
+  can re-install with different overrides. Cascade-delete is
+  deliberately not supported because plans may have live subscriptions,
+  and silent cascade would lose billing data; the dialog spells this
+  out so operators don't expect different behaviour from the
+  Stripe-products / Lago-plans uninstall they may be coming from. On
+  success the recipes query invalidates so the badge flips immediately
+  without a manual refresh. Closes the Track B gap on
+  `api.deleteRecipeInstance` — the method existed in
+  `web-v2/src/lib/api.ts` and the backend has shipped the
+  `DELETE /v1/recipes/instances/{id}` endpoint since the recipes API
+  landed (Week 3), but the dashboard had no caller, leaving operators
+  who tried out a recipe and then changed their mind with no clean way
+  to remove the recipe link short of editing the database directly.
+
 - **Edit-coupon dialog on the coupon detail page.** Operators can now extend
   a coupon's expiry, raise the redemption cap, tighten or loosen restrictions,
   or rename the coupon without archiving and recreating. New Edit button in
