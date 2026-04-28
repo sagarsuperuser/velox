@@ -16,6 +16,26 @@ A second surface mirrors this file:
 
 ## [Unreleased]
 
+### Fixed
+
+- **Usage page stat cards + meter breakdown now reflect server-side
+  filtered totals, not the visible page.** Before, the four cards on
+  `/usage` (Total Events, Page Units, Active Meters, Active Customers)
+  and the "Usage by Meter" horizontal-bar breakdown were computed by
+  reducing only the 25-event page already fetched. Paging from page 1
+  to page 2 silently shifted every number, and applying a customer
+  filter only narrowed the bars to whichever meters happened to be
+  represented in that page — both behaviours misled operators about
+  the true scope. New endpoint `GET /v1/usage-events/aggregate`
+  returns `{ total_events, total_units, active_meters,
+  active_customers, by_meter[] }` honouring the same `customer_id` /
+  `meter_id` / `from` / `to` / `dimensions` filter qs as the list
+  endpoint but without `limit` / `offset`. `total_units` and
+  `by_meter[].total` are decimal-string-encoded (NUMERIC(38,12) per
+  ADR-005) so `0.5 + 0.5 + 0.0001 = "1.0001"` round-trips without
+  precision loss. Frontend stat-card label "Page Units" renamed to
+  "Total Units" to match. Closes #7.
+
 ### Documentation
 
 - **Public/private repo split for internal-only docs.** Twelve internal

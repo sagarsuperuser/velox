@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, formatDateTime } from '@/lib/api'
-import type { Customer, Meter, UsageEvent } from '@/lib/api'
+import type { Customer, Meter, UsageEvent, UsageEventsAggregate } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
@@ -74,28 +74,47 @@ export default function UsageEventsPage() {
     return mMap
   }, [meters])
 
-  // Server-side paginated fetch
-  const loadEvents = useCallback(() => {
-    setLoading(true)
-    setError(null)
+  // Filter qs shared between the paginated list fetch and the aggregate
+  // endpoint — building it once ensures the stat cards + breakdown can
+  // never disagree with the events table on what's "in scope".
+  const filterQs = useMemo(() => {
     const parts: string[] = []
-    parts.push(`limit=${PAGE_SIZE}`)
-    parts.push(`offset=${(page - 1) * PAGE_SIZE}`)
     if (filterCustomer) parts.push(`customer_id=${filterCustomer}`)
     if (filterMeter) parts.push(`meter_id=${filterMeter}`)
     if (filterFrom) parts.push(`from=${new Date(filterFrom).toISOString()}`)
     if (filterTo) parts.push(`to=${new Date(filterTo + 'T23:59:59').toISOString()}`)
     if (filterDim) parts.push(`dimensions=${encodeURIComponent(filterDim)}`)
+    return parts.join('&')
+  }, [filterCustomer, filterMeter, filterFrom, filterTo, filterDim])
+
+  // Server-side paginated fetch
+  const loadEvents = useCallback(() => {
+    setLoading(true)
+    setError(null)
+    const parts: string[] = [
+      `limit=${PAGE_SIZE}`,
+      `offset=${(page - 1) * PAGE_SIZE}`,
+    ]
+    if (filterQs) parts.push(filterQs)
     const params = parts.join('&')
     api.listUsageEvents(params)
       .then(res => { setEvents(res.data || []); setTotal(res.total || 0); setLoading(false) })
       .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load usage events'); setEvents([]); setTotal(0); setLoading(false) })
-  }, [page, filterCustomer, filterMeter, filterFrom, filterTo, filterDim])
+  }, [page, filterQs])
 
   useEffect(() => { loadEvents() }, [loadEvents])
 
+  // Server-side aggregate that powers the stat cards + "Usage by Meter"
+  // breakdown. Same filter scope as the events table but no limit/offset
+  // — page navigation must NOT shift the totals (issue #7). Decimal
+  // precision is preserved end-to-end via string-encoded NUMERIC(38,12).
+  const { data: aggregate } = useQuery<UsageEventsAggregate>({
+    queryKey: ['usage-events-aggregate', filterQs],
+    queryFn: () => api.aggregateUsageEvents(filterQs || undefined),
+  })
+
   // `quantity` is wire-encoded as a string (NUMERIC(38, 12)) for decimal
-  // precision; coerce to number for chart math + stats only. Authoritative
+  // precision; coerce to number for display math only. Authoritative
   // money math stays server-side.
   const eventQuantity = (e: UsageEvent): number => {
     const n = Number(e.quantity)
@@ -110,43 +129,39 @@ export default function UsageEventsPage() {
     [events, filterDim],
   )
 
-  // Computed stats from current page data
-  const stats = useMemo(() => {
-    const totalEvents = total
-    const totalUnits = events.reduce((sum, e) => sum + eventQuantity(e), 0)
-    const activeMeters = new Set(events.map(e => e.meter_id)).size
-    const activeCustomers = new Set(events.map(e => e.customer_id)).size
-    return { totalEvents, totalUnits, activeMeters, activeCustomers }
-  }, [events, total])
+  // Trim trailing zeros off a decimal string so "1.500000000000" surfaces
+  // as "1.5" without losing genuine fractional digits ("1.0001" stays).
+  // Falls back to the original string if it doesn't look numeric.
+  const trimDecimal = (s: string): string => {
+    if (!s.includes('.')) return s
+    const trimmed = s.replace(/0+$/, '').replace(/\.$/, '')
+    return trimmed === '' || trimmed === '-' ? '0' : trimmed
+  }
 
-  // Meter breakdown from current page data
+  // Meter breakdown enriched with display name + unit from the customer's
+  // meter list (the aggregate endpoint deliberately returns IDs only —
+  // joining client-side avoids a JOIN at SQL time and keeps the response
+  // tight). pct is computed from total_units so the bar sums to 100%.
   const meterBreakdown = useMemo(() => {
-    const grouped: Record<string, number> = {}
-    for (const e of events) {
-      grouped[e.meter_id] = (grouped[e.meter_id] || 0) + eventQuantity(e)
-    }
-    const grandTotal = Object.values(grouped).reduce((a, b) => a + b, 0)
-    return Object.entries(grouped)
-      .map(([id, total]) => ({
-        id,
-        name: meterMap[id]?.name || id.slice(0, 12) + '...',
-        unit: meterMap[id]?.unit || 'units',
-        total,
-        pct: grandTotal > 0 ? (total / grandTotal) * 100 : 0,
-      }))
-      .sort((a, b) => b.total - a.total)
-  }, [events, meterMap])
+    const rows = aggregate?.by_meter ?? []
+    const grandTotal = Number(aggregate?.total_units ?? '0')
+    return rows.map(r => {
+      const totalNum = Number(r.total)
+      return {
+        id: r.meter_id,
+        name: meterMap[r.meter_id]?.name || r.meter_id.slice(0, 12) + '...',
+        unit: meterMap[r.meter_id]?.unit || 'units',
+        total: r.total,
+        totalNum,
+        pct: grandTotal > 0 ? (totalNum / grandTotal) * 100 : 0,
+      }
+    })
+  }, [aggregate, meterMap])
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   const handleExport = () => {
-    const parts: string[] = []
-    if (filterCustomer) parts.push(`customer_id=${filterCustomer}`)
-    if (filterMeter) parts.push(`meter_id=${filterMeter}`)
-    if (filterFrom) parts.push(`from=${new Date(filterFrom).toISOString()}`)
-    if (filterTo) parts.push(`to=${new Date(filterTo + 'T23:59:59').toISOString()}`)
-    if (filterDim) parts.push(`dimensions=${encodeURIComponent(filterDim)}`)
-    const exportParams = parts.length > 0 ? parts.join('&') : undefined
+    const exportParams = filterQs || undefined
     api.listUsageEvents(exportParams).then(res => {
       const rows = (res.data || []).map(ev => [
         formatDateTime(ev.timestamp),
@@ -159,11 +174,21 @@ export default function UsageEventsPage() {
     })
   }
 
+  // Stat-card values come from the server-side aggregate so that they
+  // reflect ALL filtered rows, not just the current page. Pagination
+  // must not shift these numbers (issue #7). total_units is rendered
+  // from the decimal string with trailing zeros trimmed; the integer
+  // counts pass through .toLocaleString() for thousands separators.
+  const totalEvents = aggregate?.total_events ?? total
+  const totalUnitsDisplay = aggregate ? trimDecimal(aggregate.total_units) : '—'
+  const activeMeters = aggregate?.active_meters ?? 0
+  const activeCustomers = aggregate?.active_customers ?? 0
+
   const statCards = [
-    { label: 'Total Events', value: stats.totalEvents.toLocaleString(), icon: Activity, color: 'text-primary' },
-    { label: 'Page Units', value: stats.totalUnits.toLocaleString(), icon: Hash, color: 'text-blue-600' },
-    { label: 'Active Meters', value: String(stats.activeMeters), icon: Gauge, color: 'text-amber-600' },
-    { label: 'Active Customers', value: String(stats.activeCustomers), icon: Users, color: 'text-emerald-600' },
+    { label: 'Total Events', value: totalEvents.toLocaleString(), icon: Activity, color: 'text-primary' },
+    { label: 'Total Units', value: totalUnitsDisplay, icon: Hash, color: 'text-blue-600' },
+    { label: 'Active Meters', value: String(activeMeters), icon: Gauge, color: 'text-amber-600' },
+    { label: 'Active Customers', value: String(activeCustomers), icon: Users, color: 'text-emerald-600' },
   ]
 
   return (
@@ -284,7 +309,7 @@ export default function UsageEventsPage() {
                     <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                       <div className="h-full bg-primary rounded-full" style={{ width: `${m.pct}%` }} />
                     </div>
-                    <span className="text-sm font-medium text-foreground tabular-nums w-24 text-right">{m.total.toLocaleString()} {m.unit}</span>
+                    <span className="text-sm font-medium text-foreground tabular-nums w-24 text-right">{trimDecimal(m.total)} {m.unit}</span>
                   </div>
                 ))}
               </CardContent>

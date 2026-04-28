@@ -50,6 +50,10 @@ func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.UsageEve
 	return result, len(result), nil
 }
 
+func (m *memStore) Aggregate(_ context.Context, _ ListFilter) (Aggregate, error) {
+	return Aggregate{ByMeter: []MeterTotal{}}, nil
+}
+
 func (m *memStore) AggregateForBillingPeriod(_ context.Context, _, _ string, _ []string, _, _ time.Time) (map[string]decimal.Decimal, error) {
 	return map[string]decimal.Decimal{}, nil
 }
