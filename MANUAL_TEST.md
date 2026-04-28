@@ -288,6 +288,25 @@ via the email outbox (no plaintext tokens in the DB — only sha256 hashes).
 - [ ] Keys expiring within 7 days show yellow "Expires in Xd" badge
 - [ ] Expired keys grouped into a collapsed "Expired keys" section
 
+## FLOW K3: API Keys page UX
+
+`/api-keys` — full operator surface for create / inspect / revoke.
+
+- [ ] Header: "API Keys" title with `· N active` count next to subtitle when any active keys exist
+- [ ] Empty tenant: `EmptyState` with key icon, copy "No API keys yet", and "Create API Key" button (no list rendered)
+- [ ] Each active card shows: name, masked prefix (`sk_live_xxxx--------`), key-type badge (secret = violet shield, publishable = blue eye), `Created Xago`, `Last used Xago` or "Never used", `Expires DATE` row when set
+- [ ] The card matching the *current session's* localStorage key is decorated with a ring-2 ring-primary/20 outline AND a "Current session" info badge
+- [ ] "Expired keys" section is collapsed by default behind chevron toggle showing count; expanding reveals one-line cards with `expired` destructive badge and a Revoke button (revoking an already-expired key is allowed and useful for cleanup)
+- [ ] "Revoked keys" section is collapsed by default; expanded rows show strikethrough name, `revoked` badge, and "Revoked Xago"
+- [ ] Create dialog: Name input (max 100 chars, required), Key Type 2-col selector (Secret default vs Publishable), Expiration preset row (No expiration / 30 days / 90 days / 1 year / Custom)
+- [ ] Selecting `Custom` reveals a `DatePicker` constrained to `minDate = tomorrow`; submit without picking a date inline-errors "Please select an expiration date"
+- [ ] Selecting any non-custom preset shows a "Key will expire on FullDate" hint below the row
+- [ ] Submit success → Create dialog closes, `API Key Created` dialog opens with amber callout, full raw key in selectable monospace, Copy button (toast "Copied to clipboard"), and a single "I've saved this key" dismiss action
+- [ ] Closing the created-key dialog removes the raw key from memory — refreshing the page only ever shows the masked prefix again
+- [ ] Per-row Revoke → AlertDialog "Revoke API Key" with name + prefix in copy → confirm → toast "API key revoked" + list refetches; Cancel dismisses without changes
+- [ ] Revoking the *current session* key triggers different copy ("Revoke Current Session Key?" / "will log you out immediately") and after confirm the next API call 401s, kicking the user back to /login
+- [ ] Server validation errors (e.g. duplicate name) surface inline via `applyApiError` against `name` / `key_type` / `expires_at` fields, not as a generic toast
+
 ---
 
 ## Billing Engine
@@ -515,6 +534,31 @@ against `tax_id_type`. Known kinds: GSTIN, EU VAT, AU ABN. Unknown kinds pass th
 - [ ] Malformed: `abn` + `123` → 422 `"invalid ABN format: expected 11 digits"`
 - [ ] Unknown kind: `br_cnpj` + `12.345.678/0001-90` → accepted as-is
 - [ ] Empty `tax_id` → always accepted regardless of kind
+
+## FLOW B17: Meter Detail page UX
+
+`/meters/:id` — operator surface for inspecting a meter, its default rating
+rule, dimension-matched pricing rules (multi-dim), and which plans use it.
+
+- [ ] Breadcrumb: `Pricing / <meter name>` — clicking "Pricing" returns to `/pricing`
+- [ ] Header: meter name, ID pill with CopyButton, default-aggregation badge (e.g. `sum`)
+- [ ] Properties card lists: Key (monospace), Unit, Default aggregation badge, Created datetime, ID with CopyButton
+- [ ] Default pricing rule card renders the linked rating rule's *latest version for the same `rule_key`* — not the snapshot version stored on the meter (verify by editing the rule and reloading; version badge bumps)
+- [ ] Mode = `flat`: 3xl price + "per unit" caption + currency uppercase tag
+- [ ] Mode = `graduated`: tiers table with `First N units` / `Next M units` / `Beyond X units` labels (last tier: `up_to=0` or `-1`); right-aligned price column
+- [ ] Mode = `package`: `<size>` units per package at `<price>` rendered inline
+- [ ] Default rule absent (rare): card shows "No pricing rule linked"
+- [ ] Dimension-matched rules table columns: Priority (mono/tabular), Dimension match (chips like `model=gpt-4` or italic "all events" when empty), Aggregation badge, Rating rule (name with `<id>` tooltip, falls back to truncated id when rule deleted), Created, trash icon
+- [ ] Empty multi-dim state: "No dimension-matched rules. Every event uses the default pricing rule above." + outline "Add a rule" button
+- [ ] "Add rule" dialog: Dimension match rows (key + `=` + value, trash to remove, `Add dimension` button); Aggregation Select with per-mode helper text (sum/count/last_during_period/last_ever/max); Priority numeric input ("Higher priority claims events first"); Rating-rule Select ("No rating rules — create one first" when empty)
+- [ ] Dimension values: `true` / `false` coerce to bool, numeric strings coerce to number, everything else stays a string — verify by submitting `model=gpt-4` (string), `count=10` (number), `featured=true` (bool) and inspecting the persisted rule via API
+- [ ] Submit with no rating rule selected → button disabled
+- [ ] Submit success → toast "Pricing rule created" + table refetches with new row; rules render in priority order (higher first)
+- [ ] Per-row trash → `TypedConfirmDialog` requiring typed `delete` confirmation; copy explicitly states "stops applying to new events at finalize time. Invoices already finalized are unaffected"
+- [ ] Confirmed delete → toast "Pricing rule deleted" + row removed; the rule's stored events on already-finalized invoices remain on those invoices (verify by checking an in-flight upcoming invoice doesn't change after delete)
+- [ ] "Used by N plans" section: lists every plan whose `meter_ids` contains this meter; columns Name (link to `/plans/:id`), Code, Interval, Base price, Status badge; row click navigates to plan detail (excluding nested button/link clicks)
+- [ ] Plans-empty state: "No plans are currently using this meter"
+- [ ] Multi-dim endpoint failure: page still renders (rules query swallows errors and shows empty state) — useful for tenants on pre-multi-dim builds
 
 ---
 
