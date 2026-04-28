@@ -333,6 +333,114 @@ func TestSupplierTaxIDTypeFromCountry(t *testing.T) {
 	}
 }
 
+// TestExemptionLegend_CustomerExempt covers the path where at least one line
+// carries Stripe's `customer_exempt` taxability reason — the PDF must surface
+// the exemption-certificate disclosure, in addition to (not in place of) any
+// reverse-charge legend already driven by inv.TaxReverseCharge.
+func TestExemptionLegend_CustomerExempt(t *testing.T) {
+	got := exemptionLegend([]domain.InvoiceLineItem{
+		{TaxabilityReason: "customer_exempt"},
+		{TaxabilityReason: "standard_rated"},
+	})
+	want := "One or more lines are exempt from tax based on the customer's exemption certificate."
+	if got != want {
+		t.Errorf("exemptionLegend = %q, want %q", got, want)
+	}
+}
+
+// TestExemptionLegend_ProductExempt covers the path where at least one line
+// carries Stripe's `product_exempt` taxability reason (e.g. food in some US
+// states, education in some EU states).
+func TestExemptionLegend_ProductExempt(t *testing.T) {
+	got := exemptionLegend([]domain.InvoiceLineItem{
+		{TaxabilityReason: "product_exempt"},
+	})
+	want := "One or more lines are exempt from tax in this jurisdiction by product category."
+	if got != want {
+		t.Errorf("exemptionLegend = %q, want %q", got, want)
+	}
+}
+
+// TestExemptionLegend_Both verifies both exemption types appear with
+// customer_exempt rendered first (chosen ordering: certificate-driven beats
+// category-driven because the customer-side disclosure is more specific).
+func TestExemptionLegend_Both(t *testing.T) {
+	got := exemptionLegend([]domain.InvoiceLineItem{
+		{TaxabilityReason: "product_exempt"},
+		{TaxabilityReason: "customer_exempt"},
+	})
+	customer := "One or more lines are exempt from tax based on the customer's exemption certificate."
+	product := "One or more lines are exempt from tax in this jurisdiction by product category."
+	want := customer + "\n" + product
+	if got != want {
+		t.Errorf("exemptionLegend joined = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(got, customer) {
+		t.Errorf("customer_exempt must render before product_exempt; got %q", got)
+	}
+}
+
+// TestExemptionLegend_None covers the no-op path: trivial reasons (empty,
+// standard_rated, reverse_charge, not_collecting) must not trigger the
+// exemption legend. reverse_charge has its own dedicated legend driven by
+// inv.TaxReverseCharge — conflating that here would double-disclose.
+func TestExemptionLegend_None(t *testing.T) {
+	cases := []struct {
+		name  string
+		items []domain.InvoiceLineItem
+	}{
+		{"nil items", nil},
+		{"empty slice", []domain.InvoiceLineItem{}},
+		{"empty reason", []domain.InvoiceLineItem{{TaxabilityReason: ""}}},
+		{"standard_rated only", []domain.InvoiceLineItem{{TaxabilityReason: "standard_rated"}}},
+		{"reverse_charge only", []domain.InvoiceLineItem{{TaxabilityReason: "reverse_charge"}}},
+		{"not_collecting only", []domain.InvoiceLineItem{{TaxabilityReason: "not_collecting"}}},
+		{"zero_rated only", []domain.InvoiceLineItem{{TaxabilityReason: "zero_rated"}}},
+		{"unknown future value", []domain.InvoiceLineItem{{TaxabilityReason: "some_new_reason_v3"}}},
+	}
+	for _, c := range cases {
+		if got := exemptionLegend(c.items); got != "" {
+			t.Errorf("%s: exemptionLegend = %q, want empty", c.name, got)
+		}
+	}
+}
+
+// TestRenderPDF_ExemptionLegend_PDFRenders is the integration sanity check:
+// rendering a PDF with a customer-exempt line completes without error and
+// the byte size is strictly larger than the same invoice rendered without
+// any exempt lines (the legend adds a line of text). gopdf compresses
+// content streams + uses font subsets so we can't byte-search, but the
+// size delta is the same technique used elsewhere in this file (see #9's
+// TestRenderPDF_NoTaxID_NoGSTINLine).
+func TestRenderPDF_ExemptionLegend_PDFRenders(t *testing.T) {
+	inv := minimalReverseChargeInvoice()
+	inv.TaxReverseCharge = false
+	billTo := BillToInfo{Name: "Acme Inc.", Country: "US"}
+	company := CompanyInfo{Name: "Velox Inc.", Country: "US"}
+
+	plain := []domain.InvoiceLineItem{
+		{LineType: domain.LineTypeBaseFee, Description: "Plan", Quantity: 1, AmountCents: 1000, TotalAmountCents: 1000, Currency: "USD", TaxabilityReason: "standard_rated"},
+	}
+	exempt := []domain.InvoiceLineItem{
+		{LineType: domain.LineTypeBaseFee, Description: "Plan", Quantity: 1, AmountCents: 1000, TotalAmountCents: 1000, Currency: "USD", TaxabilityReason: "customer_exempt"},
+	}
+
+	outPlain, err := RenderPDF(inv, plain, billTo, nil, company)
+	if err != nil {
+		t.Fatalf("render plain pdf: %v", err)
+	}
+	outExempt, err := RenderPDF(inv, exempt, billTo, nil, company)
+	if err != nil {
+		t.Fatalf("render exempt pdf: %v", err)
+	}
+	if len(outExempt) <= len(outPlain) {
+		t.Errorf("expected exempt PDF to be larger than plain (legend adds a line); got plain=%d exempt=%d", len(outPlain), len(outExempt))
+	}
+	if string(outExempt[:4]) != "%PDF" {
+		t.Fatal("exempt output is not a valid PDF")
+	}
+}
+
 func TestParseBrandColor(t *testing.T) {
 	cases := []struct {
 		in    string

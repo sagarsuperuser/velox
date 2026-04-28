@@ -206,25 +206,32 @@ type InvoiceDiscountUpdate struct {
 }
 
 type InvoiceLineItem struct {
-	ID                  string              `json:"id"`
-	InvoiceID           string              `json:"invoice_id"`
-	TenantID            string              `json:"tenant_id,omitempty"`
-	LineType            InvoiceLineItemType `json:"line_type"`
-	MeterID             string              `json:"meter_id,omitempty"`
-	Description         string              `json:"description"`
-	Quantity            int64               `json:"quantity"`
-	UnitAmountCents     int64               `json:"unit_amount_cents"`
-	AmountCents         int64               `json:"amount_cents"`
-	TaxRateBP           int64               `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
-	TaxAmountCents      int64               `json:"tax_amount_cents"`
-	TaxJurisdiction     string              `json:"tax_jurisdiction,omitempty"`
-	TaxCode             string              `json:"tax_code,omitempty"`
-	TotalAmountCents    int64               `json:"total_amount_cents"`
-	Currency            string              `json:"currency"`
-	PricingMode         string              `json:"pricing_mode,omitempty"`
-	RatingRuleVersionID string              `json:"rating_rule_version_id,omitempty"`
-	BillingPeriodStart  *time.Time          `json:"billing_period_start,omitempty"`
-	BillingPeriodEnd    *time.Time          `json:"billing_period_end,omitempty"`
-	Metadata            map[string]any      `json:"metadata,omitempty"`
-	CreatedAt           time.Time           `json:"created_at"`
+	ID              string              `json:"id"`
+	InvoiceID       string              `json:"invoice_id"`
+	TenantID        string              `json:"tenant_id,omitempty"`
+	LineType        InvoiceLineItemType `json:"line_type"`
+	MeterID         string              `json:"meter_id,omitempty"`
+	Description     string              `json:"description"`
+	Quantity        int64               `json:"quantity"`
+	UnitAmountCents int64               `json:"unit_amount_cents"`
+	AmountCents     int64               `json:"amount_cents"`
+	TaxRateBP       int64               `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
+	TaxAmountCents  int64               `json:"tax_amount_cents"`
+	TaxJurisdiction string              `json:"tax_jurisdiction,omitempty"`
+	TaxCode         string              `json:"tax_code,omitempty"`
+	// TaxabilityReason carries the Stripe-canonical structured reason
+	// (e.g. "standard_rated", "reverse_charge", "not_collecting",
+	// "customer_exempt", "product_exempt", "zero_rated"). The dashboard
+	// renders a badge for non-trivial values, and the PDF appends an
+	// exemption legend when at least one line is customer- or
+	// product-exempt. Empty for non-Stripe providers.
+	TaxabilityReason    string         `json:"tax_reason,omitempty"`
+	TotalAmountCents    int64          `json:"total_amount_cents"`
+	Currency            string         `json:"currency"`
+	PricingMode         string         `json:"pricing_mode,omitempty"`
+	RatingRuleVersionID string         `json:"rating_rule_version_id,omitempty"`
+	BillingPeriodStart  *time.Time     `json:"billing_period_start,omitempty"`
+	BillingPeriodEnd    *time.Time     `json:"billing_period_end,omitempty"`
+	Metadata            map[string]any `json:"metadata,omitempty"`
+	CreatedAt           time.Time      `json:"created_at"`
 }

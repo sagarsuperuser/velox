@@ -402,6 +402,8 @@ Stripe-Tax-enabled path.
 - [ ] India B2B reverse-charge invoice PDF shows supplier GSTIN in header (e.g. `GSTIN: 27AAEPM1234C1Z5`) under the company contact line
 - [ ] India reverse-charge legend reads "Tax payable on reverse charge basis: YES" (not the EU "VAT to be accounted for" wording)
 - [ ] EU reverse-charge invoice PDF retains EU wording ("Reverse charge — VAT to be accounted for by the recipient.")
+- [ ] **Stripe Tax `taxability_reason` round-trip (issue #4)**: trigger a no-registration jurisdiction (e.g. Texas with no Stripe Tax registration). Calc returns `tax_amount=0` with `taxability_reason=not_collecting`. After invoice finalize, line item shows the *Not collecting in this jurisdiction* badge in the dashboard, and the database `invoice_line_items.tax_reason='not_collecting'`.
+- [ ] **Customer-exempt path**: customer with `tax_status='exempt'` + exemption certificate. After finalize, line item `tax_reason='customer_exempt'` and PDF footer carries the customer-exemption legend ("One or more lines are exempt from tax based on the customer's exemption certificate.") in addition to the reverse-charge legend if applicable.
 
 ## FLOW B12: Subscription activity timeline (T0-18)
 
