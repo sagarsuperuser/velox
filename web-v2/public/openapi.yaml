@@ -845,6 +845,72 @@ paths:
         "200":
           description: Invoice list
 
+  /v1/invoices/create_preview:
+    post:
+      tags: [Invoices]
+      summary: Preview the next invoice for a customer (Stripe-equivalent)
+      description: |
+        Answers "what is my next bill going to look like?" using the same
+        line-set the cycle scan would emit if billing fired right now —
+        so dashboard projected-bill matches the eventual finalized
+        invoice. Composes across customer / subscription / pricing;
+        registered as a sibling of `/v1/invoices` (chi picks the more
+        specific pattern, otherwise `/{id}` would capture
+        `create_preview` as an invoice ID). See
+        [`docs/design-create-preview.md`](../docs/design-create-preview.md).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_id]
+              properties:
+                customer_id:
+                  type: string
+                  description: Customer to preview the invoice for.
+                subscription_id:
+                  type: string
+                  description: |
+                    Optional. Defaults to the customer's primary active
+                    subscription if not supplied.
+                period:
+                  type: object
+                  description: |
+                    Optional explicit window. Both bounds must be
+                    supplied together; partial windows are rejected.
+                    Defaults to the resolved subscription's current
+                    cycle.
+                  required: [from, to]
+                  properties:
+                    from:
+                      type: string
+                      format: date-time
+                    to:
+                      type: string
+                      format: date-time
+      responses:
+        "200":
+          description: Preview result
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Customer or subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation error (missing customer_id, partial period, no active sub, ...)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /v1/invoices/{id}:
     get:
       tags: [Invoices]

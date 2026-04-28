@@ -34,6 +34,8 @@ export * from './planStatus';
 export * from './postV1BillingRun200';
 export * from './postV1CreditsGrantBody';
 export * from './postV1CustomersBody';
+export * from './postV1InvoicesCreatePreviewBody';
+export * from './postV1InvoicesCreatePreviewBodyPeriod';
 export * from './postV1MetersBody';
 export * from './postV1MetersBodyAggregation';
 export * from './postV1PlansBody';

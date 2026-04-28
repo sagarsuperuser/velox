@@ -607,6 +607,101 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/invoices/create_preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview the next invoice for a customer (Stripe-equivalent)
+         * @description Answers "what is my next bill going to look like?" using the same
+         *     line-set the cycle scan would emit if billing fired right now —
+         *     so dashboard projected-bill matches the eventual finalized
+         *     invoice. Composes across customer / subscription / pricing;
+         *     registered as a sibling of `/v1/invoices` (chi picks the more
+         *     specific pattern, otherwise `/{id}` would capture
+         *     `create_preview` as an invoice ID). See
+         *     [`docs/design-create-preview.md`](../docs/design-create-preview.md).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @description Customer to preview the invoice for. */
+                        customer_id: string;
+                        /**
+                         * @description Optional. Defaults to the customer's primary active
+                         *     subscription if not supplied.
+                         */
+                        subscription_id?: string;
+                        /**
+                         * @description Optional explicit window. Both bounds must be
+                         *     supplied together; partial windows are rejected.
+                         *     Defaults to the resolved subscription's current
+                         *     cycle.
+                         */
+                        period?: {
+                            /** Format: date-time */
+                            from: string;
+                            /** Format: date-time */
+                            to: string;
+                        };
+                    };
+                };
+            };
+            responses: {
+                /** @description Preview result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Invalid request body */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Customer or subscription not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Validation error (missing customer_id, partial period, no active sub, ...) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/invoices/{id}": {
         parameters: {
             query?: never;
