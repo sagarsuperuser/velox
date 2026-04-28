@@ -162,6 +162,9 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 	}
 	// Normalize + format-validate tax IDs. Unknown kinds pass through untouched
 	// so we don't reject jurisdictions we haven't added explicit support for.
+	// Type is normalized to its canonical Stripe code so storage stays
+	// consistent regardless of which alias the caller supplied.
+	bp.TaxIDType = tax.NormalizeTaxIDType(bp.TaxIDType)
 	bp.TaxID = tax.NormalizeTaxID(bp.TaxID)
 	if err := tax.ValidateTaxID(bp.TaxIDType, bp.TaxID); err != nil {
 		return domain.CustomerBillingProfile{}, errs.Invalid("tax_id", err.Error())
