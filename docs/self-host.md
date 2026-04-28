@@ -5,18 +5,39 @@ shape that matches where you operate today.
 
 ## Pick a path
 
-| Shape | Use when | Status |
-|---|---|---|
-| **Docker Compose on a single VM** | Evaluating, dev/staging, low-volume production (≤ 1k events/sec) | Ships today — [`deploy/compose/README.md`](../deploy/compose/README.md) |
-| **Helm chart on Kubernetes** | You already run K8s and want to scale horizontally | Ships today — [`deploy/helm/velox/README.md`](../deploy/helm/velox/README.md) |
-| **Terraform module for AWS** | You want a one-shot VPC + EC2 + RDS deploy | Ships today — [`deploy/terraform/aws/README.md`](../deploy/terraform/aws/README.md) |
+| Shape | Use when | Availability posture | Status |
+|---|---|---|---|
+| **Docker Compose on a single VM** | Evaluating, dev/staging, demos, small single-tenant deployments where 5–30 min downtime windows are acceptable | Single-instance API on one VM (SPOF) — VM failure, AZ failure, kernel patch, or `docker compose down/up` all cause billing downtime | Ships today — [`deploy/compose/README.md`](../deploy/compose/README.md) |
+| **Helm chart on Kubernetes** | Production workloads requiring availability, horizontal scale, rolling restarts | Multi-replica API behind a load balancer + Multi-AZ managed Postgres + leader-elected scheduler via PG advisory locks | Ships today — [`deploy/helm/velox/README.md`](../deploy/helm/velox/README.md) |
+| **Terraform module for AWS** | One-shot VPC + EC2 + RDS install for evaluating or running Compose on a real AWS account without manual clicking | Inherits Compose's posture (Terraform runs the Compose stack on one EC2 host) — single-instance API | Ships today — [`deploy/terraform/aws/README.md`](../deploy/terraform/aws/README.md) |
 
-Velox itself is one Go binary plus Postgres. Both Compose and the
-Helm/Terraform paths reach the same end state — same image, same
-migrations, same env-var schema. Pick by what your team already
-operates, not by what's "production-grade." A single-VM Compose deploy
-behind an ALB with managed Postgres (RDS) is a perfectly reasonable
-v1.
+Velox itself is one Go binary plus Postgres. All three shapes reach the
+same end state on the application layer — same image, same migrations,
+same env-var schema — but their *availability posture* differs:
+
+- **Compose** runs a single `velox-api` process on one VM. The same
+  process hosts the scheduler and outbox dispatchers (see
+  [`docker-compose.yml`](../deploy/compose/docker-compose.yml) header
+  comment). VM failure, AZ failure, kernel patch, or any restart cause
+  billing downtime. Adding managed Postgres (RDS) removes the DB SPOF
+  but leaves the API SPOF intact — that is *not* production with
+  availability.
+- **Helm** runs ≥2 `velox-api` replicas behind a load balancer with
+  managed Postgres in Multi-AZ. The v1 scheduler is leader-elected via
+  PG advisory locks (see [ADR-006](adr/006-background-scheduler-vs-message-queue.md)
+  and [`internal/billing/postgres_locker.go`](../internal/billing/postgres_locker.go))
+  so multiple API replicas coexist safely without duplicate billing
+  cycles. This is the production-with-availability shape.
+- **Terraform AWS** is functionally Compose with a turn-key VPC/EC2/RDS
+  install — useful for fast evaluation on a real AWS account, but it
+  inherits Compose's single-instance API posture. Graduate to Helm for
+  production.
+
+Pick by your downtime tolerance, not just what your team operates. A
+billing engine outage queues Stripe webhooks, stalls subscription state
+machines (trial flips, scheduled cancellations, dunning runs), and
+hides invoices from customers. If those events are revenue-critical for
+your business, Helm + Multi-AZ Postgres is the answer.
 
 ## Quickstart — Docker Compose on a single VM
 
@@ -86,16 +107,28 @@ toggles.
 
 Velox is lightweight; the baseline targets are:
 
-| Profile | RAM | vCPU | Postgres |
-|---|---|---|---|
-| Eval / staging | 512 MB | 1 | 1 GB shared with API |
-| Single-tenant production (~1k events/sec) | 2 GB | 2 | 4 GB managed Postgres |
-| Multi-tenant SaaS (≥10k events/sec) | Multi-replica K8s | 4+ per replica | Sized to writes per second; partition `usage_events` |
+| Profile | Shape | RAM | vCPU | Postgres |
+|---|---|---|---|---|
+| Evaluation / dev / staging | Compose, single VM | 512 MB | 1 | 1 GB shared with API in-container |
+| Small deployment, downtime acceptable | Compose + managed Postgres | 2 GB | 2 | 4 GB managed Postgres |
+| Production with availability | Helm, ≥2 replicas + Multi-AZ Postgres | 2 GB per replica | 2 per replica | 8 GB+ Multi-AZ managed Postgres |
+| Scaled SaaS (≥10k events/sec sustained) | Helm, multi-replica + partitioned writes | 4+ per replica | 4+ per replica | Sized to writes per second; partition `usage_events` |
 
-For multi-replica deployments use the [Helm chart](../deploy/helm/velox/README.md) —
-the v1 scheduler is leader-elected via Postgres advisory locks, so
-multiple API replicas safely coexist without zombie locks (see
-`internal/billing/postgres_locker.go`).
+Notes:
+
+- The "small deployment" row is **not** "production with availability"
+  — `velox-api` remains single-instance even with managed Postgres. Use
+  this profile only for low-volume single-tenant setups where 5–30 min
+  downtime windows are acceptable.
+- For real production with availability use Helm with ≥2 replicas — the
+  v1 scheduler is leader-elected via Postgres advisory locks so
+  multiple API replicas safely coexist without duplicate billing
+  cycles (see [ADR-006](adr/006-background-scheduler-vs-message-queue.md)
+  and `internal/billing/postgres_locker.go`).
+- Throughput numbers are conservative starter sizing; the engine has
+  not been benchmarked end-to-end at the upper bound. Treat them as
+  floors, not ceilings, and run a load test against your own profile
+  before committing.
 
 ## Versioning
 
@@ -106,12 +139,13 @@ rollups are at the dashboard `/changelog` page.
 
 ## Choosing between the three install shapes
 
-- **Compose on a single VM** is the v1 reference — the simplest shape, lowest cost, fewest moving parts. [`deploy/compose/README.md`](../deploy/compose/README.md). Best for: evaluation, single-tenant production at modest volume, anyone who doesn't already operate K8s.
-- **Helm on Kubernetes** if you already run K8s. [`deploy/helm/velox/README.md`](../deploy/helm/velox/README.md). Targets generic K8s (kind / k3s / EKS / GKE / AKS); does NOT bundle Postgres — bring your own (RDS / Cloud SQL / Supabase / Neon).
-- **Terraform on AWS** if you want a one-shot AWS install with no manual clicking. [`deploy/terraform/aws/README.md`](../deploy/terraform/aws/README.md). Provisions VPC + EC2 + RDS Postgres + S3 backup bucket; runs the Compose stack on the EC2 host. Cost: ~$30-50/mo at default sizing if left running 24/7, or ~$1-2 for an apply/destroy validation run.
+- **Compose on a single VM** — the simplest shape, lowest cost, fewest moving parts. [`deploy/compose/README.md`](../deploy/compose/README.md). Single `velox-api` process on one VM; same process hosts the scheduler and outbox dispatchers. **No API HA.** Best for: evaluation, dev/staging, demos, and small single-tenant deployments where 5–30 min downtime windows are acceptable.
+- **Helm on Kubernetes** — the production-with-availability shape. [`deploy/helm/velox/README.md`](../deploy/helm/velox/README.md). Multi-replica API behind a load balancer; leader-elected scheduler via PG advisory locks. Targets generic K8s (kind / k3s / EKS / GKE / AKS); does NOT bundle Postgres — bring your own with Multi-AZ enabled (RDS / Cloud SQL / Supabase / Neon). Use this for any workload where billing downtime is a customer-visible revenue event.
+- **Terraform on AWS** — a turn-key VPC + EC2 + RDS install for evaluating or running Compose on real AWS without manual clicking. [`deploy/terraform/aws/README.md`](../deploy/terraform/aws/README.md). Provisions VPC + EC2 + RDS Postgres + S3 backup bucket and runs the Compose stack on the EC2 host. Inherits Compose's single-instance API posture — same use cases as Compose. Cost: ~$30–50/mo at default sizing if left running 24/7, or ~$1–2 for an apply/destroy validation run. For production graduate to Helm.
 
-All three reach the same end state: same image, same migrations, same
-env-var schema. Pick by what your team already operates.
+All three reach the same end state on the application layer — same
+image, same migrations, same env-var schema. The choice is about
+*availability posture*, not application capability.
 
 ## Migrating from Stripe Billing
 
