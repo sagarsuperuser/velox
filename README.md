@@ -214,7 +214,7 @@ POST   /v1/webhook-endpoints/endpoints  — register an outbound webhook endpoin
 GET    /v1/audit-log                    — query the append-only audit log
 ```
 
-Full endpoint list and request/response shapes: [`docs/openapi.yaml`](docs/openapi.yaml).
+Full endpoint list and request/response shapes: [`api/openapi.yaml`](api/openapi.yaml).
 
 ---
 

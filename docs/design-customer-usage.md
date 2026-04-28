@@ -233,7 +233,7 @@ Quantity is `decimal.Decimal` (NUMERIC(38,12)) per ADR-005, marshaled as a strin
 - [x] `resolvePeriod` helper + unit tests.
 - [x] Integration tests: single-meter parity, multi-dim parity, cycle alignment, cross-tenant 404, no-sub + explicit window, plan transition, closed-cycle parity.
 - [x] End-to-end assertion fixture against the running stack.
-- [x] OpenAPI spec update (`docs/openapi.yaml`).
+- [x] OpenAPI spec update (`api/openapi.yaml`).
 - [x] CHANGELOG entry + public changelog rollup.
 
 ## Track B unblock

@@ -109,6 +109,22 @@ var validRefundReasons = map[string]bool{
 	"other":                 true,
 }
 
+// getInvoiceServer is the slice of generated.ServerInterface that this
+// handler currently implements — the single OpenAPI operation
+// `getInvoice` (GET /v1/invoices/{id}). As more operations migrate
+// onto the typed surface, this assertion will broaden until the
+// handler conforms to the full generated.ServerInterface and the chi
+// mount can swap to the generated route helper. The compile-time
+// `var _` below catches any drift between the spec's signature and the
+// handler's implementation as a build error rather than a runtime
+// 404 — same trick Stripe-go and gh-cli use when they conform to
+// generated SDK interfaces.
+type getInvoiceServer interface {
+	GetInvoice(w http.ResponseWriter, r *http.Request, id string)
+}
+
+var _ getInvoiceServer = (*Handler)(nil)
+
 type Handler struct {
 	svc             *Service
 	customers       CustomerGetter
@@ -273,9 +289,18 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	respond.List(w, r, invoices, total)
 }
 
-func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
+// GetInvoice is the OpenAPI-typed handler for `GET /v1/invoices/{id}`.
+// Signature matches generated.ServerInterface so the spec, the handler,
+// and the router stay aligned at compile time — see the
+// `var _ generated.GetInvoiceServer = (*Handler)(nil)` assertion below.
+//
+// The chi route still calls h.get (which extracts the id via chi.URLParam
+// and delegates here), keeping the routing layer unchanged for now. As
+// more endpoints adopt this pattern we'll switch the chi mount to use
+// the generated route registration helper, which calls these typed
+// methods directly.
+func (h *Handler) GetInvoice(w http.ResponseWriter, r *http.Request, id string) {
 	tenantID := auth.TenantID(r.Context())
-	id := chi.URLParam(r, "id")
 
 	inv, items, err := h.svc.GetWithLineItems(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
@@ -295,6 +320,10 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		"invoice":    inv,
 		"line_items": items,
 	})
+}
+
+func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
+	h.GetInvoice(w, r, chi.URLParam(r, "id"))
 }
 
 func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {

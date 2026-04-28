@@ -16,6 +16,40 @@ A second surface mirrors this file:
 
 ## [Unreleased]
 
+### Added
+
+- **OpenAPI as API contract source of truth — codegen + CI gate
+  (Phase 1).** `api/openapi.yaml` is now the single source for the
+  HTTP API. `make gen` regenerates the Go server interface + DTO
+  types (`oapi-codegen` v2 → `internal/api/generated/`), the
+  TypeScript raw type tree (`openapi-typescript` →
+  `web-v2/src/lib/api.gen.ts`), and the typed `@tanstack/react-query`
+  hooks (`orval` → `web-v2/src/lib/gen/queries.gen.ts` +
+  `web-v2/src/lib/gen/schemas/`). A new CI job runs `make gen &&
+  git diff --exit-code`, so any drift between the spec and the
+  committed generated artifacts now fails the build — the same
+  pattern Stripe uses internally with its openapi repo. Phase 1
+  proves the pipeline end-to-end on `GET /v1/invoices/{id}`: the
+  invoice handler exposes `(h *Handler).GetInvoice(w, r, id)` with
+  a compile-time assertion that it satisfies the generated server
+  interface, and `web-v2/src/pages/InvoiceDetail.tsx` now consumes
+  `useGetInvoice` instead of a hand-rolled `useQuery`. Hand-written
+  endpoints elsewhere keep working unchanged; subsequent phases will
+  migrate the rest of the surface incrementally. The orval mutator
+  at `web-v2/src/lib/orvalClient.ts` delegates to the existing
+  `apiRequest` fetch wrapper, so generated hooks ride the same
+  session-cookie auth, error-envelope parsing, and
+  `Velox-Request-Id` capture as every hand-written caller.
+  Workflow doc lives at `docs/dev/openapi-workflow.md`.
+
+### Changed
+
+- **Single OpenAPI spec at `api/openapi.yaml`.** The duplicate spec at
+  `docs/openapi.yaml` is removed; README, the `/docs/api` Scalar viewer
+  description, and the four design RFCs that linked to it now point at
+  `api/openapi.yaml`. Eliminates the drift risk of two specs that
+  needed to stay in sync by hand.
+
 ### Fixed
 
 - **Usage page stat cards + meter breakdown now reflect server-side

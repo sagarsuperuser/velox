@@ -32,7 +32,7 @@ const cards = [
     to: '/docs/api',
     icon: Code2,
     title: 'API reference',
-    body: 'Full OpenAPI reference with every endpoint, schema, and example. Built from docs/openapi.yaml.',
+    body: 'Full OpenAPI reference with every endpoint, schema, and example. Built from api/openapi.yaml.',
   },
 ]
 

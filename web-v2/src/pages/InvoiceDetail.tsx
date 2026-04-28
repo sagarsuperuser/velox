@@ -5,7 +5,10 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type TenantSettings, type DunningRun, type TimelineEvent } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type TenantSettings, type DunningRun, type TimelineEvent } from '@/lib/api'
+import { useGetInvoice } from '@/lib/gen/queries.gen'
+import type { Invoice } from '@/lib/gen/schemas/invoice'
+import type { InvoiceLineItem as LineItem } from '@/lib/gen/schemas/invoiceLineItem'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { taxReasonLabel } from '@/lib/taxReasons'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
@@ -104,14 +107,16 @@ export default function InvoiceDetailPage() {
     return () => { if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl) }
   }, [pdfPreviewUrl])
 
-  const { data: invoiceData, isLoading, error: loadError, refetch } = useQuery({
-    queryKey: ['invoice', id],
-    queryFn: () => api.getInvoice(id!),
-    enabled: !!id,
+  // Generated react-query hook from api/openapi.yaml. The hook key is
+  // `getGetInvoiceQueryKey(id)` (also exported), but we keep the
+  // existing `['invoice', id]` shape for invalidations elsewhere in
+  // this file. Both work — react-query keys are content-addressed.
+  const { data: invoiceData, isLoading, error: loadError, refetch } = useGetInvoice(id!, {
+    query: { queryKey: ['invoice', id] },
   })
 
   const invoice = invoiceData?.invoice
-  const lineItems = invoiceData?.line_items ?? []
+  const lineItems: LineItem[] = invoiceData?.line_items ?? []
 
   const { data: customer } = useQuery({
     queryKey: ['customer', invoice?.customer_id],
