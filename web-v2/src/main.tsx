@@ -125,6 +125,7 @@ const CustomerPortalPage = lazy(() => import('@/pages/CustomerPortal'))
 const CustomerPortalLoginPage = lazy(() => import('@/pages/CustomerPortalLogin'))
 const HostedInvoicePage = lazy(() => import('@/pages/HostedInvoice'))
 const PublicCostDashboardPage = lazy(() => import('@/pages/PublicCostDashboard'))
+const CheckoutSuccessPage = lazy(() => import('@/pages/CheckoutSuccess'))
 const CustomerDetailPage = lazy(() => import('@/pages/CustomerDetail'))
 const InvoiceDetailPage = lazy(() => import('@/pages/InvoiceDetail'))
 const SubscriptionDetailPage = lazy(() => import('@/pages/SubscriptionDetail'))
@@ -208,6 +209,7 @@ const App = () => (
               <Route path="/customer-portal/login" element={<CustomerPortalLoginPage />} />
               <Route path="/invoice/:token" element={<HostedInvoicePage />} />
               <Route path="/public/cost-dashboard/:token" element={<PublicCostDashboardPage />} />
+              <Route path="/checkout/success" element={<CheckoutSuccessPage />} />
               <Route path="/docs" element={<DocsPage />} />
               <Route path="/docs/quickstart" element={<DocsQuickstartPage />} />
               <Route path="/docs/recipes" element={<DocsRecipesPage />} />
