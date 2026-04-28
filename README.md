@@ -128,7 +128,7 @@ Stating these loudly so the wrong customers self-select out:
 
 - **Not for vanilla card-first SaaS** with simple per-seat pricing — Stripe Billing is fine for them.
 - **Not multi-PSP yet** — Stripe is the only payment processor. Razorpay/Adyen come when a paying tenant asks.
-- **Not for marketplaces or Connect** — single-tenant per Velox deployment.
+- **Not for marketplaces or Stripe Connect** — Velox bills the tenant's customers directly; it doesn't split payouts across sub-merchants. (Velox itself is multi-tenant via RLS — many billing tenants per deployment — but each tenant collects on its own behalf, not on behalf of others.)
 - **No Revenue Recognition / Sigma** — bring your own warehouse + dbt.
 - **No Quotes or Subscription Schedules** — sales-led contract billing should pick Recurly or Maxio.
 - **No 50+ payment-method types** — cards via Stripe + send-invoice. ACH/SEPA expand from there.
