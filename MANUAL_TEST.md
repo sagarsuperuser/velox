@@ -663,6 +663,20 @@ Backed by `DELETE /v1/recipes/instances/{id}`. Uninstall is **no-cascade by desi
 - [ ] GET /v1/invoices/{id}/payment-timeline → all attempts with ts, amount, status, PI id
 - [ ] For a failed-then-succeeded invoice, both attempts are shown in order
 
+## FLOW I5b: Operator context card (issue #10)
+
+Stripe-parity diagnostic panel that explains WHY an invoice is stuck. Renders
+above the invoice document for non-terminal pending-like states; muted background
++ info icon, no destructive styling. Sources tax/payment fields from the invoice
+itself and dunning state from `GET /v1/dunning/runs?invoice_id=...`.
+
+- [ ] Pending invoice with `tax_status='pending'` → card renders with "Tax calculation deferred — `<reason>` (retry N)" diagnosis; tax-status badge + retries + deferred-at rows
+- [ ] Pending invoice with `last_payment_error` populated → card shows "Payment failed: `<reason>`" diagnosis; last-payment-failure row + payment-intent ID row
+- [ ] Invoice with `payment_status='unknown'` → diagnosis reads "Stripe returned an ambiguous outcome — reconciliation in progress"
+- [ ] Voided invoice (Velox's stand-in for uncollectible) → diagnosis reads "Marked uncollectible — manual write-off path"
+- [ ] Invoice with active dunning run → "Dunning" row shows state badge + attempt count; "Next retry" row shows scheduled timestamp
+- [ ] Paid / draft invoices → card hidden entirely (no operator context surfaced)
+
 ## FLOW I6: Email + PDF preview
 
 - [ ] Invoice detail → Email → send to any address
