@@ -1,6 +1,6 @@
 # Create-Preview Endpoint — Technical Design
 
-> **Status:** Draft v1
+> **Status:** Shipped (2026-04-26) — `POST /v1/invoices/create_preview`
 > **Owner:** Track A
 > **Last revised:** 2026-04-26
 > **Related:** `docs/design-customer-usage.md` (sibling read surface, same composition pattern), `docs/design-multi-dim-meters.md` (multi-dim dependency — `usage.AggregateByPricingRules` is the engine)

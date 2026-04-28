@@ -112,14 +112,15 @@ Stating these loudly so the wrong customers self-select out:
 ```bash
 git clone https://github.com/sagarsuperuser/velox.git && cd velox
 
-# Backend — Postgres + bootstrap demo tenant + run the API
+# Backend — Postgres + bootstrap demo tenant, dashboard owner, and API keys
 docker compose up -d postgres
-make bootstrap       # creates a demo tenant and prints API keys
+VELOX_OWNER_EMAIL=you@example.com VELOX_OWNER_PASSWORD=change-me-please \
+  make bootstrap       # prints tenant id + secret/publishable API keys
 make dev             # API on :8080
 
 # Operator dashboard (separate terminal)
 cd web-v2 && npm install && npm run dev
-# → http://localhost:5173 — paste your secret key to log in
+# → http://localhost:5173 — sign in with the email + password you set above
 ```
 
 End-to-end demo (creates a customer, ingests usage, runs billing, generates a PDF invoice):
@@ -128,7 +129,7 @@ End-to-end demo (creates a customer, ingests usage, runs billing, generates a PD
 ./scripts/demo.sh $VELOX_SECRET
 ```
 
-Five-minute self-host (Helm chart + Terraform module): under construction. Postgres backup playbook is already in [`docs/self-host/postgres-backup.md`](docs/self-host/postgres-backup.md).
+Self-host paths — Docker Compose (single VM), Helm chart on Kubernetes (production with availability), and a one-shot Terraform module for AWS — all ship today. See [`docs/self-host.md`](docs/self-host.md) for the picker, sizing table, and SPOF posture per shape.
 
 ---
 
@@ -249,14 +250,16 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 - **Plan-migration UI** — preview, batch apply, history; bulk operations on customers/subscriptions/invoices
 - **Live event stream + invoice composer** — operator UX for ingestion debugging and one-off invoice creation
 - **`velox-import`** — Stripe Billing → Velox cutover with idempotent reruns and reconciliation CSV; full operator playbook in [`docs/migration-from-stripe.md`](docs/migration-from-stripe.md)
+- **Self-host packaging** — Docker Compose, Helm chart, and Terraform AWS module all ship today; Postgres backup playbook in [`docs/self-host/postgres-backup.md`](docs/self-host/postgres-backup.md); deployment picker + SPOF posture in [`docs/self-host.md`](docs/self-host.md)
+- **Compliance posture** — encryption-at-rest, audit-log retention, SOC 2 Trust Services Criteria control mapping, GDPR data-export verification ([`docs/ops/`](docs/ops/), [`docs/compliance/`](docs/compliance/))
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 
 ### In flight
 
-- **Self-host packaging** — Helm chart + Terraform module (Postgres backup runbook already in [`docs/self-host/postgres-backup.md`](docs/self-host/postgres-backup.md))
-- **Compliance posture** — encryption-at-rest hardening, SOC 2 control mapping, GDPR export coverage
 - **First design-partner cutover** to Velox in production
+- **GDPR data-deletion** end-to-end (data export landed; deletion path is the remaining gap)
+- **Cold-install drill on a fresh AWS account** — the Terraform module structurally validates today, but a non-Velox-engineer apply on a fresh account is a separate validation lane
 
 ---
 
