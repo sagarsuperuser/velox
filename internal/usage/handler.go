@@ -44,6 +44,12 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/", h.ingest)
 	r.Post("/batch", h.batchIngest)
 	r.Get("/", h.list)
+	// Server-side aggregate that powers the /usage page's stat cards +
+	// "Usage by Meter" breakdown. Mounted as a sibling of GET / so chi
+	// picks the more-specific pattern; reuses parseListFilter so filter
+	// semantics match the list query exactly. See internal/usage/store.go
+	// (Aggregate type) for the response shape.
+	r.Get("/aggregate", h.aggregate)
 	return r
 }
 
@@ -181,19 +187,40 @@ func (h *Handler) backfill(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusCreated, event)
 }
 
-func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	tenantID := auth.TenantID(r.Context())
+// parseListFilter pulls the shared list/aggregate query params off the
+// request URL. Both handlers honour customer_id / meter_id / from / to;
+// the list handler additionally reads limit + offset, which Aggregate
+// ignores (the whole point of the aggregate endpoint is the unbounded
+// total). Empty / unparseable values are treated as absent so the
+// frontend can build URLs unconditionally without sending sentinel
+// strings.
+func parseListFilter(r *http.Request) ListFilter {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
 
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-
-	events, total, err := h.svc.List(r.Context(), ListFilter{
-		TenantID:   tenantID,
-		CustomerID: r.URL.Query().Get("customer_id"),
-		MeterID:    r.URL.Query().Get("meter_id"),
+	filter := ListFilter{
+		TenantID:   auth.TenantID(r.Context()),
+		CustomerID: q.Get("customer_id"),
+		MeterID:    q.Get("meter_id"),
 		Limit:      limit,
 		Offset:     offset,
-	})
+	}
+	if v := q.Get("from"); v != "" {
+		if t, err := parseTimestamp(v); err == nil {
+			filter.From = &t
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := parseTimestamp(v); err == nil {
+			filter.To = &t
+		}
+	}
+	return filter
+}
+
+func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
+	events, total, err := h.svc.List(r.Context(), parseListFilter(r))
 	if err != nil {
 		respond.InternalError(w, r)
 		slog.ErrorContext(r.Context(), "list usage events", "error", err)
@@ -204,6 +231,28 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.List(w, r, events, total)
+}
+
+// aggregate returns server-side totals + per-meter breakdown for the
+// current filter. Mirrors the list handler's filter parsing exactly so
+// the dashboard's stat cards reflect the same scope as the events table.
+// Unlike list, limit/offset are ignored — Aggregate.TotalEvents is the
+// authoritative count, and ByMeter is the full filtered breakdown.
+func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request) {
+	filter := parseListFilter(r)
+	// Limit/offset only matter for paginated reads. Zero them out so
+	// it's obvious from a debug log that the aggregate scanned the full
+	// filtered set, not a 100-row page.
+	filter.Limit = 0
+	filter.Offset = 0
+
+	agg, err := h.svc.Aggregate(r.Context(), filter)
+	if err != nil {
+		respond.InternalError(w, r)
+		slog.ErrorContext(r.Context(), "aggregate usage events", "error", err)
+		return
+	}
+	respond.JSON(w, r, http.StatusOK, agg)
 }
 
 func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {

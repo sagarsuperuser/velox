@@ -12,6 +12,7 @@ import (
 type Store interface {
 	Ingest(ctx context.Context, tenantID string, event domain.UsageEvent) (domain.UsageEvent, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.UsageEvent, int, error)
+	Aggregate(ctx context.Context, filter ListFilter) (Aggregate, error)
 	AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error)
 	AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]decimal.Decimal, error)
 
@@ -34,4 +35,27 @@ type ListFilter struct {
 	To         *time.Time
 	Limit      int
 	Offset     int
+}
+
+// Aggregate is the response shape of GET /v1/usage-events/aggregate. It
+// powers the stat cards + "Usage by Meter" breakdown on the dashboard's
+// /usage page so they reflect server-side filtered totals rather than
+// reductions over the current page of events.
+//
+// TotalUnits is decimal-string-encoded (NUMERIC(38,12) per ADR-005) so
+// fractional GPU-hours and partial tokens round-trip without loss.
+type Aggregate struct {
+	TotalEvents     int             `json:"total_events"`
+	TotalUnits      decimal.Decimal `json:"total_units"`
+	ActiveMeters    int             `json:"active_meters"`
+	ActiveCustomers int             `json:"active_customers"`
+	ByMeter         []MeterTotal    `json:"by_meter"`
+}
+
+// MeterTotal is the per-meter row in Aggregate.ByMeter — one entry per
+// distinct meter_id matching the filter, sorted by Total DESC so the
+// dashboard's horizontal-bar breakdown can render in priority order.
+type MeterTotal struct {
+	MeterID string          `json:"meter_id"`
+	Total   decimal.Decimal `json:"total"`
 }

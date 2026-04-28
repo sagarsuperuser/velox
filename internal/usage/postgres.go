@@ -111,6 +111,64 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	return events, total, rows.Err()
 }
 
+// Aggregate returns the totals + per-meter breakdown that powers the
+// /usage page's stat cards + "Usage by Meter" card. It honours the same
+// filter as List (customer / meter / from / to) but ignores limit/offset —
+// the whole point is to surface filtered totals, not page slices.
+//
+// SQL strategy: one row-of-totals query for COUNT/SUM/distinct-counts,
+// plus a GROUP BY meter_id query for the per-meter breakdown. Both run
+// inside the same tenant tx so RLS scopes them identically. SUM is
+// decimal-precision (NUMERIC(38,12)) so 0.5 + 0.5 + 0.0001 round-trips
+// to "1.0001" without floating-point drift.
+func (s *PostgresStore) Aggregate(ctx context.Context, filter ListFilter) (Aggregate, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, filter.TenantID)
+	if err != nil {
+		return Aggregate{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	where, args := buildUsageWhere(filter)
+
+	var agg Aggregate
+	err = tx.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(quantity), 0),
+			COUNT(DISTINCT meter_id),
+			COUNT(DISTINCT customer_id)
+		FROM usage_events`+where, args...,
+	).Scan(&agg.TotalEvents, &agg.TotalUnits, &agg.ActiveMeters, &agg.ActiveCustomers)
+	if err != nil {
+		return Aggregate{}, fmt.Errorf("aggregate totals: %w", err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT meter_id, COALESCE(SUM(quantity), 0)
+		FROM usage_events`+where+`
+		GROUP BY meter_id
+		ORDER BY 2 DESC`, args...)
+	if err != nil {
+		return Aggregate{}, fmt.Errorf("aggregate by_meter: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var m MeterTotal
+		if err := rows.Scan(&m.MeterID, &m.Total); err != nil {
+			return Aggregate{}, err
+		}
+		agg.ByMeter = append(agg.ByMeter, m)
+	}
+	if err := rows.Err(); err != nil {
+		return Aggregate{}, err
+	}
+	if agg.ByMeter == nil {
+		agg.ByMeter = []MeterTotal{}
+	}
+	return agg, nil
+}
+
 func (s *PostgresStore) AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
