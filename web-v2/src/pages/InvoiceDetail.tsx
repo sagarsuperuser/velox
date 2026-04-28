@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type TenantSettings } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type TenantSettings, type DunningRun, type TimelineEvent } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Layout } from '@/components/Layout'
@@ -29,7 +29,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { Loader2, Mail, CreditCard, Link2, RotateCw } from 'lucide-react'
+import { Loader2, Mail, CreditCard, Link2, RotateCw, Info } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
@@ -140,6 +140,25 @@ export default function InvoiceDetailPage() {
     enabled: !!id && invoice?.status !== 'draft',
   })
   const timeline = timelineData ?? []
+
+  // Dunning runs for this invoice — only fetched when the invoice is in a
+  // pending-like state where dunning context is actionable. Drafts and paid
+  // invoices have no operator-debugging context to surface; voided invoices
+  // surface the card only when they carry a payment failure (Velox's
+  // uncollectible stand-in), not when an operator voided them cleanly.
+  const showOperatorContext =
+    invoice?.tax_status === 'pending' ||
+    invoice?.tax_status === 'failed' ||
+    (invoice?.status === 'finalized' &&
+      invoice?.payment_status !== 'succeeded' &&
+      invoice?.payment_status !== 'processing') ||
+    (invoice?.status === 'voided' && !!invoice?.last_payment_error)
+  const { data: dunningRunsData } = useQuery({
+    queryKey: ['invoice-dunning-runs', id],
+    queryFn: () => api.listDunningRuns(`invoice_id=${id}`).then(r => r.data || []),
+    enabled: !!id && !!showOperatorContext,
+  })
+  const activeDunningRun = (dunningRunsData ?? []).find(r => r.state === 'active')
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -330,6 +349,17 @@ export default function InvoiceDetailPage() {
           </Button>
         </div>
       </div>
+
+      {/* Operator context — surfaces WHY an invoice is stuck (tax deferred,
+          payment failure, dunning in flight, ambiguous Stripe outcome). Only
+          renders for non-terminal states; hidden on draft/paid/voided. */}
+      {showOperatorContext && (
+        <OperatorContextCard
+          invoice={invoice}
+          dunningRun={activeDunningRun}
+          timeline={timeline}
+        />
+      )}
 
       {/* Invoice Document */}
       <Card className={cn(
@@ -817,6 +847,162 @@ export default function InvoiceDetailPage() {
         </div>
       )}
     </Layout>
+  )
+}
+
+// OperatorContextCard surfaces WHY an invoice is stuck — tax deferral,
+// payment failure, ambiguous Stripe outcome, or active dunning. Modeled on
+// Stripe Dashboard's "Payment activity" diagnostic banner: muted background,
+// info icon, one-line diagnosis, then a definition list of debugging fields.
+// Operator-only by routing — this entire page is behind dashboard auth.
+function OperatorContextCard({
+  invoice,
+  dunningRun,
+  timeline,
+}: {
+  invoice: Invoice
+  dunningRun?: DunningRun
+  timeline: TimelineEvent[]
+}) {
+  // Pick the most informative one-line diagnosis. Order matters: tax
+  // deferral wins because finalize is blocked on it; explicit payment
+  // errors next; ambiguous Stripe outcomes; finally the catch-all.
+  const diagnosis: string = (() => {
+    if (invoice.tax_status === 'pending') {
+      const reason = invoice.tax_pending_reason || 'awaiting Stripe Tax'
+      const retries = invoice.tax_retry_count ?? 0
+      return `Tax calculation deferred — ${reason} (retry ${retries})`
+    }
+    if (invoice.tax_status === 'failed') {
+      return `Tax calculation failed — ${invoice.tax_pending_reason || 'retries exhausted'}; manual intervention required`
+    }
+    if (invoice.last_payment_error) {
+      return `Payment failed: ${invoice.last_payment_error}`
+    }
+    if (invoice.payment_status === 'unknown') {
+      return 'Stripe returned an ambiguous outcome — reconciliation in progress'
+    }
+    if (invoice.status === 'voided') {
+      return 'Marked uncollectible — manual write-off path'
+    }
+    if (invoice.payment_status === 'processing') {
+      return 'Payment in progress — awaiting Stripe confirmation'
+    }
+    return 'Awaiting payment'
+  })()
+
+  // attempt_count for this invoice is sourced from the active dunning run
+  // when one exists (Velox keeps retry counters there, not on the invoice).
+  // The payment timeline gives a payment-attempt count even before dunning
+  // takes over.
+  const paymentAttempts = timeline.filter(
+    t => t.source === 'stripe' && (t.event_type === 'payment_intent.succeeded' || t.event_type === 'payment_intent.payment_failed')
+  ).length
+
+  // tax_status badge styling. Pending = amber (transient, retrying);
+  // failed = destructive (manual action needed); ok = muted (unlikely
+  // here since the card hides on terminal states but kept for safety).
+  const taxStatusBadge = invoice.tax_status && invoice.tax_status !== 'ok' ? (
+    <Badge
+      variant={invoice.tax_status === 'failed' ? 'destructive' : 'outline'}
+      className={invoice.tax_status === 'pending' ? 'border-amber-300 text-amber-700 dark:text-amber-400' : ''}
+    >
+      {invoice.tax_status}
+    </Badge>
+  ) : null
+
+  return (
+    <Card className="mb-6 border-border bg-muted/30">
+      <CardHeader className="flex-row items-center gap-2 space-y-0 pb-3">
+        <Info size={16} className="text-muted-foreground" />
+        <CardTitle className="text-sm font-medium">Operator context</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+            Why is this invoice pending?
+          </p>
+          <p className="text-foreground">{diagnosis}</p>
+        </div>
+
+        <Separator />
+
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2">
+          {taxStatusBadge && (
+            <>
+              <dt className="text-xs text-muted-foreground self-center">Tax status</dt>
+              <dd className="flex items-center gap-2">
+                {taxStatusBadge}
+                {invoice.tax_pending_reason && (
+                  <span className="text-xs text-muted-foreground">{invoice.tax_pending_reason}</span>
+                )}
+              </dd>
+            </>
+          )}
+
+          {(invoice.tax_retry_count ?? 0) > 0 && (
+            <>
+              <dt className="text-xs text-muted-foreground">Tax retries</dt>
+              <dd className="text-foreground">{invoice.tax_retry_count}</dd>
+            </>
+          )}
+
+          {invoice.tax_deferred_at && (
+            <>
+              <dt className="text-xs text-muted-foreground">Tax deferred at</dt>
+              <dd className="text-foreground">{formatDateTime(invoice.tax_deferred_at)}</dd>
+            </>
+          )}
+
+          {paymentAttempts > 0 && (
+            <>
+              <dt className="text-xs text-muted-foreground">Payment attempts</dt>
+              <dd className="text-foreground">{paymentAttempts}</dd>
+            </>
+          )}
+
+          {invoice.last_payment_error && (
+            <>
+              <dt className="text-xs text-muted-foreground">Last payment failure</dt>
+              <dd className="text-foreground">{invoice.last_payment_error}</dd>
+            </>
+          )}
+
+          {invoice.payment_status === 'unknown' && (
+            <>
+              <dt className="text-xs text-muted-foreground">Payment outcome</dt>
+              <dd className="text-foreground">Reconciler will query Stripe after the cool-off window.</dd>
+            </>
+          )}
+
+          {invoice.stripe_payment_intent_id && (
+            <>
+              <dt className="text-xs text-muted-foreground">Payment intent</dt>
+              <dd className="font-mono text-xs text-foreground">{invoice.stripe_payment_intent_id}</dd>
+            </>
+          )}
+
+          {dunningRun && (
+            <>
+              <dt className="text-xs text-muted-foreground">Dunning</dt>
+              <dd className="flex items-center gap-2">
+                <Badge variant="outline" className="border-amber-300 text-amber-700 dark:text-amber-400">
+                  {dunningRun.state}
+                </Badge>
+                <span className="text-xs text-muted-foreground">attempt {dunningRun.attempt_count}</span>
+              </dd>
+
+              {dunningRun.next_action_at && (
+                <>
+                  <dt className="text-xs text-muted-foreground">Next retry</dt>
+                  <dd className="text-foreground">{formatDateTime(dunningRun.next_action_at)}</dd>
+                </>
+              )}
+            </>
+          )}
+        </dl>
+      </CardContent>
+    </Card>
   )
 }
 

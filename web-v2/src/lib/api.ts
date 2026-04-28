@@ -646,6 +646,14 @@ export interface Invoice {
   tax_transaction_id?: string
   tax_reverse_charge?: boolean
   tax_exempt_reason?: string
+  // Tax-deferral state — populated when tax calculation hit a transient
+  // upstream failure and is awaiting retry (or has exhausted retries).
+  // 'ok' is the happy path; 'pending' / 'failed' surface in the operator
+  // context card so debugging context is one click away.
+  tax_status?: 'ok' | 'pending' | 'failed'
+  tax_pending_reason?: string
+  tax_retry_count?: number
+  tax_deferred_at?: string
   total_amount_cents: number
   amount_due_cents: number
   amount_paid_cents: number
