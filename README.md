@@ -1,6 +1,6 @@
 # Velox
 
-### Bill what you measure.
+### Turn usage into revenue.
 
 **The open-source billing engine for AI and usage-heavy SaaS — runs in your own VPC.**
 
