@@ -1,9 +1,10 @@
 # Multi-Dimensional Meters — Technical Design
 
-> **Status:** Draft v1
-> **Owner:** Track A
+> **Status:** Shipped 2026-04-25 — see [`CHANGELOG.md`](../CHANGELOG.md) for the merged commits.
 > **Last revised:** 2026-04-25
 > **Related:** ADR-002 (per-domain), ADR-003 (RLS), ADR-005 (integer cents)
+>
+> The text below is preserved as the design-time RFC. The implementation is live in `main`; refer to the package-level docs in `internal/usage/` and `internal/billing/` for the current behaviour.
 
 ## Motivation
 
@@ -307,26 +308,18 @@ Per memory `feedback_prefer_battle_tested_libs`: use `shopspring/decimal`, do no
 6. **Do existing `usage_events.quantity` BIGINT values need any migration data work?** Proposal: **no**. Widening cast is lossless; max BIGINT (≈9.2 × 10¹⁸) fits NUMERIC(38, 12) trivially.
 7. **Should we deprecate the existing `meters.aggregation` column?** Proposal: **not yet**. Keep it as the default-rule aggregation mode for back-compat; flag for removal in 6 months once all tenants migrate to `meter_pricing_rules`.
 
-## Implementation checklist (Week 2)
+## Implementation checklist
 
-Tracking via the 90-day plan; this is the canonical breakdown:
-
-- [ ] Migration `0054_multi_dim_meters.{up,down}.sql` (allocate number from `origin/main`)
-- [ ] `domain.UsageEvent.Quantity` → `decimal.Decimal` (one-time refactor; field name stays `Quantity`)
-- [ ] `domain.MeterPricingRule` struct
-- [ ] `usage.Store.UpsertPricingRule(...)`, `ListPricingRulesByMeter(...)`, `DeletePricingRule(...)`
-- [ ] `usage.Service.IngestEvent(...)` accepts decimal quantity + dimensions
-- [ ] `usage.Service.AggregateForBillingPeriod(...)` resolves rules with priority + dimension match
-- [ ] HTTP handlers: `POST /v1/usage-events`, `POST/GET/LIST/DELETE /v1/meters/{id}/pricing-rules`
-- [ ] `GET /v1/customers/{id}/usage` (powers Week 5 cost dashboard)
-- [ ] Unit tests: ingest, aggregation per mode, subset-match, priority-claim
-- [ ] Integration tests: real Postgres, RLS-isolated tenants, decimal precision, idempotency
-- [ ] `cmd/velox-bench/main.go` + 50k events/sec benchmark validation
-- [ ] OpenAPI spec update (`docs/openapi.yaml`)
-- [ ] CHANGELOG.md (Track A) + Changelog.tsx (Track B, after coordinating)
-
-## Review status
-
-- **Track A author:** drafted 2026-04-25
-- **Track B review:** pending — Track B can build recipe-picker UI scaffold against this design without waiting for implementation
-- **Human review:** pending — please flag any open question to resolve before Week 2 starts
+- [x] Migration `0054_multi_dim_meters.{up,down}.sql`
+- [x] `domain.UsageEvent.Quantity` → `decimal.Decimal`
+- [x] `domain.MeterPricingRule` struct
+- [x] `usage.Store.UpsertPricingRule(...)`, `ListPricingRulesByMeter(...)`, `DeletePricingRule(...)`
+- [x] `usage.Service.IngestEvent(...)` accepts decimal quantity + dimensions
+- [x] `usage.Service.AggregateForBillingPeriod(...)` resolves rules with priority + dimension match
+- [x] HTTP handlers: `POST /v1/usage-events`, `POST/GET/LIST/DELETE /v1/meters/{id}/pricing-rules`
+- [x] `GET /v1/customers/{id}/usage` powering the cost dashboard
+- [x] Unit tests: ingest, aggregation per mode, subset-match, priority-claim
+- [x] Integration tests: real Postgres, RLS-isolated tenants, decimal precision, idempotency
+- [x] `cmd/velox-bench/main.go` + 50k events/sec benchmark validation
+- [x] OpenAPI spec update (`docs/openapi.yaml`)
+- [x] CHANGELOG entry + public changelog rollup

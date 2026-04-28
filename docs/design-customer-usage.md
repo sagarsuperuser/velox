@@ -1,19 +1,20 @@
 # Customer Usage Endpoint — Technical Design
 
-> **Status:** Draft v1
-> **Owner:** Track A
+> **Status:** Shipped — see [`CHANGELOG.md`](../CHANGELOG.md) for the merged commits and the embeddable surface in `web-v2/src/components/CostDashboard.tsx`.
 > **Last revised:** 2026-04-26
 > **Related:** `docs/design-multi-dim-meters.md` (multi-dim dependency), `docs/design-recipes.md` (same wire-contract conventions)
+>
+> The text below is preserved as the design-time RFC. The implementation is live in `main`; refer to `internal/usage/customer_usage.go` and `internal/costdashboard/` for the current behaviour.
 
 ## Motivation
 
 A buyer evaluating Velox asks the same question on day one: "How do I show a customer their current usage and what they'll be charged?" Stripe Billing's answer is a hosted Customer Portal page — but that's locked to Stripe Billing, which Velox does not use (per ADR on PaymentIntent-only). Buyers self-hosting Velox today have no first-party answer; they hand-roll a SQL query against `usage_events` and pray the dimension-match logic stays in sync with their pricing rules.
 
-This is the second flagship developer-experience surface, alongside recipes. Where recipes collapse "set up billing" to one POST, **`GET /v1/customers/{id}/usage` collapses "show me what this customer used and owes" to one GET**. The Track B cost-dashboard scaffold (Week 5) is the in-product manifestation; the API itself unblocks every operator who needs the same data in their own portal, in Slack alerts, in CSV exports.
+This is the second flagship developer-experience surface, alongside recipes. Where recipes collapse "set up billing" to one POST, **`GET /v1/customers/{id}/usage` collapses "show me what this customer used and owes" to one GET**. The cost-dashboard component is the in-product manifestation; the API itself unblocks every operator who needs the same data in their own portal, in Slack alerts, in CSV exports.
 
 The dimension-match-aware aggregation is the part that can't be hand-rolled: the rules-ranked LATERAL JOIN in `internal/usage/postgres.go:236–279` is non-trivial, and any external SQL would silently drift from canonical pricing the moment a tenant adds a `meter_pricing_rule`. This endpoint is the supported way to get the right answer.
 
-This design ships in Week 5 and depends on Week 2 multi-dim meters (schema + aggregation already shipped) plus Week 4 invoice-line-item fan-out (so we can distinguish billed vs. not-yet-billed usage).
+This endpoint composes the multi-dim aggregation surface and the invoice-line-item fan-out so callers can distinguish billed from not-yet-billed usage in a single response.
 
 ## Goals
 
@@ -23,7 +24,7 @@ This design ships in Week 5 and depends on Week 2 multi-dim meters (schema + agg
 - **Subscription context co-emitted.** Response includes the plan(s) the customer is on plus the cycle boundaries, so a dashboard can render "Plan: AI API Pro · cycle Apr 1 → May 1 · 87% through" without follow-up calls.
 - **RLS-safe.** All queries scope through `BeginTx(ctx, postgres.TxTenant, tenantID)`; the response cannot leak across tenants even when an operator passes a customer ID from another tenant — the lookup just 404s.
 - **Cheap.** Constant-bounded SQL (one aggregate per meter on the customer's plans). No event-by-event scan in the hot path. Live dashboards refresh every few seconds without melting the DB.
-- **Documented contract Track B mocks against today.** This is the API Track B's cost-dashboard scaffold (Week 5) and the eventual portal surface call.
+- **Documented contract for downstream consumers.** This is the API the cost-dashboard component calls and the portal surface uses.
 
 ## Non-goals (deferred)
 
@@ -225,15 +226,15 @@ Quantity is `decimal.Decimal` (NUMERIC(38,12)) per ADR-005, marshaled as a strin
 7. **Should `total_amount_cents` come from a fresh `ComputeAmountCents` call or from the matching `invoice_line_items` if the cycle is closed?** **Proposal: always fresh compute.** If the customer's pricing was edited mid-cycle, the dashboard wants the live answer; the invoice has the historical answer. Cycle-closed parity test guards drift.
 8. **Should warnings include "subscription cycle has rolled over but `current_period_*` hasn't been refreshed yet"?** **Proposal: yes**, surfaces a real ops issue (cycle scanner stuck) without breaking the response. Format: `cycle_refresh_lagging` warning code + the offending subscription ID.
 
-## Implementation checklist (Week 5)
+## Implementation checklist
 
-- [ ] `internal/usage/service.go` — `GetCustomerUsage` + `RateForCustomer` (composes existing store calls, no new SQL)
-- [ ] `internal/usage/handler.go` — `GET /v1/customers/{id}/usage` route (mounted off the customer router or as its own sub-router; whichever matches the existing customer endpoint pattern)
-- [ ] `resolvePeriod` helper + unit tests
-- [ ] Integration tests: single-meter parity, multi-dim parity, cycle alignment, cross-tenant 404, no-sub + explicit window, plan transition, closed-cycle parity
-- [ ] `cmd/velox-customer-usage-e2e/main.go` (or extend recipes e2e) — assertion fixture
-- [ ] OpenAPI spec update (`docs/openapi.yaml`)
-- [ ] CHANGELOG.md (Track A) + Changelog.tsx (Track B, after coordinating)
+- [x] `internal/usage/service.go` — `GetCustomerUsage` + `RateForCustomer` composing existing store calls.
+- [x] `internal/usage/handler.go` — `GET /v1/customers/{id}/usage` route.
+- [x] `resolvePeriod` helper + unit tests.
+- [x] Integration tests: single-meter parity, multi-dim parity, cycle alignment, cross-tenant 404, no-sub + explicit window, plan transition, closed-cycle parity.
+- [x] End-to-end assertion fixture against the running stack.
+- [x] OpenAPI spec update (`docs/openapi.yaml`).
+- [x] CHANGELOG entry + public changelog rollup.
 
 ## Track B unblock
 

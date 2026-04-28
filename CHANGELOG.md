@@ -38,6 +38,41 @@ A second surface mirrors this file:
 
 ### Documentation
 
+- **README + design RFCs truthed up to reflect shipped state.**
+  README's "Status" blockquote claiming multi-dim meters land 2026-05-08
+  and the `POST /v1/usage-events` endpoint accepts integer quantity only
+  was removed — multi-dim meters shipped 2026-04-25 and the endpoint has
+  taken decimal-string quantities (`NUMERIC(38, 12)`) since migration
+  `0054_usage_events_numeric_quantity`. The 13-week roadmap table that
+  mixed shipped and not-yet-shipped rows under the same heading was
+  replaced with a forward-looking `## Roadmap` section split into
+  `### Recently shipped` (multi-dim meters, pricing recipes, quickstart
+  wizard, `create_preview`, billing thresholds, billing alerts, cost
+  dashboard, plan-migration UI, bulk ops, live event stream,
+  `velox-import` CLI) and `### In flight` (Helm + Terraform self-host
+  packaging, compliance posture, first design-partner production
+  cutover) so the README states what's shipped today and what's next,
+  not what was planned three months ago. Self-host one-liner softened
+  from "five-minute self-host coming soon" to a concrete pointer at
+  `docs/self-host/postgres-backup.md` for the backup playbook that
+  already exists, with the Helm chart + Terraform module called out as
+  "under construction." Five design RFCs (`docs/design-multi-dim-meters.md`,
+  `docs/design-recipes.md`, `docs/design-billing-thresholds.md`,
+  `docs/design-billing-alerts.md`, `docs/design-customer-usage.md`) got
+  a `Status: Shipped <date> — see CHANGELOG.md` header plus a preserved
+  "kept as historical RFC" italic note so the design rationale stays
+  searchable, but no future reader is misled into thinking the work is
+  still pending. Implementation checklists in those RFCs flipped from
+  `[ ]` to `[x]` and dropped now-stale "(Week N)" qualifiers, broken
+  pointers to the moved-out 90-day plan, and Track A / Track B
+  internal-plan vocabulary that referenced the now-private velox-ops
+  repo. The blog post `docs/blog/2026-04-stripe-meter-api-ai-workloads.md`
+  got a 2026-04-28 update note at the top calling out that the
+  multi-dim implementation it describes is now live in `main` and the
+  endpoints in the post are the production contract — past-tensed the
+  "Velox is implementing this" line further down so the post reads as
+  shipped retrospective, not aspirational design.
+
 - **Public/private repo split for internal-only docs.** Twelve internal
   planning + marketing docs moved out of the public repo to a private
   `sagarsuperuser/velox-ops` repo so the public surface only carries
