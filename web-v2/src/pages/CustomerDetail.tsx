@@ -43,6 +43,7 @@ import {
   stateLabelForCountry,
   postalPlaceholderForCountry,
 } from '@/lib/geo'
+import { TAX_ID_HINTS, taxIdTypeOptions } from '@/lib/taxIdTypes'
 
 const statusVariant = statusBadgeVariant
 
@@ -1160,14 +1161,6 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
 
 /* ─── Edit Billing Profile ───────────────────────────────────── */
 
-const TAX_ID_HINTS: Record<string, string> = {
-  gst: 'e.g. 29ABCDE1234F1Z5 (India GSTIN)',
-  vat: 'e.g. GB123456789 (UK), DE123456789 (EU)',
-  ein: 'e.g. 12-3456789 (US Employer ID)',
-  abn: 'e.g. 12 345 678 901 (Australia)',
-  other: 'Enter the identifier in your jurisdiction\u2019s format',
-}
-
 function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSaved }: {
   customerId: string
   customer: Customer
@@ -1392,19 +1385,22 @@ function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSa
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Tax ID Type</Label>
-                  <Select value={form.tax_id_type} onValueChange={(val) => setValue('tax_id_type', val ?? '', { shouldDirty: true })}>
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select type..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="">None</SelectItem>
-                      <SelectItem value="gst">GST</SelectItem>
-                      <SelectItem value="vat">VAT</SelectItem>
-                      <SelectItem value="ein">EIN</SelectItem>
-                      <SelectItem value="abn">ABN</SelectItem>
-                      <SelectItem value="other">Other</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <Combobox
+                    value={form.tax_id_type}
+                    onChange={(val) => setValue('tax_id_type', val, { shouldDirty: true })}
+                    options={taxIdTypeOptions(form.tax_id_type).map(t => ({
+                      value: t.value,
+                      label: t.label,
+                      keywords: [t.value, t.country].filter(Boolean),
+                      prefix: (
+                        <span className="text-muted-foreground font-mono text-[11px] w-7 inline-block text-center">
+                          {t.country || '\u2014'}
+                        </span>
+                      ),
+                    }))}
+                    placeholder="Select type..."
+                    clearable
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label>Tax ID</Label>

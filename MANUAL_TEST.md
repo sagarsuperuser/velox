@@ -526,15 +526,19 @@ preview before commit. Driven by `/admin/plan_migrations`.
 ## FLOW B11: Tax-ID format validation
 
 `UpsertBillingProfile` normalizes (trim + uppercase) and format-validates `tax_id`
-against `tax_id_type`. Known kinds: GSTIN, EU VAT, AU ABN. Unknown kinds pass through.
+against `tax_id_type`. Storage uses Stripe-canonical codes (`in_gst`, `eu_vat`,
+`au_abn`); legacy Velox shorthand (`gstin`, `vat`, `abn`) is still accepted on
+input and normalized to the canonical code before write. Unknown kinds pass through.
 
-- [ ] `gstin` + `27aaepm1234c1z5` → saved as `27AAEPM1234C1Z5`
-- [ ] `in_gst` / `in_gstin` aliases accepted
-- [ ] `vat` + `DE123456789` → accepted
-- [ ] `abn` + `51824753556` → accepted
-- [ ] Malformed: `gstin` + `27INVALID` → 422 `"invalid GSTIN format: expected 15-char code like 27AAEPM1234C1Z5"`
-- [ ] Malformed: `vat` + `12` → 422 `"invalid EU VAT format"`
-- [ ] Malformed: `abn` + `123` → 422 `"invalid ABN format: expected 11 digits"`
+- [ ] `in_gst` + `27AAEPM1234C1Z5` → saved as `27AAEPM1234C1Z5`, `tax_id_type` stored as `in_gst`
+- [ ] Legacy `gstin` input → normalized to `in_gst` on write (backend `NormalizeTaxIDType`)
+- [ ] `eu_vat` + `DE123456789` → accepted
+- [ ] `au_abn` + `51824753556` → accepted
+- [ ] Unknown Stripe code (`za_vat` + any value) → accepted as-is
+- [ ] Customer detail → Edit billing profile: `tax_id_type` Combobox shows alphabetized list of Stripe codes with country-code badges, searchable by code or label
+- [ ] Malformed: `in_gst` + `27INVALID` → 422 `"invalid GSTIN format: expected 15-char code like 27AAEPM1234C1Z5"`
+- [ ] Malformed: `eu_vat` + `12` → 422 `"invalid EU VAT format"`
+- [ ] Malformed: `au_abn` + `123` → 422 `"invalid ABN format: expected 11 digits"`
 - [ ] Unknown kind: `br_cnpj` + `12.345.678/0001-90` → accepted as-is
 - [ ] Empty `tax_id` → always accepted regardless of kind
 
