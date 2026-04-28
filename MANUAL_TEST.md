@@ -454,7 +454,17 @@ invoice early with `billing_reason="threshold"`.
 
 - [ ] Cross a threshold, then immediately run `POST /v1/billing/run` → idempotent skip (the scheduler already finalized the period)
 
-## FLOW B15: Billing alerts (`one_time` / `per_period`)
+### Dashboard UI (Track B, PR #70)
+
+Subscription detail → "Spend Thresholds" card sits between Items and Properties. Backed by `PUT/DELETE /v1/subscriptions/{id}/billing-thresholds`.
+
+- [ ] Subscription detail with no thresholds set → empty-state copy explains the cycle scan is the only invoice-emitting path; "Set thresholds" button on the right
+- [ ] Click Set / Edit → dialog opens with subtotal cap input (major units, e.g. `1000.00` for $1,000), `reset_billing_cycle` checkbox with both modes documented inline, and one row per subscription item with `usage_gte` decimal-string input
+- [ ] Save with subtotal `1000.00` only → backend stores `amount_gte=100000` (cents); card shows `$1,000.00` with currency suffix and reset hint
+- [ ] Save with one per-item `usage_gte=10000.5` → card shows `≥ 10000.5 units` (trailing zeros stripped from the NUMERIC(38,12) wire string per ADR-005)
+- [ ] Edit and clear all fields + save → no-op (validation blocks empty submit)
+- [ ] Click "Clear thresholds" (destructive button) → DELETE fires; card flips back to empty state
+- [ ] On a `canceled` or `archived` subscription → Set/Edit button is hidden (backend rejects there anyway)
 
 Shipped Week 5 (migration 0057). `POST /v1/billing/alerts` with `recurrence`
 controls whether the alert fires once-ever or once-per-billing-period.
@@ -465,6 +475,19 @@ controls whether the alert fires once-ever or once-per-billing-period.
 - [ ] Repeat with `recurrence:"per_period"` → fires once per billing period (resets at period boundary)
 - [ ] Webhook payload includes: `customer_id`, `meter_id`, `threshold`, `current_value`, `period_start`, `period_end`, `recurrence`
 - [ ] Dashboard notification: bell icon shows unread count; clicking the alert navigates to the customer detail page with the meter highlighted
+
+### Dashboard UI (Track B, PR #71)
+
+`/billing-alerts` page in the Config nav (with a `BellRing` icon, between Dunning and the rest). Backed by `POST/GET /v1/billing/alerts` + `POST /v1/billing/alerts/{id}/archive`.
+
+- [ ] Sidebar → Config → Billing alerts → page loads with a card listing every alert and a status filter Select (all / active / triggered / triggered_for_period / archived)
+- [ ] Empty state when no alerts exist → "Create your first alert" CTA opens the new-alert dialog
+- [ ] List columns: title, customer (linked to `/customers/:id`), meter (linked to `/meters/:id` or `"All meters"` when filterless), threshold (`≥ $X.XX` for amount alerts, `≥ N units` for usage alerts), recurrence ("one-time" / "per period"), status badge (active = success-green, triggered = danger-red, triggered_for_period = warning-amber, archived = secondary-grey), last-triggered timestamp
+- [ ] New alert dialog: title input, CustomerCombobox (search by display_name / email / external_id), optional meter Select with explicit "All meters (subtotal across all usage)" default, threshold-kind Select toggles between Amount (major units → ×100 to cents on submit) and Usage (decimal-string round-tripped per ADR-005), recurrence Select with both modes documented inline
+- [ ] Submit amount alert with title + customer + `100.00` + recurrence=one_time → row appears with `≥ $100.00` threshold and `active` status
+- [ ] Submit usage alert with `usage_gte=1000000.5` → row appears with `≥ 1000000.5 units` (trailing zeros stripped)
+- [ ] Form validation blocks: empty title, missing customer, non-positive threshold, both Amount + Usage fields filled simultaneously
+- [ ] Per-row Archive action → AlertDialog confirms ("recreate the alert if you need to track this threshold again") → row's status badge flips to `archived`; status filter "archived" surfaces it, "active" hides it
 
 ## FLOW B16: Plan migration tool (operator UI)
 
@@ -544,6 +567,18 @@ docs for an hour" to a single API call.
 - [ ] "Instantiate" button at panel footer; confirm dialog names the side-effects ("creates 4 products + 12 prices + 3 meters + 1 dunning policy + 1 webhook endpoint")
 - [ ] Post-instantiate: redirected to `/products` with the new product IDs visible
 - [ ] Recipe card on `/recipes` now shows "Instantiated 2026-04-27" with link to detail page
+
+### Uninstall (Track B, PR #73)
+
+Backed by `DELETE /v1/recipes/instances/{id}`. Uninstall is **no-cascade by design** — only the `recipe_instances` row drops; the plans / meters / rating rules / dunning policy / webhook endpoint stay so live subscriptions don't lose billing data.
+
+- [ ] Recipe card flagged "Installed" → open the configure dialog → Uninstall button visible on the footer left (destructive-coloured), separate from the install/preview/cancel actions on the right
+- [ ] Card NOT installed → no Uninstall button; install button enabled
+- [ ] Click Uninstall → AlertDialog with copy explaining: (a) recipe link drops only, (b) plans/meters/etc. stay, (c) re-install will name-collide unless you archived/renamed the originals first
+- [ ] Confirm Uninstall → toast `"Uninstalled <recipe name>"`; recipe card flips back to "not installed" without manual refresh; install button re-enables
+- [ ] After uninstall, verify in `/pricing` and `/meters` that the originally-created plans + meters are still there (no cascade)
+- [ ] Re-install the same recipe without renaming originals → 422 with name-collision error (this is by design)
+- [ ] Re-install after archiving the originals → succeeds with fresh `recipe_instances` row
 
 ---
 
@@ -758,6 +793,21 @@ Open the copied URL in an **incognito window** (no session cookie, no auth):
 - [ ] Redeem for Starter sub → error `"coupon is not valid for this plan"`
 - [ ] Redeem for Enterprise sub → discount applied
 - [ ] Copy code button works; toast "Code copied"
+
+### Edit dialog (Track B, PR #72)
+
+Coupon detail page → Edit button between Duplicate and Archive. Backed by `PATCH /v1/coupons/{id}`. Covers the Stripe-parity mutable subset: name, max_redemptions, expires_at, restrictions (min_amount / first_time_only / max_per_customer). Discount type/value/currency, duration, stackability, and plan/customer scope are write-once — the dialog deliberately doesn't expose them; duplicate-and-archive is the path there.
+
+- [ ] On a non-archived coupon detail → Edit button visible between Duplicate and Archive
+- [ ] On an archived coupon → Edit button hidden, Restore visible (existing behaviour preserved)
+- [ ] Click Edit → dialog opens pre-populated with the coupon's current name / max_redemptions / expires_at / restrictions
+- [ ] Change name + save → header h1 updates without manual refresh; audit log records `coupon.updated` with `changed_fields=[name]`
+- [ ] Clear `expires_at` and save → backend receives `expires_at: null`; header "Expires" tile flips to "No expiry"
+- [ ] Set `expires_at` to a future date and save → "Expires" tile shows the date with `<ExpiryBadge warningDays={7}>` if within the warning window
+- [ ] Clear `max_redemptions` and save → backend receives `max_redemptions: null`; header "Redemptions" tile reads "N redeemed" without the `/cap` suffix
+- [ ] Set `min_amount` only + uncheck first_time + clear max_per_customer → Restrictions card collapses to a single row (Minimum purchase)
+- [ ] Clear all three restriction fields and save → Restrictions card disappears entirely (full-overwrite to `{}` clears the block)
+- [ ] Submit a `min_amount` of `-50` → server-side 422 surfaces inline on the Minimum purchase field, not as a global toast
 
 ---
 
