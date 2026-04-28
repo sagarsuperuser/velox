@@ -6,13 +6,15 @@ import (
 	"strings"
 )
 
-// TaxIDKind is the canonical identifier for a tax-ID scheme. Kept as strings
-// rather than constants so unknown schemes pass through without rejection —
-// validation runs only when we know the format.
+// Tax-ID kind canonical codes. We use Stripe's documented codes as primary
+// (see https://stripe.com/docs/api/customer_tax_ids/object) so operators see
+// the same identifiers in Stripe webhooks, the Stripe Dashboard, and Velox.
+// Velox shorthand (gstin/vat/abn) is still accepted on input — see
+// NormalizeTaxIDType — so existing data continues to work without a backfill.
 const (
-	TaxIDKindGSTIN = "gstin" // India Goods & Services Tax Identification Number
-	TaxIDKindVAT   = "vat"   // European Union VAT identification number (format-only)
-	TaxIDKindABN   = "abn"   // Australian Business Number (format-only)
+	TaxIDKindINGST = "in_gst" // India GSTIN — Stripe canonical
+	TaxIDKindEUVAT = "eu_vat" // EU VAT — Stripe canonical
+	TaxIDKindAUABN = "au_abn" // Australia ABN — Stripe canonical
 )
 
 // gstinPattern matches the Indian GSTIN format:
@@ -36,11 +38,34 @@ var euVATPattern = regexp.MustCompile(`^[A-Z]{2}[A-Z0-9]{2,12}$`)
 // australianABNPattern: 11 digits.
 var australianABNPattern = regexp.MustCompile(`^[0-9]{11}$`)
 
+// NormalizeTaxIDType maps any accepted alias for a tax-ID kind to its
+// canonical Stripe code so storage stays consistent. Unknown kinds pass
+// through untouched (lowercased + trimmed) — Velox doesn't reject
+// jurisdictions it hasn't added explicit format support for. Empty input
+// returns empty.
+func NormalizeTaxIDType(kind string) string {
+	k := strings.ToLower(strings.TrimSpace(kind))
+	switch k {
+	case "gstin", "in_gstin", TaxIDKindINGST:
+		return TaxIDKindINGST
+	case "vat", TaxIDKindEUVAT:
+		return TaxIDKindEUVAT
+	case "abn", TaxIDKindAUABN:
+		return TaxIDKindAUABN
+	}
+	return k
+}
+
 // ValidateTaxID checks that a tax ID conforms to the format for its declared
 // kind. Returns nil for unknown kinds (pass-through) so we don't reject tax
 // IDs from jurisdictions we haven't added explicit support for. An empty
 // value is always valid — callers should check presence separately if the
 // field is required.
+//
+// Both the canonical Stripe code (in_gst, eu_vat, au_abn) and the legacy
+// Velox shorthand (gstin, vat, abn) are accepted as input so previously
+// stored data still validates after the canonical-rename. New writes
+// normalize to the Stripe code via NormalizeTaxIDType before persistence.
 //
 // Kind matching is case-insensitive on the key; the value itself is
 // normalized (uppercased, whitespace trimmed) before format validation.
@@ -50,15 +75,15 @@ func ValidateTaxID(kind, value string) error {
 		return nil
 	}
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case TaxIDKindGSTIN, "in_gst", "in_gstin":
+	case TaxIDKindINGST, "gstin", "in_gstin":
 		if !gstinPattern.MatchString(value) {
 			return fmt.Errorf("invalid GSTIN format: expected 15-char code like 27AAEPM1234C1Z5")
 		}
-	case TaxIDKindVAT, "eu_vat":
+	case TaxIDKindEUVAT, "vat":
 		if !euVATPattern.MatchString(value) {
 			return fmt.Errorf("invalid EU VAT format: expected 2-letter country prefix + alphanumerics")
 		}
-	case TaxIDKindABN, "au_abn":
+	case TaxIDKindAUABN, "abn":
 		if !australianABNPattern.MatchString(value) {
 			return fmt.Errorf("invalid ABN format: expected 11 digits")
 		}
