@@ -28,6 +28,109 @@ type CompanyInfo struct {
 	// to the neutral palette — the exact palette existing PDFs used before
 	// this field was introduced.
 	BrandColor string
+	// TaxID is the SUPPLIER's tax identifier printed in the invoice header
+	// (GSTIN, EU VAT, ABN, etc.). Mandatory on Indian B2B invoices under
+	// Rule 46 of the CGST Rules; widely expected on EU/AU invoices too.
+	// Empty = no header line rendered (legacy behaviour preserved).
+	TaxID string
+	// TaxIDType is the canonical kind of TaxID: "gstin" / "in_gst" /
+	// "in_gstin" for India, "vat" / "eu_vat" for EU, "abn" / "au_abn" for
+	// Australia. Drives both the header label ("GSTIN: ..." vs "VAT: ...")
+	// and the reverse-charge legend wording. Unknown/empty values fall back
+	// to a generic "Tax ID:" label.
+	TaxIDType string
+}
+
+// SupplierTaxIDTypeFromCountry infers a TaxIDType from the supplier's
+// registered country when settings doesn't store the type explicitly. Used
+// by handlers that build CompanyInfo from TenantSettings (which currently
+// carries TaxID without a separate kind column). Returns the empty string
+// for countries we don't have an opinion on — the PDF then prints a
+// generic "Tax ID:" label rather than misrepresenting the scheme.
+//
+// Mapping is intentionally narrow: only India, Australia, and the EU/UK
+// have unambiguous single-scheme codes. Multi-scheme countries (US: EIN
+// vs SSN vs state IDs) require an explicit type from the operator and are
+// left unmapped here.
+func SupplierTaxIDTypeFromCountry(country string) string {
+	c := strings.ToUpper(strings.TrimSpace(country))
+	switch c {
+	case "IN", "INDIA":
+		return "gstin"
+	case "AU", "AUSTRALIA":
+		return "abn"
+	case "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+		"DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+		"PL", "PT", "RO", "SK", "SI", "ES", "SE", "GB", "UK":
+		return "vat"
+	default:
+		return ""
+	}
+}
+
+// supplierTaxIDLabel maps a TaxIDType to the in-PDF label prefix. Unknown or
+// empty kinds fall back to a generic "Tax ID" so the value still appears on
+// the invoice without misrepresenting the scheme.
+func supplierTaxIDLabel(taxIDType string) string {
+	switch strings.ToLower(strings.TrimSpace(taxIDType)) {
+	case "gstin", "in_gst", "in_gstin":
+		return "GSTIN"
+	case "vat", "eu_vat":
+		return "VAT"
+	case "abn", "au_abn":
+		return "ABN"
+	default:
+		return "Tax ID"
+	}
+}
+
+// reverseChargeLegend resolves the statutory disclosure text for a
+// reverse-charge invoice. India GST (Rule 46(p), CGST §9(3)/9(4)) and EU
+// VAT (Art. 196 of the VAT Directive) carry materially different mandated
+// wording, so the legend branches on jurisdiction. Pure helper —
+// unit-testable without rendering a PDF.
+func reverseChargeLegend(inv domain.Invoice, supplier CompanyInfo, billTo BillToInfo, lineItems []domain.InvoiceLineItem) string {
+	indian := isIndianContext(supplier, billTo.Country) ||
+		lineItemsAreIndian(lineItems) ||
+		strings.EqualFold(strings.TrimSpace(inv.TaxCountry), "IN")
+	if indian {
+		return "Tax payable on reverse charge basis: YES — recipient is liable to pay GST under section 9(3)/9(4) of the CGST Act."
+	}
+	return "Reverse charge — VAT to be accounted for by the recipient."
+}
+
+// lineItemsAreIndian reports whether any line item carries an Indian
+// tax jurisdiction code. The tax engine stamps line-item TaxJurisdiction
+// like "IN-MH" (state-coded) or "IN" — used as a fallback signal when
+// neither supplier nor billing-country tells us the legend should be
+// India-flavoured.
+func lineItemsAreIndian(lineItems []domain.InvoiceLineItem) bool {
+	for _, li := range lineItems {
+		j := strings.ToUpper(strings.TrimSpace(li.TaxJurisdiction))
+		if j == "IN" || strings.HasPrefix(j, "IN-") {
+			return true
+		}
+	}
+	return false
+}
+
+// isIndianContext returns true when the invoice is plausibly an Indian tax
+// invoice — supplier registered in India, supplier carrying a GSTIN, or
+// recipient billed to India. Drives the reverse-charge legend wording so
+// Indian invoices use GST terminology and EU/other invoices keep the VAT
+// Directive language they had before.
+func isIndianContext(company CompanyInfo, customerCountry string) bool {
+	if strings.EqualFold(company.Country, "IN") || strings.EqualFold(company.Country, "India") {
+		return true
+	}
+	t := strings.ToLower(strings.TrimSpace(company.TaxIDType))
+	if t == "gstin" || t == "in_gst" || t == "in_gstin" {
+		return true
+	}
+	if strings.EqualFold(customerCountry, "IN") || strings.EqualFold(customerCountry, "India") {
+		return true
+	}
+	return false
 }
 
 // parseBrandColor converts a #rrggbb string to RGB. Returns ok=false for
@@ -213,6 +316,17 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		setFont(false, 8)
 		setColor(120, 120, 120)
 		textAt(margin, y, companyContact)
+		y += 11
+	}
+
+	// Supplier tax ID line. Mandatory header field on Indian B2B invoices
+	// (Rule 46, CGST Rules) and widely expected on EU/AU invoices too.
+	// Rendered in the same muted style as contact info so it reads as
+	// header metadata, not a primary visual element.
+	if len(company) > 0 && strings.TrimSpace(company[0].TaxID) != "" {
+		setFont(false, 8)
+		setColor(120, 120, 120)
+		textAt(margin, y, supplierTaxIDLabel(company[0].TaxIDType)+": "+company[0].TaxID)
 		y += 11
 	}
 
@@ -508,7 +622,11 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 		setFont(true, 8)
 		setColor(80, 80, 80)
 		if inv.TaxReverseCharge {
-			textAt(margin, y, "Reverse charge — VAT to be accounted for by the recipient.")
+			var supplier CompanyInfo
+			if len(company) > 0 {
+				supplier = company[0]
+			}
+			textAt(margin, y, reverseChargeLegend(inv, supplier, billTo, lineItems))
 			y += 12
 		}
 		if inv.TaxExemptReason != "" {
