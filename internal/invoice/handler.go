@@ -553,6 +553,8 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 				PostalCode:   ts.CompanyPostalCode,
 				Country:      ts.CompanyCountry,
 				BrandColor:   ts.BrandColor,
+				TaxID:        ts.TaxID,
+				TaxIDType:    SupplierTaxIDTypeFromCountry(ts.CompanyCountry),
 			}
 		}
 	}
@@ -950,6 +952,8 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 				PostalCode:   ts.CompanyPostalCode,
 				Country:      ts.CompanyCountry,
 				BrandColor:   ts.BrandColor,
+				TaxID:        ts.TaxID,
+				TaxIDType:    SupplierTaxIDTypeFromCountry(ts.CompanyCountry),
 			}
 		}
 	}

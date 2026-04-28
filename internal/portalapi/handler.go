@@ -253,6 +253,8 @@ func (h *Handler) downloadInvoicePDF(w http.ResponseWriter, r *http.Request) {
 				PostalCode:   ts.CompanyPostalCode,
 				Country:      ts.CompanyCountry,
 				BrandColor:   ts.BrandColor,
+				TaxID:        ts.TaxID,
+				TaxIDType:    invoice.SupplierTaxIDTypeFromCountry(ts.CompanyCountry),
 			}
 		}
 	}

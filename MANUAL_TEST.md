@@ -399,6 +399,9 @@ Stripe-Tax-enabled path.
 - [ ] Customer with no country: normal 18% applies (can't prove export)
 - [ ] Export customer with `tax_exempt = true`: tax = $0, `tax_name = ""` (exempt overrides export annotation)
 - [ ] Clear `tax_home_country`: US customer now charged 18% (no home country → can't zero-rate)
+- [ ] India B2B reverse-charge invoice PDF shows supplier GSTIN in header (e.g. `GSTIN: 27AAEPM1234C1Z5`) under the company contact line
+- [ ] India reverse-charge legend reads "Tax payable on reverse charge basis: YES" (not the EU "VAT to be accounted for" wording)
+- [ ] EU reverse-charge invoice PDF retains EU wording ("Reverse charge — VAT to be accounted for by the recipient.")
 
 ## FLOW B12: Subscription activity timeline (T0-18)
 
