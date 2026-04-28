@@ -57,9 +57,9 @@ const systemNav = [
 ]
 
 function NavLink({
-  to, icon: Icon, label, pathname, onClick, count,
+  to, icon: Icon, label, pathname, onClick, count, badgeTone = 'info',
 }: {
-  to: string; icon: LucideIcon; label: string; pathname: string; onClick?: () => void; count?: number
+  to: string; icon: LucideIcon; label: string; pathname: string; onClick?: () => void; count?: number; badgeTone?: 'info' | 'critical'
 }) {
   const active = pathname === to
   return (
@@ -89,7 +89,12 @@ function NavLink({
               {label}
             </div>
             {count != null && count > 0 && (
-              <span className="text-[10px] font-medium bg-destructive text-destructive-foreground rounded-full px-1.5 py-0.5 min-w-[18px] text-center">
+              <span className={cn(
+                'text-[10px] font-medium rounded-full px-1.5 py-0.5 min-w-[18px] text-center',
+                badgeTone === 'critical'
+                  ? 'bg-destructive text-destructive-foreground'
+                  : 'bg-muted text-muted-foreground border border-border',
+              )}>
                 {count}
               </span>
             )}
@@ -254,14 +259,14 @@ export function Layout({ children }: { children: ReactNode }) {
           Billing
         </p>
         {billingNav.map(item => (
-          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} count={navCounts[item.to]} />
+          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} count={navCounts[item.to]} badgeTone={item.to === '/dunning' ? 'critical' : 'info'} />
         ))}
 
         <p className="text-xs uppercase text-muted-foreground tracking-wider px-3 pt-4 pb-1">
           Configuration
         </p>
         {configNav.map(item => (
-          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} count={navCounts[item.to]} />
+          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} count={navCounts[item.to]} badgeTone={item.to === '/dunning' ? 'critical' : 'info'} />
         ))}
 
         <Separator className="my-2" />
@@ -270,7 +275,7 @@ export function Layout({ children }: { children: ReactNode }) {
           System
         </p>
         {systemNav.map(item => (
-          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} count={navCounts[item.to]} />
+          <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} count={navCounts[item.to]} badgeTone={item.to === '/dunning' ? 'critical' : 'info'} />
         ))}
       </nav>
 
