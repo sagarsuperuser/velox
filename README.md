@@ -6,6 +6,8 @@
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
+> **Status:** pre-1.0, in active development. Breaking changes land on `0.MINOR` per [`CHANGELOG.md`](CHANGELOG.md). First design-partner production cutover is [in flight](#roadmap).
+
 Velox owns the layer above PaymentIntent: pricing, subscriptions, multi-dimensional usage metering, invoicing, dunning, and credits. Stripe still does cards under the hood. The 0.5% Stripe Billing fee disappears, and customer billing data never leaves your infrastructure.
 
 Built for two market truths Stripe Billing structurally cannot serve:
@@ -72,6 +74,34 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 
 ---
 
+## How it fits
+
+|                          | **Velox** | Stripe Billing | Lago        | Orb / Metronome   | OpenMeter        |
+|--------------------------|-----------|----------------|-------------|-------------------|------------------|
+| OSS / self-host          | ✅        | ❌             | ✅          | ❌                | ✅               |
+| AI-native pricing        | ✅        | ❌             | ⚠️ generic  | ⚠️ closed source  | ⚠️ metering only |
+| Full billing engine      | ✅        | ✅             | ✅          | ✅                | ❌               |
+| Stripe-grade primitives  | ✅        | ✅             | ⚠️          | ✅                | ❌               |
+| Pricing                  | OSS       | 0.5% of GMV    | OSS / cloud | $30K+/yr          | OSS              |
+| Data sovereignty         | ✅        | ❌             | ⚠️          | ❌                | ✅ (no billing)  |
+
+Velox lives in the empty cell: **OSS + self-host + AI-native + full billing engine.** Decision tree: pick **Stripe Billing** for vanilla per-seat SaaS; pick **Lago** for generic OSS metering without an AI-shaped wedge; pick **Orb/Metronome** if you can't self-host and budget for usage-based contracts; pick **Velox** when you need all four.
+
+---
+
+## What Velox is **not**
+
+Stating these loudly so the wrong customers self-select out:
+
+- **Not for vanilla card-first SaaS** with simple per-seat pricing — Stripe Billing is fine for them.
+- **Not multi-PSP yet** — Stripe is the only payment processor. Razorpay/Adyen come when a paying tenant asks.
+- **Not for marketplaces or Stripe Connect** — Velox bills the tenant's customers directly; it doesn't split payouts across sub-merchants. (Velox itself is multi-tenant via RLS — many billing tenants per deployment — but each tenant collects on its own behalf, not on behalf of others.)
+- **No Revenue Recognition / Sigma** — bring your own warehouse + dbt.
+- **No Quotes or Subscription Schedules** — sales-led contract billing should pick Recurly or Maxio.
+- **No 50+ payment-method types** — cards via Stripe + send-invoice. ACH/SEPA expand from there.
+
+---
+
 ## Quick start
 
 ```bash
@@ -119,34 +149,6 @@ The full operator playbook — pre-migration checklist, rehearsal run,
 T-14 → T+14 parallel-run cutover, reconciliation toolkit, webhook
 redirection, rollback procedure, and known limitations — lives in
 [`docs/migration-from-stripe.md`](docs/migration-from-stripe.md).
-
----
-
-## What Velox is **not**
-
-Stating these loudly so the wrong customers self-select out:
-
-- **Not for vanilla card-first SaaS** with simple per-seat pricing — Stripe Billing is fine for them.
-- **Not multi-PSP yet** — Stripe is the only payment processor. Razorpay/Adyen come when a paying tenant asks.
-- **Not for marketplaces or Stripe Connect** — Velox bills the tenant's customers directly; it doesn't split payouts across sub-merchants. (Velox itself is multi-tenant via RLS — many billing tenants per deployment — but each tenant collects on its own behalf, not on behalf of others.)
-- **No Revenue Recognition / Sigma** — bring your own warehouse + dbt.
-- **No Quotes or Subscription Schedules** — sales-led contract billing should pick Recurly or Maxio.
-- **No 50+ payment-method types** — cards via Stripe + send-invoice. ACH/SEPA expand from there.
-
----
-
-## How it fits
-
-|                          | **Velox** | Stripe Billing | Lago        | Orb / Metronome   | OpenMeter        |
-|--------------------------|-----------|----------------|-------------|-------------------|------------------|
-| OSS / self-host          | ✅        | ❌             | ✅          | ❌                | ✅               |
-| AI-native pricing        | ✅        | ❌             | ⚠️ generic  | ⚠️ closed source  | ⚠️ metering only |
-| Full billing engine      | ✅        | ✅             | ✅          | ✅                | ❌               |
-| Stripe-grade primitives  | ✅        | ✅             | ⚠️          | ✅                | ❌               |
-| Pricing                  | OSS       | 0.5% of GMV    | OSS / cloud | $30K+/yr          | OSS              |
-| Data sovereignty         | ✅        | ❌             | ⚠️          | ❌                | ✅ (no billing)  |
-
-Velox lives in the empty cell: **OSS + self-host + AI-native + full billing engine.**
 
 ---
 
