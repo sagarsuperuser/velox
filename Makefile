@@ -1,4 +1,4 @@
-.PHONY: build run test lint migrate dev clean cli
+.PHONY: build run test lint migrate dev clean cli gen gen-go gen-ts
 
 # Build the velox binary
 build:
@@ -67,6 +67,29 @@ demo:
 # Integration tests (requires running postgres)
 test-integration:
 	go test -p 1 ./... -v -count=1 -short=false
+
+# Code generation from the OpenAPI spec at api/openapi.yaml — see
+# docs/dev/openapi-workflow.md. CI runs `make gen` followed by
+# `git diff --exit-code` so any drift between the spec and the
+# committed generated artifacts fails the build (same pattern Stripe
+# uses internally with its openapi repo). Run locally after editing
+# the spec; commit the regenerated files alongside the spec change.
+gen: gen-go gen-ts
+
+# Generate Go server interface + DTO types from api/openapi.yaml.
+# oapi-codegen is pinned in tools/tools.go and resolved through
+# go.mod, so the version is reproducible and bumps land like any
+# other dep change.
+gen-go:
+	go run -tags tools github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen \
+		--config api/cfg.yaml api/openapi.yaml
+
+# Generate TypeScript types (openapi-typescript) and typed
+# react-query hooks (orval) into web-v2/src/lib/{api.gen.ts,
+# queries.gen.ts}. Also refreshes web-v2/public/openapi.yaml so the
+# /docs/api Scalar viewer serves the canonical spec.
+gen-ts:
+	cd web-v2 && npm run gen
 
 # Frontend
 web-install:

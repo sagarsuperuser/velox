@@ -4,10 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "npm run copy-spec",
     "dev": "vite",
+    "prebuild": "npm run copy-spec",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "copy-spec": "node scripts/copy-openapi-spec.mjs",
+    "gen": "npm run copy-spec && openapi-typescript ./public/openapi.yaml -o ./src/lib/api.gen.ts && orval --config ./orval.config.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",
@@ -28,6 +32,7 @@
     "react-day-picker": "^9.14.0",
     "react-dom": "^19.2.4",
     "react-hook-form": "^7.72.1",
+    "react-is": "^19.2.5",
     "react-router-dom": "^7.14.1",
     "recharts": "^3.8.1",
     "shadcn": "^4.3.0",
@@ -43,10 +48,13 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "ajv": "^8.20.0",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "openapi-typescript": "7.13.0",
+    "orval": "8.9.0",
     "tailwindcss": "^4.2.2",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.0",

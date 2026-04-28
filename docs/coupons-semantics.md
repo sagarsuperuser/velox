@@ -5,7 +5,7 @@ reconciling promo spend, and operators answering "why did the discount do
 that?" questions.
 
 This doc covers the three interactions that catch teams off guard most
-often. API shape lives in `docs/openapi.yaml`; this doc answers the "why"
+often. API shape lives in `api/openapi.yaml`; this doc answers the "why"
 and the "what happens at the edges."
 
 ## 1. Refunds and credit notes

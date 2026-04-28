@@ -181,25 +181,162 @@ components:
           type: string
           format: date-time
 
+    InvoiceStatus:
+      type: string
+      enum: [draft, finalized, paid, voided]
+      description: Lifecycle state of the invoice.
+
+    InvoicePaymentStatus:
+      type: string
+      enum: [pending, processing, succeeded, failed, unknown]
+      description: |
+        Payment-attempt status. `unknown` marks a Stripe charge attempt that
+        returned an ambiguous error (5xx, timeout, connection reset) where
+        we cannot tell whether Stripe processed the charge — a reconciler
+        resolves these by querying Stripe after a cool-off window.
+
+    InvoiceTaxStatus:
+      type: string
+      enum: [ok, pending, failed]
+      description: |
+        Whether tax has been successfully calculated. Happy path is `ok`.
+        `pending` means a transient calculation failure is awaiting retry;
+        `failed` means retries are exhausted (operator resolves manually).
+        Pending/failed invoices are blocked from finalize so we never send
+        a wrong tax amount.
+
+    InvoiceBillingReason:
+      type: string
+      enum: [subscription_cycle, subscription_create, manual, threshold]
+      description: |
+        Mirrors Stripe's `invoice.billing_reason`. Classifies the trigger
+        that produced the invoice. Stamped at create time and never mutated.
+
+    InvoiceLineType:
+      type: string
+      enum: [base_fee, usage, add_on, discount, tax]
+
+    ItemChangeType:
+      type: string
+      enum: [plan, quantity, add, remove]
+      description: |
+        Classifies per-item proration artifacts so the dedup index can
+        distinguish a plan-change and a quantity-change that happen to
+        share the same `(subscription, item, timestamp)`.
+
     Invoice:
       type: object
+      description: |
+        A Velox invoice. Returned from create, finalize, void, list, get,
+        apply-coupon, rotate-public-token, and collect-payment endpoints.
+      required:
+        - id
+        - customer_id
+        - subscription_id
+        - invoice_number
+        - status
+        - payment_status
+        - currency
+        - subtotal_cents
+        - discount_cents
+        - tax_amount_cents
+        - tax_rate_bp
+        - total_amount_cents
+        - amount_due_cents
+        - amount_paid_cents
+        - credits_applied_cents
+        - billing_period_start
+        - billing_period_end
+        - payment_overdue
+        - net_payment_term_days
+        - created_at
+        - updated_at
       properties:
         id:
           type: string
+          example: vlx_inv_42014438d82ddf33
+        tenant_id:
+          type: string
+          description: |
+            Owning tenant. Returned for diagnostic clarity but redundant
+            with the API key (which already determines the tenant).
+            Omitted when empty.
+        customer_id:
+          type: string
+        subscription_id:
+          type: string
+          description: Empty for one-off invoices not tied to a subscription.
         invoice_number:
           type: string
+          description: Empty until the invoice is finalized.
         status:
-          type: string
-          enum: [draft, finalized, paid, voided]
+          $ref: "#/components/schemas/InvoiceStatus"
         payment_status:
-          type: string
-          enum: [pending, processing, succeeded, failed]
+          $ref: "#/components/schemas/InvoicePaymentStatus"
         currency:
           type: string
+          example: USD
         subtotal_cents:
           type: integer
           format: int64
+        discount_cents:
+          type: integer
+          format: int64
+        tax_amount_cents:
+          type: integer
+          format: int64
+        tax_rate_bp:
+          type: integer
+          format: int64
+          description: Tax rate in basis points (1850 = 18.50%).
+        tax_name:
+          type: string
+        tax_country:
+          type: string
+        tax_id:
+          type: string
+        tax_provider:
+          type: string
+          description: |
+            Durable audit snapshot of the upstream tax engine that ran the
+            calculation (e.g. `stripe`, `none`, `manual`).
+        tax_calculation_id:
+          type: string
+          description: |
+            Provider-side calculation reference captured at build time.
+            For Stripe Tax this expires after 24 h; persisted so finalized
+            invoices remain reconstructable past expiry.
+        tax_transaction_id:
+          type: string
+          description: |
+            Provider-side committed transaction reference, captured at
+            finalize. For Stripe Tax this is `tx_xxx` and is the handle
+            the provider needs for a later reversal when a credit note is
+            issued.
+        tax_reverse_charge:
+          type: boolean
+        tax_exempt_reason:
+          type: string
+        tax_status:
+          $ref: "#/components/schemas/InvoiceTaxStatus"
+        tax_deferred_at:
+          type: string
+          format: date-time
+          nullable: true
+        tax_retry_count:
+          type: integer
+        tax_pending_reason:
+          type: string
         total_amount_cents:
+          type: integer
+          format: int64
+        amount_due_cents:
+          type: integer
+          format: int64
+        amount_paid_cents:
+          type: integer
+          format: int64
+        credits_applied_cents:
           type: integer
           format: int64
         billing_period_start:
@@ -208,6 +345,165 @@ components:
         billing_period_end:
           type: string
           format: date-time
+        issued_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when the invoice transitions out of draft.
+        due_at:
+          type: string
+          format: date-time
+          nullable: true
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        voided_at:
+          type: string
+          format: date-time
+          nullable: true
+        stripe_payment_intent_id:
+          type: string
+        last_payment_error:
+          type: string
+        payment_overdue:
+          type: boolean
+        auto_charge_pending:
+          type: boolean
+        public_token:
+          type: string
+          description: |
+            Hosted-invoice-URL credential (Stripe-parity
+            `hosted_invoice_url`). Generated at finalize; drafts have an
+            empty token. Rotatable via `POST
+            /v1/invoices/{id}/rotate-public-token`.
+        net_payment_term_days:
+          type: integer
+        memo:
+          type: string
+        footer:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        source_plan_changed_at:
+          type: string
+          format: date-time
+          nullable: true
+        source_subscription_item_id:
+          type: string
+        source_change_type:
+          $ref: "#/components/schemas/ItemChangeType"
+        billing_reason:
+          $ref: "#/components/schemas/InvoiceBillingReason"
+        stripe_invoice_id:
+          type: string
+          description: |
+            Source Stripe invoice id (`in_xxx`) populated by `velox-import`
+            for invoices imported from a Stripe account. Empty for
+            Velox-native invoices.
+
+    InvoiceLineItem:
+      type: object
+      description: A single line on an invoice.
+      required:
+        - id
+        - invoice_id
+        - line_type
+        - description
+        - quantity
+        - unit_amount_cents
+        - amount_cents
+        - tax_rate_bp
+        - tax_amount_cents
+        - total_amount_cents
+        - currency
+        - created_at
+      properties:
+        id:
+          type: string
+        invoice_id:
+          type: string
+        tenant_id:
+          type: string
+          description: Owning tenant. Omitted when empty.
+        line_type:
+          $ref: "#/components/schemas/InvoiceLineType"
+        meter_id:
+          type: string
+        description:
+          type: string
+        quantity:
+          type: integer
+          format: int64
+        unit_amount_cents:
+          type: integer
+          format: int64
+        amount_cents:
+          type: integer
+          format: int64
+        tax_rate_bp:
+          type: integer
+          format: int64
+        tax_amount_cents:
+          type: integer
+          format: int64
+        tax_jurisdiction:
+          type: string
+        tax_code:
+          type: string
+        tax_reason:
+          type: string
+          description: |
+            Stripe-canonical structured `taxability_reason`
+            (`standard_rated`, `reverse_charge`, `not_collecting`,
+            `customer_exempt`, `product_exempt`, `zero_rated`, etc.).
+            Empty for non-Stripe providers.
+        total_amount_cents:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        pricing_mode:
+          type: string
+        rating_rule_version_id:
+          type: string
+        billing_period_start:
+          type: string
+          format: date-time
+          nullable: true
+        billing_period_end:
+          type: string
+          format: date-time
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    InvoiceWithLineItems:
+      type: object
+      description: |
+        Response shape for `GET /v1/invoices/{id}`. The handler returns the
+        invoice and its line items as separate top-level keys (rather than
+        nesting `line_items` inside the invoice) so the client can render
+        the two arrays independently.
+      required: [invoice, line_items]
+      properties:
+        invoice:
+          $ref: "#/components/schemas/Invoice"
+        line_items:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvoiceLineItem"
 
     CreditBalance:
       type: object
@@ -553,6 +849,7 @@ paths:
     get:
       tags: [Invoices]
       summary: Get invoice with line items
+      operationId: getInvoice
       parameters:
         - name: id
           in: path
@@ -561,7 +858,17 @@ paths:
             type: string
       responses:
         "200":
-          description: Invoice detail
+          description: Invoice with its line items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvoiceWithLineItems"
+        "404":
+          description: Invoice not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/invoices/{id}/pdf:
     get:
