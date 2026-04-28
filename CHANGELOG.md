@@ -94,6 +94,29 @@ A second surface mirrors this file:
 
 ### Added
 
+- **Persist Stripe `taxability_reason` per invoice line and surface on
+  the dashboard + PDF.** Stripe Tax returns a structured
+  `taxability_reason` on every per-line `tax_breakdown` entry (`standard_rated`,
+  `reverse_charge`, `not_collecting`, `product_exempt`, `customer_exempt`,
+  `excluded_territory`, `jurisdiction_unsupported`, `not_subject_to_tax`,
+  `reduced_rated`, `zero_rated`). Velox previously dropped the per-line
+  value at the mapper layer, leaving two zero-tax invoices indistinguishable
+  on disclosure even though they need different legends — `reverse_charge`
+  needs the EU Art. 196 disclosure, `not_collecting` (merchant has no
+  registration) needs none, and `customer_exempt` needs the
+  exemption-certificate disclosure. Migration `0065` adds an opaque
+  `invoice_line_items.tax_reason TEXT NOT NULL DEFAULT ''` column; the
+  Stripe mapper, postgres store (5 SQL touch-points), and billing-engine
+  per-line apply loop all round-trip the value end-to-end. The dashboard
+  invoice-detail page renders a small outline badge under each non-trivial
+  line item (`standard_rated` and empty are deliberately not badged — the
+  Tax column already conveys the default-path case). The PDF renderer
+  appends a new exemption legend below the existing reverse-charge legend
+  when at least one line is `customer_exempt` or `product_exempt`; the
+  reverse-charge legend itself still derives from the calc-level
+  `inv.TaxReverseCharge` so issue #9's India/EU split is preserved
+  untouched. Closes #4.
+
 - **Recipe uninstall action on the Pricing recipes page.** Recipe cards
   flagged "Installed" now expose an Uninstall button in the configure
   dialog footer (left side, destructive-coloured, separate from the

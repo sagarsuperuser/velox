@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Invoice, type LineItem, type TenantSettings, type DunningRun, type TimelineEvent } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
+import { taxReasonLabel } from '@/lib/taxReasons'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
@@ -483,17 +484,31 @@ export default function InvoiceDetailPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {lineItems.map(item => (
-                  <TableRow key={item.id} className={cn(invoice.status === 'voided' && 'opacity-50')}>
-                    <TableCell>
-                      <span className="text-sm text-foreground">{item.description}</span>
-                      <span className="ml-2 text-xs text-muted-foreground">({formatLineType(item.line_type)})</span>
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums text-sm">{item.quantity.toLocaleString()}</TableCell>
-                    <TableCell className="text-right font-mono tabular-nums text-sm">{formatCents(item.unit_amount_cents, invoice.currency)}</TableCell>
-                    <TableCell className="text-right font-mono tabular-nums text-sm font-medium">{formatCents(item.amount_cents, invoice.currency)}</TableCell>
-                  </TableRow>
-                ))}
+                {lineItems.map(item => {
+                  // Surface the Stripe-canonical tax reason as a small badge
+                  // when it's non-trivial (issue #4). standard_rated and
+                  // empty reasons would just be noise — the Tax column
+                  // already conveys the default-path case.
+                  const reasonLabel = taxReasonLabel(item.tax_reason)
+                  return (
+                    <TableRow key={item.id} className={cn(invoice.status === 'voided' && 'opacity-50')}>
+                      <TableCell>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm text-foreground">{item.description}</span>
+                          <span className="text-xs text-muted-foreground">({formatLineType(item.line_type)})</span>
+                          {reasonLabel && (
+                            <Badge variant="outline" className="text-[10px] font-normal px-1.5 py-0 h-4">
+                              {reasonLabel}
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right font-mono tabular-nums text-sm">{item.quantity.toLocaleString()}</TableCell>
+                      <TableCell className="text-right font-mono tabular-nums text-sm">{formatCents(item.unit_amount_cents, invoice.currency)}</TableCell>
+                      <TableCell className="text-right font-mono tabular-nums text-sm font-medium">{formatCents(item.amount_cents, invoice.currency)}</TableCell>
+                    </TableRow>
+                  )
+                })}
               </TableBody>
             </Table>
           </div>

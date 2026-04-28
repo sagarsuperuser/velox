@@ -92,6 +92,61 @@ func TestAddLineItemAtomic_ConcurrentAdds(t *testing.T) {
 	}
 }
 
+// TestPostgresLineItem_TaxabilityReasonRoundTrip is the regression test for
+// issue #4 at the persistence boundary: the per-line `tax_reason` column
+// stores Stripe's structured taxability_reason verbatim, and ListLineItems
+// reads it back into the domain struct without normalization. The end-to-end
+// chain is tested separately in the engine; this test pins the SQL itself.
+func TestPostgresLineItem_TaxabilityReasonRoundTrip(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := context.Background()
+
+	store := invoice.NewPostgresStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "TaxReason RoundTrip")
+	invID := seedDraftInvoice(t, db, tenantID)
+
+	// Three lines, each carrying a different Stripe-canonical reason to
+	// prove the column doesn't collapse them onto a single value, and to
+	// cover the cases that drive different PDF legends (customer_exempt
+	// triggers the exemption legend; standard_rated and not_collecting
+	// don't, which the dashboard relies on).
+	want := []string{"customer_exempt", "standard_rated", "not_collecting"}
+	for _, reason := range want {
+		_, err := store.CreateLineItem(ctx, tenantID, domain.InvoiceLineItem{
+			InvoiceID:        invID,
+			LineType:         domain.LineTypeBaseFee,
+			Description:      "line " + reason,
+			Quantity:         1,
+			UnitAmountCents:  100,
+			AmountCents:      100,
+			TotalAmountCents: 100,
+			Currency:         "USD",
+			TaxabilityReason: reason,
+		})
+		if err != nil {
+			t.Fatalf("create line item with reason %q: %v", reason, err)
+		}
+	}
+
+	got, err := store.ListLineItems(ctx, tenantID, invID)
+	if err != nil {
+		t.Fatalf("list line items: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ListLineItems returned %d items, want %d", len(got), len(want))
+	}
+	gotReasons := make([]string, len(got))
+	for i, it := range got {
+		gotReasons[i] = it.TaxabilityReason
+	}
+	// CreateLineItem orders by created_at ASC, so we expect the same order.
+	for i, w := range want {
+		if gotReasons[i] != w {
+			t.Errorf("line %d TaxabilityReason = %q, want %q (column must round-trip the Stripe-canonical reason)", i, gotReasons[i], w)
+		}
+	}
+}
+
 // TestAddLineItemAtomic_RejectsNonDraft ensures the status check happens
 // inside the locking tx: callers cannot add a line item to a finalized
 // or voided invoice, even if they race a concurrent Finalize call.

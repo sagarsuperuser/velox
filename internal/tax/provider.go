@@ -225,6 +225,14 @@ type ResultLine struct {
 	TaxName        string
 	Jurisdiction   string // e.g. "US-CA", "IN-MH"
 	TaxCode        string
+	// TaxabilityReason is the Stripe-canonical reason this line was taxed
+	// the way it was (e.g. "standard_rated", "reverse_charge",
+	// "not_collecting", "customer_exempt", "product_exempt", "zero_rated").
+	// Empty for non-Stripe providers — none/manual don't surface a reason.
+	// Treated as an opaque string at the persistence boundary; the PDF and
+	// dashboard map known values to human-readable legends but tolerate
+	// unknown ones for forward compatibility with future Stripe additions.
+	TaxabilityReason string
 }
 
 // Breakdown is one jurisdiction's contribution to the total tax. For

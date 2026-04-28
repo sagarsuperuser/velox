@@ -400,6 +400,14 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 						lines[idx].Jurisdiction = bd.Jurisdiction.Country
 					}
 				}
+				// Persist Stripe's structured taxability_reason so the PDF and
+				// dashboard can distinguish two zero-tax outcomes that read
+				// identically on the totals row but require different legends:
+				// reverse_charge needs the EU Art. 196 disclosure, while
+				// not_collecting (merchant has no registration in this
+				// jurisdiction) needs no legend at all. Treated as an opaque
+				// string — Stripe may add new reasons over time.
+				lines[idx].TaxabilityReason = string(bd.TaxabilityReason)
 			}
 			if li := req.LineItems[idx]; li.TaxCode != "" {
 				lines[idx].TaxCode = li.TaxCode

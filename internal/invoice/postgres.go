@@ -402,25 +402,25 @@ func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, ite
 			description, quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
 			total_amount_cents, currency, pricing_mode, rating_rule_version_id,
 			billing_period_start, billing_period_end, metadata, created_at,
-			tax_jurisdiction, tax_code)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			tax_jurisdiction, tax_code, tax_reason)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		RETURNING id, invoice_id, tenant_id, line_type, COALESCE(meter_id,''), description,
 			quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
 			COALESCE(rating_rule_version_id,''), billing_period_start, billing_period_end,
-			metadata, created_at, tax_jurisdiction, tax_code
+			metadata, created_at, tax_jurisdiction, tax_code, tax_reason
 	`, id, item.InvoiceID, tenantID, item.LineType, postgres.NullableString(item.MeterID),
 		item.Description, item.Quantity, item.UnitAmountCents, item.AmountCents,
 		item.TaxRateBP, item.TaxAmountCents, item.TotalAmountCents, item.Currency,
 		postgres.NullableString(item.PricingMode), postgres.NullableString(item.RatingRuleVersionID),
 		postgres.NullableTime(item.BillingPeriodStart), postgres.NullableTime(item.BillingPeriodEnd),
-		metaJSON, now, item.TaxJurisdiction, item.TaxCode,
+		metaJSON, now, item.TaxJurisdiction, item.TaxCode, item.TaxabilityReason,
 	).Scan(&item.ID, &item.InvoiceID, &item.TenantID, &item.LineType, &item.MeterID,
 		&item.Description, &item.Quantity, &item.UnitAmountCents, &item.AmountCents,
 		&item.TaxRateBP, &item.TaxAmountCents, &item.TotalAmountCents, &item.Currency,
 		&item.PricingMode, &item.RatingRuleVersionID,
 		&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt,
-		&item.TaxJurisdiction, &item.TaxCode)
+		&item.TaxJurisdiction, &item.TaxCode, &item.TaxabilityReason)
 
 	if err != nil {
 		return domain.InvoiceLineItem{}, err
@@ -444,7 +444,7 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 			quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
 			COALESCE(rating_rule_version_id,''), billing_period_start, billing_period_end,
-			metadata, created_at, tax_jurisdiction, tax_code
+			metadata, created_at, tax_jurisdiction, tax_code, tax_reason
 		FROM invoice_line_items WHERE invoice_id = $1
 		ORDER BY created_at ASC
 	`, invoiceID)
@@ -462,7 +462,7 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 			&item.AmountCents, &item.TaxRateBP, &item.TaxAmountCents, &item.TotalAmountCents,
 			&item.Currency, &item.PricingMode, &item.RatingRuleVersionID,
 			&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt,
-			&item.TaxJurisdiction, &item.TaxCode); err != nil {
+			&item.TaxJurisdiction, &item.TaxCode, &item.TaxabilityReason); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(metaJSON, &item.Metadata)
@@ -580,25 +580,25 @@ func (s *PostgresStore) AddLineItemAtomic(
 			description, quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
 			total_amount_cents, currency, pricing_mode, rating_rule_version_id,
 			billing_period_start, billing_period_end, metadata, created_at,
-			tax_jurisdiction, tax_code)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			tax_jurisdiction, tax_code, tax_reason)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		RETURNING id, invoice_id, tenant_id, line_type, COALESCE(meter_id,''), description,
 			quantity, unit_amount_cents, amount_cents, tax_rate_bp, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
 			COALESCE(rating_rule_version_id,''), billing_period_start, billing_period_end,
-			metadata, created_at, tax_jurisdiction, tax_code
+			metadata, created_at, tax_jurisdiction, tax_code, tax_reason
 	`, itemID, invoiceID, tenantID, item.LineType, postgres.NullableString(item.MeterID),
 		item.Description, item.Quantity, item.UnitAmountCents, item.AmountCents,
 		item.TaxRateBP, item.TaxAmountCents, item.TotalAmountCents, currency,
 		postgres.NullableString(item.PricingMode), postgres.NullableString(item.RatingRuleVersionID),
 		postgres.NullableTime(item.BillingPeriodStart), postgres.NullableTime(item.BillingPeriodEnd),
-		metaJSON, now, item.TaxJurisdiction, item.TaxCode,
+		metaJSON, now, item.TaxJurisdiction, item.TaxCode, item.TaxabilityReason,
 	).Scan(&item.ID, &item.InvoiceID, &item.TenantID, &item.LineType, &item.MeterID,
 		&item.Description, &item.Quantity, &item.UnitAmountCents, &item.AmountCents,
 		&item.TaxRateBP, &item.TaxAmountCents, &item.TotalAmountCents, &item.Currency,
 		&item.PricingMode, &item.RatingRuleVersionID,
 		&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt,
-		&item.TaxJurisdiction, &item.TaxCode)
+		&item.TaxJurisdiction, &item.TaxCode, &item.TaxabilityReason)
 	if err != nil {
 		return domain.InvoiceLineItem{}, domain.Invoice{}, err
 	}
@@ -693,9 +693,10 @@ func (s *PostgresStore) ApplyDiscountAtomic(
 			SET amount_cents = $3,
 			    tax_rate_bp = $4,
 			    tax_amount_cents = $5,
-			    total_amount_cents = $6
+			    total_amount_cents = $6,
+			    tax_reason = $7
 			WHERE invoice_id = $1 AND id = $2
-		`, invoiceID, li.ID, li.AmountCents, li.TaxRateBP, li.TaxAmountCents, li.TotalAmountCents)
+		`, invoiceID, li.ID, li.AmountCents, li.TaxRateBP, li.TaxAmountCents, li.TotalAmountCents, li.TaxabilityReason)
 		if err != nil {
 			return domain.Invoice{}, fmt.Errorf("update line item tax stamp: %w", err)
 		}
@@ -820,15 +821,15 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 				description, quantity, unit_amount_cents, amount_cents, tax_rate_bp,
 				tax_amount_cents, total_amount_cents, currency, pricing_mode,
 				rating_rule_version_id, billing_period_start, billing_period_end, metadata, created_at,
-				tax_jurisdiction, tax_code)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+				tax_jurisdiction, tax_code, tax_reason)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		`, itemID, inv.ID, tenantID, items[i].LineType, postgres.NullableString(items[i].MeterID),
 			items[i].Description, items[i].Quantity, items[i].UnitAmountCents, items[i].AmountCents,
 			items[i].TaxRateBP, items[i].TaxAmountCents, items[i].TotalAmountCents,
 			items[i].Currency, postgres.NullableString(items[i].PricingMode),
 			postgres.NullableString(items[i].RatingRuleVersionID),
 			postgres.NullableTime(items[i].BillingPeriodStart), postgres.NullableTime(items[i].BillingPeriodEnd),
-			itemMetaJSON, now, items[i].TaxJurisdiction, items[i].TaxCode,
+			itemMetaJSON, now, items[i].TaxJurisdiction, items[i].TaxCode, items[i].TaxabilityReason,
 		)
 		if err != nil {
 			return domain.Invoice{}, fmt.Errorf("create line item %d: %w", i, err)
