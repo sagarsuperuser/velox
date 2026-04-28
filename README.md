@@ -1,12 +1,12 @@
 # Velox
 
+### The dimension-native billing engine.
+
 **The open-source billing engine for AI and usage-heavy SaaS — runs in your own VPC.**
 
 [![CI](https://github.com/sagarsuperuser/velox/actions/workflows/ci.yml/badge.svg)](https://github.com/sagarsuperuser/velox/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-
-> **Status:** pre-1.0, in active development. Breaking changes land on `0.MINOR` per [`CHANGELOG.md`](CHANGELOG.md). First design-partner production cutover is [in flight](#roadmap).
 
 Velox owns the layer above PaymentIntent: pricing, subscriptions, multi-dimensional usage metering, invoicing, dunning, and credits. Stripe still does cards under the hood. The 0.5% Stripe Billing fee disappears, and customer billing data never leaves your infrastructure.
 
