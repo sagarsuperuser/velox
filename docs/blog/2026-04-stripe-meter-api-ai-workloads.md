@@ -4,6 +4,8 @@
 > Code samples are real; the API contracts referenced are
 > Stripe's [Billing Meter](https://docs.stripe.com/api/billing/meter) and
 > Velox's [multi-dim meters RFC](../design-multi-dim-meters.md).
+>
+> *Updated 2026-04-28: Velox's multi-dimensional meter implementation is now live in `main`. The endpoints below are the production contract — schema, aggregation semantics, and per-rule pricing all round-trip end-to-end.*
 
 If you bill an AI product — inference, embeddings, agentic workflows, vector search — you've probably tried to model your pricing inside Stripe Billing and noticed something is wrong. You start with one Meter for "tokens." Then you add another for "output tokens" because input and output bill at different rates. Then "cached input" because Anthropic prompt caching is 90% cheaper. Then "batch" because batch pricing is half. Three models in your catalog, and you're suddenly at twenty-something Meters, each tied to its own Price and its own Subscription Item, before a single customer is on the system.
 
@@ -168,7 +170,7 @@ The decision point is the cardinality of your rate matrix. Below ~6 cells, Strip
 
 ## What we're building
 
-Velox's multi-dim meter implementation lands in `v0.x` on **May 8, 2026**. The schema, API surface, aggregation semantics, and test plan are public in the [design doc](../design-multi-dim-meters.md). The endpoints in this post are the published contract — you can scaffold against them today.
+Velox's multi-dim meter implementation is live in `v0.x` (shipped 2026-04-25). The schema, API surface, aggregation semantics, and test plan are public in the [design doc](../design-multi-dim-meters.md). The endpoints in this post are the production contract — `decimal` quantities round-trip without precision loss, pricing rules dispatch on `dimension_match`, and the cycle scan rates events through the same `usage.AggregateByPricingRules` path the dashboard reads.
 
 If you run an AI product where the rate matrix is starting to outgrow Stripe Billing, or where regulatory pressure (EU GDPR-strict, India RBI data localization, healthcare-adjacent SaaS) means you can't keep customer billing data on Stripe's servers in the first place — we're looking for design partners. Twelve months free hosted access in exchange for a weekly check-in and a co-branded case study. Email `partners@velox.dev` or open an issue on [the repo](https://github.com/sagarsuperuser/velox).
 

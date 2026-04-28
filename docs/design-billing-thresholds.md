@@ -1,9 +1,10 @@
 # Billing Thresholds — Technical Design
 
-> **Status:** Draft v1
-> **Owner:** Track A
+> **Status:** Shipped — see [`CHANGELOG.md`](../CHANGELOG.md) for the merged commits and migration `0056_subscription_billing_thresholds`.
 > **Last revised:** 2026-04-26
 > **Related:** `docs/design-create-preview.md` (sibling — same composition, same wire conventions), `docs/design-multi-dim-meters.md` (multi-dim dependency — `usage.AggregateByPricingRules`)
+>
+> The text below is preserved as the design-time RFC. The implementation is live in `main`; refer to `internal/billing/threshold_scan.go` and `internal/subscription/` for the current behaviour.
 
 ## Motivation
 
@@ -12,7 +13,7 @@ Stripe ships **billing thresholds** as Tier 1 — a tenant configures a per-subs
 Velox already has every primitive to do this:
 
 - The cycle scan (`Engine.RunCycle` → `Engine.billSubscription` → `CreateInvoiceWithLineItems` → `advanceCycleOrCancel`) already builds line items from the partial-cycle window, prices them via `domain.ComputeAmountCents`, finalizes the invoice, and rolls the cycle forward.
-- `usage.AggregateByPricingRules` (Week 2) already computes the running total over an arbitrary window, including for multi-dim meters.
+- `usage.AggregateByPricingRules` already computes the running total over an arbitrary window, including for multi-dim meters.
 - The scheduler already runs a billing tick under an advisory lock (`s.billingLockKey`) that gates exactly-one finalize per (subscription, cycle).
 
 The slice is composition: **a mid-cycle scan tick** that, for every subscription with thresholds configured, computes the partial-cycle total via the same aggregation path the cycle scan uses, and when the threshold is crossed, **calls into the existing finalize-cycle code path early** with `billing_reason="threshold"`. We do **not** duplicate the build-line-items or advance-cycle code — same code path, different entry point.
@@ -323,25 +324,24 @@ The `item_thresholds` array is an aux table because per-item config doesn't comp
 6. **Should we emit `subscription.threshold_warning` at 80% of threshold?** That's Week 5d (billing alerts) — different feature. Linked, but not co-shipped.
 7. **Should `amount_gte` be denominated in the subscription's currency or platform-canonical USD?** **Proposal: subscription currency.** A multi-currency tenant configures different thresholds per currency (different subscriptions). Avoids FX conversion in the hot scan path.
 
-## Implementation checklist (Week 5c)
+## Implementation checklist
 
-- [ ] `internal/domain/subscription.go` — add `BillingThresholds` struct + `SubscriptionItemThreshold`, attach to `Subscription`.
-- [ ] `internal/domain/invoice.go` — add `InvoiceBillingReason` enum + `BillingReason` field on `Invoice`.
-- [ ] `internal/platform/migrate/sql/0056_subscription_billing_thresholds.{up,down}.sql` — schema.
-- [ ] `internal/subscription/store.go` — extend interface with `SetBillingThresholds`, `ClearBillingThresholds`, `ListWithThresholds`.
-- [ ] `internal/subscription/postgres.go` — implementations.
-- [ ] `internal/subscription/service.go` — validation + `SetBillingThresholds` method.
-- [ ] `internal/subscription/handler.go` — `PATCH /v1/subscriptions/{id}` route.
-- [ ] `internal/billing/threshold_scan.go` — `Engine.ScanThresholds` + `scanOneThreshold` + `fireThreshold`.
-- [ ] `internal/billing/scheduler.go` — wire `ScanThresholds` into `runBillingCycleForMode`.
-- [ ] `internal/billing/engine.go` — extend `billSubscription` with `billing_reason` parameter.
-- [ ] `internal/invoice/postgres.go` — extend `CreateInvoiceWithLineItems` to persist `billing_reason`.
-- [ ] `internal/domain/webhook_outbound.go` — add `EventSubscriptionThresholdCrossed`.
-- [ ] `internal/subscription/wire_shape_test.go` — `TestWireShape_SnakeCase` regression (the merge gate).
-- [ ] Unit tests for service validation + handler PATCH path + `evaluateThresholds`.
-- [ ] Integration tests covering the seven scenarios listed above.
-- [ ] CHANGELOG.md (Track A) + Changelog.tsx (Track B) entries.
-- [ ] Track A → Track B handoff note (private velox-ops repo).
+- [x] `internal/domain/subscription.go` — `BillingThresholds` struct + `SubscriptionItemThreshold`.
+- [x] `internal/domain/invoice.go` — `InvoiceBillingReason` enum + `BillingReason` field on `Invoice`.
+- [x] `internal/platform/migrate/sql/0056_subscription_billing_thresholds.{up,down}.sql`.
+- [x] `internal/subscription/store.go` — `SetBillingThresholds`, `ClearBillingThresholds`, `ListWithThresholds`.
+- [x] `internal/subscription/postgres.go` — implementations.
+- [x] `internal/subscription/service.go` — validation + `SetBillingThresholds` method.
+- [x] `internal/subscription/handler.go` — `PATCH /v1/subscriptions/{id}` route.
+- [x] `internal/billing/threshold_scan.go` — `Engine.ScanThresholds` + `scanOneThreshold` + `fireThreshold`.
+- [x] `internal/billing/scheduler.go` — `ScanThresholds` wired into `runBillingCycleForMode`.
+- [x] `internal/billing/engine.go` — `billSubscription` accepts `billing_reason`.
+- [x] `internal/invoice/postgres.go` — `CreateInvoiceWithLineItems` persists `billing_reason`.
+- [x] `internal/domain/webhook_outbound.go` — `EventSubscriptionThresholdCrossed`.
+- [x] `internal/subscription/wire_shape_test.go` — `TestWireShape_SnakeCase` regression.
+- [x] Unit tests for service validation + handler PATCH path + `evaluateThresholds`.
+- [x] Integration tests covering the seven scenarios listed above.
+- [x] CHANGELOG entry + public changelog rollup.
 
 ## Track B unblock
 
