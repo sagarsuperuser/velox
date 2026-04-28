@@ -68,8 +68,10 @@ A coarser rule (`{"model": "gpt-4"}`) plus a finer override (`{"model": "gpt-4",
 - **Row-Level Security** — one Velox deployment cleanly serves N internal tenants
 
 ### Stripe-grade primitives (already shipped)
-- **Subscriptions** — trial state machine with atomic flips · pause-collection · scheduled cancellation · plan changes with proration · per-customer price overrides
-- **Invoicing & collection** — PDF invoices · hosted invoice page with secure tokens · branded multipart emails · dunning with breaker
+- **Subscriptions** — trial state machine with atomic flips · pause-collection · scheduled cancellation · plan changes with proration · bulk plan migrations with preview
+- **Pricing & discounts** — per-customer price overrides · coupons with stacking, expiry, redemption caps
+- **Invoicing & collection** — PDF invoices · hosted invoice page with secure tokens · branded multipart emails · dunning with breaker · invoice preview (`Invoice.upcoming` parity)
+- **Spend controls** — billing alerts · hard-cap thresholds with mid-cycle finalize
 - **Credits & refunds** — event-sourced credit ledger · credit notes + refunds
 - **Reliability** — idempotency · transactional outbox · webhook signing with 72h rotation grace · test clocks
 
