@@ -505,7 +505,7 @@ Recipes inherit the `NUMERIC(38, 12)` quantity type from `usage_events`; no reci
 - [x] Unit tests: YAML parse, override validation, template render
 - [x] Integration tests: instantiate / preview / force / RLS / atomicity rollback
 - [x] `cmd/velox-recipes-e2e/main.go` + assertion against multi-dim meter pricing
-- [x] OpenAPI spec update (`docs/openapi.yaml`)
+- [x] OpenAPI spec update (`api/openapi.yaml`)
 - [x] CHANGELOG entry + public changelog rollup
 
 ## Track B unblock

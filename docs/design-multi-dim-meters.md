@@ -321,5 +321,5 @@ Per memory `feedback_prefer_battle_tested_libs`: use `shopspring/decimal`, do no
 - [x] Unit tests: ingest, aggregation per mode, subset-match, priority-claim
 - [x] Integration tests: real Postgres, RLS-isolated tenants, decimal precision, idempotency
 - [x] `cmd/velox-bench/main.go` + 50k events/sec benchmark validation
-- [x] OpenAPI spec update (`docs/openapi.yaml`)
+- [x] OpenAPI spec update (`api/openapi.yaml`)
 - [x] CHANGELOG entry + public changelog rollup

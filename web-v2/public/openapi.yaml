@@ -2,9 +2,12 @@ openapi: 3.0.3
 info:
   title: Velox Billing API
   description: |
-    Usage-based billing engine with pricing, subscriptions, usage metering,
-    invoice generation, Stripe payments, dunning, and customer credits.
-  version: 1.0.0
+    Open-source usage-based billing engine. Handles pricing, subscriptions,
+    usage metering, invoice generation, Stripe payments, dunning, and credits.
+  version: "2026-04-07"
+  license:
+    name: MIT
+    url: https://github.com/sagarsuperuser/velox/blob/main/LICENSE
   contact:
     name: Velox
     url: https://github.com/sagarsuperuser/velox
@@ -12,1798 +15,51 @@ info:
 servers:
   - url: http://localhost:8080
     description: Local development
-  - url: https://api.velox.dev
-    description: Production
 
 security:
-  - ApiKeyAuth: []
-
-tags:
-  - name: Customers
-    description: Customer lifecycle and billing profiles
-  - name: Subscriptions
-    description: Subscription management and lifecycle
-  - name: Invoices
-    description: Invoice generation, finalization, and payment
-  - name: Pricing
-    description: Plans, meters, and rating rules
-  - name: Usage
-    description: Usage event ingestion and aggregation
-  - name: Credits
-    description: Prepaid credit ledger operations
-  - name: Credit Notes
-    description: Refunds and credit notes on invoices
-  - name: Coupons
-    description: Discount coupon management and redemption
-  - name: Dunning
-    description: Payment failure recovery and retry
-  - name: Webhooks
-    description: Outbound webhook endpoint management
-  - name: Audit
-    description: Audit log queries
-  - name: Settings
-    description: Tenant configuration
-  - name: Billing
-    description: Billing engine operations
-  - name: Analytics
-    description: Revenue and usage analytics
-  - name: API Keys
-    description: API key lifecycle — issue, list, rotate, revoke
-
-paths:
-  # --- Customers ---
-  /v1/customers:
-    post:
-      tags: [Customers]
-      summary: Create a customer
-      operationId: createCustomer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [external_id, display_name]
-              properties:
-                external_id:
-                  type: string
-                  example: cus_stripe_123
-                display_name:
-                  type: string
-                  example: Acme Corp
-                email:
-                  type: string
-                  format: email
-                  example: billing@acme.com
-      responses:
-        '201':
-          description: Customer created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Customer'
-        '409':
-          description: Customer with this external_id already exists
-        '422':
-          description: Validation error
-    get:
-      tags: [Customers]
-      summary: List customers
-      operationId: listCustomers
-      parameters:
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
-        - name: status
-          in: query
-          schema:
-            type: string
-            enum: [active, archived]
-      responses:
-        '200':
-          description: List of customers
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Customer'
-                  total:
-                    type: integer
-
-  /v1/customers/{id}:
-    get:
-      tags: [Customers]
-      summary: Get a customer
-      operationId: getCustomer
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Customer details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Customer'
-        '404':
-          description: Customer not found
-    patch:
-      tags: [Customers]
-      summary: Update a customer
-      operationId: updateCustomer
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                display_name:
-                  type: string
-                email:
-                  type: string
-                status:
-                  type: string
-                  enum: [active, archived]
-      responses:
-        '200':
-          description: Updated customer
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Customer'
-
-  /v1/customers/{id}/billing-profile:
-    put:
-      tags: [Customers]
-      summary: Create or update billing profile
-      operationId: upsertBillingProfile
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BillingProfileInput'
-      responses:
-        '200':
-          description: Billing profile
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BillingProfile'
-    get:
-      tags: [Customers]
-      summary: Get billing profile
-      operationId: getBillingProfile
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Billing profile
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BillingProfile'
-
-  /v1/customers/{id}/export:
-    get:
-      tags: [Customers]
-      summary: Export all customer data (GDPR)
-      operationId: exportCustomerData
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Full data export
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  customer:
-                    $ref: '#/components/schemas/Customer'
-                  billing_profile:
-                    $ref: '#/components/schemas/BillingProfile'
-                  invoices:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Invoice'
-                  subscriptions:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Subscription'
-
-  /v1/customers/{id}/delete-data:
-    post:
-      tags: [Customers]
-      summary: Anonymize and archive customer (GDPR)
-      operationId: deleteCustomerData
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Customer anonymized
-        '422':
-          description: Customer has active subscriptions
-
-  # --- Plans ---
-  /v1/plans:
-    post:
-      tags: [Pricing]
-      summary: Create a plan
-      operationId: createPlan
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [code, name, currency, billing_interval]
-              properties:
-                code:
-                  type: string
-                  example: pro-monthly
-                name:
-                  type: string
-                  example: Pro Monthly
-                currency:
-                  type: string
-                  example: usd
-                billing_interval:
-                  type: string
-                  enum: [monthly, yearly]
-                base_amount_cents:
-                  type: integer
-                  format: int64
-                  example: 9900
-                meter_ids:
-                  type: array
-                  items:
-                    type: string
-      responses:
-        '201':
-          description: Plan created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Plan'
-    get:
-      tags: [Pricing]
-      summary: List plans
-      operationId: listPlans
-      responses:
-        '200':
-          description: List of plans
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Plan'
-
-  /v1/plans/{id}:
-    get:
-      tags: [Pricing]
-      summary: Get a plan
-      operationId: getPlan
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Plan details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Plan'
-
-  # --- Meters ---
-  /v1/meters:
-    post:
-      tags: [Pricing]
-      summary: Create a meter
-      operationId: createMeter
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [key, name, unit, aggregation]
-              properties:
-                key:
-                  type: string
-                  example: api_calls
-                name:
-                  type: string
-                  example: API Calls
-                unit:
-                  type: string
-                  example: calls
-                aggregation:
-                  type: string
-                  enum: [sum, max, last, count]
-                rating_rule_version_id:
-                  type: string
-      responses:
-        '201':
-          description: Meter created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Meter'
-    get:
-      tags: [Pricing]
-      summary: List meters
-      operationId: listMeters
-      responses:
-        '200':
-          description: List of meters
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Meter'
-
-  # --- Rating Rules ---
-  /v1/rating-rules:
-    post:
-      tags: [Pricing]
-      summary: Create a rating rule version
-      operationId: createRatingRule
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [rule_key, name, mode, currency]
-              properties:
-                rule_key:
-                  type: string
-                  example: api-calls-pricing
-                name:
-                  type: string
-                mode:
-                  type: string
-                  enum: [flat, graduated, package]
-                currency:
-                  type: string
-                flat_amount_cents:
-                  type: integer
-                  format: int64
-                graduated_tiers:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/RatingTier'
-                package_size:
-                  type: integer
-                  format: int64
-                package_amount_cents:
-                  type: integer
-                  format: int64
-                overage_unit_amount_cents:
-                  type: integer
-                  format: int64
-      responses:
-        '201':
-          description: Rating rule created
-    get:
-      tags: [Pricing]
-      summary: List rating rules
-      operationId: listRatingRules
-      responses:
-        '200':
-          description: List of rating rule versions
-
-  # --- Subscriptions ---
-  /v1/subscriptions:
-    post:
-      tags: [Subscriptions]
-      summary: Create a subscription
-      operationId: createSubscription
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [code, display_name, customer_id, items]
-              properties:
-                code:
-                  type: string
-                display_name:
-                  type: string
-                customer_id:
-                  type: string
-                items:
-                  type: array
-                  minItems: 1
-                  description: One or more priced items. Duplicate plan_id rejected per subscription.
-                  items:
-                    type: object
-                    required: [plan_id]
-                    properties:
-                      plan_id:
-                        type: string
-                      quantity:
-                        type: integer
-                        format: int64
-                        minimum: 1
-                        default: 1
-                start_now:
-                  type: boolean
-                  description: Activate immediately (skips draft state).
-                billing_time:
-                  type: string
-                  enum: [anniversary, calendar]
-                trial_days:
-                  type: integer
-                usage_cap_units:
-                  type: integer
-                  format: int64
-                overage_action:
-                  type: string
-                  enum: [block, charge]
-      responses:
-        '201':
-          description: Subscription created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Subscription'
-    get:
-      tags: [Subscriptions]
-      summary: List subscriptions
-      operationId: listSubscriptions
-      parameters:
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
-        - name: customer_id
-          in: query
-          schema:
-            type: string
-        - name: status
-          in: query
-          schema:
-            type: string
-            enum: [draft, active, paused, cancelled]
-      responses:
-        '200':
-          description: List of subscriptions
-
-  /v1/subscriptions/{id}:
-    get:
-      tags: [Subscriptions]
-      summary: Get a subscription
-      operationId: getSubscription
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Subscription details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Subscription'
-
-  /v1/subscriptions/{id}/activate:
-    post:
-      tags: [Subscriptions]
-      summary: Activate a draft subscription
-      operationId: activateSubscription
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Subscription activated
-
-  /v1/subscriptions/{id}/cancel:
-    post:
-      tags: [Subscriptions]
-      summary: Cancel a subscription
-      operationId: cancelSubscription
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Subscription cancelled
-
-  /v1/subscriptions/{id}/pause:
-    post:
-      tags: [Subscriptions]
-      summary: Pause a subscription
-      operationId: pauseSubscription
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Subscription paused
-
-  /v1/subscriptions/{id}/resume:
-    post:
-      tags: [Subscriptions]
-      summary: Resume a paused subscription
-      operationId: resumeSubscription
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Subscription resumed
-
-  /v1/subscriptions/{id}/items:
-    post:
-      tags: [Subscriptions]
-      summary: Add an item to a subscription
-      description: |
-        Adds a new plan line to an active subscription. Mid-cycle adds are
-        prorated against the remaining period as an invoice line. The backend
-        rejects duplicates on (subscription_id, plan_id) with 409.
-      operationId: addSubscriptionItem
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [plan_id]
-              properties:
-                plan_id:
-                  type: string
-                quantity:
-                  type: integer
-                  format: int64
-                  minimum: 1
-                  default: 1
-      responses:
-        '201':
-          description: Item added
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SubscriptionItem'
-
-  /v1/subscriptions/{id}/items/{itemID}:
-    patch:
-      tags: [Subscriptions]
-      summary: Update a subscription item
-      description: |
-        Exactly one of `quantity` or `{new_plan_id, immediate}` must be
-        provided — the two payload shapes are XOR. Quantity changes are
-        applied immediately and prorated. Plan changes with `immediate=true`
-        swap the plan now and prorate; with `immediate=false` they stamp
-        `pending_plan_id` and apply at the next cycle boundary.
-      operationId: updateSubscriptionItem
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-        - name: itemID
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                quantity:
-                  type: integer
-                  format: int64
-                  minimum: 1
-                new_plan_id:
-                  type: string
-                immediate:
-                  type: boolean
-                  default: false
-      responses:
-        '200':
-          description: Item updated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ItemChangeResult'
-    delete:
-      tags: [Subscriptions]
-      summary: Remove a subscription item
-      description: |
-        Hard-deletes the item. Mid-cycle removes credit the customer for the
-        unused portion of the just-paid period.
-      operationId: removeSubscriptionItem
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-        - name: itemID
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '204':
-          description: Item removed
-
-  /v1/subscriptions/{id}/items/{itemID}/pending-change:
-    delete:
-      tags: [Subscriptions]
-      summary: Cancel a pending plan change on an item
-      description: Idempotent. No-op if nothing was scheduled.
-      operationId: cancelPendingItemChange
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-        - name: itemID
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Pending change cleared
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SubscriptionItem'
-
-  # --- Usage Events ---
-  /v1/usage-events:
-    post:
-      tags: [Usage]
-      summary: Ingest a usage event
-      operationId: ingestUsageEvent
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [customer_id, meter_id, quantity]
-              properties:
-                customer_id:
-                  type: string
-                meter_id:
-                  type: string
-                quantity:
-                  type: integer
-                  format: int64
-                  example: 150
-                timestamp:
-                  type: string
-                  format: date-time
-                idempotency_key:
-                  type: string
-                properties:
-                  type: object
-      responses:
-        '201':
-          description: Event ingested
-        '409':
-          description: Duplicate idempotency key
-    get:
-      tags: [Usage]
-      summary: List usage events
-      operationId: listUsageEvents
-      parameters:
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
-        - name: customer_id
-          in: query
-          schema:
-            type: string
-        - name: meter_id
-          in: query
-          schema:
-            type: string
-      responses:
-        '200':
-          description: List of events
-
-  /v1/usage-events/batch:
-    post:
-      tags: [Usage]
-      summary: Ingest multiple usage events
-      operationId: batchIngestUsageEvents
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [events]
-              properties:
-                events:
-                  type: array
-                  maxItems: 1000
-                  items:
-                    type: object
-                    required: [customer_id, meter_id, quantity]
-                    properties:
-                      customer_id:
-                        type: string
-                      meter_id:
-                        type: string
-                      quantity:
-                        type: integer
-                        format: int64
-                      timestamp:
-                        type: string
-                        format: date-time
-                      idempotency_key:
-                        type: string
-      responses:
-        '200':
-          description: Batch result
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  accepted:
-                    type: integer
-                  rejected:
-                    type: integer
-
-  # --- Invoices ---
-  /v1/invoices:
-    get:
-      tags: [Invoices]
-      summary: List invoices
-      operationId: listInvoices
-      parameters:
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
-        - name: customer_id
-          in: query
-          schema:
-            type: string
-        - name: subscription_id
-          in: query
-          schema:
-            type: string
-        - name: status
-          in: query
-          schema:
-            type: string
-            enum: [draft, finalized, paid, voided]
-        - name: payment_status
-          in: query
-          schema:
-            type: string
-            enum: [pending, processing, succeeded, failed]
-      responses:
-        '200':
-          description: List of invoices
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Invoice'
-                  total:
-                    type: integer
-
-  /v1/invoices/{id}:
-    get:
-      tags: [Invoices]
-      summary: Get an invoice with line items
-      operationId: getInvoice
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Invoice with line items
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/Invoice'
-                  - type: object
-                    properties:
-                      line_items:
-                        type: array
-                        items:
-                          $ref: '#/components/schemas/InvoiceLineItem'
-
-  /v1/invoices/{id}/finalize:
-    post:
-      tags: [Invoices]
-      summary: Finalize a draft invoice
-      description: |
-        Transitions the invoice from draft to finalized, issues the
-        invoice number, fires invoice.finalized, and attempts auto-charge
-        if the customer has a payment method on file. Emails the invoice
-        PDF to the customer asynchronously.
-      operationId: finalizeInvoice
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Invoice finalized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Invoice'
-
-  /v1/invoices/{id}/void:
-    post:
-      tags: [Invoices]
-      summary: Void an invoice
-      operationId: voidInvoice
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Invoice voided
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Invoice'
-
-  /v1/invoices/{id}/line-items:
-    post:
-      tags: [Invoices]
-      summary: Add a manual line item to a draft invoice
-      operationId: addInvoiceLineItem
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [description, quantity, unit_amount_cents]
-              properties:
-                description:
-                  type: string
-                line_type:
-                  type: string
-                  description: Defaults to "manual" if omitted.
-                quantity:
-                  type: integer
-                  format: int64
-                  minimum: 1
-                unit_amount_cents:
-                  type: integer
-                  format: int64
-                  minimum: 1
-      responses:
-        '201':
-          description: Line item added
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/InvoiceLineItem'
-
-  /v1/invoices/{id}/send:
-    post:
-      tags: [Invoices]
-      summary: Email the invoice PDF to a specific address
-      operationId: sendInvoice
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [email]
-              properties:
-                email:
-                  type: string
-                  format: email
-      responses:
-        '200':
-          description: Email dispatched
-
-  /v1/invoices/{id}/collect:
-    post:
-      tags: [Invoices]
-      summary: Attempt immediate payment collection for a finalized invoice
-      description: |
-        Creates a PaymentIntent against the customer's stored payment
-        method. Only valid on finalized, unpaid invoices with amount_due > 0.
-      operationId: collectInvoicePayment
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Payment initiated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Invoice'
-
-  /v1/invoices/{id}/refund:
-    post:
-      tags: [Invoices]
-      summary: Issue a refund via credit note
-      description: |
-        Issues a refund through Stripe and records the corresponding
-        credit note. amount_cents=0 refunds the full remaining
-        refundable balance.
-      operationId: refundInvoice
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [reason]
-              properties:
-                amount_cents:
-                  type: integer
-                  format: int64
-                  minimum: 0
-                reason:
-                  type: string
-                  enum: [duplicate, fraudulent, requested_by_customer, other]
-                description:
-                  type: string
-      responses:
-        '200':
-          description: Refund issued, credit note returned
-
-  /v1/invoices/{id}/payment-timeline:
-    get:
-      tags: [Invoices]
-      summary: Get operator-facing payment + dunning event timeline
-      operationId: getInvoicePaymentTimeline
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Chronological list of payment and dunning events
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  events:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        timestamp:
-                          type: string
-                          format: date-time
-                        source:
-                          type: string
-                          enum: [stripe, dunning]
-                        event_type:
-                          type: string
-                        status:
-                          type: string
-                        description:
-                          type: string
-                        error:
-                          type: string
-                        amount_cents:
-                          type: integer
-                          format: int64
-                        currency:
-                          type: string
-                        payment_intent_id:
-                          type: string
-                        attempt_count:
-                          type: integer
-
-  /v1/invoices/{id}/pdf:
-    get:
-      tags: [Invoices]
-      summary: Download invoice PDF
-      operationId: getInvoicePDF
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: PDF file
-          content:
-            application/pdf:
-              schema:
-                type: string
-                format: binary
-
-  # --- Credits ---
-  /v1/credits/grant:
-    post:
-      tags: [Credits]
-      summary: Grant credits to a customer
-      operationId: grantCredits
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [customer_id, amount_cents]
-              properties:
-                customer_id:
-                  type: string
-                amount_cents:
-                  type: integer
-                  format: int64
-                  example: 5000
-                description:
-                  type: string
-                  example: Welcome bonus
-                expires_at:
-                  type: string
-                  format: date-time
-      responses:
-        '201':
-          description: Credits granted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreditLedgerEntry'
-
-  /v1/credits/balance/{customer_id}:
-    get:
-      tags: [Credits]
-      summary: Get credit balance for a customer
-      operationId: getCreditBalance
-      parameters:
-        - name: customer_id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Credit balance
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreditBalance'
-
-  /v1/credits/ledger/{customer_id}:
-    get:
-      tags: [Credits]
-      summary: List credit ledger entries
-      operationId: listCreditLedger
-      parameters:
-        - name: customer_id
-          in: path
-          required: true
-          schema:
-            type: string
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
-      responses:
-        '200':
-          description: Credit ledger entries
-
-  # --- Coupons ---
-  /v1/coupons:
-    post:
-      tags: [Coupons]
-      summary: Create a coupon
-      operationId: createCoupon
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [code, name, type]
-              properties:
-                code:
-                  type: string
-                  example: WELCOME20
-                name:
-                  type: string
-                type:
-                  type: string
-                  enum: [percentage, fixed_amount]
-                percent_off:
-                  type: number
-                  example: 20
-                amount_off:
-                  type: integer
-                  format: int64
-                currency:
-                  type: string
-                max_redemptions:
-                  type: integer
-                expires_at:
-                  type: string
-                  format: date-time
-                plan_ids:
-                  type: array
-                  items:
-                    type: string
-      responses:
-        '201':
-          description: Coupon created
-    get:
-      tags: [Coupons]
-      summary: List coupons
-      operationId: listCoupons
-      responses:
-        '200':
-          description: List of coupons
-
-  /v1/coupons/{id}:
-    get:
-      tags: [Coupons]
-      summary: Get a coupon by ID
-      operationId: getCoupon
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Coupon
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Coupon'
-
-  /v1/coupons/{id}/deactivate:
-    post:
-      tags: [Coupons]
-      summary: Deactivate a coupon
-      description: Deactivated coupons cannot be redeemed but existing redemptions are preserved.
-      operationId: deactivateCoupon
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Coupon deactivated
-
-  /v1/coupons/{id}/redemptions:
-    get:
-      tags: [Coupons]
-      summary: List redemptions for a coupon
-      operationId: listCouponRedemptions
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: List of redemptions
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/CouponRedemption'
-
-  /v1/coupons/redeem:
-    post:
-      tags: [Coupons]
-      summary: Redeem a coupon
-      operationId: redeemCoupon
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [code, customer_id, subtotal_cents]
-              properties:
-                code:
-                  type: string
-                customer_id:
-                  type: string
-                subscription_id:
-                  type: string
-                invoice_id:
-                  type: string
-                plan_id:
-                  type: string
-                subtotal_cents:
-                  type: integer
-                  format: int64
-      responses:
-        '200':
-          description: Redemption result
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CouponRedemption'
-
-  # --- Credit Notes ---
-  /v1/credit-notes:
-    post:
-      tags: [Credit Notes]
-      summary: Create a credit note on an invoice
-      operationId: createCreditNote
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [invoice_id, reason]
-              properties:
-                invoice_id:
-                  type: string
-                reason:
-                  type: string
-                line_items:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      description:
-                        type: string
-                      amount_cents:
-                        type: integer
-                        format: int64
-      responses:
-        '201':
-          description: Credit note created
-
-  # --- Dunning ---
-  /v1/dunning/policy:
-    get:
-      tags: [Dunning]
-      summary: Get dunning policy
-      operationId: getDunningPolicy
-      responses:
-        '200':
-          description: Dunning policy
-    put:
-      tags: [Dunning]
-      summary: Update dunning policy
-      operationId: updateDunningPolicy
-      responses:
-        '200':
-          description: Policy updated
-
-  /v1/dunning/runs:
-    get:
-      tags: [Dunning]
-      summary: List active dunning runs
-      operationId: listDunningRuns
-      responses:
-        '200':
-          description: List of dunning runs
-
-  # --- Webhook Endpoints ---
-  /v1/webhook-endpoints:
-    post:
-      tags: [Webhooks]
-      summary: Create a webhook endpoint
-      operationId: createWebhookEndpoint
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [url]
-              properties:
-                url:
-                  type: string
-                  format: uri
-                  example: https://example.com/webhooks
-                description:
-                  type: string
-                events:
-                  type: array
-                  items:
-                    type: string
-                  example: ["invoice.created", "payment.succeeded"]
-      responses:
-        '201':
-          description: Endpoint created (signing secret returned once)
-    get:
-      tags: [Webhooks]
-      summary: List webhook endpoints
-      operationId: listWebhookEndpoints
-      responses:
-        '200':
-          description: List of endpoints
-
-  # --- Audit ---
-  /v1/audit-log:
-    get:
-      tags: [Audit]
-      summary: Query audit log
-      operationId: queryAuditLog
-      parameters:
-        - name: resource_type
-          in: query
-          schema:
-            type: string
-        - name: resource_id
-          in: query
-          schema:
-            type: string
-        - name: action
-          in: query
-          schema:
-            type: string
-        - name: date_from
-          in: query
-          schema:
-            type: string
-            format: date
-        - name: date_to
-          in: query
-          schema:
-            type: string
-            format: date
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
-      responses:
-        '200':
-          description: Audit entries
-
-  # --- Settings ---
-  /v1/settings:
-    get:
-      tags: [Settings]
-      summary: Get tenant settings
-      operationId: getSettings
-      responses:
-        '200':
-          description: Tenant settings
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TenantSettings'
-    put:
-      tags: [Settings]
-      summary: Update tenant settings
-      operationId: updateSettings
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/TenantSettings'
-      responses:
-        '200':
-          description: Updated settings
-
-  # --- Billing ---
-  /v1/billing/run:
-    post:
-      tags: [Billing]
-      summary: Manually trigger a billing cycle
-      operationId: triggerBillingCycle
-      responses:
-        '200':
-          description: Billing cycle result
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  generated:
-                    type: integer
-                  errors:
-                    type: integer
-
-  /v1/billing/preview/{subscription_id}:
-    get:
-      tags: [Billing]
-      summary: Preview the next invoice for a subscription
-      operationId: previewInvoice
-      parameters:
-        - name: subscription_id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Invoice preview
-
-  # --- Analytics ---
-  /v1/analytics/overview:
-    get:
-      tags: [Analytics]
-      summary: Get billing overview metrics
-      operationId: getAnalyticsOverview
-      responses:
-        '200':
-          description: Overview metrics (MRR, active customers, etc.)
-
-  /v1/analytics/revenue:
-    get:
-      tags: [Analytics]
-      summary: Get revenue chart data
-      operationId: getRevenueChart
-      parameters:
-        - name: period
-          in: query
-          schema:
-            type: string
-            enum: [day, month]
-            default: month
-        - name: months
-          in: query
-          schema:
-            type: integer
-            default: 12
-      responses:
-        '200':
-          description: Revenue time series
-
-  # --- Health ---
-  /health:
-    get:
-      tags: [System]
-      summary: Liveness probe
-      security: []
-      responses:
-        '200':
-          description: Service is alive
-
-  /health/ready:
-    get:
-      tags: [System]
-      summary: Readiness probe (checks database + scheduler)
-      security: []
-      responses:
-        '200':
-          description: Service is ready
-        '503':
-          description: Service is degraded
-
-  # --- API Keys ---
-  /v1/api-keys:
-    get:
-      tags: [API Keys]
-      summary: List API keys for the current tenant
-      responses:
-        '200':
-          description: Keys listed
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/APIKey'
-    post:
-      tags: [API Keys]
-      summary: Create a new API key (raw key shown once)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateAPIKeyInput'
-      responses:
-        '201':
-          description: Key created — raw_key is shown once
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreateAPIKeyResult'
-
-  /v1/api-keys/{id}:
-    delete:
-      tags: [API Keys]
-      summary: Revoke an API key
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      responses:
-        '200':
-          description: Key revoked
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIKey'
-        '404':
-          description: Key not found
-        '422':
-          description: Cannot revoke the key being used to authenticate this request
-
-  /v1/api-keys/{id}/rotate:
-    post:
-      tags: [API Keys]
-      summary: Rotate an API key (issue replacement, retire old)
-      description: |
-        Mints a replacement key with the same type, name, livemode, and
-        expires_at as the old one. Returns the new key's raw secret — shown
-        once, never retrievable later.
-
-        The old key is retired based on `expires_in_seconds`:
-
-        - `0` (default) → revoked immediately. The next call using the old
-          key returns 401.
-        - `> 0` → the old key's `expires_at` is set to `now + N seconds` and
-          remains valid until then. Use this for zero-downtime rotation:
-          deploy the new key, let traffic drain, then let the old key lapse.
-
-        The grace window is capped at 7 days (`604800` seconds).
-
-        Self-rotation (rotating the key that authenticated the request) is
-        rejected with 422 — authenticate with a different key first. This
-        prevents locking yourself out during an interactive rotation.
-      parameters:
-        - $ref: '#/components/parameters/ResourceID'
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RotateAPIKeyInput'
-      responses:
-        '200':
-          description: Key rotated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RotateAPIKeyResult'
-        '404':
-          description: Key not found
-        '422':
-          description: Invalid grace period, key already revoked, or self-rotation attempt
+  - BearerAuth: []
 
 components:
   securitySchemes:
-    ApiKeyAuth:
-      type: apiKey
-      in: header
-      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
       description: |
-        API key for authentication. Three types:
-        - `sk_live_*` / `sk_test_*` — Secret key (full access)
-        - `pk_live_*` / `pk_test_*` — Publishable key (read-only)
-        - `plat_*` — Platform key (tenant management)
-
-  parameters:
-    ResourceID:
-      name: id
-      in: path
-      required: true
-      schema:
-        type: string
-      description: Resource ID (e.g., vlx_cus_abc123)
-    Limit:
-      name: limit
-      in: query
-      schema:
-        type: integer
-        minimum: 1
-        maximum: 100
-        default: 50
-    Offset:
-      name: offset
-      in: query
-      schema:
-        type: integer
-        minimum: 0
-        default: 0
+        API key authentication. Use `Authorization: Bearer vlx_secret_...`
+        Key types: vlx_platform_ (tenant mgmt), vlx_secret_ (full access), vlx_pub_ (restricted)
 
   schemas:
-    APIKey:
+    Error:
       type: object
       properties:
-        id:
-          type: string
-          example: vlx_key_cv2q6ktjml6ng3v2q0tg
-        key_prefix:
-          type: string
-          description: |
-            Lookup prefix (mode-aware + first 12 hex chars of the secret).
-            Stored in the clear so a leaked key can be correlated with a
-            specific row without revealing the full secret.
-          example: vlx_secret_live_1a2b3c4d5e6f
-        key_type:
-          type: string
-          enum: [platform, secret, publishable]
-        livemode:
-          type: boolean
-        name:
-          type: string
-          description: Human-readable label shown in the dashboard.
-        tenant_id:
-          type: string
-        created_at:
-          type: string
-          format: date-time
-        expires_at:
-          type: string
-          format: date-time
-          nullable: true
-        revoked_at:
-          type: string
-          format: date-time
-          nullable: true
-        last_used_at:
-          type: string
-          format: date-time
-          nullable: true
-
-    CreateAPIKeyInput:
-      type: object
-      required: [name]
-      properties:
-        name:
-          type: string
-          example: Production web backend
-        key_type:
-          type: string
-          enum: [platform, secret, publishable]
-          default: secret
-        expires_at:
-          type: string
-          format: date-time
-          nullable: true
-          description: Optional absolute expiry for the key.
-
-    CreateAPIKeyResult:
-      type: object
-      properties:
-        key:
-          $ref: '#/components/schemas/APIKey'
-        raw_key:
-          type: string
-          description: |
-            Full raw key (shown exactly once). Save it now — the server does
-            not store the secret, only a salted hash. Subsequent GETs on the
-            key return the metadata but not this value.
-          example: vlx_secret_live_d1e2f3a4b5c6...
-
-    RotateAPIKeyInput:
-      type: object
-      properties:
-        expires_in_seconds:
-          type: integer
-          format: int64
-          minimum: 0
-          maximum: 604800
-          default: 0
-          description: |
-            Seconds the old key stays valid after rotation (grace window).
-            `0` (default) revokes the old key immediately. Capped at
-            `604800` (7 days). Set this when you need time to deploy the
-            new key across fleet instances before old credentials stop
-            working.
-
-    RotateAPIKeyResult:
-      type: object
-      properties:
-        old_key:
-          allOf:
-            - $ref: '#/components/schemas/APIKey'
-          description: |
-            The retired key's post-rotation state. `revoked_at` is set for
-            immediate rotations; `expires_at` is set for grace-period
-            rotations. Both are terminal — the key is not coming back.
-        new_key:
-          $ref: '#/components/schemas/APIKey'
-        raw_key:
-          type: string
-          description: |
-            The new key's raw secret (shown exactly once). Deploy this to
-            your clients before the grace window closes.
+        error:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [invalid_request_error, authentication_error, rate_limit_error, api_error]
+            code:
+              type: string
+            message:
+              type: string
+            request_id:
+              type: string
 
     Customer:
       type: object
       properties:
         id:
           type: string
-          example: vlx_cus_a1b2c3d4e5f6
+          example: vlx_cus_42014438d82ddf33
         external_id:
           type: string
         display_name:
           type: string
         email:
           type: string
-          format: email
         status:
           type: string
           enum: [active, archived]
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-
-    BillingProfile:
-      type: object
-      properties:
-        customer_id:
-          type: string
-        legal_name:
-          type: string
-        email:
-          type: string
-        phone:
-          type: string
-        address_line1:
-          type: string
-        address_line2:
-          type: string
-        city:
-          type: string
-        state:
-          type: string
-        postal_code:
-          type: string
-        country:
-          type: string
-        currency:
-          type: string
-        tax_exempt:
-          type: boolean
-        tax_id:
-          type: string
-        tax_id_type:
-          type: string
-        profile_status:
-          type: string
-          enum: [missing, incomplete, ready]
-
-    BillingProfileInput:
-      type: object
-      properties:
-        legal_name:
-          type: string
-        email:
-          type: string
-        phone:
-          type: string
-        address_line1:
-          type: string
-        city:
-          type: string
-        state:
-          type: string
-        postal_code:
-          type: string
-        country:
-          type: string
-        currency:
-          type: string
-        tax_exempt:
-          type: boolean
-
-    Plan:
-      type: object
-      properties:
-        id:
-          type: string
-        code:
-          type: string
-        name:
-          type: string
-        description:
-          type: string
-        currency:
-          type: string
-        billing_interval:
-          type: string
-          enum: [monthly, yearly]
-        status:
-          type: string
-          enum: [draft, active, archived]
-        base_amount_cents:
-          type: integer
-          format: int64
-        meter_ids:
-          type: array
-          items:
-            type: string
         created_at:
           type: string
           format: date-time
@@ -1821,23 +77,63 @@ components:
           type: string
         aggregation:
           type: string
-          enum: [sum, max, last, count]
+          enum: [sum, count, max, last]
         rating_rule_version_id:
           type: string
-        created_at:
-          type: string
-          format: date-time
 
-    RatingTier:
+    Plan:
       type: object
       properties:
-        up_to:
+        id:
+          type: string
+        code:
+          type: string
+        name:
+          type: string
+        currency:
+          type: string
+        billing_interval:
+          type: string
+          enum: [monthly, yearly]
+        status:
+          type: string
+          enum: [draft, active, archived]
+        base_amount_cents:
           type: integer
           format: int64
-          description: Upper bound (0 = unlimited)
-        unit_amount_cents:
+        meter_ids:
+          type: array
+          items:
+            type: string
+
+    RatingRule:
+      type: object
+      properties:
+        id:
+          type: string
+        rule_key:
+          type: string
+        name:
+          type: string
+        version:
+          type: integer
+        mode:
+          type: string
+          enum: [flat, graduated, package]
+        currency:
+          type: string
+        flat_amount_cents:
           type: integer
           format: int64
+        graduated_tiers:
+          type: array
+          items:
+            type: object
+            properties:
+              up_to:
+                type: integer
+              unit_amount_cents:
+                type: integer
 
     Subscription:
       type: object
@@ -1850,132 +146,140 @@ components:
           type: string
         customer_id:
           type: string
-        items:
-          type: array
-          description: |
-            Priced lines on the subscription. Each item has its own plan and
-            quantity; billing emits one invoice line per item × quantity.
-          items:
-            $ref: '#/components/schemas/SubscriptionItem'
+        plan_id:
+          type: string
         status:
           type: string
-          enum: [draft, active, paused, cancelled, trialing]
+          enum: [draft, active, paused, canceled, archived]
         billing_time:
           type: string
-          enum: [anniversary, calendar]
+          enum: [calendar, anniversary]
         trial_start_at:
           type: string
           format: date-time
         trial_end_at:
           type: string
           format: date-time
-        current_billing_period_start:
-          type: string
-          format: date-time
-        current_billing_period_end:
-          type: string
-          format: date-time
-        next_billing_at:
-          type: string
-          format: date-time
-        usage_cap_units:
-          type: integer
-          format: int64
-          nullable: true
-        overage_action:
-          type: string
-          enum: [block, charge]
-        cancelled_at:
-          type: string
-          format: date-time
-        created_at:
-          type: string
-          format: date-time
 
-    SubscriptionItem:
-      type: object
-      properties:
-        id:
-          type: string
-        subscription_id:
-          type: string
-        plan_id:
-          type: string
-        quantity:
-          type: integer
-          format: int64
-          minimum: 1
-        pending_plan_id:
-          type: string
-          description: Set when a deferred plan change is scheduled on this item.
-        pending_plan_effective_at:
-          type: string
-          format: date-time
-          description: When the pending plan change applies (typically next cycle boundary).
-        plan_changed_at:
-          type: string
-          format: date-time
-          description: Timestamp of the last immediate plan swap on this item.
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-
-    ItemChangeResult:
-      type: object
-      description: Returned by `PATCH /subscriptions/{id}/items/{itemID}`.
-      properties:
-        item:
-          $ref: '#/components/schemas/SubscriptionItem'
-        effective_at:
-          type: string
-          format: date-time
-          description: When the change is applied (now for immediate, future for scheduled).
-        proration:
-          type: object
-          nullable: true
-          description: Populated when the change drove a proration invoice or credit.
-          properties:
-            old_plan_id:
-              type: string
-            new_plan_id:
-              type: string
-            proration_factor:
-              type: number
-              format: double
-              description: Share of the current period remaining, in [0, 1].
-            amount_cents:
-              type: integer
-              format: int64
-              description: Positive = additional charge; negative = credit.
-            type:
-              type: string
-              enum: [invoice, credit]
-            invoice_id:
-              type: string
-
-    Invoice:
+    UsageEvent:
       type: object
       properties:
         id:
           type: string
         customer_id:
           type: string
+        meter_id:
+          type: string
+        quantity:
+          type: integer
+          format: int64
+        properties:
+          type: object
+        idempotency_key:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    InvoiceStatus:
+      type: string
+      enum: [draft, finalized, paid, voided]
+      description: Lifecycle state of the invoice.
+
+    InvoicePaymentStatus:
+      type: string
+      enum: [pending, processing, succeeded, failed, unknown]
+      description: |
+        Payment-attempt status. `unknown` marks a Stripe charge attempt that
+        returned an ambiguous error (5xx, timeout, connection reset) where
+        we cannot tell whether Stripe processed the charge — a reconciler
+        resolves these by querying Stripe after a cool-off window.
+
+    InvoiceTaxStatus:
+      type: string
+      enum: [ok, pending, failed]
+      description: |
+        Whether tax has been successfully calculated. Happy path is `ok`.
+        `pending` means a transient calculation failure is awaiting retry;
+        `failed` means retries are exhausted (operator resolves manually).
+        Pending/failed invoices are blocked from finalize so we never send
+        a wrong tax amount.
+
+    InvoiceBillingReason:
+      type: string
+      enum: [subscription_cycle, subscription_create, manual, threshold]
+      description: |
+        Mirrors Stripe's `invoice.billing_reason`. Classifies the trigger
+        that produced the invoice. Stamped at create time and never mutated.
+
+    InvoiceLineType:
+      type: string
+      enum: [base_fee, usage, add_on, discount, tax]
+
+    ItemChangeType:
+      type: string
+      enum: [plan, quantity, add, remove]
+      description: |
+        Classifies per-item proration artifacts so the dedup index can
+        distinguish a plan-change and a quantity-change that happen to
+        share the same `(subscription, item, timestamp)`.
+
+    Invoice:
+      type: object
+      description: |
+        A Velox invoice. Returned from create, finalize, void, list, get,
+        apply-coupon, rotate-public-token, and collect-payment endpoints.
+      required:
+        - id
+        - customer_id
+        - subscription_id
+        - invoice_number
+        - status
+        - payment_status
+        - currency
+        - subtotal_cents
+        - discount_cents
+        - tax_amount_cents
+        - tax_rate_bp
+        - total_amount_cents
+        - amount_due_cents
+        - amount_paid_cents
+        - credits_applied_cents
+        - billing_period_start
+        - billing_period_end
+        - payment_overdue
+        - net_payment_term_days
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          example: vlx_inv_42014438d82ddf33
+        tenant_id:
+          type: string
+          description: |
+            Owning tenant. Returned for diagnostic clarity but redundant
+            with the API key (which already determines the tenant).
+            Omitted when empty.
+        customer_id:
+          type: string
         subscription_id:
           type: string
+          description: Empty for one-off invoices not tied to a subscription.
         invoice_number:
           type: string
+          description: Empty until the invoice is finalized.
         status:
-          type: string
-          enum: [draft, finalized, paid, voided]
+          $ref: "#/components/schemas/InvoiceStatus"
         payment_status:
-          type: string
-          enum: [pending, processing, succeeded, failed]
+          $ref: "#/components/schemas/InvoicePaymentStatus"
         currency:
           type: string
+          example: USD
         subtotal_cents:
+          type: integer
+          format: int64
+        discount_cents:
           type: integer
           format: int64
         tax_amount_cents:
@@ -1983,11 +287,53 @@ components:
           format: int64
         tax_rate_bp:
           type: integer
-          description: Tax rate in basis points (1850 = 18.50%)
+          format: int64
+          description: Tax rate in basis points (1850 = 18.50%).
+        tax_name:
+          type: string
+        tax_country:
+          type: string
+        tax_id:
+          type: string
+        tax_provider:
+          type: string
+          description: |
+            Durable audit snapshot of the upstream tax engine that ran the
+            calculation (e.g. `stripe`, `none`, `manual`).
+        tax_calculation_id:
+          type: string
+          description: |
+            Provider-side calculation reference captured at build time.
+            For Stripe Tax this expires after 24 h; persisted so finalized
+            invoices remain reconstructable past expiry.
+        tax_transaction_id:
+          type: string
+          description: |
+            Provider-side committed transaction reference, captured at
+            finalize. For Stripe Tax this is `tx_xxx` and is the handle
+            the provider needs for a later reversal when a credit note is
+            issued.
+        tax_reverse_charge:
+          type: boolean
+        tax_exempt_reason:
+          type: string
+        tax_status:
+          $ref: "#/components/schemas/InvoiceTaxStatus"
+        tax_deferred_at:
+          type: string
+          format: date-time
+          nullable: true
+        tax_retry_count:
+          type: integer
+        tax_pending_reason:
+          type: string
         total_amount_cents:
           type: integer
           format: int64
         amount_due_cents:
+          type: integer
+          format: int64
+        amount_paid_cents:
           type: integer
           format: int64
         credits_applied_cents:
@@ -1999,26 +345,98 @@ components:
         billing_period_end:
           type: string
           format: date-time
+        issued_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when the invoice transitions out of draft.
         due_at:
           type: string
           format: date-time
+          nullable: true
         paid_at:
           type: string
           format: date-time
+          nullable: true
+        voided_at:
+          type: string
+          format: date-time
+          nullable: true
+        stripe_payment_intent_id:
+          type: string
+        last_payment_error:
+          type: string
+        payment_overdue:
+          type: boolean
+        auto_charge_pending:
+          type: boolean
+        public_token:
+          type: string
+          description: |
+            Hosted-invoice-URL credential (Stripe-parity
+            `hosted_invoice_url`). Generated at finalize; drafts have an
+            empty token. Rotatable via `POST
+            /v1/invoices/{id}/rotate-public-token`.
+        net_payment_term_days:
+          type: integer
+        memo:
+          type: string
+        footer:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
         created_at:
           type: string
           format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        source_plan_changed_at:
+          type: string
+          format: date-time
+          nullable: true
+        source_subscription_item_id:
+          type: string
+        source_change_type:
+          $ref: "#/components/schemas/ItemChangeType"
+        billing_reason:
+          $ref: "#/components/schemas/InvoiceBillingReason"
+        stripe_invoice_id:
+          type: string
+          description: |
+            Source Stripe invoice id (`in_xxx`) populated by `velox-import`
+            for invoices imported from a Stripe account. Empty for
+            Velox-native invoices.
 
     InvoiceLineItem:
       type: object
+      description: A single line on an invoice.
+      required:
+        - id
+        - invoice_id
+        - line_type
+        - description
+        - quantity
+        - unit_amount_cents
+        - amount_cents
+        - tax_rate_bp
+        - tax_amount_cents
+        - total_amount_cents
+        - currency
+        - created_at
       properties:
         id:
           type: string
         invoice_id:
           type: string
-        line_type:
+        tenant_id:
           type: string
-          enum: [base_fee, usage, add_on, discount, tax]
+          description: Owning tenant. Omitted when empty.
+        line_type:
+          $ref: "#/components/schemas/InvoiceLineType"
+        meter_id:
+          type: string
         description:
           type: string
         quantity:
@@ -2030,36 +448,62 @@ components:
         amount_cents:
           type: integer
           format: int64
+        tax_rate_bp:
+          type: integer
+          format: int64
         tax_amount_cents:
           type: integer
           format: int64
+        tax_jurisdiction:
+          type: string
+        tax_code:
+          type: string
+        tax_reason:
+          type: string
+          description: |
+            Stripe-canonical structured `taxability_reason`
+            (`standard_rated`, `reverse_charge`, `not_collecting`,
+            `customer_exempt`, `product_exempt`, `zero_rated`, etc.).
+            Empty for non-Stripe providers.
         total_amount_cents:
           type: integer
           format: int64
-
-    CreditLedgerEntry:
-      type: object
-      properties:
-        id:
+        currency:
           type: string
-        customer_id:
+        pricing_mode:
           type: string
-        entry_type:
+        rating_rule_version_id:
           type: string
-          enum: [grant, usage, expiry, adjustment]
-        amount_cents:
-          type: integer
-          format: int64
-        description:
-          type: string
-        invoice_id:
-          type: string
-        expires_at:
+        billing_period_start:
           type: string
           format: date-time
+          nullable: true
+        billing_period_end:
+          type: string
+          format: date-time
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
         created_at:
           type: string
           format: date-time
+
+    InvoiceWithLineItems:
+      type: object
+      description: |
+        Response shape for `GET /v1/invoices/{id}`. The handler returns the
+        invoice and its line items as separate top-level keys (rather than
+        nesting `line_items` inside the invoice) so the client can render
+        the two arrays independently.
+      required: [invoice, line_items]
+      properties:
+        invoice:
+          $ref: "#/components/schemas/Invoice"
+        line_items:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvoiceLineItem"
 
     CreditBalance:
       type: object
@@ -2069,105 +513,518 @@ components:
         balance_cents:
           type: integer
           format: int64
-
-    Coupon:
-      type: object
-      properties:
-        id:
-          type: string
-        code:
-          type: string
-        name:
-          type: string
-        type:
-          type: string
-          enum: [percentage, fixed_amount]
-        percent_off:
-          type: number
-        amount_off:
+        total_granted:
           type: integer
           format: int64
-        currency:
-          type: string
-        max_redemptions:
-          type: integer
-        times_redeemed:
-          type: integer
-        expires_at:
-          type: string
-          format: date-time
-        active:
-          type: boolean
-        created_at:
-          type: string
-          format: date-time
-
-    CouponRedemption:
-      type: object
-      properties:
-        id:
-          type: string
-        coupon_id:
-          type: string
-        customer_id:
-          type: string
-        discount_cents:
+        total_used:
           type: integer
           format: int64
-        created_at:
-          type: string
-          format: date-time
 
-    TenantSettings:
-      type: object
-      properties:
-        default_currency:
-          type: string
-          example: USD
-        timezone:
-          type: string
-          example: UTC
-        invoice_prefix:
-          type: string
-          example: VLX
-        net_payment_terms:
-          type: integer
-          example: 30
-        tax_rate_bp:
-          type: integer
-          description: Default tax rate in basis points
-          example: 1850
-        tax_home_country:
-          type: string
-          description: ISO-3166 alpha-2 tax jurisdiction; seeds from company_country on first save
-          example: US
-        company_name:
-          type: string
-        company_address_line1:
-          type: string
-        company_address_line2:
-          type: string
-        company_city:
-          type: string
-        company_state:
-          type: string
-        company_postal_code:
-          type: string
-        company_country:
-          type: string
-          description: ISO-3166 alpha-2 registered-business country
-          example: US
-        company_email:
-          type: string
-        company_phone:
-          type: string
-        logo_url:
-          type: string
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
 
-    Error:
-      type: object
-      properties:
-        error:
-          type: string
-        request_id:
-          type: string
+  /v1/customers:
+    post:
+      tags: [Customers]
+      summary: Create customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id, display_name]
+              properties:
+                external_id:
+                  type: string
+                display_name:
+                  type: string
+                email:
+                  type: string
+      responses:
+        "201":
+          description: Customer created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "409":
+          description: Customer already exists
+    get:
+      tags: [Customers]
+      summary: List customers
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Customer list
+
+  /v1/meters:
+    post:
+      tags: [Pricing]
+      summary: Create meter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, name]
+              properties:
+                key:
+                  type: string
+                name:
+                  type: string
+                unit:
+                  type: string
+                  default: unit
+                aggregation:
+                  type: string
+                  enum: [sum, count, max, last]
+                  default: sum
+                rating_rule_version_id:
+                  type: string
+      responses:
+        "201":
+          description: Meter created
+    get:
+      tags: [Pricing]
+      summary: List meters
+      responses:
+        "200":
+          description: Meter list
+
+  /v1/plans:
+    post:
+      tags: [Pricing]
+      summary: Create plan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name, currency, billing_interval]
+              properties:
+                code:
+                  type: string
+                name:
+                  type: string
+                currency:
+                  type: string
+                billing_interval:
+                  type: string
+                  enum: [monthly, yearly]
+                base_amount_cents:
+                  type: integer
+                meter_ids:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "201":
+          description: Plan created
+    get:
+      tags: [Pricing]
+      summary: List plans
+      responses:
+        "200":
+          description: Plan list
+
+  /v1/rating-rules:
+    post:
+      tags: [Pricing]
+      summary: Create rating rule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rule_key, name, mode, currency]
+              properties:
+                rule_key:
+                  type: string
+                name:
+                  type: string
+                mode:
+                  type: string
+                  enum: [flat, graduated, package]
+                currency:
+                  type: string
+                flat_amount_cents:
+                  type: integer
+                graduated_tiers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      up_to:
+                        type: integer
+                      unit_amount_cents:
+                        type: integer
+                package_size:
+                  type: integer
+                package_amount_cents:
+                  type: integer
+      responses:
+        "201":
+          description: Rating rule created
+    get:
+      tags: [Pricing]
+      summary: List rating rules
+      responses:
+        "200":
+          description: Rating rule list
+
+  /v1/subscriptions:
+    post:
+      tags: [Subscriptions]
+      summary: Create subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, display_name, customer_id, plan_id]
+              properties:
+                code:
+                  type: string
+                display_name:
+                  type: string
+                customer_id:
+                  type: string
+                plan_id:
+                  type: string
+                billing_time:
+                  type: string
+                  enum: [calendar, anniversary]
+                  default: calendar
+                trial_days:
+                  type: integer
+                start_now:
+                  type: boolean
+      responses:
+        "201":
+          description: Subscription created
+    get:
+      tags: [Subscriptions]
+      summary: List subscriptions
+      responses:
+        "200":
+          description: Subscription list
+
+  /v1/subscriptions/{id}/activate:
+    post:
+      tags: [Subscriptions]
+      summary: Activate draft subscription
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Subscription activated
+
+  /v1/subscriptions/{id}/change-plan:
+    post:
+      tags: [Subscriptions]
+      summary: Change subscription plan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_plan_id]
+              properties:
+                new_plan_id:
+                  type: string
+                immediate:
+                  type: boolean
+      responses:
+        "200":
+          description: Plan changed
+
+  /v1/usage-events:
+    post:
+      tags: [Usage]
+      summary: Ingest usage event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_id, meter_id, quantity]
+              properties:
+                customer_id:
+                  type: string
+                meter_id:
+                  type: string
+                subscription_id:
+                  type: string
+                quantity:
+                  type: integer
+                  format: int64
+                properties:
+                  type: object
+                idempotency_key:
+                  type: string
+                timestamp:
+                  type: string
+                  format: date-time
+      responses:
+        "201":
+          description: Event ingested
+    get:
+      tags: [Usage]
+      summary: List usage events
+      responses:
+        "200":
+          description: Event list
+
+  /v1/usage-events/batch:
+    post:
+      tags: [Usage]
+      summary: Batch ingest usage events (max 1000)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                required: [customer_id, meter_id, quantity]
+                properties:
+                  customer_id:
+                    type: string
+                  meter_id:
+                    type: string
+                  quantity:
+                    type: integer
+      responses:
+        "201":
+          description: All events ingested
+        "206":
+          description: Partial success
+
+  /v1/invoices:
+    get:
+      tags: [Invoices]
+      summary: List invoices
+      responses:
+        "200":
+          description: Invoice list
+
+  /v1/invoices/{id}:
+    get:
+      tags: [Invoices]
+      summary: Get invoice with line items
+      operationId: getInvoice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invoice with its line items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvoiceWithLineItems"
+        "404":
+          description: Invoice not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/invoices/{id}/pdf:
+    get:
+      tags: [Invoices]
+      summary: Download invoice PDF
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: PDF file
+          content:
+            application/pdf: {}
+
+  /v1/invoices/{id}/finalize:
+    post:
+      tags: [Invoices]
+      summary: Finalize draft invoice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invoice finalized
+
+  /v1/billing/run:
+    post:
+      tags: [Billing]
+      summary: Trigger billing cycle
+      responses:
+        "200":
+          description: Billing cycle result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoices_generated:
+                    type: integer
+                  errors:
+                    type: array
+                    items:
+                      type: string
+
+  /v1/billing/preview/{subscription_id}:
+    get:
+      tags: [Billing]
+      summary: Invoice preview (dry run)
+      parameters:
+        - name: subscription_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invoice preview
+
+  /v1/credits/grant:
+    post:
+      tags: [Credits]
+      summary: Grant credits to customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_id, amount_cents]
+              properties:
+                customer_id:
+                  type: string
+                amount_cents:
+                  type: integer
+                  format: int64
+                description:
+                  type: string
+      responses:
+        "201":
+          description: Credits granted
+
+  /v1/credits/balance/{customer_id}:
+    get:
+      tags: [Credits]
+      summary: Get customer credit balance
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Credit balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreditBalance"
+
+  /v1/dunning/policy:
+    get:
+      tags: [Dunning]
+      summary: Get dunning policy
+      responses:
+        "200":
+          description: Dunning policy
+    put:
+      tags: [Dunning]
+      summary: Configure dunning policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                enabled:
+                  type: boolean
+                retry_schedule:
+                  type: array
+                  items:
+                    type: string
+                max_retry_attempts:
+                  type: integer
+                final_action:
+                  type: string
+                  enum: [manual_review, pause, write_off_later]
+      responses:
+        "200":
+          description: Policy updated
+
+  /v1/webhooks/stripe:
+    post:
+      tags: [Webhooks]
+      summary: Stripe webhook receiver
+      security: []
+      description: Receives Stripe webhook events. Verified via Stripe-Signature header.
+      responses:
+        "200":
+          description: Event processed
+
+  /v1/metrics:
+    get:
+      tags: [System]
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200":
+          description: Prometheus metrics
+          content:
+            text/plain: {}
