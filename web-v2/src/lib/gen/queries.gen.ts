@@ -35,6 +35,7 @@ import type {
   PostV1BillingRun200,
   PostV1CreditsGrantBody,
   PostV1CustomersBody,
+  PostV1InvoicesCreatePreviewBody,
   PostV1MetersBody,
   PostV1PlansBody,
   PostV1RatingRulesBody,
@@ -1503,6 +1504,86 @@ export function useGetV1Invoices<TData = Awaited<ReturnType<typeof getV1Invoices
 
 
 
+
+/**
+ * Answers "what is my next bill going to look like?" using the same
+line-set the cycle scan would emit if billing fired right now —
+so dashboard projected-bill matches the eventual finalized
+invoice. Composes across customer / subscription / pricing;
+registered as a sibling of `/v1/invoices` (chi picks the more
+specific pattern, otherwise `/{id}` would capture
+`create_preview` as an invoice ID). See
+[`docs/design-create-preview.md`](../docs/design-create-preview.md).
+
+ * @summary Preview the next invoice for a customer (Stripe-equivalent)
+ */
+export const getPostV1InvoicesCreatePreviewUrl = () => {
+
+
+
+
+  return `/v1/invoices/create_preview`
+}
+
+export const postV1InvoicesCreatePreview = async (postV1InvoicesCreatePreviewBody: PostV1InvoicesCreatePreviewBody, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPostV1InvoicesCreatePreviewUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1InvoicesCreatePreviewBody,)
+  }
+);}
+
+
+
+
+export const getPostV1InvoicesCreatePreviewMutationOptions = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1InvoicesCreatePreview>>, TError,{data: PostV1InvoicesCreatePreviewBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1InvoicesCreatePreview>>, TError,{data: PostV1InvoicesCreatePreviewBody}, TContext> => {
+
+const mutationKey = ['postV1InvoicesCreatePreview'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1InvoicesCreatePreview>>, {data: PostV1InvoicesCreatePreviewBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1InvoicesCreatePreview(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1InvoicesCreatePreviewMutationResult = NonNullable<Awaited<ReturnType<typeof postV1InvoicesCreatePreview>>>
+    export type PostV1InvoicesCreatePreviewMutationBody = PostV1InvoicesCreatePreviewBody
+    export type PostV1InvoicesCreatePreviewMutationError = Error
+
+    /**
+ * @summary Preview the next invoice for a customer (Stripe-equivalent)
+ */
+export const usePostV1InvoicesCreatePreview = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1InvoicesCreatePreview>>, TError,{data: PostV1InvoicesCreatePreviewBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1InvoicesCreatePreview>>,
+        TError,
+        {data: PostV1InvoicesCreatePreviewBody},
+        TContext
+      > => {
+      return useMutation(getPostV1InvoicesCreatePreviewMutationOptions(options), queryClient);
+    }
 
 /**
  * @summary Get invoice with line items

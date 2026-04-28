@@ -763,6 +763,25 @@ type PutV1DunningPolicyJSONBody struct {
 // PutV1DunningPolicyJSONBodyFinalAction defines parameters for PutV1DunningPolicy.
 type PutV1DunningPolicyJSONBodyFinalAction string
 
+// PostV1InvoicesCreatePreviewJSONBody defines parameters for PostV1InvoicesCreatePreview.
+type PostV1InvoicesCreatePreviewJSONBody struct {
+	// CustomerId Customer to preview the invoice for.
+	CustomerId string `json:"customer_id"`
+
+	// Period Optional explicit window. Both bounds must be
+	// supplied together; partial windows are rejected.
+	// Defaults to the resolved subscription's current
+	// cycle.
+	Period struct {
+		From time.Time `json:"from"`
+		To   time.Time `json:"to"`
+	} `json:"period,omitempty"`
+
+	// SubscriptionId Optional. Defaults to the customer's primary active
+	// subscription if not supplied.
+	SubscriptionId string `json:"subscription_id,omitempty"`
+}
+
 // PostV1MetersJSONBody defines parameters for PostV1Meters.
 type PostV1MetersJSONBody struct {
 	Aggregation         PostV1MetersJSONBodyAggregation `json:"aggregation,omitempty"`
@@ -853,6 +872,9 @@ type PostV1CustomersJSONRequestBody PostV1CustomersJSONBody
 // PutV1DunningPolicyJSONRequestBody defines body for PutV1DunningPolicy for application/json ContentType.
 type PutV1DunningPolicyJSONRequestBody PutV1DunningPolicyJSONBody
 
+// PostV1InvoicesCreatePreviewJSONRequestBody defines body for PostV1InvoicesCreatePreview for application/json ContentType.
+type PostV1InvoicesCreatePreviewJSONRequestBody PostV1InvoicesCreatePreviewJSONBody
+
 // PostV1MetersJSONRequestBody defines body for PostV1Meters for application/json ContentType.
 type PostV1MetersJSONRequestBody PostV1MetersJSONBody
 
@@ -906,6 +928,9 @@ type ServerInterface interface {
 	// List invoices
 	// (GET /v1/invoices)
 	GetV1Invoices(w http.ResponseWriter, r *http.Request)
+	// Preview the next invoice for a customer (Stripe-equivalent)
+	// (POST /v1/invoices/create_preview)
+	PostV1InvoicesCreatePreview(w http.ResponseWriter, r *http.Request)
 	// Get invoice with line items
 	// (GET /v1/invoices/{id})
 	GetInvoice(w http.ResponseWriter, r *http.Request, id string)
@@ -1023,6 +1048,12 @@ func (_ Unimplemented) PutV1DunningPolicy(w http.ResponseWriter, r *http.Request
 // List invoices
 // (GET /v1/invoices)
 func (_ Unimplemented) GetV1Invoices(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Preview the next invoice for a customer (Stripe-equivalent)
+// (POST /v1/invoices/create_preview)
+func (_ Unimplemented) PostV1InvoicesCreatePreview(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1379,6 +1410,26 @@ func (siw *ServerInterfaceWrapper) GetV1Invoices(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetV1Invoices(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1InvoicesCreatePreview operation middleware
+func (siw *ServerInterfaceWrapper) PostV1InvoicesCreatePreview(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1InvoicesCreatePreview(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1933,6 +1984,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/invoices", wrapper.GetV1Invoices)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/invoices/create_preview", wrapper.PostV1InvoicesCreatePreview)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/invoices/{id}", wrapper.GetInvoice)
