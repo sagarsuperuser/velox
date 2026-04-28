@@ -1,9 +1,10 @@
 # Pricing Recipes — Technical Design
 
-> **Status:** Draft v1
-> **Owner:** Track A
+> **Status:** Shipped — see [`CHANGELOG.md`](../CHANGELOG.md) for the merged commits and the operator-facing surface in `web-v2/src/pages/Recipes.tsx`.
 > **Last revised:** 2026-04-25
 > **Related:** `docs/design-multi-dim-meters.md` (multi-dim meter dependency), ADR-002 (per-domain), ADR-003 (RLS)
+>
+> The text below is preserved as the design-time RFC. The implementation is live in `main`; refer to the package-level docs in `internal/recipe/` for the current behaviour.
 
 ## Motivation
 
@@ -39,7 +40,7 @@ This design depends on multi-dim meters being merged.
 - `internal/pricing.Service.CreateMeter`, `CreateRatingRule`, `CreatePlan` — narrow per-domain creates, no atomic-graph helper exists yet.
 - `internal/dunning.Service.UpsertPolicy` — per-tenant retry schedule.
 - `internal/webhook.Service.CreateEndpoint` — registers a webhook URL, returns the signing secret.
-- `internal/usage.Store.UpsertPricingRule` (Week 2) — multi-dim rule per meter.
+- `internal/usage.Store.UpsertPricingRule` — multi-dim rule per meter.
 - No coordinator. Today, building `anthropic_style` by hand is ~30 HTTP calls with manual ID-passing between them. Recipes collapse this to one.
 
 ## Proposed schema changes — migration `00XX_recipe_instances`
@@ -372,7 +373,7 @@ internal/recipe/
 - `pricing.Service` for plan + meter + rating rule creation
 - `dunning.Service` for policy upsert
 - `webhook.Service` for endpoint creation
-- `usage.Service` for `MeterPricingRule` upsert (Week 2 dependency)
+- `usage.Service` for `MeterPricingRule` upsert
 - `customer.Service` + `subscription.Service` for `seed_sample_data`
 
 The dependencies inject as narrow interfaces so the recipe package owns no cross-domain state. Same pattern as `internal/billing/engine`.
@@ -469,7 +470,7 @@ Each recipe gets a one-pager at `/docs/recipes/{key}.md` (Track B's `/docs/recip
 
 ## Decimal & numeric considerations
 
-Recipes inherit Week 2's `NUMERIC(38, 12)` quantity type; no recipe-specific changes. All amount fields are integer cents per ADR-005. Currency conversion is the operator's responsibility (Stripe handles the actual settlement).
+Recipes inherit the `NUMERIC(38, 12)` quantity type from `usage_events`; no recipe-specific changes. All amount fields are integer cents per ADR-005. Currency conversion is the operator's responsibility (Stripe handles the actual settlement).
 
 ## Performance
 
@@ -488,26 +489,24 @@ Recipes inherit Week 2's `NUMERIC(38, 12)` quantity type; no recipe-specific cha
 6. **Recipe ordering in `GET /v1/recipes` — is there a "featured" notion?** Proposal: **alphabetical, no featuring v1**. The picker UI (Track B) can apply its own ordering; backend doesn't pick favorites.
 7. **Should built-in recipes ship with `webhook.events` set or empty?** Proposal: **set per recipe**. `anthropic_style` and `openai_style` get the AI-relevant events (`invoice.finalized`, `usage.threshold_crossed` once Week 5 ships); `b2b_saas_pro` gets the SaaS-classic ones (`subscription.created`, `subscription.canceled`). Concrete defaults beat empty-and-let-the-tenant-figure-it-out.
 
-## Implementation checklist (Week 3)
+## Implementation checklist
 
-Tracking via the 90-day plan; this is the canonical breakdown:
-
-- [ ] Migration `00XX_recipe_instances.{up,down}.sql` (allocate number from `origin/main`)
-- [ ] `domain.RecipeInstance` struct, `domain.Recipe` (parsed YAML), `domain.CreatedObjects`
-- [ ] `internal/recipe/embed.go` — `embed.FS` and registry
-- [ ] `internal/recipe/parse.go` — YAML schema + validation
-- [ ] `internal/recipe/template.go` — override merge + `text/template` render
-- [ ] `internal/recipe/store.go` + `postgres.go` — `recipe_instances` CRUD
-- [ ] `internal/recipe/service.go` — `Preview`, `Instantiate`, `Uninstall`
-- [ ] HTTP handlers: `GET /v1/recipes`, `GET /v1/recipes/{key}`, `POST /v1/recipes/{key}/preview`, `POST /v1/recipes/instantiate`, `DELETE /v1/recipes/instances/{id}`
-- [ ] `*Tx` variants on `pricing.Service`, `dunning.Service`, `webhook.Service`, `usage.Service` for transactional graph creation
-- [ ] 5 built-in recipes in `internal/recipe/recipes/*.yaml`
-- [ ] Per-recipe one-pagers in `docs/recipes/*.md` (Track B owns rendering at `/docs/recipes`)
-- [ ] Unit tests: YAML parse, override validation, template render
-- [ ] Integration tests: instantiate / preview / force / RLS / atomicity rollback
-- [ ] `cmd/velox-recipes-e2e/main.go` + assertion against multi-dim meter pricing
-- [ ] OpenAPI spec update (`docs/openapi.yaml`)
-- [ ] CHANGELOG.md (Track A) + Changelog.tsx (Track B, after coordinating)
+- [x] Migration `0055_recipe_instances.{up,down}.sql`
+- [x] `domain.RecipeInstance` struct, `domain.Recipe` (parsed YAML), `domain.CreatedObjects`
+- [x] `internal/recipe/embed.go` — `embed.FS` and registry
+- [x] `internal/recipe/parse.go` — YAML schema + validation
+- [x] `internal/recipe/template.go` — override merge + `text/template` render
+- [x] `internal/recipe/store.go` + `postgres.go` — `recipe_instances` CRUD
+- [x] `internal/recipe/service.go` — `Preview`, `Instantiate`, `Uninstall`
+- [x] HTTP handlers: `GET /v1/recipes`, `GET /v1/recipes/{key}`, `POST /v1/recipes/{key}/preview`, `POST /v1/recipes/instantiate`, `DELETE /v1/recipes/instances/{id}`
+- [x] `*Tx` variants on `pricing.Service`, `dunning.Service`, `webhook.Service`, `usage.Service` for transactional graph creation
+- [x] 5 built-in recipes in `internal/recipe/recipes/*.yaml`
+- [x] Per-recipe one-pagers in `docs/recipes/*.md` rendered at `/docs/recipes`
+- [x] Unit tests: YAML parse, override validation, template render
+- [x] Integration tests: instantiate / preview / force / RLS / atomicity rollback
+- [x] `cmd/velox-recipes-e2e/main.go` + assertion against multi-dim meter pricing
+- [x] OpenAPI spec update (`docs/openapi.yaml`)
+- [x] CHANGELOG entry + public changelog rollup
 
 ## Track B unblock
 

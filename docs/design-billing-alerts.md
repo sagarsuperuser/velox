@@ -1,9 +1,10 @@
 # Billing Alerts — Technical Design
 
-> **Status:** Draft v1
-> **Owner:** Track A
+> **Status:** Shipped — see [`CHANGELOG.md`](../CHANGELOG.md) for the merged commits and migration `0057_billing_alerts`.
 > **Last revised:** 2026-04-26
 > **Related:** `docs/design-create-preview.md` (sibling — same composition + always-array conventions), `docs/design-customer-usage.md` (the read surface alerts evaluate against), `docs/design-multi-dim-meters.md` (multi-dim dependency — `usage.AggregateByPricingRules` is the trigger evaluator's engine)
+>
+> The text below is preserved as the design-time RFC. The implementation is live in `main`; refer to `internal/billingalert/` and `web-v2/src/pages/BillingAlerts.tsx` for the current behaviour.
 
 ## Motivation
 
@@ -23,7 +24,7 @@ The dashboard consumer is the existing CostDashboard's notifications panel; it p
 - **Stripe Tier 1 parity** for the simple "alert me at $X" use case. Threshold is either dollar-cents (`amount_gte`) or raw quantity (`usage_gte`) — both are common ("alert at $50 spent" vs "alert at 1M tokens consumed").
 - **Customer-scoped first**. v1 alerts are always tied to a `customer_id`; tenant-wide ("alert me when ANY customer crosses $1000 this cycle") is a separate, more-complex surface — defer.
 - **Optional meter scope**. An alert can target one specific meter (`filter.meter_id`) or aggregate across all meters on the customer's plan (omit `filter.meter_id`). Single-meter alerts evaluate against that meter's rule resolution; cross-meter alerts evaluate against the customer's total amount across the cycle (same number `customer-usage` reports).
-- **Optional dimension filter**. Multi-dim meters (Week 2) let pricing rules carry `dimension_match` — alerts can narrow further: "alert me when GPT-4 input token spend on customer X exceeds $50". Implemented as a strict-superset match on rule `dimension_match`.
+- **Optional dimension filter**. Multi-dim meters let pricing rules carry `dimension_match` — alerts can narrow further: "alert me when GPT-4 input token spend on customer X exceeds $50". Implemented as a strict-superset match on rule `dimension_match`.
 - **Reliable emission via outbox**. Trigger evaluation reads, decides to fire, mutates state and enqueues the webhook all inside one tx. If the tx rolls back, no webhook fires; if it commits, the dispatcher will eventually deliver. Same atomicity contract every other event-emitting domain uses.
 - **Idempotent recurrence**. `per_period` alerts emit at most one event per (alert, cycle) — even across crashes / replica failovers / replays of the evaluator. The trigger row's UNIQUE constraint on `(alert_id, period_from)` is the source of truth.
 - **Always-array / always-object wire shape**. Same conventions as customer-usage and create_preview — `alerts[]` is a JSON array even when empty; `dimension_match` is a JSON object even when empty (the rule's "match anything" identity); decimals serialize as JSON strings.
@@ -397,26 +398,24 @@ The wire-shape regression test (`TestWireShape_SnakeCase`) marshals a fully-popu
 6. **Should we persist the trigger row's outbox `event_id` for cross-reference?** Useful for debugging "did this alert's webhook get delivered". **Proposal: defer.** The webhook outbox is queryable on its own; cross-referencing via `event_type='billing.alert.triggered'` and matching `data.alert_id` is sufficient. Add a column if a real ops use case emerges.
 7. **Should we expose a way to test-fire an alert without waiting for real usage?** Useful for the operator to verify their webhook receiver is wired correctly. **Proposal: defer to v2** behind a separate `POST /v1/billing/alerts/{id}/test_fire` route gated to test-mode keys only. v1 operators can verify via Stripe's standard webhook-event replay UI on the dashboard.
 
-## Implementation checklist (Week 5d)
+## Implementation checklist
 
-- [ ] `docs/design-billing-alerts.md` — this RFC.
-- [ ] `internal/domain/billing_alert.go` — domain types (`BillingAlert`, `BillingAlertStatus`, `BillingAlertRecurrence`, `BillingAlertTrigger`, threshold helpers).
-- [ ] `internal/platform/migrate/sql/0057_billing_alerts.up.sql` + `.down.sql` — schema.
-- [ ] `internal/billingalert/store.go` — `Store` interface + `ListFilter`.
-- [ ] `internal/billingalert/postgres.go` — Postgres implementation.
-- [ ] `internal/billingalert/service.go` — Create / Get / List / Archive.
-- [ ] `internal/billingalert/handler.go` — chi router for the four endpoints.
-- [ ] `internal/billingalert/evaluator.go` — background evaluator with advisory lock.
-- [ ] `internal/billingalert/wire_shape_test.go` — `TestWireShape_SnakeCase` merge gate.
-- [ ] `internal/billingalert/service_test.go` — unit tests with fakes.
-- [ ] `internal/billingalert/evaluator_test.go` — unit tests for evaluator helpers.
-- [ ] `internal/billingalert/integration_test.go` — full-stack integration with real Postgres + outbox.
-- [ ] Add `EventBillingAlertTriggered = "billing.alert.triggered"` to `internal/domain/webhook_outbound.go`.
-- [ ] Add `LockKeyBillingAlertEvaluator int64 = 76540005` to `internal/platform/postgres/advisory_lock.go`.
-- [ ] Wire routes + evaluator goroutine in `internal/api/router.go` and `cmd/velox/main.go`.
-- [ ] Update `web-v2/src/lib/api.ts` — `BillingAlert` types + endpoint methods.
-- [ ] Update `CHANGELOG.md` (Track A) + `web-v2/src/pages/Changelog.tsx` (Track B).
-- [ ] Track A → Track B handoff note (private velox-ops repo).
+- [x] `internal/domain/billing_alert.go` — domain types (`BillingAlert`, `BillingAlertStatus`, `BillingAlertRecurrence`, `BillingAlertTrigger`, threshold helpers).
+- [x] `internal/platform/migrate/sql/0057_billing_alerts.{up,down}.sql` — schema.
+- [x] `internal/billingalert/store.go` — `Store` interface + `ListFilter`.
+- [x] `internal/billingalert/postgres.go` — Postgres implementation.
+- [x] `internal/billingalert/service.go` — Create / Get / List / Archive.
+- [x] `internal/billingalert/handler.go` — chi router for the four endpoints.
+- [x] `internal/billingalert/evaluator.go` — background evaluator with advisory lock.
+- [x] `internal/billingalert/wire_shape_test.go` — `TestWireShape_SnakeCase` merge gate.
+- [x] `internal/billingalert/service_test.go` — unit tests with fakes.
+- [x] `internal/billingalert/evaluator_test.go` — unit tests for evaluator helpers.
+- [x] `internal/billingalert/integration_test.go` — full-stack integration with real Postgres + outbox.
+- [x] `EventBillingAlertTriggered = "billing.alert.triggered"` in `internal/domain/webhook_outbound.go`.
+- [x] `LockKeyBillingAlertEvaluator` in `internal/platform/postgres/advisory_lock.go`.
+- [x] Routes + evaluator goroutine wired in `internal/api/router.go` and `cmd/velox/main.go`.
+- [x] `web-v2/src/lib/api.ts` — `BillingAlert` types + endpoint methods.
+- [x] CHANGELOG entry + public changelog rollup.
 
 ## Track B unblock
 

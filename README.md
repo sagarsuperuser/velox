@@ -48,8 +48,6 @@ curl -X POST https://api.velox.dev/v1/meters/mtr_tokens/pricing-rules \
 
 A coarser rule (`{"model": "gpt-4"}`) plus a finer override (`{"model": "gpt-4", "cached": true}` at higher priority) compose cleanly — each event is claimed by the highest-priority matching rule, no double-count. The full design — schema, aggregation semantics, decimal quantities, all five aggregation modes (`sum`, `count`, `last_during_period`, `last_ever`, `max`) — lives in [`docs/design-multi-dim-meters.md`](docs/design-multi-dim-meters.md).
 
-> **Status:** multi-dim meters land in `v0.x` on **May 8, 2026** (Week 2 of the 90-day plan). The endpoints above are the published API contract; today's `POST /v1/usage-events` accepts integer `quantity` only and stays available for back-compat.
-
 ---
 
 ## What's in the box
@@ -95,7 +93,7 @@ End-to-end demo (creates a customer, ingests usage, runs billing, generates a PD
 ./scripts/demo.sh $VELOX_SECRET
 ```
 
-Five-minute self-host: see [`docs/self-host`](docs/) (Week 9 deliverable — under construction).
+Five-minute self-host (Helm chart + Terraform module): under construction. Postgres backup playbook is already in [`docs/self-host/postgres-backup.md`](docs/self-host/postgres-backup.md).
 
 ---
 
@@ -232,22 +230,26 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 
 ---
 
-## Roadmap (next 90 days)
+## Roadmap
 
-| Week  | Ship                                                                            |
-|-------|---------------------------------------------------------------------------------|
-| 1     | Positioning, README, blog post, design-partner outreach list (this commit)      |
-| 2     | Multi-dim meters, decimal quantities, all five aggregation modes                |
-| 3     | Pricing recipes (`anthropic_style`, etc.) + recipe-picker UI                    |
-| 4     | Quickstart wizard — sign-up → first invoice in <5 minutes                       |
-| 5     | `create_preview`, billing thresholds, billing alerts, `<VeloxCostDashboard />`  |
-| 6–7   | Live event stream UI, plan-migration preview, bulk operations, invoice composer |
-| 8     | 50 cold emails, 10+ demo calls, 3 design partners with signed LOI               |
-| 9     | Helm chart, Docker Compose, Terraform — self-host in ≤1 hour                    |
-| 10    | Compliance posture — encryption-at-rest, SOC2 mapping, GDPR export              |
-| 11    | Migration FROM Stripe Billing (importer + cutover playbook)                     |
-| 12    | First design partner cuts over to Velox in production                           |
-| 13    | Stabilize + public retro                                                         |
+### Recently shipped
+
+- **Multi-dimensional meters** — one meter, N pricing rules, decimal quantities (`NUMERIC(38, 12)`), all five aggregation modes
+- **Pricing recipes** — `anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`; recipe-picker UI; one-click uninstall
+- **Quickstart wizard** — sign-up → first invoice in under five minutes
+- **`create_preview`, billing thresholds, billing alerts** — Stripe Tier-1 surfaces with multi-dim parity
+- **Embeddable cost dashboard** — `<VeloxCostDashboard customerId={…} />` plus token-authenticated public URL
+- **Plan-migration UI** — preview, batch apply, history; bulk operations on customers/subscriptions/invoices
+- **Live event stream + invoice composer** — operator UX for ingestion debugging and one-off invoice creation
+- **`velox-import`** — Stripe Billing → Velox cutover with idempotent reruns and reconciliation CSV; full operator playbook in [`docs/migration-from-stripe.md`](docs/migration-from-stripe.md)
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
+
+### In flight
+
+- **Self-host packaging** — Helm chart + Terraform module (Postgres backup runbook already in [`docs/self-host/postgres-backup.md`](docs/self-host/postgres-backup.md))
+- **Compliance posture** — encryption-at-rest hardening, SOC 2 control mapping, GDPR export coverage
+- **First design-partner cutover** to Velox in production
 
 ---
 
