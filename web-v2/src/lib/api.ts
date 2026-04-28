@@ -222,6 +222,18 @@ export const api = {
   },
   listUsageEvents: (params?: string) =>
     apiRequest<{ data: UsageEvent[]; total: number }>('GET', `/usage-events${params ? '?' + params : ''}`),
+  // Server-side aggregate that powers the /usage page's stat cards +
+  // "Usage by Meter" breakdown. Same filter qs as listUsageEvents (drop
+  // limit/offset — the whole point is the unbounded total). All numeric
+  // fields except total_events arrive as decimal strings (NUMERIC(38,12)
+  // per ADR-005) so fractional GPU-hours and partial tokens round-trip
+  // without precision loss; coerce via Number()/parseFloat() for display
+  // only. See internal/usage/store.go (Aggregate type).
+  aggregateUsageEvents: (params?: string) =>
+    apiRequest<UsageEventsAggregate>(
+      'GET',
+      `/usage-events/aggregate${params ? '?' + params : ''}`,
+    ),
 
   // Customer updates
   updateCustomer: (id: string, data: { display_name?: string; email?: string }) =>
@@ -797,6 +809,21 @@ export interface UsageEvent {
   dimensions?: Record<string, string | number | boolean>
   idempotency_key: string
   timestamp: string
+}
+
+// Response shape of GET /v1/usage-events/aggregate. Mirrors the same
+// filter scope as listUsageEvents (customer_id, meter_id, from, to,
+// dimensions) but ignores limit/offset — by_meter is the full filtered
+// breakdown, not a page. total_units + by_meter[].total are decimal
+// strings (ADR-005) for full NUMERIC(38, 12) round-trip; total_events
+// and the active_* counts are integer JSON numbers. See
+// internal/usage/store.go (Aggregate, MeterTotal).
+export interface UsageEventsAggregate {
+  total_events: number
+  total_units: string
+  active_meters: number
+  active_customers: number
+  by_meter: { meter_id: string; total: string }[]
 }
 
 export type MeterAggregationMode =

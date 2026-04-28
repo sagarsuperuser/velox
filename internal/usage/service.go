@@ -142,6 +142,15 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.UsageEv
 	return s.store.List(ctx, filter)
 }
 
+// Aggregate returns server-side totals + per-meter breakdown matching the
+// filter. Used by GET /v1/usage-events/aggregate so the /usage dashboard's
+// stat cards reflect filtered totals rather than a reduce over the current
+// page of paginated events. Limit/Offset on the filter are intentionally
+// ignored — the whole point is the unbounded total.
+func (s *Service) Aggregate(ctx context.Context, filter ListFilter) (Aggregate, error) {
+	return s.store.Aggregate(ctx, filter)
+}
+
 func (s *Service) AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	return s.store.AggregateForBillingPeriod(ctx, tenantID, customerID, meterIDs, from, to)
 }

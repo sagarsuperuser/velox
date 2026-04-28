@@ -1198,6 +1198,10 @@ falls through to `ManualCalculator`. Operators alert on sustained non-zero value
 - [ ] Filter by customer → breakdown updates
 - [ ] Filter by date range
 - [ ] Export CSV
+- [ ] Stat cards stay constant when paging (page=1 → page=2 → page=3) — `total_events` reflects all filtered rows, NOT the 25-event page (issue #7)
+- [ ] Filter by customer → all four stat cards AND breakdown bars recompute server-side; `Total Units` reflects every matching event in scope, not the visible page
+- [ ] Filter by meter → breakdown collapses to a single row; `Active Meters` shows 1
+- [ ] Decimal precision: ingest three events with quantities `0.5`, `0.5`, `0.0001` for one customer/meter → `Total Units` displays `1.0001` (no precision loss, no toLocaleString rounding)
 
 ## FLOW U4: Cmd+K command palette
 
