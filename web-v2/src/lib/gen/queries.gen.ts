@@ -31,6 +31,7 @@ import type {
   Customer,
   Error,
   GetV1CustomersParams,
+  GetV1Whoami200,
   InvoiceWithLineItems,
   PostV1BillingRun200,
   PostV1CreditsGrantBody,
@@ -1856,6 +1857,112 @@ export const usePostV1InvoicesIdFinalize = <TError = unknown,
       > => {
       return useMutation(getPostV1InvoicesIdFinalizeMutationOptions(options), queryClient);
     }
+
+/**
+ * Returns the resolved auth context for the current bearer key.
+No specific permission required — any valid key (publishable or
+secret) can hit this. The dashboard hits this on login to
+validate a pasted key and populate the AuthContext for display.
+
+ * @summary Resolve the bearer key to its tenant context
+ */
+export const getGetV1WhoamiUrl = () => {
+
+
+
+
+  return `/v1/whoami`
+}
+
+export const getV1Whoami = async ( options?: RequestInit): Promise<GetV1Whoami200> => {
+
+  return orvalClient<GetV1Whoami200>(getGetV1WhoamiUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1WhoamiQueryKey = () => {
+    return [
+    `/v1/whoami`
+    ] as const;
+    }
+
+
+export const getGetV1WhoamiQueryOptions = <TData = Awaited<ReturnType<typeof getV1Whoami>>, TError = Error>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1Whoami>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1WhoamiQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1Whoami>>> = () => getV1Whoami(requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1Whoami>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1WhoamiQueryResult = NonNullable<Awaited<ReturnType<typeof getV1Whoami>>>
+export type GetV1WhoamiQueryError = Error
+
+
+export function useGetV1Whoami<TData = Awaited<ReturnType<typeof getV1Whoami>>, TError = Error>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1Whoami>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1Whoami>>,
+          TError,
+          Awaited<ReturnType<typeof getV1Whoami>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1Whoami<TData = Awaited<ReturnType<typeof getV1Whoami>>, TError = Error>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1Whoami>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1Whoami>>,
+          TError,
+          Awaited<ReturnType<typeof getV1Whoami>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1Whoami<TData = Awaited<ReturnType<typeof getV1Whoami>>, TError = Error>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1Whoami>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Resolve the bearer key to its tenant context
+ */
+
+export function useGetV1Whoami<TData = Awaited<ReturnType<typeof getV1Whoami>>, TError = Error>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1Whoami>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1WhoamiQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
 
 /**
  * @summary Trigger billing cycle
