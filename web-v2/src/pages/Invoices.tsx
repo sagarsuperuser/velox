@@ -68,13 +68,14 @@ export default function InvoicesPage() {
   const [urlState, setUrlState] = useUrlState({
     search: '',
     status: '',
+    payment_status: '',
     dateFrom: '',
     dateTo: '',
     page: '1',
     sort: 'created_at',
     dir: 'desc',
   })
-  const { search, status: statusFilter, dateFrom, dateTo, sort: sortKey } = urlState
+  const { search, status: statusFilter, payment_status: paymentStatusFilter, dateFrom, dateTo, sort: sortKey } = urlState
   const sortDir = urlState.dir as SortDir
   const page = Math.max(1, parseInt(urlState.page) || 1)
   const navigate = useNavigate()
@@ -84,11 +85,12 @@ export default function InvoicesPage() {
     params.set('limit', String(PAGE_SIZE))
     params.set('offset', String((page - 1) * PAGE_SIZE))
     if (statusFilter) params.set('status', statusFilter)
+    if (paymentStatusFilter) params.set('payment_status', paymentStatusFilter)
     return params.toString()
-  }, [page, statusFilter])
+  }, [page, statusFilter, paymentStatusFilter])
 
   const { data: invoicesData, isLoading: loading, error: loadErrorObj, refetch } = useQuery({
-    queryKey: ['invoices', page, statusFilter],
+    queryKey: ['invoices', page, statusFilter, paymentStatusFilter],
     queryFn: () => api.listInvoices(queryParams),
   })
 
@@ -154,8 +156,24 @@ export default function InvoicesPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Invoices</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Track invoices, payments, and billing history{statusFilter ? ` · Showing ${statusFilter}` : total > 0 ? ` · ${total} total` : ''}
+          <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
+            <span>
+              Track invoices, payments, and billing history
+              {statusFilter ? ` · Showing ${statusFilter}` : !paymentStatusFilter && total > 0 ? ` · ${total} total` : ''}
+            </span>
+            {paymentStatusFilter && (
+              <Badge variant="secondary" className="gap-1">
+                payment: {paymentStatusFilter}
+                <button
+                  type="button"
+                  onClick={() => setUrlState({ payment_status: '', page: '1' })}
+                  className="ml-0.5 hover:text-foreground"
+                  aria-label="Clear payment status filter"
+                >
+                  ×
+                </button>
+              </Badge>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -233,14 +251,20 @@ export default function InvoicesPage() {
           ) : loading ? (
             <TableSkeleton columns={7} />
           ) : total === 0 ? (
-            statusFilter ? (
+            statusFilter || paymentStatusFilter ? (
               <EmptyState
-                title={`No ${statusFilter} invoices`}
+                title={
+                  statusFilter && paymentStatusFilter
+                    ? `No ${statusFilter} invoices with payment ${paymentStatusFilter}`
+                    : statusFilter
+                    ? `No ${statusFilter} invoices`
+                    : `No invoices with payment ${paymentStatusFilter}`
+                }
                 description="Try a different filter to see more results."
                 action={{
-                  label: 'Clear filter',
+                  label: 'Clear filters',
                   variant: 'outline',
-                  onClick: () => setUrlState({ status: '', page: '1' }),
+                  onClick: () => setUrlState({ status: '', payment_status: '', page: '1' }),
                 }}
               />
             ) : (
