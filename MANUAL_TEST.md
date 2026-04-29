@@ -186,15 +186,37 @@ via the email outbox (no plaintext tokens in the DB — only sha256 hashes).
 
 - [ ] POST /v1/auth/password-reset-request `{"email":"you@known"}` → 202
 - [ ] POST /v1/auth/password-reset-request `{"email":"nobody@unknown.test"}` → 202
-  (same response to avoid enumeration; no email sent for unknown address)
-- [ ] `SELECT payload->>'reset_url' FROM email_outbox ORDER BY created_at DESC LIMIT 1;`
-  → extract the raw token from the URL
+  (identical response — enumeration resistance; the unknown email also
+  produces no `email_outbox` row, which is the verifiable signal)
+- [ ] Pull the raw token. `email_outbox` has FORCE RLS, so bypass to read:
+  ```sql
+  SET app.bypass_rls='on';
+  SELECT payload->>'to' AS to_email,
+         payload->>'password_reset_url' AS reset_url
+  FROM email_outbox
+  WHERE email_type='password_reset'
+  ORDER BY created_at DESC LIMIT 5;
+  ```
+  Verify: ONE row for the known email, ZERO rows for `nobody@unknown.test`.
+  The raw token is the `?token=` segment of `password_reset_url`.
 - [ ] POST /v1/auth/password-reset-confirm `{"token":"<raw>","password":"newpass123"}`
-  → 200; any active sessions for this user are revoked
-- [ ] Re-use the same token → 404 (tokens are single-use)
+  → **204 No Content**; all active sessions for this user are revoked
+  (verify: `SELECT revoked_at FROM sessions WHERE user_id=...` — every
+  row should be NOT NULL)
+- [ ] Re-use the same token → **401** with body `"reset link is invalid or
+  has expired — request a new one"` (single-use; consumed tokens collapse
+  into the same `ErrResetInvalid` branch as expired/forged)
 - [ ] Sign in with the new password → 200
-- [ ] Expired token (`UPDATE password_reset_tokens SET expires_at = NOW() - INTERVAL '1 hour' WHERE ...`)
-  → 404 on confirm
+- [ ] Expired token. Mint a fresh token via reset-request, then expire it:
+  ```sql
+  UPDATE password_reset_tokens
+  SET expires_at = NOW() - INTERVAL '1 hour'
+  WHERE token_hash = (SELECT token_hash FROM password_reset_tokens
+                      WHERE consumed_at IS NULL
+                      ORDER BY created_at DESC LIMIT 1);
+  ```
+  POST /v1/auth/password-reset-confirm with that token → **401** (same
+  `ErrResetInvalid` branch and message as a re-used token)
 
 ## FLOW A3: Invite a new user
 
@@ -218,7 +240,7 @@ via the email outbox (no plaintext tokens in the DB — only sha256 hashes).
 - [ ] Open the invite URL in incognito
 - [ ] Verify: preview returns `needs_new_account: false`; form shows only a password field
   with copy "We found an existing account for <email>"
-- [ ] Submit with the wrong password → 401 `"wrong password for this account"`
+- [ ] Submit with the wrong password → 401 `"invalid password for existing account"`
 - [ ] Submit with the correct password → 200; new session cookie issued for Tenant A
 - [ ] Verify: user now has memberships in both tenants; sign-in primary-tenant logic
   still picks Tenant B (the original) unless they switch

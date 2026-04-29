@@ -62,16 +62,16 @@ A coarser rule (`{"model": "gpt-4"}`) plus a finer override (`{"model": "gpt-4",
 - **Embeddable cost dashboard** — drop `<VeloxCostDashboard customerId={…} />` into your app and end users see "$4.31 of GPT-4 today" with a projected bill
 
 ### Self-host first
-- **Helm chart, Docker Compose, Terraform** — runs in your VPC in ≤1 hour
+- **Docker Compose** — single-VM install, ~5 min from clone to invoice
 - **Data sovereignty** — customer billing data never leaves your infrastructure
 - **Append-only audit log** — DB-trigger enforced tamper-evidence
 - **Row-Level Security** — one Velox deployment cleanly serves N internal tenants
 
 ### Stripe-grade primitives (already shipped)
-- **Subscriptions** — trial state machine with atomic flips · pause-collection · scheduled cancellation · plan changes with proration · bulk plan migrations with preview
+- **Subscriptions** — trial state machine with atomic flips · pause-collection · scheduled cancellation · plan changes with proration
 - **Pricing & discounts** — per-customer price overrides · coupons with stacking, expiry, redemption caps
 - **Invoicing & collection** — PDF invoices · hosted invoice page with secure tokens · branded multipart emails · dunning with breaker · invoice preview (`Invoice.upcoming` parity)
-- **Spend controls** — billing alerts · hard-cap thresholds with mid-cycle finalize
+- **Spend controls** — hard-cap thresholds with mid-cycle finalize
 - **Credits & refunds** — event-sourced credit ledger · credit notes + refunds
 - **Reliability** — idempotency · transactional outbox · webhook signing with 72h rotation grace · test clocks
 
@@ -129,32 +129,7 @@ End-to-end demo (creates a customer, ingests usage, runs billing, generates a PD
 ./scripts/demo.sh $VELOX_SECRET
 ```
 
-Self-host paths — Docker Compose (single VM), Helm chart on Kubernetes (production with availability), and a one-shot Terraform module for AWS — all ship today. See [`docs/self-host.md`](docs/self-host.md) for the picker, sizing table, and SPOF posture per shape.
-
----
-
-## Migrating from Stripe Billing
-
-Already running on Stripe Billing? `velox-import` reads via Stripe's
-restricted-key API, writes via `DATABASE_URL`, and rebuilds an entire
-tenant's customers / products / prices / subscriptions / finalized
-invoices in a single CLI run. Per-row outcomes (`insert` /
-`skip-equivalent` / `skip-divergent` / `error`) are written to a CSV
-report so the same input rerun produces only `skip-equivalent` rows —
-safe to invoke nightly during a parallel-run cutover.
-
-```bash
-velox-import \
-  --api-key=rk_live_…             \  # Stripe restricted key (read-only)
-  --tenant=ten_…                  \  # Velox tenant id
-  --resource=customers,products,prices,subscriptions,invoices \
-  --since=2024-01-01
-```
-
-The full operator playbook — pre-migration checklist, rehearsal run,
-T-14 → T+14 parallel-run cutover, reconciliation toolkit, webhook
-redirection, rollback procedure, and known limitations — lives in
-[`docs/migration-from-stripe.md`](docs/migration-from-stripe.md).
+Self-host: single-VM Docker Compose. See [`docs/self-host.md`](docs/self-host.md). Helm/Terraform/multi-replica HA paths land when a design partner names which Kubernetes flavour they actually run — pre-emptively shipping three deployment shapes produced surface nobody was running.
 
 ---
 
@@ -244,22 +219,26 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 
 - **Multi-dimensional meters** — one meter, N pricing rules, decimal quantities (`NUMERIC(38, 12)`), all five aggregation modes
 - **Pricing recipes** — `anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`; recipe-picker UI; one-click uninstall
-- **Quickstart wizard** — sign-up → first invoice in under five minutes
-- **`create_preview`, billing thresholds, billing alerts** — Stripe Tier-1 surfaces with multi-dim parity
+- **`create_preview`, billing thresholds** — Stripe Tier-1 surfaces with multi-dim parity
 - **Embeddable cost dashboard** — `<VeloxCostDashboard customerId={…} />` plus token-authenticated public URL
-- **Plan-migration UI** — preview, batch apply, history; bulk operations on customers/subscriptions/invoices
-- **Live event stream + invoice composer** — operator UX for ingestion debugging and one-off invoice creation
-- **`velox-import`** — Stripe Billing → Velox cutover with idempotent reruns and reconciliation CSV; full operator playbook in [`docs/migration-from-stripe.md`](docs/migration-from-stripe.md)
-- **Self-host packaging** — Docker Compose, Helm chart, and Terraform AWS module all ship today; Postgres backup playbook in [`docs/self-host/postgres-backup.md`](docs/self-host/postgres-backup.md); deployment picker + SPOF posture in [`docs/self-host.md`](docs/self-host.md)
-- **Compliance posture** — encryption-at-rest, audit-log retention, SOC 2 Trust Services Criteria control mapping, GDPR data-export verification ([`docs/ops/`](docs/ops/), [`docs/compliance/`](docs/compliance/))
+- **Stripe-grade billing primitives** — subscriptions (trial/pause/cancel/plan-change with proration), coupons, credit notes, dunning, hosted invoice page, transactional outbox
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 
 ### In flight
 
 - **First design-partner cutover** to Velox in production
-- **GDPR data-deletion** end-to-end (data export landed; deletion path is the remaining gap)
-- **Cold-install drill on a fresh AWS account** — the Terraform module structurally validates today, but a non-Velox-engineer apply on a fresh account is a separate validation lane
+- **AI-native primitive sharpening** — per-token, model-tier, prompt/completion split surfacing in dashboard + invoices
+
+### Explicitly deferred (on hold pending design partner)
+
+- Helm chart + Terraform AWS module + multi-replica HA
+- Stripe Billing migration tool (`velox-import`)
+- SOC 2 / GDPR-deletion / audit-log retention / encryption-at-rest enterprise-readiness docs
+- Member invitations + dashboard email+password auth (revisit alongside SSO direction)
+- Operator polish: bulk actions, billing-alerts UI, plan-migration cohort UI, live event stream, embedded dashboard docs site
+
+These are paused — not killed. They land when a real customer names the specific shape they need; pre-launch, pre-evidence builds optimise the wrong version of each.
 
 ---
 

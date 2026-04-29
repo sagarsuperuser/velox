@@ -33,19 +33,15 @@ const billingNav = [
   { to: '/invoices', icon: FileText, label: 'Invoices' },
   { to: '/subscriptions', icon: CreditCard, label: 'Subscriptions' },
   { to: '/usage', icon: BarChart3, label: 'Usage' },
-  { to: '/analytics', icon: TrendingUp, label: 'Analytics' },
 ]
 
 const configNav = [
   { to: '/pricing', icon: Tag, label: 'Pricing' },
-  { to: '/plan-migrations', icon: Wand2, label: 'Plan migration' },
-  { to: '/bulk-actions', icon: Layers, label: 'Bulk actions' },
   { to: '/recipes', icon: Sparkles, label: 'Recipes' },
   { to: '/coupons', icon: Ticket, label: 'Coupons' },
   { to: '/credits', icon: Wallet, label: 'Credits' },
   { to: '/credit-notes', icon: Receipt, label: 'Credit Notes' },
   { to: '/dunning', icon: AlertTriangle, label: 'Dunning' },
-  { to: '/billing-alerts', icon: BellRing, label: 'Billing alerts' },
 ]
 
 const systemNav = [
@@ -317,18 +313,6 @@ export function Layout({ children }: { children: ReactNode }) {
                 </div>
               </div>
               <DropdownMenuSeparator />
-              <DropdownMenuItem render={<Link to="/docs" />}>
-                <BookOpen />
-                <span>Documentation</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem render={<Link to="/changelog" />}>
-                <Sparkles />
-                <span>Changelog</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem render={<Link to="/status" />}>
-                <Activity />
-                <span>System status</span>
-              </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => {
                   // Build the mailto body at click-time so the request_id we
@@ -362,17 +346,8 @@ export function Layout({ children }: { children: ReactNode }) {
                 <span>Sign out</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <div className="px-2 py-1.5 flex items-center justify-between text-[10px] text-muted-foreground/60 tracking-wide">
-                <span>Velox v2.0</span>
-                <span className="flex items-center gap-2">
-                  <Link to="/terms" className="hover:text-foreground transition-colors">
-                    Terms
-                  </Link>
-                  <span>·</span>
-                  <Link to="/privacy" className="hover:text-foreground transition-colors">
-                    Privacy
-                  </Link>
-                </span>
+              <div className="px-2 py-1.5 text-[10px] text-muted-foreground/60 tracking-wide">
+                Velox v2.0
               </div>
             </DropdownMenuContent>
           </DropdownMenu>
