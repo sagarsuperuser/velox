@@ -1,8 +1,10 @@
-// Dashboard auth is API-key based: the operator pastes a `vlx_secret_…`
-// key into the login screen; we validate it against /v1/whoami, store it
-// in localStorage, and every subsequent apiRequest reads it back to set
-// the Authorization: Bearer header. No cookies, no sessions, no users —
-// the dashboard is a thin client over the public HTTP API.
+// Dashboard auth: the operator pastes a `vlx_secret_…` key into the
+// login screen; the backend's POST /v1/auth/exchange validates the key
+// and issues an httpOnly session cookie. Subsequent requests ride the
+// cookie via `credentials: 'include'`. The raw key never touches
+// localStorage or any other JS-readable storage — the only place it
+// exists in the browser is in the form field for the duration of the
+// submit. See ADR-008 for the rationale.
 
 import { apiRequest } from './api'
 
@@ -13,31 +15,22 @@ export interface SessionInfo {
   livemode: boolean
 }
 
-const STORAGE_KEY = 'velox_api_key'
-
-export function getApiKey(): string | null {
-  try {
-    return localStorage.getItem(STORAGE_KEY)
-  } catch {
-    return null
-  }
-}
-
-export function setApiKey(key: string): void {
-  localStorage.setItem(STORAGE_KEY, key)
-}
-
-export function clearApiKey(): void {
-  try {
-    localStorage.removeItem(STORAGE_KEY)
-  } catch {
-    /* ignore */
-  }
+export interface ExchangeResponse extends SessionInfo {
+  expires_at: string
 }
 
 export const authApi = {
-  // whoami resolves the currently-stored API key against the backend.
-  // Returns the tenant context on success; throws an ApiError on 401
-  // (invalid / revoked key) so the caller can route the user to /login.
+  // exchange takes a pasted API key, validates it server-side, and
+  // sets the httpOnly session cookie on the response. The raw key is
+  // never echoed back; the response carries only the resolved context.
+  exchange: (apiKey: string) =>
+    apiRequest<ExchangeResponse>('POST', '/auth/exchange', { api_key: apiKey }),
+
+  // logout revokes the server-side session row and clears the cookie.
+  logout: () => apiRequest<void>('POST', '/auth/logout'),
+
+  // whoami resolves the current session (or Bearer key, for SDK
+  // callers) to its tenant context. Throws ApiError(401) when neither
+  // credential is present or both are stale.
   whoami: () => apiRequest<SessionInfo>('GET', '/whoami'),
 }

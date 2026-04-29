@@ -84,9 +84,23 @@ func KeyID(ctx context.Context) string {
 	return v
 }
 
+// WithKeyID is the setter counterpart to KeyID. Used by adapters
+// outside the auth package (currently `internal/session`) that
+// resolve a credential to a key context themselves.
+func WithKeyID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, apiKeyIDKey, id)
+}
+
 func GetKeyType(ctx context.Context) KeyType {
 	v, _ := ctx.Value(keyTypeKey).(KeyType)
 	return v
+}
+
+// WithKeyType lets adapters declare the principal type so auth.Require
+// keeps working off a single ctx key. Called by `internal/session`
+// when a session resolves to its parent key's type.
+func WithKeyType(ctx context.Context, kt KeyType) context.Context {
+	return context.WithValue(ctx, keyTypeKey, kt)
 }
 
 // Livemode returns whether the request is operating in live mode. Delegates

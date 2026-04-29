@@ -730,6 +730,12 @@ type UsageEvent struct {
 	Timestamp      time.Time              `json:"timestamp,omitempty"`
 }
 
+// PostV1AuthExchangeJSONBody defines parameters for PostV1AuthExchange.
+type PostV1AuthExchangeJSONBody struct {
+	// ApiKey A `vlx_secret_…` or `vlx_pub_…` key.
+	ApiKey string `json:"api_key"`
+}
+
 // PostV1CreditsGrantJSONBody defines parameters for PostV1CreditsGrant.
 type PostV1CreditsGrantJSONBody struct {
 	AmountCents int64  `json:"amount_cents"`
@@ -863,6 +869,9 @@ type PostV1UsageEventsBatchJSONBody = []struct {
 	Quantity   int    `json:"quantity"`
 }
 
+// PostV1AuthExchangeJSONRequestBody defines body for PostV1AuthExchange for application/json ContentType.
+type PostV1AuthExchangeJSONRequestBody PostV1AuthExchangeJSONBody
+
 // PostV1CreditsGrantJSONRequestBody defines body for PostV1CreditsGrant for application/json ContentType.
 type PostV1CreditsGrantJSONRequestBody PostV1CreditsGrantJSONBody
 
@@ -901,6 +910,12 @@ type ServerInterface interface {
 	// Health check
 	// (GET /health)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// Exchange a pasted API key for an httpOnly session cookie
+	// (POST /v1/auth/exchange)
+	PostV1AuthExchange(w http.ResponseWriter, r *http.Request)
+	// Revoke the current session and clear the cookie
+	// (POST /v1/auth/logout)
+	PostV1AuthLogout(w http.ResponseWriter, r *http.Request)
 	// Invoice preview (dry run)
 	// (GET /v1/billing/preview/{subscription_id})
 	GetV1BillingPreviewSubscriptionId(w http.ResponseWriter, r *http.Request, subscriptionId string)
@@ -985,7 +1000,7 @@ type ServerInterface interface {
 	// Stripe webhook receiver
 	// (POST /v1/webhooks/stripe)
 	PostV1WebhooksStripe(w http.ResponseWriter, r *http.Request)
-	// Resolve the bearer key to its tenant context
+	// Resolve the current credential to its tenant context
 	// (GET /v1/whoami)
 	GetV1Whoami(w http.ResponseWriter, r *http.Request)
 }
@@ -997,6 +1012,18 @@ type Unimplemented struct{}
 // Health check
 // (GET /health)
 func (_ Unimplemented) GetHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Exchange a pasted API key for an httpOnly session cookie
+// (POST /v1/auth/exchange)
+func (_ Unimplemented) PostV1AuthExchange(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Revoke the current session and clear the cookie
+// (POST /v1/auth/logout)
+func (_ Unimplemented) PostV1AuthLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1168,7 +1195,7 @@ func (_ Unimplemented) PostV1WebhooksStripe(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Resolve the bearer key to its tenant context
+// Resolve the current credential to its tenant context
 // (GET /v1/whoami)
 func (_ Unimplemented) GetV1Whoami(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1188,6 +1215,46 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealth(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1AuthExchange operation middleware
+func (siw *ServerInterfaceWrapper) PostV1AuthExchange(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1AuthExchange(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1AuthLogout operation middleware
+func (siw *ServerInterfaceWrapper) PostV1AuthLogout(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1AuthLogout(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1986,6 +2053,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/health", wrapper.GetHealth)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/auth/exchange", wrapper.PostV1AuthExchange)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/auth/logout", wrapper.PostV1AuthLogout)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/billing/preview/{subscription_id}", wrapper.GetV1BillingPreviewSubscriptionId)

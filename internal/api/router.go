@@ -44,6 +44,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/portalapi"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/recipe"
+	"github.com/sagarsuperuser/velox/internal/session"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
@@ -599,6 +600,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, usageStore, auditLogger)
 	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
 
+	// Dashboard sessions — minted from a pasted API key, server-side
+	// revocable, httpOnly cookie. See ADR-008. The session service
+	// itself is a thin wrapper over the dashboard_sessions table; the
+	// handler wires /v1/auth/exchange + /v1/auth/logout.
+	sessionSvc := session.NewService(session.NewPostgresStore(db))
+	sessionH := session.NewHandler(authSvc, sessionSvc, session.DefaultCookieConfig())
+
 	s := &Server{
 		BillingEngine:         engine,
 		DunningSvc:            dunningSvc,
@@ -696,6 +704,15 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Mount("/v1/bootstrap", bootstrapH.Routes())
 	})
 
+	// Dashboard auth — exchange a pasted API key for an httpOnly
+	// session cookie, plus logout. Public surface (pre-session). Rate
+	// limited to slow credential stuffing.
+	r.Route("/v1/auth", func(r chi.Router) {
+		r.Use(rateLimiter.Middleware())
+		r.Use(middleware.Timeout(30 * time.Second))
+		r.Mount("/", sessionH.Routes())
+	})
+
 	// Stripe webhooks — no API key auth (verified by signature)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(30 * time.Second))
@@ -754,23 +771,25 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// Real-time webhook event SSE stream — mounted ABOVE the /v1 route
 	// block so it skips the global 30s middleware.Timeout (which would
 	// kill any long-lived EventSource connection at 30s). We re-apply
-	// the same auth chain that /v1/* gets (API-key, rate limit, perm
-	// check) but specifically NOT idempotency / audit log (no value on
-	// a streaming GET) and NOT the Timeout. The stream is GET-only and
-	// read-only; no body to idempotency-key, nothing to audit beyond
-	// the existing access log.
+	// the same auth chain that /v1/* gets (session cookie OR Bearer
+	// API key, rate limit, perm check) but specifically NOT
+	// idempotency / audit log (no value on a streaming GET) and NOT
+	// the Timeout. The stream is GET-only and read-only; no body to
+	// idempotency-key, nothing to audit beyond the existing access log.
 	r.Route("/v1/webhook_events/stream", func(r chi.Router) {
-		r.Use(auth.Middleware(authSvc))
+		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
 		r.Use(rateLimiter.Middleware())
 		r.With(auth.Require(auth.PermAPIKeyRead)).Get("/", webhookOutH.StreamHandler())
 	})
 
-	// Tenant-scoped routes — Authorization: Bearer <api_key> on every
-	// request. Dashboard and external integrations both authenticate
-	// the same way; the dashboard stores the operator's API key in
-	// browser storage and attaches the header.
+	// Tenant-scoped routes — accept either an httpOnly session cookie
+	// (dashboard, minted via /v1/auth/exchange) OR
+	// `Authorization: Bearer <api_key>` (SDKs, curl, server-to-server).
+	// Cookie takes precedence when both are present so a stale Bearer
+	// header doesn't bypass session revocation. Both code paths set
+	// the same auth ctx keys so handlers don't branch.
 	r.Route("/v1", func(r chi.Router) {
-		r.Use(auth.Middleware(authSvc))
+		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
 		r.Use(rateLimiter.Middleware()) // After auth so tenant ID is available for bucket key
 		r.Use(mw.Idempotency(db))
 		r.Use(mw.AuditLog(db, settingsStore))

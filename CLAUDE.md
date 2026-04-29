@@ -30,7 +30,7 @@ go test -p 1 ./... -short=false  # includes integration tests (needs postgres)
 ```
 
 ## Important decisions
-- Auth: API-key Bearer auth on every endpoint, including the dashboard. Operator pastes a `vlx_secret_…` key into `/login`; the dashboard stores it in `localStorage` and rides every request as `Authorization: Bearer`. No cookies, no sessions, no user accounts in v1. User-account direction (Zitadel / WorkOS / email+password) decided per first design partner — see `docs/adr/007-revert-to-api-key-dashboard-auth.md`.
+- Auth: the API key is the durable credential. Dashboard operator pastes a `vlx_secret_…` key into `/login`; backend `POST /v1/auth/exchange` validates the key and mints an httpOnly `velox_session` cookie tied to that key. Subsequent dashboard requests ride the cookie via `credentials: 'include'`. SDK / curl callers send `Authorization: Bearer <key>` and skip the cookie path entirely; `internal/session.MiddlewareOrAPIKey` accepts either, with cookie taking precedence so stale Bearer headers can't bypass session revocation. No user accounts, no password reset, no invitations in v1. See `docs/adr/007-revert-to-api-key-dashboard-auth.md` (revert) and `docs/adr/008-session-from-api-key.md` (httpOnly cookie refinement).
 - Stripe: PaymentIntent-only pattern (no Stripe Billing/Invoices to avoid 0.5% fee)
 - No Temporal dependency in v1 — simple background goroutine scheduler. Redis used for distributed rate limiting only.
 - Credits use event-sourced ledger (immutable append-only)

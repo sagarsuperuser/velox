@@ -33,6 +33,8 @@ import type {
   GetV1CustomersParams,
   GetV1Whoami200,
   InvoiceWithLineItems,
+  PostV1AuthExchange200,
+  PostV1AuthExchangeBody,
   PostV1BillingRun200,
   PostV1CreditsGrantBody,
   PostV1CustomersBody,
@@ -1859,12 +1861,164 @@ export const usePostV1InvoicesIdFinalize = <TError = unknown,
     }
 
 /**
- * Returns the resolved auth context for the current bearer key.
-No specific permission required — any valid key (publishable or
-secret) can hit this. The dashboard hits this on login to
-validate a pasted key and populate the AuthContext for display.
+ * Validates the pasted API key and mints a server-side session
+row. The response sets `Set-Cookie: velox_session=...; HttpOnly;
+SameSite=Lax; Path=/`. Subsequent requests authenticate via the
+cookie. The credential remains the API key; this endpoint just
+gives the dashboard an httpOnly artefact instead of holding the
+raw key in JS-readable storage. See ADR-008.
 
- * @summary Resolve the bearer key to its tenant context
+ * @summary Exchange a pasted API key for an httpOnly session cookie
+ */
+export const getPostV1AuthExchangeUrl = () => {
+
+
+
+
+  return `/v1/auth/exchange`
+}
+
+export const postV1AuthExchange = async (postV1AuthExchangeBody: PostV1AuthExchangeBody, options?: RequestInit): Promise<PostV1AuthExchange200> => {
+
+  return orvalClient<PostV1AuthExchange200>(getPostV1AuthExchangeUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1AuthExchangeBody,)
+  }
+);}
+
+
+
+
+export const getPostV1AuthExchangeMutationOptions = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthExchange>>, TError,{data: PostV1AuthExchangeBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1AuthExchange>>, TError,{data: PostV1AuthExchangeBody}, TContext> => {
+
+const mutationKey = ['postV1AuthExchange'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1AuthExchange>>, {data: PostV1AuthExchangeBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1AuthExchange(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1AuthExchangeMutationResult = NonNullable<Awaited<ReturnType<typeof postV1AuthExchange>>>
+    export type PostV1AuthExchangeMutationBody = PostV1AuthExchangeBody
+    export type PostV1AuthExchangeMutationError = Error
+
+    /**
+ * @summary Exchange a pasted API key for an httpOnly session cookie
+ */
+export const usePostV1AuthExchange = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthExchange>>, TError,{data: PostV1AuthExchangeBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1AuthExchange>>,
+        TError,
+        {data: PostV1AuthExchangeBody},
+        TContext
+      > => {
+      return useMutation(getPostV1AuthExchangeMutationOptions(options), queryClient);
+    }
+
+/**
+ * Marks the session row as revoked server-side and clears the
+cookie on the response. Idempotent — a missing or stale cookie
+is treated as already-logged-out.
+
+ * @summary Revoke the current session and clear the cookie
+ */
+export const getPostV1AuthLogoutUrl = () => {
+
+
+
+
+  return `/v1/auth/logout`
+}
+
+export const postV1AuthLogout = async ( options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPostV1AuthLogoutUrl(),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getPostV1AuthLogoutMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthLogout>>, TError,void, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1AuthLogout>>, TError,void, TContext> => {
+
+const mutationKey = ['postV1AuthLogout'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1AuthLogout>>, void> = () => {
+
+
+          return  postV1AuthLogout(requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1AuthLogoutMutationResult = NonNullable<Awaited<ReturnType<typeof postV1AuthLogout>>>
+
+    export type PostV1AuthLogoutMutationError = unknown
+
+    /**
+ * @summary Revoke the current session and clear the cookie
+ */
+export const usePostV1AuthLogout = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthLogout>>, TError,void, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1AuthLogout>>,
+        TError,
+        void,
+        TContext
+      > => {
+      return useMutation(getPostV1AuthLogoutMutationOptions(options), queryClient);
+    }
+
+/**
+ * Returns the resolved auth context for whichever credential the
+request carries — `velox_session` cookie (dashboard) or
+`Authorization: Bearer` (SDK / curl). No specific permission
+required.
+
+ * @summary Resolve the current credential to its tenant context
  */
 export const getGetV1WhoamiUrl = () => {
 
@@ -1943,7 +2097,7 @@ export function useGetV1Whoami<TData = Awaited<ReturnType<typeof getV1Whoami>>, 
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
- * @summary Resolve the bearer key to its tenant context
+ * @summary Resolve the current credential to its tenant context
  */
 
 export function useGetV1Whoami<TData = Awaited<ReturnType<typeof getV1Whoami>>, TError = Error>(
