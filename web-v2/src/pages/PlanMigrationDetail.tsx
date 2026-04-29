@@ -415,13 +415,15 @@ export default function PlanMigrationDetailPage() {
                           >
                             {customerId}
                           </Link>
-                        ) : (
+                        ) : entry.resource_id ? (
                           <Link
                             to={`/subscriptions/${entry.resource_id}`}
                             className="font-mono hover:text-primary hover:underline"
                           >
                             {entry.resource_id}
                           </Link>
+                        ) : (
+                          <span className="font-mono">{'\u2014'}</span>
                         )}
                       </TableCell>
                     </TableRow>
