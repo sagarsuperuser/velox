@@ -176,6 +176,58 @@ func TestAudit_Non2xx_SkipsAudit(t *testing.T) {
 	}
 }
 
+// recordingAuditWriter captures the args of each Write so tests can assert
+// on what the middleware persisted (resource_id in particular).
+type recordingAuditWriter struct {
+	tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string
+	calls                                                                    int
+}
+
+func (r *recordingAuditWriter) Write(_ context.Context, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) error {
+	r.calls++
+	r.tenantID, r.actorID, r.action, r.resourceType, r.resourceID, r.resourceLabel, r.path =
+		tenantID, actorID, action, resourceType, resourceID, resourceLabel, path
+	return nil
+}
+
+// Creates (POST /v1/{resource}) carry no id in the URL — the new id lives
+// in the response body. Without the body-id fallback, audit rows recorded
+// resource_id="" and the dashboard's "View" link landed on /customers/
+// (broken). Asserts the middleware now lifts `id` from the response JSON.
+func TestAudit_Create_FillsResourceIDFromResponseBody(t *testing.T) {
+	writer := &recordingAuditWriter{}
+	mw := auditLogWith(writer, &stubSettings{})
+
+	created := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"vlx_cus_42","display_name":"Stripe E2E Smoke"}`))
+	})
+
+	req := httptest.NewRequest("POST", "/v1/customers", strings.NewReader(`{}`))
+	req = tenantCtx(t, req, "t-create")
+	rec := httptest.NewRecorder()
+	mw(created).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201", rec.Code)
+	}
+	if writer.calls != 1 {
+		t.Fatalf("audit calls: got %d, want 1", writer.calls)
+	}
+	if writer.action != "create" {
+		t.Errorf("action: got %q, want create", writer.action)
+	}
+	if writer.resourceType != "customer" {
+		t.Errorf("resource_type: got %q, want customer", writer.resourceType)
+	}
+	if writer.resourceID != "vlx_cus_42" {
+		t.Errorf("resource_id: got %q, want vlx_cus_42 (lifted from response body)", writer.resourceID)
+	}
+	if writer.resourceLabel != "Stripe E2E Smoke" {
+		t.Errorf("resource_label: got %q, want Stripe E2E Smoke", writer.resourceLabel)
+	}
+}
+
 // Non-mutating methods must bypass the middleware entirely — no buffering,
 // no settings lookup, no audit write.
 func TestAudit_GET_Bypassed(t *testing.T) {

@@ -58,6 +58,11 @@ const HIGH_SEVERITY = new Set(['void', 'cancel', 'delete', 'revoke', 'credit.ded
 const MEDIUM_SEVERITY = new Set(['finalize', 'grant', 'issue', 'credit_note.issued', 'subscription.plan_changed', 'change_plan'])
 
 function resourceLink(entry: AuditEntry): string | null {
+  // Guard the empty-resource_id case — some audit rows (e.g. tenant-scope
+  // events, or events written before a child resource exists) carry an
+  // empty resource_id, and rendering "View" → /customers/ would land the
+  // user on a broken page.
+  if (!entry.resource_id) return null
   switch (entry.resource_type) {
     case 'invoice': return `/invoices/${entry.resource_id}`
     case 'customer': return `/customers/${entry.resource_id}`

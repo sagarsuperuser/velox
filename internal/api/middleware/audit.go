@@ -141,6 +141,14 @@ func auditLogWith(writer auditWriter, settings AuditSettingsLookup) func(http.Ha
 			action, resourceType, resourceID := parseAuditPath(r.Method, r.URL.Path)
 			resourceLabel := extractLabel(buf.body.Bytes())
 
+			// Creates (POST /v1/{resource}) carry no id in the URL — the
+			// new id lives in the response body. Without this fallback,
+			// the audit row records resource_id="" and the dashboard's
+			// "View" link becomes /customers/, /invoices/, etc.
+			if action == "create" && resourceID == "" {
+				resourceID = extractID(buf.body.Bytes())
+			}
+
 			if err := writer.Write(r.Context(), tenantID, auth.KeyID(r.Context()),
 				action, resourceType, resourceID, resourceLabel, r.URL.Path); err != nil {
 				RecordAuditWriteError(tenantID)
@@ -223,6 +231,39 @@ func extractLabel(body []byte) string {
 		}
 	}
 
+	return ""
+}
+
+// extractID pulls the new resource id from a 2xx create response. Used by
+// the middleware to fill in resource_id for POST /v1/{resource} where the
+// URL carries no id. Top-level `id` covers bare-object responses (the
+// common shape — `respond.JSON(w, r, 201, customer)`); the nested cases
+// mirror extractLabel so wrapped responses (e.g. `{"subscription": {…}}`)
+// still resolve.
+func extractID(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return ""
+	}
+	if v, ok := m["id"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	for _, key := range []string{"subscription", "invoice", "customer", "plan", "meter"} {
+		if sub, ok := m[key]; ok {
+			if sm, ok := sub.(map[string]any); ok {
+				if v, ok := sm["id"]; ok {
+					if s, ok := v.(string); ok && s != "" {
+						return s
+					}
+				}
+			}
+		}
+	}
 	return ""
 }
 
