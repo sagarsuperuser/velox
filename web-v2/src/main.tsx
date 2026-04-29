@@ -106,7 +106,6 @@ const DashboardPage = lazy(() => import('@/pages/Dashboard'))
 const CustomersPage = lazy(() => import('@/pages/Customers'))
 const PricingPage = lazy(() => import('@/pages/Pricing'))
 const DunningPage = lazy(() => import('@/pages/Dunning'))
-const BillingAlertsPage = lazy(() => import('@/pages/BillingAlerts'))
 const WebhooksPage = lazy(() => import('@/pages/Webhooks'))
 const WebhookEventsPage = lazy(() => import('@/pages/WebhookEvents'))
 const ApiKeysPage = lazy(() => import('@/pages/ApiKeys'))
@@ -118,43 +117,17 @@ const CouponsPage = lazy(() => import('@/pages/Coupons'))
 const CouponDetailPage = lazy(() => import('@/pages/CouponDetail'))
 const CreditsPage = lazy(() => import('@/pages/Credits'))
 const CreditNotesPage = lazy(() => import('@/pages/CreditNotes'))
-const AnalyticsPage = lazy(() => import('@/pages/Analytics'))
 const AuditLogPage = lazy(() => import('@/pages/AuditLog'))
 const UpdatePaymentPage = lazy(() => import('@/pages/UpdatePayment'))
-const CustomerPortalPage = lazy(() => import('@/pages/CustomerPortal'))
-const CustomerPortalLoginPage = lazy(() => import('@/pages/CustomerPortalLogin'))
 const HostedInvoicePage = lazy(() => import('@/pages/HostedInvoice'))
-const PublicCostDashboardPage = lazy(() => import('@/pages/PublicCostDashboard'))
 const CheckoutSuccessPage = lazy(() => import('@/pages/CheckoutSuccess'))
 const CustomerDetailPage = lazy(() => import('@/pages/CustomerDetail'))
 const InvoiceDetailPage = lazy(() => import('@/pages/InvoiceDetail'))
 const SubscriptionDetailPage = lazy(() => import('@/pages/SubscriptionDetail'))
 const PlanDetailPage = lazy(() => import('@/pages/PlanDetail'))
 const MeterDetailPage = lazy(() => import('@/pages/MeterDetail'))
-const DocsPage = lazy(() => import('@/pages/Docs'))
-const DocsQuickstartPage = lazy(() => import('@/pages/DocsQuickstart'))
-const DocsRecipesPage = lazy(() => import('@/pages/DocsRecipes'))
-const DocsEmbedsCostDashboardPage = lazy(() => import('@/pages/DocsEmbedsCostDashboard'))
-const DocsWebhooksPage = lazy(() => import('@/pages/DocsWebhooks'))
-const DocsIdempotencyPage = lazy(() => import('@/pages/DocsIdempotency'))
-const DocsApiPage = lazy(() => import('@/pages/DocsApi'))
-const DocsAccountSetupPage = lazy(() => import('@/pages/DocsAccountSetup'))
-const DocsErrorsPage = lazy(() => import('@/pages/DocsErrors'))
-const DocsRateLimitsPage = lazy(() => import('@/pages/DocsRateLimits'))
-const DocsGlossaryPage = lazy(() => import('@/pages/DocsGlossary'))
-const DocsTroubleshootingPage = lazy(() => import('@/pages/DocsTroubleshooting'))
-const SecurityPage = lazy(() => import('@/pages/Security'))
-const StatusPage = lazy(() => import('@/pages/Status'))
-const ChangelogPage = lazy(() => import('@/pages/Changelog'))
-const TermsPage = lazy(() => import('@/pages/Terms'))
-const PrivacyPage = lazy(() => import('@/pages/Privacy'))
-const DPAPage = lazy(() => import('@/pages/DPA'))
 const OnboardingPage = lazy(() => import('@/pages/Onboarding'))
 const RecipesPage = lazy(() => import('@/pages/Recipes'))
-const PlanMigrationPage = lazy(() => import('@/pages/PlanMigration'))
-const PlanMigrationsHistoryPage = lazy(() => import('@/pages/PlanMigrationsHistory'))
-const PlanMigrationDetailPage = lazy(() => import('@/pages/PlanMigrationDetail'))
-const BulkActionsPage = lazy(() => import('@/pages/BulkActions'))
 
 const App = () => (
   <ErrorBoundary>
@@ -177,21 +150,15 @@ const App = () => (
               <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
               <Route path="/onboarding" element={<ProtectedRoute><OnboardingPage /></ProtectedRoute>} />
               <Route path="/recipes" element={<ProtectedRoute><RecipesPage /></ProtectedRoute>} />
-              <Route path="/plan-migrations" element={<ProtectedRoute><PlanMigrationPage /></ProtectedRoute>} />
-              <Route path="/plan-migrations/history" element={<ProtectedRoute><PlanMigrationsHistoryPage /></ProtectedRoute>} />
-              <Route path="/plan-migrations/:id" element={<ProtectedRoute><PlanMigrationDetailPage /></ProtectedRoute>} />
-              <Route path="/bulk-actions" element={<ProtectedRoute><BulkActionsPage /></ProtectedRoute>} />
               <Route path="/customers" element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
               <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
               <Route path="/dunning" element={<ProtectedRoute><DunningPage /></ProtectedRoute>} />
-              <Route path="/billing-alerts" element={<ProtectedRoute><BillingAlertsPage /></ProtectedRoute>} />
               <Route path="/webhooks" element={<ProtectedRoute><WebhooksPage /></ProtectedRoute>} />
               <Route path="/webhooks/events" element={<ProtectedRoute><WebhookEventsPage /></ProtectedRoute>} />
               <Route path="/api-keys" element={<ProtectedRoute><ApiKeysPage /></ProtectedRoute>} />
               <Route path="/invoices" element={<ProtectedRoute><InvoicesPage /></ProtectedRoute>} />
               <Route path="/subscriptions" element={<ProtectedRoute><SubscriptionsPage /></ProtectedRoute>} />
               <Route path="/usage" element={<ProtectedRoute><UsageEventsPage /></ProtectedRoute>} />
-              <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
               <Route path="/coupons" element={<ProtectedRoute><CouponsPage /></ProtectedRoute>} />
               <Route path="/coupons/:id" element={<ProtectedRoute><CouponDetailPage /></ProtectedRoute>} />
               <Route path="/credits" element={<ProtectedRoute><CreditsPage /></ProtectedRoute>} />
@@ -205,29 +172,8 @@ const App = () => (
               <Route path="/plans/:id" element={<ProtectedRoute><PlanDetailPage /></ProtectedRoute>} />
               <Route path="/meters/:id" element={<ProtectedRoute><MeterDetailPage /></ProtectedRoute>} />
               <Route path="/update-payment" element={<UpdatePaymentPage />} />
-              <Route path="/customer-portal" element={<CustomerPortalPage />} />
-              <Route path="/customer-portal/login" element={<CustomerPortalLoginPage />} />
               <Route path="/invoice/:token" element={<HostedInvoicePage />} />
-              <Route path="/public/cost-dashboard/:token" element={<PublicCostDashboardPage />} />
               <Route path="/checkout/success" element={<CheckoutSuccessPage />} />
-              <Route path="/docs" element={<DocsPage />} />
-              <Route path="/docs/quickstart" element={<DocsQuickstartPage />} />
-              <Route path="/docs/recipes" element={<DocsRecipesPage />} />
-              <Route path="/docs/embeds/cost-dashboard" element={<DocsEmbedsCostDashboardPage />} />
-              <Route path="/docs/webhooks" element={<DocsWebhooksPage />} />
-              <Route path="/docs/idempotency" element={<DocsIdempotencyPage />} />
-              <Route path="/docs/api" element={<DocsApiPage />} />
-              <Route path="/docs/account-setup" element={<DocsAccountSetupPage />} />
-              <Route path="/docs/errors" element={<DocsErrorsPage />} />
-              <Route path="/docs/rate-limits" element={<DocsRateLimitsPage />} />
-              <Route path="/docs/glossary" element={<DocsGlossaryPage />} />
-              <Route path="/docs/troubleshooting" element={<DocsTroubleshootingPage />} />
-              <Route path="/security" element={<SecurityPage />} />
-              <Route path="/status" element={<StatusPage />} />
-              <Route path="/changelog" element={<ChangelogPage />} />
-              <Route path="/terms" element={<TermsPage />} />
-              <Route path="/privacy" element={<PrivacyPage />} />
-              <Route path="/dpa" element={<DPAPage />} />
             </Routes>
           </Suspense>
         </BrowserRouter>

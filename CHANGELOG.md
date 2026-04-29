@@ -9,12 +9,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 features, PATCH for fixes. The public API is stabilising but not yet
 frozen; breaking changes land on MINOR until `1.0.0`.
 
-A second surface mirrors this file:
-
-- `web-v2/src/pages/Changelog.tsx` — customer-facing public changelog,
-  curated rollups (not every bug fix).
-
 ## [Unreleased]
+
+### Removed
+
+- **Lean-cut: scope reduction for pre-design-partner stage (2026-04-29).**
+  Velox is local-only with one user account; features built ahead of
+  named customer demand were producing maintenance load and doc drift
+  for an audience that doesn't exist yet. Cuts ride a single branch
+  (`lean-cut`); each line below is "deferred until a real customer
+  names the spec," not "killed forever." Git history is the audit
+  trail — each cut is one revert away.
+  - **Stripe Billing migration tool** — `cmd/velox-import/` and the
+    backing `internal/importstripe/` package (28+ files: customer /
+    product / price / subscription / invoice importers, mapper layer,
+    integration tests, design RFC, operator playbook). Built before any
+    tenant has migrated. Rebuild when a real customer announces a
+    cutover; the implementation will fit their actual Stripe Billing
+    shape rather than our guess.
+  - **Self-host packaging beyond Compose** — `deploy/helm/` (Helm
+    chart with templates), `deploy/terraform/aws/` (Terraform module),
+    `deploy/k8s/` (raw Kubernetes manifests), `deploy/grafana/`,
+    `deploy/prometheus/`, `ops/alerts/`. Compose-on-single-VM is the
+    documented production-with-downtime-tolerance path; multi-replica
+    HA + leader-elected scheduling lands when a design partner names
+    which Kubernetes flavour they actually run.
+  - **Compliance and ops runbooks** — `docs/compliance/soc2-mapping.md`
+    (full SOC 2 TSC control mapping), `docs/ops/runbook.md` (803-line
+    ops runbook), `docs/ops/audit-log-retention.md`,
+    `docs/ops/encryption-at-rest.md`, `docs/ops/sla-slo.md`,
+    `docs/ops/api-key-rotation.md`, `docs/ops/backup-recovery.md`,
+    `docs/ops/capacity-planning.md`, `docs/ops/secrets-management.md`,
+    `docs/self-host/postgres-backup.md`, `docs/blog/`. These were
+    written for an enterprise buyer who hasn't shown up yet — and
+    framework choices (TSC vs ISO vs HIPAA) belong to that buyer's
+    auditor, not to us guessing.
+  - **Operator polish surface (frontend pages)** — Analytics,
+    BillingAlerts, BulkActions, Changelog (in-app changelog page),
+    CustomerPortal, CustomerPortalLogin, PublicCostDashboard, Status,
+    PlanMigration / PlanMigrationDetail / PlanMigrationsHistory (the
+    cohort UI; one-customer plan-change endpoint and audit log remain),
+    DPA, Privacy, Security, Terms, plus the entire embedded `/docs`
+    site (12 sub-pages: DocsAccountSetup, DocsApi,
+    DocsEmbedsCostDashboard, DocsErrors, DocsGlossary, DocsIdempotency,
+    DocsQuickstart, DocsRateLimits, DocsRecipes, DocsTroubleshooting,
+    DocsWebhooks, plus the index). Sidebar nav, route table, and the
+    Help dropdown trimmed to match. The `<VeloxCostDashboard>` React
+    component and the public cost-dashboard token API stay — they're
+    the embeddable widget for tenants' own apps; only the in-dashboard
+    demo page was cut.
+  - **`docs/design-billing-alerts.md`** — design RFC for the alerts UI
+    that's been removed. Alert engine logic stays in the codebase but
+    the configuration UI is paused; tenants who need overrun alerts pre
+    design-partner can wire a Slack webhook from the cycle scan.
 
 ### Added
 
