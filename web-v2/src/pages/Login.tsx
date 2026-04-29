@@ -1,18 +1,16 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { ApiError } from '@/lib/api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { Loader2, Eye, EyeOff } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { VeloxLogo } from '@/components/VeloxLogo'
 
 export default function LoginPage() {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
+  const [apiKey, setApiKeyInput] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
@@ -22,21 +20,24 @@ export default function LoginPage() {
     e.preventDefault()
     setError('')
 
-    if (!email.trim() || !password) {
-      setError('Email and password are required')
+    const trimmed = apiKey.trim()
+    if (!trimmed) {
+      setError('Paste your Velox API key')
+      return
+    }
+    if (!trimmed.startsWith('vlx_')) {
+      setError('That doesn’t look like a Velox key — it should start with vlx_')
       return
     }
 
     setLoading(true)
     try {
-      await login(email.trim(), password)
+      await login(trimmed)
       navigate('/', { replace: true })
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 401) {
-          setError('Invalid email or password')
-        } else if (err.status === 403) {
-          setError(err.message || 'Account disabled')
+          setError('Invalid or revoked API key')
         } else {
           setError(err.message)
         }
@@ -52,55 +53,28 @@ export default function LoginPage() {
     <div className="min-h-screen flex flex-col items-center justify-center px-4 bg-background">
       <div className="flex flex-col items-center mb-8">
         <VeloxLogo size="lg" />
-        <p className="text-sm text-muted-foreground mt-2">Sign in to your billing dashboard</p>
+        <p className="text-sm text-muted-foreground mt-2">Sign in with your API key</p>
       </div>
 
-      <Card className="w-full max-w-[360px]">
+      <Card className="w-full max-w-[420px]">
         <CardContent className="p-6">
           <form onSubmit={handleSubmit} noValidate className="space-y-4">
             <div className="space-y-1.5">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="api-key">Secret API key</Label>
               <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="you@company.com"
-                autoComplete="email"
+                id="api-key"
+                type="password"
+                value={apiKey}
+                onChange={e => setApiKeyInput(e.target.value)}
+                placeholder="vlx_secret_test_..."
+                autoComplete="off"
                 autoFocus
+                spellCheck={false}
               />
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="password">Password</Label>
-                <Link
-                  to="/forgot-password"
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  Forgot password?
-                </Link>
-              </div>
-              <div className="relative">
-                <Input
-                  id="password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="Enter your password"
-                  autoComplete="current-password"
-                  className="pr-10"
-                />
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onClick={() => setShowPassword(!showPassword)}
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
+              <p className="text-xs text-muted-foreground">
+                The Secret Key printed by <code className="font-mono">make bootstrap</code>, or any
+                key on the API Keys page after you&rsquo;re in.
+              </p>
             </div>
 
             {error && (
@@ -111,7 +85,7 @@ export default function LoginPage() {
 
             <Button type="submit" disabled={loading} className="w-full">
               {loading ? <Loader2 size={16} className="animate-spin mr-2" /> : null}
-              {loading ? 'Signing in...' : 'Sign In'}
+              {loading ? 'Signing in…' : 'Sign In'}
             </Button>
           </form>
         </CardContent>

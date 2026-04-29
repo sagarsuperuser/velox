@@ -48,7 +48,6 @@ const systemNav = [
   { to: '/audit-log', icon: ScrollText, label: 'Audit Log' },
   { to: '/webhooks', icon: Globe, label: 'Webhooks' },
   { to: '/api-keys', icon: Key, label: 'API Keys' },
-  { to: '/members', icon: UsersRound, label: 'Members' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 
