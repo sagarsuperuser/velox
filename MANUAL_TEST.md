@@ -68,11 +68,12 @@ stripe listen --forward-to localhost:8080/v1/webhooks/stripe/<endpoint_id>
 ### Bootstrap (first run only)
 
 ```bash
-make bootstrap                  # Creates the first tenant + admin user + API key
+make bootstrap                  # Creates the first tenant + secret/publishable API keys
 ```
 
-Open http://localhost:5173, sign in with the email+password printed by bootstrap.
-API keys are for programmatic access — the dashboard now uses a session cookie.
+Open http://localhost:5173 and paste the Secret API key printed by bootstrap into
+the Sign In screen. Same key authenticates the API and the dashboard — there are
+no user accounts in v1 (see ADR-007 / FLOW A1).
 
 ### Useful commands
 
@@ -113,12 +114,11 @@ signs out. Run this before every merge to main and as a nightly canary.
 - [ ] Frontend at http://localhost:5173 loads (white page is fine — not signed in yet)
 
 ### S1.2 Bootstrap + sign in
-- [ ] `make bootstrap` if no tenants exist — note the email/password it prints
-- [ ] Sign in via UI at /login with that email+password
-- [ ] Verify: redirected to dashboard; sidebar shows your email in the footer
-- [ ] Verify: `document.cookie` in devtools shows NO `velox_session` (httpOnly), but
-  the session is clearly present (requests succeed, whoami returns your user)
-- [ ] Verify: top-bar Test/Live toggle shows "Test" active
+- [ ] `make bootstrap` if no tenants exist — copy the printed Secret API key (`vlx_secret_test_…`)
+- [ ] Sign in via UI at `/login` by pasting the Secret API key
+- [ ] Verify: redirected to dashboard
+- [ ] Verify: `localStorage.getItem('velox_api_key')` in devtools matches the pasted key
+- [ ] Verify: subsequent requests carry `Authorization: Bearer vlx_secret_test_…` (Network tab)
 
 ### S1.3 Tenant Stripe connection
 - [ ] Settings → Payments → paste `sk_test_...` + `pk_test_...` → Connect
@@ -436,30 +436,14 @@ controls whether the alert fires once-ever or once-per-billing-period.
 - [ ] Webhook payload includes: `customer_id`, `meter_id`, `threshold`, `current_value`, `period_start`, `period_end`, `recurrence`
 - [ ] Dashboard notification: bell icon shows unread count; clicking the alert navigates to the customer detail page with the meter highlighted
 
-### Dashboard UI (Track B, PR #71)
+### Backend-only today
 
-`/billing-alerts` page in the Config nav (with a `BellRing` icon, between Dunning and the rest). Backed by `POST/GET /v1/billing/alerts` + `POST /v1/billing/alerts/{id}/archive`.
-
-- [ ] Sidebar → Config → Billing alerts → page loads with a card listing every alert and a status filter Select (all / active / triggered / triggered_for_period / archived)
-- [ ] Empty state when no alerts exist → "Create your first alert" CTA opens the new-alert dialog
-- [ ] List columns: title, customer (linked to `/customers/:id`), meter (linked to `/meters/:id` or `"All meters"` when filterless), threshold (`≥ $X.XX` for amount alerts, `≥ N units` for usage alerts), recurrence ("one-time" / "per period"), status badge (active = success-green, triggered = danger-red, triggered_for_period = warning-amber, archived = secondary-grey), last-triggered timestamp
-- [ ] New alert dialog: title input, CustomerCombobox (search by display_name / email / external_id), optional meter Select with explicit "All meters (subtotal across all usage)" default, threshold-kind Select toggles between Amount (major units → ×100 to cents on submit) and Usage (decimal-string round-tripped per ADR-005), recurrence Select with both modes documented inline
-- [ ] Submit amount alert with title + customer + `100.00` + recurrence=one_time → row appears with `≥ $100.00` threshold and `active` status
-- [ ] Submit usage alert with `usage_gte=1000000.5` → row appears with `≥ 1000000.5 units` (trailing zeros stripped)
-- [ ] Form validation blocks: empty title, missing customer, non-positive threshold, both Amount + Usage fields filled simultaneously
-- [ ] Per-row Archive action → AlertDialog confirms ("recreate the alert if you need to track this threshold again") → row's status badge flips to `archived`; status filter "archived" surfaces it, "active" hides it
-
-## FLOW B16: Plan migration tool (operator UI)
-
-Shipped Week 6 (migration 0059). Operator-side bulk plan-change with per-customer
-preview before commit. Driven by `/admin/plan_migrations`.
-
-- [ ] Admin → Plan Migrations → New migration → pick old plan + new plan
-- [ ] Preview shows N customers affected with per-customer before/after invoice projection (powered by `POST /v1/invoices/create_preview` — see I11)
-- [ ] Spot-check 2–3 rows: amounts, proration, billing-period bounds match expectations
-- [ ] One-click commit → all subscriptions move atomically; audit log records one entry per customer with the actor + reason
-- [ ] Re-running the same migration is idempotent — affected count is 0 the second time
-- [ ] Cancel before commit → no DB writes; preview discarded
+The `/billing-alerts` dashboard page was cut on the lean-cut. The
+backend handlers + alert engine remain — operators can manage alerts
+via curl until a UI returns. To create / list / archive alerts use
+the API directly (`POST /v1/billing/alerts`,
+`GET /v1/billing/alerts?status=`, `POST /v1/billing/alerts/{id}/archive`).
+Webhook firing + the engine logic are unchanged.
 
 ## FLOW B11: Tax-ID format validation
 
@@ -640,7 +624,7 @@ Every customer-facing email renders as multipart/alternative (text + HTML) with 
 - [ ] Payment-receipt email after a successful charge: similar chrome, CTA labelled **View receipt**
 - [ ] Dunning warning email: shows attempt N of M + next retry date, CTA **Update payment**
 - [ ] Payment-update-request email: CTA uses the token URL from `PAYMENT_UPDATE_URL`, not the hosted invoice URL (different flow)
-- [ ] Operator emails (password reset, member invite, portal magic link) intentionally stay **plain text** — no HTML chrome, no tenant branding, since they carry security-sensitive tokens
+- [ ] Operator emails (portal magic link) intentionally stay **plain text** — no HTML chrome, no tenant branding, since they carry security-sensitive tokens
 
 ## FLOW I7: Zero-amount invoice
 
@@ -921,39 +905,35 @@ Endpoints (all bearer-auth, scoped to the session's customer):
 - [ ] Payment Methods tab → attach / detach via Stripe SetupIntent
 - [ ] Cross-customer probe: swap the bearer token for one scoped to a different customer; hitting the first customer's invoice ID → **404** (not 403 — avoids enumeration)
 
-## FLOW CU8: Public cost-dashboard embed (Week 5)
+## FLOW CU8: Embeddable cost-dashboard widget
 
 Per-customer iframe-able URL with token auth. Migration 0064 adds
 `customers.cost_dashboard_token` (partial unique, 256-bit `vlx_pcd_` prefix).
-Operator mints, customer's app embeds, no auth handoff.
+Operator mints the token via API; the tenant embeds the
+`<VeloxCostDashboard>` React component (or hits the public JSON endpoint
+directly) into their own product. The in-dashboard preview page was
+deleted on the lean-cut; this flow exercises the API + the embeddable
+React wrapper.
 
 ### Mint + read
 
-- [ ] Customer detail → "Embed dashboard" button → dialog shows the public URL with a Copy button
 - [ ] `POST /v1/customers/{id}/rotate-cost-dashboard-token` (API-key auth) returns `{token, public_url, customer_id}` — token starts with `vlx_pcd_` + 64 hex chars (72 chars total)
 - [ ] `GET /v1/public/cost-dashboard/{token}` (no auth) returns the sanitised projection: `customer_id`, `tenant_id`, `billing_period {from, to, source}`, `subscriptions[]`, `usage[{meter_id, meter_key, meter_name, unit, currency, total_quantity, total_amount_cents, rules[]}]`, `totals[{currency, amount_cents}]`, `thresholds[]` (reserved), `warnings[]`, `projected_total_cents`
 - [ ] Confirm absent: `email`, `display_name`, `external_id`, `metadata`, `billing_profile` (sanitisation contract)
-
-### Public iframe render
-
-- [ ] Open the public URL in incognito (no session) → cycle-to-date charges, in-progress billing window, threshold alerts (if any), projected total render
 - [ ] Customer with no active subscription → empty arrays + `billing_period.source = no_subscription`, NOT a 5xx
-- [ ] `?theme=light` → light theme; `?theme=dark` (or omit) → dark by default
-- [ ] `?accent=#10b981` → cycle progress bar + focus rings repaint to that hex
-- [ ] Invalid hex (`?accent=#zzz` / `?accent=blue` / missing `#`) → silently ignored, default accent stays
-- [ ] First paint already has the right theme (no light-then-dark flash) — `useLayoutEffect` applies before render
-- [ ] Hard-refreshing the iframe stays under the 60/min/IP `hostedInvoiceRL` rate limit; 61+ requests/min/IP from the same source → 429
+- [ ] Hard-refreshing the public URL stays under the 60/min/IP `hostedInvoiceRL` rate limit; 61+ requests/min/IP from the same source → 429
 
 ### Rotation invalidates
 
-- [ ] Rotate the token (call the rotate endpoint again, or use the dashboard "Regenerate" button) → previous URL returns 404 immediately; new URL works
+- [ ] Rotate the token (call the rotate endpoint again) → previous URL returns 404 immediately; new URL works
 - [ ] Audit log records the rotation with `previous_token_was_unset` flag; plaintext token is **never** in the audit log
 
 ### Typed React wrapper
 
 - [ ] `web-v2/src/components/embeds/VeloxCostDashboard.tsx` renders the iframe via `<VeloxCostDashboard token={t} baseUrl={u} theme="dark" accent="#10b981" />`
-- [ ] Storybook / page that imports the component compiles cleanly with `tsc --noEmit`
-- [ ] URL constructed by the wrapper matches the manual-curl iframe URL byte-for-byte
+- [ ] Tenant app importing the component compiles cleanly with `tsc --noEmit`
+- [ ] `?theme=light` / `?theme=dark` query params switch theme on the iframe
+- [ ] `?accent=#10b981` repaints accent; invalid hex silently ignored
 
 ## FLOW CU7: Email bounce capture + badge (T0-20 — 🟡 pipeline only)
 
@@ -1013,25 +993,6 @@ Shipped in T0-12. URL-only logo (no upload infra); brand accent color applied to
 - [ ] Save → generate an invoice PDF → company name tinted in the brand color, thin 2px accent bar under the header block
 - [ ] Clear the brand color → save → new PDF has neutral palette (no accent bar); output is byte-identical to the pre-migration look
 - [ ] Branded email (T0-16, 2026-04-24): trigger any customer-facing email with `brand_color` set → HTML body renders the 2px accent bar at top, CTA button background uses the brand color, logo + company name in header. See FLOW I6 for the full checklist.
-
-## FLOW CU9: Bulk operations (`/admin/bulk`)
-
-Two action types ship today: `apply_coupon` and `schedule_cancel`. Both are
-preview-then-commit with idempotency keyed on `(tenant_id, idempotency_key)`.
-
-- [ ] `/admin/bulk` → tabbed UI: "Apply coupon" + "Schedule cancel" + "History"
-- [ ] **Apply coupon**: customer filter (status / segment / created_after) → preview shows N matched customers + per-customer projected discount → "Apply" commits;
-  audit log records one parent + N children (one per customer)
-- [ ] Same idempotency key replays → response is the original commit summary; no double-discount
-- [ ] **Schedule cancel**: filter cohort + cancellation date (+ optional `prorate=true`) → preview shows N subscriptions to cancel + projected refund per sub → commit
-- [ ] Cancellation date in the past → 422 `"cancel_at must be in the future"`
-- [ ] **History tab**: every past bulk action with status badge (`pending` / `completed` / `failed` / `partial`), target_count, success_count, failure_count;
-  click row → drawer with per-customer outcome (success / skipped reason / error)
-- [ ] Partial failure (one customer's coupon application fails after others succeeded) → action_status = `partial`; failed customers callable individually via the drawer's "Retry failed" button
-- [ ] Filter API: `GET /v1/bulk-actions?status=&action_type=` cursor-paginates correctly; cross-tenant request 404s
-
-> Plan migration cohort is its own tool (FLOW B16, `/admin/plan_migrations`) —
-> not under bulk actions because the per-customer preview model is richer.
 
 ---
 
@@ -1116,22 +1077,11 @@ falls through to `ManualCalculator`. Operators alert on sustained non-zero value
 ## FLOW U1: Dashboard
 
 - [ ] 4 KPI cards: MRR (sparkline + trend %), Active Customers, Failed Payments (red if >0), Revenue 30d
-- [ ] Revenue bar chart (compact, no axes, link to Analytics)
+- [ ] Revenue bar chart (compact, no axes)
 - [ ] Recent Activity: last 5 invoices with status dot, badge, amount, relative time — clicking navigates to detail
 - [ ] Get Started checklist: **6 steps** — Connect Stripe, Create first plan, Add first customer, Create subscription, Set up webhook endpoint, Complete company profile. Each auto-tracks against server state (no manual checkoff). Self-hides at 100%.
 - [ ] Dismiss button persists per-tenant in localStorage (`velox:getstarted-dismissed:${tenantID}`) — dismissing in Tenant A does not hide it in Tenant B
-- [ ] "Skip to API-first flow" link → `/docs/quickstart`
-- [ ] "Trigger Billing" button was **removed** from the dashboard (use `POST /v1/billing/run` via API — see S1.5). Dashboard empty state copy reads "Trigger a billing run from Settings → Operations" (aspirational; that tab doesn't yet exist)
-- [ ] No overlap with Analytics (no period selector, no detailed charts here)
-
-## FLOW U2: Analytics page
-
-- [ ] Revenue trend area chart with period tabs (30d / 90d / 12mo); switching updates data
-- [ ] X-axis dates, Y-axis amounts, hover tooltips
-- [ ] Payment Success Rate donut with center percentage
-- [ ] Invoice Summary bar chart (Paid/Open/Failed/Dunning)
-- [ ] Customer Stats card (Active, Subs, Dunning, Open Invoices)
-- [ ] Financial Summary card (MRR, Total Revenue, Outstanding AR, Avg Invoice, Credit Balance)
+- [ ] "Trigger Billing" button is **not** on the dashboard — use `POST /v1/billing/run` via API (see S1.5)
 
 ## FLOW U3: Usage Events page
 
@@ -1144,14 +1094,6 @@ falls through to `ManualCalculator`. Operators alert on sustained non-zero value
 - [ ] Filter by customer → all four stat cards AND breakdown bars recompute server-side; `Total Units` reflects every matching event in scope, not the visible page
 - [ ] Filter by meter → breakdown collapses to a single row; `Active Meters` shows 1
 - [ ] Decimal precision: ingest three events with quantities `0.5`, `0.5`, `0.0001` for one customer/meter → `Total Units` displays `1.0001` (no precision loss, no toLocaleString rounding)
-
-## FLOW U4: Cmd+K command palette
-
-- [ ] Cmd+K (Mac) / Ctrl+K → palette opens with navigation items
-- [ ] Type "inv" → Invoices nav filtered, matching invoices listed
-- [ ] Arrow keys → highlight moves; Enter → navigate; click result → same
-- [ ] Type a customer name → customer appears; click → navigate + close
-- [ ] Esc closes; works from any page
 
 ## FLOW U5: Dark mode
 
@@ -1213,18 +1155,15 @@ Match is case-insensitive. Used on:
 
 ## FLOW U10: Public pages (no auth required)
 
-Added in T0-2 through T0-6. All routes load without `ProtectedRoute` wrapping.
+Most public pages were cut on the lean-cut (Status, Privacy, Terms,
+DPA, Security, the embedded `/docs` site, in-app Changelog). The
+remaining unauthenticated surface is invoice + payment-update flows —
+the only public pages a real customer touches.
 
-- [ ] `/docs` landing, `/docs/quickstart`, `/docs/webhooks`, `/docs/idempotency` — each renders `DocsShell` layout
-- [ ] `/docs/recipes` — recipe catalog page (5 cards, links to per-recipe detail)
-- [ ] `/docs/embeds/cost-dashboard` — embed integration guide (token mint + iframe snippet + theme/accent params)
-- [ ] `/docs/api` — OpenAPI spec rendered by Scalar, with endpoints browsable
-- [ ] `/security` — Security page renders under `PublicLayout`
-- [ ] `/status` — Status placeholder page
-- [ ] `/changelog` — reverse-chronological entries
-- [ ] `/terms`, `/privacy`, `/dpa` — `LegalLayout` pages
-- [ ] Sign out, then hit each URL directly → no redirect to /login
-- [ ] Dashboard footer links to `/terms` and `/privacy`; account menu links to `/docs`, `/changelog`, `/status`, and the Report-issue mailto (U11)
+- [ ] `/invoice/:token` — `HostedInvoice.tsx`. Sign out, hit the URL with a valid `public_token` → invoice renders, Pay button works (full FLOW I10 below covers it).
+- [ ] `/update-payment` — `UpdatePayment.tsx`. Token-authenticated card-update flow (FLOW D4 covers it).
+- [ ] `/checkout/success` — Stripe Checkout return URL. Lands a session with a success message; no auth needed.
+- [ ] `/login` — paste-API-key form (FLOW A1). Loads without auth.
 
 ## FLOW U11: In-app support channel (Report-an-issue mailto)
 
@@ -1389,53 +1328,19 @@ exactly so `--output json` is byte-identical to the HTTP response.
 - [ ] `velox-cli invoice send <unknown>` → exit code 1, server's 404 surfaced
 - [ ] `velox-cli invoice send <inv_id> --output=json` → `{queued_at, recipient}` JSON
 
-## FLOW X13: Stripe importer (`velox-import`)
+## FLOW X14: Self-host (Compose)
 
-Migrates a tenant's Stripe data into Velox in dependency order. Phases land
-incrementally: customers → products+prices → subscriptions → invoices
-(finalized only). Outputs a CSV report per run.
+Compose-on-single-VM is the supported v1 deployment shape. Helm /
+Terraform / multi-replica HA paths are explicitly deferred — see
+`docs/self-host.md` and the lean-cut entry in CHANGELOG for the
+rationale.
 
-- [ ] `go build -o /tmp/velox-import ./cmd/velox-import && /tmp/velox-import --help` lists `--tenant`, `--api-key`, `--resource`, `--since`, `--dry-run`, `--output`, `--livemode-default`
-- [ ] Missing `--tenant` → exit 1, `"--tenant is required"`
-- [ ] Missing `--api-key` → exit 1, `"--api-key is required"`
-- [ ] **Phase 0 — customers only**: `--resource=customers --since=2026-01-01 --dry-run` →
-  CSV report lists Stripe customer IDs that *would* be imported; no DB writes; `SELECT count(*) FROM customers WHERE tenant_id=?` unchanged
-- [ ] Drop `--dry-run` → customers inserted with `livemode` derived from `sk_test_` vs `sk_live_` prefix; `external_id` = Stripe id
-- [ ] Re-run identical command → idempotent; CSV row marks each as `skipped: already_imported`; no duplicate customers
-- [ ] **Phase 1 — products + prices**: `--resource=customers,products,prices` runs in dependency order regardless of input order; each Stripe price's `lookup_key` becomes `velox.pricing_rule.key`
-- [ ] **Phase 2 — subscriptions**: imports active + trialing only; cancelled / unpaid skipped with reason in CSV; `current_period_end` carried over so first Velox billing run respects Stripe's clock
-- [ ] **Phase 3 — invoices**: only `paid` / `void` / `uncollectible` (finalized) imported; PDFs / hosted URLs not re-fetched (Stripe owns those for legacy)
-- [ ] `--livemode-default=false` overrides the prefix-derived value
-- [ ] CSV output path: defaults to `./velox-import-<timestamp>.csv`; `--output=/tmp/foo.csv` honored
-- [ ] Long-running import handles SIGINT (Ctrl-C) → flushes the CSV row count, exits 130; partial state in DB is consistent (no half-imported subscription)
-
-## FLOW X14: Self-host artifacts (Helm + Compose + Terraform)
-
-Three deploy artifacts ship under `deploy/`:
-
-```
-deploy/helm/velox/      — Kubernetes Helm chart (for operators already on K8s)
-deploy/compose/         — single-host docker-compose stack (postgres + nginx + velox)
-deploy/terraform/aws/   — AWS module: single VPC, single EC2 host, RDS Postgres, S3 backup bucket
-```
-
-The Terraform module is deliberately boring (single-AZ, no autoscaling, no
-ECS) — operators who want HA reach for the Helm chart on EKS instead. See
-`deploy/README.md` for the picker matrix.
-
-- [ ] `helm lint deploy/helm/velox` → 0 errors, 0 warnings
-- [ ] `helm template deploy/helm/velox | kubectl apply --dry-run=client -f -` → no schema errors
-- [ ] `kind create cluster && helm install velox deploy/helm/velox --set image.tag=latest --wait` → pod healthy at `/health`; `kubectl exec` → `/health/ready` returns 200
-- [ ] Helm values surface (see `deploy/helm/velox/values.yaml`): `image.tag`, `env.VELOX_ENCRYPTION_KEY`, `ingress.host`, `replicaCount`, `resources.{requests,limits}`, postgres / redis subchart toggles
-- [ ] `cd deploy/compose && docker compose up -d && curl localhost:8080/health` → `{"status":"ok"}`
-- [ ] Compose: postgres data volume survives `down` / `up` cycle without data loss; `postgres-init.sql` runs only on first boot
-- [ ] Compose: nginx fronts the API on port 80 with the config in `deploy/compose/nginx.conf`
-- [ ] `terraform -chdir=deploy/terraform/aws init && terraform validate` → success
-- [ ] `cp deploy/terraform/aws/terraform.tfvars.example terraform.tfvars`, fill `name_prefix` + `vpc_cidr` + `instance_type` + AMI; `terraform plan` against a sandbox account → resources include VPC, public + private subnets in 2 AZs, IGW, EC2 host (single AZ), RDS Postgres (db subnet group spanning both AZs but single-AZ instance), S3 backup bucket (versioned + SSE + BlockPublicAccess), security groups, IAM role for the EC2 host
-- [ ] `terraform apply` then `curl http://<ec2_public_ip>:8080/health` → `{"status":"ok"}`; `user-data.sh.tftpl` ran the migrations on first boot
-- [ ] `deploy/README.md` opens with the picker matrix (artifact ↔ when to pick it) and copy-paste quickstart for each
-- [ ] Migration step is explicit in each artifact: container image runs `RUN_MIGRATIONS_ON_BOOT=true` on first deploy; documented separately so operators can opt out and run `go run ./cmd/velox migrate` manually
-- [ ] `docs/self-host/postgres-backup.md` is referenced from `deploy/README.md` and from each artifact's README — covers `pg_basebackup` + WAL archive workflow for the recovery path (Week 12 incident-runbook truth-up references this)
+- [ ] `docker compose up -d postgres redis mailpit` brings the three sidecars up healthy
+- [ ] `make bootstrap` creates a tenant + secret/publishable test keys; banner points at `/login` to paste the secret key
+- [ ] `make dev` starts the API on `:8080`; `/health` and `/health/ready` both return `{"status":"ok"}`
+- [ ] `cd web-v2 && npm run dev` brings the dashboard up on `:5173`; pasting the secret key loads `/`
+- [ ] On first dev startup, `RUN_MIGRATIONS_ON_BOOT=true` (default for `make dev`) applies all forward migrations idempotently
+- [ ] Outbound transactional mail catches in mailpit at `http://localhost:8025` (no real SMTP needed for local eval)
 
 ---
 
@@ -1453,13 +1358,12 @@ Common failure modes and where to look first.
   `go run ./cmd/velox migrate force <version>` to clear the dirty flag before
   re-running `make migrate`
 
-## Session cookie not set after login
+## Dashboard sign-in fails
 
-- CORS: `CORS_ALLOWED_ORIGINS` must include the frontend origin; browser fetch must use
-  `credentials: 'include'` (it does — check `web-v2/src/lib/api.ts`)
-- SameSite mismatch: cookie is `SameSite=Lax`; cross-site POSTs won't attach it
-- Check `sessions` table: row exists but `revoked_at` is set → user was force-logged-out
-  (e.g., removed from workspace)
+- Pasted key doesn't start with `vlx_` → frontend rejects before sending. Inspect localStorage to confirm nothing's staged.
+- 401 on `/v1/whoami` → key is wrong, revoked, or expired. Re-run `make bootstrap` for a fresh test key, or hit `/api-keys` from another working session to mint one.
+- CORS: `CORS_ALLOWED_ORIGINS` must include the frontend origin (`http://localhost:5173` for local dev). Browser console shows the cross-origin block.
+- `Authorization` header missing on requests → `getApiKey()` returned null. Check `localStorage.getItem('velox_api_key')` in DevTools.
 
 ## Invoice didn't generate
 
@@ -1489,14 +1393,6 @@ Common failure modes and where to look first.
   stay plaintext (backward compat, FLOW X5). New rows post-key-set are encrypted
 - Wrong field — only customer display_name/email and billing profile
   legal_name/email/phone/tax_id are encrypted (see `cipher.EncryptString` call sites)
-
-## Invite email never arrives
-
-- `email_outbox` row exists but no dispatch → SMTP config missing; check `EMAIL_*` env vars
-  and dispatcher logs. In local dev without SMTP, the row stays in `pending` — pull
-  `invite_url` from `payload` directly (FLOW A3)
-- Token in URL but preview returns 404 → token expired, revoked, or already accepted;
-  all 4 collapse to the same 404 to resist enumeration
 
 ## Webhook signature fails
 
