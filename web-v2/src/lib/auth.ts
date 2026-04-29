@@ -1,34 +1,43 @@
+// Dashboard auth is API-key based: the operator pastes a `vlx_secret_…`
+// key into the login screen; we validate it against /v1/whoami, store it
+// in localStorage, and every subsequent apiRequest reads it back to set
+// the Authorization: Bearer header. No cookies, no sessions, no users —
+// the dashboard is a thin client over the public HTTP API.
+
 import { apiRequest } from './api'
 
-// SessionInfo mirrors the /v1/session GET response. Lives here rather than
-// api.ts because it's tied to the auth/session lifecycle, not tenant data.
 export interface SessionInfo {
-  user_id: string
-  email: string
   tenant_id: string
+  key_id: string
+  key_type: string
   livemode: boolean
 }
 
-export interface LoginResponse extends SessionInfo {
-  expires_at: string
+const STORAGE_KEY = 'velox_api_key'
+
+export function getApiKey(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function setApiKey(key: string): void {
+  localStorage.setItem(STORAGE_KEY, key)
+}
+
+export function clearApiKey(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
 }
 
 export const authApi = {
-  login: (email: string, password: string) =>
-    apiRequest<LoginResponse>('POST', '/auth/login', { email, password }),
-
-  logout: () => apiRequest<void>('POST', '/auth/logout'),
-
-  whoami: () => apiRequest<SessionInfo>('GET', '/session'),
-
-  setLivemode: (livemode: boolean) =>
-    apiRequest<{ livemode: boolean }>('PATCH', '/session', { livemode }),
-
-  // Always resolves (backend returns 202 regardless of whether the email
-  // matches a real user) — enumeration resistance lives in the server.
-  requestPasswordReset: (email: string) =>
-    apiRequest<void>('POST', '/auth/password-reset-request', { email }),
-
-  confirmPasswordReset: (token: string, password: string) =>
-    apiRequest<void>('POST', '/auth/password-reset-confirm', { token, password }),
+  // whoami resolves the currently-stored API key against the backend.
+  // Returns the tenant context on success; throws an ApiError on 401
+  // (invalid / revoked key) so the caller can route the user to /login.
+  whoami: () => apiRequest<SessionInfo>('GET', '/whoami'),
 }

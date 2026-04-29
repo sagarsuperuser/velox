@@ -28,8 +28,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/customerportal"
-	"github.com/sagarsuperuser/velox/internal/dashauth"
-	"github.com/sagarsuperuser/velox/internal/dashmembers"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
@@ -46,14 +44,12 @@ import (
 	"github.com/sagarsuperuser/velox/internal/portalapi"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/recipe"
-	"github.com/sagarsuperuser/velox/internal/session"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
 	"github.com/sagarsuperuser/velox/internal/tenantstripe"
 	"github.com/sagarsuperuser/velox/internal/testclock"
 	"github.com/sagarsuperuser/velox/internal/usage"
-	"github.com/sagarsuperuser/velox/internal/user"
 	"github.com/sagarsuperuser/velox/internal/webhook"
 
 	"github.com/stripe/stripe-go/v82"
@@ -358,19 +354,18 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// both *email.Sender and *email.OutboxSender, so we pick once and wire
 	// the same value everywhere.
 	var (
-		invoiceEmail       invoice.EmailSender
-		dunningEmail       dunning.EmailNotifier
-		receiptEmail       payment.EmailReceipt
-		paymentUpdate      payment.EmailPaymentUpdate
-		magicLinkEmail     customerportal.MagicLinkEmailSender
-		passwordResetEmail dashauth.EmailNotifier
+		invoiceEmail   invoice.EmailSender
+		dunningEmail   dunning.EmailNotifier
+		receiptEmail   payment.EmailReceipt
+		paymentUpdate  payment.EmailPaymentUpdate
+		magicLinkEmail customerportal.MagicLinkEmailSender
 	)
 	if emailOutboxEnabled {
 		outboxSender := email.NewOutboxSender(emailOutboxStore)
-		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail, passwordResetEmail = outboxSender, outboxSender, outboxSender, outboxSender, outboxSender, outboxSender
+		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail = outboxSender, outboxSender, outboxSender, outboxSender, outboxSender
 		slog.Info("email outbox enabled — producers will enqueue emails via email_outbox")
 	} else {
-		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail, passwordResetEmail = emailSender, emailSender, emailSender, emailSender, emailSender, emailSender
+		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail = emailSender, emailSender, emailSender, emailSender, emailSender
 		slog.Warn("email outbox DISABLED — using direct-SMTP path (set VELOX_EMAIL_OUTBOX_ENABLED=true to re-enable)")
 	}
 	invoiceH.SetEmailSender(invoiceEmail)
@@ -600,24 +595,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// (tests, webhook) keep their own signatures.
 	stripeAdapter.SetPaymentMethodAttacher(paymentMethodsSvc)
 
-	// Dashboard (email+password) auth — embedded user + session services
-	// backing the UI login flow. Deliberately separate from API-key auth
-	// (which protects /v1/* for machine traffic); session cookies only
-	// authenticate the /v1/auth and /v1/session surface plus whichever
-	// UI-facing endpoints mount session.Middleware. Password-reset emails
-	// flow through the same outbox/SMTP selector as every other domain email.
-	userSvc := user.NewService(user.NewPostgresStore(db))
-	sessionSvc := session.NewService(session.NewPostgresStore(db))
-	dashauthH := dashauth.NewHandler(
-		userSvc,
-		sessionSvc,
-		tenantNameLookup{svc: tenantSvc},
-		passwordResetEmail,
-		strings.TrimSpace(os.Getenv("VELOX_DASHBOARD_PASSWORD_RESET_URL")),
-		strings.TrimSpace(os.Getenv("VELOX_DASHBOARD_INVITE_URL")),
-		dashauth.DefaultCookieConfig(),
-	)
-
 	// GDPR data export + deletion — wired into customer handler
 	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, usageStore, auditLogger)
 	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
@@ -719,33 +696,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Mount("/v1/bootstrap", bootstrapH.Routes())
 	})
 
-	// Dashboard auth — email+password login, logout, password reset. Public
-	// because the caller is pre-session; rate-limited to slow credential
-	// stuffing. /v1/session is the session-scoped counterpart (whoami, mode
-	// toggle) and requires the cookie issued by /v1/auth/login.
-	r.Route("/v1/auth", func(r chi.Router) {
-		r.Use(rateLimiter.Middleware())
-		r.Use(middleware.Timeout(30 * time.Second))
-		r.Mount("/", dashauthH.Routes())
-	})
-	r.Route("/v1/session", func(r chi.Router) {
-		r.Use(session.Middleware(sessionSvc))
-		r.Use(rateLimiter.Middleware())
-		r.Use(middleware.Timeout(30 * time.Second))
-		r.Mount("/", dashauthH.SessionRoutes())
-	})
-
-	// Members management — session-scoped. Lists active members + pending
-	// invitations, issues new invitations (dashauth dispatches the email),
-	// and handles revoke + remove with last-owner / self-removal guards.
-	membersH := dashmembers.NewHandler(userSvc, dashauthH)
-	r.Route("/v1/members", func(r chi.Router) {
-		r.Use(session.Middleware(sessionSvc))
-		r.Use(rateLimiter.Middleware())
-		r.Use(middleware.Timeout(30 * time.Second))
-		r.Mount("/", membersH.Routes())
-	})
-
 	// Stripe webhooks — no API key auth (verified by signature)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(30 * time.Second))
@@ -804,23 +754,23 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// Real-time webhook event SSE stream — mounted ABOVE the /v1 route
 	// block so it skips the global 30s middleware.Timeout (which would
 	// kill any long-lived EventSource connection at 30s). We re-apply
-	// the same auth chain that /v1/* gets (session-or-API-key, rate
-	// limit, perm check) but specifically NOT idempotency / audit log
-	// (no value on a streaming GET) and NOT the Timeout. The stream
-	// is GET-only and read-only; no body to idempotency-key, nothing
-	// to audit beyond the existing access log.
+	// the same auth chain that /v1/* gets (API-key, rate limit, perm
+	// check) but specifically NOT idempotency / audit log (no value on
+	// a streaming GET) and NOT the Timeout. The stream is GET-only and
+	// read-only; no body to idempotency-key, nothing to audit beyond
+	// the existing access log.
 	r.Route("/v1/webhook_events/stream", func(r chi.Router) {
-		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
+		r.Use(auth.Middleware(authSvc))
 		r.Use(rateLimiter.Middleware())
 		r.With(auth.Require(auth.PermAPIKeyRead)).Get("/", webhookOutH.StreamHandler())
 	})
 
-	// Tenant-scoped routes — accept either dashboard session cookie OR
-	// Authorization: Bearer API key. Session takes precedence when the cookie
-	// is present; external integrations (no cookie) fall through to API-key
-	// auth. Both paths set the same ctx keys so handlers don't branch.
+	// Tenant-scoped routes — Authorization: Bearer <api_key> on every
+	// request. Dashboard and external integrations both authenticate
+	// the same way; the dashboard stores the operator's API key in
+	// browser storage and attaches the header.
 	r.Route("/v1", func(r chi.Router) {
-		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
+		r.Use(auth.Middleware(authSvc))
 		r.Use(rateLimiter.Middleware()) // After auth so tenant ID is available for bucket key
 		r.Use(mw.Idempotency(db))
 		r.Use(mw.AuditLog(db, settingsStore))
@@ -830,6 +780,19 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// 30s cap — long-lived EventSource connections need to run
 		// indefinitely.
 		r.Use(middleware.Timeout(30 * time.Second))
+
+		// /v1/whoami — resolves the bearer key to its tenant context
+		// without requiring a specific permission. The dashboard hits
+		// this on login to (a) validate the pasted key and (b) populate
+		// tenant_id / livemode in the AuthContext for display.
+		r.Get("/whoami", func(w http.ResponseWriter, req *http.Request) {
+			respond.JSON(w, req, http.StatusOK, map[string]any{
+				"tenant_id": auth.TenantID(req.Context()),
+				"key_id":    auth.KeyID(req.Context()),
+				"key_type":  string(auth.GetKeyType(req.Context())),
+				"livemode":  auth.Livemode(req.Context()),
+			})
+		})
 
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/api-keys", authH.Routes())
 		r.With(auth.Require(auth.PermCustomerRead)).Mount("/customers", customerH.Routes())
@@ -1033,22 +996,6 @@ func requestLogger(next http.Handler) http.Handler {
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
-}
-
-// tenantNameLookup adapts tenant.Service to dashauth.TenantLookup. Kept
-// local to router.go because it's pure composition plumbing — dashauth
-// only needs the display name, not the full tenant surface, so the
-// narrow interface lives in dashauth and the adapter lives here.
-type tenantNameLookup struct {
-	svc *tenant.Service
-}
-
-func (t tenantNameLookup) Name(ctx context.Context, tenantID string) (string, error) {
-	v, err := t.svc.Get(ctx, tenantID)
-	if err != nil {
-		return "", err
-	}
-	return v.Name, nil
 }
 
 // bulkActionSubCancellerAdapter narrows subscription.Service to the single

@@ -16,7 +16,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/config"
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
-	"github.com/sagarsuperuser/velox/internal/user"
 )
 
 func main() {
@@ -110,53 +109,6 @@ func main() {
 		fatal("create pub key: %v", err)
 	}
 
-	// Optional owner user. Provisions a dashboard login tied to the new
-	// tenant when both env vars are set; otherwise skipped so CI and
-	// scripted flows that only need API keys stay slim. Email is verified
-	// at creation — this is the owner of the tenant, so the verification
-	// loop is just noise for a one-time bootstrap.
-	ownerEmail := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_OWNER_EMAIL")))
-	ownerPassword := os.Getenv("VELOX_OWNER_PASSWORD")
-	var ownerCreated bool
-	if ownerEmail != "" && ownerPassword != "" {
-		if len(ownerPassword) < 8 {
-			_ = tx.Rollback()
-			fatal("VELOX_OWNER_PASSWORD must be at least 8 characters")
-		}
-		ownerHash, err := user.HashPassword(ownerPassword)
-		if err != nil {
-			_ = tx.Rollback()
-			fatal("hash owner password: %v", err)
-		}
-		ownerID := postgres.NewID("vlx_usr")
-		displayName := strings.TrimSpace(os.Getenv("VELOX_OWNER_NAME"))
-		if displayName == "" {
-			// Fall back to the local part of the email — better than a blank
-			// string in the whoami response.
-			if at := strings.IndexByte(ownerEmail, '@'); at > 0 {
-				displayName = ownerEmail[:at]
-			} else {
-				displayName = ownerEmail
-			}
-		}
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO users (id, email, display_name, status, password_hash, email_verified_at)
-			 VALUES ($1, $2, $3, 'active', $4, now())`,
-			ownerID, ownerEmail, displayName, ownerHash)
-		if err != nil {
-			_ = tx.Rollback()
-			fatal("create owner user: %v", err)
-		}
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO user_tenants (user_id, tenant_id, role) VALUES ($1, $2, 'owner')`,
-			ownerID, tenantID)
-		if err != nil {
-			_ = tx.Rollback()
-			fatal("create owner membership: %v", err)
-		}
-		ownerCreated = true
-	}
-
 	if err := tx.Commit(); err != nil {
 		fatal("commit: %v", err)
 	}
@@ -174,22 +126,10 @@ func main() {
 	fmt.Println("  Publishable Key (restricted):")
 	fmt.Printf("  %s\n", pubRawKey)
 	fmt.Println()
-	if ownerCreated {
-		fmt.Println("  Dashboard owner:")
-		fmt.Printf("  Email:    %s\n", ownerEmail)
-		fmt.Println("  Password: (the one you supplied in VELOX_OWNER_PASSWORD)")
-		fmt.Println()
-		fmt.Println("  Log in:")
-		fmt.Println("  curl -i -X POST http://localhost:8080/v1/auth/login \\")
-		fmt.Println("       -H 'Content-Type: application/json' \\")
-		fmt.Printf("       -d '{\"email\":\"%s\",\"password\":\"…\"}'\n", ownerEmail)
-		fmt.Println()
-	} else {
-		fmt.Println("  Dashboard owner: skipped")
-		fmt.Println("  (set VELOX_OWNER_EMAIL and VELOX_OWNER_PASSWORD to provision one)")
-		fmt.Println()
-	}
-	fmt.Println("  Try it:")
+	fmt.Println("  Sign in to the dashboard at http://localhost:5173 by")
+	fmt.Println("  pasting the Secret Key above into the login screen.")
+	fmt.Println()
+	fmt.Println("  Try it on the API:")
 	fmt.Printf("  curl -H 'Authorization: Bearer %s' http://localhost:8080/v1/customers\n", rawKey)
 	fmt.Println("========================================")
 }

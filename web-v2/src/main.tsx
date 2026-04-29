@@ -98,10 +98,6 @@ function PublicOnlyRoute({ children }: { children: ReactNode }) {
 
 // Lazy load pages
 const LoginPage = lazy(() => import('@/pages/Login'))
-const ForgotPasswordPage = lazy(() => import('@/pages/ForgotPassword'))
-const ResetPasswordPage = lazy(() => import('@/pages/ResetPassword'))
-const AcceptInvitePage = lazy(() => import('@/pages/AcceptInvite'))
-const MembersPage = lazy(() => import('@/pages/Members'))
 const DashboardPage = lazy(() => import('@/pages/Dashboard'))
 const CustomersPage = lazy(() => import('@/pages/Customers'))
 const PricingPage = lazy(() => import('@/pages/Pricing'))
@@ -144,9 +140,6 @@ const App = () => (
           >
             <Routes>
               <Route path="/login" element={<PublicOnlyRoute><LoginPage /></PublicOnlyRoute>} />
-              <Route path="/forgot-password" element={<PublicOnlyRoute><ForgotPasswordPage /></PublicOnlyRoute>} />
-              <Route path="/reset-password" element={<ResetPasswordPage />} />
-              <Route path="/accept-invite" element={<AcceptInvitePage />} />
               <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
               <Route path="/onboarding" element={<ProtectedRoute><OnboardingPage /></ProtectedRoute>} />
               <Route path="/recipes" element={<ProtectedRoute><RecipesPage /></ProtectedRoute>} />
@@ -165,7 +158,6 @@ const App = () => (
               <Route path="/credit-notes" element={<ProtectedRoute><CreditNotesPage /></ProtectedRoute>} />
               <Route path="/audit-log" element={<ProtectedRoute><AuditLogPage /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
-              <Route path="/members" element={<ProtectedRoute><MembersPage /></ProtectedRoute>} />
               <Route path="/customers/:id" element={<ProtectedRoute><CustomerDetailPage /></ProtectedRoute>} />
               <Route path="/invoices/:id" element={<ProtectedRoute><InvoiceDetailPage /></ProtectedRoute>} />
               <Route path="/subscriptions/:id" element={<ProtectedRoute><SubscriptionDetailPage /></ProtectedRoute>} />

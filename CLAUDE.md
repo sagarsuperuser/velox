@@ -30,7 +30,7 @@ go test -p 1 ./... -short=false  # includes integration tests (needs postgres)
 ```
 
 ## Important decisions
-- Auth: API keys are custom-built; user auth (UI login) will use WorkOS when frontend exists
+- Auth: API-key Bearer auth on every endpoint, including the dashboard. Operator pastes a `vlx_secret_…` key into `/login`; the dashboard stores it in `localStorage` and rides every request as `Authorization: Bearer`. No cookies, no sessions, no user accounts in v1. User-account direction (Zitadel / WorkOS / email+password) decided per first design partner — see `docs/adr/007-revert-to-api-key-dashboard-auth.md`.
 - Stripe: PaymentIntent-only pattern (no Stripe Billing/Invoices to avoid 0.5% fee)
-- No Temporal/Redis dependencies in v1 — simple background goroutine scheduler
+- No Temporal dependency in v1 — simple background goroutine scheduler. Redis used for distributed rate limiting only.
 - Credits use event-sourced ledger (immutable append-only)

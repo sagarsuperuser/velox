@@ -1,35 +1,60 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { authApi, type SessionInfo } from '@/lib/auth'
+import { authApi, getApiKey, setApiKey, clearApiKey, type SessionInfo } from '@/lib/auth'
 import { ApiError } from '@/lib/api'
 
+// AuthContext exposes the resolved API-key context to the rest of the
+// dashboard. `user` is the historical name; for API-key auth there is no
+// user account, so it carries the key's tenant_id / livemode / key_type
+// instead. `email` and `user_id` no longer apply and aren't surfaced.
+export interface UserContext {
+  tenant_id: string
+  key_id: string
+  key_type: string
+  livemode: boolean
+}
+
 interface AuthState {
-  user: SessionInfo | null
+  user: UserContext | null
   loading: boolean
-  login: (email: string, password: string) => Promise<void>
+  login: (apiKey: string) => Promise<void>
   logout: () => Promise<void>
-  toggleLivemode: () => Promise<void>
   refresh: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthState | null>(null)
 
+function toUserContext(s: SessionInfo): UserContext {
+  return {
+    tenant_id: s.tenant_id,
+    key_id: s.key_id,
+    key_type: s.key_type,
+    livemode: s.livemode,
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<SessionInfo | null>(null)
+  const [user, setUser] = useState<UserContext | null>(null)
   const [loading, setLoading] = useState(true)
   const queryClient = useQueryClient()
 
   const refresh = useCallback(async () => {
+    if (!getApiKey()) {
+      setUser(null)
+      return
+    }
     try {
       const info = await authApi.whoami()
-      setUser(info)
+      setUser(toUserContext(info))
     } catch (err) {
-      // 401 is the expected "not logged in" path — the user will be sent to
-      // /login by ProtectedRoute. Anything else is logged but treated the
-      // same to avoid pinning the app on a transient error.
+      // 401 means the stored key was revoked or invalid — drop it and
+      // route the user to /login by clearing state. Anything else is
+      // logged but treated the same to avoid pinning the app on a
+      // transient error.
       if (!(err instanceof ApiError) || err.status !== 401) {
         console.error('whoami failed:', err)
       }
+      clearApiKey()
       setUser(null)
     }
   }, [])
@@ -38,42 +63,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refresh().finally(() => setLoading(false))
   }, [refresh])
 
-  const login = useCallback(async (email: string, password: string) => {
-    const res = await authApi.login(email, password)
-    setUser({
-      user_id: res.user_id,
-      email: res.email,
-      tenant_id: res.tenant_id,
-      livemode: res.livemode,
-    })
-    // Fresh session, fresh data — stale cache from a prior session must not
-    // leak across login boundaries.
-    queryClient.clear()
+  const login = useCallback(async (apiKey: string) => {
+    // Stage the key so apiRequest can attach it on the whoami probe.
+    setApiKey(apiKey)
+    try {
+      const info = await authApi.whoami()
+      setUser(toUserContext(info))
+      // Fresh login, fresh data — stale cache from any prior key must
+      // not leak across login boundaries.
+      queryClient.clear()
+    } catch (err) {
+      // Roll back the staged key so a failed login doesn't leave a bad
+      // value in localStorage that the next refresh would pick up.
+      clearApiKey()
+      throw err
+    }
   }, [queryClient])
 
   const logout = useCallback(async () => {
-    try {
-      await authApi.logout()
-    } catch (err) {
-      // Cookie may already be expired server-side; treat as a local clear.
-      console.warn('logout request failed, clearing client state anyway:', err)
-    }
+    clearApiKey()
     setUser(null)
     queryClient.clear()
   }, [queryClient])
 
-  const toggleLivemode = useCallback(async () => {
-    if (!user) return
-    const next = !user.livemode
-    const res = await authApi.setLivemode(next)
-    setUser({ ...user, livemode: res.livemode })
-    // Test and live are fully partitioned views — clear all cached tenant
-    // data so the UI re-fetches under the new mode.
-    queryClient.clear()
-  }, [user, queryClient])
-
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, toggleLivemode, refresh }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, refresh }}>
       {children}
     </AuthContext.Provider>
   )

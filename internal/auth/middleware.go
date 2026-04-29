@@ -12,11 +12,9 @@ import (
 type contextKey string
 
 const (
-	tenantIDKey  contextKey = "tenant_id"
-	apiKeyIDKey  contextKey = "api_key_id"
-	keyTypeKey   contextKey = "key_type"
-	userIDKey    contextKey = "user_id"
-	sessionIDKey contextKey = "session_id"
+	tenantIDKey contextKey = "tenant_id"
+	apiKeyIDKey contextKey = "api_key_id"
+	keyTypeKey  contextKey = "key_type"
 )
 
 // TestTenantIDKey returns the context key for tenant ID (for use in tests).
@@ -91,39 +89,6 @@ func GetKeyType(ctx context.Context) KeyType {
 	return v
 }
 
-// WithKeyType lets adapters outside the auth package (session middleware,
-// future OIDC adapter) declare the principal type so auth.Require keeps
-// working off a single ctx key. Called with KeyTypeSession by the session
-// middleware.
-func WithKeyType(ctx context.Context, kt KeyType) context.Context {
-	return context.WithValue(ctx, keyTypeKey, kt)
-}
-
-// UserID is set by the session middleware when a request is authenticated
-// via a dashboard cookie. Unset (empty string) on API-key-authenticated
-// requests — domain code should treat empty as "no human user attached".
-func UserID(ctx context.Context) string {
-	v, _ := ctx.Value(userIDKey).(string)
-	return v
-}
-
-// WithUserID is the setter counterpart to UserID.
-func WithUserID(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, userIDKey, userID)
-}
-
-// SessionID returns the opaque session identifier for cookie-authenticated
-// requests. Used by the mode-toggle endpoint to locate the row to update.
-func SessionID(ctx context.Context) string {
-	v, _ := ctx.Value(sessionIDKey).(string)
-	return v
-}
-
-// WithSessionID is the setter counterpart to SessionID.
-func WithSessionID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, sessionIDKey, id)
-}
-
 // Livemode returns whether the request is operating in live mode. Delegates
 // to the shared postgres-package accessor so BeginTx and auth see the same
 // value off the same ctx key.
@@ -147,9 +112,7 @@ func extractBearerToken(r *http.Request) string {
 }
 
 // LivemodeFromRawKey peeks at a raw API key's prefix to recover the mode it
-// was minted for, without touching the DB. Used by the session-or-api-key
-// adapter to refuse ambiguous requests where a cookie and an API key disagree
-// on mode (see session.MiddlewareOrAPIKey). Returns ok=false for strings that
+// was minted for, without touching the DB. Returns ok=false for strings that
 // don't look like Velox API keys so callers can skip the check silently.
 func LivemodeFromRawKey(raw string) (live, ok bool) {
 	switch {

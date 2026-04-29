@@ -162,132 +162,46 @@ in order — pick the domain the change touched.
 
 ---
 
-## Auth & Session
+## Auth
 
-Velox dashboard auth is email+password with an httpOnly session cookie issued by
-`/v1/auth/login`. Invites and password resets are token-based emails delivered
-via the email outbox (no plaintext tokens in the DB — only sha256 hashes).
+Velox uses Bearer-key auth on every endpoint. The dashboard is a thin
+client over the public API: the operator pastes a `vlx_secret_…` key
+on `/login`, the browser stores it in `localStorage`, and every request
+sets `Authorization: Bearer <key>`. There are no user accounts, no
+sessions, no cookies, no password reset, no member invitations in v1
+(see ADR-007 for the rationale and the trigger to revisit).
 
-## FLOW A1: Sign-in + whoami
+## FLOW A1: Dashboard sign-in (API key)
 
-- [ ] POST /v1/auth/login `{"email","password"}` with valid creds → 200
-  - Response: `{ user_id, email, tenant_id, livemode, expires_at }`
-  - Response sets `Set-Cookie: velox_session=...; HttpOnly; SameSite=Lax; Path=/`
-- [ ] GET /v1/session/ with the cookie → 200 `{ user_id, email, tenant_id, livemode }`
-- [ ] POST /v1/auth/login with wrong password → 401 `"invalid email or password"`
-  - Verify: no user enumeration — response body is identical for unknown emails
-- [ ] POST /v1/auth/login for a disabled account → 403 `"account disabled"`
-- [ ] POST /v1/auth/login for a user with no tenant membership → 403 with
-  `"account has no tenant membership — contact your administrator"`
-- [ ] POST /v1/auth/logout with the cookie → 204; session row is revoked
-- [ ] GET /v1/session/ with the revoked cookie → 401
+- [ ] `make bootstrap` prints a `vlx_secret_test_…` key. Copy it.
+- [ ] `make dev` starts the API on `:8080`. `cd web-v2 && npm run dev`
+      starts the dashboard on `:5173`.
+- [ ] Visit `http://localhost:5173`. Login screen shows a single
+      "Secret API key" field.
+- [ ] Paste a non-vlx string → inline error `That doesn't look like a
+      Velox key — it should start with vlx_`. No request fired.
+- [ ] Paste a syntactically-valid but unknown key (e.g. `vlx_secret_test_aaaaaaa…`)
+      → request fires; API responds 401; UI shows `Invalid or revoked API key`.
+- [ ] Paste the bootstrap secret → redirect to `/`. Dashboard loads
+      with Customers / Invoices / Subscriptions etc. populated.
+- [ ] `localStorage.getItem('velox_api_key')` matches the pasted key.
+- [ ] Reload the page → still signed in (the AuthContext re-runs
+      `whoami` on mount and accepts the stored key).
+- [ ] User dropdown → Sign out → key cleared from `localStorage`,
+      redirect to `/login`.
 
-## FLOW A2: Password reset
+## FLOW A2: /v1/whoami contract
 
-- [ ] POST /v1/auth/password-reset-request `{"email":"you@known"}` → 202
-- [ ] POST /v1/auth/password-reset-request `{"email":"nobody@unknown.test"}` → 202
-  (identical response — enumeration resistance; the unknown email also
-  produces no `email_outbox` row, which is the verifiable signal)
-- [ ] Pull the raw token. `email_outbox` has FORCE RLS, so bypass to read:
-  ```sql
-  SET app.bypass_rls='on';
-  SELECT payload->>'to' AS to_email,
-         payload->>'password_reset_url' AS reset_url
-  FROM email_outbox
-  WHERE email_type='password_reset'
-  ORDER BY created_at DESC LIMIT 5;
-  ```
-  Verify: ONE row for the known email, ZERO rows for `nobody@unknown.test`.
-  The raw token is the `?token=` segment of `password_reset_url`.
-- [ ] POST /v1/auth/password-reset-confirm `{"token":"<raw>","password":"newpass123"}`
-  → **204 No Content**; all active sessions for this user are revoked
-  (verify: `SELECT revoked_at FROM sessions WHERE user_id=...` — every
-  row should be NOT NULL)
-- [ ] Re-use the same token → **401** with body `"reset link is invalid or
-  has expired — request a new one"` (single-use; consumed tokens collapse
-  into the same `ErrResetInvalid` branch as expired/forged)
-- [ ] Sign in with the new password → 200
-- [ ] Expired token. Mint a fresh token via reset-request, then expire it:
-  ```sql
-  UPDATE password_reset_tokens
-  SET expires_at = NOW() - INTERVAL '1 hour'
-  WHERE token_hash = (SELECT token_hash FROM password_reset_tokens
-                      WHERE consumed_at IS NULL
-                      ORDER BY created_at DESC LIMIT 1);
-  ```
-  POST /v1/auth/password-reset-confirm with that token → **401** (same
-  `ErrResetInvalid` branch and message as a re-used token)
-
-## FLOW A3: Invite a new user
-
-- [ ] Sign in as owner
-- [ ] Members → Invite member → email `newbie@fresh.test` → send
-- [ ] Verify: invitation appears in "Pending invitations", status `pending`
-- [ ] `SELECT payload FROM email_outbox ORDER BY created_at DESC LIMIT 1;` — inspect:
-  - `to`, `inviter_email`, `tenant_name`, `invite_url` (contains the raw token)
-- [ ] GET /v1/auth/invite/{token} → 200 `{ email, tenant_name, needs_new_account: true, ... }`
-- [ ] Open `invite_url` in incognito → AcceptInvite page shows workspace name + email
-- [ ] Submit with display_name + password (≥8 chars) + matching confirm
-- [ ] Verify: redirected to dashboard as the new user; session cookie set
-- [ ] Members list now shows 2 active members, 1 accepted invitation
-- [ ] Re-use the same token → 404 (single-use)
-
-## FLOW A4: Invite an existing user
-
-- [ ] Create a second tenant (via bootstrap or a second `make bootstrap` run)
-- [ ] Sign in as owner of Tenant A
-- [ ] Invite the email of the Tenant B user
-- [ ] Open the invite URL in incognito
-- [ ] Verify: preview returns `needs_new_account: false`; form shows only a password field
-  with copy "We found an existing account for <email>"
-- [ ] Submit with the wrong password → 401 `"invalid password for existing account"`
-- [ ] Submit with the correct password → 200; new session cookie issued for Tenant A
-- [ ] Verify: user now has memberships in both tenants; sign-in primary-tenant logic
-  still picks Tenant B (the original) unless they switch
-
-## FLOW A5: Member management
-
-- [ ] As owner: GET /v1/members/ → returns owner + pending invitations
-- [ ] Revoke a pending invite → 204; list shows it gone (or status `revoked` in DB)
-- [ ] Try to open the revoked invite's URL → 404
-- [ ] Remove a non-owner member → 204; any active sessions for that user are revoked
-- [ ] Try to remove yourself → 409 `"you cannot remove yourself from the workspace — transfer ownership first"`
-- [ ] As the only owner, try to remove yourself (or a DB-level last-owner case) → 409
-  `"cannot remove the last owner of the workspace"`
-
-## FLOW A6: Session cookie lifecycle
-
-- [ ] After login, inspect `Set-Cookie`: `HttpOnly`, `SameSite=Lax`, `Path=/`,
-  `Max-Age` matches `SESSION_TTL` (default 30 days)
-- [ ] Cookie domain: absent in local dev (host-only); in staging/prod verify the
-  cookie domain matches the dashboard origin
-- [ ] Verify the session DB row: `SELECT id, user_id, expires_at, revoked_at FROM sessions WHERE id = encode(sha256('<cookie_value>'::bytea),'hex');`
-- [ ] Revoke via /v1/auth/logout → next authenticated request returns 401
-- [ ] Expire a session manually (`UPDATE sessions SET expires_at = NOW() - INTERVAL '1h' WHERE id = ...`) → 401
-
-## FLOW A7: Livemode toggle
-
-- [ ] Sign in — Test/Live toggle shows "Test" active (default on fresh sessions)
-- [ ] Click → PATCH /v1/session/ `{"livemode":true}` → 200; toggle shows "Live" with green dot
-- [ ] Refresh page → toggle state persists (read from session)
-- [ ] Verify: API calls made while live return live-mode rows only (list customers, etc.)
-- [ ] Toggle back; new state sticks across page reloads
-- [ ] **Test-mode banner** (Stripe parity): while in test mode, an amber bar reading
-  `You're viewing TEST data. No real money is moving.` pins to the top of every page,
-  above the nav. Banner disappears entirely in live mode. Clicking "Switch to live"
-  in the banner flips mode inline.
-- [ ] **Shift+M shortcut**: pressing `Shift+M` from any page (outside text inputs)
-  toggles mode — same action as the pill. Pressing `M` inside an input types "M".
-  Hovering the pill shows `Switch to ... mode (Shift+M)` tooltip.
-- [ ] **Session/key mode-mismatch guard**: with a browser cookie session in LIVE
-  mode, fire a curl against `/v1/customers` using a `Bearer vlx_secret_test_...`
-  (cookie AND key on the same request) → **400** with `"auth mode mismatch: session
-  and API key are in different modes — remove one or align them"`. Without this
-  guard the cookie silently wins and the test key appears to read live data.
-- [ ] **Cross-key fetch-by-id**: with a test key, request `GET /v1/customers/{live_customer_id}`
-  → **404**. RLS filters by livemode, so a caller who knows the opposite-mode ID
-  cannot sidestep isolation. Covered by `TestE2E_TestModeIsolation` sub-tests
-  `test_key_probing_live_customer_ID_→_404` and its inverse.
+- [ ] `curl -H 'Authorization: Bearer <secret>' http://localhost:8080/v1/whoami`
+      → `200 {"tenant_id":"vlx_ten_...","key_id":"vlx_key_...","key_type":"secret","livemode":false}`
+- [ ] Same call without the header → `401 missing credentials — use
+      Authorization: Bearer vlx_secret_...`
+- [ ] Revoke the key (`UPDATE api_keys SET revoked_at = NOW() WHERE id =
+      '<key_id>'`) → next call → `401 api key revoked`. Dashboard's next
+      tick on that key clears `localStorage` and bounces to `/login`.
+- [ ] Publishable key (`vlx_pub_test_…`) → `whoami` succeeds, returns
+      `key_type:"publishable"`. Dashboard surfaces this — most write
+      endpoints will subsequently 403, which is correct behaviour.
 
 ---
 
