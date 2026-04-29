@@ -117,8 +117,9 @@ signs out. Run this before every merge to main and as a nightly canary.
 - [ ] `make bootstrap` if no tenants exist — copy the printed Secret API key (`vlx_secret_test_…`)
 - [ ] Sign in via UI at `/login` by pasting the Secret API key
 - [ ] Verify: redirected to dashboard
-- [ ] Verify: `localStorage.getItem('velox_api_key')` in devtools matches the pasted key
-- [ ] Verify: subsequent requests carry `Authorization: Bearer vlx_secret_test_…` (Network tab)
+- [ ] Verify: DevTools → Cookies → `velox_session` set with `HttpOnly: ✓`
+- [ ] Verify: `localStorage` does NOT contain the API key (credential is in the httpOnly cookie, not in JS-readable storage)
+- [ ] Verify: subsequent requests have no `Authorization` header but include the cookie (Network tab → request headers)
 
 ### S1.3 Tenant Stripe connection
 - [ ] Settings → Payments → paste `sk_test_...` + `pk_test_...` → Connect
@@ -164,44 +165,37 @@ in order — pick the domain the change touched.
 
 ## Auth
 
-Velox uses Bearer-key auth on every endpoint. The dashboard is a thin
-client over the public API: the operator pastes a `vlx_secret_…` key
-on `/login`, the browser stores it in `localStorage`, and every request
-sets `Authorization: Bearer <key>`. There are no user accounts, no
-sessions, no cookies, no password reset, no member invitations in v1
-(see ADR-007 for the rationale and the trigger to revisit).
+The API key is the durable credential. The dashboard exchanges a pasted
+key for an httpOnly `velox_session` cookie via `POST /v1/auth/exchange`;
+SDK / curl callers send `Authorization: Bearer <key>` directly. There
+are no user accounts, no password reset, no member invitations in v1.
+See ADR-007 (revert) and ADR-008 (cookie refinement).
 
-## FLOW A1: Dashboard sign-in (API key)
+## FLOW A1: Dashboard sign-in (paste key → httpOnly cookie)
 
 - [ ] `make bootstrap` prints a `vlx_secret_test_…` key. Copy it.
-- [ ] `make dev` starts the API on `:8080`. `cd web-v2 && npm run dev`
-      starts the dashboard on `:5173`.
-- [ ] Visit `http://localhost:5173`. Login screen shows a single
-      "Secret API key" field.
-- [ ] Paste a non-vlx string → inline error `That doesn't look like a
-      Velox key — it should start with vlx_`. No request fired.
-- [ ] Paste a syntactically-valid but unknown key (e.g. `vlx_secret_test_aaaaaaa…`)
-      → request fires; API responds 401; UI shows `Invalid or revoked API key`.
-- [ ] Paste the bootstrap secret → redirect to `/`. Dashboard loads
-      with Customers / Invoices / Subscriptions etc. populated.
-- [ ] `localStorage.getItem('velox_api_key')` matches the pasted key.
-- [ ] Reload the page → still signed in (the AuthContext re-runs
-      `whoami` on mount and accepts the stored key).
-- [ ] User dropdown → Sign out → key cleared from `localStorage`,
-      redirect to `/login`.
+- [ ] `make dev` starts the API on `:8080`. `cd web-v2 && npm run dev` starts the dashboard on `:5173`.
+- [ ] Visit `http://localhost:5173`. Login screen shows a single "Secret API key" field.
+- [ ] Paste a non-vlx string → inline error `That doesn't look like a Velox key — it should start with vlx_`. No request fired.
+- [ ] Paste a syntactically-valid but unknown key (e.g. `vlx_secret_test_aaaaaaa…`) → `POST /v1/auth/exchange` returns 401; UI shows `Invalid or revoked API key`.
+- [ ] Paste the bootstrap secret → redirect to `/`. Dashboard loads with Customers / Invoices / Subscriptions etc. populated.
+- [ ] DevTools → Application → Cookies → `velox_session` is set, `HttpOnly: ✓`, `SameSite: Lax`, `Path: /`. Value is opaque (the raw cookie value, not the API key).
+- [ ] `localStorage` is empty for `velox_*` keys (the credential is *not* in localStorage anymore).
+- [ ] Reload the page → still signed in (AuthContext re-runs `whoami` on mount; cookie attaches automatically).
+- [ ] Verify the session row exists: `SELECT id_hash, key_id, tenant_id, expires_at FROM dashboard_sessions ORDER BY created_at DESC LIMIT 1;` — row is present, `expires_at` is ~7 days out.
+- [ ] User dropdown → Sign out → `POST /v1/auth/logout` returns 204; cookie is cleared (devtools reflects); redirect to `/login`.
+- [ ] Verify revocation: `SELECT revoked_at FROM dashboard_sessions WHERE id_hash = '<id_hash>';` — `revoked_at` is now NOT NULL.
+- [ ] Try to use the same cookie value (e.g. paste it back into the browser via devtools) → next protected request → 401 `invalid or expired session`.
 
-## FLOW A2: /v1/whoami contract
+## FLOW A2: /v1/whoami contract — cookie OR Bearer
 
-- [ ] `curl -H 'Authorization: Bearer <secret>' http://localhost:8080/v1/whoami`
-      → `200 {"tenant_id":"vlx_ten_...","key_id":"vlx_key_...","key_type":"secret","livemode":false}`
-- [ ] Same call without the header → `401 missing credentials — use
-      Authorization: Bearer vlx_secret_...`
-- [ ] Revoke the key (`UPDATE api_keys SET revoked_at = NOW() WHERE id =
-      '<key_id>'`) → next call → `401 api key revoked`. Dashboard's next
-      tick on that key clears `localStorage` and bounces to `/login`.
-- [ ] Publishable key (`vlx_pub_test_…`) → `whoami` succeeds, returns
-      `key_type:"publishable"`. Dashboard surfaces this — most write
-      endpoints will subsequently 403, which is correct behaviour.
+- [ ] `curl -i -c /tmp/c.txt -H 'Content-Type: application/json' -d '{"api_key":"<vlx_secret_test_...>"}' http://localhost:8080/v1/auth/exchange` → 200, response body has `{tenant_id, key_id, key_type, livemode, expires_at}`, `Set-Cookie: velox_session=...; HttpOnly` on the response.
+- [ ] `curl -b /tmp/c.txt http://localhost:8080/v1/whoami` → `200 {"tenant_id":"vlx_ten_...","key_id":"vlx_key_...","key_type":"secret","livemode":false}`
+- [ ] `curl -H 'Authorization: Bearer <vlx_secret_test_...>' http://localhost:8080/v1/whoami` → 200 with the same shape (Bearer fallback works for SDK callers).
+- [ ] Without either credential → `401 missing credentials — sign in at /login or send Authorization: Bearer vlx_secret_...`.
+- [ ] Cookie + Bearer on the same request, with **disagreeing** keys → cookie wins (verify by sending a Bearer for a different tenant + a valid cookie; whoami returns the cookie's tenant_id).
+- [ ] Revoke the underlying API key (`UPDATE api_keys SET revoked_at = NOW() WHERE id = '<key_id>'`) → Bearer path 401s `api key revoked` immediately. Existing cookie still works until `dashboard_sessions.revoked_at` is also flipped — the dashboard should call `RevokeAllForKey` on key revocation (operator UI: out of scope for v1).
+- [ ] Publishable key (`vlx_pub_test_…`) on `POST /v1/auth/exchange` → cookie minted; `whoami` returns `key_type:"publishable"`. Most write endpoints will 403, which is correct.
 
 ---
 
@@ -1360,10 +1354,11 @@ Common failure modes and where to look first.
 
 ## Dashboard sign-in fails
 
-- Pasted key doesn't start with `vlx_` → frontend rejects before sending. Inspect localStorage to confirm nothing's staged.
-- 401 on `/v1/whoami` → key is wrong, revoked, or expired. Re-run `make bootstrap` for a fresh test key, or hit `/api-keys` from another working session to mint one.
-- CORS: `CORS_ALLOWED_ORIGINS` must include the frontend origin (`http://localhost:5173` for local dev). Browser console shows the cross-origin block.
-- `Authorization` header missing on requests → `getApiKey()` returned null. Check `localStorage.getItem('velox_api_key')` in DevTools.
+- Pasted key doesn't start with `vlx_` → frontend rejects before sending; no request fired.
+- 401 on `POST /v1/auth/exchange` → key is wrong, revoked, or expired. Re-run `make bootstrap` for a fresh test key.
+- CORS: `CORS_ALLOWED_ORIGINS` must include the frontend origin (`http://localhost:5173` for local dev). Browser console shows the cross-origin block. The cookie won't attach without the right CORS preflight either.
+- Cookie not set after exchange → check `Set-Cookie` on the exchange response; `Secure` flag in dev should be off (we set it only when `APP_ENV` is `staging`/`production`). If it's on in dev, the browser drops the cookie over plain HTTP.
+- `velox_session` cookie present but every request 401s → `dashboard_sessions.expires_at` may have passed, or `revoked_at` is set. Check the row.
 
 ## Invoice didn't generate
 

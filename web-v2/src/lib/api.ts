@@ -1,5 +1,4 @@
 import { setLastRequestId } from './lastRequestId'
-import { getApiKey } from './auth'
 
 const API_BASE = '/v1'
 
@@ -42,22 +41,22 @@ function humanizeError(msg: string): string {
 }
 
 // apiRequest is the shared fetch wrapper for all Velox API calls. The
-// dashboard authenticates with an API key the operator pasted at /login;
-// the key lives in localStorage and rides every request as
-// `Authorization: Bearer <key>`. No cookies, no sessions — the dashboard
-// is a thin client over the public HTTP API.
+// dashboard rides an httpOnly session cookie (minted via
+// POST /v1/auth/exchange when the operator pastes their API key on
+// /login). The cookie attaches automatically via `credentials:
+// 'include'` — no Authorization header, no key in JS-reachable storage.
+// SDK / curl callers reach the same endpoints with a Bearer header
+// instead, which the server's MiddlewareOrAPIKey accepts as a fallback
+// when the cookie is missing.
 export async function apiRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-  }
-  const apiKey = getApiKey()
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`
   }
 
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
+    credentials: 'include',
     body: body ? JSON.stringify(body) : undefined,
   })
 

@@ -793,6 +793,131 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/exchange": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange a pasted API key for an httpOnly session cookie
+         * @description Validates the pasted API key and mints a server-side session
+         *     row. The response sets `Set-Cookie: velox_session=...; HttpOnly;
+         *     SameSite=Lax; Path=/`. Subsequent requests authenticate via the
+         *     cookie. The credential remains the API key; this endpoint just
+         *     gives the dashboard an httpOnly artefact instead of holding the
+         *     raw key in JS-readable storage. See ADR-008.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @description A `vlx_secret_…` or `vlx_pub_…` key. */
+                        api_key: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Session minted; cookie set on response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            tenant_id: string;
+                            key_id: string;
+                            /** @enum {string} */
+                            key_type: "platform" | "secret" | "publishable";
+                            livemode: boolean;
+                            /** Format: date-time */
+                            expires_at: string;
+                        };
+                    };
+                };
+                /** @description Malformed body */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Missing, malformed, revoked, or expired API key */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description api_key field missing */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke the current session and clear the cookie
+         * @description Marks the session row as revoked server-side and clears the
+         *     cookie on the response. Idempotent — a missing or stale cookie
+         *     is treated as already-logged-out.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Session revoked */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/whoami": {
         parameters: {
             query?: never;
@@ -801,11 +926,11 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Resolve the bearer key to its tenant context
-         * @description Returns the resolved auth context for the current bearer key.
-         *     No specific permission required — any valid key (publishable or
-         *     secret) can hit this. The dashboard hits this on login to
-         *     validate a pasted key and populate the AuthContext for display.
+         * Resolve the current credential to its tenant context
+         * @description Returns the resolved auth context for whichever credential the
+         *     request carries — `velox_session` cookie (dashboard) or
+         *     `Authorization: Bearer` (SDK / curl). No specific permission
+         *     required.
          */
         get: {
             parameters: {

@@ -966,15 +966,89 @@ paths:
         "200":
           description: Invoice finalized
 
+  /v1/auth/exchange:
+    post:
+      tags: [Auth]
+      summary: Exchange a pasted API key for an httpOnly session cookie
+      description: |
+        Validates the pasted API key and mints a server-side session
+        row. The response sets `Set-Cookie: velox_session=...; HttpOnly;
+        SameSite=Lax; Path=/`. Subsequent requests authenticate via the
+        cookie. The credential remains the API key; this endpoint just
+        gives the dashboard an httpOnly artefact instead of holding the
+        raw key in JS-readable storage. See ADR-008.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [api_key]
+              properties:
+                api_key:
+                  type: string
+                  description: A `vlx_secret_…` or `vlx_pub_…` key.
+      responses:
+        "200":
+          description: Session minted; cookie set on response
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenant_id, key_id, key_type, livemode, expires_at]
+                properties:
+                  tenant_id:
+                    type: string
+                  key_id:
+                    type: string
+                  key_type:
+                    type: string
+                    enum: [platform, secret, publishable]
+                  livemode:
+                    type: boolean
+                  expires_at:
+                    type: string
+                    format: date-time
+        "400":
+          description: Malformed body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing, malformed, revoked, or expired API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: api_key field missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current session and clear the cookie
+      description: |
+        Marks the session row as revoked server-side and clears the
+        cookie on the response. Idempotent — a missing or stale cookie
+        is treated as already-logged-out.
+      responses:
+        "204":
+          description: Session revoked
+
   /v1/whoami:
     get:
       tags: [Auth]
-      summary: Resolve the bearer key to its tenant context
+      summary: Resolve the current credential to its tenant context
       description: |
-        Returns the resolved auth context for the current bearer key.
-        No specific permission required — any valid key (publishable or
-        secret) can hit this. The dashboard hits this on login to
-        validate a pasted key and populate the AuthContext for display.
+        Returns the resolved auth context for whichever credential the
+        request carries — `velox_session` cookie (dashboard) or
+        `Authorization: Bearer` (SDK / curl). No specific permission
+        required.
       responses:
         "200":
           description: Resolved auth context

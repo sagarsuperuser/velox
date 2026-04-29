@@ -1,12 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { authApi, getApiKey, setApiKey, clearApiKey, type SessionInfo } from '@/lib/auth'
+import { authApi, type SessionInfo } from '@/lib/auth'
 import { ApiError } from '@/lib/api'
 
-// AuthContext exposes the resolved API-key context to the rest of the
-// dashboard. `user` is the historical name; for API-key auth there is no
-// user account, so it carries the key's tenant_id / livemode / key_type
-// instead. `email` and `user_id` no longer apply and aren't surfaced.
+// AuthContext exposes the resolved session context to the rest of the
+// dashboard. There is no user account in v1 (see ADR-007/008); the
+// "user" object carries the parent API key's tenant_id, key_id,
+// key_type, and livemode for display.
 export interface UserContext {
   tenant_id: string
   key_id: string
@@ -39,22 +39,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
 
   const refresh = useCallback(async () => {
-    if (!getApiKey()) {
-      setUser(null)
-      return
-    }
     try {
       const info = await authApi.whoami()
       setUser(toUserContext(info))
     } catch (err) {
-      // 401 means the stored key was revoked or invalid — drop it and
-      // route the user to /login by clearing state. Anything else is
-      // logged but treated the same to avoid pinning the app on a
-      // transient error.
+      // 401 means no session — the user will be sent to /login by
+      // ProtectedRoute. Anything else is logged but treated the same
+      // to avoid pinning the app on a transient error.
       if (!(err instanceof ApiError) || err.status !== 401) {
         console.error('whoami failed:', err)
       }
-      clearApiKey()
       setUser(null)
     }
   }, [])
@@ -64,24 +58,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refresh])
 
   const login = useCallback(async (apiKey: string) => {
-    // Stage the key so apiRequest can attach it on the whoami probe.
-    setApiKey(apiKey)
-    try {
-      const info = await authApi.whoami()
-      setUser(toUserContext(info))
-      // Fresh login, fresh data — stale cache from any prior key must
-      // not leak across login boundaries.
-      queryClient.clear()
-    } catch (err) {
-      // Roll back the staged key so a failed login doesn't leave a bad
-      // value in localStorage that the next refresh would pick up.
-      clearApiKey()
-      throw err
-    }
+    const res = await authApi.exchange(apiKey)
+    setUser(toUserContext(res))
+    // Fresh session, fresh data — stale cache from any prior session
+    // must not leak across login boundaries.
+    queryClient.clear()
   }, [queryClient])
 
   const logout = useCallback(async () => {
-    clearApiKey()
+    try {
+      await authApi.logout()
+    } catch (err) {
+      // Cookie may already be expired server-side; treat as a local
+      // clear and keep going.
+      console.warn('logout request failed, clearing client state anyway:', err)
+    }
     setUser(null)
     queryClient.clear()
   }, [queryClient])
