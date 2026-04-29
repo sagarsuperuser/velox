@@ -985,6 +985,9 @@ type ServerInterface interface {
 	// Stripe webhook receiver
 	// (POST /v1/webhooks/stripe)
 	PostV1WebhooksStripe(w http.ResponseWriter, r *http.Request)
+	// Resolve the bearer key to its tenant context
+	// (GET /v1/whoami)
+	GetV1Whoami(w http.ResponseWriter, r *http.Request)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -1162,6 +1165,12 @@ func (_ Unimplemented) PostV1UsageEventsBatch(w http.ResponseWriter, r *http.Req
 // Stripe webhook receiver
 // (POST /v1/webhooks/stripe)
 func (_ Unimplemented) PostV1WebhooksStripe(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Resolve the bearer key to its tenant context
+// (GET /v1/whoami)
+func (_ Unimplemented) GetV1Whoami(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1842,6 +1851,26 @@ func (siw *ServerInterfaceWrapper) PostV1WebhooksStripe(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// GetV1Whoami operation middleware
+func (siw *ServerInterfaceWrapper) GetV1Whoami(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1Whoami(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -2041,6 +2070,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/webhooks/stripe", wrapper.PostV1WebhooksStripe)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/whoami", wrapper.GetV1Whoami)
 	})
 
 	return r

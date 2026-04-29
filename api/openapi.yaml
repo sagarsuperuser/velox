@@ -966,6 +966,40 @@ paths:
         "200":
           description: Invoice finalized
 
+  /v1/whoami:
+    get:
+      tags: [Auth]
+      summary: Resolve the bearer key to its tenant context
+      description: |
+        Returns the resolved auth context for the current bearer key.
+        No specific permission required — any valid key (publishable or
+        secret) can hit this. The dashboard hits this on login to
+        validate a pasted key and populate the AuthContext for display.
+      responses:
+        "200":
+          description: Resolved auth context
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenant_id, key_id, key_type, livemode]
+                properties:
+                  tenant_id:
+                    type: string
+                  key_id:
+                    type: string
+                  key_type:
+                    type: string
+                    enum: [platform, secret, publishable]
+                  livemode:
+                    type: boolean
+        "401":
+          description: Missing, revoked, or expired API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /v1/billing/run:
     post:
       tags: [Billing]

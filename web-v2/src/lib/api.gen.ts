@@ -793,6 +793,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/whoami": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve the bearer key to its tenant context
+         * @description Returns the resolved auth context for the current bearer key.
+         *     No specific permission required — any valid key (publishable or
+         *     secret) can hit this. The dashboard hits this on login to
+         *     validate a pasted key and populate the AuthContext for display.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Resolved auth context */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            tenant_id: string;
+                            key_id: string;
+                            /** @enum {string} */
+                            key_type: "platform" | "secret" | "publishable";
+                            livemode: boolean;
+                        };
+                    };
+                };
+                /** @description Missing, revoked, or expired API key */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/billing/run": {
         parameters: {
             query?: never;

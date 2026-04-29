@@ -15,6 +15,8 @@ export * from './error';
 export * from './errorError';
 export * from './errorErrorType';
 export * from './getV1CustomersParams';
+export * from './getV1Whoami200';
+export * from './getV1Whoami200KeyType';
 export * from './invoice';
 export * from './invoiceBillingReason';
 export * from './invoiceLineItem';
