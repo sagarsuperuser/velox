@@ -28,6 +28,12 @@ function presetToParams(p: PeriodPreset): { from?: string; to?: string } | undef
 
 export function CostDashboard({ customerId }: { customerId: string }) {
   const [preset, setPreset] = useState<PeriodPreset>('current')
+  // Multi-sub customers get one cycle card per subscription, but most
+  // operators only need the primary (the sub whose cycle drives the
+  // displayed period — server-side: latest current_period_start).
+  // Default collapsed, expand on click. Only matters for customers with
+  // 2+ subs; single-sub customers don't see a "show more" affordance.
+  const [subsExpanded, setSubsExpanded] = useState(false)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['customer-usage', customerId, preset],
@@ -68,6 +74,25 @@ export function CostDashboard({ customerId }: { customerId: string }) {
     queryFn: async () => {
       try {
         return await api.createInvoicePreview({ customer_id: customerId })
+      } catch {
+        return null
+      }
+    },
+  })
+
+  // Cross-window hint — when the operator is on Current cycle, fetch the
+  // last-30-days total in parallel so we can surface "1,400 events in the
+  // last 30 days" alongside the cycle-to-date number. This is what closes
+  // the cycle-rollover gap: a sub that just rolled over shows $0.00
+  // cycle-to-date but the operator's mental model expects to see usage —
+  // the hint redirects them to the broader window where the closed
+  // cycle's events still show.
+  const { data: thirtyDay } = useQuery({
+    queryKey: ['customer-usage', customerId, 'last_30d_compare'],
+    enabled: preset === 'current',
+    queryFn: async () => {
+      try {
+        return await api.customerUsage(customerId, presetToParams('last_30d'))
       } catch {
         return null
       }
@@ -121,15 +146,30 @@ export function CostDashboard({ customerId }: { customerId: string }) {
         </Card>
       ) : (
         <>
-          {/* Subscription / cycle context */}
+          {/* Subscription / cycle context. Multi-sub customers default to
+              showing the primary (subs[0], the one driving the displayed
+              period) and collapse the rest behind a "+N more" toggle. */}
           {data.subscriptions.length > 0 && (
             <Card>
               <CardContent className="p-4">
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                  {data.subscriptions.map(sub => (
+                  {(subsExpanded ? data.subscriptions : data.subscriptions.slice(0, 1)).map(sub => (
                     <CycleHeader key={sub.id} sub={sub} />
                   ))}
                 </div>
+                {data.subscriptions.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setSubsExpanded(!subsExpanded)}
+                    className="text-xs text-muted-foreground hover:text-foreground mt-3 inline-flex items-center gap-1"
+                  >
+                    {subsExpanded ? (
+                      <>Hide other subscriptions</>
+                    ) : (
+                      <>+ {data.subscriptions.length - 1} more subscription{data.subscriptions.length - 1 === 1 ? '' : 's'}</>
+                    )}
+                  </button>
+                )}
               </CardContent>
             </Card>
           )}
@@ -166,6 +206,36 @@ export function CostDashboard({ customerId }: { customerId: string }) {
                   ))}
                 </p>
               )}
+
+              {/* Cross-window hint — shown only on the Current cycle tab
+                  when the broader 30-day window has more activity than the
+                  current cycle. Closes the cycle-rollover gap: a sub that
+                  rolled over an hour ago shows $0.00 here but the operator
+                  expects to see the customer's recent usage. The link
+                  redirects to the Last 30 days tab without a page reload.
+                  Threshold is "30d total > current cycle total" (any gap)
+                  rather than a percentage — the operator who's looking
+                  for "where did my events go?" is helped by ANY non-zero
+                  gap, not just large ones. */}
+              {preset === 'current' && thirtyDay && (() => {
+                const currentCents = data.totals.reduce((sum, t) => sum + t.amount_cents, 0)
+                const thirtyCents = thirtyDay.totals.reduce((sum, t) => sum + t.amount_cents, 0)
+                const thirtyEvents = thirtyDay.meters.reduce((sum, m) => sum + Number(m.total_quantity), 0)
+                if (thirtyCents <= currentCents || thirtyEvents <= 0) return null
+                return (
+                  <p className="text-xs text-muted-foreground mt-3 pt-3 border-t border-border">
+                    Last 30 days:{' '}
+                    <button
+                      type="button"
+                      onClick={() => setPreset('last_30d')}
+                      className="text-foreground font-medium tabular-nums underline-offset-2 hover:underline"
+                    >
+                      {formatCents(thirtyCents)} ({thirtyEvents.toLocaleString()} event{thirtyEvents === 1 ? '' : 's'})
+                    </button>
+                    {currentCents === 0 && ' — cycle just started? Switch to view recent activity.'}
+                  </p>
+                )
+              })()}
             </CardContent>
           </Card>
 
