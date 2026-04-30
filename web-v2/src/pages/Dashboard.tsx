@@ -249,9 +249,17 @@ export default function DashboardPage() {
                       <div className="flex items-center gap-3 min-w-0">
                         <PaymentStatusDot status={inv.payment_status} />
                         <span className="text-sm font-mono text-foreground">{inv.invoice_number}</span>
-                        <Badge variant={statusBadgeVariant(inv.payment_status)} className="text-[10px]">
-                          {inv.payment_status}
-                        </Badge>
+                        {/* Drafts: show "draft" pill instead of payment_status —
+                            payment_status is meaningless before finalize. */}
+                        {inv.status === 'draft' ? (
+                          <Badge variant={statusBadgeVariant('draft')} className="text-[10px]">
+                            draft
+                          </Badge>
+                        ) : (
+                          <Badge variant={statusBadgeVariant(inv.payment_status)} className="text-[10px]">
+                            {inv.payment_status}
+                          </Badge>
+                        )}
                       </div>
                       <div className="flex items-center gap-4 shrink-0">
                         <span className="text-sm tabular-nums text-foreground">

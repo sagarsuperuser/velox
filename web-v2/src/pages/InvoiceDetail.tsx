@@ -289,6 +289,15 @@ export default function InvoiceDetailPage() {
             <span className="text-xs font-mono text-muted-foreground">{invoice.id}</span>
             <CopyButton text={invoice.id} />
           </div>
+          {/* Draft hint — orients operators on the next step. Drafts have
+              no PaymentIntent yet, so payment_status is misleading; the
+              page hides that pill (see status-badge block below) and
+              points at Finalize as the next action. */}
+          {invoice.status === 'draft' && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Draft invoice — finalize to issue and begin collection.
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {invoice.status === 'draft' && (
