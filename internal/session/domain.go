@@ -38,16 +38,16 @@ var ErrNotFound = errors.New("session: not found")
 // the parent key — sessions don't toggle modes; a mode flip would mint
 // a new session from the relevant key.
 type Session struct {
-	IDHash      string
-	KeyID       string
-	TenantID    string
-	Livemode    bool
-	CreatedAt   time.Time
-	LastSeenAt  time.Time
-	ExpiresAt   time.Time
-	RevokedAt   *time.Time
-	UserAgent   string
-	IP          string
+	IDHash     string
+	KeyID      string
+	TenantID   string
+	Livemode   bool
+	CreatedAt  time.Time
+	LastSeenAt time.Time
+	ExpiresAt  time.Time
+	RevokedAt  *time.Time
+	UserAgent  string
+	IP         string
 }
 
 // IsActive reports whether the session can authenticate a request:
