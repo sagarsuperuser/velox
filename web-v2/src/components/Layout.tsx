@@ -1,16 +1,14 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
   Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3, Ticket,
-  Sun, Moon, Search, TrendingUp, UsersRound, ChevronsUpDown, BookOpen, Activity,
-  Sparkles, MessageSquareWarning, Wand2, Layers, BellRing, type LucideIcon,
+  Sun, Moon, Search, ChevronsUpDown, MessageSquareWarning, Sparkles,
+  type LucideIcon,
 } from 'lucide-react'
-import { toast } from 'sonner'
 import { useDarkMode } from '@/hooks/useDarkMode'
 import { cn } from '@/lib/utils'
 import { api, setActiveCurrency } from '@/lib/api'
-import { showApiError } from '@/lib/formErrors'
 import { getLastRequestId } from '@/lib/lastRequestId'
 import { useAuth } from '@/contexts/AuthContext'
 import { Separator } from '@/components/ui/separator'
@@ -103,40 +101,19 @@ function NavLink({
   )
 }
 
-// ModeToggle — a Stripe-style Test/Live pill. The active side gets a subtle
-// surface to mark state; "Live" gets a green dot so the state is legible at
-// a glance across test/live sessions.
-function ModeToggle({ livemode, onToggle, busy }: { livemode: boolean; onToggle: () => void; busy: boolean }) {
+// ModeBadge — a read-only Test/Live indicator. Mode follows the API
+// key (test vs live key prefix), not a per-session toggle, so this is
+// display-only. Switching modes means signing out and pasting a key
+// in the other mode.
+function ModeBadge({ livemode }: { livemode: boolean }) {
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      disabled={busy}
-      aria-label={`Switch to ${livemode ? 'test' : 'live'} mode (Shift+M)`}
-      title={`Switch to ${livemode ? 'test' : 'live'} mode (Shift+M)`}
-      className={cn(
-        'flex items-center rounded-full border border-border bg-muted p-0.5 text-xs font-medium transition-opacity',
-        busy && 'opacity-60 cursor-not-allowed'
-      )}
+    <div
+      title={livemode ? 'Live mode (paste a test key on /login to switch)' : 'Test mode (paste a live key on /login to switch)'}
+      className="flex items-center gap-1.5 rounded-full border border-border bg-muted px-3 py-1 text-xs font-medium text-foreground"
     >
-      <span
-        className={cn(
-          'px-3 py-1 rounded-full transition-colors',
-          !livemode ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'
-        )}
-      >
-        Test
-      </span>
-      <span
-        className={cn(
-          'px-3 py-1 rounded-full transition-colors flex items-center gap-1.5',
-          livemode ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'
-        )}
-      >
-        {livemode && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />}
-        Live
-      </span>
-    </button>
+      {livemode && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />}
+      {livemode ? 'Live' : 'Test'}
+    </div>
   )
 }
 
@@ -146,9 +123,8 @@ export function Layout({ children }: { children: ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [commandOpen, setCommandOpen] = useState(false)
   const [navCounts, setNavCounts] = useState<Record<string, number>>({})
-  const [toggling, setToggling] = useState(false)
   const { dark, toggle: toggleDark } = useDarkMode()
-  const { user, logout, toggleLivemode } = useAuth()
+  const { user, logout } = useAuth()
   // Drives the live-mode Stripe-missing hard-blocker. The launcher itself
   // calls the same hook — React Query dedupes by key, so no duplicate fetches.
   const { hasLiveStripe } = useOnboardingSteps()
@@ -158,43 +134,16 @@ export function Layout({ children }: { children: ReactNode }) {
     navigate('/login', { replace: true })
   }
 
-  const handleToggleLivemode = async () => {
-    if (toggling) return
-    setToggling(true)
-    try {
-      await toggleLivemode()
-      toast.success(user?.livemode ? 'Switched to test mode' : 'Switched to live mode')
-    } catch (err) {
-      showApiError(err, 'Could not switch mode')
-    } finally {
-      setToggling(false)
-    }
-  }
-
-  // Ref-to-latest so the global keydown listener can call the freshest handler
-  // without re-registering on every render (matches Stripe's Shift+M UX).
-  const toggleLivemodeRef = useRef(handleToggleLivemode)
-  useEffect(() => { toggleLivemodeRef.current = handleToggleLivemode })
-
-  // Global keyboard shortcuts:
-  //   Cmd/Ctrl+K — command palette
-  //   Shift+M    — toggle Test/Live mode (Stripe parity)
+  // Global keyboard shortcut: Cmd/Ctrl+K opens the command palette.
+  // The earlier Shift+M (test/live toggle) was removed when livemode
+  // became a property of the API key rather than a session toggle —
+  // see ADR-007/008. Switching modes now means signing out and
+  // pasting a key in the other mode.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault()
         setCommandOpen(prev => !prev)
-        return
-      }
-      if (e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === 'M' || e.key === 'm')) {
-        const t = e.target as HTMLElement | null
-        if (t) {
-          const tag = t.tagName
-          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-          if (t.isContentEditable) return
-        }
-        e.preventDefault()
-        toggleLivemodeRef.current()
       }
     }
     document.addEventListener('keydown', onKeyDown)
@@ -421,14 +370,6 @@ export function Layout({ children }: { children: ReactNode }) {
               <span>
                 You're viewing <strong className="font-semibold">TEST</strong> data. No real money is moving.
               </span>
-              <button
-                type="button"
-                onClick={handleToggleLivemode}
-                disabled={toggling}
-                className="ml-1 underline decoration-amber-950/40 underline-offset-2 hover:decoration-amber-950 disabled:opacity-60"
-              >
-                Switch to live
-              </button>
             </div>
           )}
           {/* Top bar — always visible. Mobile adds a hamburger, desktop leaves
@@ -445,7 +386,7 @@ export function Layout({ children }: { children: ReactNode }) {
               <VeloxLogo size="sm" />
             </div>
             <div className="flex-1" />
-            {user && <ModeToggle livemode={user.livemode} onToggle={handleToggleLivemode} busy={toggling} />}
+            {user && <ModeBadge livemode={user.livemode} />}
           </div>
         </div>
         <div className="max-w-7xl mx-auto p-4 md:p-8">
