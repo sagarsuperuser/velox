@@ -286,7 +286,8 @@ See ADR-007 (revert) and ADR-008 (cookie refinement).
   ```
   → `401 missing credentials — sign in at /login or send Authorization: Bearer vlx_secret_...`.
 - [ ] Cookie + Bearer on the same request, with **disagreeing** keys → cookie wins (verify by sending a Bearer for a different tenant + a valid cookie; whoami returns the cookie's tenant_id).
-- [ ] Revoke the underlying API key (`UPDATE api_keys SET revoked_at = NOW() WHERE id = '<key_id>'`) → Bearer path 401s `api key revoked` immediately. Existing cookie still works until `dashboard_sessions.revoked_at` is also flipped — the dashboard should call `RevokeAllForKey` on key revocation (operator UI: out of scope for v1).
+- [ ] Revoke the underlying API key via the dashboard (or `DELETE /v1/api-keys/<key_id>`) → Bearer path 401s `api key revoked` immediately AND every `dashboard_sessions` row tied to that key has `revoked_at` flipped in the same request (auth.Service.RevokeKey fans out to session.Service.RevokeAllForKey). Cookie path 401s on the next request. See FLOW K4 for the full safeguard suite.
+- [ ] Direct DB revoke via psql (`UPDATE api_keys SET revoked_at = NOW() WHERE id = '<key_id>'`) bypasses the fan-out — Bearer 401s but cookies remain valid until their TTL or until the operator runs `UPDATE dashboard_sessions SET revoked_at = NOW() WHERE key_id = '<key_id>'` manually. Use the API endpoint, not psql, for live revocations.
 - [ ] Publishable key (`vlx_pub_test_…`) on `POST /v1/auth/exchange` → cookie minted; `whoami` returns `key_type:"publishable"`. Most write endpoints will 403, which is correct.
 
 ---
