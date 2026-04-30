@@ -289,10 +289,10 @@ export function Layout({ children }: { children: ReactNode }) {
                 aria-hidden="true"
                 className="h-7 w-7 shrink-0 rounded-full bg-gradient-to-br from-primary/25 to-primary/5 ring-1 ring-primary/20 text-primary flex items-center justify-center text-xs font-semibold"
               >
-                {user.email.charAt(0).toUpperCase()}
+                {(user.key_type || 'K').charAt(0).toUpperCase()}
               </div>
-              <p className="text-xs text-foreground truncate flex-1 min-w-0" title={user.email}>
-                {user.email}
+              <p className="text-xs text-foreground truncate flex-1 min-w-0" title={user.key_id}>
+                {user.key_id}
               </p>
               <ChevronsUpDown size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             </DropdownMenuTrigger>
@@ -302,13 +302,15 @@ export function Layout({ children }: { children: ReactNode }) {
                   aria-hidden="true"
                   className="h-9 w-9 shrink-0 rounded-full bg-gradient-to-br from-primary/25 to-primary/5 ring-1 ring-primary/20 text-primary flex items-center justify-center text-sm font-semibold"
                 >
-                  {user.email.charAt(0).toUpperCase()}
+                  {(user.key_type || 'K').charAt(0).toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground truncate" title={user.email}>
-                    {user.email}
+                  <p className="text-sm font-medium text-foreground truncate font-mono" title={user.key_id}>
+                    {user.key_id}
                   </p>
-                  <p className="text-[11px] text-muted-foreground">Signed in</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {user.key_type ? `${user.key_type} key` : 'API key'} · {user.livemode ? 'Live' : 'Test'}
+                  </p>
                 </div>
               </div>
               <DropdownMenuSeparator />
