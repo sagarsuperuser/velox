@@ -98,39 +98,57 @@ asks for it. The schema is non-breakingly extensible — adding
 
 ### Frontend implementation
 
-- `date-fns-tz` added as a dependency (canonical companion to the existing
-  `date-fns`). Provides `formatInTimeZone(date, tz, fmt)` and
-  `fromZonedTime(wallclock, tz)` for civil-date ↔ UTC conversion.
-- `formatDate(iso, timezone?)` and `formatDateTime(iso, timezone?)` accept
-  an optional IANA TZ argument. Existing call sites unchanged (default to
-  browser local for now); call sites that should use tenant TZ pass it
-  explicitly. Migrating each surface is a per-feature decision, not a
-  big-bang rewrite.
-- `ApiKeys.tsx` is the first surface migrated end-to-end:
-  - Picker fetches tenant TZ from `/v1/settings`.
-  - `addDaysInTZ(N, tz)` and `endOfDayInTZ(yyyymmdd, tz)` helpers compute
-    end-of-day-in-tenant-TZ as a UTC ISO instant.
-  - "Key will expire on..." hint renders in tenant TZ with the abbreviation
-    (`"May 5, 2026 at 11:59 PM PDT"`).
-  - Existing-keys list "Expires {date}" passes tenant TZ.
+The migration is now end-to-end across the dashboard. Four-commit
+arc (b523c71 → 2e93b3f):
 
-### What we deliberately did NOT do
+**Module-scoped tenant TZ + display defaults** (`b523c71`)
+- `date-fns-tz` added as a dependency (canonical companion to `date-fns`).
+- `lib/api.ts` exposes `setTenantTimezone(tz)` / `getTenantTimezone()`.
+  `formatDate(iso, timezone?)` and `formatDateTime(iso, timezone?)` default
+  to the module-scoped TZ when set, fall back to browser-local otherwise.
+- `formatDateTime` adds zone abbreviation (`"May 5, 2026, 2:14 PM PDT"`)
+  when rendering in tenant TZ; `formatDate` stays bare (date-only is
+  unambiguous at day resolution).
+- `lib/TenantTimezoneBootstrap.tsx`: render-nothing component mounted in
+  `main.tsx` inside `AuthProvider`. Fetches `/v1/settings` once user is
+  authenticated and seeds the module-scoped TZ. React-query caches the
+  fetch so per-page `useQuery(['settings'])` callers dedupe.
+- Net: ~70 existing display call sites across 20+ files automatically
+  inherit tenant-TZ rendering. Zero per-callsite churn.
+
+**Civil-date pickers** (`198d670`)
+- Shared helpers in `lib/dates.ts`: `endOfDayInTZ`, `startOfDayInTZ`,
+  `addDaysInTZ`, `formatYMDInTZ`, `formatExpiryHintInTZ`. All default to
+  `getTenantTimezone()` when no explicit TZ arg is passed.
+- Migrated: ApiKeys (refactored to use shared helpers), Coupons,
+  CouponDetail, Credits. All operator-picked civil dates (expiry-grade)
+  now compute UTC via tenant TZ.
+
+**Date-range filters** (`0a1675f`)
+- Migrated: Invoices (client-side via `formatYMDInTZ`), UsageEvents
+  (server-side via `startOfDayInTZ` / `endOfDayInTZ`), AuditLog
+  (server-side via the same helpers).
+- Backend: `audit/audit.go` `normalizeDateFilter` accepts either an
+  RFC3339 instant (the dashboard's new format) or a bare yyyy-mm-dd
+  (legacy fallback for direct curl users). Backward compatible.
+
+**Inline `toLocaleString` cleanup** (`2e93b3f`)
+- Five chart-axis / grouping callsites in CostDashboard, Dashboard, and
+  AuditLog were inline `new Date().toLocaleDateString(...)` calls — they
+  bypassed `formatDate` so didn't inherit the bootstrap-time tenant TZ.
+- All five now read `getTenantTimezone()` and use `formatInTimeZone` with
+  matching format strings, falling back to browser-local pre-bootstrap.
+
+### Out of scope (deferred per feedback_pre_launch_scoping)
 
 - **Three-field civil round-trip** (`expires_at_civil DATE` +
-  `expires_at_tz TEXT` alongside `expires_at TIMESTAMPTZ`). This is the
-  Stripe-grade nice-to-have that guarantees "operator picked May 5"
-  displays as May 5 to *every* viewer regardless of TZ. Defer until a
-  multi-operator-with-different-TZs DP appears — the migration + wire
-  shape change isn't justified for 1 operator.
-- **Per-user TZ override.** See above.
-- **Tenant-TZ-anchored billing cycles.** Adding tenant TZ to `billing_cycle
-  _anchor` interpretation is a meaningful behavior change with DST and
-  schedule-shift implications. Stripe's model (UTC-anchored cycles) is
-  the safer default; if a DP requires "bill on the 5th in our TZ" we can
-  ship that as opt-in later.
-- **Tenant-local scheduled jobs.** Dunning, retry, etc. all run on UTC
-  cron. "Send dunning at 9am tenant-local" requires per-tenant scheduler
-  fan-out. Out of scope for v1.
+  `expires_at_tz TEXT` alongside `expires_at TIMESTAMPTZ`). Stripe-grade
+  nice-to-have; defer until multi-operator-with-different-TZs DP appears.
+- **Per-user TZ override.** Defer until seats > 1.
+- **Tenant-TZ-anchored billing cycles.** Stripe's model (UTC-anchored
+  cycles) stays. Opt-in later if a DP requires.
+- **Tenant-local scheduled jobs.** Dunning, retry stay UTC cron.
+
 
 ### Migration of remaining surfaces (future, not part of this commit)
 

@@ -235,6 +235,34 @@ in order — pick the domain the change touched.
 
 ---
 
+## Tenant timezone
+
+Velox uses a single tenant-wide timezone for all date-grade input
+interpretation and all dashboard timestamp display. UTC for storage
+and billing math, tenant TZ for everything operators see and type.
+Set in Settings → Account → Timezone (defaults to UTC). See
+ADR-010 for the model.
+
+The behaviour you'll see across the dashboard:
+- **Date pickers** (API key expiry, coupon valid-until, credit
+  expiry, list-page from/to filters): operator-picked civil dates
+  are interpreted as start/end of day in tenant TZ.
+- **Display of stored timestamps**: rendered in tenant TZ via
+  `formatDate` / `formatDateTime`. `formatDateTime` includes the
+  zone abbreviation (`"May 5, 2026, 2:14 PM PDT"`); `formatDate`
+  is bare.
+- **Chart axes + audit-log section headers**: tenant TZ.
+- **Storage + wire format**: always UTC ISO 8601 with `Z`. No naive
+  local strings on the wire.
+- **Subscription billing math**: UTC, follow Stripe — `monthly on
+  the 5th` means 5th UTC, not 5th in tenant TZ. Don't confuse with
+  date-grade pickers.
+
+To validate end-to-end: change Settings → Account → Timezone to
+something offset from UTC (e.g. `Asia/Kolkata` or `America/Los_
+Angeles`), refresh, and confirm dashboard timestamps shift to that
+zone with the abbreviation appended.
+
 ## Auth
 
 The API key is the durable credential. The dashboard exchanges a pasted
@@ -306,10 +334,15 @@ See ADR-007 (revert) and ADR-008 (cookie refinement).
 
 - [ ] Create key → expiration presets: No expiration, 30 days, 90 days, 1 year, Custom
 - [ ] Select Custom → calendar picker uses the same branded component as rest of app
-- [ ] Create a key with `expires_at = now + 1 min` — verify 200 until expiry
+- [ ] Today's date is **disabled** in the calendar grid AND on the "Today" footer button (`cursor-not-allowed`); hover the disabled Today button → shadcn tooltip reads "Today is below the minimum allowed date (<minDate>)." (FLOW K2-TZ explains why minDate = tomorrow.)
+- [ ] Tenant timezone consistency (FLOW K2-TZ): pick "30d" preset at 14:30 today → "Key will expire on May 31, 2026 at 11:59 PM PDT" (or whatever tenant TZ Settings is configured to). The date and TZ in the hint match Settings → Tenant → Timezone exactly. ADR-010.
+- [ ] Tenant timezone consistency, custom branch: pick a custom date → hint reads "Key will expire on <PickedDate> at 11:59 PM <TenantTZ>". Two operators picking the same date in different physical timezones produce the same UTC `expires_at` for the same tenant.
+- [ ] Created `expires_at` row matches: `SELECT expires_at FROM api_keys WHERE id='<...>'` returns the UTC instant equivalent to "23:59:59.999 in tenant TZ" — e.g. tenant Asia/Kolkata + picked May 5 → `2026-05-05T18:29:59.999Z`.
+- [ ] Create a key with `expires_at = now + 90s` (use the API directly to bypass the tomorrow-or-later UI floor) — verify 200 until expiry, then 401 `"api key expired"` after the timestamp passes. (Same code path as the psql backdate below, faster to test.)
 - [ ] `UPDATE api_keys SET expires_at = NOW() - INTERVAL '1 hour' WHERE ...` → 401 `"api key expired"`
 - [ ] Keys expiring within 7 days show yellow "Expires in Xd" badge
 - [ ] Expired keys grouped into a collapsed "Expired keys" section
+- [ ] Expired-keys-section Revoke button is **enabled** (revoking an expired key is allowed cleanup; the last-active-key safeguard from FLOW K4 doesn't refuse it because expired keys aren't counted as "active").
 
 ## FLOW K3: API Keys page UX
 
