@@ -455,9 +455,16 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
     { value: 'custom', label: 'Custom' },
   ]
 
-  // Min date for custom picker = tomorrow
+  // Min date for custom picker = tomorrow at start-of-day. Without
+  // setHours(0,0,0,0), `tomorrow` carries the current wall-clock time
+  // and the DayPicker's `before: minDate` matcher inconsistently
+  // disables today depending on time-of-day — so today could leak
+  // through. A 0-day-from-now expiry is also a foot-gun for prod
+  // workflows, hence the tomorrow-or-later floor (matches GitHub PAT
+  // minimum and the FLOW K2 doc bullet).
   const tomorrow = new Date()
   tomorrow.setDate(tomorrow.getDate() + 1)
+  tomorrow.setHours(0, 0, 0, 0)
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
