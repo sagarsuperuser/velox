@@ -202,6 +202,85 @@ func TestClassifyInvoiceAttention_PriorityOrder(t *testing.T) {
 	}
 }
 
+func TestClassifyInvoiceAttention_PaymentProcessing(t *testing.T) {
+	inv := draft()
+	inv.Status = InvoiceFinalized
+	inv.PaymentStatus = PaymentProcessing
+	inv.UpdatedAt = time.Now()
+
+	att := ClassifyInvoiceAttention(inv)
+	if att == nil {
+		t.Fatalf("expected attention")
+	}
+	if att.Severity != AttentionSeverityInfo {
+		t.Errorf("severity = %s, want info", att.Severity)
+	}
+	if att.Reason != AttentionReasonPaymentProcessing {
+		t.Errorf("reason = %s, want %s", att.Reason, AttentionReasonPaymentProcessing)
+	}
+	if len(att.Actions) != 0 {
+		t.Errorf("processing should expose no actions (waiting on provider), got %d", len(att.Actions))
+	}
+}
+
+func TestClassifyInvoiceAttention_PaymentScheduled(t *testing.T) {
+	inv := draft()
+	inv.Status = InvoiceFinalized
+	inv.PaymentStatus = PaymentPending
+	inv.AutoChargePending = true
+	inv.UpdatedAt = time.Now()
+
+	att := ClassifyInvoiceAttention(inv)
+	if att == nil {
+		t.Fatalf("expected attention")
+	}
+	if att.Severity != AttentionSeverityInfo {
+		t.Errorf("severity = %s, want info", att.Severity)
+	}
+	if att.Reason != AttentionReasonPaymentScheduled {
+		t.Errorf("reason = %s, want %s", att.Reason, AttentionReasonPaymentScheduled)
+	}
+	if len(att.Actions) == 0 || att.Actions[0].Code != AttentionActionChargeNow {
+		t.Errorf("expected primary action charge_now, got %+v", att.Actions)
+	}
+}
+
+func TestClassifyInvoiceAttention_AwaitingPayment(t *testing.T) {
+	inv := draft()
+	inv.Status = InvoiceFinalized
+	inv.PaymentStatus = PaymentPending
+	// AutoChargePending = false (default) — no scheduler queue, no charge yet.
+	inv.UpdatedAt = time.Now()
+
+	att := ClassifyInvoiceAttention(inv)
+	if att == nil {
+		t.Fatalf("expected attention")
+	}
+	if att.Severity != AttentionSeverityInfo {
+		t.Errorf("severity = %s, want info", att.Severity)
+	}
+	if att.Reason != AttentionReasonAwaitingPayment {
+		t.Errorf("reason = %s, want %s", att.Reason, AttentionReasonAwaitingPayment)
+	}
+	codes := make(map[AttentionAction]bool)
+	for _, a := range att.Actions {
+		codes[a.Code] = true
+	}
+	if !codes[AttentionActionChargeNow] || !codes[AttentionActionSendReminder] {
+		t.Errorf("awaiting_payment should offer charge_now + send_reminder, got %+v", att.Actions)
+	}
+}
+
+func TestClassifyInvoiceAttention_DraftSuppressesAttention(t *testing.T) {
+	inv := draft()
+	// Status=draft, payment_status=pending — should NOT raise attention
+	// (the page itself communicates draft state).
+	att := ClassifyInvoiceAttention(inv)
+	if att != nil {
+		t.Errorf("draft should suppress info attention, got %+v", att)
+	}
+}
+
 func TestClassifyInvoiceAttention_EmptyPaymentErrorFallsBackToGeneric(t *testing.T) {
 	inv := draft()
 	inv.PaymentStatus = PaymentFailed

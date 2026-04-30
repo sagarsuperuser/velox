@@ -25,11 +25,19 @@ import { cn } from '@/lib/utils'
 export function InvoiceAttention({
   invoice,
   onRetryTax,
+  onChargeNow,
+  onSendReminder,
   retrying,
+  charging,
+  sending,
 }: {
   invoice: Invoice
   onRetryTax?: () => void
+  onChargeNow?: () => void
+  onSendReminder?: () => void
   retrying?: boolean
+  charging?: boolean
+  sending?: boolean
 }) {
   const att = invoice.attention
   if (!att) return null
@@ -72,7 +80,11 @@ export function InvoiceAttention({
                 primary={idx === 0}
                 invoice={invoice}
                 onRetryTax={onRetryTax}
+                onChargeNow={onChargeNow}
+                onSendReminder={onSendReminder}
                 retrying={retrying}
+                charging={charging}
+                sending={sending}
               />
             ))}
             {att.doc_url && (
@@ -112,14 +124,22 @@ function ActionButton({
   primary,
   invoice,
   onRetryTax,
+  onChargeNow,
+  onSendReminder,
   retrying,
+  charging,
+  sending,
 }: {
   action: AttentionAction
   label?: string
   primary: boolean
   invoice: Invoice
   onRetryTax?: () => void
+  onChargeNow?: () => void
+  onSendReminder?: () => void
   retrying?: boolean
+  charging?: boolean
+  sending?: boolean
 }) {
   const variant = primary ? 'default' : 'outline'
   const display = label ?? defaultLabel(action)
@@ -161,6 +181,28 @@ function ActionButton({
       return (
         <Button asChild variant={variant} size="sm">
           <Link to="/settings">{display}</Link>
+        </Button>
+      )
+    case 'charge_now':
+      return (
+        <Button
+          variant={variant}
+          size="sm"
+          onClick={onChargeNow}
+          disabled={!onChargeNow || charging}
+        >
+          {charging ? 'Charging…' : display}
+        </Button>
+      )
+    case 'send_reminder':
+      return (
+        <Button
+          variant={variant}
+          size="sm"
+          onClick={onSendReminder}
+          disabled={!onSendReminder || sending}
+        >
+          {sending ? 'Sending…' : display}
         </Button>
       )
     case 'reconcile_payment':
@@ -220,6 +262,9 @@ function humanReason(reason: string): string {
     payment_failed: 'Payment failed',
     payment_unconfirmed: 'Payment unconfirmed',
     overdue: 'Past due',
+    payment_processing: 'Payment processing',
+    payment_scheduled: 'Auto-charge scheduled',
+    awaiting_payment: 'Awaiting payment',
   }
   return map[reason] ?? reason
 }
@@ -233,6 +278,8 @@ function defaultLabel(action: AttentionAction): string {
     rotate_api_key: 'Rotate API key',
     reconcile_payment: 'Reconcile',
     review_registration: 'Review tax registration',
+    charge_now: 'Charge now',
+    send_reminder: 'Send reminder',
   }
   return map[action] ?? action
 }

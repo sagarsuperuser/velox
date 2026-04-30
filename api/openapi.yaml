@@ -221,6 +221,9 @@ components:
         - payment_failed
         - payment_unconfirmed
         - overdue
+        - payment_processing
+        - payment_scheduled
+        - awaiting_payment
       description: |
         Closed, typed code naming why an invoice needs operator
         attention. Stable public-API contract — codes are never
@@ -238,6 +241,8 @@ components:
         - rotate_api_key
         - reconcile_payment
         - review_registration
+        - charge_now
+        - send_reminder
       description: |
         Operator's recommended next step. Closed enum because every
         code maps to a concrete server endpoint or frontend route,

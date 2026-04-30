@@ -629,6 +629,9 @@ export type AttentionReason =
   | 'payment_failed'
   | 'payment_unconfirmed'
   | 'overdue'
+  | 'payment_processing'
+  | 'payment_scheduled'
+  | 'awaiting_payment'
 
 export type AttentionAction =
   | 'edit_billing_profile'
@@ -638,6 +641,8 @@ export type AttentionAction =
   | 'rotate_api_key'
   | 'reconcile_payment'
   | 'review_registration'
+  | 'charge_now'
+  | 'send_reminder'
 
 export interface AttentionActionItem {
   code: AttentionAction

@@ -379,7 +379,9 @@ export default function InvoiceDetailPage() {
       <InvoiceAttention
         invoice={invoice as unknown as ApiInvoice}
         onRetryTax={() => retryTaxMutation.mutate()}
+        onChargeNow={() => collectMutation.mutate()}
         retrying={retryTaxMutation.isPending}
+        charging={collectMutation.isPending}
       />
 
       {/* Operator context — diagnostic detail (dunning, payment intent
