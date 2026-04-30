@@ -78,6 +78,26 @@ const (
 	// `invoice.overdue` event. Distinct from payment_failed — overdue
 	// can occur without a charge attempt (e.g. send_invoice collection).
 	AttentionReasonOverdue AttentionReason = "overdue"
+
+	// AttentionReasonPaymentProcessing: charge attempt is in flight at
+	// the provider — Stripe has accepted the PaymentIntent but hasn't
+	// returned a final outcome. Self-resolves; no operator action.
+	// Stripe parity: `processing` status on the payment_intent.
+	AttentionReasonPaymentProcessing AttentionReason = "payment_processing"
+
+	// AttentionReasonPaymentScheduled: invoice is finalized and unpaid
+	// with auto_charge_pending=true — the scheduler will fire the auto-
+	// charge on its next tick. Operators can short-circuit with
+	// "Charge now". Mirrors Stripe's "Awaiting payment" with auto-retry
+	// scheduled state.
+	AttentionReasonPaymentScheduled AttentionReason = "payment_scheduled"
+
+	// AttentionReasonAwaitingPayment: invoice is finalized and unpaid,
+	// no charge attempt has fired yet (no PaymentIntent or
+	// auto_charge_pending=false). Customer-pay collection mode, or a
+	// pre-first-charge window. Operator can trigger a charge or send a
+	// reminder. Stripe parity: `open` invoice with no payment activity.
+	AttentionReasonAwaitingPayment AttentionReason = "awaiting_payment"
 )
 
 // AttentionAction names the operator's recommended next step. Closed
@@ -95,6 +115,15 @@ const (
 	AttentionActionRotateAPIKey       AttentionAction = "rotate_api_key"
 	AttentionActionReconcilePayment   AttentionAction = "reconcile_payment"
 	AttentionActionReviewRegistration AttentionAction = "review_registration"
+	// AttentionActionChargeNow triggers an immediate auto-charge (calls
+	// the existing collect-payment endpoint). Operators use this to
+	// short-circuit the scheduler when they want to bill now.
+	AttentionActionChargeNow AttentionAction = "charge_now"
+	// AttentionActionSendReminder dispatches an invoice email to the
+	// customer (calls the existing send-invoice-email endpoint). Used
+	// in customer-pay collection mode when the invoice is sitting
+	// unpaid and a nudge is appropriate.
+	AttentionActionSendReminder AttentionAction = "send_reminder"
 )
 
 // AttentionActionItem is one entry in Attention.Actions. Frontend
@@ -168,18 +197,23 @@ const docBaseURL = "https://docs.velox.dev/errors/"
 // invoice needs operator attention, or nil if everything is healthy.
 //
 // Priority order (first match wins, descending urgency):
-//  1. Tax failed     — blocks finalize, Critical
-//  2. Payment failed — money flow broken, Critical
-//  3. Tax pending    — engine retrying, Warning
-//  4. Overdue        — needs collection action, Warning
+//  1. Tax failed          — blocks finalize, Critical
+//  2. Payment failed      — money flow broken, Critical
+//  3. Tax pending         — engine retrying, Warning
+//  4. Overdue             — needs collection action, Warning
 //  5. Payment unconfirmed — reconciler resolves, Info
+//  6. Payment processing  — charge in flight at provider, Info
+//  7. Payment scheduled   — auto-charge will fire on next tick, Info
+//  8. Awaiting payment    — finalized, no charge attempted yet, Info
 //
 // Terminal-state invoices (paid, voided) never raise attention.
+// Drafts also skip — the page itself communicates draft state and
+// adding a banner would be redundant noise.
 //
 // Pure function — no I/O, deterministic on the input Invoice. Tested
 // in invoice_attention_test.go across the cartesian product of
 // (status, tax_status, tax_error_code, payment_status,
-// payment_overdue).
+// payment_overdue, auto_charge_pending).
 func ClassifyInvoiceAttention(inv Invoice) *Attention {
 	if inv.Status == InvoicePaid || inv.Status == InvoiceVoided {
 		return nil
@@ -195,6 +229,12 @@ func ClassifyInvoiceAttention(inv Invoice) *Attention {
 		return classifyOverdue(inv)
 	case inv.PaymentStatus == PaymentUnknown:
 		return classifyPaymentUnconfirmed(inv)
+	case inv.PaymentStatus == PaymentProcessing:
+		return classifyPaymentProcessing(inv)
+	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending && inv.AutoChargePending:
+		return classifyPaymentScheduled(inv)
+	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending:
+		return classifyAwaitingPayment(inv)
 	}
 	return nil
 }
@@ -304,9 +344,65 @@ func classifyOverdue(inv Invoice) *Attention {
 		Message:  "Invoice is past its due date and remains unpaid.",
 		DocURL:   docBaseURL + "overdue",
 		Actions: []AttentionActionItem{
-			{Code: AttentionActionRetryPayment, Label: "Retry payment"},
+			{Code: AttentionActionChargeNow, Label: "Charge now"},
+			{Code: AttentionActionSendReminder, Label: "Send reminder"},
 		},
 		Since: inv.DueAt,
+	}
+}
+
+// classifyPaymentProcessing surfaces the in-flight charge state. Self-
+// resolves on the next provider callback; no operator action is
+// possible. Mirrors Stripe's `processing` PaymentIntent state.
+func classifyPaymentProcessing(inv Invoice) *Attention {
+	since := inv.UpdatedAt
+	return &Attention{
+		Severity: AttentionSeverityInfo,
+		Reason:   AttentionReasonPaymentProcessing,
+		Code:     "payment.processing",
+		Message:  "Payment is in flight at the provider — awaiting confirmation.",
+		DocURL:   docBaseURL + "payment-processing",
+		Since:    &since,
+	}
+}
+
+// classifyPaymentScheduled surfaces the scheduler-will-retry state.
+// Auto-charge is queued; the engine will fire on its next sweep. The
+// operator can short-circuit with "Charge now" if they don't want to
+// wait the scheduler interval.
+func classifyPaymentScheduled(inv Invoice) *Attention {
+	since := inv.UpdatedAt
+	return &Attention{
+		Severity: AttentionSeverityInfo,
+		Reason:   AttentionReasonPaymentScheduled,
+		Code:     "payment.scheduled",
+		Message:  "Auto-charge is scheduled — the engine will attempt the charge on its next tick.",
+		DocURL:   docBaseURL + "payment-scheduled",
+		Actions: []AttentionActionItem{
+			{Code: AttentionActionChargeNow, Label: "Charge now"},
+		},
+		Since: &since,
+	}
+}
+
+// classifyAwaitingPayment surfaces the steady-state finalized-but-
+// unpaid invoice. No charge attempt has fired yet — either customer-
+// pay collection mode (operator emails the link, customer self-pays)
+// or a pre-first-charge window. Operators get two paths: trigger the
+// charge themselves, or send the customer a reminder email.
+func classifyAwaitingPayment(inv Invoice) *Attention {
+	since := inv.UpdatedAt
+	return &Attention{
+		Severity: AttentionSeverityInfo,
+		Reason:   AttentionReasonAwaitingPayment,
+		Code:     "payment.awaiting",
+		Message:  "Invoice is finalized and awaiting payment. No charge attempt has fired yet.",
+		DocURL:   docBaseURL + "awaiting-payment",
+		Actions: []AttentionActionItem{
+			{Code: AttentionActionChargeNow, Label: "Charge now"},
+			{Code: AttentionActionSendReminder, Label: "Send reminder"},
+		},
+		Since: &since,
 	}
 }
 
