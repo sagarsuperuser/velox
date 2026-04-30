@@ -20,7 +20,8 @@ import { useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
-import { api, formatCents, formatDate } from '@/lib/api'
+import { formatInTimeZone } from 'date-fns-tz'
+import { api, formatCents, formatDate, getTenantTimezone } from '@/lib/api'
 import type { CustomerUsage, CustomerUsageMeter, CustomerUsageRule, CustomerUsageSubscription, Subscription, Invoice, InvoicePreview } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -475,12 +476,14 @@ function UsageChart({ usage }: { usage: CustomerUsage }) {
   const data = useMemo(
     () =>
       usage.buckets.map(b => {
+        // Render in tenant TZ so chart x-axis labels match what
+        // operators see elsewhere on the dashboard. ADR-010.
+        const tz = getTenantTimezone() || undefined
         const row: Record<string, number | string> = {
           date: b.bucket_start,
-          label: new Date(b.bucket_start).toLocaleDateString('en-US', {
-            month: 'short',
-            day: 'numeric',
-          }),
+          label: tz
+            ? formatInTimeZone(new Date(b.bucket_start), tz, 'MMM d')
+            : new Date(b.bucket_start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
         }
         for (const m of meters) {
           row[m.meter_id] = Number(b.per_meter[m.meter_id] ?? 0)
@@ -530,11 +533,10 @@ function UsageChart({ usage }: { usage: CustomerUsage }) {
               labelFormatter={(label, payload) => {
                 if (!payload || !payload[0]) return label
                 const date = (payload[0].payload as { date: string }).date
-                return new Date(date).toLocaleDateString('en-US', {
-                  weekday: 'short',
-                  month: 'short',
-                  day: 'numeric',
-                })
+                const tz = getTenantTimezone() || undefined
+                return tz
+                  ? formatInTimeZone(new Date(date), tz, 'EEE, MMM d')
+                  : new Date(date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
               }}
               formatter={(value, _name, item) => {
                 const meterId = item.dataKey as string

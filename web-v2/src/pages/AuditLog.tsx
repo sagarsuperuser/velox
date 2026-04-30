@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, formatDateTime } from '@/lib/api'
+import { formatInTimeZone } from 'date-fns-tz'
+import { api, formatDateTime, getTenantTimezone } from '@/lib/api'
 import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { AuditEntry } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
@@ -122,12 +123,20 @@ function formatMetadata(meta: Record<string, unknown> | undefined): { label: str
 }
 
 function groupByDate(entries: AuditEntry[]): { date: string; entries: AuditEntry[] }[] {
+  // Group by tenant-TZ date so the section headers match the
+  // dashboard's tenant-TZ display elsewhere. Around UTC-day
+  // boundaries the prior browser-local grouping disagreed with the
+  // entries' rendered timestamps. ADR-010.
+  const tz = getTenantTimezone() || undefined
+  const fmtDate = (iso: string) =>
+    tz
+      ? formatInTimeZone(new Date(iso), tz, 'MMMM d, yyyy')
+      : new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+
   const groups: { date: string; entries: AuditEntry[] }[] = []
   let currentDate = ''
   for (const entry of entries) {
-    const date = new Date(entry.created_at).toLocaleDateString('en-US', {
-      year: 'numeric', month: 'long', day: 'numeric',
-    })
+    const date = fmtDate(entry.created_at)
     if (date !== currentDate) {
       groups.push({ date, entries: [] })
       currentDate = date
@@ -383,7 +392,10 @@ export default function AuditLogPage() {
                     </div>
                     <div className="divide-y divide-border">
                       {group.entries.map(entry => {
-                        const time = new Date(entry.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+                        const tz = getTenantTimezone() || undefined
+                        const time = tz
+                          ? formatInTimeZone(new Date(entry.created_at), tz, 'h:mm a')
+                          : new Date(entry.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
                         const isHigh = HIGH_SEVERITY.has(entry.action)
                         const isMedium = MEDIUM_SEVERITY.has(entry.action)
                         const isExpanded = expandedId === entry.id

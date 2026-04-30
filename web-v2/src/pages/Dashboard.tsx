@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { api, formatCents, formatRelativeTime } from '@/lib/api'
+import { formatInTimeZone } from 'date-fns-tz'
+import { api, formatCents, formatRelativeTime, getTenantTimezone } from '@/lib/api'
 import type { Invoice } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
@@ -26,10 +27,17 @@ function formatCompactAmount(cents: number): string {
   return `$${Math.round(cents / 100)}`
 }
 
+// formatShortDate renders chart axis labels in tenant TZ so they
+// match what operators see elsewhere on the dashboard. Falls back
+// to browser-local before TenantTimezoneBootstrap seeds the value.
+// ADR-010.
 function formatShortDate(dateStr: string): string {
   const d = new Date(dateStr)
   if (Number.isNaN(d.getTime())) return dateStr
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  const tz = getTenantTimezone()
+  return tz
+    ? formatInTimeZone(d, tz, 'MMM d')
+    : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
 export default function DashboardPage() {
