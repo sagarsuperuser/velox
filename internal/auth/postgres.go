@@ -138,13 +138,21 @@ func (s *PostgresStore) Revoke(ctx context.Context, tenantID, id string) (domain
 		return domain.APIKey{}, fmt.Errorf("count remaining keys: %w", err)
 	}
 
-	// Look up the target's key_type so the safeguard only fires when
-	// revoking a key that COULD be the last secret/platform — revoking
-	// a publishable key never orphans the tenant.
-	var targetKeyType string
+	// Look up the target's key_type and expires_at so the safeguard
+	// only fires when revoking a CURRENTLY-ACTIVE secret/platform key
+	// would orphan the tenant. Revoking a publishable key never
+	// orphans (publishables can't manage keys), and revoking an
+	// already-expired key doesn't worsen the state — the key was
+	// already failing auth, so the active-key count doesn't decrease.
+	// Allowing the latter is necessary for the "clean up stale
+	// expired rows" operator workflow.
+	var (
+		targetKeyType   string
+		targetExpiresAt sql.NullTime
+	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT key_type FROM api_keys WHERE id = $1 AND revoked_at IS NULL`,
-		id).Scan(&targetKeyType)
+		`SELECT key_type, expires_at FROM api_keys WHERE id = $1 AND revoked_at IS NULL`,
+		id).Scan(&targetKeyType, &targetExpiresAt)
 	if err == sql.ErrNoRows {
 		return domain.APIKey{}, errs.ErrNotFound
 	}
@@ -152,7 +160,8 @@ func (s *PostgresStore) Revoke(ctx context.Context, tenantID, id string) (domain
 		return domain.APIKey{}, fmt.Errorf("read target key: %w", err)
 	}
 
-	if (targetKeyType == "secret" || targetKeyType == "platform") && remaining == 0 {
+	targetActive := !targetExpiresAt.Valid || targetExpiresAt.Time.After(time.Now().UTC())
+	if targetActive && (targetKeyType == "secret" || targetKeyType == "platform") && remaining == 0 {
 		return domain.APIKey{}, errs.InvalidState(
 			"cannot revoke the last active secret/platform key — create another first")
 	}
