@@ -605,6 +605,14 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	sessionSvc := session.NewService(session.NewPostgresStore(db))
 	sessionH := session.NewHandler(authSvc, sessionSvc, session.DefaultCookieConfig())
 
+	// Wire api-key-revoke fan-out: when an operator revokes (or
+	// rotates with grace=0) an API key, every dashboard cookie tied
+	// to that key dies in the same request so the cookie path stops
+	// working alongside the Bearer path. Without this, a stolen
+	// cookie remains usable for up to the session TTL after the
+	// underlying key is revoked.
+	authSvc.SetSessionRevoker(sessionSvc)
+
 	s := &Server{
 		BillingEngine:         engine,
 		DunningSvc:            dunningSvc,
