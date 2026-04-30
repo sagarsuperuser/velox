@@ -25,6 +25,24 @@ type Store interface {
 	// last_ever rules ignore the period bounds and pick the latest event
 	// across all time (for "current state" billing like seat counts).
 	AggregateByPricingRules(ctx context.Context, tenantID, customerID, meterID string, defaultMode domain.AggregationMode, from, to time.Time) ([]domain.RuleAggregation, error)
+
+	// AggregateDailyBuckets returns events bucketed to UTC-day granularity
+	// over [from, to) for the given customer × meter set. One row per
+	// (bucket_start, meter_id) — the service fills missing buckets with
+	// zero so chart consumers get continuous time. Sums to the same
+	// per-meter total as AggregateForBillingPeriod over the same window;
+	// powers the daily-bar-chart on the customer-usage view (matches
+	// Datadog / OpenAI / AWS Cost Explorer's primary visual primitive).
+	AggregateDailyBuckets(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) ([]DailyBucketRow, error)
+}
+
+// DailyBucketRow is one (bucket_start, meter) cell from the bucket
+// aggregation. Storage-shape only; the service composes these into
+// the gap-filled DailyBucket presentation type before serving.
+type DailyBucketRow struct {
+	BucketStart time.Time
+	MeterID     string
+	Quantity    decimal.Decimal
 }
 
 type ListFilter struct {

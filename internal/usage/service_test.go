@@ -66,6 +66,10 @@ func (m *memStore) AggregateByPricingRules(_ context.Context, _, _, _ string, _ 
 	return nil, nil
 }
 
+func (m *memStore) AggregateDailyBuckets(_ context.Context, _, _ string, _ []string, _, _ time.Time) ([]DailyBucketRow, error) {
+	return nil, nil
+}
+
 func TestIngest(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()

@@ -155,6 +155,13 @@ func (s *Service) AggregateForBillingPeriod(ctx context.Context, tenantID, custo
 	return s.store.AggregateForBillingPeriod(ctx, tenantID, customerID, meterIDs, from, to)
 }
 
+// AggregateDailyBuckets delegates to the store. Exposed on the Service
+// so CustomerUsageService can fetch chart data without holding the
+// Store directly. See Store interface for contract.
+func (s *Service) AggregateDailyBuckets(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) ([]DailyBucketRow, error) {
+	return s.store.AggregateDailyBuckets(ctx, tenantID, customerID, meterIDs, from, to)
+}
+
 // AggregateByPricingRules resolves a single (customer, meter, period) into
 // per-rule aggregations using the priority+claim algorithm. The defaultMode
 // applies to events that match no rule; it must be one of the four
