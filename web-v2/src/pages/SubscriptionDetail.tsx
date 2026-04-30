@@ -780,7 +780,17 @@ export default function SubscriptionDetailPage() {
                       </Link>
                     </TableCell>
                     <TableCell><Badge variant={statusVariant(inv.status)}>{inv.status}</Badge></TableCell>
-                    <TableCell><Badge variant={statusVariant(inv.payment_status)}>{inv.payment_status}</Badge></TableCell>
+                    <TableCell>
+                      {/* payment_status is meaningless on drafts — no
+                          PaymentIntent exists yet. Hide the pill (Stripe
+                          parity); show an em dash so the column stays
+                          aligned. */}
+                      {inv.status === 'draft' ? (
+                        <span className="text-sm text-muted-foreground">—</span>
+                      ) : (
+                        <Badge variant={statusVariant(inv.payment_status)}>{inv.payment_status}</Badge>
+                      )}
+                    </TableCell>
                     <TableCell className="text-right font-medium">{formatCents(inv.total_amount_cents)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{formatDate(inv.created_at)}</TableCell>
                   </TableRow>

@@ -338,9 +338,19 @@ export default function InvoicesPage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
-                          <Badge variant={statusBadgeVariant(inv.payment_status)}>{inv.payment_status}</Badge>
-                          {inv.due_at && inv.payment_status !== 'paid' && (
+                          {/* payment_status is only meaningful once an invoice
+                              is finalized — drafts default to "pending" but
+                              no PaymentIntent exists yet. Hiding the pill on
+                              drafts (Stripe parity) avoids the misleading
+                              "this is stuck on payment" reading. */}
+                          {inv.status !== 'draft' && (
+                            <Badge variant={statusBadgeVariant(inv.payment_status)}>{inv.payment_status}</Badge>
+                          )}
+                          {inv.due_at && inv.payment_status !== 'paid' && inv.status !== 'draft' && (
                             <ExpiryBadge expiresAt={inv.due_at} label="Due" warningDays={3} />
+                          )}
+                          {inv.status === 'draft' && (
+                            <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </div>
                       </TableCell>
