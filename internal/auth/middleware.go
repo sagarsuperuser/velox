@@ -63,6 +63,36 @@ func Require(perm Permission) func(http.Handler) http.Handler {
 	}
 }
 
+// RequireMethod returns middleware that picks the permission to enforce
+// based on HTTP method: GET/HEAD/OPTIONS check `read`, POST/PUT/PATCH/
+// DELETE check `write`. Closes the gap where a single Require() in
+// front of a chi.Mount applies one permission to a subrouter that
+// mixes reads and writes — left unguarded, a key with read access
+// could write on every endpoint inside the subtree.
+//
+// Usage:
+//
+//	r.With(auth.RequireMethod(auth.PermCustomerRead, auth.PermCustomerWrite)).
+//	    Mount("/customers", customerH.Routes())
+func RequireMethod(read, write Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			perm := read
+			switch r.Method {
+			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+				perm = write
+			}
+			kt := GetKeyType(r.Context())
+			if !HasPermission(kt, perm) {
+				respond.Forbidden(w, r,
+					"insufficient permissions: this key type does not have "+string(perm)+" access")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // Context accessors
 
 func TenantID(ctx context.Context) string {

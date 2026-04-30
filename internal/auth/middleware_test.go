@@ -256,3 +256,46 @@ func TestRequire_PlatformKeyOnlyTenants(t *testing.T) {
 		t.Errorf("platform key should NOT have customer:read, got %d", rec2.Code)
 	}
 }
+
+func TestRequireMethod_GETUsesReadPOSTUsesWrite(t *testing.T) {
+	svc := NewService(newMemStore())
+	pub, _ := svc.CreateKey(t.Context(), "t1", CreateKeyInput{Name: "Pub", KeyType: KeyTypePublishable})
+	sec, _ := svc.CreateKey(t.Context(), "t1", CreateKeyInput{Name: "Sec", KeyType: KeyTypeSecret})
+
+	mw := Middleware(svc)(RequireMethod(PermCustomerRead, PermCustomerWrite)(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
+	))
+
+	cases := []struct {
+		method string
+		key    string
+		want   int
+		why    string
+	}{
+		// Publishable holds customer:read but not customer:write.
+		// Read methods pass; write methods 403.
+		{"GET", pub.RawKey, http.StatusOK, "GET pub → read perm satisfied"},
+		{"HEAD", pub.RawKey, http.StatusOK, "HEAD pub → read perm satisfied"},
+		{"OPTIONS", pub.RawKey, http.StatusOK, "OPTIONS pub → read perm satisfied"},
+		{"POST", pub.RawKey, http.StatusForbidden, "POST pub → write perm denied"},
+		{"PUT", pub.RawKey, http.StatusForbidden, "PUT pub → write perm denied"},
+		{"PATCH", pub.RawKey, http.StatusForbidden, "PATCH pub → write perm denied"},
+		{"DELETE", pub.RawKey, http.StatusForbidden, "DELETE pub → write perm denied"},
+		// Secret holds both — every method allowed.
+		{"GET", sec.RawKey, http.StatusOK, "GET secret → both perms held"},
+		{"POST", sec.RawKey, http.StatusOK, "POST secret → both perms held"},
+		{"DELETE", sec.RawKey, http.StatusOK, "DELETE secret → both perms held"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.method+"_"+tc.why, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, "/", nil)
+			req.Header.Set("Authorization", "Bearer "+tc.key)
+			rec := httptest.NewRecorder()
+			mw.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Errorf("%s: got %d, want %d", tc.why, rec.Code, tc.want)
+			}
+		})
+	}
+}
