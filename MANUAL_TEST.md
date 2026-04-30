@@ -135,22 +135,66 @@ signs out. Run this before every merge to main and as a nightly canary.
 - [ ] Customers → create: "Smoke Corp", `external_id=smoke_corp`, email any@any.test
 - [ ] Customer detail → Billing Profile → set address + `USD` + `10%` tax rate
 - [ ] Customer detail → Set Up Payment → test card `4242 4242 4242 4242`
-- [ ] Customer detail → New Subscription → Starter plan, calendar billing, start today
+- [ ] **Mint a test clock** so we don't have to wait 30 days for the cycle to end.
+  `internal/testclock/` is locked to test-mode by DB constraint, so it's safe.
+  ```bash
+  KEY=vlx_secret_test_…
+  API=http://localhost:8080
+  curl -sS -X POST "$API/v1/test-clocks" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d "{\"name\":\"smoke\",\"frozen_time\":\"$(date -u +%FT%TZ)\"}" | jq .
+  # → {"id":"vlx_clk_…","frozen_time":"…","status":"ready"}
+  ```
+- [ ] Customer detail → New Subscription → Starter plan, calendar billing, start today.
+  **Pin it to the test clock**: pass `test_clock_id` (UI form field, or the
+  create-subscription POST body). Subscription is now time-bound to the clock,
+  not wall-clock.
 
 ### S1.5 Bill + charge
-- [ ] Usage → ingest 1,000 events for `api_calls` on `smoke_corp`
-- [ ] Trigger billing via API (UI button was removed):
-  `curl -X POST -H "Authorization: Bearer $VELOX_KEY" http://localhost:8080/v1/billing/run`
-  where `$VELOX_KEY` is a secret key from API Keys page (or the bootstrap key)
+
+The billing engine fires on `current_billing_period_end <= clock.Now()`. A
+freshly-created subscription's period end is ~30 days out, so a bare
+`/v1/billing/run` right after creation finds nothing due. We advance the
+test clock past the cycle end so the engine has something to do.
+
+- [ ] Usage → ingest 1,000 events for `api_calls` on `smoke_corp`. Single
+  curl batch (≤1000 events per call):
+  ```bash
+  TS=$(date -u +%FT%TZ)
+  jq -n --arg ts "$TS" '[range(1000) | {external_customer_id: "smoke_corp", event_name: "api_calls", quantity: "1", idempotency_key: "smoke_\($ts)_\(.)"}]' > /tmp/events.json
+  curl -sS -X POST "$API/v1/usage-events/batch" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" --data-binary @/tmp/events.json | jq .
+  # → {"ingested":1000,"errors":[]}
+  ```
+- [ ] Advance the test clock past `current_billing_period_end` (31 days
+  forward covers a 30-day calendar cycle):
+  ```bash
+  CLK=vlx_clk_…   # from S1.4 above
+  # macOS:
+  curl -sS -X POST "$API/v1/test-clocks/$CLK/advance" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d "{\"frozen_time\":\"$(date -u -v+31d +%FT%TZ)\"}" | jq .
+  # Linux:
+  # curl ... -d "{\"frozen_time\":\"$(date -u -d '+31 days' +%FT%TZ)\"}"
+  ```
+- [ ] Trigger billing via API (no UI button on the dashboard):
+  ```bash
+  curl -sS -X POST "$API/v1/billing/run" -H "Authorization: Bearer $KEY" | jq .
+  # → {"invoices_generated":1, "errors":[]}
+  ```
 - [ ] Verify: exactly 1 invoice generated; auto-finalized, `payment_status = succeeded`
 - [ ] Invoice detail → line items: base fee (prorated), usage ($10.00), tax (10%)
 - [ ] Verify: Stripe CLI terminal shows `payment_intent.succeeded`
 - [ ] Dashboard: MRR > $0, revenue chart updated, Recent Activity shows the invoice
 
+> **Skip the test clock?** Only as a debugging shortcut — backdate via psql:
+> `UPDATE subscriptions SET current_billing_period_end = NOW() - INTERVAL '1 minute' WHERE customer_id = (SELECT id FROM customers WHERE external_id='smoke_corp');`
+> then run the billing curl. Bypasses trial-flip / proration / cycle-bookkeeping
+> logic the test clock exercises — fine for "I want one invoice now," wrong for
+> a smoke flow where the test-clock path is the thing being smoked.
+
 ### S1.6 Sign out
 - [ ] Sidebar → Sign Out
 - [ ] Verify: redirect to /login; back-button still lands you on /login
-- [ ] Verify: `curl -b <stale_cookie> http://localhost:8080/v1/session/` → 401
+- [ ] Verify: `curl -i -b <stale_cookie> http://localhost:8080/v1/whoami` → 401
+  `invalid or expired session` (the cookie value still hashes to a row in
+  `dashboard_sessions` but `revoked_at` is now NOT NULL — `session.Service.Resolve`
+  rejects revoked rows even though the row physically exists)
 
 **If all of S1 passes, the core engine is healthy.**
 
