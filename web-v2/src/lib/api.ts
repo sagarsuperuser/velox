@@ -1683,23 +1683,52 @@ export function formatCents(cents: number, currency?: string): string {
   return `${sign}${symbol}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`
 }
 
-// formatDate / formatDateTime — by default render in the browser's
-// local timezone (current behavior, unchanged for existing callers).
-// Pass `timezone` to render in a specific IANA TZ — e.g. tenant TZ
-// for date-grade values like API key expiry, where the wall-clock
-// the operator picked should round-trip to display unchanged.
+// _tenantTimezone is module-scoped state seeded once at app boot
+// (after /v1/settings resolves) via setTenantTimezone. formatDate /
+// formatDateTime read from it as their default so every existing
+// display call site automatically renders in tenant TZ — no per-
+// callsite churn. Not reactive: tenant TZ rarely changes during a
+// session, and the Settings save flow is followed by a navigation
+// that re-bootstraps. Acceptable for v1; revisit if multi-tenant-
+// switcher UX lands. See ADR-010.
+let _tenantTimezone: string | null = null
+
+export function setTenantTimezone(tz: string | null): void {
+  _tenantTimezone = tz || null
+}
+
+export function getTenantTimezone(): string | null {
+  return _tenantTimezone
+}
+
+// formatDate / formatDateTime — default to tenant TZ when set,
+// browser-local otherwise. Pass an explicit `timezone` to override
+// (used by ApiKeys to be defensive even before the bootstrap-time
+// setTenantTimezone call resolves).
+//
+// formatDate stays bare (no zone label) — date-only displays are
+// visually noisy with a TZ stamp and the date is unambiguous at
+// day resolution for normal use.
+//
+// formatDateTime appends a zone abbreviation when rendering in
+// tenant TZ ("May 5, 2026, 2:14 PM PDT") so operators have an
+// explicit cue about the rendering frame. Browser-local fallback
+// stays unlabelled (matches existing behaviour to avoid surprising
+// pre-bootstrap renders).
 export function formatDate(iso: string, timezone?: string): string {
+  const tz = timezone || _tenantTimezone || undefined
   return new Date(iso).toLocaleDateString('en-US', {
     year: 'numeric', month: 'short', day: 'numeric',
-    ...(timezone ? { timeZone: timezone } : {}),
+    ...(tz ? { timeZone: tz } : {}),
   })
 }
 
 export function formatDateTime(iso: string, timezone?: string): string {
+  const tz = timezone || _tenantTimezone || undefined
   return new Date(iso).toLocaleString('en-US', {
     year: 'numeric', month: 'short', day: 'numeric',
     hour: 'numeric', minute: '2-digit',
-    ...(timezone ? { timeZone: timezone, timeZoneName: 'short' } : {}),
+    ...(tz ? { timeZone: tz, timeZoneName: 'short' } : {}),
   })
 }
 
