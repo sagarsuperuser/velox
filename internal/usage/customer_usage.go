@@ -88,6 +88,12 @@ type CustomerUsageResult struct {
 	Meters        []CustomerUsageMeter        `json:"meters"`
 	Totals        []CustomerUsageTotal        `json:"totals"`
 	Warnings      []string                    `json:"warnings"`
+	// Buckets is the daily-grain time series powering the customer-usage
+	// chart. One entry per UTC day in [period.from, period.to), missing
+	// days zero-filled so chart consumers don't have to gap-fill. Each
+	// bucket carries per-meter quantities — the frontend stacks them or
+	// flattens depending on the meter cardinality. Sums match Meters[].
+	Buckets []CustomerUsageBucket `json:"buckets"`
 }
 
 // CustomerUsagePeriodOut tells the client which window the response covers
@@ -148,6 +154,16 @@ type CustomerUsageTotal struct {
 	AmountCents int64  `json:"amount_cents"`
 }
 
+// CustomerUsageBucket is one UTC-day cell of the time-series. PerMeter
+// is keyed by meter_id with the day's total quantity (decimal so the
+// NUMERIC(38,12) storage precision round-trips). Days with no events
+// are still included with PerMeter empty / zeroed so the chart renders
+// continuous time without client-side gap-filling.
+type CustomerUsageBucket struct {
+	BucketStart time.Time                  `json:"bucket_start"`
+	PerMeter    map[string]decimal.Decimal `json:"per_meter"`
+}
+
 // Get composes the customer-usage view. Order:
 //  1. Customer existence (RLS makes cross-tenant IDs return ErrNotFound).
 //  2. Active+trialing subscriptions for the customer.
@@ -202,6 +218,20 @@ func (s *CustomerUsageService) Get(ctx context.Context, tenantID, customerID str
 	subSummaries := buildSubscriptionSummaries(activeSubs, plansByID)
 	totals := computeTotals(meters)
 
+	// Daily time series for the chart. Cheap relative to the per-meter
+	// rate calls we already did — single SQL pass with date_trunc + sum.
+	// On store error we degrade to an empty buckets slice rather than
+	// failing the whole response: the chart vanishes, the rest stays.
+	buckets := []CustomerUsageBucket{}
+	if len(meterIDs) > 0 {
+		rows, err := s.usage.AggregateDailyBuckets(ctx, tenantID, customerID, meterIDs, from, to)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("daily bucket aggregation failed: %v", err))
+		} else {
+			buckets = composeDailyBuckets(rows, from, to)
+		}
+	}
+
 	return CustomerUsageResult{
 		CustomerID:    customerID,
 		Period:        CustomerUsagePeriodOut{From: from, To: to, Source: source},
@@ -209,7 +239,41 @@ func (s *CustomerUsageService) Get(ctx context.Context, tenantID, customerID str
 		Meters:        meters,
 		Totals:        totals,
 		Warnings:      nilToEmptyStrings(warnings),
+		Buckets:       buckets,
 	}, nil
+}
+
+// composeDailyBuckets fills missing UTC-day buckets in [from, to) with
+// empty PerMeter maps so the chart consumer gets continuous time.
+// Bucket boundaries are date_trunc('day', from) inclusive through
+// date_trunc('day', to) exclusive — same alignment the SQL produces.
+//
+// Non-empty buckets are sorted by date by virtue of the gap-fill walk;
+// per-meter map insertion is order-irrelevant (frontend keys by id).
+func composeDailyBuckets(rows []DailyBucketRow, from, to time.Time) []CustomerUsageBucket {
+	// Index rows by truncated UTC day for O(1) lookup during the walk.
+	byDay := make(map[time.Time][]DailyBucketRow, len(rows))
+	for _, r := range rows {
+		day := r.BucketStart.UTC().Truncate(24 * time.Hour)
+		byDay[day] = append(byDay[day], r)
+	}
+
+	// Walk inclusive-from through exclusive-to one day at a time.
+	start := from.UTC().Truncate(24 * time.Hour)
+	end := to.UTC().Truncate(24 * time.Hour)
+	if !to.UTC().Equal(end) {
+		end = end.Add(24 * time.Hour) // include the partial trailing day
+	}
+
+	out := make([]CustomerUsageBucket, 0, int(end.Sub(start).Hours()/24)+1)
+	for cursor := start; cursor.Before(end); cursor = cursor.Add(24 * time.Hour) {
+		bucket := CustomerUsageBucket{BucketStart: cursor, PerMeter: map[string]decimal.Decimal{}}
+		for _, r := range byDay[cursor] {
+			bucket.PerMeter[r.MeterID] = r.Quantity
+		}
+		out = append(out, bucket)
+	}
+	return out
 }
 
 // resolvePeriod decides the [from, to) window to query. Default is the

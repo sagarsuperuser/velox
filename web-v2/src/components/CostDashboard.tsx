@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import { api, formatCents, formatDate } from '@/lib/api'
-import type { CustomerUsageMeter, CustomerUsageRule } from '@/lib/api'
+import type { CustomerUsage, CustomerUsageMeter, CustomerUsageRule } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 import { Card, CardContent } from '@/components/ui/card'
@@ -239,6 +240,17 @@ export function CostDashboard({ customerId }: { customerId: string }) {
             </CardContent>
           </Card>
 
+          {/* Daily usage chart — the primary visual primitive 5/7
+              reference platforms (Datadog, OpenAI, Anthropic, AWS,
+              Orb) build their per-customer view around. Stacked by
+              meter when the customer has multiple; collapses to a
+              flat bar when there's one. Hidden when the period has
+              no events at all (the hint above already covers that
+              case). */}
+          {data.buckets.length > 0 && data.meters.length > 0 && (
+            <UsageChart usage={data} />
+          )}
+
           {/* Warnings */}
           {data.warnings.length > 0 && (
             <Card className="border-amber-200 dark:border-amber-900">
@@ -271,6 +283,114 @@ export function CostDashboard({ customerId }: { customerId: string }) {
         </>
       )}
     </div>
+  )
+}
+
+// UsageChart — daily-grain stacked bar chart of events per meter,
+// matching the primary visual primitive on Datadog, OpenAI, AWS Cost
+// Explorer. Stacks by meter so multi-meter customers see the
+// composition; single-meter customers get a flat bar. Hover surfaces
+// per-meter quantity. Total at the top reconciles with the
+// CYCLE-TO-DATE big number above (sums to data.totals).
+//
+// The chart deliberately shows quantity (events), not dollars, on the
+// Y axis — matches the "events as primary, cost as roll-up" framing
+// the reference platforms use. The cost is the headline number on the
+// big-number card; the chart is for trend / pattern / anomaly.
+function UsageChart({ usage }: { usage: CustomerUsage }) {
+  // Build chart-friendly data: one row per bucket with a column per
+  // meter. Recharts wants numeric values; per_meter is decimal-string
+  // from the wire so we Number()-coerce per cell.
+  const meters = usage.meters
+  const data = useMemo(
+    () =>
+      usage.buckets.map(b => {
+        const row: Record<string, number | string> = {
+          date: b.bucket_start,
+          // Pre-formatted label for the X axis — short month/day
+          // matches AWS / Datadog density at 30-90 day windows.
+          label: new Date(b.bucket_start).toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+          }),
+        }
+        for (const m of meters) {
+          row[m.meter_id] = Number(b.per_meter[m.meter_id] ?? 0)
+        }
+        return row
+      }),
+    [usage.buckets, meters],
+  )
+
+  // Stable color palette — meters get an index-based color so reorder
+  // doesn't shift colors and the legend matches the operator's mental
+  // model across renders. Tailwind palette tokens (the project uses
+  // CSS-variable-based theming for primary; everything else is fixed
+  // hex from the design system used elsewhere in the dashboard).
+  const palette = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899']
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Daily usage</p>
+          <p className="text-xs text-muted-foreground tabular-nums">
+            {data.length} day{data.length === 1 ? '' : 's'}
+          </p>
+        </div>
+        <ResponsiveContainer width="100%" height={180}>
+          <BarChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148,163,184,0.2)" />
+            <XAxis
+              dataKey="label"
+              tick={{ fontSize: 10, fill: 'currentColor' }}
+              tickLine={false}
+              axisLine={false}
+              interval="preserveStartEnd"
+              minTickGap={20}
+            />
+            <YAxis
+              tick={{ fontSize: 10, fill: 'currentColor' }}
+              tickLine={false}
+              axisLine={false}
+              width={40}
+            />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: 'var(--background)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                fontSize: 12,
+              }}
+              labelFormatter={(label, payload) => {
+                if (!payload || !payload[0]) return label
+                const date = (payload[0].payload as { date: string }).date
+                return new Date(date).toLocaleDateString('en-US', {
+                  weekday: 'short',
+                  month: 'short',
+                  day: 'numeric',
+                })
+              }}
+              formatter={(value, _name, item) => {
+                const meterId = item.dataKey as string
+                const meter = meters.find(m => m.meter_id === meterId)
+                const label = meter ? `${meter.meter_name}` : meterId
+                return [`${Number(value).toLocaleString()} ${meter?.unit ?? ''}`, label]
+              }}
+            />
+            {meters.map((m, i) => (
+              <Bar
+                key={m.meter_id}
+                dataKey={m.meter_id}
+                stackId="a"
+                fill={palette[i % palette.length]}
+                radius={i === meters.length - 1 ? [3, 3, 0, 0] : 0}
+              />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      </CardContent>
+    </Card>
   )
 }
 

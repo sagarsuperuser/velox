@@ -838,6 +838,15 @@ export interface CustomerUsage {
   meters: CustomerUsageMeter[]
   totals: { currency: string; amount_cents: number }[]
   warnings: string[]
+  // Daily buckets for the chart. One entry per UTC day in [from, to)
+  // with missing days zero-filled server-side. per_meter is keyed by
+  // meter_id with the day's total quantity (decimal-string).
+  buckets: CustomerUsageBucket[]
+}
+
+export interface CustomerUsageBucket {
+  bucket_start: string
+  per_meter: Record<string, string>
 }
 
 export interface CustomerUsageSubscription {

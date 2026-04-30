@@ -215,6 +215,57 @@ func (s *PostgresStore) AggregateForBillingPeriodByAgg(ctx context.Context, tena
 	return result, nil
 }
 
+// AggregateDailyBuckets — see Store interface for contract. UTC-day
+// granularity matches every reference platform (Datadog, OpenAI, AWS
+// Cost Explorer); finer grain (hour) lives in a future bucket-grain
+// param when an operator needs it. NULL meter_ids → empty result with
+// no DB roundtrip. The result is unsorted; the service fills gaps and
+// sorts by (bucket_start, meter_id) before serving.
+func (s *PostgresStore) AggregateDailyBuckets(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) ([]DailyBucketRow, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if len(meterIDs) == 0 {
+		return nil, nil
+	}
+
+	placeholders := make([]string, len(meterIDs))
+	args := []any{customerID, from, to}
+	for i, id := range meterIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+4)
+		args = append(args, id)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT date_trunc('day', timestamp AT TIME ZONE 'UTC') AS bucket_start,
+		       meter_id,
+		       COALESCE(SUM(quantity), 0) AS qty
+		FROM usage_events
+		WHERE customer_id = $1
+		  AND timestamp >= $2
+		  AND timestamp < $3
+		  AND meter_id IN (`+strings.Join(placeholders, ",")+`)
+		GROUP BY 1, 2
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []DailyBucketRow
+	for rows.Next() {
+		var row DailyBucketRow
+		if err := rows.Scan(&row.BucketStart, &row.MeterID, &row.Quantity); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
