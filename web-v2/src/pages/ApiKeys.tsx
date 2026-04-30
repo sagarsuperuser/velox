@@ -4,6 +4,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { api, formatDate, formatRelativeTime, type ApiKeyInfo } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { applyApiError, showApiError } from '@/lib/formErrors'
@@ -90,6 +91,16 @@ export default function ApiKeysPage() {
   // value is populated by the time the page renders.
   const { user } = useAuth()
   const currentKeyId = user?.key_id ?? ''
+
+  // Tenant timezone for displaying expires_at — see CreateKeyDialog
+  // for the "why tenant TZ" rationale. UTC fallback covers the
+  // before-fetch race; the column is NOT NULL with default 'UTC' so
+  // every loaded settings row has a real value.
+  const { data: tenantSettings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => api.getSettings(),
+  })
+  const tenantTZ = tenantSettings?.timezone || 'UTC'
 
   const { data: keysData, isLoading: loading, error: loadError, refetch } = useQuery({
     queryKey: ['api-keys'],
@@ -213,7 +224,7 @@ export default function ApiKeysPage() {
                             {k.expires_at && (
                               <span className="text-xs text-muted-foreground flex items-center gap-1">
                                 <Clock size={11} />
-                                Expires {formatDate(k.expires_at)}
+                                Expires {formatDate(k.expires_at, tenantTZ)}
                               </span>
                             )}
                           </div>
@@ -400,19 +411,30 @@ export default function ApiKeysPage() {
 
 type ExpiryPreset = 'never' | '30d' | '90d' | '1y' | 'custom'
 
-// addDays rolls the date N days forward and pins it to end-of-day in
-// the browser's local timezone (23:59:59.999). Matches the custom-
-// date branch (which uses T23:59:59 on the picked day) so a "30d"
-// preset and a custom-date "30 days from now" pick produce the
-// same expiry. Without the time normalization, presets behaved as
-// rolling-24h (30d created at 14:30 expired at 14:30 thirty days
-// later) and contradicted the operator's "valid through this day"
-// intent. Matches GitHub PAT / Auth0-admin convention.
-function addDays(days: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() + days)
-  d.setHours(23, 59, 59, 999)
-  return d.toISOString()
+// endOfDayInTZ returns the UTC ISO 8601 timestamp of "yyyy-mm-dd at
+// 23:59:59.999 in tenant timezone tz". Operator picks "May 5",
+// tenant TZ is Asia/Kolkata → 2026-05-05T18:29:59.999Z (May 5 23:59
+// IST). Tenant-TZ-grounded inputs are the long-term convention
+// (Stripe / Auth0); we route every API-key date pick through here
+// so two operators in different physical timezones generate the
+// same expiry for the same picked date.
+function endOfDayInTZ(yyyymmdd: string, tz: string): string {
+  return fromZonedTime(`${yyyymmdd} 23:59:59.999`, tz).toISOString()
+}
+
+// addDaysInTZ rolls forward N days from today's date in tenant TZ
+// and pins it to end-of-day in tenant TZ. The day-arithmetic uses
+// the browser's local Date (constructor-by-y-m-d is TZ-agnostic for
+// day-grade math), then re-grounds in tenant TZ for the final
+// timestamp. Matches the custom-date branch — both produce
+// end-of-day-in-tenant-TZ — so a "30d" preset and a custom-date
+// "30 days from now" land on the same instant.
+function addDaysInTZ(days: number, tz: string): string {
+  const todayStr = formatInTimeZone(new Date(), tz, 'yyyy-MM-dd')
+  const [y, m, d] = todayStr.split('-').map(Number)
+  const target = new Date(y, m - 1, d + days)
+  const targetStr = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, '0')}-${String(target.getDate()).padStart(2, '0')}`
+  return endOfDayInTZ(targetStr, tz)
 }
 
 function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (rawKey: string) => void }) {
@@ -421,6 +443,17 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
   const [customDate, setCustomDate] = useState('')
   const [customDateError, setCustomDateError] = useState('')
 
+  // Tenant timezone is the canonical clock for date-grade picks
+  // (matches Stripe / Auth0). Fetch from /v1/settings — already
+  // exposed there. Fall back to UTC if settings haven't loaded yet
+  // (covers the dialog-open-before-fetch race; UTC is the DB
+  // default so no tenant operates without a value in practice).
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => api.getSettings(),
+  })
+  const tenantTZ = settings?.timezone || 'UTC'
+
   const form = useForm<CreateApiKeyData>({
     resolver: zodResolver(createApiKeySchema),
     defaultValues: { name: '' },
@@ -428,10 +461,10 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
 
   function getExpiresAt(): string | undefined {
     switch (expiryPreset) {
-      case '30d': return addDays(30)
-      case '90d': return addDays(90)
-      case '1y': return addDays(365)
-      case 'custom': return customDate ? new Date(customDate + 'T23:59:59').toISOString() : undefined
+      case '30d': return addDaysInTZ(30, tenantTZ)
+      case '90d': return addDaysInTZ(90, tenantTZ)
+      case '1y': return addDaysInTZ(365, tenantTZ)
+      case 'custom': return customDate ? endOfDayInTZ(customDate, tenantTZ) : undefined
       default: return undefined
     }
   }
@@ -559,7 +592,12 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
               )}
               {expiryPreset !== 'never' && expiryPreset !== 'custom' && (
                 <p className="text-xs text-muted-foreground mt-2">
-                  Key will expire on {new Date(getExpiresAt()!).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                  Key will expire on {formatInTimeZone(new Date(getExpiresAt()!), tenantTZ, "MMMM d, yyyy 'at' h:mm a (zzz)")}
+                </p>
+              )}
+              {expiryPreset === 'custom' && customDate && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Key will expire on {formatInTimeZone(new Date(getExpiresAt()!), tenantTZ, "MMMM d, yyyy 'at' h:mm a (zzz)")}
                 </p>
               )}
               {customDateError && <p className="text-destructive text-sm mt-2">{customDateError}</p>}
