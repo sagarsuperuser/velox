@@ -1683,16 +1683,23 @@ export function formatCents(cents: number, currency?: string): string {
   return `${sign}${symbol}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`
 }
 
-export function formatDate(iso: string): string {
+// formatDate / formatDateTime — by default render in the browser's
+// local timezone (current behavior, unchanged for existing callers).
+// Pass `timezone` to render in a specific IANA TZ — e.g. tenant TZ
+// for date-grade values like API key expiry, where the wall-clock
+// the operator picked should round-trip to display unchanged.
+export function formatDate(iso: string, timezone?: string): string {
   return new Date(iso).toLocaleDateString('en-US', {
     year: 'numeric', month: 'short', day: 'numeric',
+    ...(timezone ? { timeZone: timezone } : {}),
   })
 }
 
-export function formatDateTime(iso: string): string {
+export function formatDateTime(iso: string, timezone?: string): string {
   return new Date(iso).toLocaleString('en-US', {
     year: 'numeric', month: 'short', day: 'numeric',
     hour: 'numeric', minute: '2-digit',
+    ...(timezone ? { timeZone: timezone, timeZoneName: 'short' } : {}),
   })
 }
 
