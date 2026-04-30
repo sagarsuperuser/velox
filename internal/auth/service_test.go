@@ -63,17 +63,41 @@ func (m *memStore) GetByPrefix(_ context.Context, prefix string) (domain.APIKey,
 	return domain.APIKey{}, errs.ErrNotFound
 }
 
+// Revoke mirrors PostgresStore.Revoke's safeguard: refuse if revoking
+// would leave the tenant with zero active secret/platform keys. Keeps
+// the unit-test contract aligned with the real store.
 func (m *memStore) Revoke(_ context.Context, tenantID, id string) (domain.APIKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	k, ok := m.keys[id]
-	if !ok || k.TenantID != tenantID {
+	target, ok := m.keys[id]
+	if !ok || target.TenantID != tenantID || target.RevokedAt != nil {
 		return domain.APIKey{}, errs.ErrNotFound
 	}
+	if target.KeyType == "secret" || target.KeyType == "platform" {
+		remaining := 0
+		for _, k := range m.keys {
+			if k.TenantID != tenantID || k.ID == id {
+				continue
+			}
+			if k.RevokedAt != nil {
+				continue
+			}
+			if k.ExpiresAt != nil && k.ExpiresAt.Before(time.Now().UTC()) {
+				continue
+			}
+			if k.KeyType == "secret" || k.KeyType == "platform" {
+				remaining++
+			}
+		}
+		if remaining == 0 {
+			return domain.APIKey{}, errs.InvalidState(
+				"cannot revoke the last active secret/platform key — create another first")
+		}
+	}
 	now := time.Now().UTC()
-	k.RevokedAt = &now
-	m.keys[id] = k
-	return k, nil
+	target.RevokedAt = &now
+	m.keys[id] = target
+	return target, nil
 }
 
 func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.APIKey, error) {
@@ -288,8 +312,14 @@ func TestValidateKey_Revoked(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
 
+	// Create a spare so the last-key safeguard doesn't refuse the revoke.
+	if _, err := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "Spare", KeyType: KeyTypeSecret}); err != nil {
+		t.Fatalf("create spare: %v", err)
+	}
 	result, _ := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "Revokable", KeyType: KeyTypeSecret})
-	_, _ = svc.RevokeKey(ctx, "t1", result.Key.ID)
+	if _, err := svc.RevokeKey(ctx, "t1", result.Key.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
 
 	_, err := svc.ValidateKey(ctx, result.RawKey)
 	if err == nil {
@@ -485,8 +515,14 @@ func TestRotateKey_RejectsAlreadyRevoked(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
 
+	// Spare so the last-key safeguard allows the revoke below.
+	if _, err := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "Spare", KeyType: KeyTypeSecret}); err != nil {
+		t.Fatalf("create spare: %v", err)
+	}
 	result, _ := svc.CreateKey(ctx, "t1", CreateKeyInput{Name: "K", KeyType: KeyTypeSecret})
-	_, _ = svc.RevokeKey(ctx, "t1", result.Key.ID)
+	if _, err := svc.RevokeKey(ctx, "t1", result.Key.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
 
 	_, err := svc.RotateKey(ctx, "t1", result.Key.ID, RotateKeyInput{})
 	if err == nil {
@@ -531,5 +567,199 @@ func TestRotateKey_PreservesTestmode(t *testing.T) {
 	}
 	if !strings.HasPrefix(rotated.RawKey, "vlx_secret_test_") {
 		t.Errorf("test-mode raw key prefix expected, got %q...", rotated.RawKey[:20])
+	}
+}
+
+// recordingSessionRevoker captures fan-out calls so tests can assert
+// that auth.Service correctly invokes session-revocation after a key
+// revoke and during rotate-with-grace=0.
+type recordingSessionRevoker struct {
+	mu    sync.Mutex
+	calls []string
+	err   error
+}
+
+func (r *recordingSessionRevoker) RevokeAllForKey(_ context.Context, keyID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, keyID)
+	return r.err
+}
+
+func (r *recordingSessionRevoker) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
+
+func TestRevokeKey_BlockedWhenLastSecret(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+
+	// One active secret, nothing else. Revoke must refuse.
+	created, err := svc.CreateKey(context.Background(), "ten_1",
+		CreateKeyInput{Name: "only", KeyType: KeyTypeSecret})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	_, err = svc.RevokeKey(context.Background(), "ten_1", created.Key.ID)
+	if err == nil {
+		t.Fatalf("expected InvalidState, got nil")
+	}
+	if !strings.Contains(err.Error(), "last active secret/platform key") {
+		t.Errorf("error should mention last-key safeguard, got: %v", err)
+	}
+}
+
+func TestRevokeKey_BlockedWhenLastPlatform(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+
+	created, err := svc.CreateKey(context.Background(), "ten_1",
+		CreateKeyInput{Name: "only-platform", KeyType: KeyTypePlatform})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if _, err := svc.RevokeKey(context.Background(), "ten_1", created.Key.ID); err == nil {
+		t.Fatalf("expected InvalidState for last platform key, got nil")
+	}
+}
+
+func TestRevokeKey_AllowLastPublishable(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+
+	// Tenant has a secret + a publishable. Revoking the publishable
+	// must succeed because publishables don't count toward the
+	// safeguard (they can't manage keys).
+	if _, err := svc.CreateKey(context.Background(), "ten_1",
+		CreateKeyInput{Name: "secret", KeyType: KeyTypeSecret}); err != nil {
+		t.Fatalf("create secret: %v", err)
+	}
+	pub, err := svc.CreateKey(context.Background(), "ten_1",
+		CreateKeyInput{Name: "publishable", KeyType: KeyTypePublishable})
+	if err != nil {
+		t.Fatalf("create publishable: %v", err)
+	}
+
+	if _, err := svc.RevokeKey(context.Background(), "ten_1", pub.Key.ID); err != nil {
+		t.Fatalf("revoking last publishable should succeed, got: %v", err)
+	}
+}
+
+func TestRevokeKey_AllowWhenOthersExist(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+
+	first, err := svc.CreateKey(context.Background(), "ten_1",
+		CreateKeyInput{Name: "first", KeyType: KeyTypeSecret})
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	if _, err := svc.CreateKey(context.Background(), "ten_1",
+		CreateKeyInput{Name: "second", KeyType: KeyTypeSecret}); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+
+	if _, err := svc.RevokeKey(context.Background(), "ten_1", first.Key.ID); err != nil {
+		t.Fatalf("revoke with another active secret should succeed, got: %v", err)
+	}
+}
+
+func TestRevokeKey_FanOutCalled(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	rev := &recordingSessionRevoker{}
+	svc.SetSessionRevoker(rev)
+
+	// Need ≥2 secrets so the safeguard doesn't refuse.
+	first, err := svc.CreateKey(context.Background(), "ten_1",
+		CreateKeyInput{Name: "first", KeyType: KeyTypeSecret})
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	if _, err := svc.CreateKey(context.Background(), "ten_1",
+		CreateKeyInput{Name: "second", KeyType: KeyTypeSecret}); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+
+	if _, err := svc.RevokeKey(context.Background(), "ten_1", first.Key.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	if got := rev.callCount(); got != 1 {
+		t.Errorf("expected exactly one fan-out call, got %d", got)
+	}
+	if rev.calls[0] != first.Key.ID {
+		t.Errorf("fan-out called with %q, want %q", rev.calls[0], first.Key.ID)
+	}
+}
+
+func TestRevokeKey_FanOutNotCalledOnFailedRevoke(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	rev := &recordingSessionRevoker{}
+	svc.SetSessionRevoker(rev)
+
+	// Revoking the only secret returns an error; fan-out must NOT
+	// fire (auth state didn't change, sessions should remain).
+	created, err := svc.CreateKey(context.Background(), "ten_1",
+		CreateKeyInput{Name: "only", KeyType: KeyTypeSecret})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.RevokeKey(context.Background(), "ten_1", created.Key.ID); err == nil {
+		t.Fatal("expected last-key safeguard to refuse")
+	}
+
+	if got := rev.callCount(); got != 0 {
+		t.Errorf("fan-out should not fire on refused revoke, got %d calls", got)
+	}
+}
+
+func TestRotateKey_FanOutOnImmediateCutoverOnly(t *testing.T) {
+	// Grace=0 should fan out; grace>0 should not (old key still
+	// valid through the grace window, sessions tied to it stay live).
+	for _, tc := range []struct {
+		name     string
+		grace    int64
+		wantCall bool
+	}{
+		{"grace=0 fans out", 0, true},
+		{"grace=300 does not fan out", 300, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemStore()
+			svc := NewService(store)
+			rev := &recordingSessionRevoker{}
+			svc.SetSessionRevoker(rev)
+
+			// Two secrets so the immediate-cutover path passes the
+			// safeguard when calling Store.Revoke under the hood.
+			created, err := svc.CreateKey(context.Background(), "ten_1",
+				CreateKeyInput{Name: "rotating", KeyType: KeyTypeSecret})
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if _, err := svc.CreateKey(context.Background(), "ten_1",
+				CreateKeyInput{Name: "spare", KeyType: KeyTypeSecret}); err != nil {
+				t.Fatalf("create spare: %v", err)
+			}
+
+			if _, err := svc.RotateKey(context.Background(), "ten_1", created.Key.ID,
+				RotateKeyInput{ExpiresInSeconds: tc.grace}); err != nil {
+				t.Fatalf("rotate: %v", err)
+			}
+
+			got := rev.callCount()
+			if tc.wantCall && got != 1 {
+				t.Errorf("expected fan-out, got %d calls", got)
+			}
+			if !tc.wantCall && got != 0 {
+				t.Errorf("expected no fan-out, got %d calls", got)
+			}
+		})
 	}
 }

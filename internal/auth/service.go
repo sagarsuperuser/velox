@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -20,12 +21,33 @@ const (
 	keySecretLen = 32 // random bytes = 64 hex chars
 )
 
+// SessionRevoker is the narrow surface auth uses to mass-invalidate
+// dashboard cookie sessions when an API key is revoked. Satisfied by
+// session.Service in production. Lives here so auth doesn't import
+// the session package; router.go injects the concrete impl at
+// assembly time.
+type SessionRevoker interface {
+	RevokeAllForKey(ctx context.Context, keyID string) error
+}
+
 type Service struct {
-	store Store
+	store          Store
+	sessionRevoker SessionRevoker
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
+}
+
+// SetSessionRevoker wires the cookie-session invalidator. After an
+// API key is revoked (directly or via rotate-with-grace=0), this
+// fans out to revoke every dashboard cookie tied to that key so
+// the cookie path stops working alongside the Bearer path.
+//
+// Optional: nil revoker means cookies stay valid until their TTL,
+// which is acceptable in tests and tooling that don't run sessions.
+func (s *Service) SetSessionRevoker(r SessionRevoker) {
+	s.sessionRevoker = r
 }
 
 // CreateKeyResult contains the key record + raw key (shown once).
@@ -178,7 +200,27 @@ func (s *Service) ValidateKey(ctx context.Context, rawKey string) (domain.APIKey
 }
 
 func (s *Service) RevokeKey(ctx context.Context, tenantID, id string) (domain.APIKey, error) {
-	return s.store.Revoke(ctx, tenantID, id)
+	key, err := s.store.Revoke(ctx, tenantID, id)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	s.fanOutSessionRevoke(ctx, id)
+	return key, nil
+}
+
+// fanOutSessionRevoke best-effort revokes every dashboard cookie
+// session tied to the given key. The auth tx has already committed
+// — Bearer auth is dead — so a session-revoke failure isn't fatal,
+// just leaves a brief window where pre-existing cookies still work.
+// Logged but not surfaced to the caller.
+func (s *Service) fanOutSessionRevoke(ctx context.Context, keyID string) {
+	if s.sessionRevoker == nil {
+		return
+	}
+	if err := s.sessionRevoker.RevokeAllForKey(ctx, keyID); err != nil {
+		slog.WarnContext(ctx, "auth: session revoke fan-out failed",
+			"key_id", keyID, "error", err)
+	}
 }
 
 // MaxRotationGraceSeconds caps how long a caller can keep the old key alive
@@ -271,6 +313,16 @@ func (s *Service) RotateKey(ctx context.Context, tenantID, id string, input Rota
 		// stays valid until its retry succeeds. A garbage-collection job can
 		// eventually reap the unused new key if the caller never retries.
 		return RotateKeyResult{}, fmt.Errorf("retire old key (replacement %s was created and must be cleaned up if retry fails): %w", created.Key.ID, err)
+	}
+
+	// Fan out cookie-session revocation only on immediate cutover.
+	// Grace-window rotations leave the old key valid for the grace
+	// period; sessions tied to it should keep working through that
+	// window. (Sessions surviving past the underlying key's expires_at
+	// is a separate gap — session.Service.Resolve doesn't re-check the
+	// key's expires_at — out of scope for this commit.)
+	if input.ExpiresInSeconds == 0 {
+		s.fanOutSessionRevoke(ctx, id)
 	}
 
 	return RotateKeyResult{

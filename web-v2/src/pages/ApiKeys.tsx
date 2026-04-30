@@ -5,6 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, formatRelativeTime, type ApiKeyInfo } from '@/lib/api'
+import { useAuth } from '@/contexts/AuthContext'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Layout } from '@/components/Layout'
@@ -82,9 +83,13 @@ export default function ApiKeysPage() {
   const [showExpired, setShowExpired] = useState(false)
   const queryClient = useQueryClient()
 
-  let currentKeyPrefix = ''
-  try { currentKeyPrefix = localStorage.getItem('velox_api_key')?.slice(0, 20) || '' }
-  catch { /* Private browsing mode */ }
+  // Current-session key id comes from /v1/whoami via AuthContext.
+  // Pre-ADR-008 this read from localStorage, but the credential is now
+  // an httpOnly cookie — JS can't see it. The whoami round-trip is
+  // already in flight at app boot (AuthContext.refreshUser), so this
+  // value is populated by the time the page renders.
+  const { user } = useAuth()
+  const currentKeyId = user?.key_id ?? ''
 
   const { data: keysData, isLoading: loading, error: loadError, refetch } = useQuery({
     queryKey: ['api-keys'],
@@ -109,6 +114,20 @@ export default function ApiKeysPage() {
   const activeKeys = keys.filter(k => !k.revoked_at && !isExpired(k))
   const expiredKeys = keys.filter(k => !k.revoked_at && isExpired(k))
   const revokedKeys = keys.filter(k => !!k.revoked_at)
+
+  // Last-active-secret-or-platform safeguard (mirrors the server-side
+  // rule in auth.Store.Revoke). If revoking a secret/platform key
+  // would leave zero such keys, the tenant is locked out: can't sign
+  // in, can't create new keys. Disable the Revoke button on the row;
+  // server still enforces the rule as defense-in-depth.
+  const otherActiveSecretOrPlatform = (target: ApiKeyInfo) =>
+    activeKeys.filter(
+      k => k.id !== target.id && (k.key_type === 'secret' || k.key_type === 'platform'),
+    ).length
+
+  const wouldOrphanTenant = (k: ApiKeyInfo) =>
+    (k.key_type === 'secret' || k.key_type === 'platform') &&
+    otherActiveSecretOrPlatform(k) === 0
 
   return (
     <Layout>
@@ -154,7 +173,13 @@ export default function ApiKeysPage() {
           {/* Active keys */}
           <div className="mt-6 space-y-3">
             {activeKeys.map(k => {
-              const isCurrent = currentKeyPrefix && k.key_prefix && currentKeyPrefix.startsWith(k.key_prefix)
+              const isCurrent = !!currentKeyId && k.id === currentKeyId
+              const orphan = wouldOrphanTenant(k)
+              const disabledReason = isCurrent
+                ? 'Cannot revoke the API key your dashboard session uses — sign out and sign back in with another key first.'
+                : orphan
+                  ? 'Cannot revoke the only active secret/platform key — create another first.'
+                  : ''
               return (
                 <Card key={k.id} className={cn(isCurrent && 'ring-2 ring-primary/20')}>
                   <CardContent className="px-6 py-4">
@@ -199,14 +224,25 @@ export default function ApiKeysPage() {
                           </p>
                         </div>
                       </div>
-                      <Button variant="outline" size="sm"
-                        className="shrink-0 text-destructive hover:text-destructive"
-                        onClick={() => {
-                          setIsRevokingSelf(!!isCurrent)
-                          setRevokeTarget(k)
-                        }}>
-                        Revoke
-                      </Button>
+                      {/* Wrap in span so title attribute fires even when
+                          the button is disabled (Button uses
+                          disabled:pointer-events-none, so hover events
+                          fall through to the wrapper). cursor-not-allowed
+                          on the span is what the user actually sees. */}
+                      <span
+                        title={disabledReason}
+                        className={cn('shrink-0', (isCurrent || orphan) && 'cursor-not-allowed')}
+                      >
+                        <Button variant="outline" size="sm"
+                          className="text-destructive hover:text-destructive"
+                          disabled={isCurrent || orphan}
+                          onClick={() => {
+                            setIsRevokingSelf(!!isCurrent)
+                            setRevokeTarget(k)
+                          }}>
+                          Revoke
+                        </Button>
+                      </span>
                     </div>
                   </CardContent>
                 </Card>
