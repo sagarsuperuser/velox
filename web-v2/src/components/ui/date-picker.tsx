@@ -4,6 +4,7 @@ import { DayPicker } from 'react-day-picker'
 import { Calendar, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 interface DatePickerProps {
   value: string                    // ISO date string (yyyy-mm-dd) or ''
@@ -137,32 +138,44 @@ export function DatePicker({ value, onChange, placeholder = 'Pick a date', class
               ? new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate())
               : null
             const todayBlocked = !!minStart && todayStart < minStart
-            const tooltip = todayBlocked
-              ? `Today is below the minimum allowed date (${format(minStart!, 'MMM d, yyyy')}).`
-              : ''
+            const todayBtn = (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-xs"
+                disabled={todayBlocked}
+                onClick={() => { onChange(format(new Date(), 'yyyy-MM-dd')); setOpen(false); }}
+              >
+                Today
+              </Button>
+            )
             return (
               <div className="border-t border-border mt-2 pt-2 flex justify-center">
-                {/* Wrap in span so the disabled-state tooltip fires —
-                    Button uses disabled:pointer-events-none which
-                    suppresses the native title attribute. cursor-not-
-                    allowed on the span signals the disabled state on
-                    hover. Same pattern as ApiKeys.tsx's Revoke
-                    button. */}
-                <span
-                  title={tooltip}
-                  className={cn(todayBlocked && 'cursor-not-allowed')}
-                >
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="text-xs"
-                    disabled={todayBlocked}
-                    onClick={() => { onChange(format(new Date(), 'yyyy-MM-dd')); setOpen(false); }}
-                  >
-                    Today
-                  </Button>
-                </span>
+                {todayBlocked ? (
+                  // Tooltip-component path for the disabled state. The
+                  // native `title` attribute is unreliable on disabled
+                  // buttons because Button has disabled:pointer-events-
+                  // none, which interferes with browser hit-testing of
+                  // the wrapping span across browsers/scroll positions.
+                  // The shadcn Tooltip primitive registers focus/pointer
+                  // listeners on the trigger itself and renders the
+                  // popup via Portal, so it fires reliably. Wrapping
+                  // span gives the trigger a focusable target since
+                  // disabled buttons don't receive focus events.
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-block cursor-not-allowed">
+                        {todayBtn}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Today is below the minimum allowed date ({format(minStart!, 'MMM d, yyyy')}).
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  todayBtn
+                )}
               </div>
             )
           })()}
