@@ -137,18 +137,32 @@ export function DatePicker({ value, onChange, placeholder = 'Pick a date', class
               ? new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate())
               : null
             const todayBlocked = !!minStart && todayStart < minStart
+            const tooltip = todayBlocked
+              ? `Today is below the minimum allowed date (${format(minStart!, 'MMM d, yyyy')}).`
+              : ''
             return (
               <div className="border-t border-border mt-2 pt-2 flex justify-center">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs"
-                  disabled={todayBlocked}
-                  onClick={() => { onChange(format(new Date(), 'yyyy-MM-dd')); setOpen(false); }}
+                {/* Wrap in span so the disabled-state tooltip fires —
+                    Button uses disabled:pointer-events-none which
+                    suppresses the native title attribute. cursor-not-
+                    allowed on the span signals the disabled state on
+                    hover. Same pattern as ApiKeys.tsx's Revoke
+                    button. */}
+                <span
+                  title={tooltip}
+                  className={cn(todayBlocked && 'cursor-not-allowed')}
                 >
-                  Today
-                </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs"
+                    disabled={todayBlocked}
+                    onClick={() => { onChange(format(new Date(), 'yyyy-MM-dd')); setOpen(false); }}
+                  >
+                    Today
+                  </Button>
+                </span>
               </div>
             )
           })()}

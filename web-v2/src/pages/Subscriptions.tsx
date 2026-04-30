@@ -590,17 +590,24 @@ export default function SubscriptionsPage() {
                           </FormItem>
                         )}
                       />
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        className="h-9 px-2 text-muted-foreground hover:text-destructive"
-                        onClick={() => itemsArray.remove(idx)}
-                        disabled={itemsArray.fields.length <= 1}
-                        title={itemsArray.fields.length <= 1 ? 'At least one item required' : 'Remove'}
+                      {/* Wrap in span so the tooltip fires when
+                          disabled — disabled:pointer-events-none on
+                          the Button suppresses the native title. */}
+                      <span
+                        title={itemsArray.fields.length <= 1 ? 'A subscription requires at least one item.' : 'Remove'}
+                        className={cn(itemsArray.fields.length <= 1 && 'cursor-not-allowed')}
                       >
-                        <Trash2 size={14} />
-                      </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-9 px-2 text-muted-foreground hover:text-destructive"
+                          onClick={() => itemsArray.remove(idx)}
+                          disabled={itemsArray.fields.length <= 1}
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </span>
                     </div>
                   ))}
                 </div>
