@@ -81,15 +81,6 @@ export default function CustomerDetailPage() {
   const [showAssignCoupon, setShowAssignCoupon] = useState(false)
   const [showNewInvoice, setShowNewInvoice] = useState(false)
   const [settingUpPayment, setSettingUpPayment] = useState(false)
-  // Embed-token dialog state. embedURL is empty until the operator clicks
-  // "Embed dashboard" — we don't pre-mint on page load because every
-  // rotate invalidates the prior URL, and silent backgound minting would
-  // break a previously-pasted iframe each time the operator viewed the
-  // customer.
-  const [showEmbedDialog, setShowEmbedDialog] = useState(false)
-  const [embedURL, setEmbedURL] = useState('')
-  const [embedMinting, setEmbedMinting] = useState(false)
-
   const { data: customer, isLoading, error: loadError, refetch } = useQuery({
     queryKey: ['customer', id],
     queryFn: () => api.getCustomer(id!),
@@ -195,38 +186,6 @@ export default function CustomerDetailPage() {
       showApiError(err, 'Failed to set up payment')
     } finally {
       setSettingUpPayment(false)
-    }
-  }
-
-  // Mint (or re-mint) the embed token. Every call invalidates the prior
-  // URL on the server side per PR #59 — surface that fact in the dialog
-  // so an operator who clicks "Regenerate" knows the link they pasted
-  // five minutes ago has stopped working.
-  const handleMintEmbedURL = async () => {
-    if (!id) return
-    setEmbedMinting(true)
-    try {
-      const res = await api.rotateCostDashboardToken(id)
-      // Prefer the server-supplied public_url so the token is rendered
-      // against whatever public hostname the deployment expects (Velox
-      // SaaS vs. self-host on a different origin). Fallback to a
-      // dashboard-origin URL if the server omits it for any reason.
-      setEmbedURL(res.public_url || `${window.location.origin}/public/cost-dashboard/${res.token}`)
-      setShowEmbedDialog(true)
-    } catch (err) {
-      showApiError(err, 'Failed to mint embed link')
-    } finally {
-      setEmbedMinting(false)
-    }
-  }
-
-  const handleCopyEmbedURL = async () => {
-    if (!embedURL) return
-    try {
-      await navigator.clipboard.writeText(embedURL)
-      toast.success('Embed link copied to clipboard')
-    } catch {
-      toast.error('Failed to copy — you can select the URL manually')
     }
   }
 
@@ -671,18 +630,6 @@ export default function CustomerDetailPage() {
           Component is self-contained so the same surface drops into a future
           public iframe-able route once token-based access lands. */}
       <div className="mt-6">
-        <div className="flex items-center justify-end mb-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleMintEmbedURL}
-            disabled={embedMinting || isArchived}
-            title="Mint a public, iframe-able URL for this customer's cost dashboard"
-          >
-            <Code2 size={14} className="mr-1.5" />
-            {embedMinting ? 'Minting…' : 'Embed dashboard'}
-          </Button>
-        </div>
         <CostDashboard customerId={id!} />
       </div>
 
@@ -912,61 +859,6 @@ export default function CustomerDetailPage() {
         />
       )}
 
-      {/* Embed-dashboard URL dialog — surfaces the just-minted public URL
-          plus a Regenerate action that re-mints (and invalidates the
-          previous URL on the server). Mirrors the rotate-public-token
-          pattern on the invoice detail page. */}
-      <Dialog open={showEmbedDialog} onOpenChange={(open) => setShowEmbedDialog(open)}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Embed cost dashboard</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              Share this URL with your customer or paste it into an iframe in your own app.
-              Anyone with the URL can view the dashboard — there is no login.
-            </p>
-            <div className="space-y-1.5">
-              <Label htmlFor="embed-url" className="text-xs uppercase tracking-wide text-muted-foreground">
-                Public URL
-              </Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  id="embed-url"
-                  value={embedURL}
-                  readOnly
-                  className="font-mono text-xs"
-                  onFocus={e => e.currentTarget.select()}
-                />
-                <Button variant="outline" size="sm" onClick={handleCopyEmbedURL}>
-                  Copy
-                </Button>
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Need to revoke a leaked link?{' '}
-              <button
-                type="button"
-                onClick={handleMintEmbedURL}
-                disabled={embedMinting}
-                className="inline-flex items-center gap-1 text-foreground hover:underline disabled:opacity-60"
-              >
-                <RotateCw size={11} aria-hidden="true" />
-                {embedMinting ? 'Regenerating…' : 'Regenerate'}
-              </button>{' '}
-              — this will invalidate the URL above.
-            </p>
-            <p className="text-xs text-muted-foreground">
-              See the{' '}
-              <Link to="/docs/embeds/cost-dashboard" className="underline underline-offset-2 hover:text-foreground" target="_blank">
-                embed guide
-              </Link>{' '}
-              for an iframe snippet and rotation patterns.
-            </p>
-          </div>
-          <DialogFooter showCloseButton />
-        </DialogContent>
-      </Dialog>
     </Layout>
   )
 }

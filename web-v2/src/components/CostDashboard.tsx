@@ -35,12 +35,21 @@ export function CostDashboard({ customerId }: { customerId: string }) {
       try {
         return await api.customerUsage(customerId, presetToParams(preset))
       } catch (err) {
-        // 400 customer_has_no_subscription is the documented "no current cycle"
-        // state — surface it as an empty result, not a hard error. Same pattern
-        // for 404. Real network/auth errors fall through to the error UI.
-        if (err && typeof err === 'object' && 'status' in err) {
+        // The backend's "no current billing cycle" path returns 422
+        // with code=customer_has_no_subscription (errs.Invalid →
+        // ErrValidation → 422 in respond.FromError). Surface it as an
+        // empty result so the dashboard renders the empty-state card
+        // instead of a red error toast — the customer just doesn't
+        // have a subscription with a current cycle yet, which is a
+        // valid state, not a failure. 404 (customer not found) gets
+        // the same treatment because the parent page already 404s in
+        // that case. Real network / auth / unexpected-422 errors with
+        // other codes still fall through to the error UI.
+        if (err && typeof err === 'object' && 'status' in err && 'code' in err) {
           const s = (err as { status: number }).status
-          if (s === 400 || s === 404) return null
+          const c = (err as { code?: string }).code
+          if (s === 404) return null
+          if (s === 422 && c === 'customer_has_no_subscription') return null
         }
         throw err
       }
