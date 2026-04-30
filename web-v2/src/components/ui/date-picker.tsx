@@ -123,17 +123,35 @@ export function DatePicker({ value, onChange, placeholder = 'Pick a date', class
             .velox-cal .rdp-weekdays { display:flex; }
             .velox-cal .rdp-week { display:flex; }
           `}</style>
-          <div className="border-t border-border mt-2 pt-2 flex justify-center">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="text-xs"
-              onClick={() => { onChange(format(new Date(), 'yyyy-MM-dd')); setOpen(false); }}
-            >
-              Today
-            </Button>
-          </div>
+          {/* Quick-select Today shortcut. Honour minDate by greying
+              out the button when today < minDate — the day-grid above
+              already disables today's cell, but this footer button
+              has its own click handler and would otherwise bypass the
+              constraint. Compare at start-of-day on both sides so a
+              minDate passed with a non-zero time still gates today
+              consistently. */}
+          {(() => {
+            const todayStart = new Date()
+            todayStart.setHours(0, 0, 0, 0)
+            const minStart = minDate
+              ? new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate())
+              : null
+            const todayBlocked = !!minStart && todayStart < minStart
+            return (
+              <div className="border-t border-border mt-2 pt-2 flex justify-center">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs"
+                  disabled={todayBlocked}
+                  onClick={() => { onChange(format(new Date(), 'yyyy-MM-dd')); setOpen(false); }}
+                >
+                  Today
+                </Button>
+              </div>
+            )
+          })()}
         </div>
       )}
     </div>
