@@ -112,15 +112,14 @@ Stating these loudly so the wrong customers self-select out:
 ```bash
 git clone https://github.com/sagarsuperuser/velox.git && cd velox
 
-# Backend — Postgres + bootstrap demo tenant, dashboard owner, and API keys
+# Backend — Postgres + bootstrap demo tenant + paired test/live API keys
 docker compose up -d postgres
-VELOX_OWNER_EMAIL=you@example.com VELOX_OWNER_PASSWORD=change-me-please \
-  make bootstrap       # prints tenant id + secret/publishable API keys
+make bootstrap       # prints tenant id + secret-test, secret-live, publishable-test keys
 make dev             # API on :8080
 
 # Operator dashboard (separate terminal)
 cd web-v2 && npm install && npm run dev
-# → http://localhost:5173 — sign in with the email + password you set above
+# → http://localhost:5173 — paste the Secret Test key into the Sign In screen
 ```
 
 End-to-end demo (creates a customer, ingests usage, runs billing, generates a PDF invoice):

@@ -114,8 +114,8 @@ signs out. Run this before every merge to main and as a nightly canary.
 - [ ] Frontend at http://localhost:5173 loads (white page is fine — not signed in yet)
 
 ### S1.2 Bootstrap + sign in
-- [ ] `make bootstrap` if no tenants exist — copy the printed Secret API key (`vlx_secret_test_…`)
-- [ ] Sign in via UI at `/login` by pasting the Secret API key
+- [ ] `make bootstrap` if no tenants exist — bootstrap prints a paired Secret Test key (`vlx_secret_test_…`) and Secret Live key (`vlx_secret_live_…`) plus a Publishable test key. Copy the Secret Test key for the smoke flow.
+- [ ] Sign in via UI at `/login` by pasting the Secret Test key
 - [ ] Verify: redirected to dashboard
 - [ ] Verify: DevTools → Cookies → `velox_session` set with `HttpOnly: ✓`
 - [ ] Verify: `localStorage` does NOT contain the API key (credential is in the httpOnly cookie, not in JS-readable storage)
@@ -173,7 +173,7 @@ See ADR-007 (revert) and ADR-008 (cookie refinement).
 
 ## FLOW A1: Dashboard sign-in (paste key → httpOnly cookie)
 
-- [ ] `make bootstrap` prints a `vlx_secret_test_…` key. Copy it.
+- [ ] `make bootstrap` prints THREE keys: a `vlx_secret_test_…`, a `vlx_secret_live_…`, and a `vlx_pub_test_…` publishable. Copy the secret in the mode you want to operate in (test for eval; live to charge real cards).
 - [ ] `make dev` starts the API on `:8080`. `cd web-v2 && npm run dev` starts the dashboard on `:5173`.
 - [ ] Visit `http://localhost:5173`. Login screen shows a single "Secret API key" field.
 - [ ] Paste a non-vlx string → inline error `That doesn't look like a Velox key — it should start with vlx_`. No request fired.
