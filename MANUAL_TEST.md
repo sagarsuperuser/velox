@@ -75,6 +75,28 @@ Open http://localhost:5173 and paste the Secret API key printed by bootstrap int
 the Sign In screen. Same key authenticates the API and the dashboard — there are
 no user accounts in v1 (see ADR-007 / FLOW A1).
 
+### Shell setup for curl examples
+
+Every curl example below assumes `$API` and `$KEY` are exported. Set them once
+per terminal session:
+
+```bash
+export API=http://localhost:8080
+export KEY=vlx_secret_test_…    # paste your secret-test key from bootstrap output
+```
+
+**Quoting rule:** shell variables don't expand inside single quotes, so
+`-d '{"api_key": $KEY }'` ships the literal string `$KEY` and the API rejects
+it as invalid JSON. Use **double-quoted JSON with backslash-escaped quotes**
+when the body references a shell var:
+
+```bash
+-d "{\"api_key\":\"$KEY\"}"
+```
+
+For bodies that don't reference any shell var, single quotes are fine and
+cleaner: `-d '{"api_key":"vlx_secret_test_..."}'`.
+
 ### Useful commands
 
 | Command | What it does |
@@ -138,9 +160,11 @@ signs out. Run this before every merge to main and as a nightly canary.
 - [ ] **Mint a test clock** so we don't have to wait 30 days for the cycle to end.
   `internal/testclock/` is locked to test-mode by DB constraint, so it's safe.
   ```bash
-  KEY=vlx_secret_test_…
-  API=http://localhost:8080
-  curl -sS -X POST "$API/v1/test-clocks" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d "{\"name\":\"smoke\",\"frozen_time\":\"$(date -u +%FT%TZ)\"}" | jq .
+  # Assumes $API and $KEY exported per "Shell setup for curl examples" above.
+  curl -sS -X POST "$API/v1/test-clocks" \
+    -H "Authorization: Bearer $KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"name\":\"smoke\",\"frozen_time\":\"$(date -u +%FT%TZ)\"}" | jq .
   # → {"id":"vlx_clk_…","frozen_time":"…","status":"ready"}
   ```
 - [ ] Customer detail → New Subscription → Starter plan, calendar billing, start today.
@@ -166,15 +190,19 @@ test clock past the cycle end so the engine has something to do.
 - [ ] Advance the test clock past `current_billing_period_end` (31 days
   forward covers a 30-day calendar cycle):
   ```bash
-  CLK=vlx_clk_…   # from S1.4 above
-  # macOS:
-  curl -sS -X POST "$API/v1/test-clocks/$CLK/advance" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d "{\"frozen_time\":\"$(date -u -v+31d +%FT%TZ)\"}" | jq .
-  # Linux:
-  # curl ... -d "{\"frozen_time\":\"$(date -u -d '+31 days' +%FT%TZ)\"}"
+  export CLK=vlx_clk_…   # from S1.4 above
+  # macOS (uses BSD date's -v):
+  curl -sS -X POST "$API/v1/test-clocks/$CLK/advance" \
+    -H "Authorization: Bearer $KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"frozen_time\":\"$(date -u -v+31d +%FT%TZ)\"}" | jq .
+  # Linux (uses GNU date's -d):
+  #   -d "{\"frozen_time\":\"$(date -u -d '+31 days' +%FT%TZ)\"}"
   ```
 - [ ] Trigger billing via API (no UI button on the dashboard):
   ```bash
-  curl -sS -X POST "$API/v1/billing/run" -H "Authorization: Bearer $KEY" | jq .
+  curl -sS -X POST "$API/v1/billing/run" \
+    -H "Authorization: Bearer $KEY" | jq .
   # → {"invoices_generated":1, "errors":[]}
   ```
 - [ ] Verify: exactly 1 invoice generated; auto-finalized, `payment_status = succeeded`
@@ -233,10 +261,30 @@ See ADR-007 (revert) and ADR-008 (cookie refinement).
 
 ## FLOW A2: /v1/whoami contract — cookie OR Bearer
 
-- [ ] `curl -i -c /tmp/c.txt -H 'Content-Type: application/json' -d '{"api_key":"<vlx_secret_test_...>"}' http://localhost:8080/v1/auth/exchange` → 200, response body has `{tenant_id, key_id, key_type, livemode, expires_at}`, `Set-Cookie: velox_session=...; HttpOnly` on the response.
-- [ ] `curl -b /tmp/c.txt http://localhost:8080/v1/whoami` → `200 {"tenant_id":"vlx_ten_...","key_id":"vlx_key_...","key_type":"secret","livemode":false}`
-- [ ] `curl -H 'Authorization: Bearer <vlx_secret_test_...>' http://localhost:8080/v1/whoami` → 200 with the same shape (Bearer fallback works for SDK callers).
-- [ ] Without either credential → `401 missing credentials — sign in at /login or send Authorization: Bearer vlx_secret_...`.
+- [ ] **Exchange:** mint a session cookie from $KEY.
+  ```bash
+  curl -i -c /tmp/c.txt \
+    -H "Content-Type: application/json" \
+    -d "{\"api_key\":\"$KEY\"}" \
+    "$API/v1/auth/exchange"
+  ```
+  → 200, body has `{tenant_id, key_id, key_type, livemode, expires_at}`,
+  `Set-Cookie: velox_session=...; HttpOnly` on the response.
+- [ ] **Cookie path** (the dashboard's path):
+  ```bash
+  curl -b /tmp/c.txt "$API/v1/whoami"
+  ```
+  → `200 {"tenant_id":"vlx_ten_...","key_id":"vlx_key_...","key_type":"secret","livemode":false}`
+- [ ] **Bearer path** (SDK / curl callers — bypasses the cookie):
+  ```bash
+  curl -H "Authorization: Bearer $KEY" "$API/v1/whoami"
+  ```
+  → 200 with the same shape.
+- [ ] **No credentials**:
+  ```bash
+  curl "$API/v1/whoami"
+  ```
+  → `401 missing credentials — sign in at /login or send Authorization: Bearer vlx_secret_...`.
 - [ ] Cookie + Bearer on the same request, with **disagreeing** keys → cookie wins (verify by sending a Bearer for a different tenant + a valid cookie; whoami returns the cookie's tenant_id).
 - [ ] Revoke the underlying API key (`UPDATE api_keys SET revoked_at = NOW() WHERE id = '<key_id>'`) → Bearer path 401s `api key revoked` immediately. Existing cookie still works until `dashboard_sessions.revoked_at` is also flipped — the dashboard should call `RevokeAllForKey` on key revocation (operator UI: out of scope for v1).
 - [ ] Publishable key (`vlx_pub_test_…`) on `POST /v1/auth/exchange` → cookie minted; `whoami` returns `key_type:"publishable"`. Most write endpoints will 403, which is correct.
