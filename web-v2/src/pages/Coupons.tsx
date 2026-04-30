@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate } from '@/lib/api'
+import { endOfDayInTZ } from '@/lib/dates'
 import type { Coupon, CouponRedemption } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
@@ -717,7 +718,7 @@ function CreateCouponDialog({ open, onOpenChange, onCreated, initialValues }: {
           ? { percent_off_bp: Math.round(parseFloat(data.discountValue) * 100) }
           : { amount_off: Math.round(parseFloat(data.discountValue) * 100), currency: data.currency }),
         ...(data.maxRedemptions ? { max_redemptions: parseInt(data.maxRedemptions, 10) } : {}),
-        ...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
+        ...(data.expiresAt ? { expires_at: endOfDayInTZ(data.expiresAt) } : {}),
         ...(data.planIds.length > 0 ? { plan_ids: data.planIds } : {}),
         ...(isPrivate && data.customerId ? { customer_id: data.customerId } : {}),
         duration: data.duration,

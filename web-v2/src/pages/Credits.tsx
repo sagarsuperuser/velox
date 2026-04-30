@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol } from '@/lib/api'
+import { endOfDayInTZ } from '@/lib/dates'
 import type { Customer, CreditBalance, CreditLedgerEntry } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
@@ -541,7 +542,7 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
           customer_id: effectiveCustomerId,
           amount_cents: amountCents,
           description,
-          ...(expiresAt ? { expires_at: new Date(expiresAt).toISOString() } : {}),
+          ...(expiresAt ? { expires_at: endOfDayInTZ(expiresAt) } : {}),
         })
       }
     },

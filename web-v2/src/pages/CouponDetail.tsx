@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Coupon, type CouponRedemption, type Plan } from '@/lib/api'
+import { endOfDayInTZ } from '@/lib/dates'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
@@ -789,7 +790,7 @@ function EditCouponDialog({
       return api.updateCoupon(coupon.id, {
         name: data.name.trim(),
         max_redemptions: data.maxRedemptions.trim() ? parseInt(data.maxRedemptions, 10) : null,
-        expires_at: data.expiresAt.trim() ? new Date(data.expiresAt).toISOString() : null,
+        expires_at: data.expiresAt.trim() ? endOfDayInTZ(data.expiresAt) : null,
         restrictions,
       })
     },

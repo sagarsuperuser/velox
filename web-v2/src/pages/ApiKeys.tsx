@@ -4,8 +4,8 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { api, formatDate, formatRelativeTime, type ApiKeyInfo } from '@/lib/api'
+import { addDaysInTZ, endOfDayInTZ, formatExpiryHintInTZ } from '@/lib/dates'
 import { useAuth } from '@/contexts/AuthContext'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
@@ -411,31 +411,9 @@ export default function ApiKeysPage() {
 
 type ExpiryPreset = 'never' | '30d' | '90d' | '1y' | 'custom'
 
-// endOfDayInTZ returns the UTC ISO 8601 timestamp of "yyyy-mm-dd at
-// 23:59:59.999 in tenant timezone tz". Operator picks "May 5",
-// tenant TZ is Asia/Kolkata → 2026-05-05T18:29:59.999Z (May 5 23:59
-// IST). Tenant-TZ-grounded inputs are the long-term convention
-// (Stripe / Auth0); we route every API-key date pick through here
-// so two operators in different physical timezones generate the
-// same expiry for the same picked date.
-function endOfDayInTZ(yyyymmdd: string, tz: string): string {
-  return fromZonedTime(`${yyyymmdd} 23:59:59.999`, tz).toISOString()
-}
-
-// addDaysInTZ rolls forward N days from today's date in tenant TZ
-// and pins it to end-of-day in tenant TZ. The day-arithmetic uses
-// the browser's local Date (constructor-by-y-m-d is TZ-agnostic for
-// day-grade math), then re-grounds in tenant TZ for the final
-// timestamp. Matches the custom-date branch — both produce
-// end-of-day-in-tenant-TZ — so a "30d" preset and a custom-date
-// "30 days from now" land on the same instant.
-function addDaysInTZ(days: number, tz: string): string {
-  const todayStr = formatInTimeZone(new Date(), tz, 'yyyy-MM-dd')
-  const [y, m, d] = todayStr.split('-').map(Number)
-  const target = new Date(y, m - 1, d + days)
-  const targetStr = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, '0')}-${String(target.getDate()).padStart(2, '0')}`
-  return endOfDayInTZ(targetStr, tz)
-}
+// Date-grade helpers (endOfDayInTZ, addDaysInTZ, formatExpiryHintInTZ)
+// live in @/lib/dates so Coupons / Credits / future pickers can reuse
+// the same TZ-grounded arithmetic. See ADR-010.
 
 function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (rawKey: string) => void }) {
   const [keyType, setKeyType] = useState('secret')
@@ -592,12 +570,12 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
               )}
               {expiryPreset !== 'never' && expiryPreset !== 'custom' && (
                 <p className="text-xs text-muted-foreground mt-2">
-                  Key will expire on {formatInTimeZone(new Date(getExpiresAt()!), tenantTZ, "MMMM d, yyyy 'at' h:mm a (zzz)")}
+                  Key will expire on {formatExpiryHintInTZ(getExpiresAt()!, tenantTZ)}
                 </p>
               )}
               {expiryPreset === 'custom' && customDate && (
                 <p className="text-xs text-muted-foreground mt-2">
-                  Key will expire on {formatInTimeZone(new Date(getExpiresAt()!), tenantTZ, "MMMM d, yyyy 'at' h:mm a (zzz)")}
+                  Key will expire on {formatExpiryHintInTZ(getExpiresAt()!, tenantTZ)}
                 </p>
               )}
               {customDateError && <p className="text-destructive text-sm mt-2">{customDateError}</p>}
