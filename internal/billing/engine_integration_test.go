@@ -162,6 +162,10 @@ func (a *invoiceStoreAdapter) ApplyDiscountAtomic(ctx context.Context, tenantID,
 	return a.store.ApplyDiscountAtomic(ctx, tenantID, invoiceID, update, lineItems)
 }
 
+func (a *invoiceStoreAdapter) UpdateTaxAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return a.store.UpdateTaxAtomic(ctx, tenantID, invoiceID, update, lineItems)
+}
+
 // TestFullBillingCycle_E2E tests the complete flow against real Postgres:
 // tenant → customer → meter → rating rule → plan → subscription → usage → billing engine → invoice
 func TestFullBillingCycle_E2E(t *testing.T) {

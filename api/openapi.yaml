@@ -205,6 +205,115 @@ components:
         Pending/failed invoices are blocked from finalize so we never send
         a wrong tax amount.
 
+    AttentionSeverity:
+      type: string
+      enum: [info, warning, critical]
+      description: |
+        Urgency of an Attention surface. Operators sort/filter on this
+        and the dashboard renders one colour per level. Priority
+        descending: Critical > Warning > Info.
+
+    AttentionReason:
+      type: string
+      enum:
+        - tax_calculation_failed
+        - tax_location_required
+        - payment_failed
+        - payment_unconfirmed
+        - overdue
+      description: |
+        Closed, typed code naming why an invoice needs operator
+        attention. Stable public-API contract — codes are never
+        repurposed; deprecations keep the code reserved and add a
+        successor. See `Attention.code` for the open, provider-specific
+        sub-code.
+
+    AttentionAction:
+      type: string
+      enum:
+        - edit_billing_profile
+        - retry_tax
+        - retry_payment
+        - wait_provider
+        - rotate_api_key
+        - reconcile_payment
+        - review_registration
+      description: |
+        Operator's recommended next step. Closed enum because every
+        code maps to a concrete server endpoint or frontend route,
+        and audit logs key off the code.
+
+    AttentionActionItem:
+      type: object
+      required: [code]
+      properties:
+        code:
+          $ref: "#/components/schemas/AttentionAction"
+        label:
+          type: string
+          description: |
+            Default rendering label. UIs are free to substitute
+            localized copy.
+
+    Attention:
+      type: object
+      description: |
+        Unified "this invoice needs operator attention" surface.
+        Computed server-side from durable invoice fields
+        (`tax_status`, `tax_error_code`, `payment_status`,
+        `last_payment_error`, `payment_overdue`). Never persisted —
+        always derived. Omitted entirely when the invoice is healthy
+        (matches Stripe's `last_finalization_error: null` ergonomic).
+        See ADR-009.
+      required: [severity, reason, message]
+      properties:
+        severity:
+          $ref: "#/components/schemas/AttentionSeverity"
+        reason:
+          $ref: "#/components/schemas/AttentionReason"
+        message:
+          type: string
+          description: Human-readable headline copy, safe to render verbatim.
+        actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttentionActionItem"
+          description: |
+            Prescribed next steps. First item is the primary CTA; the
+            rest are secondary.
+        code:
+          type: string
+          description: |
+            Open, dotted, provider-specific code (e.g.
+            `tax.customer_data_invalid`, `payment.declined`,
+            `lifecycle.overdue`). New codes ship without a contract
+            bump. Stripe parity.
+        doc_url:
+          type: string
+          description: |
+            Deep link to operator-facing documentation for this
+            reason. Stripe parity.
+        param:
+          type: string
+          description: |
+            Dotted-path pointer at the entity field the operator must
+            edit to resolve the issue (e.g.
+            `customer.address.postal_code`). Stripe parity. Empty
+            when the resolution isn't field-scoped.
+        detail:
+          type: string
+          description: |
+            Raw provider payload (Stripe Tax JSON envelope, last
+            payment error message). Disclosed in a collapsible
+            section for diagnostic depth.
+        since:
+          type: string
+          format: date-time
+          description: |
+            When the attention condition started — operators triage
+            by age. tax_deferred_at for tax reasons; due_at for
+            overdue; updated_at as a proxy for payment failures.
+
     InvoiceBillingReason:
       type: string
       enum: [subscription_cycle, subscription_create, manual, threshold]
@@ -327,6 +436,16 @@ components:
           type: integer
         tax_pending_reason:
           type: string
+        tax_error_code:
+          type: string
+          description: |
+            Typed taxonomy of `tax_pending_reason`. One of
+            `customer_data_invalid`, `jurisdiction_unsupported`,
+            `provider_outage`, `provider_auth`, `unknown`. Empty for
+            invoices deferred before this column existed (migration
+            0067).
+        attention:
+          $ref: "#/components/schemas/Attention"
         total_amount_cents:
           type: integer
           format: int64
@@ -965,6 +1084,47 @@ paths:
       responses:
         "200":
           description: Invoice finalized
+
+  /v1/invoices/{id}/retry-tax:
+    post:
+      tags: [Invoices]
+      summary: Retry tax calculation on a deferred invoice
+      description: |
+        Re-runs tax calculation against a draft invoice whose
+        `tax_status` is `pending` or `failed`. Backs the operator-
+        facing "Retry tax" action surfaced by the unified
+        `Attention` shape.
+
+        Idempotent: each call increments `tax_retry_count` and
+        rewrites the per-line and invoice-level tax fields. A retry
+        that succeeds clears `tax_pending_reason` / `tax_error_code`
+        and unblocks finalize. A retry that still fails writes the
+        new typed code so the dashboard banner refreshes — operators
+        get an immediate signal of whether their fix worked.
+
+        Returns the updated invoice (carrying the re-derived
+        `attention`) on success or post-retry failure. A retry that
+        is still failing is **not** an HTTP error — the caller
+        renders the new attention.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invoice updated; check `attention` for the new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "404":
+          description: Invoice not found.
+        "409":
+          description: |
+            Invoice is not in a retryable state (status != draft, or
+            tax_status not in pending/failed).
 
   /v1/auth/exchange:
     post:

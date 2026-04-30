@@ -417,6 +417,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// resource while the engine does the coordination.
 	invoiceSvc.SetCouponApplier(engine)
 
+	// Operator-initiated retry-tax routes through the billing engine,
+	// which owns provider resolve → recompute → atomic persist. Backs
+	// the "Retry tax" action surfaced by the unified Attention shape on
+	// invoices in tax_status pending or failed.
+	invoiceSvc.SetTaxRetrier(engine)
+
 	// Credit note issue reverses the invoice's tax_transaction so the
 	// tenant's upstream tax liability is reduced alongside the refund.
 	// Required for EU VAT, UK VAT, India GST compliance — without this

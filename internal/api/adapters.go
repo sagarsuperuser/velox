@@ -73,6 +73,10 @@ func (a *invoiceWriterAdapter) ApplyDiscountAtomic(ctx context.Context, tenantID
 	return a.store.ApplyDiscountAtomic(ctx, tenantID, invoiceID, update, lineItems)
 }
 
+func (a *invoiceWriterAdapter) UpdateTaxAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return a.store.UpdateTaxAtomic(ctx, tenantID, invoiceID, update, lineItems)
+}
+
 // creditGrantAdapter bridges credit.Service → creditnote.CreditGranter.
 type creditGrantAdapter struct {
 	svc *credit.Service

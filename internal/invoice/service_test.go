@@ -284,6 +284,53 @@ func (m *memStore) ApplyDiscountAtomic(_ context.Context, tenantID, invoiceID st
 	return inv, nil
 }
 
+func (m *memStore) UpdateTaxAtomic(_ context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
+	inv, ok := m.invoices[invoiceID]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	if inv.Status != domain.InvoiceDraft {
+		return domain.Invoice{}, errs.InvalidState("not draft")
+	}
+	if inv.TaxStatus != domain.InvoiceTaxPending && inv.TaxStatus != domain.InvoiceTaxFailed {
+		return domain.Invoice{}, errs.InvalidState("tax not retryable")
+	}
+	byID := make(map[string]domain.InvoiceLineItem, len(lineItems))
+	for _, li := range lineItems {
+		byID[li.ID] = li
+	}
+	for i, existing := range m.lineItems[invoiceID] {
+		if updated, ok := byID[existing.ID]; ok {
+			m.lineItems[invoiceID][i].TaxRateBP = updated.TaxRateBP
+			m.lineItems[invoiceID][i].TaxAmountCents = updated.TaxAmountCents
+			m.lineItems[invoiceID][i].TotalAmountCents = updated.TotalAmountCents
+		}
+	}
+	inv.TaxAmountCents = update.TaxAmountCents
+	inv.TaxRateBP = update.TaxRateBP
+	inv.TaxName = update.TaxName
+	inv.TaxCountry = update.TaxCountry
+	inv.TaxID = update.TaxID
+	inv.TaxProvider = update.TaxProvider
+	inv.TaxCalculationID = update.TaxCalculationID
+	inv.TaxReverseCharge = update.TaxReverseCharge
+	inv.TaxExemptReason = update.TaxExemptReason
+	inv.TaxStatus = update.TaxStatus
+	inv.TaxDeferredAt = update.TaxDeferredAt
+	inv.TaxPendingReason = update.TaxPendingReason
+	inv.TaxErrorCode = update.TaxErrorCode
+	inv.TaxRetryCount++
+	inv.TotalAmountCents = update.TotalAmountCents
+	due := inv.TotalAmountCents - inv.AmountPaidCents - inv.CreditsAppliedCents
+	if due < 0 {
+		due = 0
+	}
+	inv.AmountDueCents = due
+	inv.UpdatedAt = time.Now().UTC()
+	m.invoices[invoiceID] = inv
+	return inv, nil
+}
+
 func (m *memStore) CreateWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
 	// Emulate the proration dedup partial unique index. Without this, tests
 	// that exercise retry-after-partial-failure paths silently double-insert

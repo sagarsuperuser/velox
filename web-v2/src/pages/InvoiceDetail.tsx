@@ -5,7 +5,8 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type TenantSettings, type DunningRun, type TimelineEvent } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice } from '@/lib/api'
+import { InvoiceAttention } from '@/components/InvoiceAttention'
 import { useGetInvoice } from '@/lib/gen/queries.gen'
 import type { Invoice } from '@/lib/gen/schemas/invoice'
 import type { InvoiceLineItem as LineItem } from '@/lib/gen/schemas/invoiceLineItem'
@@ -206,6 +207,21 @@ export default function InvoiceDetailPage() {
     onError: err => showApiError(err, 'Failed to rotate public link'),
   })
 
+  const retryTaxMutation = useMutation({
+    mutationFn: () => api.retryInvoiceTax(id!),
+    onSuccess: (updated) => {
+      invalidateAll()
+      if (updated.tax_status === 'ok') {
+        toast.success('Tax recalculated successfully')
+      } else {
+        toast.message('Tax retry attempted', {
+          description: 'Still pending — see the attention card for the latest reason.',
+        })
+      }
+    },
+    onError: err => showApiError(err, 'Failed to retry tax'),
+  })
+
   const acting = finalizeMutation.isPending || voidMutation.isPending || collectMutation.isPending || rotatePublicTokenMutation.isPending
 
   // Build the shareable hosted-invoice URL for clipboard copy. Uses the
@@ -356,9 +372,19 @@ export default function InvoiceDetailPage() {
         </div>
       </div>
 
-      {/* Operator context — surfaces WHY an invoice is stuck (tax deferred,
-          payment failure, dunning in flight, ambiguous Stripe outcome). Only
-          renders for non-terminal states; hidden on draft/paid/voided. */}
+      {/* Unified attention banner — typed reason + prescribed actions
+          for tax/payment/overdue. Computed server-side; renders only
+          when invoice.attention is set (healthy + terminal-state
+          invoices return no attention). See ADR-009. */}
+      <InvoiceAttention
+        invoice={invoice as unknown as ApiInvoice}
+        onRetryTax={() => retryTaxMutation.mutate()}
+        retrying={retryTaxMutation.isPending}
+      />
+
+      {/* Operator context — diagnostic detail (dunning, payment intent
+          ids, attempt counts) below the attention banner. Hidden on
+          terminal states. */}
       {showOperatorContext && (
         <OperatorContextCard
           invoice={invoice}
@@ -870,11 +896,11 @@ export default function InvoiceDetailPage() {
   )
 }
 
-// OperatorContextCard surfaces WHY an invoice is stuck — tax deferral,
-// payment failure, ambiguous Stripe outcome, or active dunning. Modeled on
-// Stripe Dashboard's "Payment activity" diagnostic banner: muted background,
-// info icon, one-line diagnosis, then a definition list of debugging fields.
-// Operator-only by routing — this entire page is behind dashboard auth.
+// OperatorContextCard renders diagnostic supporting detail below the
+// unified InvoiceAttention banner — dunning state, payment intent ids,
+// attempt counts, deferred timestamps. The "why is this stuck" headline
+// and the per-reason actions live in InvoiceAttention; this card is
+// the field-level dl for engineers debugging beyond the banner.
 function OperatorContextCard({
   invoice,
   dunningRun,
@@ -884,33 +910,6 @@ function OperatorContextCard({
   dunningRun?: DunningRun
   timeline: TimelineEvent[]
 }) {
-  // Pick the most informative one-line diagnosis. Order matters: tax
-  // deferral wins because finalize is blocked on it; explicit payment
-  // errors next; ambiguous Stripe outcomes; finally the catch-all.
-  const diagnosis: string = (() => {
-    if (invoice.tax_status === 'pending') {
-      const reason = invoice.tax_pending_reason || 'awaiting Stripe Tax'
-      const retries = invoice.tax_retry_count ?? 0
-      return `Tax calculation deferred — ${reason} (retry ${retries})`
-    }
-    if (invoice.tax_status === 'failed') {
-      return `Tax calculation failed — ${invoice.tax_pending_reason || 'retries exhausted'}; manual intervention required`
-    }
-    if (invoice.last_payment_error) {
-      return `Payment failed: ${invoice.last_payment_error}`
-    }
-    if (invoice.payment_status === 'unknown') {
-      return 'Stripe returned an ambiguous outcome — reconciliation in progress'
-    }
-    if (invoice.status === 'voided') {
-      return 'Marked uncollectible — manual write-off path'
-    }
-    if (invoice.payment_status === 'processing') {
-      return 'Payment in progress — awaiting Stripe confirmation'
-    }
-    return 'Awaiting payment'
-  })()
-
   // attempt_count for this invoice is sourced from the active dunning run
   // when one exists (Velox keeps retry counters there, not on the invoice).
   // The payment timeline gives a payment-attempt count even before dunning
@@ -935,27 +934,15 @@ function OperatorContextCard({
     <Card className="mb-6 border-border bg-muted/30">
       <CardHeader className="flex-row items-center gap-2 space-y-0 pb-3">
         <Info size={16} className="text-muted-foreground" />
-        <CardTitle className="text-sm font-medium">Operator context</CardTitle>
+        <CardTitle className="text-sm font-medium">Diagnostic detail</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-            Why is this invoice pending?
-          </p>
-          <p className="text-foreground">{diagnosis}</p>
-        </div>
-
-        <Separator />
-
         <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2">
           {taxStatusBadge && (
             <>
               <dt className="text-xs text-muted-foreground self-center">Tax status</dt>
-              <dd className="flex items-center gap-2">
+              <dd className="flex items-center gap-2 flex-wrap">
                 {taxStatusBadge}
-                {invoice.tax_pending_reason && (
-                  <span className="text-xs text-muted-foreground">{invoice.tax_pending_reason}</span>
-                )}
               </dd>
             </>
           )}
@@ -1021,6 +1008,7 @@ function OperatorContextCard({
             </>
           )}
         </dl>
+
       </CardContent>
     </Card>
   )

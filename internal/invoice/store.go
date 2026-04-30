@@ -48,6 +48,14 @@ type Store interface {
 	// errs.ErrNotFound when the invoice doesn't exist (caller surfaces 404).
 	ApplyDiscountAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error)
 
+	// UpdateTaxAtomic re-stamps an invoice's tax decision after a manual
+	// retry. Locks the invoice row, gates on tax_status in (pending, failed)
+	// and status='draft', rewrites per-line tax stamps and invoice-level tax
+	// columns, increments tax_retry_count, recomputes total + amount_due.
+	// Returns errs.InvalidState when a gate fails (caller surfaces 409) and
+	// errs.ErrNotFound when the invoice doesn't exist (caller surfaces 404).
+	UpdateTaxAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error)
+
 	// HasSucceededInvoice reports whether the customer has any invoice with
 	// payment_status = 'succeeded'. Backs the coupon first_time_customer_only
 	// restriction — existence-only so the query can use LIMIT 1 instead of

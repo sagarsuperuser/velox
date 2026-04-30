@@ -99,6 +99,21 @@ type Invoice struct {
 	TaxDeferredAt         *time.Time       `json:"tax_deferred_at,omitempty"`
 	TaxRetryCount         int              `json:"tax_retry_count,omitempty"`
 	TaxPendingReason      string           `json:"tax_pending_reason,omitempty"`
+	// TaxErrorCode is the typed classification of TaxPendingReason —
+	// one of customer_data_invalid / jurisdiction_unsupported /
+	// provider_outage / provider_auth / unknown. Lets the operator
+	// UX branch on cause (fix-customer-data vs wait-for-provider) and
+	// lets webhook consumers route alerts. Empty for invoices defered
+	// before this column existed (migration 0067).
+	TaxErrorCode string `json:"tax_error_code,omitempty"`
+	// Attention is the unified "needs operator attention" surface,
+	// computed on read by ClassifyInvoiceAttention. Never persisted —
+	// always derived from the durable fields above (tax_status,
+	// tax_error_code, payment_status, last_payment_error,
+	// payment_overdue) plus due_at. Nil when the invoice is healthy
+	// (terminal-state or no failure mode active). See
+	// docs/adr/009-invoice-attention.md for the wire-shape contract.
+	Attention             *Attention       `json:"attention,omitempty"`
 	TotalAmountCents      int64            `json:"total_amount_cents"`
 	AmountDueCents        int64            `json:"amount_due_cents"`
 	AmountPaidCents       int64            `json:"amount_paid_cents"`
@@ -203,6 +218,33 @@ type InvoiceDiscountUpdate struct {
 	TaxStatus        InvoiceTaxStatus
 	TaxDeferredAt    *time.Time
 	TaxPendingReason string
+	TaxErrorCode     string
+}
+
+// InvoiceTaxRetryUpdate is the snapshot UpdateTaxAtomic writes to a
+// pending or failed invoice when an operator (or the retry worker)
+// triggers a tax recompute. Carries the new tax decision plus the
+// resulting headline totals; per-line tax stamps travel via the
+// lineItems argument.
+//
+// Empty TaxCalculationID + TaxStatus=pending|failed signals the
+// retry itself failed — the row stays blocked from finalize and the
+// dashboard banner picks up the new error code.
+type InvoiceTaxRetryUpdate struct {
+	TaxAmountCents   int64
+	TaxRateBP        int64
+	TaxName          string
+	TaxCountry       string
+	TaxID            string
+	TaxProvider      string
+	TaxCalculationID string
+	TaxReverseCharge bool
+	TaxExemptReason  string
+	TaxStatus        InvoiceTaxStatus
+	TaxDeferredAt    *time.Time
+	TaxPendingReason string
+	TaxErrorCode     string
+	TotalAmountCents int64
 }
 
 type InvoiceLineItem struct {
