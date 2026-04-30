@@ -64,8 +64,10 @@ func (m *memStore) GetByPrefix(_ context.Context, prefix string) (domain.APIKey,
 }
 
 // Revoke mirrors PostgresStore.Revoke's safeguard: refuse if revoking
-// would leave the tenant with zero active secret/platform keys. Keeps
-// the unit-test contract aligned with the real store.
+// a *currently-active* secret/platform key would leave the tenant
+// with zero such keys. An already-expired key is allowed to be
+// revoked even when no other active secret/platform keys exist —
+// it's already dead, revoking is just cleanup.
 func (m *memStore) Revoke(_ context.Context, tenantID, id string) (domain.APIKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -73,7 +75,9 @@ func (m *memStore) Revoke(_ context.Context, tenantID, id string) (domain.APIKey
 	if !ok || target.TenantID != tenantID || target.RevokedAt != nil {
 		return domain.APIKey{}, errs.ErrNotFound
 	}
-	if target.KeyType == "secret" || target.KeyType == "platform" {
+	now := time.Now().UTC()
+	targetActive := target.ExpiresAt == nil || target.ExpiresAt.After(now)
+	if targetActive && (target.KeyType == "secret" || target.KeyType == "platform") {
 		remaining := 0
 		for _, k := range m.keys {
 			if k.TenantID != tenantID || k.ID == id {
@@ -82,7 +86,7 @@ func (m *memStore) Revoke(_ context.Context, tenantID, id string) (domain.APIKey
 			if k.RevokedAt != nil {
 				continue
 			}
-			if k.ExpiresAt != nil && k.ExpiresAt.Before(time.Now().UTC()) {
+			if k.ExpiresAt != nil && k.ExpiresAt.Before(now) {
 				continue
 			}
 			if k.KeyType == "secret" || k.KeyType == "platform" {
@@ -94,7 +98,6 @@ func (m *memStore) Revoke(_ context.Context, tenantID, id string) (domain.APIKey
 				"cannot revoke the last active secret/platform key — create another first")
 		}
 	}
-	now := time.Now().UTC()
 	target.RevokedAt = &now
 	m.keys[id] = target
 	return target, nil
@@ -646,6 +649,30 @@ func TestRevokeKey_AllowLastPublishable(t *testing.T) {
 
 	if _, err := svc.RevokeKey(context.Background(), "ten_1", pub.Key.ID); err != nil {
 		t.Fatalf("revoking last publishable should succeed, got: %v", err)
+	}
+}
+
+func TestRevokeKey_AllowExpiredEvenWithoutActiveSiblings(t *testing.T) {
+	// An already-expired secret key is not "active" — revoking it
+	// doesn't reduce the active-key count, so the last-key safeguard
+	// must NOT fire even when no other active secret/platform keys
+	// exist for the tenant. Expired-row cleanup is a real operator
+	// workflow (FLOW K3 documents it) and the safeguard would
+	// otherwise block it.
+	store := newMemStore()
+	svc := NewService(store)
+
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	expired, err := svc.CreateKey(context.Background(), "ten_1",
+		CreateKeyInput{Name: "expired-secret", KeyType: KeyTypeSecret, ExpiresAt: &past})
+	if err != nil {
+		t.Fatalf("create expired: %v", err)
+	}
+
+	// No other active secret/platform keys exist. The safeguard
+	// would mistakenly block this without the targetActive gate.
+	if _, err := svc.RevokeKey(context.Background(), "ten_1", expired.Key.ID); err != nil {
+		t.Fatalf("revoking an expired key should succeed regardless of active-key count, got: %v", err)
 	}
 }
 
