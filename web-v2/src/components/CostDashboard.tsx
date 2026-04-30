@@ -81,25 +81,6 @@ export function CostDashboard({ customerId }: { customerId: string }) {
     },
   })
 
-  // Cross-window hint — when the operator is on Current cycle, fetch the
-  // last-30-days total in parallel so we can surface "1,400 events in the
-  // last 30 days" alongside the cycle-to-date number. This is what closes
-  // the cycle-rollover gap: a sub that just rolled over shows $0.00
-  // cycle-to-date but the operator's mental model expects to see usage —
-  // the hint redirects them to the broader window where the closed
-  // cycle's events still show.
-  const { data: thirtyDay } = useQuery({
-    queryKey: ['customer-usage', customerId, 'last_30d_compare'],
-    enabled: preset === 'current',
-    queryFn: async () => {
-      try {
-        return await api.customerUsage(customerId, presetToParams('last_30d'))
-      } catch {
-        return null
-      }
-    },
-  })
-
   if (error) {
     return (
       <Card>
@@ -208,35 +189,6 @@ export function CostDashboard({ customerId }: { customerId: string }) {
                 </p>
               )}
 
-              {/* Cross-window hint — shown only on the Current cycle tab
-                  when the broader 30-day window has more activity than the
-                  current cycle. Closes the cycle-rollover gap: a sub that
-                  rolled over an hour ago shows $0.00 here but the operator
-                  expects to see the customer's recent usage. The link
-                  redirects to the Last 30 days tab without a page reload.
-                  Threshold is "30d total > current cycle total" (any gap)
-                  rather than a percentage — the operator who's looking
-                  for "where did my events go?" is helped by ANY non-zero
-                  gap, not just large ones. */}
-              {preset === 'current' && thirtyDay && (() => {
-                const currentCents = data.totals.reduce((sum, t) => sum + t.amount_cents, 0)
-                const thirtyCents = thirtyDay.totals.reduce((sum, t) => sum + t.amount_cents, 0)
-                const thirtyEvents = thirtyDay.meters.reduce((sum, m) => sum + Number(m.total_quantity), 0)
-                if (thirtyCents <= currentCents || thirtyEvents <= 0) return null
-                return (
-                  <p className="text-xs text-muted-foreground mt-3 pt-3 border-t border-border">
-                    Last 30 days:{' '}
-                    <button
-                      type="button"
-                      onClick={() => setPreset('last_30d')}
-                      className="text-foreground font-medium tabular-nums underline-offset-2 hover:underline"
-                    >
-                      {formatCents(thirtyCents)} ({thirtyEvents.toLocaleString()} event{thirtyEvents === 1 ? '' : 's'})
-                    </button>
-                    {currentCents === 0 && ' — cycle just started? Switch to view recent activity.'}
-                  </p>
-                )
-              })()}
             </CardContent>
           </Card>
 
