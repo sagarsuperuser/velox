@@ -510,7 +510,7 @@ export default function CustomerDetailPage() {
           <div className="flex items-center justify-between">
             <CardTitle className="text-sm">Dunning Override</CardTitle>
             {!isArchived && (
-              <Button variant="ghost" size="sm" onClick={() => setShowDunningOverride(true)}>
+              <Button variant="outline" size="sm" onClick={() => setShowDunningOverride(true)}>
                 {dunningOverride ? 'Edit' : 'Configure'}
               </Button>
             )}

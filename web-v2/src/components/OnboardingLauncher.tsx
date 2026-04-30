@@ -110,17 +110,6 @@ export function OnboardingLauncher() {
         ))}
       </ul>
 
-      <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-2.5 text-xs">
-        <span className="text-muted-foreground">Prefer the API?</span>
-        <Link
-          to="/docs/quickstart"
-          onClick={() => setOpen(false)}
-          className="flex shrink-0 items-center gap-1 font-medium text-primary hover:underline"
-        >
-          Quickstart
-          <ArrowRight size={12} aria-hidden />
-        </Link>
-      </div>
     </div>
   )
 }

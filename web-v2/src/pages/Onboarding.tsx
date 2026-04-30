@@ -151,9 +151,6 @@ const STEPS: Step[] = [
           <li>Trigger a billing run from <Link to="/invoices" className="underline underline-offset-2 hover:text-foreground">/invoices</Link>.</li>
           <li>Open the resulting draft, finalize, and send.</li>
         </ol>
-        <p className="text-xs text-muted-foreground">
-          Curl-only path: see the <Link to="/docs/quickstart" className="underline underline-offset-2 hover:text-foreground">CLI quickstart</Link>.
-        </p>
       </div>
     ),
   },

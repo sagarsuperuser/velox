@@ -175,9 +175,6 @@ export default function DashboardPage() {
                     <p className="text-sm font-medium text-foreground">Revenue</p>
                     <p className="text-xs text-muted-foreground mt-0.5">Last {PERIOD_LABELS[period].toLowerCase()}</p>
                   </div>
-                  <Link to="/analytics" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
-                    Open analytics →
-                  </Link>
                 </div>
                 {chartData.length > 0 ? (
                   <div role="img" aria-label={`Revenue trend over the last ${PERIOD_LABELS[period].toLowerCase()}`}>
