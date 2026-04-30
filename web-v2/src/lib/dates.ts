@@ -60,3 +60,15 @@ export function formatExpiryHintInTZ(iso: string, timezone?: string): string {
 export function formatYMD(d: Date): string {
   return format(d, 'yyyy-MM-dd')
 }
+
+// formatYMDInTZ returns the yyyy-MM-dd date prefix of a UTC ISO
+// timestamp re-projected into tenant TZ. Used by client-side list
+// filters that compare a row's date against a picked date string —
+// without this, a row with created_at = May 4 22:00 UTC (= May 5
+// IST) would compare as "May 4" against an operator's "from May 5"
+// pick and get filtered out, contradicting the dashboard's tenant-
+// TZ display.
+export function formatYMDInTZ(iso: string, timezone?: string): string {
+  const tz = timezone || tenantTZ()
+  return formatInTimeZone(new Date(iso), tz, 'yyyy-MM-dd')
+}

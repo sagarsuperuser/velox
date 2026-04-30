@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime } from '@/lib/api'
+import { formatYMDInTZ } from '@/lib/dates'
 import type { Customer, Invoice } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
@@ -115,11 +116,16 @@ export default function InvoicesPage() {
       const q = search.toLowerCase()
       if (!inv.invoice_number.toLowerCase().includes(q)) return false
     }
+    // Compare created_at re-projected into tenant TZ so the date
+    // operators pick matches what they see on the row (commit
+    // b523c71 made formatDate render in tenant TZ; this filter
+    // must follow the same projection or it disagrees with the
+    // displayed date around UTC-day boundaries).
     if (dateFrom) {
-      if (inv.created_at && inv.created_at.slice(0, 10) < dateFrom) return false
+      if (inv.created_at && formatYMDInTZ(inv.created_at) < dateFrom) return false
     }
     if (dateTo) {
-      if (inv.created_at && inv.created_at.slice(0, 10) > dateTo) return false
+      if (inv.created_at && formatYMDInTZ(inv.created_at) > dateTo) return false
     }
     return true
   }), [invoices, search, dateFrom, dateTo])
