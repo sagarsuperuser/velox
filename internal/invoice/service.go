@@ -38,12 +38,21 @@ type CouponApplier interface {
 	ApplyCouponToInvoice(ctx context.Context, tenantID, invoiceID, code, idempotencyKey string) (domain.Invoice, error)
 }
 
+// TaxRetrier is the narrow view into tax recompute + persistence the
+// retry-tax endpoint depends on. Satisfied by billing.Engine in
+// production. Same rationale as CouponApplier — the contract lives
+// next to the handler that calls it.
+type TaxRetrier interface {
+	RetryTaxForInvoice(ctx context.Context, tenantID, invoiceID string) (domain.Invoice, error)
+}
+
 type Service struct {
 	store         Store
 	clock         clock.Clock
 	numberer      InvoiceNumberer
 	taxCommitter  TaxCommitter
 	couponApplier CouponApplier
+	taxRetrier    TaxRetrier
 }
 
 func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service {
@@ -63,6 +72,12 @@ func (s *Service) SetTaxCommitter(tc TaxCommitter) {
 // Production passes billing.Engine; tests can pass any implementation.
 func (s *Service) SetCouponApplier(c CouponApplier) {
 	s.couponApplier = c
+}
+
+// SetTaxRetrier wires the orchestrator behind the retry-tax endpoint.
+// Production passes billing.Engine; tests can pass any implementation.
+func (s *Service) SetTaxRetrier(r TaxRetrier) {
+	s.taxRetrier = r
 }
 
 type CreateInput struct {
@@ -132,7 +147,23 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 }
 
 func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
-	return s.store.Get(ctx, tenantID, id)
+	inv, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	return attachAttention(inv), nil
+}
+
+// attachAttention computes the unified Attention surface from durable
+// invoice fields and stamps it on the value before it leaves the
+// service boundary. Pure derivation — no I/O. Internal callers that
+// read straight from the store (engine, scheduler, finalize path) skip
+// this; only user-facing reads see the Attention field. Keeps the
+// derivation single-source so handlers, webhook serializers, and
+// hosted-invoice rendering all see the same shape.
+func attachAttention(inv domain.Invoice) domain.Invoice {
+	inv.Attention = domain.ClassifyInvoiceAttention(inv)
+	return inv
 }
 
 // HasSucceededInvoice is the implementation of coupon.CustomerHistoryLookup.
@@ -144,7 +175,14 @@ func (s *Service) HasSucceededInvoice(ctx context.Context, tenantID, customerID 
 }
 
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Invoice, int, error) {
-	return s.store.List(ctx, filter)
+	invs, total, err := s.store.List(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range invs {
+		invs[i] = attachAttention(invs[i])
+	}
+	return invs, total, nil
 }
 
 func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
@@ -231,7 +269,7 @@ func (s *Service) GetWithLineItems(ctx context.Context, tenantID, id string) (do
 	if err != nil {
 		return domain.Invoice{}, nil, err
 	}
-	return inv, items, nil
+	return attachAttention(inv), items, nil
 }
 
 // GetByPublicToken resolves a hosted-invoice-URL token to the invoice.
@@ -240,7 +278,11 @@ func (s *Service) GetWithLineItems(ctx context.Context, tenantID, id string) (do
 // is available. Thin forward to the store — the store method is the one
 // that uses TxBypass.
 func (s *Service) GetByPublicToken(ctx context.Context, token string) (domain.Invoice, error) {
-	return s.store.GetByPublicToken(ctx, token)
+	inv, err := s.store.GetByPublicToken(ctx, token)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	return attachAttention(inv), nil
 }
 
 // SetPublicToken persists a rotated public_token on a non-draft invoice.
@@ -309,5 +351,25 @@ func (s *Service) ApplyCoupon(ctx context.Context, tenantID, invoiceID, code, id
 	if s.couponApplier == nil {
 		return domain.Invoice{}, errs.InvalidState("coupon application is not configured")
 	}
-	return s.couponApplier.ApplyCouponToInvoice(ctx, tenantID, invoiceID, code, idempotencyKey)
+	inv, err := s.couponApplier.ApplyCouponToInvoice(ctx, tenantID, invoiceID, code, idempotencyKey)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	return attachAttention(inv), nil
+}
+
+// RetryTax routes an operator-triggered "Retry tax" action through the
+// billing engine. The engine owns the recompute and atomic persist;
+// the service is the HTTP-facing entry. Returns the updated invoice
+// with its Attention re-derived so the caller can render the new
+// banner state immediately.
+func (s *Service) RetryTax(ctx context.Context, tenantID, invoiceID string) (domain.Invoice, error) {
+	if s.taxRetrier == nil {
+		return domain.Invoice{}, errs.InvalidState("tax retry is not configured")
+	}
+	inv, err := s.taxRetrier.RetryTaxForInvoice(ctx, tenantID, invoiceID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	return attachAttention(inv), nil
 }

@@ -210,6 +210,10 @@ type InvoiceWriter interface {
 	// snapshot onto a draft invoice in one tx. Used by
 	// Engine.ApplyCouponToInvoice for the apply-coupon-after-issue flow.
 	ApplyDiscountAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error)
+	// UpdateTaxAtomic re-stamps an invoice's tax decision after a manual
+	// retry. Used by Engine.RetryTaxForInvoice to persist the recomputed
+	// per-line and invoice-level tax fields atomically.
+	UpdateTaxAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error)
 }
 
 func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader, paymentSetups PaymentSetupReader, charger InvoiceCharger, clk clock.Clock, profiles ...BillingProfileReader) *Engine {
@@ -461,6 +465,11 @@ type TaxApplication struct {
 	TaxStatus        domain.InvoiceTaxStatus
 	TaxDeferredAt    *time.Time
 	TaxPendingReason string
+	// TaxErrorCode is the typed classification of TaxPendingReason
+	// (one of customer_data_invalid / jurisdiction_unsupported /
+	// provider_outage / provider_auth / unknown). Populated by
+	// tax.Classify on the deferral path; empty for ok results.
+	TaxErrorCode string
 }
 
 // truncateReason clips a provider error string to a sensible length before
@@ -582,7 +591,14 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 			lineItems[i].TotalAmountCents = lineItems[i].AmountCents
 		}
 		app.TaxStatus = domain.InvoiceTaxPending
-		app.TaxPendingReason = truncateReason(err.Error(), 500)
+		// Classify the provider error into a typed taxonomy so the
+		// dashboard banner and webhook consumers can branch on cause
+		// (customer-data fix vs provider-outage retry). The pending
+		// reason is the cleaned upstream message (Stripe Tax JSON
+		// envelope unwrapped) — preserved verbatim in tax_calculations
+		// for diagnostic depth.
+		app.TaxErrorCode = string(tax.Classify(err))
+		app.TaxPendingReason = truncateReason(tax.CleanMessage(err.Error()), 500)
 		deferredAt := time.Now().UTC()
 		if e.clock != nil {
 			deferredAt = e.clock.Now()
@@ -1209,6 +1225,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		TaxStatus:          taxApp.TaxStatus,
 		TaxDeferredAt:      taxApp.TaxDeferredAt,
 		TaxPendingReason:   taxApp.TaxPendingReason,
+		TaxErrorCode:       taxApp.TaxErrorCode,
 		TotalAmountCents:   totalWithTax,
 		AmountDueCents:     totalWithTax,
 		BillingPeriodStart: periodStart,
@@ -1520,6 +1537,7 @@ func (e *Engine) ApplyCouponToInvoice(ctx context.Context, tenantID, invoiceID, 
 		TaxStatus:        taxApp.TaxStatus,
 		TaxDeferredAt:    taxApp.TaxDeferredAt,
 		TaxPendingReason: taxApp.TaxPendingReason,
+		TaxErrorCode:     taxApp.TaxErrorCode,
 	}
 
 	updated, err := e.invoices.ApplyDiscountAtomic(ctx, tenantID, invoiceID, update, items)
@@ -1545,6 +1563,75 @@ func (e *Engine) ApplyCouponToInvoice(ctx context.Context, tenantID, invoiceID, 
 	}
 
 	return updated, nil
+}
+
+// RetryTaxForInvoice re-runs ApplyTaxToLineItems against an invoice
+// that's currently parked at tax_status in (pending, failed) and
+// persists the new decision atomically. Backs the operator-triggered
+// "Retry tax" action surfaced by the unified Attention shape.
+//
+// Idempotent under retry: each call increments tax_retry_count and
+// rewrites the per-line and invoice-level tax fields. A retry that
+// succeeds clears TaxPendingReason / TaxErrorCode and unblocks
+// finalize. A retry that fails again writes the new typed code so
+// the dashboard banner refreshes — operators get an immediate signal
+// of whether their fix worked, without waiting on the background
+// retry worker.
+//
+// Gates (defence in depth — postgres re-asserts under FOR UPDATE):
+//   - invoice must be draft
+//   - tax_status must be pending or failed
+//   - subscription is loaded if present (so jurisdiction-by-plan-tax-
+//     code logic in ApplyTaxToLineItems sees the same inputs as the
+//     original cycle build)
+func (e *Engine) RetryTaxForInvoice(ctx context.Context, tenantID, invoiceID string) (domain.Invoice, error) {
+	inv, err := e.invoices.GetInvoice(ctx, tenantID, invoiceID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if inv.Status != domain.InvoiceDraft {
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+			"tax retry only valid on draft invoices (current: %s)", inv.Status))
+	}
+	if inv.TaxStatus != domain.InvoiceTaxPending && inv.TaxStatus != domain.InvoiceTaxFailed {
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+			"tax retry only valid when tax_status in (pending, failed) (current: %s)", inv.TaxStatus))
+	}
+
+	items, err := e.invoices.ListLineItems(ctx, tenantID, invoiceID)
+	if err != nil {
+		return domain.Invoice{}, fmt.Errorf("list line items: %w", err)
+	}
+
+	taxApp, err := e.ApplyTaxToLineItems(ctx, tenantID, inv.CustomerID, inv.Currency,
+		inv.SubtotalCents, inv.DiscountCents, items)
+	if err != nil {
+		return domain.Invoice{}, fmt.Errorf("recompute tax: %w", err)
+	}
+
+	totalWithTax := inv.SubtotalCents - inv.DiscountCents + taxApp.TaxAmountCents
+	if totalWithTax < 0 {
+		totalWithTax = 0
+	}
+
+	update := domain.InvoiceTaxRetryUpdate{
+		TaxAmountCents:   taxApp.TaxAmountCents,
+		TaxRateBP:        taxApp.TaxRateBP,
+		TaxName:          taxApp.TaxName,
+		TaxCountry:       taxApp.TaxCountry,
+		TaxID:            taxApp.TaxID,
+		TaxProvider:      taxApp.TaxProvider,
+		TaxCalculationID: taxApp.TaxCalculationID,
+		TaxReverseCharge: taxApp.TaxReverseCharge,
+		TaxExemptReason:  taxApp.TaxExemptReason,
+		TaxStatus:        taxApp.TaxStatus,
+		TaxDeferredAt:    taxApp.TaxDeferredAt,
+		TaxPendingReason: taxApp.TaxPendingReason,
+		TaxErrorCode:     taxApp.TaxErrorCode,
+		TotalAmountCents: totalWithTax,
+	}
+
+	return e.invoices.UpdateTaxAtomic(ctx, tenantID, invoiceID, update, items)
 }
 
 func advanceBillingPeriod(from time.Time, interval domain.BillingInterval) time.Time {

@@ -177,6 +177,13 @@ export const api = {
     apiRequest<Invoice>('POST', `/invoices/${id}/rotate-public-token`),
   applyInvoiceCoupon: (id: string, data: { code: string; idempotency_key?: string }) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/apply-coupon`, data),
+  // retryInvoiceTax re-runs tax calculation against a draft invoice
+  // currently in tax_status pending or failed. Backs the "Retry tax"
+  // action surfaced by Attention. Returns the updated invoice with
+  // its Attention re-derived — so the caller can render the new
+  // banner state without a follow-up GET.
+  retryInvoiceTax: (id: string) =>
+    apiRequest<Invoice>('POST', `/invoices/${id}/retry-tax`),
   collectPayment: (id: string) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/collect`),
   sendInvoiceEmail: (invoiceId: string, email: string) =>
@@ -611,6 +618,51 @@ export interface Subscription {
   created_at: string
 }
 
+// Attention surface — the unified "this invoice needs operator
+// attention" payload computed server-side. See ADR-009. Field shapes
+// mirror the Go domain.Attention struct one-for-one.
+export type AttentionSeverity = 'info' | 'warning' | 'critical'
+
+export type AttentionReason =
+  | 'tax_calculation_failed'
+  | 'tax_location_required'
+  | 'payment_failed'
+  | 'payment_unconfirmed'
+  | 'overdue'
+
+export type AttentionAction =
+  | 'edit_billing_profile'
+  | 'retry_tax'
+  | 'retry_payment'
+  | 'wait_provider'
+  | 'rotate_api_key'
+  | 'reconcile_payment'
+  | 'review_registration'
+
+export interface AttentionActionItem {
+  code: AttentionAction
+  label?: string
+}
+
+export interface InvoiceAttention {
+  severity: AttentionSeverity
+  reason: AttentionReason
+  message: string
+  actions?: AttentionActionItem[]
+  // Open dotted code (e.g. "tax.customer_data_invalid"). Stable but
+  // extensible — new codes ship without contract bump.
+  code?: string
+  doc_url?: string
+  // Dotted-path pointer at the field needing edit (Stripe parity).
+  // E.g. "customer.address.postal_code" for tax_location_required.
+  param?: string
+  // Raw provider payload — disclosed in collapsible detail.
+  detail?: string
+  // ISO timestamp marking when the condition started; operators triage
+  // by age.
+  since?: string
+}
+
 export interface Invoice {
   id: string
   invoice_number: string
@@ -639,6 +691,15 @@ export interface Invoice {
   tax_pending_reason?: string
   tax_retry_count?: number
   tax_deferred_at?: string
+  // tax_error_code is the typed taxonomy of tax_pending_reason —
+  // populated for invoices deferred after migration 0067. The
+  // attention surface picks it up; raw consumers can read it directly.
+  tax_error_code?: string
+  // attention is the unified "needs operator attention" surface,
+  // computed server-side from tax_status / tax_error_code /
+  // payment_status / payment_overdue / due_at. Omitted entirely when
+  // the invoice is healthy. See ADR-009.
+  attention?: InvoiceAttention
   total_amount_cents: number
   amount_due_cents: number
   amount_paid_cents: number

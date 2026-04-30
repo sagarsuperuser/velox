@@ -36,6 +36,10 @@ const (
 	AuditActionUnarchive   = "unarchive"
 	AuditActionRedeem      = "redeem"
 	AuditActionApplyCoupon = "apply_coupon"
+	// AuditActionRetryTax covers operator-initiated tax recompute on a
+	// pending/failed invoice. Persists the actor + before/after attention
+	// so post-mortems can see who retried what and whether it cleared.
+	AuditActionRetryTax = "retry_tax"
 	// AuditActionRotate covers credential/token rotation (API keys,
 	// webhook secrets, hosted-invoice public tokens). Its own action so
 	// audit queries can surface "who rotated what, when" separately from

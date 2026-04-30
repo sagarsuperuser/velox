@@ -309,13 +309,16 @@ export default function InvoicesPage() {
                       }}
                     >
                       <TableCell>
-                        <Link
-                          to={`/invoices/${inv.id}`}
-                          className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[140px]"
-                          title={inv.invoice_number}
-                        >
-                          {inv.invoice_number}
-                        </Link>
+                        <div className="flex items-center gap-1.5">
+                          <Link
+                            to={`/invoices/${inv.id}`}
+                            className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[140px]"
+                            title={inv.invoice_number}
+                          >
+                            {inv.invoice_number}
+                          </Link>
+                          <AttentionDot attention={inv.attention} />
+                        </div>
                       </TableCell>
                       <TableCell className="text-sm">
                         <div className="flex items-center gap-2.5">
@@ -421,5 +424,27 @@ export default function InvoicesPage() {
         </CardContent>
       </Card>
     </Layout>
+  )
+}
+
+// AttentionDot is the list-row signal that an invoice needs operator
+// attention. Severity-tinted disc, title attribute carries the typed
+// reason + message — hover surfaces the diagnosis without leaving the
+// list. Renders nothing when invoice.attention is absent.
+function AttentionDot({ attention }: { attention: Invoice['attention'] }) {
+  if (!attention) return null
+  const color =
+    attention.severity === 'critical'
+      ? 'bg-destructive'
+      : attention.severity === 'warning'
+        ? 'bg-amber-500'
+        : 'bg-blue-500'
+  const title = `${attention.reason} — ${attention.message}`
+  return (
+    <span
+      className={cn('inline-block w-1.5 h-1.5 rounded-full shrink-0', color)}
+      title={title}
+      aria-label={title}
+    />
   )
 }

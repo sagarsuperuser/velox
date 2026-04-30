@@ -220,6 +220,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/{id}/collect", h.collectPayment)
 	r.Post("/{id}/refund", h.refund)
 	r.Post("/{id}/apply-coupon", h.applyCoupon)
+	r.Post("/{id}/retry-tax", h.retryTax)
 	r.Post("/{id}/rotate-public-token", h.rotatePublicToken)
 	r.Get("/{id}/payment-timeline", h.paymentTimeline)
 	return r
@@ -774,6 +775,56 @@ func (h *Handler) applyCoupon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventInvoiceCouponApplied, inv)
+
+	respond.JSON(w, r, http.StatusOK, inv)
+}
+
+// retryTax re-runs tax calculation against a draft invoice in
+// tax_status pending or failed. Backs the "Retry tax" action surfaced
+// by the unified Attention shape. Idempotent — each call increments
+// tax_retry_count and rewrites the per-line + invoice-level tax fields.
+//
+// 200 with the updated invoice (carrying the new Attention) on
+// success or post-retry failure (a "still failing" retry is not an
+// HTTP error — the dashboard wants the new code to render). 409 when
+// the gate fails (status != draft, or tax_status not retryable). 404
+// when the invoice doesn't exist.
+func (h *Handler) retryTax(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	// Snapshot the pre-retry attention reason for the audit trail so
+	// post-mortems can answer "did the retry change anything?".
+	before, _ := h.svc.Get(r.Context(), tenantID, id)
+
+	inv, err := h.svc.RetryTax(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "invoice")
+		return
+	}
+	if err != nil {
+		respond.FromError(w, r, err, "invoice")
+		return
+	}
+
+	if h.auditLogger != nil {
+		var beforeReason, afterReason string
+		if before.Attention != nil {
+			beforeReason = string(before.Attention.Reason)
+		}
+		if inv.Attention != nil {
+			afterReason = string(inv.Attention.Reason)
+		}
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRetryTax, "invoice", inv.ID, map[string]any{
+			"invoice_number":    inv.InvoiceNumber,
+			"customer_id":       inv.CustomerID,
+			"tax_status":        inv.TaxStatus,
+			"tax_retry_count":   inv.TaxRetryCount,
+			"before_attention":  beforeReason,
+			"after_attention":   afterReason,
+			"tax_error_code":    inv.TaxErrorCode,
+		})
+	}
 
 	respond.JSON(w, r, http.StatusOK, inv)
 }

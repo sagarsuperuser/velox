@@ -443,6 +443,62 @@ func (m *mockInvoices) ApplyDiscountAtomic(_ context.Context, tenantID, invoiceI
 	return inv, nil
 }
 
+func (m *mockInvoices) UpdateTaxAtomic(_ context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
+	idx := -1
+	for i, inv := range m.invoices {
+		if inv.ID == invoiceID && inv.TenantID == tenantID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv := m.invoices[idx]
+	if inv.Status != domain.InvoiceDraft {
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf("invoice must be draft (current: %s)", inv.Status))
+	}
+	if inv.TaxStatus != domain.InvoiceTaxPending && inv.TaxStatus != domain.InvoiceTaxFailed {
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf("tax retry requires pending/failed (current: %s)", inv.TaxStatus))
+	}
+	byID := make(map[string]domain.InvoiceLineItem, len(lineItems))
+	for _, li := range lineItems {
+		byID[li.ID] = li
+	}
+	for i, existing := range m.lineItems {
+		if existing.InvoiceID != invoiceID {
+			continue
+		}
+		if updated, ok := byID[existing.ID]; ok {
+			m.lineItems[i].TaxRateBP = updated.TaxRateBP
+			m.lineItems[i].TaxAmountCents = updated.TaxAmountCents
+			m.lineItems[i].TotalAmountCents = updated.TotalAmountCents
+		}
+	}
+	inv.TaxAmountCents = update.TaxAmountCents
+	inv.TaxRateBP = update.TaxRateBP
+	inv.TaxName = update.TaxName
+	inv.TaxCountry = update.TaxCountry
+	inv.TaxID = update.TaxID
+	inv.TaxProvider = update.TaxProvider
+	inv.TaxCalculationID = update.TaxCalculationID
+	inv.TaxReverseCharge = update.TaxReverseCharge
+	inv.TaxExemptReason = update.TaxExemptReason
+	inv.TaxStatus = update.TaxStatus
+	inv.TaxDeferredAt = update.TaxDeferredAt
+	inv.TaxPendingReason = update.TaxPendingReason
+	inv.TaxErrorCode = update.TaxErrorCode
+	inv.TaxRetryCount++
+	inv.TotalAmountCents = update.TotalAmountCents
+	due := inv.TotalAmountCents - inv.AmountPaidCents - inv.CreditsAppliedCents
+	if due < 0 {
+		due = 0
+	}
+	inv.AmountDueCents = due
+	m.invoices[idx] = inv
+	return inv, nil
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

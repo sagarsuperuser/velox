@@ -33,6 +33,7 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	tax_provider, tax_calculation_id, COALESCE(tax_transaction_id,''),
 	tax_reverse_charge, tax_exempt_reason,
 	tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason,
+	COALESCE(tax_error_code,''),
 	COALESCE(public_token,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,'')`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
@@ -62,9 +63,9 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
-			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, billing_reason,
+			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, tax_error_code, billing_reason,
 			stripe_invoice_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -80,6 +81,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 		postgres.NullableString(string(inv.SourceChangeType)),
 		inv.TaxProvider, inv.TaxCalculationID, inv.TaxReverseCharge, inv.TaxExemptReason,
 		string(taxStatus), postgres.NullableTime(inv.TaxDeferredAt), inv.TaxRetryCount, inv.TaxPendingReason,
+		postgres.NullableString(inv.TaxErrorCode),
 		postgres.NullableString(string(inv.BillingReason)),
 		postgres.NullableString(inv.StripeInvoiceID),
 	).Scan(scanInvDest(&inv)...)
@@ -721,9 +723,10 @@ func (s *PostgresStore) ApplyDiscountAtomic(
 			tax_status = $13,
 			tax_deferred_at = $14,
 			tax_pending_reason = $15,
-			total_amount_cents = $16,
-			amount_due_cents = GREATEST($16 - amount_paid_cents - credits_applied_cents, 0),
-			updated_at = $17
+			tax_error_code = $16,
+			total_amount_cents = $17,
+			amount_due_cents = GREATEST($17 - amount_paid_cents - credits_applied_cents, 0),
+			updated_at = $18
 		WHERE id = $1
 		RETURNING `+invCols,
 		invoiceID,
@@ -733,7 +736,118 @@ func (s *PostgresStore) ApplyDiscountAtomic(
 		postgres.NullableString(update.TaxCalculationID),
 		update.TaxReverseCharge, update.TaxExemptReason,
 		update.TaxStatus, postgres.NullableTime(update.TaxDeferredAt), update.TaxPendingReason,
+		postgres.NullableString(update.TaxErrorCode),
 		total, now,
+	).Scan(scanInvDest(&inv)...)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, err
+	}
+	return inv, nil
+}
+
+// UpdateTaxAtomic re-stamps an invoice's tax decision after a manual
+// retry (or, eventually, the retry worker). Locks the invoice row FOR
+// UPDATE, gates on tax_status in (pending, failed) and status='draft',
+// rewrites per-line tax fields from the supplied lineItems, rewrites
+// the invoice-level tax columns, recomputes total / amount_due, and
+// increments tax_retry_count. Returns the updated row with attention
+// re-derivable from the new fields.
+//
+// A retry that succeeds writes tax_status='ok' with calculation_id
+// populated and tax_pending_reason / tax_error_code cleared. A retry
+// that fails again writes tax_status='pending' or 'failed' with the
+// new code/reason — the row stays blocked from finalize and the
+// dashboard banner refreshes.
+func (s *PostgresStore) UpdateTaxAtomic(
+	ctx context.Context, tenantID, invoiceID string,
+	update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem,
+) (domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var (
+		status    domain.InvoiceStatus
+		taxStatus string
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT status, tax_status FROM invoices WHERE id = $1 FOR UPDATE`,
+		invoiceID,
+	).Scan(&status, &taxStatus)
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if status != domain.InvoiceDraft {
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+			"tax retry only valid on draft invoices (current: %s)", status))
+	}
+	if taxStatus != string(domain.InvoiceTaxPending) && taxStatus != string(domain.InvoiceTaxFailed) {
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+			"tax retry only valid when tax_status in (pending, failed) (current: %s)", taxStatus))
+	}
+
+	now := time.Now().UTC()
+
+	for _, li := range lineItems {
+		if li.ID == "" {
+			continue
+		}
+		_, err = tx.ExecContext(ctx, `
+			UPDATE invoice_line_items
+			SET tax_rate_bp = $3,
+			    tax_amount_cents = $4,
+			    total_amount_cents = $5,
+			    tax_jurisdiction = $6,
+			    tax_code = $7,
+			    tax_reason = $8
+			WHERE invoice_id = $1 AND id = $2
+		`, invoiceID, li.ID, li.TaxRateBP, li.TaxAmountCents, li.TotalAmountCents,
+			li.TaxJurisdiction, li.TaxCode, li.TaxabilityReason)
+		if err != nil {
+			return domain.Invoice{}, fmt.Errorf("update line item tax stamp: %w", err)
+		}
+	}
+
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `
+		UPDATE invoices SET
+			tax_amount_cents = $2,
+			tax_rate_bp = $3,
+			tax_name = $4,
+			tax_country = $5,
+			tax_id = $6,
+			tax_provider = $7,
+			tax_calculation_id = $8,
+			tax_reverse_charge = $9,
+			tax_exempt_reason = $10,
+			tax_status = $11,
+			tax_deferred_at = $12,
+			tax_pending_reason = $13,
+			tax_error_code = $14,
+			tax_retry_count = tax_retry_count + 1,
+			total_amount_cents = $15,
+			amount_due_cents = GREATEST($15 - amount_paid_cents - credits_applied_cents, 0),
+			updated_at = $16
+		WHERE id = $1
+		RETURNING `+invCols,
+		invoiceID,
+		update.TaxAmountCents, update.TaxRateBP,
+		update.TaxName, update.TaxCountry, update.TaxID,
+		postgres.NullableString(update.TaxProvider),
+		postgres.NullableString(update.TaxCalculationID),
+		update.TaxReverseCharge, update.TaxExemptReason,
+		string(update.TaxStatus), postgres.NullableTime(update.TaxDeferredAt),
+		update.TaxPendingReason, postgres.NullableString(update.TaxErrorCode),
+		update.TotalAmountCents, now,
 	).Scan(scanInvDest(&inv)...)
 	if err != nil {
 		return domain.Invoice{}, err
@@ -776,9 +890,9 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 			net_payment_term_days, memo, footer, metadata, created_at, updated_at,
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
-			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, billing_reason,
+			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, tax_error_code, billing_reason,
 			stripe_invoice_id, paid_at, voided_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -795,6 +909,7 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 		postgres.NullableString(string(inv.SourceChangeType)),
 		inv.TaxProvider, inv.TaxCalculationID, inv.TaxReverseCharge, inv.TaxExemptReason,
 		string(taxStatus), postgres.NullableTime(inv.TaxDeferredAt), inv.TaxRetryCount, inv.TaxPendingReason,
+		postgres.NullableString(inv.TaxErrorCode),
 		postgres.NullableString(string(inv.BillingReason)),
 		postgres.NullableString(inv.StripeInvoiceID),
 		postgres.NullableTime(inv.PaidAt), postgres.NullableTime(inv.VoidedAt),
@@ -979,6 +1094,7 @@ func scanInvDest(inv *domain.Invoice) []any {
 		&inv.TaxProvider, &inv.TaxCalculationID, &inv.TaxTransactionID,
 		&inv.TaxReverseCharge, &inv.TaxExemptReason,
 		(*string)(&inv.TaxStatus), &inv.TaxDeferredAt, &inv.TaxRetryCount, &inv.TaxPendingReason,
+		&inv.TaxErrorCode,
 		&inv.PublicToken, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
 	}
 }
