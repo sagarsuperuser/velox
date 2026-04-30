@@ -6,6 +6,7 @@ import { api, formatCents, formatDateTime } from '@/lib/api'
 import type { MeterPricingRule, MeterAggregationMode, RatingRule } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
+import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
@@ -535,16 +536,24 @@ function CreatePricingRuleDialog({
                     onChange={(e) => updateRow(i, { value: e.target.value })}
                     className="font-mono text-sm"
                   />
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-9 w-9 shrink-0 text-muted-foreground"
-                    onClick={() => removeRow(i)}
-                    disabled={dimensions.length === 1}
-                    aria-label="Remove dimension"
+                  {/* Wrap in span so the tooltip fires when disabled —
+                      Button uses disabled:pointer-events-none which
+                      suppresses the native title on the button itself. */}
+                  <span
+                    title={dimensions.length === 1 ? 'A meter requires at least one dimension.' : ''}
+                    className={cn('shrink-0', dimensions.length === 1 && 'cursor-not-allowed')}
                   >
-                    <Trash2 size={14} />
-                  </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9 text-muted-foreground"
+                      onClick={() => removeRow(i)}
+                      disabled={dimensions.length === 1}
+                      aria-label="Remove dimension"
+                    >
+                      <Trash2 size={14} />
+                    </Button>
+                  </span>
                 </div>
               ))}
             </div>
