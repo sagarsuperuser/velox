@@ -369,10 +369,39 @@ function CycleHeader({ sub }: { sub: { plan_name: string; current_period_start: 
   )
 }
 
+// Top-N cap for the rule breakdown. AWS Cost Explorer's "9 named bars
+// + 1 Other" is the cleanest documented top-N treatment in the field;
+// we adopt it exactly. Operators who want the long tail go to CSV.
+const RULE_TOP_N = 9
+
 function MeterRow({ meter }: { meter: CustomerUsageMeter }) {
   const [expanded, setExpanded] = useState(false)
   const hasMultipleRules = meter.rules.length > 1
   const totalQty = useMemo(() => Number(meter.total_quantity), [meter.total_quantity])
+
+  // Visible rules: sort by amount_cents DESC (highest-spend first), then
+  // cap at RULE_TOP_N + a synthetic "Other" rollup row. Operators see
+  // the bars in spend order, the long tail aggregates into one row, the
+  // chart never blooms past N+1 entries no matter how many rules
+  // exist. AWS-exact convention.
+  const visibleRules = useMemo<CustomerUsageRule[]>(() => {
+    const sorted = [...meter.rules].sort((a, b) => b.amount_cents - a.amount_cents)
+    if (sorted.length <= RULE_TOP_N + 1) return sorted
+    const top = sorted.slice(0, RULE_TOP_N)
+    const tail = sorted.slice(RULE_TOP_N)
+    const otherCents = tail.reduce((sum, r) => sum + r.amount_cents, 0)
+    const otherQty = tail.reduce((sum, r) => sum + Number(r.quantity), 0)
+    return [
+      ...top,
+      {
+        rating_rule_version_id: '__other__',
+        rule_key: `(${tail.length} more rules)`,
+        dimension_match: undefined,
+        quantity: String(otherQty),
+        amount_cents: otherCents,
+      },
+    ]
+  }, [meter.rules])
 
   return (
     <Card>
@@ -393,7 +422,7 @@ function MeterRow({ meter }: { meter: CustomerUsageMeter }) {
             <p className="text-sm font-medium text-foreground truncate">{meter.meter_name}</p>
             <p className="text-xs text-muted-foreground font-mono">
               {totalQty.toLocaleString(undefined, { maximumFractionDigits: 6 })} {meter.unit}
-              {hasMultipleRules && <span className="ml-2 text-muted-foreground">· {meter.rules.length} rules</span>}
+              {hasMultipleRules && <span className="ml-2">· {meter.rules.length} rules</span>}
             </p>
           </div>
           <p className="text-sm font-semibold text-foreground tabular-nums shrink-0">
@@ -403,7 +432,18 @@ function MeterRow({ meter }: { meter: CustomerUsageMeter }) {
 
         {expanded && hasMultipleRules && (
           <div className="border-t border-border bg-muted/20">
-            {meter.rules.map(r => <RuleRow key={r.rating_rule_version_id} rule={r} unit={meter.unit} currency={meter.currency} />)}
+            <p className="px-5 pt-3 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+              By pricing rule
+            </p>
+            {visibleRules.map(r => (
+              <RuleRow
+                key={r.rating_rule_version_id}
+                rule={r}
+                totalCents={meter.total_amount_cents}
+                unit={meter.unit}
+                currency={meter.currency}
+              />
+            ))}
           </div>
         )}
       </CardContent>
@@ -411,26 +451,77 @@ function MeterRow({ meter }: { meter: CustomerUsageMeter }) {
   )
 }
 
-function RuleRow({ rule, unit, currency }: { rule: CustomerUsageRule; unit: string; currency: string }) {
+function RuleRow({
+  rule,
+  totalCents,
+  unit,
+  currency,
+}: {
+  rule: CustomerUsageRule
+  totalCents: number
+  unit: string
+  currency: string
+}) {
   const qty = Number(rule.quantity)
+  const pct = totalCents > 0 ? (rule.amount_cents / totalCents) * 100 : 0
+  // Average rate — the engine doesn't return rate directly (rules can
+  // be flat / tiered / graduated), so we derive an effective rate from
+  // (amount / quantity). For flat rules this is the actual rate; for
+  // tiered it's the blended effective rate over the period, which is
+  // the operationally interesting number anyway.
+  const avgRate = qty > 0 ? rule.amount_cents / 100 / qty : 0
+  const isOther = rule.rating_rule_version_id === '__other__'
+  const hasDimensions =
+    !isOther && rule.dimension_match && Object.keys(rule.dimension_match).length > 0
+
   return (
-    <div className="px-5 py-2.5 flex items-center gap-4 text-xs border-b border-border last:border-b-0">
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge variant="secondary" className="font-mono">{rule.rule_key}</Badge>
-          {rule.dimension_match && Object.entries(rule.dimension_match).map(([k, v]) => (
-            <span key={k} className="inline-flex items-center font-mono bg-muted px-1.5 py-0.5 rounded text-foreground/80">
-              {k}=<span className="text-foreground">{String(v)}</span>
-            </span>
-          ))}
+    <div className="px-5 py-3 border-b border-border last:border-b-0 space-y-1.5">
+      <div className="flex items-baseline justify-between gap-4">
+        <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+          {hasDimensions ? (
+            Object.entries(rule.dimension_match!).map(([k, v]) => (
+              <span
+                key={k}
+                className="inline-flex items-center font-mono text-[10px] bg-background border border-border px-1.5 py-0.5 rounded"
+              >
+                <span className="text-muted-foreground">{k}</span>
+                <span className="mx-1 text-muted-foreground/60">=</span>
+                <span className="text-foreground">{String(v)}</span>
+              </span>
+            ))
+          ) : isOther ? (
+            <span className="text-xs text-muted-foreground italic">{rule.rule_key}</span>
+          ) : (
+            <Badge variant="secondary" className="font-mono text-[10px] py-0 px-1.5">
+              {rule.rule_key || 'catch-all'}
+            </Badge>
+          )}
         </div>
-        <p className="text-muted-foreground font-mono mt-1">
-          {qty.toLocaleString(undefined, { maximumFractionDigits: 6 })} {unit}
-        </p>
+        <span className="font-semibold text-sm tabular-nums shrink-0">
+          {formatCents(rule.amount_cents, currency)}
+        </span>
       </div>
-      <p className="font-semibold text-foreground tabular-nums shrink-0">
-        {formatCents(rule.amount_cents, currency)}
-      </p>
+
+      {/* Proportion bar — Mixpanel-flavoured per-row visual. Reads as
+          "this rule's share of the meter's total spend." Capped at
+          100% so floating-point drift on the sum doesn't render past
+          the bar. */}
+      <div className="h-1 bg-muted rounded-full overflow-hidden">
+        <div
+          className="h-full bg-primary/80 rounded-full"
+          style={{ width: `${Math.min(100, pct)}%` }}
+        />
+      </div>
+
+      <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono">
+        <span>
+          {qty.toLocaleString(undefined, { maximumFractionDigits: 4 })} {unit}
+          {avgRate > 0 && !isOther && (
+            <span className="ml-2">@ ${avgRate.toFixed(4)}/{unit}</span>
+          )}
+        </span>
+        <span>{pct.toFixed(pct < 1 ? 1 : 0)}%</span>
+      </div>
     </div>
   )
 }
