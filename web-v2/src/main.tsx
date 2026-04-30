@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
+import { TenantTimezoneBootstrap } from '@/lib/TenantTimezoneBootstrap'
 import '@fontsource-variable/geist/index.css'
 import '@fontsource-variable/geist-mono/index.css'
 import './index.css'
@@ -129,6 +130,7 @@ const App = () => (
   <ErrorBoundary>
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
+      <TenantTimezoneBootstrap />
       <TooltipProvider>
         <BrowserRouter>
           <Suspense
