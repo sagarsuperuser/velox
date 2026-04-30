@@ -317,7 +317,7 @@ See ADR-007 (revert) and ADR-008 (cookie refinement).
 - [ ] Header: "API Keys" title with `· N active` count next to subtitle when any active keys exist
 - [ ] Empty tenant: `EmptyState` with key icon, copy "No API keys yet", and "Create API Key" button (no list rendered)
 - [ ] Each active card shows: name, masked prefix (`sk_live_xxxx--------`), key-type badge (secret = violet shield, publishable = blue eye), `Created Xago`, `Last used Xago` or "Never used", `Expires DATE` row when set
-- [ ] The card matching the *current session's* localStorage key is decorated with a ring-2 ring-primary/20 outline AND a "Current session" info badge
+- [ ] The card matching the *current session's* `key_id` (from `/v1/whoami`) is decorated with a ring-2 ring-primary/20 outline AND a "Current session" info badge
 - [ ] "Expired keys" section is collapsed by default behind chevron toggle showing count; expanding reveals one-line cards with `expired` destructive badge and a Revoke button (revoking an already-expired key is allowed and useful for cleanup)
 - [ ] "Revoked keys" section is collapsed by default; expanded rows show strikethrough name, `revoked` badge, and "Revoked Xago"
 - [ ] Create dialog: Name input (max 100 chars, required), Key Type 2-col selector (Secret default vs Publishable), Expiration preset row (No expiration / 30 days / 90 days / 1 year / Custom)
@@ -326,8 +326,54 @@ See ADR-007 (revert) and ADR-008 (cookie refinement).
 - [ ] Submit success → Create dialog closes, `API Key Created` dialog opens with amber callout, full raw key in selectable monospace, Copy button (toast "Copied to clipboard"), and a single "I've saved this key" dismiss action
 - [ ] Closing the created-key dialog removes the raw key from memory — refreshing the page only ever shows the masked prefix again
 - [ ] Per-row Revoke → AlertDialog "Revoke API Key" with name + prefix in copy → confirm → toast "API key revoked" + list refetches; Cancel dismisses without changes
-- [ ] Revoking the *current session* key triggers different copy ("Revoke Current Session Key?" / "will log you out immediately") and after confirm the next API call 401s, kicking the user back to /login
+- [ ] On the row that matches the current session's key_id: Revoke button is **disabled** with `cursor-not-allowed`; hovering shows tooltip "Cannot revoke the API key your dashboard session uses — sign out and sign back in with another key first." Confirmation dialog never opens. (See FLOW K4 for the safeguard rules.)
 - [ ] Server validation errors (e.g. duplicate name) surface inline via `applyApiError` against `name` / `key_type` / `expires_at` fields, not as a generic toast
+
+## FLOW K4: Revoke safeguards (lockout-prevention + cookie fan-out)
+
+Two correctness rules around revoke that prevent permanent lockouts and
+ghost-cookie sessions. Server enforces both; the UI mirrors them.
+
+### Last-active-secret-or-platform safeguard
+
+- [ ] **Server (Bearer)**: tenant has exactly one active `secret` key. `curl -X DELETE -H "Authorization: Bearer $KEY" "$API/v1/api-keys/<that_key_id>"` → **422** (or wrapped 409) with message containing "last active secret/platform key".
+- [ ] **Server**: same with one active `platform` key → blocked.
+- [ ] **Server**: tenant has one active `publishable` key (no secret/platform) → revoking the publishable **succeeds** — publishables don't count toward the safeguard.
+- [ ] **Server**: tenant has one secret + one publishable → revoking the publishable succeeds. Revoking the secret → **blocked** (would leave only publishable, can't manage keys).
+- [ ] **Server**: tenant has two active secrets → revoking either succeeds.
+- [ ] **UI**: on the API Keys page, when the tenant has only one active secret/platform key, that row's Revoke button is **disabled** with `cursor-not-allowed`; hovering shows tooltip "Cannot revoke the only active secret/platform key — create another first."
+- [ ] **UI**: after creating a second secret key, the first key's Revoke button becomes enabled again (list refetch + safeguard recompute).
+
+### Cookie fan-out on revoke (cross-key)
+
+When operator A's session was minted from KEY_A and a *different* operator's
+key KEY_B is revoked, KEY_B's cookies must die in the same request.
+
+- [ ] Sign in via KEY_A → `velox_session` cookie minted; verify a row in `dashboard_sessions` for KEY_A.
+- [ ] In a separate browser (or curl), exchange KEY_B for a cookie too. Now `dashboard_sessions` has rows for both keys.
+- [ ] From the KEY_A session, revoke KEY_B via the API Keys page (or `DELETE /v1/api-keys/<KEY_B_id>` with `Authorization: Bearer $KEY_A`).
+- [ ] Verify: `SELECT revoked_at FROM dashboard_sessions WHERE key_id = '<KEY_B_id>';` — every row has `revoked_at NOT NULL`.
+- [ ] Verify: KEY_B's browser session, on its next request → 401 `invalid or expired session`.
+- [ ] Verify: KEY_A's session is unaffected (cookie still works).
+
+### Rotate-with-grace doesn't fan out
+
+`POST /v1/api-keys/<id>/rotate` with `expires_in_seconds=300` keeps the
+old key valid through the grace window — sessions on it stay alive too.
+
+- [ ] Sign in via KEY_X → cookie minted, session row exists.
+- [ ] Rotate KEY_X with `expires_in_seconds=300`. Verify the new key is created and old key has `expires_at` ~5 min out.
+- [ ] Verify: `SELECT revoked_at FROM dashboard_sessions WHERE key_id = '<KEY_X_id>';` — row's `revoked_at IS NULL`. Cookie still works.
+- [ ] Rotate a different key with `expires_in_seconds=0` (immediate cutover) → that key's sessions DO get revoked (fan-out fires same as direct revoke).
+
+### Self-revoke remains blocked
+
+The handler refuses self-revoke (returns 422 `self_revoke`) regardless of
+the safeguard. This is independent of the lockout rule — even with a
+spare key in place, you cannot revoke the key your own request rode in on.
+
+- [ ] Bearer using KEY_A: `curl -X DELETE -H "Authorization: Bearer $KEY_A" "$API/v1/api-keys/<KEY_A_id>"` → **422** with code `self_revoke`.
+- [ ] Cookie session minted from KEY_A: same DELETE via the dashboard `apiRequest` → 422. UI surfaces this as a generic error toast (button is disabled in the dashboard so the request shouldn't fire from the UI in the first place; defense-in-depth).
 
 ---
 
@@ -678,19 +724,64 @@ Backed by `DELETE /v1/recipes/instances/{id}`. Uninstall is **no-cascade by desi
 - [ ] GET /v1/invoices/{id}/payment-timeline → all attempts with ts, amount, status, PI id
 - [ ] For a failed-then-succeeded invoice, both attempts are shown in order
 
-## FLOW I5b: Operator context card (issue #10)
+## FLOW I5b: Invoice Attention banner (ADR-009)
 
-Stripe-parity diagnostic panel that explains WHY an invoice is stuck. Renders
-above the invoice document for non-terminal pending-like states; muted background
-+ info icon, no destructive styling. Sources tax/payment fields from the invoice
-itself and dunning state from `GET /v1/dunning/runs?invoice_id=...`.
+Unified "this invoice needs operator attention" surface. Server-derived from
+the invoice's durable fields (`tax_status`, `tax_error_code`, `payment_status`,
+`last_payment_error`, `payment_overdue`, `auto_charge_pending`). Renders as a
+severity-tinted banner above the invoice document with a typed reason badge,
+human message, prescribed action buttons, optional `doc_url` "Learn more" link,
+and a collapsible "Provider response" disclosure.
 
-- [ ] Pending invoice with `tax_status='pending'` → card renders with "Tax calculation deferred — `<reason>` (retry N)" diagnosis; tax-status badge + retries + deferred-at rows
-- [ ] Pending invoice with `last_payment_error` populated → card shows "Payment failed: `<reason>`" diagnosis; last-payment-failure row + payment-intent ID row
-- [ ] Invoice with `payment_status='unknown'` → diagnosis reads "Stripe returned an ambiguous outcome — reconciliation in progress"
-- [ ] Voided invoice (Velox's stand-in for uncollectible) → diagnosis reads "Marked uncollectible — manual write-off path"
-- [ ] Invoice with active dunning run → "Dunning" row shows state badge + attempt count; "Next retry" row shows scheduled timestamp
-- [ ] Paid / draft invoices → card hidden entirely (no operator context surfaced)
+Healthy and terminal-state invoices (paid, voided) suppress the banner. Drafts
+also suppress — the page already screams DRAFT.
+
+### Critical-tier reasons
+
+- [ ] **tax_location_required** — finalize an invoice for a US customer whose billing profile is missing `postal_code`. The Stripe Tax 422 on calculate causes the engine to defer; the next read shows a red-tinted banner with badge "Customer address required", message about the customer's billing profile, code `tax.customer_data_invalid`, primary action **Edit billing profile** (deep-links to `/customers/<id>`), secondary **Retry tax**.
+- [ ] **tax_calculation_failed** (provider outage) — simulate by temporarily revoking the tenant's Stripe key in Settings → Payments. Trigger billing → engine defers with `provider_auth` code → banner shows "Tax calculation failed", code `tax.provider_auth`, primary action **Rotate API key** (deep-links to `/settings`).
+- [ ] **payment_failed** — invoice with `payment_status='failed'` (use Stripe test card `4000 0000 0000 9995`) → red-tinted banner, code `payment.declined`, message is the truncated `last_payment_error`, action **Retry payment** (currently disabled — wiring deferred).
+
+### Warning-tier reasons
+
+- [ ] **tax_calculation_failed (pending)** — same as the failed variants above but `tax_status='pending'` (retry worker hasn't exhausted yet) → amber-tinted banner with same code/actions but Severity = warning.
+- [ ] **overdue** — finalized invoice past `due_at`, still unpaid → amber banner with reason "Past due", code `lifecycle.overdue`, actions **Charge now** + **Send reminder** (Send disabled — wiring deferred).
+
+### Info-tier reasons
+
+- [ ] **payment_processing** — `payment_status='processing'` → muted banner "Payment processing — payment is in flight at the provider", no actions.
+- [ ] **payment_scheduled** — finalized invoice with `auto_charge_pending=true` → muted banner "Auto-charge scheduled — the engine will attempt the charge on its next tick", primary action **Charge now**.
+- [ ] **awaiting_payment** — finalized invoice, `payment_status='pending'`, no auto-charge queued → muted banner "Awaiting payment — invoice is finalized and awaiting payment. No charge attempt has fired yet", actions **Charge now** + **Send reminder**.
+
+### Banner shape (any reason)
+
+- [ ] Severity styling: `critical` = red border + red-tinted bg + `AlertCircle` icon; `warning` = amber border + amber-tinted bg + `AlertTriangle` icon; `info` = muted border + muted bg + `Info` icon.
+- [ ] Reason badge displays the human label (mapped from `attention.reason` typed code). Open dotted `attention.code` shows next to it in monospace muted text.
+- [ ] `attention.since` renders as relative time ("2h ago", "3d ago"). For tax reasons it's `tax_deferred_at`; for `overdue` it's `due_at`; for `payment_*` it's `updated_at`.
+- [ ] `attention.doc_url` renders as a "Learn more ↗" Button.ghost link beside the actions. The URL points at `https://docs.velox.dev/errors/<reason>`.
+- [ ] `attention.detail` (raw provider payload, e.g. Stripe Tax JSON envelope) renders inside a `<details>` disclosure labeled "Provider response", code-formatted, monospace.
+- [ ] **Healthy** invoice (status=finalized, payment_status=succeeded, tax_status=ok) → banner is omitted entirely (no `attention` key in the API response).
+- [ ] **Paid / voided** invoice → banner suppressed regardless of underlying field state.
+- [ ] **Draft** invoice → banner suppressed (the page's existing DRAFT pill + "Draft invoice — finalize to issue and begin collection." hint cover this state).
+
+### Retry tax flow (operator action)
+
+- [ ] Tax-deferred invoice (banner showing) → click **Retry tax**. Button shows "Retrying…" while pending. `POST /v1/invoices/{id}/retry-tax` is fired.
+- [ ] Server: `audit_logs` table gets a row with `action='retry_tax'`, `resource_type='invoice'`, and metadata containing `before_attention` + `after_attention` reason codes.
+- [ ] If the underlying issue was fixed (e.g. customer postal code now set) → response invoice has `tax_status='ok'`, `tax_error_code` cleared, banner disappears on the page refresh, toast "Tax recalculated successfully".
+- [ ] If still failing → response invoice still has `tax_status='pending'/'failed'` with a possibly-different `tax_error_code` (e.g. transient provider outage → permanent jurisdiction issue). Banner refreshes with the new reason. Toast "Tax retry attempted — still pending. See the attention card for the latest reason."
+- [ ] Idempotent under retry: each click increments `tax_retry_count` (visible via SQL or via re-deferral history). Concurrent clicks do not corrupt state.
+- [ ] Gate: revoking-tax on a non-pending/non-failed invoice (e.g. status=finalized + tax_status=ok) → 409 `InvalidState`.
+
+### List-row attention chip
+
+- [ ] On `/invoices`, every row whose `invoice.attention.severity != null` shows a small severity-tinted dot next to the invoice number (red/amber/blue for critical/warning/info). Hovering surfaces the typed reason + message via `title` tooltip.
+- [ ] Healthy invoices show no dot. Drafts also show no dot — Attention is suppressed.
+
+### Draft pill cleanup (related)
+
+- [ ] Invoices list, Dashboard recent-invoices, SubscriptionDetail invoices table: rows with `status='draft'` show a "draft" pill (Dashboard) or em dash (Invoices, SubscriptionDetail) in place of the misleading `payment_status='pending'` pill. (Pre-fix: both pills rendered side-by-side, making drafts look stuck on payment.)
+- [ ] InvoiceDetail header on a draft row shows the muted hint "Draft invoice — finalize to issue and begin collection." just below the id/copy row.
 
 ## FLOW I6: Email + PDF preview
 
