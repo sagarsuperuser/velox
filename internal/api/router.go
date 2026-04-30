@@ -810,7 +810,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		})
 
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/api-keys", authH.Routes())
-		r.With(auth.Require(auth.PermCustomerRead)).Mount("/customers", customerH.Routes())
+		// /customers subtree mixes reads (GET list/get/billing-profile) and
+		// writes (POST create, PATCH update, PUT billing-profile, GDPR
+		// delete-data). RequireMethod splits the gate by HTTP method so a
+		// publishable key (customer:read only) can list/get but cannot
+		// create/update/delete. Pre-fix the entire subtree was gated on
+		// PermCustomerRead, letting any read-tier key write.
+		r.With(auth.RequireMethod(auth.PermCustomerRead, auth.PermCustomerWrite)).Mount("/customers", customerH.Routes())
 		// Customer-scoped coupon assignment. Mounted as a sibling of
 		// /customers so GET/POST/DELETE can carry independent permission
 		// guards (attach/revoke need write, get needs read) without
@@ -826,7 +832,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Mount("/customers/{id}/usage", customerUsageH.CustomerUsageRoutes(
 			auth.Require(auth.PermUsageRead),
 		))
-		r.With(auth.Require(auth.PermPricingRead)).Mount("/meters", pricingH.MeterRoutes())
+		r.With(auth.RequireMethod(auth.PermPricingRead, auth.PermPricingWrite)).Mount("/meters", pricingH.MeterRoutes())
 		// Meter-scoped pricing rule subtree. Mounted as a sibling of
 		// /meters so reads (PermPricingRead) and writes (PermPricingWrite)
 		// can carry independent guards without nesting permission middleware.
@@ -834,21 +840,21 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 			auth.Require(auth.PermPricingRead),
 			auth.Require(auth.PermPricingWrite),
 		))
-		r.With(auth.Require(auth.PermPricingRead)).Mount("/plans", pricingH.PlanRoutes())
-		r.With(auth.Require(auth.PermPricingRead)).Mount("/rating-rules", pricingH.RatingRuleRoutes())
+		r.With(auth.RequireMethod(auth.PermPricingRead, auth.PermPricingWrite)).Mount("/plans", pricingH.PlanRoutes())
+		r.With(auth.RequireMethod(auth.PermPricingRead, auth.PermPricingWrite)).Mount("/rating-rules", pricingH.RatingRuleRoutes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/recipes", recipeH.Routes())
-		r.With(auth.Require(auth.PermSubscriptionRead)).Mount("/subscriptions", subH.Routes())
+		r.With(auth.RequireMethod(auth.PermSubscriptionRead, auth.PermSubscriptionWrite)).Mount("/subscriptions", subH.Routes())
 		// Backfill is mounted ahead of the /usage-events subtree so chi picks
 		// the more-specific pattern; PermUsageWrite gates it to secret-tier
 		// keys (publishable keys are read-only).
 		r.With(auth.Require(auth.PermUsageWrite)).Post("/usage-events/backfill", usageH.Backfill)
-		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-events", usageH.Routes())
+		r.With(auth.RequireMethod(auth.PermUsageRead, auth.PermUsageWrite)).Mount("/usage-events", usageH.Routes())
 		// create_preview must mount BEFORE /invoices because chi tries
 		// patterns in registration order — once /invoices is mounted with
 		// /{id}/... children, "create_preview" would be claimed as an
 		// invoice ID. See docs/design-create-preview.md.
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices/create_preview", createPreviewH.Routes())
-		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices", invoiceH.Routes())
+		r.With(auth.RequireMethod(auth.PermInvoiceRead, auth.PermInvoiceWrite)).Mount("/invoices", invoiceH.Routes())
 		// Plan migration tool — operator-only bulk plan swap. Both preview
 		// and commit are write-grade (cohort can be sensitive even when no
 		// DB mutation occurs), so PermSubscriptionWrite gates the whole
@@ -863,7 +869,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/price-overrides", pricingH.OverrideRoutes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/coupons", couponH.Routes())
 		r.With(auth.Require(auth.PermCustomerWrite)).Mount("/credits", creditH.Routes())
-		r.With(auth.Require(auth.PermDunningRead)).Mount("/dunning", dunningH.Routes())
+		r.With(auth.RequireMethod(auth.PermDunningRead, auth.PermDunningWrite)).Mount("/dunning", dunningH.Routes())
 		// /billing/alerts must mount BEFORE /billing because chi tries
 		// patterns in registration order — once /billing is mounted with
 		// /{id}/... children, "alerts" would be claimed as a billing-job
