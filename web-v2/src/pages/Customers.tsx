@@ -20,13 +20,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
-import { Checkbox } from '@/components/ui/checkbox'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import {
   Dialog,
   DialogContent,
@@ -62,7 +55,7 @@ import {
 } from '@/components/ui/form'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Users, Layers, ChevronDown } from 'lucide-react'
+import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Users } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 
 const createCustomerSchema = z.object({
@@ -100,10 +93,6 @@ function SortableHead({
 
 export default function CustomersPage() {
   const [showCreate, setShowCreate] = useState(false)
-  // Selected customer IDs for bulk actions. Selection is page-scoped so
-  // operators see exactly what's about to be acted on; the list is also
-  // limited (see PAGE_SIZE) so a misclick can't select the whole tenant.
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [urlState, setUrlState] = useUrlState({
     search: '',
     status: '',
@@ -179,48 +168,6 @@ export default function CustomersPage() {
     createMutation.mutate(data)
   })
 
-  // toggleSelected flips one row's selection. We keep the Set in a fresh
-  // reference each call so React diff'ing picks it up.
-  const toggleSelected = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  // toggleSelectAll selects every customer in the current page slice; we
-  // explicitly refuse to select across pages because /v1/admin/bulk_actions
-  // caps a single run at 500 server-side and an operator selecting "all" on
-  // a 5,000-tenant deployment would silently truncate.
-  const allCurrentPageSelected =
-    sorted.length > 0 && sorted.every((c: Customer) => selectedIds.has(c.id))
-  const toggleSelectAll = () => {
-    setSelectedIds((prev) => {
-      if (allCurrentPageSelected) {
-        const next = new Set(prev)
-        sorted.forEach((c: Customer) => next.delete(c.id))
-        return next
-      }
-      const next = new Set(prev)
-      sorted.forEach((c: Customer) => next.add(c.id))
-      return next
-    })
-  }
-
-  // navigateToBulkActions jumps to /bulk-actions pre-scoped to the
-  // current selection. We could open a drawer here but the dedicated
-  // page is richer (recent runs sidebar, error inspection) and the
-  // selection round-trips via location.state without leaking IDs into
-  // the URL.
-  const navigateToBulkActions = () => {
-    if (selectedIds.size === 0) return
-    navigate('/bulk-actions', {
-      state: { customer_ids: Array.from(selectedIds) },
-    })
-  }
-
   const handleExport = () => {
     api.listCustomers().then(res => {
       const rows = res.data.map((c: Customer) => [
@@ -243,23 +190,6 @@ export default function CustomersPage() {
           <p className="text-sm text-muted-foreground mt-1">Manage customers and billing profiles{total > 0 ? ` · ${total} total` : ''}</p>
         </div>
         <div className="flex items-center gap-2">
-          {selectedIds.size > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger render={<Button size="sm" variant="outline" />}>
-                <Layers size={16} className="mr-2" />
-                Bulk actions ({selectedIds.size})
-                <ChevronDown size={14} className="ml-1.5" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem onClick={navigateToBulkActions}>
-                  Apply coupon to selected
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={navigateToBulkActions}>
-                  Schedule cancel on selected
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
           {total > 0 && (
             <Button variant="outline" size="sm" onClick={handleExport}>
               <Download size={16} className="mr-2" />
@@ -352,13 +282,6 @@ export default function CustomersPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-10">
-                      <Checkbox
-                        checked={allCurrentPageSelected}
-                        onCheckedChange={toggleSelectAll}
-                        aria-label={allCurrentPageSelected ? 'Deselect all on this page' : 'Select all on this page'}
-                      />
-                    </TableHead>
                     <SortableHead label="Name" sortKey="display_name" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                     <TableHead className="text-xs font-medium">External ID</TableHead>
                     <SortableHead label="Email" sortKey="email" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} />
@@ -373,18 +296,10 @@ export default function CustomersPage() {
                       className={cn('cursor-pointer hover:bg-muted/50 transition-colors border-l-[3px]', statusBorderColor(c.status))}
                       onClick={(e) => {
                         const target = e.target as HTMLElement
-                        // Don't navigate if click was on the checkbox or any control
-                        if (target.closest('button, a, input, select, [data-slot="checkbox"], [data-slot="checkbox-indicator"]')) return
+                        if (target.closest('button, a, input, select')) return
                         navigate(`/customers/${c.id}`)
                       }}
                     >
-                      <TableCell className="w-10" onClick={(e) => e.stopPropagation()}>
-                        <Checkbox
-                          checked={selectedIds.has(c.id)}
-                          onCheckedChange={() => toggleSelected(c.id)}
-                          aria-label={selectedIds.has(c.id) ? `Deselect ${c.display_name}` : `Select ${c.display_name}`}
-                        />
-                      </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2.5">
                           <InitialsAvatar name={c.display_name} />
