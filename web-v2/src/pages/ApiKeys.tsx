@@ -400,9 +400,18 @@ export default function ApiKeysPage() {
 
 type ExpiryPreset = 'never' | '30d' | '90d' | '1y' | 'custom'
 
+// addDays rolls the date N days forward and pins it to end-of-day in
+// the browser's local timezone (23:59:59.999). Matches the custom-
+// date branch (which uses T23:59:59 on the picked day) so a "30d"
+// preset and a custom-date "30 days from now" pick produce the
+// same expiry. Without the time normalization, presets behaved as
+// rolling-24h (30d created at 14:30 expired at 14:30 thirty days
+// later) and contradicted the operator's "valid through this day"
+// intent. Matches GitHub PAT / Auth0-admin convention.
 function addDays(days: number): string {
   const d = new Date()
   d.setDate(d.getDate() + days)
+  d.setHours(23, 59, 59, 999)
   return d.toISOString()
 }
 
