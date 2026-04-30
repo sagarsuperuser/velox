@@ -148,14 +148,20 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 	if filter.ActorID != "" {
 		where += andClause(&idx, "al.actor_id", &args, filter.ActorID)
 	}
+	// Accept either a full RFC3339 instant (preferred — the dashboard
+	// sends start/end-of-day in tenant TZ as UTC ISO) or a bare
+	// yyyy-mm-dd date (legacy — interpreted as UTC midnight). The
+	// dashboard moved to ISO instants in commit b523c71 and onward;
+	// the date-only branch stays for any direct curl users that
+	// haven't migrated. See ADR-010 for the tenant-TZ model.
 	if filter.DateFrom != "" {
 		where += fmt.Sprintf(" AND al.created_at >= $%d", idx)
-		args = append(args, filter.DateFrom+"T00:00:00Z")
+		args = append(args, normalizeDateFilter(filter.DateFrom, false))
 		idx++
 	}
 	if filter.DateTo != "" {
 		where += fmt.Sprintf(" AND al.created_at <= $%d", idx)
-		args = append(args, filter.DateTo+"T23:59:59Z")
+		args = append(args, normalizeDateFilter(filter.DateTo, true))
 		idx++
 	}
 
@@ -267,4 +273,21 @@ func andClause(idx *int, col string, args *[]any, val string) string {
 	*args = append(*args, val)
 	*idx++
 	return clause
+}
+
+// normalizeDateFilter accepts either an RFC3339 instant
+// (e.g. "2026-05-04T18:30:00Z" — what the dashboard sends, derived
+// from tenant TZ start/end-of-day) or a bare yyyy-mm-dd date string
+// (legacy — interpreted as UTC midnight). Returns a string suitable
+// for a TIMESTAMPTZ comparison. endOfDay=true uses 23:59:59 instead
+// of 00:00:00 for the date-only branch so date_to filters
+// inclusively. See ADR-010.
+func normalizeDateFilter(val string, endOfDay bool) string {
+	if _, err := time.Parse(time.RFC3339, val); err == nil {
+		return val
+	}
+	if endOfDay {
+		return val + "T23:59:59Z"
+	}
+	return val + "T00:00:00Z"
 }

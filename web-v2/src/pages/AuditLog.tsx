@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api, formatDateTime } from '@/lib/api'
+import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { AuditEntry } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
@@ -186,8 +187,13 @@ export default function AuditLogPage() {
     if (action) params.set('action', action)
     if (resourceIdFilter) params.set('resource_id', resourceIdFilter)
     if (actorFilter) params.set('actor_id', actorFilter)
-    if (dateFrom) params.set('date_from', dateFrom)
-    if (dateTo) params.set('date_to', dateTo)
+    // Send tenant-TZ-grounded UTC instants (start-of-day for from,
+    // end-of-day for to) instead of bare yyyy-mm-dd strings — so an
+    // operator picking "May 5" in IST gets the same window as one
+    // picking it in PST for the same tenant. Backend's
+    // normalizeDateFilter accepts both formats. ADR-010.
+    if (dateFrom) params.set('date_from', startOfDayInTZ(dateFrom))
+    if (dateTo) params.set('date_to', endOfDayInTZ(dateTo))
     const qs = params.toString()
     api.listAuditLog(qs)
       .then(res => { setEntries(res.data || []); setTotal(res.total || 0); setLoading(false) })

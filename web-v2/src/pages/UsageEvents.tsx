@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, formatDateTime } from '@/lib/api'
+import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { Customer, Meter, UsageEvent, UsageEventsAggregate } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
@@ -81,8 +82,13 @@ export default function UsageEventsPage() {
     const parts: string[] = []
     if (filterCustomer) parts.push(`customer_id=${filterCustomer}`)
     if (filterMeter) parts.push(`meter_id=${filterMeter}`)
-    if (filterFrom) parts.push(`from=${new Date(filterFrom).toISOString()}`)
-    if (filterTo) parts.push(`to=${new Date(filterTo + 'T23:59:59').toISOString()}`)
+    // Convert picked civil dates to UTC instants of start/end of day
+    // in tenant TZ. Pre-fix this used new Date(yyyymmdd).toISOString()
+    // which interprets the input string in BROWSER local TZ, so two
+    // operators in different TZs filtering "from May 5" got
+    // different results. ADR-010.
+    if (filterFrom) parts.push(`from=${startOfDayInTZ(filterFrom)}`)
+    if (filterTo) parts.push(`to=${endOfDayInTZ(filterTo)}`)
     if (filterDim) parts.push(`dimensions=${encodeURIComponent(filterDim)}`)
     return parts.join('&')
   }, [filterCustomer, filterMeter, filterFrom, filterTo, filterDim])
