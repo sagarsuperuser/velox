@@ -49,10 +49,6 @@ func (h *Handler) Routes() chi.Router {
 		r.Put("/", h.upsertBillingProfile)
 		r.Get("/", h.getBillingProfile)
 	})
-	// Cost-dashboard token rotation. Operator-authenticated (api-key
-	// guard sits above the mount in router.go); the public read-side
-	// is mounted separately at /v1/public/cost-dashboard.
-	r.Post("/{id}/rotate-cost-dashboard-token", h.rotateCostDashboardToken)
 	// GDPR endpoints (data export + right to erasure)
 	if h.gdpr != nil {
 		r.Get("/{id}/export", h.gdpr.exportData)

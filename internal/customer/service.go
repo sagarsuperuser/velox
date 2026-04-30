@@ -208,39 +208,6 @@ func (s *Service) GetBillingProfile(ctx context.Context, tenantID, customerID st
 	return s.store.GetBillingProfile(ctx, tenantID, customerID)
 }
 
-// RotateCostDashboardToken mints a fresh cost-dashboard URL token for the
-// given customer, invalidating any previous token. The previous token (if
-// any) is replaced atomically by the SQL UPDATE — once Set returns, the
-// old URL is dead and the returned token is the only one that resolves.
-//
-// Returns errs.ErrNotFound if the customer doesn't exist (or belongs to
-// another tenant — the existence-check uses RLS via Get). Surfacing 404
-// keeps "wrong customer ID" indistinguishable from "wrong tenant", which
-// is the same posture every other tenant-scoped endpoint takes.
-func (s *Service) RotateCostDashboardToken(ctx context.Context, tenantID, customerID string) (string, error) {
-	if _, err := s.store.Get(ctx, tenantID, customerID); err != nil {
-		return "", err
-	}
-	token, err := GenerateCostDashboardToken()
-	if err != nil {
-		return "", err
-	}
-	if err := s.store.SetCostDashboardToken(ctx, tenantID, customerID, token); err != nil {
-		return "", err
-	}
-	return token, nil
-}
-
-// GetByCostDashboardToken resolves a token to its owning customer with
-// no tenant context — the public iframe handler hits this BEFORE it
-// knows which tenant to scope to. The store runs under TxBypass; this
-// service method is the public entry point so callers don't need to
-// reach into the store interface directly. Empty/unknown tokens uniformly
-// surface as errs.ErrNotFound.
-func (s *Service) GetByCostDashboardToken(ctx context.Context, token string) (domain.Customer, error) {
-	return s.store.GetByCostDashboardToken(ctx, token)
-}
-
 func validateEmail(field, email string) error {
 	at := strings.Index(email, "@")
 	if at < 1 {

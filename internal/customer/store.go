@@ -24,20 +24,6 @@ type Store interface {
 	// same path is later reused by provider webhooks (SES/SendGrid) when
 	// wired. Idempotent — repeated calls just refresh the timestamp.
 	MarkEmailBounced(ctx context.Context, tenantID, customerID, reason string) error
-
-	// SetCostDashboardToken writes (or rotates) the cost-dashboard URL
-	// token for one customer. Empty token clears the column (parking
-	// the customer back to "no public URL"). The store enforces the
-	// partial UNIQUE index from migration 0064 — collisions surface as
-	// an error rather than a silent overwrite.
-	SetCostDashboardToken(ctx context.Context, tenantID, customerID, token string) error
-
-	// GetByCostDashboardToken resolves a token to its customer with no
-	// tenant context — the public iframe handler hits this BEFORE it
-	// knows which tenant to scope to. Implementations MUST run under
-	// TxBypass so the lookup spans every tenant; the 256-bit token
-	// itself is the credential.
-	GetByCostDashboardToken(ctx context.Context, token string) (domain.Customer, error)
 }
 
 type ListFilter struct {
