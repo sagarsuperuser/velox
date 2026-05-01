@@ -183,6 +183,27 @@ the engine act" was wrong half the time. Post-this-change,
 real scheduled retries elsewhere. Consumers that mistakenly relied on
 the old shape should switch to `DueBy` for deadline display.
 
+### Two-step framing for `no_payment_method`
+
+Refined post-review: attaching a PM does **not** auto-resolve the
+state. The engine ran at finalize, found no PM, and skipped — and
+crucially, the skip path does NOT set `auto_charge_pending`, so no
+scheduler retry queues either. The operator has to manually trigger
+Collect Payment after attaching a PM.
+
+The message names the second step explicitly:
+
+> "No payment method on file. To charge, attach a method then click
+> Collect Payment. To let the customer pay themselves, share the
+> invoice link."
+
+The Collect Payment button on the invoice detail page is **disabled
+with a tooltip** ("Attach a payment method first") when the customer
+has no PaymentSetup ready. Same disable-with-tooltip pattern Velox
+uses for Finalize-on-tax-failure. The InvoiceAttention banner above
+provides the path forward so the disabled button isn't a dead-end —
+it's a visible constraint with a clear link to the fix.
+
 ### Future enhancements (deferred)
 
 - `NextAttemptAt` for `payment_failed` derived from
@@ -195,6 +216,9 @@ the old shape should switch to `DueBy` for deadline display.
   `send_invoice`) so `no_payment_method` framing can adapt to the
   customer's intended collection method (today the message
   accommodates both implicitly).
+- Auto-fire charge when a PM is attached on a customer with a
+  finalized-pending invoice. Removes the manual second step. Out of
+  scope here — needs a hook on PaymentSetup status changes.
 
 ## Industry references
 
