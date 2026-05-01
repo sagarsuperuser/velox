@@ -99,6 +99,15 @@ type Store interface {
 	// EndTrial action.
 	ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
 
+	// MarkPastDue / MarkUnpaid / RecoverFromPastDue wire the
+	// subscription status off dunning events. Idempotent — re-applying
+	// the same transition is a no-op so dunning replays don't error.
+	// Transitions only fire on compatible source statuses (e.g.
+	// MarkPastDue won't touch a paused or canceled sub). ADR-013.
+	MarkPastDue(ctx context.Context, tenantID, id string, at time.Time) error
+	MarkUnpaid(ctx context.Context, tenantID, id string, at time.Time) error
+	RecoverFromPastDue(ctx context.Context, tenantID, id string, at time.Time) error
+
 	// ExtendTrial atomically updates trial_end_at on a 'trialing' row.
 	// Returns errs.InvalidState if the row's status is not 'trialing' at
 	// UPDATE time (operator already ended the trial, or the row was never

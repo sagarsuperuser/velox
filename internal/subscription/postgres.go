@@ -486,6 +486,88 @@ func (s *PostgresStore) ClearPauseCollection(ctx context.Context, tenantID, id s
 	return sub, nil
 }
 
+// MarkPastDue flips status 'active' → 'past_due' atomically. Called
+// from dunning when StartDunning fires (a payment has failed and
+// retries are scheduled). Idempotent on already-past_due rows; rejects
+// transitions from terminal/incompatible states (paused, canceled,
+// archived) — those operators have stronger semantics than dunning's
+// recovery flow. ADR-013 follow-up.
+func (s *PostgresStore) MarkPastDue(ctx context.Context, tenantID, id string, at time.Time) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE subscriptions
+		SET status = 'past_due', updated_at = $1
+		WHERE id = $2 AND status IN ('active', 'trialing', 'past_due')
+	`, at, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Either the row doesn't exist or it's in a non-transitional
+		// state. Either way we don't want to fail the dunning start
+		// — log-and-continue is the right shape for a status update
+		// that's a label, not the source of truth.
+		return nil
+	}
+	return tx.Commit()
+}
+
+// MarkUnpaid flips 'past_due' → 'unpaid' atomically. Called from
+// dunning when exhaustRun fires (max retries hit). Once in unpaid,
+// the engine generates new cycle invoices as DRAFT instead of
+// finalized — preserves the audit trail without stacking failed
+// charges. Idempotent.
+func (s *PostgresStore) MarkUnpaid(ctx context.Context, tenantID, id string, at time.Time) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE subscriptions
+		SET status = 'unpaid', updated_at = $1
+		WHERE id = $2 AND status IN ('past_due', 'unpaid')
+	`, at, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	return tx.Commit()
+}
+
+// RecoverFromPastDue flips 'past_due' → 'active' atomically. Called
+// from dunning when a retry succeeds. Only valid from past_due —
+// recovering from unpaid requires operator action (see notes on
+// SubscriptionUnpaid). Idempotent on already-active rows.
+func (s *PostgresStore) RecoverFromPastDue(ctx context.Context, tenantID, id string, at time.Time) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE subscriptions
+		SET status = 'active', updated_at = $1
+		WHERE id = $2 AND status = 'past_due'
+	`, at, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	return tx.Commit()
+}
+
 // ActivateAfterTrial flips status 'trialing' → 'active' atomically. Sets
 // activated_at = at if currently NULL (preserves the original activation
 // timestamp on re-runs). Used by the billing engine when the trial window
@@ -681,7 +763,7 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
 		LEFT JOIN test_clocks tc ON tc.id = s.test_clock_id
-		WHERE s.status IN ('active', 'trialing')
+		WHERE s.status IN ('active', 'trialing', 'past_due', 'unpaid')
 		  AND s.livemode = $1
 		  AND s.next_billing_at <= COALESCE(tc.frozen_time, $2)
 		ORDER BY s.next_billing_at ASC LIMIT $3
@@ -1161,7 +1243,7 @@ func (s *PostgresStore) ListWithThresholds(ctx context.Context, livemode bool, l
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
-		WHERE s.status IN ('active', 'trialing')
+		WHERE s.status IN ('active', 'trialing', 'past_due', 'unpaid')
 		  AND s.livemode = $1
 		  AND (s.billing_threshold_amount_gte IS NOT NULL
 		       OR EXISTS (SELECT 1 FROM subscription_item_thresholds sit WHERE sit.subscription_id = s.id))

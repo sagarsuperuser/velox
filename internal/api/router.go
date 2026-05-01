@@ -273,6 +273,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		paymentSetups: customerStore,
 	})
 	dunningSvc.SetSubscriptionPauser(&subscriptionPauserAdapter{svc: subSvc}, invoiceStore)
+	// Project dunning lifecycle onto subscription status (past_due /
+	// unpaid). Adapter resolves invoice → subscription_id, then calls
+	// the corresponding subStore transition. ADR-013 follow-up.
+	dunningSvc.SetSubscriptionStatusUpdater(&subscriptionStatusUpdaterAdapter{
+		invoiceStore: invoiceStore,
+		subStore:     subStore,
+	})
 	dunningSvc.SetEventDispatcher(eventDispatcher)
 	// customer service emits customer.email_bounced when T0-20 bounce
 	// reporting fires; needs the same webhook dispatcher as the other
