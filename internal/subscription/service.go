@@ -17,9 +17,18 @@ import (
 
 var slugPattern = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
+// SettingsReader is the narrow surface this service uses to resolve
+// the tenant's timezone for period-boundary snapping. Optional —
+// nil-safe, falls back to UTC. Avoids importing internal/tenant
+// directly so the dependency graph stays acyclic.
+type SettingsReader interface {
+	Get(ctx context.Context, tenantID string) (domain.TenantSettings, error)
+}
+
 type Service struct {
-	store Store
-	clock clock.Clock
+	store    Store
+	clock    clock.Clock
+	settings SettingsReader
 }
 
 func NewService(store Store, clk clock.Clock) *Service {
@@ -27,6 +36,51 @@ func NewService(store Store, clk clock.Clock) *Service {
 		clk = clock.Real()
 	}
 	return &Service{store: store, clock: clk}
+}
+
+// SetSettingsReader wires the tenant settings reader. Kept as a setter
+// rather than a constructor arg because router.go builds the settings
+// store after the subscription service today; setter avoids a forced
+// re-order. Calls before the setter is wired fall back to UTC for
+// period snapping (tested via the nil branch of tenantLocation).
+func (s *Service) SetSettingsReader(r SettingsReader) {
+	s.settings = r
+}
+
+// tenantLocation resolves the tenant's preferred timezone (ADR-010).
+// Errors and missing/invalid TZ strings collapse to UTC — the snap is
+// a UX improvement over raw timestamps and shouldn't fail the create
+// call when settings are unreadable. ADR-010-aligned with the
+// dashboard's @/lib/dates helpers.
+func (s *Service) tenantLocation(ctx context.Context, tenantID string) *time.Location {
+	if s.settings == nil {
+		return time.UTC
+	}
+	ts, err := s.settings.Get(ctx, tenantID)
+	if err != nil || ts.Timezone == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(ts.Timezone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// beginningOfDayIn snaps `t` to 00:00:00 on its calendar date in `loc`,
+// returned as a UTC instant for storage. Day-grade billing requires
+// this to align UI-displayed dates with proration math (Chargebee /
+// Lago / Recurly default).
+func beginningOfDayIn(t time.Time, loc *time.Location) time.Time {
+	local := t.In(loc)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc).UTC()
+}
+
+// beginningOfMonthIn snaps `t` to the first-of-month-at-00:00 in `loc`,
+// returned as UTC. Calendar-billing anchor.
+func beginningOfMonthIn(t time.Time, loc *time.Location) time.Time {
+	local := t.In(loc)
+	return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc).UTC()
 }
 
 // CreateItemInput is a single priced line the caller wants on a new
@@ -117,6 +171,14 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 
 	var periodStart, periodEnd, nextBilling *time.Time
 
+	// Resolve tenant TZ once for all period-boundary snaps below. Day-
+	// grade billing (Chargebee / Lago default) snaps both endpoints to
+	// 00:00 in tenant TZ so the "Period: <start> - <end>" UI exactly
+	// matches the proration math. Without this, a sub created at 14:00
+	// on the 1st gets billed for 30/31 days even though the UI shows
+	// May 1 → Jun 1 — see service_test.go TestPeriod_DayGradeSnap.
+	loc := s.tenantLocation(ctx, tenantID)
+
 	if input.TrialDays > 0 {
 		ts := now
 		te := now.AddDate(0, 0, input.TrialDays)
@@ -125,14 +187,17 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		status = domain.SubscriptionTrialing
 		startedAt = &now
 		if billingTime == domain.BillingTimeCalendar {
-			ps := beginningOfMonth(te.AddDate(0, 1, 0))
-			pe := ps.AddDate(0, 1, 0)
+			// Trial ends → period starts on first of next month after
+			// trial-end, snapped to 00:00 tenant TZ.
+			ps := beginningOfMonthIn(te.AddDate(0, 1, 0), loc)
+			pe := beginningOfMonthIn(ps.AddDate(0, 1, 0), loc)
 			periodStart = &ps
 			periodEnd = &pe
 			nextBilling = &pe
 		} else {
-			ps := te
-			pe := te.AddDate(0, 1, 0)
+			// Anniversary: period starts at trial-end snapped to 00:00.
+			ps := beginningOfDayIn(te, loc)
+			pe := ps.AddDate(0, 1, 0)
 			periodStart = &ps
 			periodEnd = &pe
 			nextBilling = &pe
@@ -141,14 +206,17 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		status = domain.SubscriptionActive
 		startedAt = &now
 		if billingTime == domain.BillingTimeCalendar {
-			ps := now
-			pe := beginningOfMonth(now).AddDate(0, 1, 0)
+			// Today's start-of-day in tenant TZ → first of next month
+			// at 00:00 in tenant TZ. A sub created at any time on May 1
+			// gets the full first day of May.
+			ps := beginningOfDayIn(now, loc)
+			pe := beginningOfMonthIn(now.AddDate(0, 1, 0), loc)
 			periodStart = &ps
 			periodEnd = &pe
 			nextBilling = &pe
 		} else {
-			ps := now
-			pe := now.AddDate(0, 1, 0)
+			ps := beginningOfDayIn(now, loc)
+			pe := ps.AddDate(0, 1, 0)
 			periodStart = &ps
 			periodEnd = &pe
 			nextBilling = &pe
@@ -202,8 +270,9 @@ func (s *Service) Activate(ctx context.Context, tenantID, id string) (domain.Sub
 	sub.StartedAt = &now
 
 	if sub.CurrentBillingPeriodStart == nil {
-		ps := beginningOfMonth(now)
-		pe := ps.AddDate(0, 1, 0)
+		loc := s.tenantLocation(ctx, tenantID)
+		ps := beginningOfMonthIn(now, loc)
+		pe := beginningOfMonthIn(now.AddDate(0, 1, 0), loc)
 		sub.CurrentBillingPeriodStart = &ps
 		sub.CurrentBillingPeriodEnd = &pe
 		sub.NextBillingAt = &pe
@@ -662,6 +731,3 @@ func (s *Service) ClearBillingThresholds(ctx context.Context, tenantID, id strin
 	return s.store.ClearBillingThresholds(ctx, tenantID, id)
 }
 
-func beginningOfMonth(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
-}
