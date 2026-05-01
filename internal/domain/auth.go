@@ -2,22 +2,6 @@ package domain
 
 import "time"
 
-type UserStatus string
-
-const (
-	UserActive   UserStatus = "active"
-	UserDisabled UserStatus = "disabled"
-)
-
-type User struct {
-	ID          string     `json:"id"`
-	Email       string     `json:"email"`
-	DisplayName string     `json:"display_name"`
-	Status      UserStatus `json:"status"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-}
-
 type APIKey struct {
 	ID         string     `json:"id"`
 	KeyPrefix  string     `json:"key_prefix"`

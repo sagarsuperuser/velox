@@ -14,6 +14,7 @@ type contextKey string
 const (
 	tenantIDKey contextKey = "tenant_id"
 	apiKeyIDKey contextKey = "api_key_id"
+	userIDKey   contextKey = "user_id"
 	keyTypeKey  contextKey = "key_type"
 )
 
@@ -119,6 +120,21 @@ func KeyID(ctx context.Context) string {
 // resolve a credential to a key context themselves.
 func WithKeyID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, apiKeyIDKey, id)
+}
+
+// UserID returns the dashboard user id resolved from the cookie
+// session, or "" if the request is on the Bearer (API-key) path.
+// Audit log entries use UserID for cookie-authed requests and KeyID
+// for Bearer-authed requests as the actor identifier.
+func UserID(ctx context.Context) string {
+	v, _ := ctx.Value(userIDKey).(string)
+	return v
+}
+
+// WithUserID is the setter counterpart to UserID. Called by the
+// session middleware when a cookie resolves to a user-bound session.
+func WithUserID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, userIDKey, id)
 }
 
 func GetKeyType(ctx context.Context) KeyType {
