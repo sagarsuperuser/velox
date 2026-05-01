@@ -945,23 +945,11 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 			Currency:    inv.Currency,
 		})
 	}
-	// Due-by anchor — passive deadline marker, NOT a scheduled engine
-	// action. Auto-charge fires at finalize (engine.go:1364), not at
-	// due_at; with no PM, the engine never auto-charges at all. The
-	// previous "Auto-charge scheduled at due_at" event was misleading
-	// for both auto-charge invoices (charge already happened or
-	// failed) and send-invoice invoices (engine never schedules).
-	// Surface due_at as a deadline, only when the invoice is still
-	// open and has a real due_at.
-	if inv.Status == domain.InvoiceFinalized && inv.PaymentStatus == domain.PaymentPending && inv.DueAt != nil {
-		events = append(events, timelineEvent{
-			Timestamp:   inv.DueAt.Format(time.RFC3339),
-			Source:      "lifecycle",
-			EventType:   "invoice.due_by",
-			Status:      "scheduled",
-			Description: "Payment deadline",
-		})
-	}
+	// (Removed: synthetic "Payment deadline" event keyed off due_at.
+	// Activity is for things that happened — charges, state
+	// transitions, dunning attempts. A future deadline isn't an
+	// activity. The deadline is already surfaced honestly in the
+	// invoice header and the InvoiceAttention banner's `DueBy` line.)
 	if inv.VoidedAt != nil {
 		events = append(events, timelineEvent{
 			Timestamp:   inv.VoidedAt.Format(time.RFC3339),
