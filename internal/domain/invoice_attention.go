@@ -187,6 +187,16 @@ type Attention struct {
 	// updated_at as a proxy for payment_failed/unconfirmed (we don't
 	// track a precise failed_at timestamp).
 	Since *time.Time `json:"since,omitempty"`
+
+	// NextAttemptAt is when the engine will next try to make this
+	// invoice progress automatically — typically the queued auto-charge
+	// time for awaiting_payment / payment_scheduled, or the next
+	// dunning retry for payment_failed. Surfacing this converts the
+	// operator's "is this stuck?" uncertainty into a visible commitment.
+	// Stripe / Vercel pattern (every state has the next ETA visible).
+	// Empty when the system has no scheduled action (paid, voided,
+	// terminal failure).
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
 }
 
 // docBaseURL is the doc site root for operator-facing error pages. Kept
@@ -381,7 +391,8 @@ func classifyPaymentScheduled(inv Invoice) *Attention {
 		Actions: []AttentionActionItem{
 			{Code: AttentionActionChargeNow, Label: "Charge now"},
 		},
-		Since: &since,
+		Since:         &since,
+		NextAttemptAt: inv.DueAt,
 	}
 }
 
@@ -402,7 +413,8 @@ func classifyAwaitingPayment(inv Invoice) *Attention {
 			{Code: AttentionActionChargeNow, Label: "Charge now"},
 			{Code: AttentionActionSendReminder, Label: "Send reminder"},
 		},
-		Since: &since,
+		Since:         &since,
+		NextAttemptAt: inv.DueAt,
 	}
 }
 

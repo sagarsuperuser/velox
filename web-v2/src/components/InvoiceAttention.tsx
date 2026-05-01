@@ -1,11 +1,12 @@
 import { Link } from 'react-router-dom'
-import { AlertTriangle, AlertCircle, Info, ExternalLink } from 'lucide-react'
+import { AlertTriangle, AlertCircle, Info, ExternalLink, Calendar } from 'lucide-react'
 import type {
   Invoice,
   InvoiceAttention as Attention,
   AttentionAction,
   AttentionSeverity,
 } from '@/lib/api'
+import { formatDateTime } from '@/lib/api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -67,6 +68,12 @@ export function InvoiceAttention({
               )}
             </div>
             <p className="text-sm text-foreground">{att.message}</p>
+            {att.next_attempt_at && (
+              <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Calendar size={11} className="shrink-0" />
+                Next scheduled action: <span className="text-foreground">{formatDateTime(att.next_attempt_at)}</span>
+              </p>
+            )}
           </div>
         </div>
 

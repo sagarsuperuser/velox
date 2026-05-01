@@ -921,6 +921,67 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 
 	var events []timelineEvent
 
+	// Lifecycle events synthesised from invoice columns. Without these,
+	// freshly-finalized invoices that haven't seen a Stripe charge yet
+	// render an empty timeline — operators have no chronology to read.
+	// Mirrors Stripe's "Invoice activity" section which always anchors
+	// on Created → Finalized regardless of payment progress.
+	events = append(events, timelineEvent{
+		Timestamp:   inv.CreatedAt.Format(time.RFC3339),
+		Source:      "lifecycle",
+		EventType:   "invoice.created",
+		Status:      "succeeded",
+		Description: "Invoice created",
+	})
+	if inv.IssuedAt != nil {
+		amt := inv.AmountDueCents
+		events = append(events, timelineEvent{
+			Timestamp:   inv.IssuedAt.Format(time.RFC3339),
+			Source:      "lifecycle",
+			EventType:   "invoice.finalized",
+			Status:      "succeeded",
+			Description: "Invoice finalized",
+			AmountCents: &amt,
+			Currency:    inv.Currency,
+		})
+	}
+	// Auto-charge ETA — only meaningful while the invoice is still
+	// awaiting/scheduled. Once status flips, the actual attempt event
+	// from Stripe webhooks supersedes it on the timeline.
+	if inv.Status == domain.InvoiceFinalized && inv.PaymentStatus == domain.PaymentPending && inv.DueAt != nil {
+		amt := inv.AmountDueCents
+		events = append(events, timelineEvent{
+			Timestamp:   inv.DueAt.Format(time.RFC3339),
+			Source:      "lifecycle",
+			EventType:   "invoice.auto_charge_scheduled",
+			Status:      "scheduled",
+			Description: "Auto-charge scheduled",
+			AmountCents: &amt,
+			Currency:    inv.Currency,
+		})
+	}
+	if inv.VoidedAt != nil {
+		events = append(events, timelineEvent{
+			Timestamp:   inv.VoidedAt.Format(time.RFC3339),
+			Source:      "lifecycle",
+			EventType:   "invoice.voided",
+			Status:      "canceled",
+			Description: "Invoice voided",
+		})
+	}
+	if inv.PaidAt != nil {
+		amt := inv.AmountPaidCents
+		events = append(events, timelineEvent{
+			Timestamp:   inv.PaidAt.Format(time.RFC3339),
+			Source:      "lifecycle",
+			EventType:   "invoice.paid",
+			Status:      "succeeded",
+			Description: "Invoice paid",
+			AmountCents: &amt,
+			Currency:    inv.Currency,
+		})
+	}
+
 	// Fetch Stripe webhook events — only operator-relevant ones
 	if h.webhookEvents != nil {
 		webhookEvts, err := h.webhookEvents.ListByInvoice(r.Context(), tenantID, id)

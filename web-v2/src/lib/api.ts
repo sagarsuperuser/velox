@@ -697,6 +697,11 @@ export interface InvoiceAttention {
   // ISO timestamp marking when the condition started; operators triage
   // by age.
   since?: string
+  // ISO timestamp of the next scheduled engine action (auto-charge time
+  // for awaiting/scheduled, next dunning retry for failures). Surfacing
+  // this answers the operator's primary "is it stuck?" question with
+  // a visible commitment. Empty for terminal states.
+  next_attempt_at?: string
 }
 
 export interface Invoice {

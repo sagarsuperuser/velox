@@ -35,7 +35,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { Loader2, Mail, CreditCard, Link2, RotateCw, Info } from 'lucide-react'
+import { Loader2, Mail, CreditCard, Link2, RotateCw, Info, CheckCircle2 } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
@@ -63,6 +63,21 @@ function formatCompanyAddressLines(s?: TenantSettings | null): string[] {
 
 function formatLineType(raw: string): string {
   return LINE_TYPE_LABELS[raw] || raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
+// humaniseInvoiceStatus maps the persisted enum to operator-facing
+// copy. Server-side codes (draft/finalized/paid/voided/uncollectible)
+// are stable; UI owns its own labels so wording changes don't require
+// a server roll. Keep matches Stripe Dashboard's column copy.
+function humaniseInvoiceStatus(raw: string): string {
+  const map: Record<string, string> = {
+    draft: 'Draft',
+    finalized: 'Open',
+    paid: 'Paid',
+    voided: 'Voided',
+    uncollectible: 'Uncollectible',
+  }
+  return map[raw] ?? raw
 }
 
 // aggregateTaxByJurisdiction rolls up per-line-item tax amounts into a single
@@ -148,6 +163,18 @@ export default function InvoiceDetailPage() {
     enabled: !!id && invoice?.status !== 'draft',
   })
   const timeline = timelineData ?? []
+
+  // Payment-method snapshot for the success-state card. v1 uses the
+  // customer's current default method as a stand-in for the actual
+  // charged method; if the customer rotated cards after payment we'd
+  // show the new one, which is wrong. A proper fix snapshots
+  // brand+last4 onto the invoice at payment-time (deferred — needs a
+  // schema migration).
+  const { data: paymentSetup } = useQuery({
+    queryKey: ['payment-setup', invoice?.customer_id],
+    queryFn: () => api.getPaymentStatus(invoice!.customer_id),
+    enabled: !!invoice?.customer_id && invoice?.status === 'paid',
+  })
 
   // Dunning runs for this invoice — only fetched when the invoice is in a
   // pending-like state where dunning context is actionable. Drafts and paid
@@ -454,16 +481,14 @@ export default function InvoiceDetailPage() {
             </div>
           </div>
 
-          {/* Status badges */}
+          {/* Header status — single humanised pill. Payment-state detail
+              and operator actions live in the InvoiceAttention banner
+              below; duplicating "payment_awaiting" up here was leaky
+              domain-code and visually noisy. */}
           <div className="flex items-center gap-2 mt-5">
-            <Badge variant={statusVariant(invoice.status)}>{invoice.status}</Badge>
-            {invoice.status === 'finalized' && (
-              <Badge variant={statusVariant(invoice.payment_status)}>{invoice.payment_status}</Badge>
-            )}
-            {invoice.status === 'voided' && (
-              <span className="text-xs font-semibold text-destructive uppercase tracking-wider ml-1">
-                {invoice.voided_at ? `Voided ${formatDate(invoice.voided_at)}` : 'Voided'}
-              </span>
+            <Badge variant={statusVariant(invoice.status)}>{humaniseInvoiceStatus(invoice.status)}</Badge>
+            {invoice.status === 'voided' && invoice.voided_at && (
+              <span className="text-xs text-muted-foreground ml-1">Voided {formatDate(invoice.voided_at)}</span>
             )}
             {invoice.status === 'paid' && invoice.paid_at && (
               <span className="text-xs text-muted-foreground ml-1">Paid {formatDate(invoice.paid_at)}</span>
@@ -810,11 +835,39 @@ export default function InvoiceDetailPage() {
         </Card>
       )}
 
-      {/* Payment Activity Timeline */}
+      {/* Payment-method snapshot — only on paid invoices. Confirms
+          which card was charged so the operator doesn't have to dig
+          through the customer detail page or Stripe Dashboard for
+          settled receipts. */}
+      {invoice.status === 'paid' && paymentSetup?.card_brand && paymentSetup?.card_last4 && (
+        <Card className="mt-6 border-emerald-500/30 bg-emerald-500/5">
+          <CardContent className="px-6 py-4 flex items-center gap-4">
+            <div className="h-9 w-9 rounded-lg bg-emerald-500/15 flex items-center justify-center shrink-0">
+              <CheckCircle2 size={18} className="text-emerald-600 dark:text-emerald-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground">
+                Paid {invoice.paid_at ? formatDateTime(invoice.paid_at) : ''}
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                <span className="capitalize">{paymentSetup.card_brand}</span> •••• {paymentSetup.card_last4}
+                {invoice.stripe_payment_intent_id && (
+                  <span className="ml-2 font-mono text-[10px]">{invoice.stripe_payment_intent_id}</span>
+                )}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Activity Timeline — chronology of lifecycle + payment events.
+          Replaces the older "Payment Activity" framing now that
+          lifecycle anchors (created, finalized, scheduled) sit
+          alongside Stripe + dunning events. */}
       {timeline.length > 0 && invoice.status !== 'draft' && (
         <Card className={cn('mt-6', invoice.status === 'voided' && 'opacity-60')}>
           <CardHeader>
-            <CardTitle className="text-sm">Payment Activity</CardTitle>
+            <CardTitle className="text-sm">Activity</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="relative">
