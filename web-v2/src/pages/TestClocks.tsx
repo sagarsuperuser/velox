@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 
-import { api, formatDateTime, getTenantTimezone, type TestClock } from '@/lib/api'
+import { api, formatDate, formatDateTime, getTenantTimezone, type TestClock } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { Layout } from '@/components/Layout'
