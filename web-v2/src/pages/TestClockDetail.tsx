@@ -3,7 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
-import { api, formatDate, type TestClock } from '@/lib/api'
+import { api, formatDateTime, getTenantTimezone, type TestClock } from '@/lib/api'
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -162,7 +163,7 @@ export default function TestClockDetailPage() {
             <ClockIcon size={20} className="text-violet-500" />
             <div>
               <p className="text-xs uppercase tracking-wider text-muted-foreground">Current clock time</p>
-              <p className="text-lg font-mono mt-0.5">{formatDate(clock.frozen_time)}</p>
+              <p className="text-lg font-mono mt-0.5">{formatDateTime(clock.frozen_time)}</p>
             </div>
           </div>
         </CardContent>
@@ -201,7 +202,7 @@ export default function TestClockDetailPage() {
                       <p className="text-xs text-muted-foreground mt-0.5 font-mono">{s.id}</p>
                     </div>
                     <div className="text-xs text-muted-foreground shrink-0 text-right">
-                      {s.next_billing_at ? <>Next bill: {formatDate(s.next_billing_at)}</> : 'No next-bill'}
+                      {s.next_billing_at ? <>Next bill: {formatDateTime(s.next_billing_at)}</> : 'No next-bill'}
                     </div>
                   </CardContent>
                 </Card>
@@ -252,12 +253,18 @@ function AdvanceClockDialog({
   onClose: () => void
 }) {
   const queryClient = useQueryClient()
+  // Times shown / picked in tenant TZ so the operator-picked "5pm
+  // tomorrow" matches the tenant's clock and the displayed clock-time
+  // stays internally consistent. ADR-010.
+  const tz = getTenantTimezone() || 'UTC'
+  const toPicker = (d: Date) => formatInTimeZone(d, tz, "yyyy-MM-dd'T'HH:mm")
   // Default to current frozen + 1 hour so the picker isn't blank.
   const defaultNext = useMemo(() => {
     const d = new Date(clock.frozen_time)
     d.setHours(d.getHours() + 1)
-    return d.toISOString().slice(0, 16)
-  }, [clock.frozen_time])
+    return toPicker(d)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clock.frozen_time, tz])
   const [target, setTarget] = useState(defaultNext)
   const [submitting, setSubmitting] = useState(false)
 
@@ -268,7 +275,7 @@ function AdvanceClockDialog({
   ]
   const applyPreset = (ms: number) => {
     const d = new Date(new Date(clock.frozen_time).getTime() + ms)
-    setTarget(d.toISOString().slice(0, 16))
+    setTarget(toPicker(d))
   }
 
   // Soft warning when the jump exceeds typical sub interval — Stripe caps
@@ -280,7 +287,11 @@ function AdvanceClockDialog({
 
   const handleSubmit = async () => {
     if (!target) return
-    const targetIso = new Date(target).toISOString()
+    // Re-ground the picker output as wall-clock-in-tenant-TZ → UTC
+    // ISO. Without this, the browser would interpret the picker's
+    // YYYY-MM-DDTHH:mm as local time and the result would skew by
+    // (tenant_TZ_offset − browser_TZ_offset).
+    const targetIso = fromZonedTime(target, tz).toISOString()
     if (new Date(targetIso) <= new Date(clock.frozen_time)) {
       toast.error('Target time must be after the current clock time')
       return
@@ -314,7 +325,7 @@ function AdvanceClockDialog({
         <div className="space-y-4">
           <div>
             <Label className="text-xs text-muted-foreground">Current clock time</Label>
-            <p className="text-sm font-mono mt-1">{formatDate(clock.frozen_time)}</p>
+            <p className="text-sm font-mono mt-1">{formatDateTime(clock.frozen_time)}</p>
           </div>
 
           <div>
@@ -331,6 +342,7 @@ function AdvanceClockDialog({
           <div>
             <Label htmlFor="target">Target clock time</Label>
             <Input id="target" type="datetime-local" value={target} onChange={e => setTarget(e.target.value)} className="mt-1.5" />
+            <p className="text-xs text-muted-foreground mt-1.5">Times in tenant timezone ({tz}).</p>
           </div>
 
           {overlongWarning && (
