@@ -207,6 +207,30 @@ func (a *customerEmailFetcherAdapter) GetCustomerEmail(ctx context.Context, tena
 	return email, name, nil
 }
 
+// noPaymentMethodNotifierAdapter bridges payment.EmailPaymentUpdate
+// (the existing payment-update-request email surface used on charge
+// failures) into billing.NoPaymentMethodNotifier so the engine can
+// dispatch the same email at finalize when the customer has no PM
+// ready. Mirrors the path payment.Stripe takes on charge failure
+// (stripe.go:522): resolve customer email, build a payment-update
+// URL, enqueue via the outbox sender. ADR-013.
+type noPaymentMethodNotifierAdapter struct {
+	email            payment.EmailPaymentUpdate
+	customerEmail    *customerEmailFetcherAdapter
+	paymentUpdateURL string
+}
+
+func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error {
+	to, name, err := a.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
+	if err != nil || to == "" {
+		// Skip without erroring — missing email isn't a billing
+		// failure, just a delivery gap. Engine logs the warning.
+		return nil
+	}
+	updateURL := fmt.Sprintf("%s?invoice_id=%s&customer_id=%s", a.paymentUpdateURL, inv.ID, inv.CustomerID)
+	return a.email.SendPaymentUpdateRequest(tenantID, to, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL)
+}
+
 // prorationCreditGranterAdapter bridges credit.Service → subscription.ProrationCreditGranter.
 type prorationCreditGranterAdapter struct {
 	svc *credit.Service

@@ -286,10 +286,17 @@ func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
 		return classifyPaymentUnconfirmed(inv)
 	case inv.PaymentStatus == PaymentProcessing:
 		return classifyPaymentProcessing(inv)
-	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending && inv.AutoChargePending:
-		return classifyPaymentScheduled(inv)
+	// no_payment_method beats payment_scheduled: when both flags are
+	// set (engine queued for retry but PM is still missing), the
+	// scheduler will keep skipping until a PM is attached. The
+	// operator-facing reality is "no PM" — that's the actionable
+	// reason. Surfacing payment_scheduled instead would falsely tell
+	// the operator "engine will retry on its next tick" when the
+	// retry will skip again until a PM is attached.
 	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending && !atc.HasPaymentMethod:
 		return classifyNoPaymentMethod(inv)
+	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending && inv.AutoChargePending:
+		return classifyPaymentScheduled(inv)
 	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending:
 		return classifyAwaitingPayment(inv)
 	}

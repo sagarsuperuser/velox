@@ -402,6 +402,22 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	engine.SetTestClockReader(testClockStore)
 	engine.SetEventDispatcher(eventDispatcher)
 	testClockSvc.SetBillingRunner(engine)
+	// No-payment-method finalize notifier: at finalize-time when a
+	// customer has no PaymentSetup ready, the engine queues for retry
+	// (so attaching a PM later auto-collects) AND emails the customer
+	// with a payment-update link. Without this, customers learn about
+	// the missing PM only when the invoice goes overdue weeks later —
+	// too late for happy-path collection. Stripe sends the equivalent
+	// email at charge-failure time; we extend the same pattern to the
+	// no-PM-at-finalize case for symmetric customer experience.
+	// ADR-013.
+	if paymentUpdateURL != "" {
+		engine.SetNoPaymentMethodNotifier(&noPaymentMethodNotifierAdapter{
+			email:            paymentUpdate,
+			customerEmail:    customerEmailAdapter,
+			paymentUpdateURL: paymentUpdateURL,
+		})
+	}
 
 	// Tax: per-tenant provider resolution (none|manual|stripe_tax) + durable
 	// audit trail in tax_calculations. Resolver reads tenant_settings and
