@@ -81,6 +81,16 @@ func (s *Service) Delete(ctx context.Context, tenantID, id string) error {
 	return s.store.Delete(ctx, tenantID, id)
 }
 
+// ListSubscriptions returns the subscriptions pinned to the given clock.
+// Verifies the clock exists first so a missing-clock id surfaces as 404
+// rather than an empty list (which would look like an empty clock).
+func (s *Service) ListSubscriptions(ctx context.Context, tenantID, clockID string) ([]domain.Subscription, error) {
+	if _, err := s.store.Get(ctx, tenantID, clockID); err != nil {
+		return nil, err
+	}
+	return s.store.ListSubscriptionsOnClock(ctx, tenantID, clockID)
+}
+
 type AdvanceInput struct {
 	FrozenTime time.Time `json:"frozen_time"`
 }

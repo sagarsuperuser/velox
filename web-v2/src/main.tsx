@@ -108,6 +108,8 @@ const DunningPage = lazy(() => import('@/pages/Dunning'))
 const WebhooksPage = lazy(() => import('@/pages/Webhooks'))
 const WebhookEventsPage = lazy(() => import('@/pages/WebhookEvents'))
 const ApiKeysPage = lazy(() => import('@/pages/ApiKeys'))
+const TestClocksPage = lazy(() => import('@/pages/TestClocks'))
+const TestClockDetailPage = lazy(() => import('@/pages/TestClockDetail'))
 const SettingsPage = lazy(() => import('@/pages/Settings'))
 const InvoicesPage = lazy(() => import('@/pages/Invoices'))
 const SubscriptionsPage = lazy(() => import('@/pages/Subscriptions'))
@@ -155,6 +157,8 @@ const App = () => (
               <Route path="/webhooks" element={<ProtectedRoute><WebhooksPage /></ProtectedRoute>} />
               <Route path="/webhooks/events" element={<ProtectedRoute><WebhookEventsPage /></ProtectedRoute>} />
               <Route path="/api-keys" element={<ProtectedRoute><ApiKeysPage /></ProtectedRoute>} />
+              <Route path="/test-clocks" element={<ProtectedRoute><TestClocksPage /></ProtectedRoute>} />
+              <Route path="/test-clocks/:id" element={<ProtectedRoute><TestClockDetailPage /></ProtectedRoute>} />
               <Route path="/invoices" element={<ProtectedRoute><InvoicesPage /></ProtectedRoute>} />
               <Route path="/subscriptions" element={<ProtectedRoute><SubscriptionsPage /></ProtectedRoute>} />
               <Route path="/usage" element={<ProtectedRoute><UsageEventsPage /></ProtectedRoute>} />

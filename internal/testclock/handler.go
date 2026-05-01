@@ -29,6 +29,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/", h.create)
 	r.Get("/", h.list)
 	r.Get("/{id}", h.get)
+	r.Get("/{id}/subscriptions", h.listSubscriptions)
 	r.Post("/{id}/advance", h.advance)
 	r.Delete("/{id}", h.delete)
 	return r
@@ -89,6 +90,25 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, r, http.StatusOK, clk)
+}
+
+// listSubscriptions returns every subscription pinned to the clock,
+// including their customer for one-shot rendering on the clock detail
+// page. The dashboard uses the embedded customer_id to compose the
+// "customers in this simulation" view without a second round-trip.
+func (h *Handler) listSubscriptions(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	subs, err := h.svc.ListSubscriptions(r.Context(), tenantID, id)
+	if err != nil {
+		respond.FromError(w, r, err, "test_clock")
+		return
+	}
+	if subs == nil {
+		subs = []domain.Subscription{}
+	}
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": subs})
 }
 
 func (h *Handler) advance(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,7 @@ import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
   Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3, Ticket,
   Sun, Moon, Search, ChevronsUpDown, MessageSquareWarning, Sparkles, Loader2,
+  Clock as ClockIcon, FlaskConical,
   type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -43,11 +44,20 @@ const configNav = [
   { to: '/dunning', icon: AlertTriangle, label: 'Dunning' },
 ]
 
-const systemNav = [
+type NavItem = { to: string; icon: LucideIcon; label: string }
+
+const systemNav: NavItem[] = [
   { to: '/audit-log', icon: ScrollText, label: 'Audit Log' },
   { to: '/webhooks', icon: Globe, label: 'Webhooks' },
   { to: '/api-keys', icon: Key, label: 'API Keys' },
   { to: '/settings', icon: Settings, label: 'Settings' },
+]
+
+// Test-mode-only nav: shown when the active session is in test mode and
+// hidden when in live. Test clocks are the only entry today; the array
+// shape lets future test-only tooling slot in cleanly.
+const testOnlyNav: NavItem[] = [
+  { to: '/test-clocks', icon: ClockIcon, label: 'Test Clocks' },
 ]
 
 function NavLink({
@@ -266,6 +276,18 @@ export function Layout({ children }: { children: ReactNode }) {
         {systemNav.map(item => (
           <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} count={navCounts[item.to]} badgeTone={item.to === '/dunning' ? 'critical' : 'info'} />
         ))}
+
+        {user && !user.livemode && (
+          <>
+            <p className="text-xs uppercase text-muted-foreground tracking-wider px-3 pt-4 pb-1 flex items-center gap-1.5">
+              <FlaskConical size={11} className="text-amber-500" />
+              Test mode
+            </p>
+            {testOnlyNav.map(item => (
+              <NavLink key={item.to} {...item} pathname={location.pathname} onClick={closeSidebar} />
+            ))}
+          </>
+        )}
       </nav>
 
       {/* Footer — enterprise account menu. Trigger row shows identity +

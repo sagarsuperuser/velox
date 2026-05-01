@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Customer, type BillingProfile, type Invoice, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride, type CustomerCouponAssignment } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
+import { useAuth } from '@/contexts/AuthContext'
 import { Layout } from '@/components/Layout'
 import { CostDashboard } from '@/components/CostDashboard'
 import { cn } from '@/lib/utils'
@@ -970,9 +971,21 @@ function EditCustomerDialog({ customer, onClose, onSaved }: {
 function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
   customerId: string; plans: Plan[]; onClose: () => void; onCreated: (sub: Subscription) => void
 }) {
+  const { user } = useAuth()
   const [startNow, setStartNow] = useState(true)
   const [planId, setPlanId] = useState('')
   const [planError, setPlanError] = useState('')
+  const [testClockId, setTestClockId] = useState('')
+
+  // Test clocks are test-mode-only. Fetch only when the operator is in
+  // test mode so the field is hidden in live (matches the sidebar nav).
+  const isTestMode = !!user && !user.livemode
+  const { data: clocksData } = useQuery({
+    queryKey: ['test-clocks'],
+    queryFn: () => api.listTestClocks(),
+    enabled: isTestMode,
+  })
+  const clocks = clocksData?.data ?? []
 
   const form = useForm<{ display_name: string; code: string }>({
     resolver: zodResolver(z.object({
@@ -992,10 +1005,11 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
         customer_id: customerId,
         items: [{ plan_id: planId }],
         start_now: startNow,
+        test_clock_id: testClockId || undefined,
       })
       onCreated(sub)
     } catch (err) {
-      applyApiError(form, err, ['display_name', 'code'], { toastTitle: 'Failed to create subscription' })
+      applyApiError(form, err, ['display_name', 'code', 'test_clock_id'], { toastTitle: 'Failed to create subscription' })
     }
   })
 
@@ -1039,6 +1053,35 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
             <Checkbox checked={startNow} onCheckedChange={(checked) => setStartNow(checked === true)} />
             Start immediately (activate + set billing period)
           </label>
+
+          {isTestMode && clocks.length > 0 && (
+            <div className="space-y-2">
+              <Label>Pin to test clock <span className="text-muted-foreground">(optional)</span></Label>
+              <Select value={testClockId} onValueChange={(v) => setTestClockId(v ?? '')}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="No test clock — use wall clock">
+                    {(value: string) => {
+                      if (!value) return 'No test clock — use wall clock'
+                      const c = clocks.find(c => c.id === value)
+                      return c ? (c.name || c.id) : value
+                    }}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">No test clock — use wall clock</SelectItem>
+                  {clocks.map(c => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name || c.id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Subscription's billing time follows the clock instead of wall-clock. Advance the clock from Test Clocks to fast-forward billing.
+              </p>
+            </div>
+          )}
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={isSubmitting}>
