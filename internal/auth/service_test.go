@@ -63,11 +63,9 @@ func (m *memStore) GetByPrefix(_ context.Context, prefix string) (domain.APIKey,
 	return domain.APIKey{}, errs.ErrNotFound
 }
 
-// Revoke mirrors PostgresStore.Revoke's safeguard: refuse if revoking
-// a *currently-active* secret/platform key would leave the tenant
-// with zero such keys. An already-expired key is allowed to be
-// revoked even when no other active secret/platform keys exist —
-// it's already dead, revoking is just cleanup.
+// Revoke flips revoked_at on the target key. Per ADR-011 the
+// last-active-secret/platform safeguard is gone (sessions are
+// user-bound, no tenant orphan path).
 func (m *memStore) Revoke(_ context.Context, tenantID, id string) (domain.APIKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -76,28 +74,6 @@ func (m *memStore) Revoke(_ context.Context, tenantID, id string) (domain.APIKey
 		return domain.APIKey{}, errs.ErrNotFound
 	}
 	now := time.Now().UTC()
-	targetActive := target.ExpiresAt == nil || target.ExpiresAt.After(now)
-	if targetActive && (target.KeyType == "secret" || target.KeyType == "platform") {
-		remaining := 0
-		for _, k := range m.keys {
-			if k.TenantID != tenantID || k.ID == id {
-				continue
-			}
-			if k.RevokedAt != nil {
-				continue
-			}
-			if k.ExpiresAt != nil && k.ExpiresAt.Before(now) {
-				continue
-			}
-			if k.KeyType == "secret" || k.KeyType == "platform" {
-				remaining++
-			}
-		}
-		if remaining == 0 {
-			return domain.APIKey{}, errs.InvalidState(
-				"cannot revoke the last active secret/platform key — create another first")
-		}
-	}
 	target.RevokedAt = &now
 	m.keys[id] = target
 	return target, nil
@@ -577,127 +553,7 @@ func TestRotateKey_PreservesTestmode(t *testing.T) {
 // dashboard sessions are user-bound now, so no API-key revoke fan-out
 // to test.)
 
-// keySpec describes one key to seed into the test tenant. expired=true
-// produces a key with expires_at one hour in the past — the only knob
-// the safeguard cares about beyond the type.
-type keySpec struct {
-	keyType KeyType
-	expired bool
-}
-
-// seed creates the keys described by specs in tenant ten_1 and returns
-// their IDs in the same order. Test setup helper to keep the table-
-// driven cases readable.
-func seed(t *testing.T, svc *Service, specs ...keySpec) []string {
-	t.Helper()
-	ids := make([]string, len(specs))
-	for i, spec := range specs {
-		input := CreateKeyInput{
-			Name:    string(spec.keyType) + "-" + string(rune('a'+i)),
-			KeyType: spec.keyType,
-		}
-		if spec.expired {
-			past := time.Now().UTC().Add(-1 * time.Hour)
-			input.ExpiresAt = &past
-		}
-		res, err := svc.CreateKey(context.Background(), "ten_1", input)
-		if err != nil {
-			t.Fatalf("seed %d: %v", i, err)
-		}
-		ids[i] = res.Key.ID
-	}
-	return ids
-}
-
-// TestRevokeKey_Safeguard table-tests the last-active-secret-or-platform
-// guard in auth.Service.RevokeKey. The store-layer safeguard refuses
-// any revoke that would leave the tenant with zero active secret or
-// platform keys; publishable keys don't count (they can't manage other
-// keys); already-expired keys aren't "active" so revoking them never
-// reduces the count.
-//
-// FLOW K4 in MANUAL_TEST.md is the operator-facing contract; this is
-// the unit-level enforcement.
-func TestRevokeKey_Safeguard(t *testing.T) {
-	cases := []struct {
-		name        string
-		seed        []keySpec
-		revokeIdx   int    // index into seed of the key to revoke
-		wantBlocked bool   // expect Service.RevokeKey to return an error
-		wantMsg     string // substring required in the error (when blocked)
-	}{
-		{
-			name:        "blocked: only secret",
-			seed:        []keySpec{{keyType: KeyTypeSecret}},
-			revokeIdx:   0,
-			wantBlocked: true,
-			wantMsg:     "last active secret/platform key",
-		},
-		{
-			name:        "blocked: only platform",
-			seed:        []keySpec{{keyType: KeyTypePlatform}},
-			revokeIdx:   0,
-			wantBlocked: true,
-			wantMsg:     "last active secret/platform key",
-		},
-		{
-			name: "blocked: secret + publishable, revoke secret (publishable doesn't count)",
-			seed: []keySpec{
-				{keyType: KeyTypeSecret},
-				{keyType: KeyTypePublishable},
-			},
-			revokeIdx:   0,
-			wantBlocked: true,
-			wantMsg:     "last active secret/platform key",
-		},
-		{
-			name: "allow: secret + publishable, revoke publishable",
-			seed: []keySpec{
-				{keyType: KeyTypeSecret},
-				{keyType: KeyTypePublishable},
-			},
-			revokeIdx: 1,
-		},
-		{
-			name: "allow: two secrets, revoke either",
-			seed: []keySpec{
-				{keyType: KeyTypeSecret},
-				{keyType: KeyTypeSecret},
-			},
-			revokeIdx: 0,
-		},
-		{
-			name: "allow: only key is expired secret (no targetActive → safeguard skipped)",
-			seed: []keySpec{
-				{keyType: KeyTypeSecret, expired: true},
-			},
-			revokeIdx: 0,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			svc := NewService(newMemStore())
-			ids := seed(t, svc, tc.seed...)
-
-			_, err := svc.RevokeKey(context.Background(), "ten_1", ids[tc.revokeIdx])
-			if tc.wantBlocked {
-				if err == nil {
-					t.Fatalf("expected error, got nil")
-				}
-				if tc.wantMsg != "" && !strings.Contains(err.Error(), tc.wantMsg) {
-					t.Errorf("error should contain %q, got: %v", tc.wantMsg, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("expected success, got: %v", err)
-			}
-		})
-	}
-}
-
-// (Cookie-session fan-out tests deleted in ADR-011 — the SessionRevoker
-// interface and the fan-out call site are gone with user-bound
-// sessions. RevokeKey is now a thin store passthrough; RotateKey
-// likewise no longer cares about cookie sessions.)
+// (TestRevokeKey_Safeguard / cookie-session fan-out tests deleted in
+// ADR-011 — the last-active-secret/platform safeguard, SessionRevoker
+// interface, and the fan-out call site are all gone with user-bound
+// sessions. RevokeKey is now a thin store passthrough.)
