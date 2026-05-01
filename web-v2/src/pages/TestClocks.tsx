@@ -6,8 +6,9 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 
-import { api, formatDate, type TestClock } from '@/lib/api'
+import { api, formatDateTime, getTenantTimezone, type TestClock } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { Layout } from '@/components/Layout'
 import { EmptyState } from '@/components/EmptyState'
 import { CardListSkeleton } from '@/components/ui/TableSkeleton'
@@ -126,7 +127,7 @@ export default function TestClocksPage() {
                       {statusBadge(c.status)}
                     </div>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      Clock time: <span className="font-mono">{formatDate(c.frozen_time)}</span>
+                      Clock time: <span className="font-mono">{formatDateTime(c.frozen_time)}</span>
                     </p>
                   </div>
                   <p className="text-xs text-muted-foreground shrink-0">
@@ -147,9 +148,12 @@ export default function TestClocksPage() {
 function CreateClockDialog({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  // Default the picker to "now"; the operator typically wants to start
-  // a simulation from the current wall-clock and advance from there.
-  const defaultNow = new Date().toISOString().slice(0, 16) // YYYY-MM-DDTHH:MM
+  // Default the picker to "now in tenant TZ" so the wall-clock the
+  // operator sees in the picker matches the tenant's clock, not the
+  // browser's. ADR-010: every operator-picked civil datetime is
+  // interpreted in tenant TZ.
+  const tz = getTenantTimezone() || 'UTC'
+  const defaultNow = formatInTimeZone(new Date(), tz, "yyyy-MM-dd'T'HH:mm")
   const form = useForm<CreateData>({
     resolver: zodResolver(createSchema),
     defaultValues: { name: '', frozen_time: defaultNow },
@@ -157,7 +161,11 @@ function CreateClockDialog({ onClose }: { onClose: () => void }) {
 
   const onSubmit = form.handleSubmit(async data => {
     try {
-      const isoUtc = new Date(data.frozen_time).toISOString()
+      // Re-ground the picker output as wall-clock-in-tenant-TZ → UTC
+      // ISO. Without this round-trip the browser would interpret the
+      // YYYY-MM-DDTHH:mm string as local time and the resulting UTC
+      // ISO would skew by (tenant_TZ_offset − browser_TZ_offset).
+      const isoUtc = fromZonedTime(data.frozen_time, tz).toISOString()
       const clk = await api.createTestClock({
         name: data.name || '',
         frozen_time: isoUtc,
@@ -206,7 +214,7 @@ function CreateClockDialog({ onClose }: { onClose: () => void }) {
                     <Input type="datetime-local" {...field} />
                   </FormControl>
                   <FormDescription>
-                    The clock starts here. Use Advance from the detail page to move it forward.
+                    Times are in your tenant timezone ({tz}). The clock starts here; use Advance from the detail page to move it forward.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
