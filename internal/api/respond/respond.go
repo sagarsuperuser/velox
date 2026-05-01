@@ -13,7 +13,14 @@ const apiVersion = "2026-04-07"
 func JSON(w http.ResponseWriter, r *http.Request, status int, data any) {
 	setHeaders(w, r)
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(data)
+	enc := json.NewEncoder(w)
+	// Default Go HTML-escapes <, >, & to < etc. for safety when JSON
+	// is embedded in HTML. API responses are served as application/json,
+	// so the escaping is unnecessary and just makes errors harder to read
+	// (e.g. "must be <= 604800"). Stripe / Vercel / GitHub all return
+	// raw <, >, &.
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(data)
 }
 
 // List writes a paginated list response.
@@ -35,7 +42,9 @@ func Error(w http.ResponseWriter, r *http.Request, status int, errType, code, me
 func errorField(w http.ResponseWriter, r *http.Request, status int, errType, code, field, message string) {
 	setHeaders(w, r)
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(ErrorBody{
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(ErrorBody{
 		Error: ErrorDetail{
 			Type:      errType,
 			Code:      code,
