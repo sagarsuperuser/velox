@@ -43,6 +43,7 @@ export function Combobox({
 }: ComboboxProps) {
   const [open, setOpen] = React.useState(false)
   const [dropUp, setDropUp] = React.useState(false)
+  const [alignRight, setAlignRight] = React.useState(false)
   const ref = React.useRef<HTMLDivElement>(null)
 
   const selected = options.find(o => o.value === value)
@@ -52,6 +53,12 @@ export function Combobox({
     const rect = ref.current.getBoundingClientRect()
     const spaceBelow = window.innerHeight - rect.bottom
     setDropUp(spaceBelow < 340)
+    // Right-align when the trigger sits close enough to the viewport's
+    // right edge that the popover (which can grow up to 32rem wide for
+    // long labels like "America/Los_Angeles (UTC-08:00)") would clip.
+    // Mirrors the DatePicker's edge-clamping logic.
+    const popoverWidth = 384 // px, matches md (~24rem) — close enough
+    setAlignRight(window.innerWidth - rect.left < popoverWidth)
   }, [open])
 
   React.useEffect(() => {
@@ -119,8 +126,15 @@ export function Combobox({
       {open && (
         <div
           className={cn(
-            'absolute z-50 w-full rounded-md border border-border bg-popover shadow-md',
+            // min-w-full lets the popover be at least as wide as the
+            // trigger but grow up to max-w when content needs more
+            // space (long timezone names, etc). Prior `w-full` clipped
+            // labels in narrow columns. max-w caps the natural growth
+            // so the popover never overflows the viewport on small
+            // screens; alignRight handles the right-edge case.
+            'absolute z-50 min-w-full max-w-[min(32rem,calc(100vw-2rem))] rounded-md border border-border bg-popover shadow-md',
             dropUp ? 'bottom-full mb-1' : 'top-full mt-1',
+            alignRight ? 'right-0' : 'left-0',
           )}
         >
           <Command
