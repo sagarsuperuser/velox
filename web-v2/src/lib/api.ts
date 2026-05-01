@@ -428,6 +428,12 @@ export const api = {
   listApiKeys: () => apiRequest<{ data: ApiKeyInfo[] }>('GET', '/api-keys'),
   createApiKey: (data: { name: string; key_type: string; expires_at?: string }) => apiRequest<{ key: ApiKeyInfo; raw_key: string }>('POST', '/api-keys', data),
   revokeApiKey: (id: string) => apiRequest<ApiKeyInfo>('DELETE', `/api-keys/${id}`),
+  rotateApiKey: (id: string, expires_in_seconds?: number) =>
+    apiRequest<{ old_key: ApiKeyInfo; new_key: ApiKeyInfo; raw_key: string }>(
+      'POST',
+      `/api-keys/${id}/rotate`,
+      expires_in_seconds !== undefined ? { expires_in_seconds } : undefined,
+    ),
 
   // Stripe credentials (per-tenant). Secrets post once here; the server keeps
   // them encrypted and only returns last4 + verify status. Deleting a row
