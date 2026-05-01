@@ -17,7 +17,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { DatePicker } from '@/components/ui/date-picker'
+import { DateTimePicker } from '@/components/ui/datetime-picker'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
@@ -213,19 +213,12 @@ function CreateClockDialog({ onClose }: { onClose: () => void }) {
             />
             <div className="space-y-1.5">
               <Label className="text-sm font-medium">Initial clock time</Label>
-              <div className="flex gap-2">
-                <DatePicker
-                  value={datePart}
-                  onChange={(d) => { setDatePart(d); setPickerError('') }}
-                  className="flex-1"
-                />
-                <Input
-                  type="time"
-                  value={timePart}
-                  onChange={(e) => { setTimePart(e.target.value); setPickerError('') }}
-                  className="w-28"
-                />
-              </div>
+              <DateTimePicker
+                date={datePart}
+                time={timePart}
+                onDateChange={(d) => { setDatePart(d); setPickerError('') }}
+                onTimeChange={(t) => { setTimePart(t); setPickerError('') }}
+              />
               <p className="text-xs text-muted-foreground">
                 Times are in your tenant timezone ({tz}). The clock starts here; use Advance from the detail page to move it forward.
               </p>

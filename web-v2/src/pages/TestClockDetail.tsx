@@ -9,9 +9,8 @@ import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { DatePicker } from '@/components/ui/date-picker'
+import { DateTimePicker } from '@/components/ui/datetime-picker'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
@@ -357,13 +356,12 @@ function AdvanceClockDialog({
 
           <div>
             <Label>Target clock time</Label>
-            <div className="flex gap-2 mt-1.5">
-              <DatePicker value={datePart} onChange={setDatePart} className="flex-1" />
-              <Input
-                type="time"
-                value={timePart}
-                onChange={e => setTimePart(e.target.value)}
-                className="w-28"
+            <div className="mt-1.5">
+              <DateTimePicker
+                date={datePart}
+                time={timePart}
+                onDateChange={setDatePart}
+                onTimeChange={setTimePart}
               />
             </div>
             <p className="text-xs text-muted-foreground mt-1.5">Times in tenant timezone ({tz}).</p>
