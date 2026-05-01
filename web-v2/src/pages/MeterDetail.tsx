@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -536,24 +537,37 @@ function CreatePricingRuleDialog({
                     onChange={(e) => updateRow(i, { value: e.target.value })}
                     className="font-mono text-sm"
                   />
-                  {/* Wrap in span so the tooltip fires when disabled —
-                      Button uses disabled:pointer-events-none which
-                      suppresses the native title on the button itself. */}
-                  <span
-                    title={dimensions.length === 1 ? 'A meter requires at least one dimension.' : ''}
-                    className={cn('shrink-0', dimensions.length === 1 && 'cursor-not-allowed')}
-                  >
+                  {/* shadcn Tooltip — native `title` is unreliable on
+                      disabled-button-in-span. See ApiKeys / DatePicker
+                      for the same swap. */}
+                  {dimensions.length === 1 ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="inline-block shrink-0 cursor-not-allowed">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-9 w-9 text-muted-foreground"
+                            disabled
+                            aria-label="Remove dimension"
+                          >
+                            <Trash2 size={14} />
+                          </Button>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>A meter requires at least one dimension.</TooltipContent>
+                    </Tooltip>
+                  ) : (
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-9 w-9 text-muted-foreground"
+                      className="h-9 w-9 shrink-0 text-muted-foreground"
                       onClick={() => removeRow(i)}
-                      disabled={dimensions.length === 1}
                       aria-label="Remove dimension"
                     >
                       <Trash2 size={14} />
                     </Button>
-                  </span>
+                  )}
                 </div>
               ))}
             </div>
