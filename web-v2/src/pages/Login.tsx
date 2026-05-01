@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { ApiError } from '@/lib/api'
 import { Card, CardContent } from '@/components/ui/card'
@@ -10,7 +10,8 @@ import { Loader2 } from 'lucide-react'
 import { VeloxLogo } from '@/components/VeloxLogo'
 
 export default function LoginPage() {
-  const [apiKey, setApiKeyInput] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
@@ -20,24 +21,21 @@ export default function LoginPage() {
     e.preventDefault()
     setError('')
 
-    const trimmed = apiKey.trim()
-    if (!trimmed) {
-      setError('Paste your Velox API key')
-      return
-    }
-    if (!trimmed.startsWith('vlx_')) {
-      setError('That doesn’t look like a Velox key — it should start with vlx_')
+    if (!email.trim() || !password) {
+      setError('Email and password are required')
       return
     }
 
     setLoading(true)
     try {
-      await login(trimmed)
+      await login(email.trim(), password)
       navigate('/', { replace: true })
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 401) {
-          setError('Invalid or revoked API key')
+          setError('Invalid email or password')
+        } else if (err.status === 429) {
+          setError('Too many attempts — try again in 15 minutes')
         } else {
           setError(err.message)
         }
@@ -53,28 +51,44 @@ export default function LoginPage() {
     <div className="min-h-screen flex flex-col items-center justify-center px-4 bg-background">
       <div className="flex flex-col items-center mb-8">
         <VeloxLogo size="lg" />
-        <p className="text-sm text-muted-foreground mt-2">Sign in with your API key</p>
+        <p className="text-sm text-muted-foreground mt-2">Sign in to the dashboard</p>
       </div>
 
       <Card className="w-full max-w-[420px]">
         <CardContent className="p-6">
           <form onSubmit={handleSubmit} noValidate className="space-y-4">
             <div className="space-y-1.5">
-              <Label htmlFor="api-key">Secret API key</Label>
+              <Label htmlFor="email">Email</Label>
               <Input
-                id="api-key"
-                type="password"
-                value={apiKey}
-                onChange={e => setApiKeyInput(e.target.value)}
-                placeholder="vlx_secret_test_..."
-                autoComplete="off"
+                id="email"
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
                 autoFocus
                 spellCheck={false}
               />
-              <p className="text-xs text-muted-foreground">
-                The Secret Key printed by <code className="font-mono">make bootstrap</code>, or any
-                key on the API Keys page after you&rsquo;re in.
-              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="password">Password</Label>
+                <Link
+                  to="/forgot-password"
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Forgot password?
+                </Link>
+              </div>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                autoComplete="current-password"
+              />
             </div>
 
             {error && (
@@ -91,7 +105,8 @@ export default function LoginPage() {
         </CardContent>
       </Card>
       <p className="text-xs text-muted-foreground mt-6">
-        Trouble signing in?{' '}
+        Need an account? Run <code className="font-mono">make bootstrap</code> on your local install — operators
+        are bootstrapped via CLI, not the dashboard. Trouble signing in?{' '}
         <a
           href={`mailto:support@velox.dev?subject=${encodeURIComponent(
             'Velox sign-in issue',

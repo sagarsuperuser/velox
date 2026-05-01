@@ -4,31 +4,40 @@ import { authApi, type SessionInfo } from '@/lib/auth'
 import { ApiError } from '@/lib/api'
 
 // AuthContext exposes the resolved session context to the rest of the
-// dashboard. There is no user account in v1 (see ADR-007/008); the
-// "user" object carries the parent API key's tenant_id, key_id,
-// key_type, and livemode for display.
+// dashboard. Per ADR-011, the dashboard signs in via email + password;
+// the resulting session is user-bound (UserContext.user_id is the
+// canonical identifier). Email is rendered in the user dropdown.
+//
+// SDK callers using Authorization: Bearer never reach this context —
+// they don't render React. The user_id field is therefore always
+// present on a populated UserContext.
 export interface UserContext {
+  user_id: string
   tenant_id: string
-  key_id: string
-  key_type: string
+  email: string
   livemode: boolean
 }
 
 interface AuthState {
   user: UserContext | null
   loading: boolean
-  login: (apiKey: string) => Promise<void>
+  login: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
   refresh: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthState | null>(null)
 
-function toUserContext(s: SessionInfo): UserContext {
+function toUserContext(s: SessionInfo): UserContext | null {
+  // Cookie path returns user_id + email; Bearer path doesn't. The
+  // dashboard only ever rides the cookie path, so a missing user_id
+  // means whoami resolved to a Bearer key (e.g. someone hand-rolled
+  // an Authorization header) — treat as not-signed-in.
+  if (!s.user_id) return null
   return {
+    user_id: s.user_id,
     tenant_id: s.tenant_id,
-    key_id: s.key_id,
-    key_type: s.key_type,
+    email: s.email ?? '',
     livemode: s.livemode,
   }
 }
@@ -57,9 +66,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refresh().finally(() => setLoading(false))
   }, [refresh])
 
-  const login = useCallback(async (apiKey: string) => {
-    const res = await authApi.exchange(apiKey)
-    setUser(toUserContext(res))
+  const login = useCallback(async (email: string, password: string) => {
+    const res = await authApi.login(email, password)
+    setUser({
+      user_id: res.user_id,
+      tenant_id: res.tenant_id,
+      email: res.email,
+      livemode: res.livemode,
+    })
     // Fresh session, fresh data — stale cache from any prior session
     // must not leak across login boundaries.
     queryClient.clear()
