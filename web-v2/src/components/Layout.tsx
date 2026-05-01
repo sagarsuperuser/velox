@@ -3,9 +3,10 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
   Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3, Ticket,
-  Sun, Moon, Search, ChevronsUpDown, MessageSquareWarning, Sparkles,
+  Sun, Moon, Search, ChevronsUpDown, MessageSquareWarning, Sparkles, Loader2,
   type LucideIcon,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { useDarkMode } from '@/hooks/useDarkMode'
 import { cn } from '@/lib/utils'
 import { api, setActiveCurrency } from '@/lib/api'
@@ -120,10 +121,14 @@ function ModeToggle({ livemode, busy, onToggle }: { livemode: boolean; busy: boo
         livemode
           ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/15'
           : 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300 hover:bg-amber-500/15',
-        busy && 'opacity-60 cursor-not-allowed',
+        busy && 'opacity-70 cursor-not-allowed',
       )}
     >
-      <span className={cn('h-1.5 w-1.5 rounded-full', livemode ? 'bg-emerald-500' : 'bg-amber-500')} />
+      {busy ? (
+        <Loader2 size={11} className="animate-spin" aria-hidden="true" />
+      ) : (
+        <span className={cn('h-1.5 w-1.5 rounded-full', livemode ? 'bg-emerald-500' : 'bg-amber-500')} />
+      )}
       {livemode ? 'Live' : 'Test'} mode
     </button>
   )
@@ -140,13 +145,13 @@ export function Layout({ children }: { children: ReactNode }) {
   const [modeBusy, setModeBusy] = useState(false)
   const handleToggleMode = async () => {
     if (!user || modeBusy) return
+    const next = !user.livemode
     setModeBusy(true)
     try {
-      await setMode(!user.livemode)
+      await setMode(next)
+      toast.success(next ? 'Switched to live mode' : 'Switched to test mode')
     } catch (err) {
-      // Surface as toast so the operator knows the flip didn't take.
       const msg = err instanceof Error ? err.message : 'Failed to switch mode'
-      const { toast } = await import('sonner')
       toast.error(msg)
     } finally {
       setModeBusy(false)
