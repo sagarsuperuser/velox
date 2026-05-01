@@ -130,8 +130,20 @@ export default function ApiKeysPage() {
   // Last-active-secret-or-platform safeguard (mirrors the server-side
   // rule in auth.Store.Revoke). If revoking a secret/platform key
   // would leave zero such keys, the tenant is locked out: can't sign
-  // in, can't create new keys. Disable the Revoke button on the row;
-  // server still enforces the rule as defense-in-depth.
+  // in, can't create new keys.
+  //
+  // DEFENSE-IN-DEPTH ONLY in v1: this UI path is unreachable in
+  // normal operator flows. When a tenant has exactly one active
+  // secret/platform key, the operator's session was minted from that
+  // same key — so the row's `isCurrent` self-revoke tooltip fires
+  // first ("Cannot revoke the API key your dashboard session
+  // uses..."), and the orphan tooltip ("Cannot revoke the only
+  // active secret/platform key...") never appears. We keep the
+  // check anyway so multi-user accounts (when they ship) get the
+  // right behaviour without a code change — at that point session-
+  // key and active-secret/platform keys can diverge and the orphan
+  // path becomes live. The server-side safeguard is the real
+  // enforcement (see TestRevokeKey_Safeguard).
   const otherActiveSecretOrPlatform = (target: ApiKeyInfo) =>
     activeKeys.filter(
       k => k.id !== target.id && (k.key_type === 'secret' || k.key_type === 'platform'),
