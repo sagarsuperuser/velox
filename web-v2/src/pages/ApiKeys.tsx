@@ -46,7 +46,7 @@ import {
 } from '@/components/ui/form'
 import { CardListSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Key, Shield, Eye, ChevronDown, Loader2, Clock } from 'lucide-react'
+import { Plus, Key, Shield, Eye, ChevronDown, Loader2, Clock, RotateCw } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 
 const createApiKeySchema = z.object({
@@ -78,6 +78,7 @@ export default function ApiKeysPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null)
+  const [rotateTarget, setRotateTarget] = useState<ApiKeyInfo | null>(null)
   const [showRevoked, setShowRevoked] = useState(false)
   const [showExpired, setShowExpired] = useState(false)
   const queryClient = useQueryClient()
@@ -203,11 +204,17 @@ export default function ApiKeysPage() {
                         </p>
                       </div>
                     </div>
-                    <Button variant="outline" size="sm"
-                      className="shrink-0 text-destructive hover:text-destructive"
-                      onClick={() => setRevokeTarget(k)}>
-                      Revoke
-                    </Button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button variant="outline" size="sm" onClick={() => setRotateTarget(k)}>
+                        <RotateCw size={14} className="mr-1.5" />
+                        Rotate
+                      </Button>
+                      <Button variant="outline" size="sm"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => setRevokeTarget(k)}>
+                        Revoke
+                      </Button>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -290,6 +297,20 @@ export default function ApiKeysPage() {
             setCreatedKey(rawKey)
             queryClient.invalidateQueries({ queryKey: ['api-keys'] })
             toast.success('API key created')
+          }}
+        />
+      )}
+
+      {/* Rotate key dialog */}
+      {rotateTarget && (
+        <RotateKeyDialog
+          target={rotateTarget}
+          onClose={() => setRotateTarget(null)}
+          onRotated={(rawKey) => {
+            setRotateTarget(null)
+            setCreatedKey(rawKey)
+            queryClient.invalidateQueries({ queryKey: ['api-keys'] })
+            toast.success('API key rotated')
           }}
         />
       )}
@@ -541,6 +562,87 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
             </DialogFooter>
           </form>
         </Form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/* --- Rotate Key Dialog --- */
+
+// Rotate replaces a key in place: the old key keeps working for the
+// chosen grace window (so deployed clients can swap credentials without
+// downtime), then expires automatically. Picking "Now" revokes the old
+// key the moment the new one is minted — pick this only when you can
+// redeploy immediately. Mirrors Stripe's Roll API key UX.
+const ROTATE_GRACE_PRESETS: { value: number; label: string }[] = [
+  { value: 0, label: 'Now' },
+  { value: 60 * 60, label: 'In 1 hour' },
+  { value: 24 * 60 * 60, label: 'In 24 hours' },
+  { value: 7 * 24 * 60 * 60, label: 'In 7 days' },
+]
+
+function RotateKeyDialog({
+  target,
+  onClose,
+  onRotated,
+}: {
+  target: ApiKeyInfo
+  onClose: () => void
+  onRotated: (rawKey: string) => void
+}) {
+  const [grace, setGrace] = useState<number>(24 * 60 * 60)
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleSubmit = async () => {
+    setSubmitting(true)
+    try {
+      const res = await api.rotateApiKey(target.id, grace)
+      onRotated(res.raw_key)
+    } catch (err) {
+      showApiError(err, 'Failed to rotate key')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !submitting) onClose() }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Rotate API Key</DialogTitle>
+          <DialogDescription>
+            A new {target.key_type} key will be issued for "{target.name}". Choose how long the current key
+            stays valid so deployed clients can swap credentials.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div>
+          <Label className="mb-2 block">Expire current key</Label>
+          <div className="flex flex-wrap gap-2">
+            {ROTATE_GRACE_PRESETS.map(p => (
+              <button
+                key={p.value}
+                type="button"
+                onClick={() => setGrace(p.value)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-sm border transition-colors',
+                  grace === p.value
+                    ? 'border-primary bg-primary/5 text-primary font-medium'
+                    : 'border-border text-muted-foreground hover:text-foreground hover:border-border/80'
+                )}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button onClick={handleSubmit} disabled={submitting}>
+            {submitting ? <><Loader2 size={14} className="animate-spin mr-2" /> Rotating...</> : 'Rotate Key'}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

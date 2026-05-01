@@ -210,11 +210,6 @@ type RotateKeyResult struct {
 // immediately (grace=0) or scheduled to expire after input.ExpiresInSeconds
 // seconds; callers trading zero-downtime deploys for slightly wider blast
 // radius pick a non-zero grace.
-//
-// Self-rotation guard (handler-level, not service-level): the caller must not
-// rotate the key that authenticated the request — same rationale as Revoke.
-// The handler checks this before invoking the service; the service itself
-// has no access to the requesting key's identity.
 func (s *Service) RotateKey(ctx context.Context, tenantID, id string, input RotateKeyInput) (RotateKeyResult, error) {
 	if input.ExpiresInSeconds < 0 {
 		return RotateKeyResult{}, errs.Invalid("expires_in_seconds", "must be >= 0")
