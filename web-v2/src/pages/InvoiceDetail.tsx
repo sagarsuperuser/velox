@@ -969,6 +969,23 @@ function OperatorContextCard({
     </Badge>
   ) : null
 
+  // Don't render the card at all when there's nothing diagnostic to
+  // show. A freshly-finalized invoice that's awaiting its first charge
+  // has no tax issues, no payment attempts, no dunning — so every dl
+  // entry below is conditional-false and the card reads as empty
+  // noise. The InvoiceAttention banner already explains the state;
+  // operators don't need an empty "Diagnostic detail" card alongside.
+  const hasAnyDiagnostic =
+    !!taxStatusBadge ||
+    (invoice.tax_retry_count ?? 0) > 0 ||
+    !!invoice.tax_deferred_at ||
+    paymentAttempts > 0 ||
+    !!invoice.last_payment_error ||
+    invoice.payment_status === 'unknown' ||
+    !!invoice.stripe_payment_intent_id ||
+    !!dunningRun
+  if (!hasAnyDiagnostic) return null
+
   return (
     <Card className="mb-6 border-border bg-muted/30">
       <CardHeader className="flex-row items-center gap-2 space-y-0 pb-3">
