@@ -239,13 +239,17 @@ func (s *Sender) SendPaymentReceipt(tenantID, to, customerName, invoiceNumber st
 	})
 }
 
-// SendDunningWarning notifies a customer about a failed retry with a
-// branded HTML body + "Update payment" CTA to the hosted invoice page.
-func (s *Sender) SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, publicToken string) error {
+// SendDunningWarning notifies a customer about a failed retry. Body
+// includes the latest decline reason (so the customer can act —
+// insufficient_funds → top up; lost_card → swap card) and escalates
+// tone on the final attempt ("Last attempt before service impact").
+// CTA is a "Pay invoice" button on the hosted invoice page (Stripe
+// Checkout there handles both PM update and pay).
+func (s *Sender) SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
 	brand := s.brandingFor(tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 
-	subject, contentHTML, ctaURL, ctaLabel := renderDunningWarningHTML(customerName, invoiceNumber, attemptNumber, maxAttempts, nextRetryDate, hostedURL)
+	subject, contentHTML, ctaURL, ctaLabel := renderDunningWarningHTML(customerName, invoiceNumber, attemptNumber, maxAttempts, nextRetryDate, failureReason, hostedURL)
 	htmlBody, err := renderLayout(layoutInputs{
 		Subject: subject, CompanyName: brand.CompanyName, LogoURL: brand.LogoURL,
 		BrandColor: brand.BrandColor, SupportURL: brand.SupportURL,
@@ -254,7 +258,7 @@ func (s *Sender) SendDunningWarning(tenantID, to, customerName, invoiceNumber st
 	if err != nil {
 		return fmt.Errorf("render dunning warning html: %w", err)
 	}
-	textBody := dunningWarningTextBody(customerName, invoiceNumber, attemptNumber, maxAttempts, nextRetryDate, hostedURL)
+	textBody := dunningWarningTextBody(customerName, invoiceNumber, attemptNumber, maxAttempts, nextRetryDate, failureReason, hostedURL)
 
 	return s.sendRich(richMessage{
 		TenantID: tenantID, To: to, Subject: subject,
@@ -400,11 +404,21 @@ func receiptTextBody(customerName, invoiceNumber, amount, hostedURL string) stri
 	return b.String()
 }
 
-func dunningWarningTextBody(customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, hostedURL string) string {
+func dunningWarningTextBody(customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, hostedURL string) string {
+	finalAttempt := maxAttempts > 0 && attemptNumber >= maxAttempts
 	var b strings.Builder
-	fmt.Fprintf(&b, "Hi %s,\n\nAttempt %d of %d to charge invoice %s was declined. We'll try again on %s.\n\n", customerName, attemptNumber, maxAttempts, invoiceNumber, nextRetryDate)
+	fmt.Fprintf(&b, "Hi %s,\n\n", customerName)
+	fmt.Fprintf(&b, "Attempt %d of %d to charge invoice %s was declined.\n", attemptNumber, maxAttempts, invoiceNumber)
+	if strings.TrimSpace(failureReason) != "" {
+		fmt.Fprintf(&b, "Reason: %s\n", failureReason)
+	}
+	if finalAttempt {
+		fmt.Fprintf(&b, "\nThis was the final automatic retry. If we can't collect this invoice, your subscription may be paused or canceled. Please pay the invoice or update your payment method now.\n\n")
+	} else {
+		fmt.Fprintf(&b, "\nWe'll try again on %s.\n\n", nextRetryDate)
+	}
 	if hostedURL != "" {
-		fmt.Fprintf(&b, "Update your payment method: %s\n", hostedURL)
+		fmt.Fprintf(&b, "Pay invoice: %s\n", hostedURL)
 	}
 	return b.String()
 }

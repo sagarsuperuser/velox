@@ -47,7 +47,14 @@ type CustomerEmailFetcher interface {
 // (drafts, pre-addendum invoices); the sender gracefully omits the CTA.
 type EmailNotifier interface {
 	SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
-	SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, publicToken string) error
+	// SendDunningWarning emails the customer about a failed retry.
+	// failureReason is the latest decline reason (from the retrier's
+	// error message) — surfaced inline so customers can act
+	// (insufficient_funds → top up; lost_card → swap card). Empty
+	// reason renders without the diagnostic block. The template
+	// branches on attemptNumber == maxAttempts for "Last attempt"
+	// urgency tone.
+	SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
 	SendDunningEscalation(tenantID, to, customerName, invoiceNumber, action, publicToken string) error
 }
 
@@ -301,7 +308,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 				if run.NextActionAt != nil {
 					nextRetry = run.NextActionAt.Format("January 2, 2006")
 				}
-				if err := s.emailNotifier.SendDunningWarning(tenantID, email, name, invoiceNumber, run.AttemptCount, policy.MaxRetryAttempts, nextRetry, publicToken); err != nil {
+				if err := s.emailNotifier.SendDunningWarning(tenantID, email, name, invoiceNumber, run.AttemptCount, policy.MaxRetryAttempts, nextRetry, retryErr.Error(), publicToken); err != nil {
 					slog.Error("failed to send dunning warning email",
 						"run_id", run.ID, "email", email, "error", err)
 				}

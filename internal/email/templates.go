@@ -170,16 +170,42 @@ func renderReceiptHTML(customerName, invoiceNumber, amount, hostedURL string) (s
 	return subject, b.String(), ctaURL, ctaLabel
 }
 
-func renderDunningWarningHTML(customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, hostedURL string) (subject, contentHTML, ctaURL, ctaLabel string) {
-	subject = "Action required — payment retry for invoice " + invoiceNumber
+func renderDunningWarningHTML(customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, hostedURL string) (subject, contentHTML, ctaURL, ctaLabel string) {
+	// Final-attempt branch: switch tone + subject so the customer
+	// understands this is the last automatic charge before a service-
+	// impacting action. Prevents the silent-spiral where every retry
+	// uses the same template and the customer never realises time is
+	// running out.
+	finalAttempt := maxAttempts > 0 && attemptNumber >= maxAttempts
+	if finalAttempt {
+		subject = "Last attempt — pay invoice " + invoiceNumber + " to keep service active"
+	} else {
+		subject = "Action required — payment retry for invoice " + invoiceNumber
+	}
 	var b strings.Builder
-	b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#111827;">We weren't able to process your payment</h1>`)
+	if finalAttempt {
+		b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#b91c1c;">Last attempt — please update your payment</h1>`)
+	} else {
+		b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#111827;">We weren't able to process your payment</h1>`)
+	}
 	b.WriteString(`<p style="margin:0 0 8px;color:#4b5563;">Hi ` + escape(customerName) + `,</p>`)
-	b.WriteString(`<p style="margin:0 0 20px;color:#4b5563;">Attempt <strong style="color:#111827;">` + escape(itoa(attemptNumber)) + ` of ` + escape(itoa(maxAttempts)) + `</strong> to charge invoice <strong style="color:#111827;">` + escape(invoiceNumber) + `</strong> was declined.</p>`)
-	b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">We'll try again on <strong style="color:#111827;">` + escape(nextRetryDate) + `</strong>. To avoid further retries, please update the payment method on file.</p>`)
+	b.WriteString(`<p style="margin:0 0 12px;color:#4b5563;">Attempt <strong style="color:#111827;">` + escape(itoa(attemptNumber)) + ` of ` + escape(itoa(maxAttempts)) + `</strong> to charge invoice <strong style="color:#111827;">` + escape(invoiceNumber) + `</strong> was declined.</p>`)
+	// Surface the decline reason inline so customers can act
+	// (insufficient_funds → top up; lost_card → swap card). Empty
+	// reason = no callout, no false noise.
+	if strings.TrimSpace(failureReason) != "" {
+		b.WriteString(`<div style="background:#fef2f2;border-left:3px solid #fca5a5;padding:10px 14px;margin:0 0 16px;color:#7f1d1d;font-size:13px;">`)
+		b.WriteString(`Reason: ` + escape(failureReason))
+		b.WriteString(`</div>`)
+	}
+	if finalAttempt {
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">This was the final automatic retry. If we can't collect this invoice, your subscription may be paused or canceled. Please pay the invoice or update your payment method now.</p>`)
+	} else {
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">We'll try again on <strong style="color:#111827;">` + escape(nextRetryDate) + `</strong>. To avoid further retries, please pay the invoice or update your payment method.</p>`)
+	}
 	if hostedURL != "" {
 		ctaURL = hostedURL
-		ctaLabel = "Update payment"
+		ctaLabel = "Pay invoice"
 	}
 	return subject, b.String(), ctaURL, ctaLabel
 }
@@ -208,10 +234,10 @@ func renderPaymentFailedHTML(customerName, invoiceNumber, reason, hostedURL stri
 	if strings.TrimSpace(reason) != "" {
 		b.WriteString(`<div style="background:#fef2f2;border-left:3px solid #fca5a5;padding:12px 16px;margin:8px 0 16px;color:#7f1d1d;font-size:14px;">` + escape(reason) + `</div>`)
 	}
-	b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Please update your payment method to avoid any service interruption.</p>`)
+	b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Pay the invoice or update your payment method to avoid service interruption.</p>`)
 	if hostedURL != "" {
 		ctaURL = hostedURL
-		ctaLabel = "Update payment"
+		ctaLabel = "Pay invoice"
 	}
 	return subject, b.String(), ctaURL, ctaLabel
 }
