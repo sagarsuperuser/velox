@@ -13,6 +13,7 @@ import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -235,25 +236,37 @@ export default function ApiKeysPage() {
                           </p>
                         </div>
                       </div>
-                      {/* Wrap in span so title attribute fires even when
-                          the button is disabled (Button uses
-                          disabled:pointer-events-none, so hover events
-                          fall through to the wrapper). cursor-not-allowed
-                          on the span is what the user actually sees. */}
-                      <span
-                        title={disabledReason}
-                        className={cn('shrink-0', (isCurrent || orphan) && 'cursor-not-allowed')}
-                      >
+                      {/* shadcn Tooltip wraps the disabled button — the
+                          native `title` attribute is unreliable on
+                          disabled-button-in-span across browsers
+                          (Button uses disabled:pointer-events-none, which
+                          interferes with hit-testing for the wrapper's
+                          title). Same swap applied to date-picker's
+                          Today button in commit 7a0dc97. */}
+                      {(isCurrent || orphan) ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="inline-block shrink-0 cursor-not-allowed">
+                              <Button variant="outline" size="sm"
+                                className="text-destructive hover:text-destructive"
+                                disabled
+                              >
+                                Revoke
+                              </Button>
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>{disabledReason}</TooltipContent>
+                        </Tooltip>
+                      ) : (
                         <Button variant="outline" size="sm"
-                          className="text-destructive hover:text-destructive"
-                          disabled={isCurrent || orphan}
+                          className="shrink-0 text-destructive hover:text-destructive"
                           onClick={() => {
                             setIsRevokingSelf(!!isCurrent)
                             setRevokeTarget(k)
                           }}>
                           Revoke
                         </Button>
-                      </span>
+                      )}
                     </div>
                   </CardContent>
                 </Card>

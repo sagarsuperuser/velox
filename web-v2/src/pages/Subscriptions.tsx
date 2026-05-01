@@ -17,6 +17,7 @@ import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -590,24 +591,37 @@ export default function SubscriptionsPage() {
                           </FormItem>
                         )}
                       />
-                      {/* Wrap in span so the tooltip fires when
-                          disabled — disabled:pointer-events-none on
-                          the Button suppresses the native title. */}
-                      <span
-                        title={itemsArray.fields.length <= 1 ? 'A subscription requires at least one item.' : 'Remove'}
-                        className={cn(itemsArray.fields.length <= 1 && 'cursor-not-allowed')}
-                      >
+                      {/* shadcn Tooltip — native `title` unreliable on
+                          disabled-button-in-span. */}
+                      {itemsArray.fields.length <= 1 ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="inline-block cursor-not-allowed">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-9 px-2 text-muted-foreground hover:text-destructive"
+                                disabled
+                              >
+                                <Trash2 size={14} />
+                              </Button>
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>A subscription requires at least one item.</TooltipContent>
+                        </Tooltip>
+                      ) : (
                         <Button
                           type="button"
                           size="sm"
                           variant="ghost"
                           className="h-9 px-2 text-muted-foreground hover:text-destructive"
                           onClick={() => itemsArray.remove(idx)}
-                          disabled={itemsArray.fields.length <= 1}
+                          title="Remove"
                         >
                           <Trash2 size={14} />
                         </Button>
-                      </span>
+                      )}
                     </div>
                   ))}
                 </div>
