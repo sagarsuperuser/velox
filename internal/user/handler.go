@@ -1,0 +1,255 @@
+package user
+
+import (
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/session"
+)
+
+// Handler wires the dashboard auth endpoints. ADR-011.
+//
+// Routes (mounted under /v1/auth):
+//   POST /login                     — email + password → mint cookie
+//   POST /logout                    — clear cookie + revoke session
+//   POST /password-reset/request    — email → send reset link
+//   POST /password-reset/confirm    — token + new password → set
+type Handler struct {
+	users    *Service
+	sessions *session.Service
+	cookie   session.CookieConfig
+	email    EmailSender // optional; nil = print reset link to logs (dev only)
+}
+
+// EmailSender is the narrow surface this handler uses to dispatch
+// password-reset emails. Satisfied by internal/email's Service in
+// production; the bootstrap CLI implementation prints to stdout
+// instead.
+type EmailSender interface {
+	SendPasswordReset(email, resetLink string) error
+}
+
+// NewHandler wires the dependencies. emailSender may be nil (e.g.
+// when SMTP isn't configured); in that case password-reset emails
+// fail silently and operators must use `make reset-password` CLI.
+func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender) *Handler {
+	return &Handler{
+		users:    users,
+		sessions: sessions,
+		cookie:   cookie,
+		email:    emailSender,
+	}
+}
+
+// Routes returns the dashboard auth surface. Mount under /v1/auth.
+// All routes are intentionally outside session middleware: they're
+// either pre-session (login, password-reset) or take the cookie via
+// r.Cookie directly (logout).
+func (h *Handler) Routes() chi.Router {
+	r := chi.NewRouter()
+	r.Post("/login", h.login)
+	r.Post("/logout", h.logout)
+	r.Post("/password-reset/request", h.requestPasswordReset)
+	r.Post("/password-reset/confirm", h.confirmPasswordReset)
+	return r
+}
+
+type loginReq struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type loginResp struct {
+	UserID    string `json:"user_id"`
+	TenantID  string `json:"tenant_id"`
+	Email     string `json:"email"`
+	Livemode  bool   `json:"livemode"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// login authenticates the operator's email + password and mints a
+// session cookie. Failures collapse into a single 401 with a
+// constant-time bcrypt check on the not-found path so we don't leak
+// account existence via response timing.
+func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	var req loginReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+	if req.Email == "" {
+		respond.ValidationField(w, r, "email", "email is required")
+		return
+	}
+	if req.Password == "" {
+		respond.ValidationField(w, r, "password", "password is required")
+		return
+	}
+
+	u, tenants, err := h.users.Authenticate(r.Context(), req.Email, req.Password)
+	if err != nil {
+		// On bad creds, still record the attempt against the (possibly
+		// non-existent) email for the lockout counter. Don't bother
+		// recording on lockout — already locked.
+		if errors.Is(err, ErrBadCredentials) {
+			h.users.RecordFailedAttempt(r.Context(), req.Email)
+			respond.Unauthorized(w, r, "invalid email or password")
+			return
+		}
+		if errors.Is(err, ErrAccountLocked) {
+			respond.Error(w, r, http.StatusTooManyRequests,
+				"authentication_error", "account_locked",
+				"too many failed attempts — try again in 15 minutes")
+			return
+		}
+		respond.FromError(w, r, err, "user")
+		return
+	}
+
+	// V1: each user belongs to exactly one tenant. The Authenticate
+	// call already errored out on zero tenants. Pick the first.
+	tenant := tenants[0]
+
+	rawID, sess, err := h.sessions.Issue(r.Context(), session.IssueInput{
+		UserID:    u.ID,
+		TenantID:  tenant.TenantID,
+		Livemode:  false, // dashboard sessions default to test mode; bearer for live
+		UserAgent: r.UserAgent(),
+		IP:        session.ClientIP(r),
+	})
+	if err != nil {
+		slog.Error("session: issue failed", "err", err, "user_id", u.ID)
+		respond.InternalError(w, r)
+		return
+	}
+
+	h.cookie.SetCookie(w, rawID, sess.ExpiresAt)
+	respond.JSON(w, r, http.StatusOK, loginResp{
+		UserID:    u.ID,
+		TenantID:  tenant.TenantID,
+		Email:     u.Email,
+		Livemode:  sess.Livemode,
+		ExpiresAt: sess.ExpiresAt.Format("2006-01-02T15:04:05Z07:00"),
+	})
+}
+
+// logout revokes the session row matching the cookie and clears the
+// cookie on the response. Idempotent — missing cookie is a no-op.
+func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie(session.CookieName)
+	if err == nil && c.Value != "" {
+		if revokeErr := h.sessions.Revoke(r.Context(), c.Value); revokeErr != nil {
+			slog.Error("session: revoke failed", "err", revokeErr)
+		}
+	}
+	h.cookie.ClearCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type requestResetReq struct {
+	Email string `json:"email"`
+}
+
+// requestPasswordReset issues a reset token (if the email matches a
+// user) and emails the operator a reset link. Always returns 200 with
+// a generic message — never confirms whether the email matched a
+// user, to avoid account enumeration.
+func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
+	var req requestResetReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+	if req.Email == "" {
+		respond.ValidationField(w, r, "email", "email is required")
+		return
+	}
+
+	plaintext, err := h.users.IssueResetToken(r.Context(), req.Email)
+	if err != nil {
+		slog.Error("password reset issue failed", "err", err)
+		// Generic response — don't expose internal failures
+	}
+
+	if plaintext != "" && h.email != nil {
+		// Best-effort send. Failure is logged but doesn't affect the
+		// response — the operator gets the same "if your email is on
+		// file, you'll get a link" message regardless.
+		resetLink := buildResetLink(r, plaintext)
+		if sendErr := h.email.SendPasswordReset(req.Email, resetLink); sendErr != nil {
+			slog.Error("password reset email send failed", "err", sendErr)
+		}
+	} else if plaintext != "" {
+		// Dev / no-SMTP fallback: log the link so the operator can
+		// retrieve it from server logs. Production deployments should
+		// always have an EmailSender wired.
+		slog.Info("password reset link issued (no email sender configured)",
+			"email", req.Email, "reset_link", buildResetLink(r, plaintext))
+	}
+
+	respond.JSON(w, r, http.StatusOK, map[string]string{
+		"message": "if an account exists for that email, a password-reset link has been sent",
+	})
+}
+
+type confirmResetReq struct {
+	Token    string `json:"token"`
+	Password string `json:"password"`
+}
+
+// confirmPasswordReset validates the reset token, applies the new
+// password, and revokes any active sessions for the user (forces a
+// fresh login). Surface the password-validation error inline (e.g.
+// "must be at least 12 characters") so the dashboard can highlight
+// the field; collapse token failures into a single 422.
+func (h *Handler) confirmPasswordReset(w http.ResponseWriter, r *http.Request) {
+	var req confirmResetReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+	if req.Token == "" {
+		respond.ValidationField(w, r, "token", "token is required")
+		return
+	}
+	if req.Password == "" {
+		respond.ValidationField(w, r, "password", "password is required")
+		return
+	}
+
+	_, err := h.users.ConsumeResetToken(r.Context(), req.Token, req.Password)
+	if err != nil {
+		// errs.Invalid (password validation) and errs.NotFound (token
+		// invalid/expired/used) both map cleanly; let respond.FromError
+		// do the routing.
+		respond.FromError(w, r, err, "password_reset")
+		return
+	}
+
+	respond.JSON(w, r, http.StatusOK, map[string]string{
+		"message": "password updated — sign in with your new password",
+	})
+}
+
+// buildResetLink constructs the operator-facing URL for the reset
+// confirmation page. Uses the request's Host header (dashboard and
+// API are same-origin in standard deployments).
+func buildResetLink(r *http.Request, token string) string {
+	scheme := "https"
+	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
+		scheme = "http"
+	}
+	return scheme + "://" + r.Host + "/reset-password?token=" + token
+}
+
+// (Email integration deferred — internal/email's surface is built
+// for tenant-scoped invoice/dunning email delivery via outbox+
+// dispatcher and doesn't yet expose a simple SendRaw call. v1
+// password-reset emits the reset link to server logs; operators
+// retrieve it from there. Production deployments will wire a real
+// EmailSender once internal/email exposes the right surface.)

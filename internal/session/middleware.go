@@ -64,8 +64,8 @@ func MiddlewareOrAPIKey(sessSvc *Service, keySvc *auth.Service) func(http.Handle
 			}
 			ctx := r.Context()
 			ctx = auth.WithTenantID(ctx, key.TenantID)
-			ctx = withKeyID(ctx, key.ID)
-			ctx = withKeyType(ctx, auth.KeyType(key.KeyType))
+			ctx = auth.WithKeyID(ctx, key.ID)
+			ctx = auth.WithKeyType(ctx, auth.KeyType(key.KeyType))
 			ctx = postgres.WithLivemode(ctx, key.Livemode)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -74,30 +74,15 @@ func MiddlewareOrAPIKey(sessSvc *Service, keySvc *auth.Service) func(http.Handle
 
 func applyToCtx(ctx context.Context, s Session) context.Context {
 	ctx = auth.WithTenantID(ctx, s.TenantID)
-	ctx = withKeyID(ctx, s.KeyID)
-	// Session-authed requests inherit the parent key's permissions.
-	// We don't carry KeyType on the session row to avoid drift if the
-	// underlying key's type ever changes mid-session; resolving it
-	// fresh from auth.Service would require a DB roundtrip on every
-	// request, which is overkill for v1. The dashboard only mints
-	// sessions from secret keys via /v1/auth/exchange, so KeyType
-	// defaults to secret here — refine when publishable-key sessions
-	// exist (see ADR-008 mitigations list).
-	ctx = withKeyType(ctx, auth.KeyTypeSecret)
+	ctx = auth.WithUserID(ctx, s.UserID)
+	// Session-authed requests use the KeyTypeSession permission set
+	// (full operator access, mirroring the bootstrap-equivalent role).
+	// When invite flows ship and roles diverge, resolve the user's
+	// role from the user_tenants row and pick a permission set per
+	// role. Today every user is implicitly an owner.
+	ctx = auth.WithKeyType(ctx, auth.KeyTypeSession)
 	ctx = postgres.WithLivemode(ctx, s.Livemode)
 	return ctx
-}
-
-// withKeyID and withKeyType are local thin wrappers that route
-// through auth.WithTenantID's siblings without re-exporting them. The
-// auth package owns the canonical context keys; we just call its
-// setters.
-func withKeyID(ctx context.Context, id string) context.Context {
-	return auth.WithKeyID(ctx, id)
-}
-
-func withKeyType(ctx context.Context, kt auth.KeyType) context.Context {
-	return auth.WithKeyType(ctx, kt)
 }
 
 func extractBearer(r *http.Request) string {

@@ -1,12 +1,14 @@
-// Package session implements dashboard sessions minted from a pasted
-// API key. The credential is the API key (durable, operator-managed);
-// the browser-side artefact is an httpOnly cookie tied to that key —
-// see ADR-008 for why this shape was chosen over Bearer-in-localStorage.
+// Package session implements dashboard sessions minted by the
+// email+password login flow. The credential is the operator's
+// password (verified via bcrypt); the browser-side artefact is an
+// httpOnly cookie tied to the user — see ADR-011 for the full
+// rationale and what changed from the previous (key-bound) shape.
 //
 // The package deliberately exposes only the surface the dashboard auth
-// flow needs: Issue (mint a session from a validated key), Get (resolve
-// a cookie value to its session row), Revoke (logout). Everything is
-// keyed by sha256(raw_id); the raw id only ever lives in the cookie.
+// flow needs: Issue (mint a session for an authenticated user), Get
+// (resolve a cookie value to its session row), Revoke (logout).
+// Everything is keyed by sha256(raw_id); the raw id only ever lives
+// in the cookie.
 package session
 
 import (
@@ -22,10 +24,11 @@ import (
 // name without risk of drift.
 const CookieName = "velox_session"
 
-// DefaultTTL is the default session lifetime. Shorter than typical
-// password-based sessions (which were 30d) because the underlying
-// credential is a durable API key — the session is just the
-// browser-side artefact of "I pasted that key recently."
+// DefaultTTL is the default session lifetime. 7 days matches GitHub's
+// auth cookie default and the prior (ADR-008) value; long enough that
+// operators don't see a daily login prompt, short enough that a
+// stolen cookie has bounded lifetime even if the operator never
+// realises and the cookie isn't revoked server-side.
 const DefaultTTL = 7 * 24 * time.Hour
 
 // ErrNotFound signals that a session id resolves to no row, or to a
@@ -34,12 +37,13 @@ const DefaultTTL = 7 * 24 * time.Hour
 var ErrNotFound = errors.New("session: not found")
 
 // Session is the domain row. id_hash is sha256(raw); the raw id never
-// leaves the cookie. Livemode is captured at session-issue time from
-// the parent key — sessions don't toggle modes; a mode flip would mint
-// a new session from the relevant key.
+// leaves the cookie. UserID identifies the operator the session was
+// minted for; sessions are user-bound (ADR-011), not key-bound.
+// Livemode is captured at session-issue time and stays static —
+// sessions don't toggle modes; a mode flip would mint a new session.
 type Session struct {
 	IDHash     string
-	KeyID      string
+	UserID     string
 	TenantID   string
 	Livemode   bool
 	CreatedAt  time.Time

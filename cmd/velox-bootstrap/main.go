@@ -16,6 +16,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/config"
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/user"
 )
 
 func main() {
@@ -102,12 +103,42 @@ func main() {
 		fatal("commit: %v", err)
 	}
 
+	// Bootstrap a dashboard user (ADR-011). Email + password come from
+	// VELOX_BOOTSTRAP_EMAIL / VELOX_BOOTSTRAP_PASSWORD env or sensible
+	// defaults (admin@velox.local / a randomly-generated password
+	// printed once below).
+	bootstrapEmail := strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_EMAIL"))
+	if bootstrapEmail == "" {
+		bootstrapEmail = "admin@velox.local"
+	}
+	bootstrapPassword := strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_PASSWORD"))
+	passwordGenerated := false
+	if bootstrapPassword == "" {
+		bootstrapPassword = generatePassword()
+		passwordGenerated = true
+	}
+	userSvc := user.NewService(user.NewPostgresStore(db), nil)
+	createdUser, err := userSvc.CreateUser(ctx, bootstrapEmail, bootstrapPassword, tenantID, "owner")
+	if err != nil {
+		fatal("create dashboard user: %v", err)
+	}
+
 	fmt.Println("========================================")
 	fmt.Println("  Velox Bootstrap Complete")
 	fmt.Println("========================================")
 	fmt.Println()
 	fmt.Printf("  Tenant:     %s\n", tenantName)
 	fmt.Printf("  Tenant ID:  %s\n", tenantID)
+	fmt.Println()
+	fmt.Println("  Dashboard sign-in (http://localhost:5173/login):")
+	fmt.Printf("  Email:    %s\n", createdUser.Email)
+	if passwordGenerated {
+		fmt.Printf("  Password: %s   (generated — save this; not retrievable)\n", bootstrapPassword)
+	} else {
+		fmt.Println("  Password: (the value of VELOX_BOOTSTRAP_PASSWORD)")
+	}
+	fmt.Println()
+	fmt.Println("  API keys for SDK / curl callers:")
 	fmt.Println()
 	fmt.Println("  Secret Key — TEST mode (no real money):")
 	fmt.Printf("  %s\n", testSecretKey)
@@ -118,14 +149,18 @@ func main() {
 	fmt.Println("  Publishable Key (restricted, test mode):")
 	fmt.Printf("  %s\n", testPubKey)
 	fmt.Println()
-	fmt.Println("  Sign in to the dashboard at http://localhost:5173 by")
-	fmt.Println("  pasting the Secret Key for the mode you want to operate in.")
-	fmt.Println("  Mode is determined by the key — there is no in-app toggle.")
-	fmt.Println("  Switching modes means signing out and pasting the other key.")
-	fmt.Println()
 	fmt.Println("  Try it on the API:")
 	fmt.Printf("  curl -H 'Authorization: Bearer %s' http://localhost:8080/v1/customers\n", testSecretKey)
 	fmt.Println("========================================")
+}
+
+// generatePassword returns 24 random hex chars — meets the 12-char
+// minimum from internal/user.MinPasswordLength with a wide margin.
+// Printed to stdout once; not retrievable.
+func generatePassword() string {
+	b := make([]byte, 12)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // mintKey returns a freshly generated raw key with the given mode-aware

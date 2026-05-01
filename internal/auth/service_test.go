@@ -573,27 +573,9 @@ func TestRotateKey_PreservesTestmode(t *testing.T) {
 	}
 }
 
-// recordingSessionRevoker captures fan-out calls so tests can assert
-// that auth.Service correctly invokes session-revocation after a key
-// revoke and during rotate-with-grace=0.
-type recordingSessionRevoker struct {
-	mu    sync.Mutex
-	calls []string
-	err   error
-}
-
-func (r *recordingSessionRevoker) RevokeAllForKey(_ context.Context, keyID string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, keyID)
-	return r.err
-}
-
-func (r *recordingSessionRevoker) callCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.calls)
-}
+// (recordingSessionRevoker / fan-out tests deleted in ADR-011 —
+// dashboard sessions are user-bound now, so no API-key revoke fan-out
+// to test.)
 
 // keySpec describes one key to seed into the test tenant. expired=true
 // produces a key with expires_at one hour in the past — the only knob
@@ -715,95 +697,7 @@ func TestRevokeKey_Safeguard(t *testing.T) {
 	}
 }
 
-// TestRevokeKey_FanOut covers the cookie-session fan-out: a successful
-// RevokeKey must call sessionRevoker.RevokeAllForKey exactly once with
-// the revoked key id; a refused RevokeKey (safeguard fired) must not
-// fire fan-out at all (auth state didn't change, sessions should remain
-// valid).
-func TestRevokeKey_FanOut(t *testing.T) {
-	cases := []struct {
-		name      string
-		seed      []keySpec
-		revokeIdx int
-		wantCalls int
-	}{
-		{
-			name: "fans out on successful revoke",
-			seed: []keySpec{
-				{keyType: KeyTypeSecret},
-				{keyType: KeyTypeSecret},
-			},
-			revokeIdx: 0,
-			wantCalls: 1,
-		},
-		{
-			name:      "does not fan out when safeguard refuses",
-			seed:      []keySpec{{keyType: KeyTypeSecret}},
-			revokeIdx: 0,
-			wantCalls: 0,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			svc := NewService(newMemStore())
-			rev := &recordingSessionRevoker{}
-			svc.SetSessionRevoker(rev)
-			ids := seed(t, svc, tc.seed...)
-
-			_, _ = svc.RevokeKey(context.Background(), "ten_1", ids[tc.revokeIdx])
-
-			if got := rev.callCount(); got != tc.wantCalls {
-				t.Errorf("fan-out call count: got %d, want %d", got, tc.wantCalls)
-			}
-			if tc.wantCalls > 0 && rev.calls[0] != ids[tc.revokeIdx] {
-				t.Errorf("fan-out called with %q, want %q", rev.calls[0], ids[tc.revokeIdx])
-			}
-		})
-	}
-}
-
-func TestRotateKey_FanOutOnImmediateCutoverOnly(t *testing.T) {
-	// Grace=0 should fan out; grace>0 should not (old key still
-	// valid through the grace window, sessions tied to it stay live).
-	for _, tc := range []struct {
-		name     string
-		grace    int64
-		wantCall bool
-	}{
-		{"grace=0 fans out", 0, true},
-		{"grace=300 does not fan out", 300, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := newMemStore()
-			svc := NewService(store)
-			rev := &recordingSessionRevoker{}
-			svc.SetSessionRevoker(rev)
-
-			// Two secrets so the immediate-cutover path passes the
-			// safeguard when calling Store.Revoke under the hood.
-			created, err := svc.CreateKey(context.Background(), "ten_1",
-				CreateKeyInput{Name: "rotating", KeyType: KeyTypeSecret})
-			if err != nil {
-				t.Fatalf("create: %v", err)
-			}
-			if _, err := svc.CreateKey(context.Background(), "ten_1",
-				CreateKeyInput{Name: "spare", KeyType: KeyTypeSecret}); err != nil {
-				t.Fatalf("create spare: %v", err)
-			}
-
-			if _, err := svc.RotateKey(context.Background(), "ten_1", created.Key.ID,
-				RotateKeyInput{ExpiresInSeconds: tc.grace}); err != nil {
-				t.Fatalf("rotate: %v", err)
-			}
-
-			got := rev.callCount()
-			if tc.wantCall && got != 1 {
-				t.Errorf("expected fan-out, got %d calls", got)
-			}
-			if !tc.wantCall && got != 0 {
-				t.Errorf("expected no fan-out, got %d calls", got)
-			}
-		})
-	}
-}
+// (Cookie-session fan-out tests deleted in ADR-011 — the SessionRevoker
+// interface and the fan-out call site are gone with user-bound
+// sessions. RevokeKey is now a thin store passthrough; RotateKey
+// likewise no longer cares about cookie sessions.)

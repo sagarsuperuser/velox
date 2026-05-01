@@ -6,10 +6,9 @@ import (
 )
 
 // Service is the auth-flow facade over Store. Issue mints a session
-// from a validated key context (caller has already resolved the key);
-// Resolve looks up a raw cookie value and returns the Session if it's
-// still active; Revoke handles logout. The package never accepts an
-// API key directly — key validation is auth.Service's job.
+// for an authenticated user (caller has already verified the
+// password); Resolve looks up a raw cookie value and returns the
+// Session if it's still active; Revoke handles logout.
 type Service struct {
 	store Store
 	now   func() time.Time
@@ -21,11 +20,11 @@ func NewService(store Store) *Service {
 	return &Service{store: store, now: time.Now, ttl: DefaultTTL}
 }
 
-// IssueInput is the contract for Issue. Callers (the exchange handler)
-// pass everything needed to mint a session row — the API key has
-// already been validated and resolved.
+// IssueInput is the contract for Issue. Callers (the login handler)
+// pass everything needed to mint a session row — the user has already
+// been authenticated by user.Service.Authenticate.
 type IssueInput struct {
-	KeyID     string
+	UserID    string
 	TenantID  string
 	Livemode  bool
 	UserAgent string
@@ -44,7 +43,7 @@ func (s *Service) Issue(ctx context.Context, in IssueInput) (rawID string, sess 
 	now := s.now().UTC()
 	sess = Session{
 		IDHash:     HashID(rawID),
-		KeyID:      in.KeyID,
+		UserID:     in.UserID,
 		TenantID:   in.TenantID,
 		Livemode:   in.Livemode,
 		CreatedAt:  now,
@@ -83,14 +82,4 @@ func (s *Service) Revoke(ctx context.Context, rawID string) error {
 		return nil
 	}
 	return s.store.Revoke(ctx, HashID(rawID))
-}
-
-// RevokeAllForKey is invoked when an API key is revoked through the
-// /v1/api-keys surface — all browser sessions minted from that key
-// must die at the same instant. Idempotent.
-func (s *Service) RevokeAllForKey(ctx context.Context, keyID string) error {
-	if keyID == "" {
-		return nil
-	}
-	return s.store.RevokeAllForKey(ctx, keyID)
 }

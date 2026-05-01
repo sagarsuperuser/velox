@@ -44,6 +44,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/recipe"
 	"github.com/sagarsuperuser/velox/internal/session"
+	"github.com/sagarsuperuser/velox/internal/user"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
@@ -598,20 +599,17 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, usageStore, auditLogger)
 	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
 
-	// Dashboard sessions — minted from a pasted API key, server-side
-	// revocable, httpOnly cookie. See ADR-008. The session service
-	// itself is a thin wrapper over the dashboard_sessions table; the
-	// handler wires /v1/auth/exchange + /v1/auth/logout.
+	// Dashboard sessions are user-bound (ADR-011) — minted by the
+	// email+password login flow, server-side revocable, httpOnly
+	// cookie. The session service itself is a thin wrapper over the
+	// dashboard_sessions table.
 	sessionSvc := session.NewService(session.NewPostgresStore(db))
-	sessionH := session.NewHandler(authSvc, sessionSvc, session.DefaultCookieConfig())
 
-	// Wire api-key-revoke fan-out: when an operator revokes (or
-	// rotates with grace=0) an API key, every dashboard cookie tied
-	// to that key dies in the same request so the cookie path stops
-	// working alongside the Bearer path. Without this, a stolen
-	// cookie remains usable for up to the session TTL after the
-	// underlying key is revoked.
-	authSvc.SetSessionRevoker(sessionSvc)
+	// User accounts: email + password auth for the dashboard. See
+	// ADR-011. The auth handler wires /v1/auth/login,
+	// /v1/auth/logout, and the password-reset flow.
+	userSvc := user.NewService(user.NewPostgresStore(db), nil)
+	dashboardAuthH := user.NewHandler(userSvc, sessionSvc, session.DefaultCookieConfig(), nil)
 
 	s := &Server{
 		BillingEngine:         engine,
@@ -710,13 +708,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Mount("/v1/bootstrap", bootstrapH.Routes())
 	})
 
-	// Dashboard auth — exchange a pasted API key for an httpOnly
-	// session cookie, plus logout. Public surface (pre-session). Rate
-	// limited to slow credential stuffing.
+	// Dashboard auth — email+password login, logout, password-reset
+	// flow. Public surface (pre-session). Rate limited to slow
+	// credential stuffing. ADR-011.
 	r.Route("/v1/auth", func(r chi.Router) {
 		r.Use(rateLimiter.Middleware())
 		r.Use(middleware.Timeout(30 * time.Second))
-		r.Mount("/", sessionH.Routes())
+		r.Mount("/", dashboardAuthH.Routes())
 	})
 
 	// Stripe webhooks — no API key auth (verified by signature)
