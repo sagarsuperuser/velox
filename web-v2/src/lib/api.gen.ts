@@ -981,6 +981,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Switch the dashboard session between test and live mode
+         * @description Updates `dashboard_sessions.livemode` for the cookie session.
+         *     All subsequent requests inherit the new mode via session middleware,
+         *     so customers / invoices / subscriptions / API keys reads filter to
+         *     the active mode without per-call mode parameters. The same operator
+         *     flips back and forth without re-authenticating.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        livemode: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Mode updated */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            livemode: boolean;
+                        };
+                    };
+                };
+                /** @description Missing or expired session */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/password-reset/request": {
         parameters: {
             query?: never;

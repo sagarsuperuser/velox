@@ -22,6 +22,7 @@ type Store interface {
 	Insert(ctx context.Context, s Session) error
 	GetByIDHash(ctx context.Context, idHash string) (Session, error)
 	Revoke(ctx context.Context, idHash string) error
+	UpdateLivemode(ctx context.Context, idHash string, livemode bool) error
 }
 
 type postgresStore struct {
@@ -106,6 +107,31 @@ func (s *postgresStore) Revoke(ctx context.Context, idHash string) error {
 		WHERE id_hash = $2 AND revoked_at IS NULL
 	`, time.Now().UTC(), idHash); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+func (s *postgresStore) UpdateLivemode(ctx context.Context, idHash string, livemode bool) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE dashboard_sessions
+		SET livemode = $1
+		WHERE id_hash = $2 AND revoked_at IS NULL
+	`, livemode, idHash)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return tx.Commit()
 }

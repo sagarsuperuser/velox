@@ -40,6 +40,8 @@ export * from './planBillingInterval';
 export * from './planStatus';
 export * from './postV1AuthLogin200';
 export * from './postV1AuthLoginBody';
+export * from './postV1AuthMode200';
+export * from './postV1AuthModeBody';
 export * from './postV1AuthPasswordResetConfirmBody';
 export * from './postV1AuthPasswordResetRequestBody';
 export * from './postV1BillingRun200';

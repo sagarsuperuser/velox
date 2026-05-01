@@ -54,4 +54,9 @@ export const authApi = {
   // password. Token from the email link's ?token= param.
   confirmPasswordReset: (token: string, password: string) =>
     apiRequest<{ message: string }>('POST', '/auth/password-reset/confirm', { token, password }),
+
+  // setMode flips the active mode (test/live) on the cookie session.
+  // All subsequent requests inherit the new mode automatically.
+  setMode: (livemode: boolean) =>
+    apiRequest<{ livemode: boolean }>('POST', '/auth/mode', { livemode }),
 }
