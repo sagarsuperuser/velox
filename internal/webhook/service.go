@@ -205,10 +205,17 @@ func (s *Service) CreateEndpointTx(ctx context.Context, tx *sql.Tx, tenantID str
 }
 
 // SecretRotationGracePeriod is how long a rotated-out secret keeps
-// signing alongside its replacement. Matches Stripe's public guidance
-// for their rotating signing-secret feature: long enough for a partner
-// to stage a deploy across a typical release window, short enough that a
-// compromised-key rotation has a bounded bleed-through.
+// signing alongside its replacement. Velox uses 72h; Stripe's hosted
+// equivalent caps at 24h
+// (https://docs.stripe.com/webhooks/signature). The intentional
+// deviation: self-hosted Velox deployments often have slower deploy
+// cadences (manual rolls, no central CI fleet), so 24h would force a
+// rushed cutover for tenants whose ops team checks the webhook
+// receivers once a week. 72h covers a typical "find the change request
+// → ship → verify" loop without the rushed-deploy footgun. Compromise
+// case: a leaked secret stays usable for up to 72h after the operator
+// rotates — bounded but not instant. Tighten to 24h if a tenant-
+// configurable cap is justified by a real DP request.
 const SecretRotationGracePeriod = 72 * time.Hour
 
 // RotateSecret generates a new signing secret for an endpoint and returns it
