@@ -16,6 +16,8 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
@@ -29,7 +31,6 @@ import { Plus, Clock as ClockIcon, Loader2 } from 'lucide-react'
 
 const createSchema = z.object({
   name: z.string().max(200, 'Name must be at most 200 characters').optional(),
-  frozen_time: z.string().min(1, 'Initial clock time is required'),
 })
 type CreateData = z.infer<typeof createSchema>
 
@@ -148,24 +149,30 @@ export default function TestClocksPage() {
 function CreateClockDialog({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  // Default the picker to "now in tenant TZ" so the wall-clock the
-  // operator sees in the picker matches the tenant's clock, not the
-  // browser's. ADR-010: every operator-picked civil datetime is
-  // interpreted in tenant TZ.
+  // ADR-010: every operator-picked civil datetime is interpreted in
+  // tenant TZ. Date + time edited independently so the branded
+  // DatePicker (consistent with API Keys / Coupons / Credits) handles
+  // the date and a small text input handles HH:mm.
   const tz = getTenantTimezone() || 'UTC'
-  const defaultNow = formatInTimeZone(new Date(), tz, "yyyy-MM-dd'T'HH:mm")
+  const [datePart, setDatePart] = useState(() => formatInTimeZone(new Date(), tz, 'yyyy-MM-dd'))
+  const [timePart, setTimePart] = useState(() => formatInTimeZone(new Date(), tz, 'HH:mm'))
+  const [pickerError, setPickerError] = useState('')
+
   const form = useForm<CreateData>({
     resolver: zodResolver(createSchema),
-    defaultValues: { name: '', frozen_time: defaultNow },
+    defaultValues: { name: '' },
   })
 
   const onSubmit = form.handleSubmit(async data => {
+    setPickerError('')
+    if (!datePart) { setPickerError('Date is required'); return }
+    if (!/^\d{2}:\d{2}$/.test(timePart)) { setPickerError('Time must be HH:MM'); return }
     try {
-      // Re-ground the picker output as wall-clock-in-tenant-TZ → UTC
-      // ISO. Without this round-trip the browser would interpret the
-      // YYYY-MM-DDTHH:mm string as local time and the resulting UTC
-      // ISO would skew by (tenant_TZ_offset − browser_TZ_offset).
-      const isoUtc = fromZonedTime(data.frozen_time, tz).toISOString()
+      // Re-ground "wall-clock in tenant TZ" → UTC ISO. Without this,
+      // the browser would interpret the YYYY-MM-DDTHH:mm string as
+      // local time and the resulting UTC ISO would skew by
+      // (tenant_TZ_offset − browser_TZ_offset).
+      const isoUtc = fromZonedTime(`${datePart}T${timePart}:00`, tz).toISOString()
       const clk = await api.createTestClock({
         name: data.name || '',
         frozen_time: isoUtc,
@@ -204,22 +211,26 @@ function CreateClockDialog({ onClose }: { onClose: () => void }) {
                 </FormItem>
               )}
             />
-            <FormField
-              control={form.control}
-              name="frozen_time"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Initial clock time</FormLabel>
-                  <FormControl>
-                    <Input type="datetime-local" {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    Times are in your tenant timezone ({tz}). The clock starts here; use Advance from the detail page to move it forward.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+            <div className="space-y-1.5">
+              <Label className="text-sm font-medium">Initial clock time</Label>
+              <div className="flex gap-2">
+                <DatePicker
+                  value={datePart}
+                  onChange={(d) => { setDatePart(d); setPickerError('') }}
+                  className="flex-1"
+                />
+                <Input
+                  type="time"
+                  value={timePart}
+                  onChange={(e) => { setTimePart(e.target.value); setPickerError('') }}
+                  className="w-28"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Times are in your tenant timezone ({tz}). The clock starts here; use Advance from the detail page to move it forward.
+              </p>
+              {pickerError && <p className="text-xs text-destructive">{pickerError}</p>}
+            </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
               <Button type="submit" disabled={form.formState.isSubmitting}>

@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
@@ -257,15 +258,23 @@ function AdvanceClockDialog({
   // tomorrow" matches the tenant's clock and the displayed clock-time
   // stays internally consistent. ADR-010.
   const tz = getTenantTimezone() || 'UTC'
-  const toPicker = (d: Date) => formatInTimeZone(d, tz, "yyyy-MM-dd'T'HH:mm")
-  // Default to current frozen + 1 hour so the picker isn't blank.
-  const defaultNext = useMemo(() => {
+  // Date + time edited independently — branded DatePicker for the date
+  // and a small text input for HH:mm. Defaults to "current frozen + 1h"
+  // in tenant TZ so the picker isn't blank and isn't accidentally past.
+  const defaultDate = useMemo(() => {
     const d = new Date(clock.frozen_time)
     d.setHours(d.getHours() + 1)
-    return toPicker(d)
+    return formatInTimeZone(d, tz, 'yyyy-MM-dd')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clock.frozen_time, tz])
-  const [target, setTarget] = useState(defaultNext)
+  const defaultTime = useMemo(() => {
+    const d = new Date(clock.frozen_time)
+    d.setHours(d.getHours() + 1)
+    return formatInTimeZone(d, tz, 'HH:mm')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clock.frozen_time, tz])
+  const [datePart, setDatePart] = useState(defaultDate)
+  const [timePart, setTimePart] = useState(defaultTime)
   const [submitting, setSubmitting] = useState(false)
 
   const presets: { label: string; ms: number }[] = [
@@ -275,23 +284,30 @@ function AdvanceClockDialog({
   ]
   const applyPreset = (ms: number) => {
     const d = new Date(new Date(clock.frozen_time).getTime() + ms)
-    setTarget(toPicker(d))
+    setDatePart(formatInTimeZone(d, tz, 'yyyy-MM-dd'))
+    setTimePart(formatInTimeZone(d, tz, 'HH:mm'))
   }
+
+  // Compose date + time in tenant TZ, then re-ground to UTC for both
+  // the soft warning and the submit. Single source of truth for the
+  // target instant.
+  const targetIso = useMemo(() => {
+    if (!datePart || !/^\d{2}:\d{2}$/.test(timePart)) return null
+    return fromZonedTime(`${datePart}T${timePart}:00`, tz).toISOString()
+  }, [datePart, timePart, tz])
 
   // Soft warning when the jump exceeds typical sub interval — Stripe caps
   // this hard, we just nudge.
-  const overlongWarning = subs.length > 0 && (() => {
-    const jumpMs = new Date(target).getTime() - new Date(clock.frozen_time).getTime()
+  const overlongWarning = subs.length > 0 && targetIso !== null && (() => {
+    const jumpMs = new Date(targetIso).getTime() - new Date(clock.frozen_time).getTime()
     return jumpMs > 31 * 24 * 60 * 60 * 1000
   })()
 
   const handleSubmit = async () => {
-    if (!target) return
-    // Re-ground the picker output as wall-clock-in-tenant-TZ → UTC
-    // ISO. Without this, the browser would interpret the picker's
-    // YYYY-MM-DDTHH:mm as local time and the result would skew by
-    // (tenant_TZ_offset − browser_TZ_offset).
-    const targetIso = fromZonedTime(target, tz).toISOString()
+    if (!targetIso) {
+      toast.error('Pick a valid date and time')
+      return
+    }
     if (new Date(targetIso) <= new Date(clock.frozen_time)) {
       toast.error('Target time must be after the current clock time')
       return
@@ -340,8 +356,16 @@ function AdvanceClockDialog({
           </div>
 
           <div>
-            <Label htmlFor="target">Target clock time</Label>
-            <Input id="target" type="datetime-local" value={target} onChange={e => setTarget(e.target.value)} className="mt-1.5" />
+            <Label>Target clock time</Label>
+            <div className="flex gap-2 mt-1.5">
+              <DatePicker value={datePart} onChange={setDatePart} className="flex-1" />
+              <Input
+                type="time"
+                value={timePart}
+                onChange={e => setTimePart(e.target.value)}
+                className="w-28"
+              />
+            </div>
             <p className="text-xs text-muted-foreground mt-1.5">Times in tenant timezone ({tz}).</p>
           </div>
 
