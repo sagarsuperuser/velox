@@ -386,7 +386,7 @@ the old key immediately (`expires_in_seconds=0`) or schedules its
 expiry for the grace window. Dashboard surface in FLOW K3.
 
 - [ ] Rotate KEY_X with `expires_in_seconds=300` → new key returned with fresh raw_key; `SELECT expires_at FROM api_keys WHERE id='<KEY_X_id>'` is ~5 min out, `revoked_at IS NULL`. Bearer using KEY_X still authenticates until expiry.
-- [ ] Rotate KEY_Y with `expires_in_seconds=0` → old key has `revoked_at NOT NULL`; Bearer using KEY_Y → 401 `api key revoked`.
+- [ ] Rotate KEY_Y with `expires_in_seconds=0` → old key has `revoked_at NOT NULL`; Bearer using KEY_Y → 401 `invalid api key` (revoked + nonexistent collapse into one generic message; Stripe pattern, avoids leaking existence).
 - [ ] Rotate a revoked key → 422 `cannot rotate a revoked key`.
 - [ ] `expires_in_seconds` > 7 days (`> 604800`) → 422 with `field=expires_in_seconds`.
 
