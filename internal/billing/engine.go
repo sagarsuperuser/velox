@@ -42,21 +42,37 @@ type SettingsReader interface {
 }
 
 type Engine struct {
-	subs          SubscriptionReader
-	usage         UsageAggregator
-	pricing       PricingReader
-	invoices      InvoiceWriter
-	credits       CreditApplier
-	settings      SettingsReader
-	paymentSetups PaymentSetupReader
-	charger       InvoiceCharger
-	profiles      BillingProfileReader
-	taxProviders  TaxProviderResolver
-	taxCalcStore  TaxCalculationWriter
-	coupons       CouponApplier
-	clock         clock.Clock
-	testClocks    TestClockReader
-	events        domain.EventDispatcher
+	subs           SubscriptionReader
+	usage          UsageAggregator
+	pricing        PricingReader
+	invoices       InvoiceWriter
+	credits        CreditApplier
+	settings       SettingsReader
+	paymentSetups  PaymentSetupReader
+	charger        InvoiceCharger
+	profiles       BillingProfileReader
+	taxProviders   TaxProviderResolver
+	taxCalcStore   TaxCalculationWriter
+	coupons        CouponApplier
+	clock          clock.Clock
+	testClocks     TestClockReader
+	events         domain.EventDispatcher
+	noPMNotifier   NoPaymentMethodNotifier
+}
+
+// NoPaymentMethodNotifier dispatches a customer-facing email when an
+// invoice finalizes for a customer with no PaymentSetup ready. Without
+// this, the customer would never know to add a card and the invoice
+// would silently sit unpaid until it goes overdue and dunning fires
+// — too late for happy-path collection. Stripe sends an equivalent
+// "Action required: payment method needed" email at finalize for
+// failed charges; we extend the same pattern to the no-PM case so the
+// customer experience is symmetric.
+//
+// Optional — when nil, engine skips the notification (local dev,
+// integration tests). Wire in router.go via SetNoPaymentMethodNotifier.
+type NoPaymentMethodNotifier interface {
+	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error
 }
 
 // TestClockReader looks up a test clock's frozen_time. The billing engine
@@ -349,6 +365,13 @@ func (e *Engine) SetTestClockReader(r TestClockReader) {
 // dropped (acceptable for narrow billing unit tests).
 func (e *Engine) SetEventDispatcher(d domain.EventDispatcher) {
 	e.events = d
+}
+
+// SetNoPaymentMethodNotifier wires the customer-notification dispatcher
+// fired when an invoice finalizes without a PaymentSetup ready. See
+// the NoPaymentMethodNotifier doc-comment for the full rationale.
+func (e *Engine) SetNoPaymentMethodNotifier(n NoPaymentMethodNotifier) {
+	e.noPMNotifier = n
 }
 
 // shouldFireScheduledCancel reports whether a sub's soft-cancel intent has
@@ -1362,9 +1385,10 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	// because finalize hasn't happened. This is the Stripe-parity behavior:
 	// pause_collection neuters the financial side without touching the cycle.
 	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && !collectionPaused {
-		if ps, err := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID); err == nil &&
-			ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
+		ps, psErr := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID)
+		pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != ""
 
+		if pmReady {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 
@@ -1379,6 +1403,33 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
 				} else {
 					slog.Info("auto-charge succeeded", "invoice_id", inv.ID)
+				}
+			}
+		} else {
+			// No PM ready: queue for the scheduler-retry path AND
+			// notify the customer. RetryPendingCharges checks PM on
+			// each tick — skips when still missing, charges
+			// immediately when the customer attaches one (Chargebee's
+			// "Collect Invoice on Card Update"). The notifier sends
+			// the same "Action required: payment method needed" email
+			// Stripe sends on charge failures, so the customer learns
+			// about the gap from email — not from the invoice silently
+			// going overdue weeks later.
+			slog.Info("no payment method at finalize, queuing for scheduler retry + notifying customer",
+				"invoice_id", inv.ID,
+				"customer_id", sub.CustomerID,
+			)
+			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+			if e.noPMNotifier != nil {
+				// Reload the invoice so the notifier sees the just-
+				// finalized state (invoice number, totals).
+				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
+					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
+						slog.Warn("no-payment-method notification failed",
+							"invoice_id", inv.ID,
+							"error", err,
+						)
+					}
 				}
 			}
 		}

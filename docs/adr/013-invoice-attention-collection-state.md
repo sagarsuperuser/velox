@@ -183,15 +183,43 @@ the engine act" was wrong half the time. Post-this-change,
 real scheduled retries elsewhere. Consumers that mistakenly relied on
 the old shape should switch to `DueBy` for deadline display.
 
+### Engine queues for retry, fires customer notification — production-grade
+
+Initial implementation silently skipped auto-charge when no PM was
+ready. This was acceptable for local-only single-operator usage but
+unacceptable for paying customers in production: the customer is
+never notified, the operator must manually monitor open invoices,
+and attaching a PM later does nothing automatic. Refined to match
+industry standard:
+
+1. **Engine queues for scheduler retry**: at finalize, when no PM is
+   ready, engine sets `auto_charge_pending=true` instead of silent
+   skip. The existing `RetryPendingCharges` scheduler path checks PM
+   each tick — skips while still missing, charges immediately when
+   the customer attaches one. This is Chargebee's "Collect Invoice
+   on Card Update" — the operator never has to babysit, the
+   customer's attach-PM action self-resolves the open invoice.
+2. **Customer notification at finalize**: engine fires
+   `NoPaymentMethodNotifier` (wired in router.go to the existing
+   `payment.EmailPaymentUpdate` path that Stripe already uses on
+   charge failures). Customer receives the same "Action required:
+   payment method needed" email format with a tokenized
+   payment-update URL — at finalize, not weeks later when the
+   invoice goes overdue.
+3. **Classifier priority**: `no_payment_method` now beats
+   `payment_scheduled`. When both flags are set (engine queued for
+   retry but PM still missing), the actionable reason wins —
+   `payment_scheduled`'s "engine will retry on its next tick"
+   message would lie to the operator (the retry would skip again
+   until a PM is attached).
+
+Both engine wiring and notifier dispatch are optional (nil-safe) so
+narrow unit tests don't have to wire the full email infrastructure.
+
 ### Two-step framing for `no_payment_method`
 
-Refined post-review: attaching a PM does **not** auto-resolve the
-state. The engine ran at finalize, found no PM, and skipped — and
-crucially, the skip path does NOT set `auto_charge_pending`, so no
-scheduler retry queues either. The operator has to manually trigger
-Collect Payment after attaching a PM.
-
-The message names the second step explicitly:
+Even with auto-fire-on-PM-attach in place, the in-page actions still
+name the manual override path explicitly. The message:
 
 > "No payment method on file. To charge, attach a method then click
 > Collect Payment. To let the customer pay themselves, share the
@@ -216,9 +244,6 @@ it's a visible constraint with a clear link to the fix.
   `send_invoice`) so `no_payment_method` framing can adapt to the
   customer's intended collection method (today the message
   accommodates both implicitly).
-- Auto-fire charge when a PM is attached on a customer with a
-  finalized-pending invoice. Removes the manual second step. Out of
-  scope here — needs a hook on PaymentSetup status changes.
 
 ## Industry references
 

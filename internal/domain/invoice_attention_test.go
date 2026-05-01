@@ -230,7 +230,12 @@ func TestClassifyInvoiceAttention_PaymentScheduled(t *testing.T) {
 	inv.AutoChargePending = true
 	inv.UpdatedAt = time.Now()
 
-	att := ClassifyInvoiceAttention(inv, AttentionContext{})
+	// payment_scheduled requires HasPaymentMethod=true: when both
+	// auto_charge_pending AND no PM, no_payment_method wins (the
+	// scheduler retry would skip again until PM is attached, so
+	// "engine will retry" would lie to the operator). See
+	// TestClassifyInvoiceAttention_NoPaymentMethod_BeatsScheduled.
+	att := ClassifyInvoiceAttention(inv, AttentionContext{HasPaymentMethod: true})
 	if att == nil {
 		t.Fatalf("expected attention")
 	}
@@ -242,6 +247,28 @@ func TestClassifyInvoiceAttention_PaymentScheduled(t *testing.T) {
 	}
 	if len(att.Actions) == 0 || att.Actions[0].Code != AttentionActionChargeNow {
 		t.Errorf("expected primary action charge_now, got %+v", att.Actions)
+	}
+}
+
+// TestClassifyInvoiceAttention_NoPaymentMethod_BeatsScheduled pins the
+// priority order: when an invoice has both auto_charge_pending=true
+// AND no PM ready, the classifier surfaces no_payment_method (the
+// actionable reason) — surfacing payment_scheduled would tell the
+// operator "engine will retry on its next tick" when in fact the
+// retry will skip again until a PM is attached.
+func TestClassifyInvoiceAttention_NoPaymentMethod_BeatsScheduled(t *testing.T) {
+	inv := draft()
+	inv.Status = InvoiceFinalized
+	inv.PaymentStatus = PaymentPending
+	inv.AutoChargePending = true // engine queued for retry post-no-PM-finalize
+	inv.UpdatedAt = time.Now()
+
+	att := ClassifyInvoiceAttention(inv, AttentionContext{HasPaymentMethod: false})
+	if att == nil {
+		t.Fatalf("expected attention")
+	}
+	if att.Reason != AttentionReasonNoPaymentMethod {
+		t.Errorf("reason = %s, want %s (no_payment_method must beat payment_scheduled when PM is missing)", att.Reason, AttentionReasonNoPaymentMethod)
 	}
 }
 
