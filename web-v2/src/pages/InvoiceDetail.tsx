@@ -472,6 +472,13 @@ export default function InvoiceDetailPage() {
         invoice={invoice as unknown as ApiInvoice}
         onRetryTax={() => retryTaxMutation.mutate()}
         onChargeNow={() => collectMutation.mutate()}
+        // send_reminder action opens the existing email dialog. The
+        // hosted invoice page that lands the customer in Stripe
+        // Checkout handles both has-PM and no-PM cases, so a single
+        // wiring covers awaiting_payment, no_payment_method, and
+        // overdue. Operator confirms the recipient and clicks Send;
+        // server fires the same template that already exists.
+        onSendReminder={() => setShowEmailModal(true)}
         retrying={retryTaxMutation.isPending}
         charging={collectMutation.isPending}
       />

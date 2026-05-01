@@ -502,15 +502,24 @@ func classifyNoPaymentMethod(inv Invoice) *Attention {
 	// immediate charge. Naming both paths here matches the actual
 	// behaviour and removes the false impression that operator action
 	// is required after PM attach.
+	// Operator-facing actions, ordered by what the operator can
+	// actually do. Adding a payment method is a *customer* action
+	// (PCI: card details must be entered by the cardholder via a
+	// secure flow). The operator's lever is "email the customer a
+	// link to pay" — the hosted invoice page handles both has-PM and
+	// no-PM via Stripe Checkout, so a single action covers the path.
+	// "Open customer page" is the secondary advanced flow (operator
+	// drives setup live during a support call); it's not the right
+	// banner-primary verb.
 	return &Attention{
 		Severity: AttentionSeverityWarning,
 		Reason:   AttentionReasonNoPaymentMethod,
 		Code:     "payment.no_payment_method",
-		Message:  "No payment method on file. Once one is attached, the engine auto-charges on its next sweep — or click Collect Payment for an immediate charge. To let the customer pay themselves, email them the payment link.",
+		Message:  "No payment method on file. The customer has been emailed a setup link — the engine will auto-charge once a method is attached. Resend the link if they haven't acted, or open the customer page to drive setup live.",
 		DocURL:   docBaseURL + "no-payment-method",
 		Actions: []AttentionActionItem{
-			{Code: AttentionActionAddPaymentMethod, Label: "Add payment method"},
-			{Code: AttentionActionSendReminder, Label: "Email payment link"},
+			{Code: AttentionActionSendReminder, Label: "Resend payment link"},
+			{Code: AttentionActionAddPaymentMethod, Label: "Open customer page"},
 		},
 		Since: &since,
 		DueBy: inv.DueAt,
