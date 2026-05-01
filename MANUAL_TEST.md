@@ -399,6 +399,45 @@ expiry for the grace window. Dashboard surface in FLOW K3.
 
 ---
 
+## Test Clocks (test mode only)
+
+## FLOW TC1: Test Clocks page UX
+
+The `/test-clocks` page is hidden in live mode. In test mode, it lives
+under a "Test mode" sidebar header below System.
+
+- [ ] Sidebar shows "Test mode" group + "Test Clocks" entry only when `user.livemode === false`. Flip the top-right toggle to live → entry disappears, navigating to `/test-clocks` redirects to `/`.
+- [ ] `/test-clocks` empty state: clock icon + "No test clocks yet" copy + "New test clock" button.
+- [ ] **New test clock** dialog: optional name (≤200 chars) + `datetime-local` picker for initial frozen time (defaults to now). Submit creates the clock and navigates to its detail page.
+- [ ] Index list rows: name (or "Unnamed clock"), status badge (Ready/Advancing/Failed), clock time + created-at. Click row → detail page.
+
+## FLOW TC2: Test Clock detail + Advance
+
+- [ ] Detail header: name + status pill + Advance / Delete buttons. "Advance" is disabled when status ≠ ready.
+- [ ] "Current clock time" panel renders large/monospace.
+- [ ] **Advance** dialog: presets `+1h / +1d / +1mo` + custom `datetime-local`. Default is `frozen_time + 1h`. Submitting an earlier time toasts an error inline.
+- [ ] Advance button → status flips to **Advancing** with a spinner badge; the page polls `/v1/test-clocks/{id}` every ~1.5s until status returns to `ready` (no manual refresh needed).
+- [ ] If catchup fails server-side, status flips to **Failed** with a destructive banner explaining the next step (inspect billing, then delete).
+- [ ] Subscriptions table on detail page lists every sub pinned to this clock with their current `status` + `next_billing_at`. Click row → existing `/subscriptions/:id`.
+
+## FLOW TC3: Pinning a subscription to a clock
+
+- [ ] Customer detail → Create Subscription → in test mode, an extra **Pin to test clock** dropdown appears below "Start immediately". Empty selection (default) creates a wall-clock sub.
+- [ ] Selecting a clock from the dropdown sets `test_clock_id` on `POST /v1/subscriptions`. Verify the new sub appears on the clock's detail page.
+- [ ] In live mode, the dropdown is hidden entirely (matching the sidebar guard).
+- [ ] `/subscriptions/:id` for a clock-pinned sub shows a **Test clock** badge linking to the clock detail page.
+
+## FLOW TC4: Catchup correctness
+
+- [ ] Pin a monthly subscription to a fresh clock at "now".
+- [ ] Advance the clock by 1 month → exactly 1 invoice is generated for that sub. Subsequent invoices have `created_at` matching the clock's `frozen_time` window, not wall-clock.
+- [ ] Advance by 3 months → 3 invoices generated (one per cycle), all with sequential periods.
+- [ ] Advance to a backwards time → 422 `must be strictly after current frozen_time`.
+- [ ] While status=advancing, a second advance returns 409.
+- [ ] After delete, the pinned subs are gone; standalone (non-pinned) subs unaffected.
+
+---
+
 ## Billing Engine
 
 ## FLOW B1: Billing model sanity (arrears + proration)

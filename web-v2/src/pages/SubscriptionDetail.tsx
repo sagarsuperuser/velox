@@ -304,6 +304,13 @@ export default function SubscriptionDetailPage() {
           {sub.status === 'trialing' && sub.trial_end_at && (
             <ExpiryBadge expiresAt={sub.trial_end_at} label="Trial ends" warningDays={3} />
           )}
+          {sub.test_clock_id && (
+            <Link to={`/test-clocks/${sub.test_clock_id}`} className="inline-block">
+              <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300 hover:bg-amber-500/15">
+                Test clock
+              </Badge>
+            </Link>
+          )}
         </div>
       </div>
 

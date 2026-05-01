@@ -1063,6 +1063,17 @@ type PostV1SubscriptionsIdChangePlanJSONBody struct {
 	NewPlanId string `json:"new_plan_id"`
 }
 
+// PostV1TestClocksJSONBody defines parameters for PostV1TestClocks.
+type PostV1TestClocksJSONBody struct {
+	FrozenTime time.Time `json:"frozen_time"`
+	Name       string    `json:"name,omitempty"`
+}
+
+// PostV1TestClocksIdAdvanceJSONBody defines parameters for PostV1TestClocksIdAdvance.
+type PostV1TestClocksIdAdvanceJSONBody struct {
+	FrozenTime time.Time `json:"frozen_time"`
+}
+
 // PostV1UsageEventsJSONBody defines parameters for PostV1UsageEvents.
 type PostV1UsageEventsJSONBody struct {
 	CustomerId     string                 `json:"customer_id"`
@@ -1119,6 +1130,12 @@ type PostV1SubscriptionsJSONRequestBody PostV1SubscriptionsJSONBody
 
 // PostV1SubscriptionsIdChangePlanJSONRequestBody defines body for PostV1SubscriptionsIdChangePlan for application/json ContentType.
 type PostV1SubscriptionsIdChangePlanJSONRequestBody PostV1SubscriptionsIdChangePlanJSONBody
+
+// PostV1TestClocksJSONRequestBody defines body for PostV1TestClocks for application/json ContentType.
+type PostV1TestClocksJSONRequestBody PostV1TestClocksJSONBody
+
+// PostV1TestClocksIdAdvanceJSONRequestBody defines body for PostV1TestClocksIdAdvance for application/json ContentType.
+type PostV1TestClocksIdAdvanceJSONRequestBody PostV1TestClocksIdAdvanceJSONBody
 
 // PostV1UsageEventsJSONRequestBody defines body for PostV1UsageEvents for application/json ContentType.
 type PostV1UsageEventsJSONRequestBody PostV1UsageEventsJSONBody
@@ -1221,6 +1238,24 @@ type ServerInterface interface {
 	// Change subscription plan
 	// (POST /v1/subscriptions/{id}/change-plan)
 	PostV1SubscriptionsIdChangePlan(w http.ResponseWriter, r *http.Request, id string)
+	// List test clocks for the active tenant
+	// (GET /v1/test-clocks)
+	GetV1TestClocks(w http.ResponseWriter, r *http.Request)
+	// Create a test clock
+	// (POST /v1/test-clocks)
+	PostV1TestClocks(w http.ResponseWriter, r *http.Request)
+	// Delete a test clock (cascades to pinned subscriptions)
+	// (DELETE /v1/test-clocks/{id})
+	DeleteV1TestClocksId(w http.ResponseWriter, r *http.Request, id string)
+	// Get a test clock by id
+	// (GET /v1/test-clocks/{id})
+	GetV1TestClocksId(w http.ResponseWriter, r *http.Request, id string)
+	// Advance the clock to a new frozen_time
+	// (POST /v1/test-clocks/{id}/advance)
+	PostV1TestClocksIdAdvance(w http.ResponseWriter, r *http.Request, id string)
+	// List subscriptions pinned to this clock
+	// (GET /v1/test-clocks/{id}/subscriptions)
+	GetV1TestClocksIdSubscriptions(w http.ResponseWriter, r *http.Request, id string)
 	// List usage events
 	// (GET /v1/usage-events)
 	GetV1UsageEvents(w http.ResponseWriter, r *http.Request)
@@ -1425,6 +1460,42 @@ func (_ Unimplemented) PostV1SubscriptionsIdActivate(w http.ResponseWriter, r *h
 // Change subscription plan
 // (POST /v1/subscriptions/{id}/change-plan)
 func (_ Unimplemented) PostV1SubscriptionsIdChangePlan(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List test clocks for the active tenant
+// (GET /v1/test-clocks)
+func (_ Unimplemented) GetV1TestClocks(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create a test clock
+// (POST /v1/test-clocks)
+func (_ Unimplemented) PostV1TestClocks(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete a test clock (cascades to pinned subscriptions)
+// (DELETE /v1/test-clocks/{id})
+func (_ Unimplemented) DeleteV1TestClocksId(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Get a test clock by id
+// (GET /v1/test-clocks/{id})
+func (_ Unimplemented) GetV1TestClocksId(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Advance the clock to a new frozen_time
+// (POST /v1/test-clocks/{id}/advance)
+func (_ Unimplemented) PostV1TestClocksIdAdvance(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List subscriptions pinned to this clock
+// (GET /v1/test-clocks/{id}/subscriptions)
+func (_ Unimplemented) GetV1TestClocksIdSubscriptions(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2192,6 +2263,170 @@ func (siw *ServerInterfaceWrapper) PostV1SubscriptionsIdChangePlan(w http.Respon
 	handler.ServeHTTP(w, r)
 }
 
+// GetV1TestClocks operation middleware
+func (siw *ServerInterfaceWrapper) GetV1TestClocks(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1TestClocks(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1TestClocks operation middleware
+func (siw *ServerInterfaceWrapper) PostV1TestClocks(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1TestClocks(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteV1TestClocksId operation middleware
+func (siw *ServerInterfaceWrapper) DeleteV1TestClocksId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteV1TestClocksId(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetV1TestClocksId operation middleware
+func (siw *ServerInterfaceWrapper) GetV1TestClocksId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1TestClocksId(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1TestClocksIdAdvance operation middleware
+func (siw *ServerInterfaceWrapper) PostV1TestClocksIdAdvance(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1TestClocksIdAdvance(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetV1TestClocksIdSubscriptions operation middleware
+func (siw *ServerInterfaceWrapper) GetV1TestClocksIdSubscriptions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1TestClocksIdSubscriptions(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetV1UsageEvents operation middleware
 func (siw *ServerInterfaceWrapper) GetV1UsageEvents(w http.ResponseWriter, r *http.Request) {
 
@@ -2491,6 +2726,24 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/subscriptions/{id}/change-plan", wrapper.PostV1SubscriptionsIdChangePlan)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/test-clocks", wrapper.GetV1TestClocks)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/test-clocks", wrapper.PostV1TestClocks)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/test-clocks/{id}", wrapper.DeleteV1TestClocksId)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/test-clocks/{id}", wrapper.GetV1TestClocksId)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/test-clocks/{id}/advance", wrapper.PostV1TestClocksIdAdvance)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/test-clocks/{id}/subscriptions", wrapper.GetV1TestClocksIdSubscriptions)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/usage-events", wrapper.GetV1UsageEvents)

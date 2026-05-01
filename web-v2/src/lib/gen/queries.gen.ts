@@ -31,6 +31,9 @@ import type {
   Customer,
   Error,
   GetV1CustomersParams,
+  GetV1TestClocks200,
+  GetV1TestClocksId200,
+  GetV1TestClocksIdSubscriptions200,
   GetV1Whoami200,
   Invoice,
   InvoiceWithLineItems,
@@ -49,6 +52,10 @@ import type {
   PostV1RatingRulesBody,
   PostV1SubscriptionsBody,
   PostV1SubscriptionsIdChangePlanBody,
+  PostV1TestClocks201,
+  PostV1TestClocksBody,
+  PostV1TestClocksIdAdvance200,
+  PostV1TestClocksIdAdvanceBody,
   PostV1UsageEventsBatchBodyItem,
   PostV1UsageEventsBody,
   PutV1DunningPolicyBody
@@ -2950,6 +2957,535 @@ export const usePutV1DunningPolicy = <TError = unknown,
         TContext
       > => {
       return useMutation(getPutV1DunningPolicyMutationOptions(options), queryClient);
+    }
+
+/**
+ * Test mode only — returns 403 in live mode. Test clocks let
+operators simulate time-bound billing flows without waiting for
+wall-clock advances. See ADR / docs for the simulator semantics.
+
+ * @summary List test clocks for the active tenant
+ */
+export const getGetV1TestClocksUrl = () => {
+
+
+
+
+  return `/v1/test-clocks`
+}
+
+export const getV1TestClocks = async ( options?: RequestInit): Promise<GetV1TestClocks200> => {
+
+  return orvalClient<GetV1TestClocks200>(getGetV1TestClocksUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1TestClocksQueryKey = () => {
+    return [
+    `/v1/test-clocks`
+    ] as const;
+    }
+
+
+export const getGetV1TestClocksQueryOptions = <TData = Awaited<ReturnType<typeof getV1TestClocks>>, TError = Error>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocks>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1TestClocksQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1TestClocks>>> = () => getV1TestClocks(requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocks>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1TestClocksQueryResult = NonNullable<Awaited<ReturnType<typeof getV1TestClocks>>>
+export type GetV1TestClocksQueryError = Error
+
+
+export function useGetV1TestClocks<TData = Awaited<ReturnType<typeof getV1TestClocks>>, TError = Error>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocks>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1TestClocks>>,
+          TError,
+          Awaited<ReturnType<typeof getV1TestClocks>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1TestClocks<TData = Awaited<ReturnType<typeof getV1TestClocks>>, TError = Error>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocks>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1TestClocks>>,
+          TError,
+          Awaited<ReturnType<typeof getV1TestClocks>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1TestClocks<TData = Awaited<ReturnType<typeof getV1TestClocks>>, TError = Error>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocks>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List test clocks for the active tenant
+ */
+
+export function useGetV1TestClocks<TData = Awaited<ReturnType<typeof getV1TestClocks>>, TError = Error>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocks>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1TestClocksQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * Test mode only. The clock starts in `ready` state at
+`frozen_time`. Use `/advance` to move it forward.
+
+ * @summary Create a test clock
+ */
+export const getPostV1TestClocksUrl = () => {
+
+
+
+
+  return `/v1/test-clocks`
+}
+
+export const postV1TestClocks = async (postV1TestClocksBody: PostV1TestClocksBody, options?: RequestInit): Promise<PostV1TestClocks201> => {
+
+  return orvalClient<PostV1TestClocks201>(getPostV1TestClocksUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1TestClocksBody,)
+  }
+);}
+
+
+
+
+export const getPostV1TestClocksMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1TestClocks>>, TError,{data: PostV1TestClocksBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1TestClocks>>, TError,{data: PostV1TestClocksBody}, TContext> => {
+
+const mutationKey = ['postV1TestClocks'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1TestClocks>>, {data: PostV1TestClocksBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1TestClocks(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1TestClocksMutationResult = NonNullable<Awaited<ReturnType<typeof postV1TestClocks>>>
+    export type PostV1TestClocksMutationBody = PostV1TestClocksBody
+    export type PostV1TestClocksMutationError = unknown
+
+    /**
+ * @summary Create a test clock
+ */
+export const usePostV1TestClocks = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1TestClocks>>, TError,{data: PostV1TestClocksBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1TestClocks>>,
+        TError,
+        {data: PostV1TestClocksBody},
+        TContext
+      > => {
+      return useMutation(getPostV1TestClocksMutationOptions(options), queryClient);
+    }
+
+/**
+ * @summary Get a test clock by id
+ */
+export const getGetV1TestClocksIdUrl = (id: string,) => {
+
+
+
+
+  return `/v1/test-clocks/${id}`
+}
+
+export const getV1TestClocksId = async (id: string, options?: RequestInit): Promise<GetV1TestClocksId200> => {
+
+  return orvalClient<GetV1TestClocksId200>(getGetV1TestClocksIdUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1TestClocksIdQueryKey = (id: string,) => {
+    return [
+    `/v1/test-clocks/${id}`
+    ] as const;
+    }
+
+
+export const getGetV1TestClocksIdQueryOptions = <TData = Awaited<ReturnType<typeof getV1TestClocksId>>, TError = void>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksId>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1TestClocksIdQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1TestClocksId>>> = () => getV1TestClocksId(id, requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksId>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1TestClocksIdQueryResult = NonNullable<Awaited<ReturnType<typeof getV1TestClocksId>>>
+export type GetV1TestClocksIdQueryError = void
+
+
+export function useGetV1TestClocksId<TData = Awaited<ReturnType<typeof getV1TestClocksId>>, TError = void>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksId>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1TestClocksId>>,
+          TError,
+          Awaited<ReturnType<typeof getV1TestClocksId>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1TestClocksId<TData = Awaited<ReturnType<typeof getV1TestClocksId>>, TError = void>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksId>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1TestClocksId>>,
+          TError,
+          Awaited<ReturnType<typeof getV1TestClocksId>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1TestClocksId<TData = Awaited<ReturnType<typeof getV1TestClocksId>>, TError = void>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksId>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get a test clock by id
+ */
+
+export function useGetV1TestClocksId<TData = Awaited<ReturnType<typeof getV1TestClocksId>>, TError = void>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksId>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1TestClocksIdQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * @summary Delete a test clock (cascades to pinned subscriptions)
+ */
+export const getDeleteV1TestClocksIdUrl = (id: string,) => {
+
+
+
+
+  return `/v1/test-clocks/${id}`
+}
+
+export const deleteV1TestClocksId = async (id: string, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getDeleteV1TestClocksIdUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getDeleteV1TestClocksIdMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteV1TestClocksId>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteV1TestClocksId>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['deleteV1TestClocksId'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteV1TestClocksId>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteV1TestClocksId(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteV1TestClocksIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteV1TestClocksId>>>
+
+    export type DeleteV1TestClocksIdMutationError = unknown
+
+    /**
+ * @summary Delete a test clock (cascades to pinned subscriptions)
+ */
+export const useDeleteV1TestClocksId = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteV1TestClocksId>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteV1TestClocksId>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+      return useMutation(getDeleteV1TestClocksIdMutationOptions(options), queryClient);
+    }
+
+/**
+ * @summary List subscriptions pinned to this clock
+ */
+export const getGetV1TestClocksIdSubscriptionsUrl = (id: string,) => {
+
+
+
+
+  return `/v1/test-clocks/${id}/subscriptions`
+}
+
+export const getV1TestClocksIdSubscriptions = async (id: string, options?: RequestInit): Promise<GetV1TestClocksIdSubscriptions200> => {
+
+  return orvalClient<GetV1TestClocksIdSubscriptions200>(getGetV1TestClocksIdSubscriptionsUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1TestClocksIdSubscriptionsQueryKey = (id: string,) => {
+    return [
+    `/v1/test-clocks/${id}/subscriptions`
+    ] as const;
+    }
+
+
+export const getGetV1TestClocksIdSubscriptionsQueryOptions = <TData = Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError = void>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1TestClocksIdSubscriptionsQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>> = () => getV1TestClocksIdSubscriptions(id, requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1TestClocksIdSubscriptionsQueryResult = NonNullable<Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>>
+export type GetV1TestClocksIdSubscriptionsQueryError = void
+
+
+export function useGetV1TestClocksIdSubscriptions<TData = Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError = void>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>,
+          TError,
+          Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1TestClocksIdSubscriptions<TData = Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError = void>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>,
+          TError,
+          Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1TestClocksIdSubscriptions<TData = Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError = void>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List subscriptions pinned to this clock
+ */
+
+export function useGetV1TestClocksIdSubscriptions<TData = Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError = void>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1TestClocksIdSubscriptions>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1TestClocksIdSubscriptionsQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * Moves the clock forward and synchronously runs billing catchup
+for every subscription pinned to this clock. While catchup runs,
+the clock is in `advancing` state and concurrent advances 409.
+Catchup failures flip the clock to `internal_failure` — operator
+must inspect and delete to unstick.
+
+ * @summary Advance the clock to a new frozen_time
+ */
+export const getPostV1TestClocksIdAdvanceUrl = (id: string,) => {
+
+
+
+
+  return `/v1/test-clocks/${id}/advance`
+}
+
+export const postV1TestClocksIdAdvance = async (id: string,
+    postV1TestClocksIdAdvanceBody: PostV1TestClocksIdAdvanceBody, options?: RequestInit): Promise<PostV1TestClocksIdAdvance200> => {
+
+  return orvalClient<PostV1TestClocksIdAdvance200>(getPostV1TestClocksIdAdvanceUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1TestClocksIdAdvanceBody,)
+  }
+);}
+
+
+
+
+export const getPostV1TestClocksIdAdvanceMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1TestClocksIdAdvance>>, TError,{id: string;data: PostV1TestClocksIdAdvanceBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1TestClocksIdAdvance>>, TError,{id: string;data: PostV1TestClocksIdAdvanceBody}, TContext> => {
+
+const mutationKey = ['postV1TestClocksIdAdvance'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1TestClocksIdAdvance>>, {id: string;data: PostV1TestClocksIdAdvanceBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  postV1TestClocksIdAdvance(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1TestClocksIdAdvanceMutationResult = NonNullable<Awaited<ReturnType<typeof postV1TestClocksIdAdvance>>>
+    export type PostV1TestClocksIdAdvanceMutationBody = PostV1TestClocksIdAdvanceBody
+    export type PostV1TestClocksIdAdvanceMutationError = void
+
+    /**
+ * @summary Advance the clock to a new frozen_time
+ */
+export const usePostV1TestClocksIdAdvance = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1TestClocksIdAdvance>>, TError,{id: string;data: PostV1TestClocksIdAdvanceBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1TestClocksIdAdvance>>,
+        TError,
+        {id: string;data: PostV1TestClocksIdAdvanceBody},
+        TContext
+      > => {
+      return useMutation(getPostV1TestClocksIdAdvanceMutationOptions(options), queryClient);
     }
 
 /**

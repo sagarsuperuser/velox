@@ -105,7 +105,7 @@ export const api = {
   // Subscriptions
   listSubscriptions: (params?: string) =>
     apiRequest<{ data: Subscription[]; total: number }>('GET', `/subscriptions${params ? '?' + params : ''}`),
-  createSubscription: (data: { code: string; display_name: string; customer_id: string; items: { plan_id: string; quantity?: number }[]; start_now?: boolean; billing_time?: string; trial_days?: number; usage_cap_units?: number | null; overage_action?: string }) =>
+  createSubscription: (data: { code: string; display_name: string; customer_id: string; items: { plan_id: string; quantity?: number }[]; start_now?: boolean; billing_time?: string; trial_days?: number; usage_cap_units?: number | null; overage_action?: string; test_clock_id?: string }) =>
     apiRequest<Subscription>('POST', '/subscriptions', data),
 
   // Pricing
@@ -424,6 +424,18 @@ export const api = {
   getUsageAnalytics: (period: string) =>
     apiRequest<UsageAnalyticsResponse>('GET', `/analytics/usage?period=${period}`),
 
+  // Test clocks (test mode only — server returns 403 in live mode)
+  listTestClocks: () => apiRequest<{ data: TestClock[] }>('GET', '/test-clocks'),
+  getTestClock: (id: string) => apiRequest<TestClock>('GET', `/test-clocks/${id}`),
+  createTestClock: (data: { name: string; frozen_time: string }) =>
+    apiRequest<TestClock>('POST', '/test-clocks', data),
+  advanceTestClock: (id: string, frozen_time: string) =>
+    apiRequest<TestClock>('POST', `/test-clocks/${id}/advance`, { frozen_time }),
+  deleteTestClock: (id: string) =>
+    apiRequest<{ status: string }>('DELETE', `/test-clocks/${id}`),
+  listSubscriptionsOnClock: (id: string) =>
+    apiRequest<{ data: Subscription[] }>('GET', `/test-clocks/${id}/subscriptions`),
+
   // API Keys
   listApiKeys: () => apiRequest<{ data: ApiKeyInfo[] }>('GET', '/api-keys'),
   createApiKey: (data: { name: string; key_type: string; expires_at?: string }) => apiRequest<{ key: ApiKeyInfo; raw_key: string }>('POST', '/api-keys', data),
@@ -591,11 +603,24 @@ export interface BillingThresholds {
   item_thresholds: SubscriptionItemThreshold[]
 }
 
+export interface TestClock {
+  id: string
+  tenant_id: string
+  livemode: boolean
+  name: string
+  frozen_time: string
+  status: 'ready' | 'advancing' | 'internal_failure'
+  created_at: string
+  updated_at: string
+  deletes_after?: string | null
+}
+
 export interface Subscription {
   id: string
   code: string
   display_name: string
   customer_id: string
+  test_clock_id?: string
   // items is the authoritative list of priced lines on the subscription.
   // Present on all list/get responses from FEAT-5 onward. Pre-FEAT-5 code
   // paths may omit it, so treat as optional and fall back gracefully.

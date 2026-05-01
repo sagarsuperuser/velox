@@ -1438,6 +1438,147 @@ paths:
         "200":
           description: Policy updated
 
+  /v1/test-clocks:
+    get:
+      tags: [TestClocks]
+      summary: List test clocks for the active tenant
+      description: |
+        Test mode only — returns 403 in live mode. Test clocks let
+        operators simulate time-bound billing flows without waiting for
+        wall-clock advances. See ADR / docs for the simulator semantics.
+      responses:
+        "200":
+          description: Test clocks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { type: object }
+        "403":
+          description: Caller is in live mode
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags: [TestClocks]
+      summary: Create a test clock
+      description: |
+        Test mode only. The clock starts in `ready` state at
+        `frozen_time`. Use `/advance` to move it forward.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [frozen_time]
+              properties:
+                name:
+                  type: string
+                  maxLength: 200
+                frozen_time:
+                  type: string
+                  format: date-time
+      responses:
+        "201":
+          description: Clock created
+          content:
+            application/json:
+              schema: { type: object }
+
+  /v1/test-clocks/{id}:
+    get:
+      tags: [TestClocks]
+      summary: Get a test clock by id
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Clock
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          description: Clock not found
+    delete:
+      tags: [TestClocks]
+      summary: Delete a test clock (cascades to pinned subscriptions)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Clock deleted
+
+  /v1/test-clocks/{id}/subscriptions:
+    get:
+      tags: [TestClocks]
+      summary: List subscriptions pinned to this clock
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Subscriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { type: object }
+        "404":
+          description: Clock not found
+
+  /v1/test-clocks/{id}/advance:
+    post:
+      tags: [TestClocks]
+      summary: Advance the clock to a new frozen_time
+      description: |
+        Moves the clock forward and synchronously runs billing catchup
+        for every subscription pinned to this clock. While catchup runs,
+        the clock is in `advancing` state and concurrent advances 409.
+        Catchup failures flip the clock to `internal_failure` — operator
+        must inspect and delete to unstick.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [frozen_time]
+              properties:
+                frozen_time:
+                  type: string
+                  format: date-time
+      responses:
+        "200":
+          description: Clock advanced
+          content:
+            application/json:
+              schema: { type: object }
+        "409":
+          description: Clock is not in `ready` state
+        "422":
+          description: New frozen_time is not strictly after the current
+
   /v1/webhooks/stripe:
     post:
       tags: [Webhooks]
