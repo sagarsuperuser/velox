@@ -89,82 +89,22 @@ func (s *PostgresStore) GetByPrefix(ctx context.Context, prefix string) (domain.
 	return key, err
 }
 
-// Revoke flips revoked_at on the target key, but refuses if doing so
-// would leave the tenant with zero active secret-or-platform keys —
-// the lockout case where the operator can no longer sign in or
-// create new keys. Publishable keys don't count toward the safeguard
-// since they can't manage other keys.
+// Revoke flips revoked_at on the target key. Idempotent: revoking an
+// already-revoked or expired key returns ErrNotFound (the UPDATE
+// matches zero rows). Caller decides how to surface that.
 //
-// Atomic: takes FOR UPDATE on the tenant's candidate-blocker keys
-// before counting, so concurrent revokes serialize and can't both
-// pass the safeguard and end at zero. Different tenants don't block
-// each other (the lock filter is tenant-scoped).
-//
-// Idempotent: revoking an already-revoked or expired key returns
-// ErrNotFound (the UPDATE matches zero rows). Caller decides how to
-// surface that.
+// Pre-ADR-011 included a last-active-secret/platform safeguard that
+// refused to leave the tenant with zero active manage-keys-capable
+// credentials — necessary when the API key was the dashboard sign-in
+// credential. With user accounts (ADR-011), revoking all API keys
+// no longer locks the tenant out: the operator still signs in via
+// email + password and creates new keys.
 func (s *PostgresStore) Revoke(ctx context.Context, tenantID, id string) (domain.APIKey, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.APIKey{}, err
 	}
 	defer postgres.Rollback(tx)
-
-	// Lock the candidate-blocker set so concurrent revokes serialize.
-	// We lock the broader set (all active secret/platform keys for the
-	// tenant) rather than just the target row so any other revoke on
-	// the same tenant blocks here, even if it targets a different row.
-	if _, err := tx.ExecContext(ctx, `
-		SELECT 1 FROM api_keys
-		WHERE tenant_id = $1
-		  AND key_type IN ('secret', 'platform')
-		  AND revoked_at IS NULL
-		FOR UPDATE`, tenantID); err != nil {
-		return domain.APIKey{}, fmt.Errorf("lock keys: %w", err)
-	}
-
-	// Count what would remain after the revoke — secret/platform keys
-	// other than the target, still active and unexpired.
-	var remaining int
-	err = tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM api_keys
-		WHERE tenant_id = $1
-		  AND id != $2
-		  AND key_type IN ('secret', 'platform')
-		  AND revoked_at IS NULL
-		  AND (expires_at IS NULL OR expires_at > NOW())`,
-		tenantID, id).Scan(&remaining)
-	if err != nil {
-		return domain.APIKey{}, fmt.Errorf("count remaining keys: %w", err)
-	}
-
-	// Look up the target's key_type and expires_at so the safeguard
-	// only fires when revoking a CURRENTLY-ACTIVE secret/platform key
-	// would orphan the tenant. Revoking a publishable key never
-	// orphans (publishables can't manage keys), and revoking an
-	// already-expired key doesn't worsen the state — the key was
-	// already failing auth, so the active-key count doesn't decrease.
-	// Allowing the latter is necessary for the "clean up stale
-	// expired rows" operator workflow.
-	var (
-		targetKeyType   string
-		targetExpiresAt sql.NullTime
-	)
-	err = tx.QueryRowContext(ctx,
-		`SELECT key_type, expires_at FROM api_keys WHERE id = $1 AND revoked_at IS NULL`,
-		id).Scan(&targetKeyType, &targetExpiresAt)
-	if err == sql.ErrNoRows {
-		return domain.APIKey{}, errs.ErrNotFound
-	}
-	if err != nil {
-		return domain.APIKey{}, fmt.Errorf("read target key: %w", err)
-	}
-
-	targetActive := !targetExpiresAt.Valid || targetExpiresAt.Time.After(time.Now().UTC())
-	if targetActive && (targetKeyType == "secret" || targetKeyType == "platform") && remaining == 0 {
-		return domain.APIKey{}, errs.InvalidState(
-			"cannot revoke the last active secret/platform key — create another first")
-	}
 
 	now := time.Now().UTC()
 	k, err := scanKey(tx.QueryRowContext(ctx, `

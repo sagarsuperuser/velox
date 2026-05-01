@@ -76,11 +76,12 @@ func (h *Handler) revoke(w http.ResponseWriter, r *http.Request) {
 	tenantID := TenantID(r.Context())
 	id := chi.URLParam(r, "id")
 
-	// Guard: prevent revoking your own active key
-	if id == KeyID(r.Context()) {
-		respond.Error(w, r, http.StatusUnprocessableEntity, "invalid_request_error", "self_revoke", "cannot revoke the API key you are currently using")
-		return
-	}
+	// Pre-ADR-011 guarded against revoking the calling Bearer key.
+	// With user-bound dashboard sessions, revoking via the dashboard
+	// doesn't kill the cookie session (sessions don't reference API
+	// keys), so the foot-gun is gone. Bearer callers that revoke
+	// their own key get an immediate 401 on the next request — that's
+	// the operator's intent.
 
 	key, err := h.svc.RevokeKey(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
@@ -100,15 +101,12 @@ func (h *Handler) rotate(w http.ResponseWriter, r *http.Request) {
 	tenantID := TenantID(r.Context())
 	id := chi.URLParam(r, "id")
 
-	// Self-rotation would drop the caller's authentication on the floor if
-	// grace=0, and is a foot-gun even with a grace window — same reasoning
-	// as the self-revoke guard.
-	if id == KeyID(r.Context()) {
-		respond.Error(w, r, http.StatusUnprocessableEntity, "invalid_request_error", "self_rotate",
-			"cannot rotate the API key you are currently using; authenticate with a different key first")
-		return
-	}
-
+	// Pre-ADR-011 guarded against self-rotation; with user-bound
+	// dashboard sessions, rotating via the dashboard doesn't drop
+	// the operator's auth (cookie isn't tied to the rotated key).
+	// Bearer callers that rotate their own key need to swap to the
+	// new raw_key in their config — that's the rotation contract.
+	//
 	// Body is optional — POST /rotate with no body defaults to immediate
 	// revocation of the old key. An empty request should not 400.
 	var input RotateKeyInput
