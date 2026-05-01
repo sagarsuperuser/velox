@@ -474,7 +474,7 @@ func classifyAwaitingPayment(inv Invoice) *Attention {
 		DocURL:   docBaseURL + "awaiting-payment",
 		Actions: []AttentionActionItem{
 			{Code: AttentionActionChargeNow, Label: "Charge now"},
-			{Code: AttentionActionSendReminder, Label: "Send reminder"},
+			{Code: AttentionActionSendReminder, Label: "Email payment link"},
 		},
 		Since: &since,
 		DueBy: inv.DueAt,
@@ -494,22 +494,23 @@ func classifyAwaitingPayment(inv Invoice) *Attention {
 // invoice" collection mode look alarming.
 func classifyNoPaymentMethod(inv Invoice) *Attention {
 	since := inv.UpdatedAt
-	// Two-step framing: attaching a PM does NOT auto-resolve. The
-	// engine has already moved past its auto-charge trigger (it ran at
-	// finalize, found no PM, skipped — and crucially didn't set
-	// auto_charge_pending, so no scheduler retry queues either). The
-	// operator has to manually trigger Collect Payment after attaching
-	// a PM. Naming the second step here removes the trap of "I added
-	// the card, why isn't it charging?".
+	// Auto-collect framing: post-ADR-013 b18d2d3 the engine queues
+	// no-PM invoices via auto_charge_pending and the scheduler picks
+	// them up the moment a PaymentSetup flips to ready (Chargebee's
+	// "Collect Invoice on Card Update"). So attaching a PM is enough
+	// — Collect Payment is the operator's *manual override* for
+	// immediate charge. Naming both paths here matches the actual
+	// behaviour and removes the false impression that operator action
+	// is required after PM attach.
 	return &Attention{
 		Severity: AttentionSeverityWarning,
 		Reason:   AttentionReasonNoPaymentMethod,
 		Code:     "payment.no_payment_method",
-		Message:  "No payment method on file. To charge, attach a method then click Collect Payment. To let the customer pay themselves, share the invoice link.",
+		Message:  "No payment method on file. Once one is attached, the engine auto-charges on its next sweep — or click Collect Payment for an immediate charge. To let the customer pay themselves, email them the payment link.",
 		DocURL:   docBaseURL + "no-payment-method",
 		Actions: []AttentionActionItem{
 			{Code: AttentionActionAddPaymentMethod, Label: "Add payment method"},
-			{Code: AttentionActionSendReminder, Label: "Share invoice link"},
+			{Code: AttentionActionSendReminder, Label: "Email payment link"},
 		},
 		Since: &since,
 		DueBy: inv.DueAt,
