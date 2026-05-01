@@ -7,13 +7,12 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
 
  * OpenAPI spec version: 2026-04-07
  */
-import type { GetV1Whoami200KeyType } from './getV1Whoami200KeyType';
+import type { AttentionAction } from './attentionAction';
 
-export type GetV1Whoami200 = {
-  tenant_id: string;
-  livemode: boolean;
-  user_id?: string;
-  email?: string;
-  key_id?: string;
-  key_type?: GetV1Whoami200KeyType;
-};
+export interface AttentionActionItem {
+  code: AttentionAction;
+  /** Default rendering label. UIs are free to substitute
+  localized copy.
+   */
+  label?: string;
+}

@@ -793,7 +793,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/auth/exchange": {
+    "/v1/invoices/{id}/retry-tax": {
         parameters: {
             query?: never;
             header?: never;
@@ -803,13 +803,85 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Exchange a pasted API key for an httpOnly session cookie
-         * @description Validates the pasted API key and mints a server-side session
-         *     row. The response sets `Set-Cookie: velox_session=...; HttpOnly;
-         *     SameSite=Lax; Path=/`. Subsequent requests authenticate via the
-         *     cookie. The credential remains the API key; this endpoint just
-         *     gives the dashboard an httpOnly artefact instead of holding the
-         *     raw key in JS-readable storage. See ADR-008.
+         * Retry tax calculation on a deferred invoice
+         * @description Re-runs tax calculation against a draft invoice whose
+         *     `tax_status` is `pending` or `failed`. Backs the operator-
+         *     facing "Retry tax" action surfaced by the unified
+         *     `Attention` shape.
+         *
+         *     Idempotent: each call increments `tax_retry_count` and
+         *     rewrites the per-line and invoice-level tax fields. A retry
+         *     that succeeds clears `tax_pending_reason` / `tax_error_code`
+         *     and unblocks finalize. A retry that still fails writes the
+         *     new typed code so the dashboard banner refreshes — operators
+         *     get an immediate signal of whether their fix worked.
+         *
+         *     Returns the updated invoice (carrying the re-derived
+         *     `attention`) on success or post-retry failure. A retry that
+         *     is still failing is **not** an HTTP error — the caller
+         *     renders the new attention.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Invoice updated; check `attention` for the new state. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Invoice"];
+                    };
+                };
+                /** @description Invoice not found. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /**
+                 * @description Invoice is not in a retryable state (status != draft, or
+                 *     tax_status not in pending/failed).
+                 */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sign in with email and password; mint an httpOnly session cookie
+         * @description Validates email + password, mints a server-side session row, and
+         *     sets `Set-Cookie: velox_session=...; HttpOnly; SameSite=Lax; Path=/`.
+         *     Subsequent dashboard requests authenticate via the cookie; sessions
+         *     are bound to `users.id` and are independent of API key lifecycle.
+         *     See ADR-011.
          */
         post: {
             parameters: {
@@ -821,8 +893,9 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        /** @description A `vlx_secret_…` or `vlx_pub_…` key. */
-                        api_key: string;
+                        /** Format: email */
+                        email: string;
+                        password: string;
                     };
                 };
             };
@@ -834,26 +907,16 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            user_id: string;
                             tenant_id: string;
-                            key_id: string;
-                            /** @enum {string} */
-                            key_type: "platform" | "secret" | "publishable";
+                            email: string;
                             livemode: boolean;
                             /** Format: date-time */
                             expires_at: string;
                         };
                     };
                 };
-                /** @description Malformed body */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Error"];
-                    };
-                };
-                /** @description Missing, malformed, revoked, or expired API key */
+                /** @description Invalid email or password */
                 401: {
                     headers: {
                         [name: string]: unknown;
@@ -862,8 +925,8 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
-                /** @description api_key field missing */
-                422: {
+                /** @description Account locked after too many failed attempts (15-min cooldown) */
+                429: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -918,6 +981,107 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/password-reset/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a password reset link
+         * @description Always returns 204 regardless of whether the email exists, to
+         *     avoid account enumeration. If a user matches, a single-use 1-hour
+         *     token is generated and the reset link is delivered out-of-band
+         *     (SMTP delivery deferred — currently logged to stdout).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Format: email */
+                        email: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Request accepted (regardless of email existence) */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/password-reset/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set a new password using a reset token
+         * @description Consumes a single-use reset token and updates the user's password.
+         *     The token is invalidated on use; reuse or expired tokens return 422.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        token: string;
+                        password: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Password updated */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Token invalid/expired or password does not meet policy */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/whoami": {
         parameters: {
             query?: never;
@@ -929,8 +1093,9 @@ export interface paths {
          * Resolve the current credential to its tenant context
          * @description Returns the resolved auth context for whichever credential the
          *     request carries — `velox_session` cookie (dashboard) or
-         *     `Authorization: Bearer` (SDK / curl). No specific permission
-         *     required.
+         *     `Authorization: Bearer` (SDK / curl). Cookie path returns
+         *     `user_id` + `email`; Bearer path returns `key_id` + `key_type`.
+         *     Both always return `tenant_id` + `livemode`.
          */
         get: {
             parameters: {
@@ -949,14 +1114,16 @@ export interface paths {
                     content: {
                         "application/json": {
                             tenant_id: string;
-                            key_id: string;
-                            /** @enum {string} */
-                            key_type: "platform" | "secret" | "publishable";
                             livemode: boolean;
+                            user_id?: string;
+                            email?: string;
+                            key_id?: string;
+                            /** @enum {string} */
+                            key_type?: "platform" | "secret" | "publishable";
                         };
                     };
                 };
-                /** @description Missing, revoked, or expired API key */
+                /** @description Missing, revoked, or expired credential */
                 401: {
                     headers: {
                         [name: string]: unknown;
@@ -1377,6 +1544,89 @@ export interface components {
          */
         InvoiceTaxStatus: "ok" | "pending" | "failed";
         /**
+         * @description Urgency of an Attention surface. Operators sort/filter on this
+         *     and the dashboard renders one colour per level. Priority
+         *     descending: Critical > Warning > Info.
+         * @enum {string}
+         */
+        AttentionSeverity: "info" | "warning" | "critical";
+        /**
+         * @description Closed, typed code naming why an invoice needs operator
+         *     attention. Stable public-API contract — codes are never
+         *     repurposed; deprecations keep the code reserved and add a
+         *     successor. See `Attention.code` for the open, provider-specific
+         *     sub-code.
+         * @enum {string}
+         */
+        AttentionReason: "tax_calculation_failed" | "tax_location_required" | "payment_failed" | "payment_unconfirmed" | "overdue" | "payment_processing" | "payment_scheduled" | "awaiting_payment";
+        /**
+         * @description Operator's recommended next step. Closed enum because every
+         *     code maps to a concrete server endpoint or frontend route,
+         *     and audit logs key off the code.
+         * @enum {string}
+         */
+        AttentionAction: "edit_billing_profile" | "retry_tax" | "retry_payment" | "wait_provider" | "rotate_api_key" | "reconcile_payment" | "review_registration" | "charge_now" | "send_reminder";
+        AttentionActionItem: {
+            code: components["schemas"]["AttentionAction"];
+            /**
+             * @description Default rendering label. UIs are free to substitute
+             *     localized copy.
+             */
+            label?: string;
+        };
+        /**
+         * @description Unified "this invoice needs operator attention" surface.
+         *     Computed server-side from durable invoice fields
+         *     (`tax_status`, `tax_error_code`, `payment_status`,
+         *     `last_payment_error`, `payment_overdue`). Never persisted —
+         *     always derived. Omitted entirely when the invoice is healthy
+         *     (matches Stripe's `last_finalization_error: null` ergonomic).
+         *     See ADR-009.
+         */
+        Attention: {
+            severity: components["schemas"]["AttentionSeverity"];
+            reason: components["schemas"]["AttentionReason"];
+            /** @description Human-readable headline copy, safe to render verbatim. */
+            message: string;
+            /**
+             * @description Prescribed next steps. First item is the primary CTA; the
+             *     rest are secondary.
+             */
+            actions?: components["schemas"]["AttentionActionItem"][];
+            /**
+             * @description Open, dotted, provider-specific code (e.g.
+             *     `tax.customer_data_invalid`, `payment.declined`,
+             *     `lifecycle.overdue`). New codes ship without a contract
+             *     bump. Stripe parity.
+             */
+            code?: string;
+            /**
+             * @description Deep link to operator-facing documentation for this
+             *     reason. Stripe parity.
+             */
+            doc_url?: string;
+            /**
+             * @description Dotted-path pointer at the entity field the operator must
+             *     edit to resolve the issue (e.g.
+             *     `customer.address.postal_code`). Stripe parity. Empty
+             *     when the resolution isn't field-scoped.
+             */
+            param?: string;
+            /**
+             * @description Raw provider payload (Stripe Tax JSON envelope, last
+             *     payment error message). Disclosed in a collapsible
+             *     section for diagnostic depth.
+             */
+            detail?: string;
+            /**
+             * Format: date-time
+             * @description When the attention condition started — operators triage
+             *     by age. tax_deferred_at for tax reasons; due_at for
+             *     overdue; updated_at as a proxy for payment failures.
+             */
+            since?: string;
+        };
+        /**
          * @description Mirrors Stripe's `invoice.billing_reason`. Classifies the trigger
          *     that produced the invoice. Stamped at create time and never mutated.
          * @enum {string}
@@ -1452,6 +1702,15 @@ export interface components {
             tax_deferred_at?: string | null;
             tax_retry_count?: number;
             tax_pending_reason?: string;
+            /**
+             * @description Typed taxonomy of `tax_pending_reason`. One of
+             *     `customer_data_invalid`, `jurisdiction_unsupported`,
+             *     `provider_outage`, `provider_auth`, `unknown`. Empty for
+             *     invoices deferred before this column existed (migration
+             *     0067).
+             */
+            tax_error_code?: string;
+            attention?: components["schemas"]["Attention"];
             /** Format: int64 */
             total_amount_cents: number;
             /** Format: int64 */

@@ -777,7 +777,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	})
 
 	// Tenant-scoped routes — accept either an httpOnly session cookie
-	// (dashboard, minted via /v1/auth/exchange) OR
+	// (dashboard, minted via /v1/auth/login) OR
 	// `Authorization: Bearer <api_key>` (SDKs, curl, server-to-server).
 	// Cookie takes precedence when both are present so a stale Bearer
 	// header doesn't bypass session revocation. Both code paths set

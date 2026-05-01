@@ -8,6 +8,11 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
  * OpenAPI spec version: 2026-04-07
  */
 
+export * from './attention';
+export * from './attentionAction';
+export * from './attentionActionItem';
+export * from './attentionReason';
+export * from './attentionSeverity';
 export * from './creditBalance';
 export * from './customer';
 export * from './customerStatus';
@@ -33,9 +38,10 @@ export * from './meterAggregation';
 export * from './plan';
 export * from './planBillingInterval';
 export * from './planStatus';
-export * from './postV1AuthExchange200';
-export * from './postV1AuthExchange200KeyType';
-export * from './postV1AuthExchangeBody';
+export * from './postV1AuthLogin200';
+export * from './postV1AuthLoginBody';
+export * from './postV1AuthPasswordResetConfirmBody';
+export * from './postV1AuthPasswordResetRequestBody';
 export * from './postV1BillingRun200';
 export * from './postV1CreditsGrantBody';
 export * from './postV1CustomersBody';
