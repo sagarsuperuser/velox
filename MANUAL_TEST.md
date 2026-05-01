@@ -361,7 +361,7 @@ See ADR-007 (revert) and ADR-008 (cookie refinement).
 - [ ] Closing the created-key dialog removes the raw key from memory — refreshing the page only ever shows the masked prefix again
 - [ ] Per-row Revoke → AlertDialog "Revoke API Key" with name + prefix in copy → confirm → toast "API key revoked" + list refetches; Cancel dismisses without changes
 - [ ] On the row that matches the current session's key_id: Revoke button is **disabled** with `cursor-not-allowed`; hovering shows tooltip "Cannot revoke the API key your dashboard session uses — sign out and sign back in with another key first." Confirmation dialog never opens. (See FLOW K4 for the safeguard rules.)
-- [ ] Server validation errors (e.g. duplicate name) surface inline via `applyApiError` against `name` / `key_type` / `expires_at` fields, not as a generic toast
+- [ ] Server validation errors surface inline via `applyApiError` against `name` / `key_type` / `expires_at` fields, not as a generic toast. The Zod client-side schema catches most invalid inputs before submit, so to actually exercise the server-side path bypass the UI: `curl -i -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"name":"  ","key_type":"secret"}' "$API/v1/api-keys"` → 422 with `error.param = "name"` and `error.code = "required"`. (Note: `api_keys.name` has no UNIQUE constraint so "duplicate name" cannot fire — server validations that actually fire are `Required(name)` and `Invalid(key_type, ...)`.)
 
 ## FLOW K4: Revoke safeguards (lockout-prevention + cookie fan-out)
 
