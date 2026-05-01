@@ -370,13 +370,24 @@ ghost-cookie sessions. Server enforces both; the UI mirrors them.
 
 ### Last-active-secret-or-platform safeguard
 
-- [ ] **Server (Bearer)**: tenant has exactly one active `secret` key. `curl -X DELETE -H "Authorization: Bearer $KEY" "$API/v1/api-keys/<that_key_id>"` → **422** (or wrapped 409) with message containing "last active secret/platform key".
-- [ ] **Server**: same with one active `platform` key → blocked.
-- [ ] **Server**: tenant has one active `publishable` key (no secret/platform) → revoking the publishable **succeeds** — publishables don't count toward the safeguard.
-- [ ] **Server**: tenant has one secret + one publishable → revoking the publishable succeeds. Revoking the secret → **blocked** (would leave only publishable, can't manage keys).
-- [ ] **Server**: tenant has two active secrets → revoking either succeeds.
-- [ ] **UI**: on the API Keys page, when the tenant has only one active secret/platform key, that row's Revoke button is **disabled** with `cursor-not-allowed`; hovering shows tooltip "Cannot revoke the only active secret/platform key — create another first."
-- [ ] **UI**: after creating a second secret key, the first key's Revoke button becomes enabled again (list refetch + safeguard recompute).
+The store-layer safeguard refuses any revoke that would leave the
+tenant with zero active secret/platform keys. Server-side enforcement
+is unit-tested; the dashboard mirrors the rule with a disabled-button
++ tooltip. Note: the matrix can't be exercised end-to-end via curl
+because the auth handler's `self_revoke` 422 fires before the
+safeguard does — the unit tests are the real defense.
+
+- [ ] **Server (unit)**: `go test ./internal/auth/... -run TestRevokeKey_Safeguard -v` passes. Six cases cover: last secret blocked, last platform blocked, secret+publishable revoke-secret blocked, secret+publishable revoke-publishable allowed, two secrets either-revoke allowed, expired-secret-only allowed (targetActive gate skips the safeguard).
+- [ ] **UI**: set up a tenant with exactly one active secret/platform key via psql:
+  ```sql
+  UPDATE api_keys SET revoked_at = NOW()
+  WHERE tenant_id = '<tenant_id>'
+    AND key_type IN ('secret','platform')
+    AND id != '<the_one_to_keep>'
+    AND revoked_at IS NULL;
+  ```
+  Reload `/api-keys`. The lone secret/platform row's Revoke button is **disabled** with `cursor-not-allowed`; hover shows shadcn tooltip *"Cannot revoke the only active secret/platform key — create another first."*
+- [ ] **UI**: from the state above, click "Create API Key" → name it, type `secret`, no expiry → submit. The list refetches; the original row's Revoke button becomes **enabled** (cursor-pointer, no tooltip).
 
 ### Cookie fan-out on revoke (cross-key)
 
