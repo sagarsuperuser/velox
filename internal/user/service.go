@@ -187,6 +187,13 @@ func (s *Service) CreateUser(ctx context.Context, email, plaintext, tenantID, ro
 // On failure: caller (the auth handler) is responsible for
 // incrementing the rate-limit counter and triggering Lock() once
 // the threshold is exceeded.
+// GetByID looks up a user by id. Used by /v1/whoami to project email
+// onto the cookie-path response without forcing the session row to
+// duplicate it.
+func (s *Service) GetByID(ctx context.Context, id string) (domain.User, error) {
+	return s.store.GetByID(ctx, id)
+}
+
 func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (domain.User, []domain.UserTenant, error) {
 	u, err := s.store.GetByEmail(ctx, email)
 	if err != nil {

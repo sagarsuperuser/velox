@@ -794,17 +794,30 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// indefinitely.
 		r.Use(middleware.Timeout(30 * time.Second))
 
-		// /v1/whoami — resolves the bearer key to its tenant context
-		// without requiring a specific permission. The dashboard hits
-		// this on login to (a) validate the pasted key and (b) populate
-		// tenant_id / livemode in the AuthContext for display.
+		// /v1/whoami — resolves the active credential to its tenant
+		// context without requiring a specific permission. Cookie path
+		// returns user_id + email (dashboard); Bearer path returns
+		// key_id + key_type (SDK / curl). Both always return tenant_id
+		// + livemode. The dashboard's AuthContext relies on user_id
+		// being present on the cookie path — without it, refresh()
+		// silently logs the operator out.
 		r.Get("/whoami", func(w http.ResponseWriter, req *http.Request) {
-			respond.JSON(w, req, http.StatusOK, map[string]any{
-				"tenant_id": auth.TenantID(req.Context()),
-				"key_id":    auth.KeyID(req.Context()),
-				"key_type":  string(auth.GetKeyType(req.Context())),
-				"livemode":  auth.Livemode(req.Context()),
-			})
+			ctx := req.Context()
+			out := map[string]any{
+				"tenant_id": auth.TenantID(ctx),
+				"livemode":  auth.Livemode(ctx),
+			}
+			if uid := auth.UserID(ctx); uid != "" {
+				out["user_id"] = uid
+				if u, err := userSvc.GetByID(ctx, uid); err == nil {
+					out["email"] = u.Email
+				}
+			}
+			if kid := auth.KeyID(ctx); kid != "" {
+				out["key_id"] = kid
+				out["key_type"] = string(auth.GetKeyType(ctx))
+			}
+			respond.JSON(w, req, http.StatusOK, out)
 		})
 
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/api-keys", authH.Routes())
