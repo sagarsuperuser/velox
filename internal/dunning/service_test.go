@@ -311,7 +311,10 @@ func TestUpsertPolicy(t *testing.T) {
 	if policy.GracePeriodDays != 3 {
 		t.Errorf("default grace_period: got %d, want 3", policy.GracePeriodDays)
 	}
-	if policy.FinalAction != domain.DunningActionManualReview {
-		t.Errorf("default final_action: got %q, want manual_review", policy.FinalAction)
+	// Default flipped from manual_review → pause in migration 0071 so
+	// dunning-exhausted subs go into pause_collection.keep_as_draft
+	// automatically instead of stacking finalized invoices each cycle.
+	if policy.FinalAction != domain.DunningActionPause {
+		t.Errorf("default final_action: got %q, want pause", policy.FinalAction)
 	}
 }
