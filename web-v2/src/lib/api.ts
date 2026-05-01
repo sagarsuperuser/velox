@@ -663,6 +663,7 @@ export type AttentionReason =
   | 'payment_processing'
   | 'payment_scheduled'
   | 'awaiting_payment'
+  | 'no_payment_method'
 
 export type AttentionAction =
   | 'edit_billing_profile'
@@ -674,6 +675,7 @@ export type AttentionAction =
   | 'review_registration'
   | 'charge_now'
   | 'send_reminder'
+  | 'add_payment_method'
 
 export interface AttentionActionItem {
   code: AttentionAction
@@ -697,11 +699,16 @@ export interface InvoiceAttention {
   // ISO timestamp marking when the condition started; operators triage
   // by age.
   since?: string
-  // ISO timestamp of the next scheduled engine action (auto-charge time
-  // for awaiting/scheduled, next dunning retry for failures). Surfacing
-  // this answers the operator's primary "is it stuck?" question with
-  // a visible commitment. Empty for terminal states.
+  // ISO timestamp of the next scheduled engine action — only set when
+  // there's a real automatic retry queued (e.g. auto_charge_pending
+  // sweep, dunning retry). Crucially NOT due_at — due_at is a
+  // deadline, not an engine action. Empty when no automatic next
+  // action exists (e.g. no_payment_method: operator must act).
   next_attempt_at?: string
+  // ISO timestamp of the invoice's payment deadline (mirrors
+  // invoice.due_at). Distinct from next_attempt_at — the engine does
+  // NOT auto-act on this date; it's a customer-facing "pay by" line.
+  due_by?: string
 }
 
 export interface Invoice {

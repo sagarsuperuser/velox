@@ -945,19 +945,21 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 			Currency:    inv.Currency,
 		})
 	}
-	// Auto-charge ETA — only meaningful while the invoice is still
-	// awaiting/scheduled. Once status flips, the actual attempt event
-	// from Stripe webhooks supersedes it on the timeline.
+	// Due-by anchor — passive deadline marker, NOT a scheduled engine
+	// action. Auto-charge fires at finalize (engine.go:1364), not at
+	// due_at; with no PM, the engine never auto-charges at all. The
+	// previous "Auto-charge scheduled at due_at" event was misleading
+	// for both auto-charge invoices (charge already happened or
+	// failed) and send-invoice invoices (engine never schedules).
+	// Surface due_at as a deadline, only when the invoice is still
+	// open and has a real due_at.
 	if inv.Status == domain.InvoiceFinalized && inv.PaymentStatus == domain.PaymentPending && inv.DueAt != nil {
-		amt := inv.AmountDueCents
 		events = append(events, timelineEvent{
 			Timestamp:   inv.DueAt.Format(time.RFC3339),
 			Source:      "lifecycle",
-			EventType:   "invoice.auto_charge_scheduled",
+			EventType:   "invoice.due_by",
 			Status:      "scheduled",
-			Description: "Auto-charge scheduled",
-			AmountCents: &amt,
-			Currency:    inv.Currency,
+			Description: "Payment deadline",
 		})
 	}
 	if inv.VoidedAt != nil {

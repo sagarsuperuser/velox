@@ -98,6 +98,17 @@ const (
 	// pre-first-charge window. Operator can trigger a charge or send a
 	// reminder. Stripe parity: `open` invoice with no payment activity.
 	AttentionReasonAwaitingPayment AttentionReason = "awaiting_payment"
+
+	// AttentionReasonNoPaymentMethod: invoice is finalized and unpaid,
+	// and the customer has no PaymentSetup ready. The engine's auto-
+	// charge path silently skips when no PM is attached — there is NO
+	// retry, NO sweep that will eventually pick this up. The operator
+	// is the only mechanism that moves this invoice forward (add a PM
+	// and Charge now, or send the invoice link for self-pay). Surfaces
+	// distinct from awaiting_payment because the action is concrete:
+	// "Add payment method", not "Wait and see". Mirrors Stripe's
+	// `customer.invoice.requires_payment_method` flow.
+	AttentionReasonNoPaymentMethod AttentionReason = "no_payment_method"
 )
 
 // AttentionAction names the operator's recommended next step. Closed
@@ -124,6 +135,11 @@ const (
 	// in customer-pay collection mode when the invoice is sitting
 	// unpaid and a nudge is appropriate.
 	AttentionActionSendReminder AttentionAction = "send_reminder"
+	// AttentionActionAddPaymentMethod deep-links the dashboard to the
+	// customer's billing surface to attach a PM. Surfaced when an
+	// invoice is awaiting payment AND the customer has no PaymentSetup
+	// ready — the only state where adding a PM unblocks collection.
+	AttentionActionAddPaymentMethod AttentionAction = "add_payment_method"
 )
 
 // AttentionActionItem is one entry in Attention.Actions. Frontend
@@ -188,15 +204,36 @@ type Attention struct {
 	// track a precise failed_at timestamp).
 	Since *time.Time `json:"since,omitempty"`
 
-	// NextAttemptAt is when the engine will next try to make this
-	// invoice progress automatically — typically the queued auto-charge
-	// time for awaiting_payment / payment_scheduled, or the next
-	// dunning retry for payment_failed. Surfacing this converts the
-	// operator's "is this stuck?" uncertainty into a visible commitment.
-	// Stripe / Vercel pattern (every state has the next ETA visible).
-	// Empty when the system has no scheduled action (paid, voided,
-	// terminal failure).
+	// NextAttemptAt is when the engine will retry an automatic action.
+	// Populated ONLY when there's a real scheduled retry — typically
+	// `payment_scheduled` (auto_charge_pending=true, scheduler will
+	// fire on its next sweep) or a dunning retry. Crucially, this is
+	// NOT due_at: due_at is a deadline (when the invoice becomes
+	// overdue), not when the engine is scheduled to act. Empty when
+	// the system has no automatic next action — including the
+	// no_payment_method case where the engine has nothing scheduled
+	// and the operator is the only mover.
 	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
+
+	// DueBy is the invoice's payment deadline (mirrors invoice.due_at).
+	// Surfaced separately from NextAttemptAt so the operator-facing
+	// banner can render "Due by Jun 16" without claiming the engine
+	// will act on that date. Empty when the invoice has no due_at set.
+	DueBy *time.Time `json:"due_by,omitempty"`
+}
+
+// AttentionContext carries ancillary signals needed by the classifier
+// that aren't durable on the Invoice row itself. Today this is just
+// the customer's payment-method state, but the struct is the seam for
+// future signals (dunning policy retry schedule, collection mode, etc).
+// Zero-value is safe — classifier falls back to existing behaviour
+// when callers don't have the signal available.
+type AttentionContext struct {
+	// HasPaymentMethod is true when the customer has a PaymentSetup
+	// row in `ready` state with a stripe_customer_id. Distinguishes
+	// the operator-actionable no_payment_method state from the generic
+	// awaiting_payment race window.
+	HasPaymentMethod bool
 }
 
 // docBaseURL is the doc site root for operator-facing error pages. Kept
@@ -220,11 +257,19 @@ const docBaseURL = "https://docs.velox.dev/errors/"
 // Drafts also skip — the page itself communicates draft state and
 // adding a banner would be redundant noise.
 //
-// Pure function — no I/O, deterministic on the input Invoice. Tested
-// in invoice_attention_test.go across the cartesian product of
-// (status, tax_status, tax_error_code, payment_status,
-// payment_overdue, auto_charge_pending).
-func ClassifyInvoiceAttention(inv Invoice) *Attention {
+// Pure function — no I/O, deterministic on the input Invoice +
+// AttentionContext. Tested in invoice_attention_test.go across the
+// cartesian product of (status, tax_status, tax_error_code,
+// payment_status, payment_overdue, auto_charge_pending,
+// has_payment_method).
+//
+// The atc.HasPaymentMethod signal distinguishes two awaiting sub-
+// states: a no-PM invoice (operator-actionable, the engine has nothing
+// scheduled) vs a has-PM race window (transient, engine will fire on
+// next sweep). Without the context, callers fall through to the
+// generic awaiting_payment classification — backwards-compat for
+// internal call sites that don't have a PaymentMethodReader handy.
+func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
 	if inv.Status == InvoicePaid || inv.Status == InvoiceVoided {
 		return nil
 	}
@@ -243,6 +288,8 @@ func ClassifyInvoiceAttention(inv Invoice) *Attention {
 		return classifyPaymentProcessing(inv)
 	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending && inv.AutoChargePending:
 		return classifyPaymentScheduled(inv)
+	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending && !atc.HasPaymentMethod:
+		return classifyNoPaymentMethod(inv)
 	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending:
 		return classifyAwaitingPayment(inv)
 	}
@@ -382,6 +429,11 @@ func classifyPaymentProcessing(inv Invoice) *Attention {
 // wait the scheduler interval.
 func classifyPaymentScheduled(inv Invoice) *Attention {
 	since := inv.UpdatedAt
+	// payment_scheduled fires when auto_charge_pending=true: a charge
+	// has been attempted, failed retryably, and the scheduler will
+	// pick it up on its next sweep. The sweep cadence is short
+	// (seconds-to-minutes) so we don't surface a precise
+	// next_attempt_at — "on its next tick" is honest.
 	return &Attention{
 		Severity: AttentionSeverityInfo,
 		Reason:   AttentionReasonPaymentScheduled,
@@ -391,8 +443,8 @@ func classifyPaymentScheduled(inv Invoice) *Attention {
 		Actions: []AttentionActionItem{
 			{Code: AttentionActionChargeNow, Label: "Charge now"},
 		},
-		Since:         &since,
-		NextAttemptAt: inv.DueAt,
+		Since: &since,
+		DueBy: inv.DueAt,
 	}
 }
 
@@ -403,18 +455,50 @@ func classifyPaymentScheduled(inv Invoice) *Attention {
 // charge themselves, or send the customer a reminder email.
 func classifyAwaitingPayment(inv Invoice) *Attention {
 	since := inv.UpdatedAt
+	// Has-PM race window: PaymentSetup is ready but the engine hasn't
+	// run yet (sub-second to engine-tick window) OR the engine ran but
+	// charge_immediately_at_finalize was disabled. Operator-actionable
+	// only if they don't want to wait — Charge now is the override.
 	return &Attention{
 		Severity: AttentionSeverityInfo,
 		Reason:   AttentionReasonAwaitingPayment,
 		Code:     "payment.awaiting",
-		Message:  "Invoice is finalized and awaiting payment. No charge attempt has fired yet.",
+		Message:  "Invoice is finalized and awaiting first charge attempt.",
 		DocURL:   docBaseURL + "awaiting-payment",
 		Actions: []AttentionActionItem{
 			{Code: AttentionActionChargeNow, Label: "Charge now"},
 			{Code: AttentionActionSendReminder, Label: "Send reminder"},
 		},
-		Since:         &since,
-		NextAttemptAt: inv.DueAt,
+		Since: &since,
+		DueBy: inv.DueAt,
+	}
+}
+
+// classifyNoPaymentMethod surfaces the "engine has nothing to do here"
+// state: invoice finalized, customer has no PaymentSetup ready. The
+// engine's auto-charge path silently skips when no PM is attached;
+// without operator action, this invoice will sit forever until it
+// becomes overdue. Distinct from awaiting_payment because the action
+// is concrete: add a PM (then Charge now), or send the invoice link
+// for self-pay.
+//
+// Severity = warning (operator action required, not financially
+// broken). Promoting to critical would make a perfectly normal "send-
+// invoice" collection mode look alarming.
+func classifyNoPaymentMethod(inv Invoice) *Attention {
+	since := inv.UpdatedAt
+	return &Attention{
+		Severity: AttentionSeverityWarning,
+		Reason:   AttentionReasonNoPaymentMethod,
+		Code:     "payment.no_payment_method",
+		Message:  "No payment method on file. The engine won't auto-charge until one is attached. Add a payment method, send the invoice link for self-pay, or void the invoice.",
+		DocURL:   docBaseURL + "no-payment-method",
+		Actions: []AttentionActionItem{
+			{Code: AttentionActionAddPaymentMethod, Label: "Add payment method"},
+			{Code: AttentionActionSendReminder, Label: "Send invoice link"},
+		},
+		Since: &since,
+		DueBy: inv.DueAt,
 	}
 }
 

@@ -428,6 +428,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// invoices in tax_status pending or failed.
 	invoiceSvc.SetTaxRetrier(engine)
 
+	// Payment-method reader powers the no_payment_method attention
+	// branch — distinguishes operator-actionable "add a PM" state from
+	// the generic awaiting_payment race window. customerStore satisfies
+	// the PaymentMethodReader interface (GetPaymentSetup).
+	invoiceSvc.SetPaymentMethodReader(customerStore)
+
 	// Credit note issue reverses the invoice's tax_transaction so the
 	// tenant's upstream tax liability is reduced alongside the refund.
 	// Required for EU VAT, UK VAT, India GST compliance — without this

@@ -71,7 +71,13 @@ export function InvoiceAttention({
             {att.next_attempt_at && (
               <p className="text-xs text-muted-foreground flex items-center gap-1.5">
                 <Calendar size={11} className="shrink-0" />
-                Next scheduled action: <span className="text-foreground">{formatDateTime(att.next_attempt_at)}</span>
+                Engine will retry: <span className="text-foreground">{formatDateTime(att.next_attempt_at)}</span>
+              </p>
+            )}
+            {att.due_by && (
+              <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Calendar size={11} className="shrink-0" />
+                Due by: <span className="text-foreground">{formatDateTime(att.due_by)}</span>
               </p>
             )}
           </div>
@@ -153,6 +159,7 @@ function ActionButton({
 
   switch (action) {
     case 'edit_billing_profile':
+    case 'add_payment_method':
       return (
         <Button asChild variant={variant} size="sm">
           <Link to={`/customers/${invoice.customer_id}`}>{display}</Link>
@@ -271,7 +278,8 @@ function humanReason(reason: string): string {
     overdue: 'Past due',
     payment_processing: 'Payment processing',
     payment_scheduled: 'Auto-charge scheduled',
-    awaiting_payment: 'Awaiting payment',
+    awaiting_payment: 'Awaiting first charge',
+    no_payment_method: 'No payment method',
   }
   return map[reason] ?? reason
 }
@@ -287,6 +295,7 @@ function defaultLabel(action: AttentionAction): string {
     review_registration: 'Review tax registration',
     charge_now: 'Charge now',
     send_reminder: 'Send reminder',
+    add_payment_method: 'Add payment method',
   }
   return map[action] ?? action
 }

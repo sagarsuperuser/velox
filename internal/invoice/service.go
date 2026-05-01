@@ -46,13 +46,23 @@ type TaxRetrier interface {
 	RetryTaxForInvoice(ctx context.Context, tenantID, invoiceID string) (domain.Invoice, error)
 }
 
+// PaymentMethodReader is the narrow lookup the attention classifier
+// uses to decide between no_payment_method (operator-actionable) and
+// awaiting_payment (engine race window). Satisfied by the existing
+// payment.PaymentSetupStore — kept as a local interface so this
+// package doesn't import internal/payment.
+type PaymentMethodReader interface {
+	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
+}
+
 type Service struct {
-	store         Store
-	clock         clock.Clock
-	numberer      InvoiceNumberer
-	taxCommitter  TaxCommitter
-	couponApplier CouponApplier
-	taxRetrier    TaxRetrier
+	store          Store
+	clock          clock.Clock
+	numberer       InvoiceNumberer
+	taxCommitter   TaxCommitter
+	couponApplier  CouponApplier
+	taxRetrier     TaxRetrier
+	paymentMethods PaymentMethodReader
 }
 
 func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service {
@@ -78,6 +88,15 @@ func (s *Service) SetCouponApplier(c CouponApplier) {
 // Production passes billing.Engine; tests can pass any implementation.
 func (s *Service) SetTaxRetrier(r TaxRetrier) {
 	s.taxRetrier = r
+}
+
+// SetPaymentMethodReader wires the customer payment-setup lookup used
+// by the attention classifier to surface no_payment_method distinctly
+// from generic awaiting_payment. Optional — when nil, the classifier
+// falls back to the awaiting_payment branch (less specific but still
+// correct for healthy/transient cases).
+func (s *Service) SetPaymentMethodReader(r PaymentMethodReader) {
+	s.paymentMethods = r
 }
 
 type CreateInput struct {
@@ -151,18 +170,31 @@ func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Invoice,
 	if err != nil {
 		return domain.Invoice{}, err
 	}
-	return attachAttention(inv), nil
+	return s.attachAttention(ctx, inv), nil
 }
 
 // attachAttention computes the unified Attention surface from durable
-// invoice fields and stamps it on the value before it leaves the
-// service boundary. Pure derivation — no I/O. Internal callers that
-// read straight from the store (engine, scheduler, finalize path) skip
-// this; only user-facing reads see the Attention field. Keeps the
-// derivation single-source so handlers, webhook serializers, and
-// hosted-invoice rendering all see the same shape.
-func attachAttention(inv domain.Invoice) domain.Invoice {
-	inv.Attention = domain.ClassifyInvoiceAttention(inv)
+// invoice fields plus the customer's payment-method status. Internal
+// callers that read straight from the store (engine, scheduler,
+// finalize path) skip this; only user-facing reads see the Attention
+// field. Keeps the derivation single-source so handlers, webhook
+// serializers, and hosted-invoice rendering all see the same shape.
+//
+// PaymentMethodReader is read at attach-time, not on the hot path —
+// dashboard reads dominate this code, and a PM lookup per invoice is
+// cheap. When the reader isn't wired (older test fixtures, isolated
+// unit tests), HasPaymentMethod defaults to false → no_payment_method
+// shows up — but that's safe: tests that exercise specific reasons
+// override the field anyway.
+func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domain.Invoice {
+	atc := domain.AttentionContext{}
+	if s.paymentMethods != nil && inv.CustomerID != "" {
+		ps, err := s.paymentMethods.GetPaymentSetup(ctx, inv.TenantID, inv.CustomerID)
+		if err == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
+			atc.HasPaymentMethod = true
+		}
+	}
+	inv.Attention = domain.ClassifyInvoiceAttention(inv, atc)
 	return inv
 }
 
@@ -180,7 +212,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Invoice
 		return nil, 0, err
 	}
 	for i := range invs {
-		invs[i] = attachAttention(invs[i])
+		invs[i] = s.attachAttention(ctx, invs[i])
 	}
 	return invs, total, nil
 }
@@ -269,7 +301,7 @@ func (s *Service) GetWithLineItems(ctx context.Context, tenantID, id string) (do
 	if err != nil {
 		return domain.Invoice{}, nil, err
 	}
-	return attachAttention(inv), items, nil
+	return s.attachAttention(ctx, inv), items, nil
 }
 
 // GetByPublicToken resolves a hosted-invoice-URL token to the invoice.
@@ -282,7 +314,7 @@ func (s *Service) GetByPublicToken(ctx context.Context, token string) (domain.In
 	if err != nil {
 		return domain.Invoice{}, err
 	}
-	return attachAttention(inv), nil
+	return s.attachAttention(ctx, inv), nil
 }
 
 // SetPublicToken persists a rotated public_token on a non-draft invoice.
@@ -355,7 +387,7 @@ func (s *Service) ApplyCoupon(ctx context.Context, tenantID, invoiceID, code, id
 	if err != nil {
 		return domain.Invoice{}, err
 	}
-	return attachAttention(inv), nil
+	return s.attachAttention(ctx, inv), nil
 }
 
 // RetryTax routes an operator-triggered "Retry tax" action through the
@@ -371,5 +403,5 @@ func (s *Service) RetryTax(ctx context.Context, tenantID, invoiceID string) (dom
 	if err != nil {
 		return domain.Invoice{}, err
 	}
-	return attachAttention(inv), nil
+	return s.attachAttention(ctx, inv), nil
 }
