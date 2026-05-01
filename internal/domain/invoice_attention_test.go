@@ -16,7 +16,7 @@ func draft() Invoice {
 }
 
 func TestClassifyInvoiceAttention_HealthyReturnsNil(t *testing.T) {
-	if got := ClassifyInvoiceAttention(draft()); got != nil {
+	if got := ClassifyInvoiceAttention(draft(), AttentionContext{}); got != nil {
 		t.Fatalf("healthy invoice should return nil, got %+v", got)
 	}
 }
@@ -31,7 +31,7 @@ func TestClassifyInvoiceAttention_TerminalStatesReturnNil(t *testing.T) {
 			inv.TaxErrorCode = "customer_data_invalid"
 			inv.PaymentStatus = PaymentFailed
 			inv.PaymentOverdue = true
-			if got := ClassifyInvoiceAttention(inv); got != nil {
+			if got := ClassifyInvoiceAttention(inv, AttentionContext{}); got != nil {
 				t.Fatalf("terminal status %s should suppress attention, got %+v", status, got)
 			}
 		})
@@ -61,7 +61,7 @@ func TestClassifyInvoiceAttention_TaxFailedSubcodes(t *testing.T) {
 			now := time.Now()
 			inv.TaxDeferredAt = &now
 
-			att := ClassifyInvoiceAttention(inv)
+			att := ClassifyInvoiceAttention(inv, AttentionContext{})
 			if att == nil {
 				t.Fatalf("expected attention, got nil")
 			}
@@ -100,7 +100,7 @@ func TestClassifyInvoiceAttention_TaxPendingIsWarning(t *testing.T) {
 	inv := draft()
 	inv.TaxStatus = InvoiceTaxPending
 	inv.TaxErrorCode = "customer_data_invalid"
-	att := ClassifyInvoiceAttention(inv)
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil || att.Severity != AttentionSeverityWarning {
 		t.Fatalf("pending should be warning, got %+v", att)
 	}
@@ -115,7 +115,7 @@ func TestClassifyInvoiceAttention_PaymentFailed(t *testing.T) {
 	inv.LastPaymentError = "card declined: insufficient funds"
 	inv.UpdatedAt = time.Now()
 
-	att := ClassifyInvoiceAttention(inv)
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil {
 		t.Fatalf("expected attention")
 	}
@@ -136,7 +136,7 @@ func TestClassifyInvoiceAttention_PaymentFailed(t *testing.T) {
 func TestClassifyInvoiceAttention_PaymentUnknownIsInfo(t *testing.T) {
 	inv := draft()
 	inv.PaymentStatus = PaymentUnknown
-	att := ClassifyInvoiceAttention(inv)
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil || att.Severity != AttentionSeverityInfo {
 		t.Fatalf("payment_unknown should be info, got %+v", att)
 	}
@@ -151,7 +151,7 @@ func TestClassifyInvoiceAttention_OverdueIsWarning(t *testing.T) {
 	due := time.Now().Add(-48 * time.Hour)
 	inv.DueAt = &due
 
-	att := ClassifyInvoiceAttention(inv)
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil || att.Severity != AttentionSeverityWarning {
 		t.Fatalf("overdue should be warning, got %+v", att)
 	}
@@ -171,7 +171,7 @@ func TestClassifyInvoiceAttention_PriorityOrder(t *testing.T) {
 	inv.PaymentStatus = PaymentFailed // also bad
 	inv.PaymentOverdue = true         // also bad
 
-	att := ClassifyInvoiceAttention(inv)
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil {
 		t.Fatalf("expected attention")
 	}
@@ -182,21 +182,21 @@ func TestClassifyInvoiceAttention_PriorityOrder(t *testing.T) {
 	// Drop tax — payment_failed should now win over overdue + unknown.
 	inv.TaxStatus = InvoiceTaxOK
 	inv.TaxErrorCode = ""
-	att = ClassifyInvoiceAttention(inv)
+	att = ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil || att.Reason != AttentionReasonPaymentFailed {
 		t.Errorf("priority broken: payment_failed should beat overdue, got %+v", att)
 	}
 
 	// Drop payment_failed — overdue should win over payment_unknown.
 	inv.PaymentStatus = PaymentUnknown
-	att = ClassifyInvoiceAttention(inv)
+	att = ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil || att.Reason != AttentionReasonOverdue {
 		t.Errorf("priority broken: overdue should beat payment_unknown, got %+v", att)
 	}
 
 	// Drop overdue — payment_unknown remains.
 	inv.PaymentOverdue = false
-	att = ClassifyInvoiceAttention(inv)
+	att = ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil || att.Reason != AttentionReasonPaymentUnconfirmed {
 		t.Errorf("priority broken: payment_unknown should remain, got %+v", att)
 	}
@@ -208,7 +208,7 @@ func TestClassifyInvoiceAttention_PaymentProcessing(t *testing.T) {
 	inv.PaymentStatus = PaymentProcessing
 	inv.UpdatedAt = time.Now()
 
-	att := ClassifyInvoiceAttention(inv)
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil {
 		t.Fatalf("expected attention")
 	}
@@ -230,7 +230,7 @@ func TestClassifyInvoiceAttention_PaymentScheduled(t *testing.T) {
 	inv.AutoChargePending = true
 	inv.UpdatedAt = time.Now()
 
-	att := ClassifyInvoiceAttention(inv)
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil {
 		t.Fatalf("expected attention")
 	}
@@ -252,7 +252,10 @@ func TestClassifyInvoiceAttention_AwaitingPayment(t *testing.T) {
 	// AutoChargePending = false (default) — no scheduler queue, no charge yet.
 	inv.UpdatedAt = time.Now()
 
-	att := ClassifyInvoiceAttention(inv)
+	// HasPaymentMethod=true: PM is on file but engine hasn't run yet.
+	// This is the race-window case; classifier should pick awaiting_
+	// payment (generic info), not no_payment_method.
+	att := ClassifyInvoiceAttention(inv, AttentionContext{HasPaymentMethod: true})
 	if att == nil {
 		t.Fatalf("expected attention")
 	}
@@ -269,13 +272,50 @@ func TestClassifyInvoiceAttention_AwaitingPayment(t *testing.T) {
 	if !codes[AttentionActionChargeNow] || !codes[AttentionActionSendReminder] {
 		t.Errorf("awaiting_payment should offer charge_now + send_reminder, got %+v", att.Actions)
 	}
+	if att.NextAttemptAt != nil {
+		t.Errorf("awaiting_payment must not set NextAttemptAt — engine has nothing scheduled, got %v", att.NextAttemptAt)
+	}
+}
+
+// TestClassifyInvoiceAttention_NoPaymentMethod pins the operator-
+// actionable distinction: a finalized invoice with no PaymentSetup
+// surfaces no_payment_method (warning, action: add_payment_method),
+// not the generic awaiting_payment. Without this branch, operators
+// see "Invoice is finalized and awaiting payment" and have no
+// indication that the engine will never auto-charge.
+func TestClassifyInvoiceAttention_NoPaymentMethod(t *testing.T) {
+	inv := draft()
+	inv.Status = InvoiceFinalized
+	inv.PaymentStatus = PaymentPending
+	inv.UpdatedAt = time.Now()
+
+	att := ClassifyInvoiceAttention(inv, AttentionContext{HasPaymentMethod: false})
+	if att == nil {
+		t.Fatalf("expected attention")
+	}
+	if att.Reason != AttentionReasonNoPaymentMethod {
+		t.Errorf("reason = %s, want %s", att.Reason, AttentionReasonNoPaymentMethod)
+	}
+	if att.Severity != AttentionSeverityWarning {
+		t.Errorf("severity = %s, want warning", att.Severity)
+	}
+	codes := make(map[AttentionAction]bool)
+	for _, a := range att.Actions {
+		codes[a.Code] = true
+	}
+	if !codes[AttentionActionAddPaymentMethod] {
+		t.Errorf("no_payment_method must offer add_payment_method, got %+v", att.Actions)
+	}
+	if att.NextAttemptAt != nil {
+		t.Errorf("no_payment_method must not set NextAttemptAt — engine won't auto-charge without PM, got %v", att.NextAttemptAt)
+	}
 }
 
 func TestClassifyInvoiceAttention_DraftSuppressesAttention(t *testing.T) {
 	inv := draft()
 	// Status=draft, payment_status=pending — should NOT raise attention
 	// (the page itself communicates draft state).
-	att := ClassifyInvoiceAttention(inv)
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att != nil {
 		t.Errorf("draft should suppress info attention, got %+v", att)
 	}
@@ -285,7 +325,7 @@ func TestClassifyInvoiceAttention_EmptyPaymentErrorFallsBackToGeneric(t *testing
 	inv := draft()
 	inv.PaymentStatus = PaymentFailed
 	inv.LastPaymentError = ""
-	att := ClassifyInvoiceAttention(inv)
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil {
 		t.Fatalf("expected attention")
 	}
