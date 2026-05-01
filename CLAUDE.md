@@ -30,7 +30,7 @@ go test -p 1 ./... -short=false  # includes integration tests (needs postgres)
 ```
 
 ## Important decisions
-- Auth: the API key is the durable credential. Dashboard operator pastes a `vlx_secret_…` key into `/login`; backend `POST /v1/auth/exchange` validates the key and mints an httpOnly `velox_session` cookie tied to that key. Subsequent dashboard requests ride the cookie via `credentials: 'include'`. SDK / curl callers send `Authorization: Bearer <key>` and skip the cookie path entirely; `internal/session.MiddlewareOrAPIKey` accepts either, with cookie taking precedence so stale Bearer headers can't bypass session revocation. No user accounts, no password reset, no invitations in v1. See `docs/adr/007-revert-to-api-key-dashboard-auth.md` (revert) and `docs/adr/008-session-from-api-key.md` (httpOnly cookie refinement).
+- Auth: dashboard uses email + password; API uses Bearer keys. Dashboard `POST /v1/auth/login` validates against `users.password_hash` (bcrypt cost 12) and mints an httpOnly `velox_session` cookie bound to `users.id` — not to any API key. SDK / curl callers send `Authorization: Bearer <vlx_…>`; `internal/session.MiddlewareOrAPIKey` accepts either, cookie taking precedence. Password reset uses single-use 1h tokens; SMTP delivery is deferred (link logged to stdout). No multi-user invites or 2FA in v1. See `docs/adr/011-email-password-auth-and-clean-api-keys.md`; ADR-007 and ADR-008 are superseded.
 - Stripe: PaymentIntent-only pattern (no Stripe Billing/Invoices to avoid 0.5% fee)
 - No Temporal dependency in v1 — simple background goroutine scheduler. Redis used for distributed rate limiting only.
 - Credits use event-sourced ledger (immutable append-only)

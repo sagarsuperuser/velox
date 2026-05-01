@@ -7,6 +7,7 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
 
  * OpenAPI spec version: 2026-04-07
  */
+import type { Attention } from './attention';
 import type { InvoiceBillingReason } from './invoiceBillingReason';
 import type { InvoiceMetadata } from './invoiceMetadata';
 import type { InvoicePaymentStatus } from './invoicePaymentStatus';
@@ -64,6 +65,14 @@ export interface Invoice {
   tax_deferred_at?: string | null;
   tax_retry_count?: number;
   tax_pending_reason?: string;
+  /** Typed taxonomy of `tax_pending_reason`. One of
+  `customer_data_invalid`, `jurisdiction_unsupported`,
+  `provider_outage`, `provider_auth`, `unknown`. Empty for
+  invoices deferred before this column existed (migration
+  0067).
+   */
+  tax_error_code?: string;
+  attention?: Attention;
   total_amount_cents: number;
   amount_due_cents: number;
   amount_paid_cents: number;

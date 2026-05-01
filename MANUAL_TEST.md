@@ -68,12 +68,13 @@ stripe listen --forward-to localhost:8080/v1/webhooks/stripe/<endpoint_id>
 ### Bootstrap (first run only)
 
 ```bash
-make bootstrap                  # Creates the first tenant + secret/publishable API keys
+make bootstrap                  # Creates the first tenant + user + API keys
 ```
 
-Open http://localhost:5173 and paste the Secret API key printed by bootstrap into
-the Sign In screen. Same key authenticates the API and the dashboard — there are
-no user accounts in v1 (see ADR-007 / FLOW A1).
+Bootstrap prints an operator email + password (use these for the dashboard) and the
+secret/publishable API keys (use the secret as `$KEY` for curl). Dashboard auth and
+API auth are independent: dashboard uses email+password sessions, API uses Bearer
+keys (see ADR-011 / FLOW A1).
 
 ### Shell setup for curl examples
 
@@ -265,58 +266,56 @@ zone with the abbreviation appended.
 
 ## Auth
 
-The API key is the durable credential. The dashboard exchanges a pasted
-key for an httpOnly `velox_session` cookie via `POST /v1/auth/exchange`;
-SDK / curl callers send `Authorization: Bearer <key>` directly. There
-are no user accounts, no password reset, no member invitations in v1.
-See ADR-007 (revert) and ADR-008 (cookie refinement).
+Dashboard uses email + password — `POST /v1/auth/login` mints an httpOnly
+`velox_session` cookie bound to `users.id`. SDK / curl callers send
+`Authorization: Bearer <vlx_…>` directly. The two paths are independent:
+revoking an API key never invalidates a dashboard session. Single-user
+v1; password reset is single-use 1h tokens (SMTP deferred). See ADR-011.
 
-## FLOW A1: Dashboard sign-in (paste key → httpOnly cookie)
+## FLOW A1: Dashboard sign-in (email + password → httpOnly cookie)
 
-- [ ] `make bootstrap` prints THREE keys: a `vlx_secret_test_…`, a `vlx_secret_live_…`, and a `vlx_pub_test_…` publishable. Copy the secret in the mode you want to operate in (test for eval; live to charge real cards).
+- [ ] `make bootstrap` prints an operator email + password and the API keys. Copy both.
 - [ ] `make dev` starts the API on `:8080`. `cd web-v2 && npm run dev` starts the dashboard on `:5173`.
-- [ ] Visit `http://localhost:5173`. Login screen shows a single "Secret API key" field.
-- [ ] Paste a non-vlx string → inline error `That doesn't look like a Velox key — it should start with vlx_`. No request fired.
-- [ ] Paste a syntactically-valid but unknown key (e.g. `vlx_secret_test_aaaaaaa…`) → `POST /v1/auth/exchange` returns 401; UI shows `Invalid or revoked API key`.
-- [ ] Paste the bootstrap secret → redirect to `/`. Dashboard loads with Customers / Invoices / Subscriptions etc. populated.
-- [ ] DevTools → Application → Cookies → `velox_session` is set, `HttpOnly: ✓`, `SameSite: Lax`, `Path: /`. Value is opaque (the raw cookie value, not the API key).
-- [ ] `localStorage` is empty for `velox_*` keys (the credential is *not* in localStorage anymore).
-- [ ] Reload the page → still signed in (AuthContext re-runs `whoami` on mount; cookie attaches automatically).
-- [ ] Verify the session row exists: `SELECT id_hash, key_id, tenant_id, expires_at FROM dashboard_sessions ORDER BY created_at DESC LIMIT 1;` — row is present, `expires_at` is ~7 days out.
-- [ ] User dropdown → Sign out → `POST /v1/auth/logout` returns 204; cookie is cleared (devtools reflects); redirect to `/login`.
-- [ ] Verify revocation: `SELECT revoked_at FROM dashboard_sessions WHERE id_hash = '<id_hash>';` — `revoked_at` is now NOT NULL.
-- [ ] Try to use the same cookie value (e.g. paste it back into the browser via devtools) → next protected request → 401 `invalid or expired session`.
+- [ ] Visit `http://localhost:5173`. Login screen shows Email and Password fields and a "Forgot password?" link.
+- [ ] Submit empty form → inline error "Email and password are required". No request fired.
+- [ ] Wrong password → `POST /v1/auth/login` returns 401; UI shows "Invalid email or password".
+- [ ] Five wrong-password attempts in a minute → 429; UI shows "Too many attempts — try again in 15 minutes". DB row: `SELECT locked_until FROM users WHERE email='<email>';` is ~15 min out.
+- [ ] Right credentials → redirect to `/`. Dashboard loads.
+- [ ] DevTools → Application → Cookies → `velox_session` is set, `HttpOnly: ✓`, `SameSite: Lax`, `Path: /`. `localStorage` has no `velox_*` keys.
+- [ ] Reload the page → still signed in (`whoami` re-runs on mount; cookie attaches automatically).
+- [ ] Session row: `SELECT id_hash, user_id, tenant_id, expires_at FROM dashboard_sessions ORDER BY created_at DESC LIMIT 1;` — `user_id` populated, `expires_at` ~7 days out.
+- [ ] Sign out → `POST /v1/auth/logout` returns 204; cookie cleared; redirect to `/login`.
+- [ ] `SELECT revoked_at FROM dashboard_sessions WHERE id_hash='<id_hash>';` — now NOT NULL.
+- [ ] Reusing the cleared cookie value via devtools → next protected request → 401 `invalid or expired session`.
+
+### Password reset
+
+- [ ] `/login` → "Forgot password?" → enter email → submit → server returns 204 regardless of whether the email exists (no enumeration). Reset link is logged to stdout (SMTP integration deferred).
+- [ ] Copy the link from logs → `/reset-password?token=…` → set new password (12-char min) → redirect to `/login?reset=success` → sign in with the new password.
+- [ ] Reuse the same token → 422 "token already used or expired".
+- [ ] Wait past the 1h TTL on a fresh token → 422 "token already used or expired".
+- [ ] Submit a password under 12 chars → 422 with `field=password`.
 
 ## FLOW A2: /v1/whoami contract — cookie OR Bearer
 
-- [ ] **Exchange:** mint a session cookie from $KEY.
-  ```bash
-  curl -i -c /tmp/c.txt \
-    -H "Content-Type: application/json" \
-    -d "{\"api_key\":\"$KEY\"}" \
-    "$API/v1/auth/exchange"
-  ```
-  → 200, body has `{tenant_id, key_id, key_type, livemode, expires_at}`,
-  `Set-Cookie: velox_session=...; HttpOnly` on the response.
-- [ ] **Cookie path** (the dashboard's path):
+- [ ] **Cookie path** (dashboard): sign in via the UI; then
   ```bash
   curl -b /tmp/c.txt "$API/v1/whoami"
   ```
-  → `200 {"tenant_id":"vlx_ten_...","key_id":"vlx_key_...","key_type":"secret","livemode":false}`
-- [ ] **Bearer path** (SDK / curl callers — bypasses the cookie):
+  → `200 {"tenant_id":"vlx_ten_...","user_id":"vlx_usr_...","email":"…","livemode":false}`.
+- [ ] **Bearer path** (SDK / curl):
   ```bash
   curl -H "Authorization: Bearer $KEY" "$API/v1/whoami"
   ```
-  → 200 with the same shape.
+  → `200 {"tenant_id":"vlx_ten_...","key_id":"vlx_key_...","key_type":"secret","livemode":false}`.
 - [ ] **No credentials**:
   ```bash
   curl "$API/v1/whoami"
   ```
   → `401 missing credentials — sign in at /login or send Authorization: Bearer vlx_secret_...`.
-- [ ] Cookie + Bearer on the same request, with **disagreeing** keys → cookie wins (verify by sending a Bearer for a different tenant + a valid cookie; whoami returns the cookie's tenant_id).
-- [ ] Revoke the underlying API key via the dashboard (or `DELETE /v1/api-keys/<key_id>`) → Bearer path 401s `api key revoked` immediately AND every `dashboard_sessions` row tied to that key has `revoked_at` flipped in the same request (auth.Service.RevokeKey fans out to session.Service.RevokeAllForKey). Cookie path 401s on the next request. See FLOW K4 for the full safeguard suite.
-- [ ] Direct DB revoke via psql (`UPDATE api_keys SET revoked_at = NOW() WHERE id = '<key_id>'`) bypasses the fan-out — Bearer 401s but cookies remain valid until their TTL or until the operator runs `UPDATE dashboard_sessions SET revoked_at = NOW() WHERE key_id = '<key_id>'` manually. Use the API endpoint, not psql, for live revocations.
-- [ ] Publishable key (`vlx_pub_test_…`) on `POST /v1/auth/exchange` → cookie minted; `whoami` returns `key_type:"publishable"`. Most write endpoints will 403, which is correct.
+- [ ] Cookie + Bearer on the same request, with **disagreeing** identities → cookie wins (whoami returns the cookie's user/tenant).
+- [ ] Revoke the underlying API key via the dashboard (or `DELETE /v1/api-keys/<key_id>`) → Bearer path 401s `api key revoked` immediately. Cookie sessions are user-bound and unaffected — they don't reference API keys (ADR-011).
+- [ ] Publishable key on Bearer → `whoami` returns `key_type:"publishable"`. Most write endpoints return 403, which is correct.
 
 ---
 
@@ -342,7 +341,7 @@ See ADR-007 (revert) and ADR-008 (cookie refinement).
 - [ ] `UPDATE api_keys SET expires_at = NOW() - INTERVAL '1 hour' WHERE ...` → 401 `"api key expired"`
 - [ ] Keys expiring within 7 days show yellow "Expires in Xd" badge
 - [ ] Expired keys grouped into a collapsed "Expired keys" section
-- [ ] Expired-keys-section Revoke button is **enabled** (revoking an expired key is allowed cleanup; the last-active-key safeguard from FLOW K4 doesn't refuse it because expired keys aren't counted as "active").
+- [ ] Expired-keys-section Revoke button is **enabled** (revoking an expired key is allowed cleanup).
 
 ## FLOW K3: API Keys page UX
 
@@ -351,7 +350,6 @@ See ADR-007 (revert) and ADR-008 (cookie refinement).
 - [ ] Header: "API Keys" title with `· N active` count next to subtitle when any active keys exist
 - [ ] Empty tenant: `EmptyState` with key icon, copy "No API keys yet", and "Create API Key" button (no list rendered)
 - [ ] Each active card shows: name, masked prefix (`sk_live_xxxx--------`), key-type badge (secret = violet shield, publishable = blue eye), `Created Xago`, `Last used Xago` or "Never used", `Expires DATE` row when set
-- [ ] The card matching the *current session's* `key_id` (from `/v1/whoami`) is decorated with a ring-2 ring-primary/20 outline AND a "Current session" info badge
 - [ ] "Expired keys" section is collapsed by default behind chevron toggle showing count; expanding reveals one-line cards with `expired` destructive badge and a Revoke button (revoking an already-expired key is allowed and useful for cleanup)
 - [ ] "Revoked keys" section is collapsed by default; expanded rows show strikethrough name, `revoked` badge, and "Revoked Xago"
 - [ ] Create dialog: Name input (max 100 chars, required), Key Type 2-col selector (Secret default vs Publishable), Expiration preset row (No expiration / 30 days / 90 days / 1 year / Custom)
@@ -359,64 +357,27 @@ See ADR-007 (revert) and ADR-008 (cookie refinement).
 - [ ] Selecting any non-custom preset shows a "Key will expire on FullDate" hint below the row
 - [ ] Submit success → Create dialog closes, `API Key Created` dialog opens with amber callout, full raw key in selectable monospace, Copy button (toast "Copied to clipboard"), and a single "I've saved this key" dismiss action
 - [ ] Closing the created-key dialog removes the raw key from memory — refreshing the page only ever shows the masked prefix again
-- [ ] Per-row Revoke → AlertDialog "Revoke API Key" with name + prefix in copy → confirm → toast "API key revoked" + list refetches; Cancel dismisses without changes
-- [ ] On the row that matches the current session's key_id: Revoke button is **disabled** with `cursor-not-allowed`; hovering shows tooltip "Cannot revoke the API key your dashboard session uses — sign out and sign back in with another key first." Confirmation dialog never opens. (See FLOW K4 for the safeguard rules.)
+- [ ] Per-row Revoke → AlertDialog "Revoke API Key" with name + prefix in copy → confirm → toast "API key revoked" + list refetches; Cancel dismisses without changes. Revoke is always enabled — dashboard sessions are user-bound (ADR-011), so revoking any key never locks the operator out.
+- [ ] Per-row Rotate → modal "Rotate API Key" with grace presets (Now / 1h / 24h / 7d, default 24h) → confirm → toast "API key rotated" + reveals the new raw key once via the same dialog used for create. Old key keeps working through the chosen window then expires automatically.
 - [ ] Server validation errors surface inline via `applyApiError` against `name` / `key_type` / `expires_at` fields, not as a generic toast. The Zod client-side schema catches most invalid inputs before submit, so to actually exercise the server-side path bypass the UI: `curl -i -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"name":"  ","key_type":"secret"}' "$API/v1/api-keys"` → 422 with `error.param = "name"` and `error.code = "required"`. (Note: `api_keys.name` has no UNIQUE constraint so "duplicate name" cannot fire — server validations that actually fire are `Required(name)` and `Invalid(key_type, ...)`.)
 
-## FLOW K4: Revoke safeguards (lockout-prevention + cookie fan-out)
+## FLOW K4: Rotate
 
-Two correctness rules around revoke that prevent permanent lockouts and
-ghost-cookie sessions. Server enforces both; the UI mirrors them.
+`POST /v1/api-keys/<id>/rotate` mints a replacement and either revokes
+the old key immediately (`expires_in_seconds=0`) or schedules its
+expiry for the grace window. Dashboard surface in FLOW K3.
 
-### Last-active-secret-or-platform safeguard
+- [ ] Rotate KEY_X with `expires_in_seconds=300` → new key returned with fresh raw_key; `SELECT expires_at FROM api_keys WHERE id='<KEY_X_id>'` is ~5 min out, `revoked_at IS NULL`. Bearer using KEY_X still authenticates until expiry.
+- [ ] Rotate KEY_Y with `expires_in_seconds=0` → old key has `revoked_at NOT NULL`; Bearer using KEY_Y → 401 `api key revoked`.
+- [ ] Rotate a revoked key → 422 `cannot rotate a revoked key`.
+- [ ] `expires_in_seconds` > 7 days (`> 604800`) → 422 with `field=expires_in_seconds`.
 
-The store-layer safeguard refuses any revoke that would leave the
-tenant with zero active secret/platform keys. Unit-tested at the
-service layer; not reachable end-to-end via curl because the auth
-handler's `self_revoke` 422 fires first.
-
-The dashboard's orphan-row disabled state (mirroring the same rule
-on the API Keys page) is also unreachable in v1 operator flows —
-when the tenant has exactly one active secret/platform key, the
-operator's current session was almost certainly minted from that
-key, so the row's `isCurrent` tooltip ("Cannot revoke the API key
-your dashboard session uses…") fires first instead. The
-`wouldOrphanTenant` UI check is kept as defense-in-depth for
-future multi-user accounts where session-key and active-secret/
-platform-keys can diverge.
-
-- [ ] **Server (unit)**: `go test ./internal/auth/... -run TestRevokeKey_Safeguard -v` passes. Six cases cover: last secret blocked, last platform blocked, secret+publishable revoke-secret blocked, secret+publishable revoke-publishable allowed, two secrets either-revoke allowed, expired-secret-only allowed (targetActive gate skips the safeguard).
-
-### Cookie fan-out on revoke (cross-key)
-
-When operator A's session was minted from KEY_A and a *different* operator's
-key KEY_B is revoked, KEY_B's cookies must die in the same request.
-
-- [ ] Sign in via KEY_A → `velox_session` cookie minted; verify a row in `dashboard_sessions` for KEY_A.
-- [ ] In a separate browser (or curl), exchange KEY_B for a cookie too. Now `dashboard_sessions` has rows for both keys.
-- [ ] From the KEY_A session, revoke KEY_B via the API Keys page (or `DELETE /v1/api-keys/<KEY_B_id>` with `Authorization: Bearer $KEY_A`).
-- [ ] Verify: `SELECT revoked_at FROM dashboard_sessions WHERE key_id = '<KEY_B_id>';` — every row has `revoked_at NOT NULL`.
-- [ ] Verify: KEY_B's browser session, on its next request → 401 `invalid or expired session`.
-- [ ] Verify: KEY_A's session is unaffected (cookie still works).
-
-### Rotate-with-grace doesn't fan out
-
-`POST /v1/api-keys/<id>/rotate` with `expires_in_seconds=300` keeps the
-old key valid through the grace window — sessions on it stay alive too.
-
-- [ ] Sign in via KEY_X → cookie minted, session row exists.
-- [ ] Rotate KEY_X with `expires_in_seconds=300`. Verify the new key is created and old key has `expires_at` ~5 min out.
-- [ ] Verify: `SELECT revoked_at FROM dashboard_sessions WHERE key_id = '<KEY_X_id>';` — row's `revoked_at IS NULL`. Cookie still works.
-- [ ] Rotate a different key with `expires_in_seconds=0` (immediate cutover) → that key's sessions DO get revoked (fan-out fires same as direct revoke).
-
-### Self-revoke remains blocked
-
-The handler refuses self-revoke (returns 422 `self_revoke`) regardless of
-the safeguard. This is independent of the lockout rule — even with a
-spare key in place, you cannot revoke the key your own request rode in on.
-
-- [ ] Bearer using KEY_A: `curl -X DELETE -H "Authorization: Bearer $KEY_A" "$API/v1/api-keys/<KEY_A_id>"` → **422** with code `self_revoke`.
-- [ ] Cookie session minted from KEY_A: same DELETE via the dashboard `apiRequest` → 422. UI surfaces this as a generic error toast (button is disabled in the dashboard so the request shouldn't fire from the UI in the first place; defense-in-depth).
+> ADR-011 removed the previous "last-active-secret/platform safeguard",
+> "self-revoke 422", and "cookie fan-out on revoke" rules. With
+> user-bound dashboard sessions, none of those failure modes apply:
+> revoking every API key never locks the operator out, and revoking the
+> key a Bearer request rode in on is a deliberate, reversible action
+> (mint a new key from the dashboard).
 
 ---
 
@@ -1580,11 +1541,12 @@ Common failure modes and where to look first.
 
 ## Dashboard sign-in fails
 
-- Pasted key doesn't start with `vlx_` → frontend rejects before sending; no request fired.
-- 401 on `POST /v1/auth/exchange` → key is wrong, revoked, or expired. Re-run `make bootstrap` for a fresh test key.
-- CORS: `CORS_ALLOWED_ORIGINS` must include the frontend origin (`http://localhost:5173` for local dev). Browser console shows the cross-origin block. The cookie won't attach without the right CORS preflight either.
-- Cookie not set after exchange → check `Set-Cookie` on the exchange response; `Secure` flag in dev should be off (we set it only when `APP_ENV` is `staging`/`production`). If it's on in dev, the browser drops the cookie over plain HTTP.
+- 401 on `POST /v1/auth/login` → wrong email or password. Run `make bootstrap` again to print fresh credentials, or use the password-reset flow.
+- 429 on `POST /v1/auth/login` → 5 wrong-password attempts in a minute trigger a 15-min lockout. `SELECT locked_until FROM users WHERE email='<email>';` — wait for it to pass.
+- CORS: `CORS_ALLOWED_ORIGINS` must include the frontend origin (`http://localhost:5173` for local dev). The cookie won't attach without the right CORS preflight either.
+- Cookie not set after login → check `Set-Cookie` on the login response; `Secure` flag in dev should be off (we set it only when `APP_ENV` is `staging`/`production`). If it's on in dev, the browser drops the cookie over plain HTTP.
 - `velox_session` cookie present but every request 401s → `dashboard_sessions.expires_at` may have passed, or `revoked_at` is set. Check the row.
+- Password-reset link 422 on confirm → token already used or past its 1h TTL. Re-request a fresh link.
 
 ## Invoice didn't generate
 

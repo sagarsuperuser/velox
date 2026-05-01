@@ -42,12 +42,12 @@ function humanizeError(msg: string): string {
 
 // apiRequest is the shared fetch wrapper for all Velox API calls. The
 // dashboard rides an httpOnly session cookie (minted via
-// POST /v1/auth/exchange when the operator pastes their API key on
-// /login). The cookie attaches automatically via `credentials:
-// 'include'` — no Authorization header, no key in JS-reachable storage.
-// SDK / curl callers reach the same endpoints with a Bearer header
-// instead, which the server's MiddlewareOrAPIKey accepts as a fallback
-// when the cookie is missing.
+// POST /v1/auth/login from the operator's email + password). The cookie
+// attaches automatically via `credentials: 'include'` — no Authorization
+// header, no credential in JS-reachable storage. SDK / curl callers
+// reach the same endpoints with a Bearer header instead, which the
+// server's MiddlewareOrAPIKey accepts as a fallback when the cookie is
+// missing.
 export async function apiRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',

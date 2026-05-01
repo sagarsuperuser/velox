@@ -7,13 +7,11 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
 
  * OpenAPI spec version: 2026-04-07
  */
-import type { GetV1Whoami200KeyType } from './getV1Whoami200KeyType';
 
-export type GetV1Whoami200 = {
+export type PostV1AuthLogin200 = {
+  user_id: string;
   tenant_id: string;
+  email: string;
   livemode: boolean;
-  user_id?: string;
-  email?: string;
-  key_id?: string;
-  key_type?: GetV1Whoami200KeyType;
+  expires_at: string;
 };

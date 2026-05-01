@@ -11,11 +11,108 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 const (
 	BearerAuthScopes = "BearerAuth.Scopes"
 )
+
+// Defines values for AttentionAction.
+const (
+	ChargeNow          AttentionAction = "charge_now"
+	EditBillingProfile AttentionAction = "edit_billing_profile"
+	ReconcilePayment   AttentionAction = "reconcile_payment"
+	RetryPayment       AttentionAction = "retry_payment"
+	RetryTax           AttentionAction = "retry_tax"
+	ReviewRegistration AttentionAction = "review_registration"
+	RotateApiKey       AttentionAction = "rotate_api_key"
+	SendReminder       AttentionAction = "send_reminder"
+	WaitProvider       AttentionAction = "wait_provider"
+)
+
+// Valid indicates whether the value is a known member of the AttentionAction enum.
+func (e AttentionAction) Valid() bool {
+	switch e {
+	case ChargeNow:
+		return true
+	case EditBillingProfile:
+		return true
+	case ReconcilePayment:
+		return true
+	case RetryPayment:
+		return true
+	case RetryTax:
+		return true
+	case ReviewRegistration:
+		return true
+	case RotateApiKey:
+		return true
+	case SendReminder:
+		return true
+	case WaitProvider:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AttentionReason.
+const (
+	AwaitingPayment      AttentionReason = "awaiting_payment"
+	Overdue              AttentionReason = "overdue"
+	PaymentFailed        AttentionReason = "payment_failed"
+	PaymentProcessing    AttentionReason = "payment_processing"
+	PaymentScheduled     AttentionReason = "payment_scheduled"
+	PaymentUnconfirmed   AttentionReason = "payment_unconfirmed"
+	TaxCalculationFailed AttentionReason = "tax_calculation_failed"
+	TaxLocationRequired  AttentionReason = "tax_location_required"
+)
+
+// Valid indicates whether the value is a known member of the AttentionReason enum.
+func (e AttentionReason) Valid() bool {
+	switch e {
+	case AwaitingPayment:
+		return true
+	case Overdue:
+		return true
+	case PaymentFailed:
+		return true
+	case PaymentProcessing:
+		return true
+	case PaymentScheduled:
+		return true
+	case PaymentUnconfirmed:
+		return true
+	case TaxCalculationFailed:
+		return true
+	case TaxLocationRequired:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AttentionSeverity.
+const (
+	Critical AttentionSeverity = "critical"
+	Info     AttentionSeverity = "info"
+	Warning  AttentionSeverity = "warning"
+)
+
+// Valid indicates whether the value is a known member of the AttentionSeverity enum.
+func (e AttentionSeverity) Valid() bool {
+	switch e {
+	case Critical:
+		return true
+	case Info:
+		return true
+	case Warning:
+		return true
+	default:
+		return false
+	}
+}
 
 // Defines values for CustomerStatus.
 const (
@@ -437,6 +534,89 @@ func (e PostV1SubscriptionsJSONBodyBillingTime) Valid() bool {
 	}
 }
 
+// Attention Unified "this invoice needs operator attention" surface.
+// Computed server-side from durable invoice fields
+// (`tax_status`, `tax_error_code`, `payment_status`,
+// `last_payment_error`, `payment_overdue`). Never persisted —
+// always derived. Omitted entirely when the invoice is healthy
+// (matches Stripe's `last_finalization_error: null` ergonomic).
+// See ADR-009.
+type Attention struct {
+	// Actions Prescribed next steps. First item is the primary CTA; the
+	// rest are secondary.
+	Actions []AttentionActionItem `json:"actions,omitempty"`
+
+	// Code Open, dotted, provider-specific code (e.g.
+	// `tax.customer_data_invalid`, `payment.declined`,
+	// `lifecycle.overdue`). New codes ship without a contract
+	// bump. Stripe parity.
+	Code string `json:"code,omitempty"`
+
+	// Detail Raw provider payload (Stripe Tax JSON envelope, last
+	// payment error message). Disclosed in a collapsible
+	// section for diagnostic depth.
+	Detail string `json:"detail,omitempty"`
+
+	// DocUrl Deep link to operator-facing documentation for this
+	// reason. Stripe parity.
+	DocUrl string `json:"doc_url,omitempty"`
+
+	// Message Human-readable headline copy, safe to render verbatim.
+	Message string `json:"message"`
+
+	// Param Dotted-path pointer at the entity field the operator must
+	// edit to resolve the issue (e.g.
+	// `customer.address.postal_code`). Stripe parity. Empty
+	// when the resolution isn't field-scoped.
+	Param string `json:"param,omitempty"`
+
+	// Reason Closed, typed code naming why an invoice needs operator
+	// attention. Stable public-API contract — codes are never
+	// repurposed; deprecations keep the code reserved and add a
+	// successor. See `Attention.code` for the open, provider-specific
+	// sub-code.
+	Reason AttentionReason `json:"reason"`
+
+	// Severity Urgency of an Attention surface. Operators sort/filter on this
+	// and the dashboard renders one colour per level. Priority
+	// descending: Critical > Warning > Info.
+	Severity AttentionSeverity `json:"severity"`
+
+	// Since When the attention condition started — operators triage
+	// by age. tax_deferred_at for tax reasons; due_at for
+	// overdue; updated_at as a proxy for payment failures.
+	Since time.Time `json:"since,omitempty"`
+}
+
+// AttentionAction Operator's recommended next step. Closed enum because every
+// code maps to a concrete server endpoint or frontend route,
+// and audit logs key off the code.
+type AttentionAction string
+
+// AttentionActionItem defines model for AttentionActionItem.
+type AttentionActionItem struct {
+	// Code Operator's recommended next step. Closed enum because every
+	// code maps to a concrete server endpoint or frontend route,
+	// and audit logs key off the code.
+	Code AttentionAction `json:"code"`
+
+	// Label Default rendering label. UIs are free to substitute
+	// localized copy.
+	Label string `json:"label,omitempty"`
+}
+
+// AttentionReason Closed, typed code naming why an invoice needs operator
+// attention. Stable public-API contract — codes are never
+// repurposed; deprecations keep the code reserved and add a
+// successor. See `Attention.code` for the open, provider-specific
+// sub-code.
+type AttentionReason string
+
+// AttentionSeverity Urgency of an Attention surface. Operators sort/filter on this
+// and the dashboard renders one colour per level. Priority
+// descending: Critical > Warning > Info.
+type AttentionSeverity string
+
 // CreditBalance defines model for CreditBalance.
 type CreditBalance struct {
 	BalanceCents int64  `json:"balance_cents,omitempty"`
@@ -474,8 +654,17 @@ type ErrorErrorType string
 // Invoice A Velox invoice. Returned from create, finalize, void, list, get,
 // apply-coupon, rotate-public-token, and collect-payment endpoints.
 type Invoice struct {
-	AmountDueCents     int64     `json:"amount_due_cents"`
-	AmountPaidCents    int64     `json:"amount_paid_cents"`
+	AmountDueCents  int64 `json:"amount_due_cents"`
+	AmountPaidCents int64 `json:"amount_paid_cents"`
+
+	// Attention Unified "this invoice needs operator attention" surface.
+	// Computed server-side from durable invoice fields
+	// (`tax_status`, `tax_error_code`, `payment_status`,
+	// `last_payment_error`, `payment_overdue`). Never persisted —
+	// always derived. Omitted entirely when the invoice is healthy
+	// (matches Stripe's `last_finalization_error: null` ergonomic).
+	// See ADR-009.
+	Attention          Attention `json:"attention,omitempty"`
 	AutoChargePending  bool      `json:"auto_charge_pending,omitempty"`
 	BillingPeriodEnd   time.Time `json:"billing_period_end"`
 	BillingPeriodStart time.Time `json:"billing_period_start"`
@@ -543,10 +732,17 @@ type Invoice struct {
 	TaxCalculationId string    `json:"tax_calculation_id,omitempty"`
 	TaxCountry       string    `json:"tax_country,omitempty"`
 	TaxDeferredAt    time.Time `json:"tax_deferred_at,omitempty"`
-	TaxExemptReason  string    `json:"tax_exempt_reason,omitempty"`
-	TaxId            string    `json:"tax_id,omitempty"`
-	TaxName          string    `json:"tax_name,omitempty"`
-	TaxPendingReason string    `json:"tax_pending_reason,omitempty"`
+
+	// TaxErrorCode Typed taxonomy of `tax_pending_reason`. One of
+	// `customer_data_invalid`, `jurisdiction_unsupported`,
+	// `provider_outage`, `provider_auth`, `unknown`. Empty for
+	// invoices deferred before this column existed (migration
+	// 0067).
+	TaxErrorCode     string `json:"tax_error_code,omitempty"`
+	TaxExemptReason  string `json:"tax_exempt_reason,omitempty"`
+	TaxId            string `json:"tax_id,omitempty"`
+	TaxName          string `json:"tax_name,omitempty"`
+	TaxPendingReason string `json:"tax_pending_reason,omitempty"`
 
 	// TaxProvider Durable audit snapshot of the upstream tax engine that ran the
 	// calculation (e.g. `stripe`, `none`, `manual`).
@@ -730,10 +926,21 @@ type UsageEvent struct {
 	Timestamp      time.Time              `json:"timestamp,omitempty"`
 }
 
-// PostV1AuthExchangeJSONBody defines parameters for PostV1AuthExchange.
-type PostV1AuthExchangeJSONBody struct {
-	// ApiKey A `vlx_secret_…` or `vlx_pub_…` key.
-	ApiKey string `json:"api_key"`
+// PostV1AuthLoginJSONBody defines parameters for PostV1AuthLogin.
+type PostV1AuthLoginJSONBody struct {
+	Email    openapi_types.Email `json:"email"`
+	Password string              `json:"password"`
+}
+
+// PostV1AuthPasswordResetConfirmJSONBody defines parameters for PostV1AuthPasswordResetConfirm.
+type PostV1AuthPasswordResetConfirmJSONBody struct {
+	Password string `json:"password"`
+	Token    string `json:"token"`
+}
+
+// PostV1AuthPasswordResetRequestJSONBody defines parameters for PostV1AuthPasswordResetRequest.
+type PostV1AuthPasswordResetRequestJSONBody struct {
+	Email openapi_types.Email `json:"email"`
 }
 
 // PostV1CreditsGrantJSONBody defines parameters for PostV1CreditsGrant.
@@ -869,8 +1076,14 @@ type PostV1UsageEventsBatchJSONBody = []struct {
 	Quantity   int    `json:"quantity"`
 }
 
-// PostV1AuthExchangeJSONRequestBody defines body for PostV1AuthExchange for application/json ContentType.
-type PostV1AuthExchangeJSONRequestBody PostV1AuthExchangeJSONBody
+// PostV1AuthLoginJSONRequestBody defines body for PostV1AuthLogin for application/json ContentType.
+type PostV1AuthLoginJSONRequestBody PostV1AuthLoginJSONBody
+
+// PostV1AuthPasswordResetConfirmJSONRequestBody defines body for PostV1AuthPasswordResetConfirm for application/json ContentType.
+type PostV1AuthPasswordResetConfirmJSONRequestBody PostV1AuthPasswordResetConfirmJSONBody
+
+// PostV1AuthPasswordResetRequestJSONRequestBody defines body for PostV1AuthPasswordResetRequest for application/json ContentType.
+type PostV1AuthPasswordResetRequestJSONRequestBody PostV1AuthPasswordResetRequestJSONBody
 
 // PostV1CreditsGrantJSONRequestBody defines body for PostV1CreditsGrant for application/json ContentType.
 type PostV1CreditsGrantJSONRequestBody PostV1CreditsGrantJSONBody
@@ -910,12 +1123,18 @@ type ServerInterface interface {
 	// Health check
 	// (GET /health)
 	GetHealth(w http.ResponseWriter, r *http.Request)
-	// Exchange a pasted API key for an httpOnly session cookie
-	// (POST /v1/auth/exchange)
-	PostV1AuthExchange(w http.ResponseWriter, r *http.Request)
+	// Sign in with email and password; mint an httpOnly session cookie
+	// (POST /v1/auth/login)
+	PostV1AuthLogin(w http.ResponseWriter, r *http.Request)
 	// Revoke the current session and clear the cookie
 	// (POST /v1/auth/logout)
 	PostV1AuthLogout(w http.ResponseWriter, r *http.Request)
+	// Set a new password using a reset token
+	// (POST /v1/auth/password-reset/confirm)
+	PostV1AuthPasswordResetConfirm(w http.ResponseWriter, r *http.Request)
+	// Request a password reset link
+	// (POST /v1/auth/password-reset/request)
+	PostV1AuthPasswordResetRequest(w http.ResponseWriter, r *http.Request)
 	// Invoice preview (dry run)
 	// (GET /v1/billing/preview/{subscription_id})
 	GetV1BillingPreviewSubscriptionId(w http.ResponseWriter, r *http.Request, subscriptionId string)
@@ -955,6 +1174,9 @@ type ServerInterface interface {
 	// Download invoice PDF
 	// (GET /v1/invoices/{id}/pdf)
 	GetV1InvoicesIdPdf(w http.ResponseWriter, r *http.Request, id string)
+	// Retry tax calculation on a deferred invoice
+	// (POST /v1/invoices/{id}/retry-tax)
+	PostV1InvoicesIdRetryTax(w http.ResponseWriter, r *http.Request, id string)
 	// List meters
 	// (GET /v1/meters)
 	GetV1Meters(w http.ResponseWriter, r *http.Request)
@@ -1015,15 +1237,27 @@ func (_ Unimplemented) GetHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Exchange a pasted API key for an httpOnly session cookie
-// (POST /v1/auth/exchange)
-func (_ Unimplemented) PostV1AuthExchange(w http.ResponseWriter, r *http.Request) {
+// Sign in with email and password; mint an httpOnly session cookie
+// (POST /v1/auth/login)
+func (_ Unimplemented) PostV1AuthLogin(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Revoke the current session and clear the cookie
 // (POST /v1/auth/logout)
 func (_ Unimplemented) PostV1AuthLogout(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Set a new password using a reset token
+// (POST /v1/auth/password-reset/confirm)
+func (_ Unimplemented) PostV1AuthPasswordResetConfirm(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Request a password reset link
+// (POST /v1/auth/password-reset/request)
+func (_ Unimplemented) PostV1AuthPasswordResetRequest(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1102,6 +1336,12 @@ func (_ Unimplemented) PostV1InvoicesIdFinalize(w http.ResponseWriter, r *http.R
 // Download invoice PDF
 // (GET /v1/invoices/{id}/pdf)
 func (_ Unimplemented) GetV1InvoicesIdPdf(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Retry tax calculation on a deferred invoice
+// (POST /v1/invoices/{id}/retry-tax)
+func (_ Unimplemented) PostV1InvoicesIdRetryTax(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1224,8 +1464,8 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
-// PostV1AuthExchange operation middleware
-func (siw *ServerInterfaceWrapper) PostV1AuthExchange(w http.ResponseWriter, r *http.Request) {
+// PostV1AuthLogin operation middleware
+func (siw *ServerInterfaceWrapper) PostV1AuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
@@ -1234,7 +1474,7 @@ func (siw *ServerInterfaceWrapper) PostV1AuthExchange(w http.ResponseWriter, r *
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PostV1AuthExchange(w, r)
+		siw.Handler.PostV1AuthLogin(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1255,6 +1495,46 @@ func (siw *ServerInterfaceWrapper) PostV1AuthLogout(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostV1AuthLogout(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1AuthPasswordResetConfirm operation middleware
+func (siw *ServerInterfaceWrapper) PostV1AuthPasswordResetConfirm(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1AuthPasswordResetConfirm(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1AuthPasswordResetRequest operation middleware
+func (siw *ServerInterfaceWrapper) PostV1AuthPasswordResetRequest(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1AuthPasswordResetRequest(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1599,6 +1879,37 @@ func (siw *ServerInterfaceWrapper) GetV1InvoicesIdPdf(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetV1InvoicesIdPdf(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1InvoicesIdRetryTax operation middleware
+func (siw *ServerInterfaceWrapper) PostV1InvoicesIdRetryTax(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1InvoicesIdRetryTax(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2055,10 +2366,16 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/health", wrapper.GetHealth)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/auth/exchange", wrapper.PostV1AuthExchange)
+		r.Post(options.BaseURL+"/v1/auth/login", wrapper.PostV1AuthLogin)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/auth/logout", wrapper.PostV1AuthLogout)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/auth/password-reset/confirm", wrapper.PostV1AuthPasswordResetConfirm)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/auth/password-reset/request", wrapper.PostV1AuthPasswordResetRequest)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/billing/preview/{subscription_id}", wrapper.GetV1BillingPreviewSubscriptionId)
@@ -2098,6 +2415,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/invoices/{id}/pdf", wrapper.GetV1InvoicesIdPdf)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/invoices/{id}/retry-tax", wrapper.PostV1InvoicesIdRetryTax)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/meters", wrapper.GetV1Meters)

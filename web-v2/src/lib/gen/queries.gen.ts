@@ -32,9 +32,12 @@ import type {
   Error,
   GetV1CustomersParams,
   GetV1Whoami200,
+  Invoice,
   InvoiceWithLineItems,
-  PostV1AuthExchange200,
-  PostV1AuthExchangeBody,
+  PostV1AuthLogin200,
+  PostV1AuthLoginBody,
+  PostV1AuthPasswordResetConfirmBody,
+  PostV1AuthPasswordResetRequestBody,
   PostV1BillingRun200,
   PostV1CreditsGrantBody,
   PostV1CustomersBody,
@@ -1861,43 +1864,52 @@ export const usePostV1InvoicesIdFinalize = <TError = unknown,
     }
 
 /**
- * Validates the pasted API key and mints a server-side session
-row. The response sets `Set-Cookie: velox_session=...; HttpOnly;
-SameSite=Lax; Path=/`. Subsequent requests authenticate via the
-cookie. The credential remains the API key; this endpoint just
-gives the dashboard an httpOnly artefact instead of holding the
-raw key in JS-readable storage. See ADR-008.
+ * Re-runs tax calculation against a draft invoice whose
+`tax_status` is `pending` or `failed`. Backs the operator-
+facing "Retry tax" action surfaced by the unified
+`Attention` shape.
 
- * @summary Exchange a pasted API key for an httpOnly session cookie
+Idempotent: each call increments `tax_retry_count` and
+rewrites the per-line and invoice-level tax fields. A retry
+that succeeds clears `tax_pending_reason` / `tax_error_code`
+and unblocks finalize. A retry that still fails writes the
+new typed code so the dashboard banner refreshes — operators
+get an immediate signal of whether their fix worked.
+
+Returns the updated invoice (carrying the re-derived
+`attention`) on success or post-retry failure. A retry that
+is still failing is **not** an HTTP error — the caller
+renders the new attention.
+
+ * @summary Retry tax calculation on a deferred invoice
  */
-export const getPostV1AuthExchangeUrl = () => {
+export const getPostV1InvoicesIdRetryTaxUrl = (id: string,) => {
 
 
 
 
-  return `/v1/auth/exchange`
+  return `/v1/invoices/${id}/retry-tax`
 }
 
-export const postV1AuthExchange = async (postV1AuthExchangeBody: PostV1AuthExchangeBody, options?: RequestInit): Promise<PostV1AuthExchange200> => {
+export const postV1InvoicesIdRetryTax = async (id: string, options?: RequestInit): Promise<Invoice> => {
 
-  return orvalClient<PostV1AuthExchange200>(getPostV1AuthExchangeUrl(),
+  return orvalClient<Invoice>(getPostV1InvoicesIdRetryTaxUrl(id),
   {
     ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(
-      postV1AuthExchangeBody,)
+    method: 'POST'
+
+
   }
 );}
 
 
 
 
-export const getPostV1AuthExchangeMutationOptions = <TError = Error,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthExchange>>, TError,{data: PostV1AuthExchangeBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
-): UseMutationOptions<Awaited<ReturnType<typeof postV1AuthExchange>>, TError,{data: PostV1AuthExchangeBody}, TContext> => {
+export const getPostV1InvoicesIdRetryTaxMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1InvoicesIdRetryTax>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1InvoicesIdRetryTax>>, TError,{id: string}, TContext> => {
 
-const mutationKey = ['postV1AuthExchange'];
+const mutationKey = ['postV1InvoicesIdRetryTax'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
       options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
       options
@@ -1907,10 +1919,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1AuthExchange>>, {data: PostV1AuthExchangeBody}> = (props) => {
-          const {data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1InvoicesIdRetryTax>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
 
-          return  postV1AuthExchange(data,requestOptions)
+          return  postV1InvoicesIdRetryTax(id,requestOptions)
         }
 
 
@@ -1920,22 +1932,99 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
   return  { mutationFn, ...mutationOptions }}
 
-    export type PostV1AuthExchangeMutationResult = NonNullable<Awaited<ReturnType<typeof postV1AuthExchange>>>
-    export type PostV1AuthExchangeMutationBody = PostV1AuthExchangeBody
-    export type PostV1AuthExchangeMutationError = Error
+    export type PostV1InvoicesIdRetryTaxMutationResult = NonNullable<Awaited<ReturnType<typeof postV1InvoicesIdRetryTax>>>
+
+    export type PostV1InvoicesIdRetryTaxMutationError = void
 
     /**
- * @summary Exchange a pasted API key for an httpOnly session cookie
+ * @summary Retry tax calculation on a deferred invoice
  */
-export const usePostV1AuthExchange = <TError = Error,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthExchange>>, TError,{data: PostV1AuthExchangeBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+export const usePostV1InvoicesIdRetryTax = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1InvoicesIdRetryTax>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
  , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof postV1AuthExchange>>,
+        Awaited<ReturnType<typeof postV1InvoicesIdRetryTax>>,
         TError,
-        {data: PostV1AuthExchangeBody},
+        {id: string},
         TContext
       > => {
-      return useMutation(getPostV1AuthExchangeMutationOptions(options), queryClient);
+      return useMutation(getPostV1InvoicesIdRetryTaxMutationOptions(options), queryClient);
+    }
+
+/**
+ * Validates email + password, mints a server-side session row, and
+sets `Set-Cookie: velox_session=...; HttpOnly; SameSite=Lax; Path=/`.
+Subsequent dashboard requests authenticate via the cookie; sessions
+are bound to `users.id` and are independent of API key lifecycle.
+See ADR-011.
+
+ * @summary Sign in with email and password; mint an httpOnly session cookie
+ */
+export const getPostV1AuthLoginUrl = () => {
+
+
+
+
+  return `/v1/auth/login`
+}
+
+export const postV1AuthLogin = async (postV1AuthLoginBody: PostV1AuthLoginBody, options?: RequestInit): Promise<PostV1AuthLogin200> => {
+
+  return orvalClient<PostV1AuthLogin200>(getPostV1AuthLoginUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1AuthLoginBody,)
+  }
+);}
+
+
+
+
+export const getPostV1AuthLoginMutationOptions = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthLogin>>, TError,{data: PostV1AuthLoginBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1AuthLogin>>, TError,{data: PostV1AuthLoginBody}, TContext> => {
+
+const mutationKey = ['postV1AuthLogin'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1AuthLogin>>, {data: PostV1AuthLoginBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1AuthLogin(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1AuthLoginMutationResult = NonNullable<Awaited<ReturnType<typeof postV1AuthLogin>>>
+    export type PostV1AuthLoginMutationBody = PostV1AuthLoginBody
+    export type PostV1AuthLoginMutationError = Error
+
+    /**
+ * @summary Sign in with email and password; mint an httpOnly session cookie
+ */
+export const usePostV1AuthLogin = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthLogin>>, TError,{data: PostV1AuthLoginBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1AuthLogin>>,
+        TError,
+        {data: PostV1AuthLoginBody},
+        TContext
+      > => {
+      return useMutation(getPostV1AuthLoginMutationOptions(options), queryClient);
     }
 
 /**
@@ -2013,10 +2102,161 @@ export const usePostV1AuthLogout = <TError = unknown,
     }
 
 /**
+ * Always returns 204 regardless of whether the email exists, to
+avoid account enumeration. If a user matches, a single-use 1-hour
+token is generated and the reset link is delivered out-of-band
+(SMTP delivery deferred — currently logged to stdout).
+
+ * @summary Request a password reset link
+ */
+export const getPostV1AuthPasswordResetRequestUrl = () => {
+
+
+
+
+  return `/v1/auth/password-reset/request`
+}
+
+export const postV1AuthPasswordResetRequest = async (postV1AuthPasswordResetRequestBody: PostV1AuthPasswordResetRequestBody, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPostV1AuthPasswordResetRequestUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1AuthPasswordResetRequestBody,)
+  }
+);}
+
+
+
+
+export const getPostV1AuthPasswordResetRequestMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthPasswordResetRequest>>, TError,{data: PostV1AuthPasswordResetRequestBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1AuthPasswordResetRequest>>, TError,{data: PostV1AuthPasswordResetRequestBody}, TContext> => {
+
+const mutationKey = ['postV1AuthPasswordResetRequest'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1AuthPasswordResetRequest>>, {data: PostV1AuthPasswordResetRequestBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1AuthPasswordResetRequest(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1AuthPasswordResetRequestMutationResult = NonNullable<Awaited<ReturnType<typeof postV1AuthPasswordResetRequest>>>
+    export type PostV1AuthPasswordResetRequestMutationBody = PostV1AuthPasswordResetRequestBody
+    export type PostV1AuthPasswordResetRequestMutationError = unknown
+
+    /**
+ * @summary Request a password reset link
+ */
+export const usePostV1AuthPasswordResetRequest = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthPasswordResetRequest>>, TError,{data: PostV1AuthPasswordResetRequestBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1AuthPasswordResetRequest>>,
+        TError,
+        {data: PostV1AuthPasswordResetRequestBody},
+        TContext
+      > => {
+      return useMutation(getPostV1AuthPasswordResetRequestMutationOptions(options), queryClient);
+    }
+
+/**
+ * Consumes a single-use reset token and updates the user's password.
+The token is invalidated on use; reuse or expired tokens return 422.
+
+ * @summary Set a new password using a reset token
+ */
+export const getPostV1AuthPasswordResetConfirmUrl = () => {
+
+
+
+
+  return `/v1/auth/password-reset/confirm`
+}
+
+export const postV1AuthPasswordResetConfirm = async (postV1AuthPasswordResetConfirmBody: PostV1AuthPasswordResetConfirmBody, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPostV1AuthPasswordResetConfirmUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1AuthPasswordResetConfirmBody,)
+  }
+);}
+
+
+
+
+export const getPostV1AuthPasswordResetConfirmMutationOptions = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthPasswordResetConfirm>>, TError,{data: PostV1AuthPasswordResetConfirmBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1AuthPasswordResetConfirm>>, TError,{data: PostV1AuthPasswordResetConfirmBody}, TContext> => {
+
+const mutationKey = ['postV1AuthPasswordResetConfirm'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1AuthPasswordResetConfirm>>, {data: PostV1AuthPasswordResetConfirmBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1AuthPasswordResetConfirm(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1AuthPasswordResetConfirmMutationResult = NonNullable<Awaited<ReturnType<typeof postV1AuthPasswordResetConfirm>>>
+    export type PostV1AuthPasswordResetConfirmMutationBody = PostV1AuthPasswordResetConfirmBody
+    export type PostV1AuthPasswordResetConfirmMutationError = Error
+
+    /**
+ * @summary Set a new password using a reset token
+ */
+export const usePostV1AuthPasswordResetConfirm = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthPasswordResetConfirm>>, TError,{data: PostV1AuthPasswordResetConfirmBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1AuthPasswordResetConfirm>>,
+        TError,
+        {data: PostV1AuthPasswordResetConfirmBody},
+        TContext
+      > => {
+      return useMutation(getPostV1AuthPasswordResetConfirmMutationOptions(options), queryClient);
+    }
+
+/**
  * Returns the resolved auth context for whichever credential the
 request carries — `velox_session` cookie (dashboard) or
-`Authorization: Bearer` (SDK / curl). No specific permission
-required.
+`Authorization: Bearer` (SDK / curl). Cookie path returns
+`user_id` + `email`; Bearer path returns `key_id` + `key_type`.
+Both always return `tenant_id` + `livemode`.
 
  * @summary Resolve the current credential to its tenant context
  */
