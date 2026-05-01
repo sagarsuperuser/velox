@@ -348,7 +348,8 @@ type fakeDeliverer struct {
 	lastCurrency    string
 	lastAttemptN    int
 	lastMaxN        int
-	lastNextDate    string
+	lastNextDate      string
+	lastFailureReason string
 	lastAction      string
 	lastReason      string
 	lastUpdateURL   string
@@ -370,10 +371,11 @@ func (f *fakeDeliverer) SendPaymentReceipt(tenantID, to, name, inv string, amoun
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendDunningWarning(tenantID, to, name, inv string, n, max int, next, publicToken string) error {
+func (f *fakeDeliverer) SendDunningWarning(tenantID, to, name, inv string, n, max int, next, failureReason, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeDunningWarning, tenantID, to, name, inv
 	f.lastAttemptN, f.lastMaxN, f.lastNextDate = n, max, next
+	f.lastFailureReason = failureReason
 	f.lastPublicToken = publicToken
 	return nil
 }
@@ -436,6 +438,7 @@ func callDeliverer(_ context.Context, d email.EmailDeliverer, row email.OutboxRo
 		NextRetryDate string `json:"next_retry_date"`
 		Action        string `json:"action"`
 		Reason        string `json:"reason"`
+		FailureReason string `json:"failure_reason"`
 		UpdateURL     string `json:"update_url"`
 		MagicLinkURL  string `json:"magic_link_url"`
 		PublicToken   string `json:"public_token"`
@@ -450,7 +453,7 @@ func callDeliverer(_ context.Context, d email.EmailDeliverer, row email.OutboxRo
 	case email.TypePaymentReceipt:
 		return d.SendPaymentReceipt(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PublicToken)
 	case email.TypeDunningWarning:
-		return d.SendDunningWarning(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AttemptNumber, m.MaxAttempts, m.NextRetryDate, m.PublicToken)
+		return d.SendDunningWarning(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AttemptNumber, m.MaxAttempts, m.NextRetryDate, m.FailureReason, m.PublicToken)
 	case email.TypeDunningEscalation:
 		return d.SendDunningEscalation(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Action, m.PublicToken)
 	case email.TypePaymentFailed:

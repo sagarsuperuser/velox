@@ -44,7 +44,7 @@ type DispatchLocker interface {
 type EmailDeliverer interface {
 	SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
 	SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
-	SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, publicToken string) error
+	SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
 	SendDunningEscalation(tenantID, to, customerName, invoiceNumber, action, publicToken string) error
 	SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
 	SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
@@ -155,7 +155,7 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 			msg.AmountCents, msg.Currency, msg.PublicToken)
 	case TypeDunningWarning:
 		return d.sender.SendDunningWarning(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
-			msg.AttemptNumber, msg.MaxAttempts, msg.NextRetryDate, msg.PublicToken)
+			msg.AttemptNumber, msg.MaxAttempts, msg.NextRetryDate, msg.FailureReason, msg.PublicToken)
 	case TypeDunningEscalation:
 		return d.sender.SendDunningEscalation(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.Action, msg.PublicToken)

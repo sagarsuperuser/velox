@@ -35,6 +35,12 @@ type outboxMessage struct {
 	NextRetryDate    string `json:"next_retry_date,omitempty"`
 	Action           string `json:"action,omitempty"`
 	Reason           string `json:"reason,omitempty"`
+	// FailureReason carries the latest decline-or-error message for
+	// dunning_warning + payment_failed templates. Surfaced inline so
+	// the customer can act (insufficient_funds → top up; lost_card →
+	// swap card). Distinct from Reason which is used by dunning_
+	// escalation to carry the final-action verb.
+	FailureReason    string `json:"failure_reason,omitempty"`
 	UpdateURL        string `json:"update_url,omitempty"`
 	MagicLinkURL     string `json:"magic_link_url,omitempty"`
 	PasswordResetURL string `json:"password_reset_url,omitempty"`
@@ -80,6 +86,7 @@ func (s *OutboxSender) enqueue(tenantID, emailType string, msg outboxMessage) er
 		"next_retry_date":    msg.NextRetryDate,
 		"action":             msg.Action,
 		"reason":             msg.Reason,
+		"failure_reason":     msg.FailureReason,
 		"update_url":         msg.UpdateURL,
 		"magic_link_url":     msg.MagicLinkURL,
 		"password_reset_url": msg.PasswordResetURL,
@@ -121,7 +128,7 @@ func (s *OutboxSender) SendPaymentReceipt(tenantID, to, customerName, invoiceNum
 }
 
 // SendDunningWarning enqueues a dunning-warning email. Satisfies dunning.EmailNotifier.
-func (s *OutboxSender) SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, publicToken string) error {
+func (s *OutboxSender) SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
 	return s.enqueue(tenantID, TypeDunningWarning, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
@@ -129,6 +136,7 @@ func (s *OutboxSender) SendDunningWarning(tenantID, to, customerName, invoiceNum
 		AttemptNumber: attemptNumber,
 		MaxAttempts:   maxAttempts,
 		NextRetryDate: nextRetryDate,
+		FailureReason: failureReason,
 		PublicToken:   publicToken,
 	})
 }
