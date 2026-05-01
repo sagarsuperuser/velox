@@ -108,29 +108,46 @@ function NavLink({
 // downstream API call inherits the new mode via session middleware.
 // Stripe / Vercel / Linear all use a top-of-chrome toggle in this
 // position.
+// ModeToggle — segmented control showing both modes with the active
+// one highlighted, so the affordance is explicit. Linear, Vercel,
+// Stripe all use this shape for binary mode/environment switches:
+// click the inactive segment to switch. Backed by POST /v1/auth/mode,
+// which updates dashboard_sessions.livemode for the current cookie
+// session; every downstream API call inherits the new mode via session
+// middleware.
 function ModeToggle({ livemode, busy, onToggle }: { livemode: boolean; busy: boolean; onToggle: () => void }) {
-  return (
+  const segment = (active: boolean, label: 'Test' | 'Live', activeColor: string) => (
     <button
       type="button"
-      onClick={onToggle}
-      disabled={busy}
-      aria-label={livemode ? 'Switch to test mode' : 'Switch to live mode'}
-      title={livemode ? 'Live mode — click to switch to Test' : 'Test mode — click to switch to Live'}
+      role="radio"
+      aria-checked={active}
+      aria-label={`${label} mode`}
+      disabled={busy || active}
+      onClick={() => { if (!active) onToggle() }}
       className={cn(
-        'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
-        livemode
-          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/15'
-          : 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300 hover:bg-amber-500/15',
-        busy && 'opacity-70 cursor-not-allowed',
+        'flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors',
+        active
+          ? activeColor
+          : 'text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer',
+        busy && !active && 'opacity-50 cursor-not-allowed',
       )}
     >
-      {busy ? (
+      {busy && active ? (
         <Loader2 size={11} className="animate-spin" aria-hidden="true" />
       ) : (
-        <span className={cn('h-1.5 w-1.5 rounded-full', livemode ? 'bg-emerald-500' : 'bg-amber-500')} />
+        <span className={cn(
+          'h-1.5 w-1.5 rounded-full',
+          active ? (label === 'Live' ? 'bg-emerald-500' : 'bg-amber-500') : 'bg-muted-foreground/40',
+        )} />
       )}
-      {livemode ? 'Live' : 'Test'} mode
+      {label}
     </button>
+  )
+  return (
+    <div role="radiogroup" aria-label="Test or live mode" className="flex items-center rounded-full border border-border bg-muted/40 p-0.5">
+      {segment(!livemode, 'Test', 'bg-amber-500/15 text-amber-800 dark:text-amber-300 ring-1 ring-amber-500/30')}
+      {segment(livemode, 'Live', 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-1 ring-emerald-500/30')}
+    </div>
   )
 }
 
