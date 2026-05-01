@@ -585,11 +585,31 @@ export default function InvoiceDetailPage() {
                   // empty reasons would just be noise — the Tax column
                   // already conveys the default-path case.
                   const reasonLabel = taxReasonLabel(item.tax_reason)
+                  // Operators occasionally see "prorated 20/31 days" and
+                  // wonder why the count is what it is. The tooltip
+                  // surfaces the day-grade math: period boundaries snap
+                  // to 00:00 in tenant TZ, days counted inclusive of
+                  // signup day. Makes the *why* one hover away without
+                  // bloating the line description.
+                  const prorationMatch = /prorated (\d+)\/(\d+) days/.exec(item.description)
                   return (
                     <TableRow key={item.id} className={cn(invoice.status === 'voided' && 'opacity-50')}>
                       <TableCell>
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm text-foreground">{item.description}</span>
+                          {prorationMatch ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="text-sm text-foreground cursor-help underline decoration-dotted underline-offset-2">
+                                  {item.description}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs">
+                                {`Subscription started mid-cycle. Charge covers ${prorationMatch[1]} of ${prorationMatch[2]} days in the period. Period boundaries snap to start-of-day in tenant timezone (signup day inclusive).`}
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <span className="text-sm text-foreground">{item.description}</span>
+                          )}
                           <span className="text-xs text-muted-foreground">({formatLineType(item.line_type)})</span>
                           {reasonLabel && (
                             <Badge variant="outline" className="text-[10px] font-normal px-1.5 py-0 h-4">

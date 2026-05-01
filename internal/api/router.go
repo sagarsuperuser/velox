@@ -171,6 +171,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	customerUsageSvc := usage.NewCustomerUsageService(usageSvc, customerStore, subStore, pricingSvc)
 	customerUsageH := usage.NewCustomerUsageHandler(customerUsageSvc)
 	settingsStore := tenant.NewSettingsStore(db)
+	// Wire tenant settings into subscription so period boundaries snap
+	// to start-of-day in the tenant's timezone (day-grade calendar
+	// billing — Chargebee / Lago default).
+	subSvc.SetSettingsReader(settingsStore)
 	creditStore := credit.NewPostgresStore(db)
 	creditSvc := credit.NewService(creditStore)
 	creditH := credit.NewHandler(creditSvc)

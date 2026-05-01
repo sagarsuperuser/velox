@@ -526,6 +526,97 @@ func TestCreate(t *testing.T) {
 	})
 }
 
+// fakeSettings is a SettingsReader that returns a fixed timezone — used
+// to assert the day-grade snap honours the tenant's configured TZ.
+type fakeSettings struct{ tz string }
+
+func (f fakeSettings) Get(_ context.Context, _ string) (domain.TenantSettings, error) {
+	return domain.TenantSettings{Timezone: f.tz}, nil
+}
+
+// TestPeriod_DayGradeSnap pins the day-grade calendar billing
+// behaviour: a subscription created at any wall-clock time on a given
+// day produces a period whose start is 00:00 in tenant TZ, NOT the
+// raw timestamp. Without this, a 14:00 signup gets billed for 30/31
+// days (truncating int division) even though the UI shows the period
+// as a whole month — Chargebee / Lago default. ADR follow-up.
+func TestPeriod_DayGradeSnap(t *testing.T) {
+	ctx := context.Background()
+
+	// Asia/Kolkata: UTC+05:30, no DST. Picked because the screenshot
+	// that surfaced this bug used IST and because no-DST keeps the
+	// expected values trivially predictable.
+	ist, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatalf("load Asia/Kolkata: %v", err)
+	}
+	// Fix the clock at May 1, 2026 14:00 IST. Pre-snap, periodStart
+	// would be this exact instant; post-snap it should be May 1 00:00
+	// IST.
+	creation := time.Date(2026, 5, 1, 14, 0, 0, 0, ist)
+	expectedStart := time.Date(2026, 5, 1, 0, 0, 0, 0, ist).UTC()
+	expectedEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, ist).UTC()
+
+	svc := NewService(newMemStore(), clock.NewFake(creation))
+	svc.SetSettingsReader(fakeSettings{tz: "Asia/Kolkata"})
+
+	sub, err := svc.Create(ctx, "t1", CreateInput{
+		Code: "sub-snap-calendar", DisplayName: "Snap Calendar",
+		CustomerID: "cus_1",
+		Items:      []CreateItemInput{{PlanID: "pln_1"}},
+		StartNow:   true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sub.CurrentBillingPeriodStart == nil || !sub.CurrentBillingPeriodStart.Equal(expectedStart) {
+		t.Errorf("calendar periodStart: got %v, want %v", sub.CurrentBillingPeriodStart, expectedStart)
+	}
+	if sub.CurrentBillingPeriodEnd == nil || !sub.CurrentBillingPeriodEnd.Equal(expectedEnd) {
+		t.Errorf("calendar periodEnd: got %v, want %v", sub.CurrentBillingPeriodEnd, expectedEnd)
+	}
+
+	// Anniversary billing: same snap rule — 14:00 signup → 00:00
+	// start in tenant TZ, period covers 30 days from there.
+	sub, err = svc.Create(ctx, "t1", CreateInput{
+		Code: "sub-snap-anniversary", DisplayName: "Snap Anniversary",
+		CustomerID:  "cus_1",
+		Items:       []CreateItemInput{{PlanID: "pln_1"}},
+		StartNow:    true,
+		BillingTime: domain.BillingTimeAnniversary,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sub.CurrentBillingPeriodStart == nil || !sub.CurrentBillingPeriodStart.Equal(expectedStart) {
+		t.Errorf("anniversary periodStart: got %v, want %v", sub.CurrentBillingPeriodStart, expectedStart)
+	}
+	annivExpectedEnd := expectedStart.AddDate(0, 1, 0)
+	if sub.CurrentBillingPeriodEnd == nil || !sub.CurrentBillingPeriodEnd.Equal(annivExpectedEnd) {
+		t.Errorf("anniversary periodEnd: got %v, want %v", sub.CurrentBillingPeriodEnd, annivExpectedEnd)
+	}
+
+	// SettingsReader nil → UTC fallback, behaviour stays correct.
+	// Operators who haven't configured a TZ get the same shape, just
+	// against the UTC clock instead.
+	svcUTC := NewService(newMemStore(), clock.NewFake(creation))
+	subUTC, err := svcUTC.Create(ctx, "t1", CreateInput{
+		Code: "sub-snap-utc", DisplayName: "Snap UTC",
+		CustomerID: "cus_1",
+		Items:      []CreateItemInput{{PlanID: "pln_1"}},
+		StartNow:   true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 14:00 IST = 08:30 UTC, so the UTC start-of-day is May 1 00:00
+	// UTC = April 30 18:30 IST. The snap targets UTC midnight here.
+	expectedUTCStart := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	if !subUTC.CurrentBillingPeriodStart.Equal(expectedUTCStart) {
+		t.Errorf("UTC fallback periodStart: got %v, want %v", subUTC.CurrentBillingPeriodStart, expectedUTCStart)
+	}
+}
+
 func TestActivateAndCancel(t *testing.T) {
 	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()

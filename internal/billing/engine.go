@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -19,6 +20,15 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// roundDays converts a duration to whole-day count, rounded to nearest.
+// Period boundaries snapped to 00:00 in tenant TZ produce durations
+// that are either exact day-multiples or within ±1h of one (DST
+// spring-forward subtracts an hour, fall-back adds one). Round absorbs
+// the DST drift; truncation would silently miscount.
+func roundDays(d time.Duration) int {
+	return int(math.Round(d.Hours() / 24))
+}
 
 // Engine orchestrates the billing cycle: finds subscriptions due for billing,
 // aggregates usage, computes charges, and generates invoices with line items.
@@ -994,8 +1004,13 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	subtotal := int64(0)
 
 	// Detect partial period once — same across all items since they share the
-	// billing period.
-	periodDays := int(periodEnd.Sub(periodStart).Hours() / 24)
+	// billing period. Use math.Round, not int truncation: a sub created
+	// at 14:00 was previously billed for 30/31 days because hour-precise
+	// duration / 24 truncated to 30. With period boundaries snapped to
+	// 00:00 in tenant TZ (subscription.Service), elapsed hours land on
+	// (or within ±1h of) a whole-day multiple — DST transitions
+	// account for the ±1h tolerance, which Round absorbs.
+	periodDays := roundDays(periodEnd.Sub(periodStart))
 
 	// Base fee line item per item — quantity-multiplied and prorated for partial
 	// periods. One line per item so the invoice clearly shows what each plan
@@ -1008,7 +1023,7 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		baseFee := plan.BaseAmountCents * it.Quantity
 		description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
 
-		fullCycleDays := int(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart).Hours() / 24)
+		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart))
 		if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
 			baseFee = money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(periodDays), int64(fullCycleDays))
 			description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, it.Quantity, periodDays, fullCycleDays)
