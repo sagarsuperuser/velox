@@ -36,6 +36,8 @@ import type {
   InvoiceWithLineItems,
   PostV1AuthLogin200,
   PostV1AuthLoginBody,
+  PostV1AuthMode200,
+  PostV1AuthModeBody,
   PostV1AuthPasswordResetConfirmBody,
   PostV1AuthPasswordResetRequestBody,
   PostV1BillingRun200,
@@ -2099,6 +2101,83 @@ export const usePostV1AuthLogout = <TError = unknown,
         TContext
       > => {
       return useMutation(getPostV1AuthLogoutMutationOptions(options), queryClient);
+    }
+
+/**
+ * Updates `dashboard_sessions.livemode` for the cookie session.
+All subsequent requests inherit the new mode via session middleware,
+so customers / invoices / subscriptions / API keys reads filter to
+the active mode without per-call mode parameters. The same operator
+flips back and forth without re-authenticating.
+
+ * @summary Switch the dashboard session between test and live mode
+ */
+export const getPostV1AuthModeUrl = () => {
+
+
+
+
+  return `/v1/auth/mode`
+}
+
+export const postV1AuthMode = async (postV1AuthModeBody: PostV1AuthModeBody, options?: RequestInit): Promise<PostV1AuthMode200> => {
+
+  return orvalClient<PostV1AuthMode200>(getPostV1AuthModeUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1AuthModeBody,)
+  }
+);}
+
+
+
+
+export const getPostV1AuthModeMutationOptions = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthMode>>, TError,{data: PostV1AuthModeBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1AuthMode>>, TError,{data: PostV1AuthModeBody}, TContext> => {
+
+const mutationKey = ['postV1AuthMode'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1AuthMode>>, {data: PostV1AuthModeBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1AuthMode(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1AuthModeMutationResult = NonNullable<Awaited<ReturnType<typeof postV1AuthMode>>>
+    export type PostV1AuthModeMutationBody = PostV1AuthModeBody
+    export type PostV1AuthModeMutationError = Error
+
+    /**
+ * @summary Switch the dashboard session between test and live mode
+ */
+export const usePostV1AuthMode = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthMode>>, TError,{data: PostV1AuthModeBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1AuthMode>>,
+        TError,
+        {data: PostV1AuthModeBody},
+        TContext
+      > => {
+      return useMutation(getPostV1AuthModeMutationOptions(options), queryClient);
     }
 
 /**

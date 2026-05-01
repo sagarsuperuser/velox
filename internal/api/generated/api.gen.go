@@ -932,6 +932,11 @@ type PostV1AuthLoginJSONBody struct {
 	Password string              `json:"password"`
 }
 
+// PostV1AuthModeJSONBody defines parameters for PostV1AuthMode.
+type PostV1AuthModeJSONBody struct {
+	Livemode bool `json:"livemode"`
+}
+
 // PostV1AuthPasswordResetConfirmJSONBody defines parameters for PostV1AuthPasswordResetConfirm.
 type PostV1AuthPasswordResetConfirmJSONBody struct {
 	Password string `json:"password"`
@@ -1079,6 +1084,9 @@ type PostV1UsageEventsBatchJSONBody = []struct {
 // PostV1AuthLoginJSONRequestBody defines body for PostV1AuthLogin for application/json ContentType.
 type PostV1AuthLoginJSONRequestBody PostV1AuthLoginJSONBody
 
+// PostV1AuthModeJSONRequestBody defines body for PostV1AuthMode for application/json ContentType.
+type PostV1AuthModeJSONRequestBody PostV1AuthModeJSONBody
+
 // PostV1AuthPasswordResetConfirmJSONRequestBody defines body for PostV1AuthPasswordResetConfirm for application/json ContentType.
 type PostV1AuthPasswordResetConfirmJSONRequestBody PostV1AuthPasswordResetConfirmJSONBody
 
@@ -1129,6 +1137,9 @@ type ServerInterface interface {
 	// Revoke the current session and clear the cookie
 	// (POST /v1/auth/logout)
 	PostV1AuthLogout(w http.ResponseWriter, r *http.Request)
+	// Switch the dashboard session between test and live mode
+	// (POST /v1/auth/mode)
+	PostV1AuthMode(w http.ResponseWriter, r *http.Request)
 	// Set a new password using a reset token
 	// (POST /v1/auth/password-reset/confirm)
 	PostV1AuthPasswordResetConfirm(w http.ResponseWriter, r *http.Request)
@@ -1246,6 +1257,12 @@ func (_ Unimplemented) PostV1AuthLogin(w http.ResponseWriter, r *http.Request) {
 // Revoke the current session and clear the cookie
 // (POST /v1/auth/logout)
 func (_ Unimplemented) PostV1AuthLogout(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Switch the dashboard session between test and live mode
+// (POST /v1/auth/mode)
+func (_ Unimplemented) PostV1AuthMode(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1495,6 +1512,26 @@ func (siw *ServerInterfaceWrapper) PostV1AuthLogout(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostV1AuthLogout(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1AuthMode operation middleware
+func (siw *ServerInterfaceWrapper) PostV1AuthMode(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1AuthMode(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2370,6 +2407,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/auth/logout", wrapper.PostV1AuthLogout)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/auth/mode", wrapper.PostV1AuthMode)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/auth/password-reset/confirm", wrapper.PostV1AuthPasswordResetConfirm)

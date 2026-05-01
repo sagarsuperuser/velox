@@ -83,3 +83,13 @@ func (s *Service) Revoke(ctx context.Context, rawID string) error {
 	}
 	return s.store.Revoke(ctx, HashID(rawID))
 }
+
+// SetLivemode flips the active mode (test/live) on the cookie session.
+// Same operator switches between modes without re-authenticating; every
+// downstream request inherits the new mode via session.Resolve.
+func (s *Service) SetLivemode(ctx context.Context, rawID string, livemode bool) error {
+	if rawID == "" {
+		return ErrNotFound
+	}
+	return s.store.UpdateLivemode(ctx, HashID(rawID), livemode)
+}

@@ -49,11 +49,12 @@ func NewHandler(users *Service, sessions *session.Service, cookie session.Cookie
 // Routes returns the dashboard auth surface. Mount under /v1/auth.
 // All routes are intentionally outside session middleware: they're
 // either pre-session (login, password-reset) or take the cookie via
-// r.Cookie directly (logout).
+// r.Cookie directly (logout, mode).
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/login", h.login)
 	r.Post("/logout", h.logout)
+	r.Post("/mode", h.setMode)
 	r.Post("/password-reset/request", h.requestPasswordReset)
 	r.Post("/password-reset/confirm", h.confirmPasswordReset)
 	return r
@@ -135,6 +136,41 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		Email:     u.Email,
 		Livemode:  sess.Livemode,
 		ExpiresAt: sess.ExpiresAt.Format("2006-01-02T15:04:05Z07:00"),
+	})
+}
+
+type setModeReq struct {
+	Livemode bool `json:"livemode"`
+}
+
+// setMode flips the active mode (test/live) on the cookie session.
+// Same operator switches between modes without re-authenticating.
+// Returns 401 if the cookie is missing or the session is gone.
+func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie(session.CookieName)
+	if err != nil || c.Value == "" {
+		respond.Unauthorized(w, r, "missing session — sign in at /login")
+		return
+	}
+
+	var req setModeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	if err := h.sessions.SetLivemode(r.Context(), c.Value, req.Livemode); err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			respond.Unauthorized(w, r, "invalid or expired session")
+			return
+		}
+		slog.Error("session: set livemode failed", "err", err)
+		respond.InternalError(w, r)
+		return
+	}
+
+	respond.JSON(w, r, http.StatusOK, map[string]any{
+		"livemode": req.Livemode,
 	})
 }
 

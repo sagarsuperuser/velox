@@ -24,6 +24,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
   refresh: () => Promise<void>
+  setMode: (livemode: boolean) => Promise<void>
 }
 
 const AuthContext = createContext<AuthState | null>(null)
@@ -91,8 +92,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryClient.clear()
   }, [queryClient])
 
+  const setMode = useCallback(async (livemode: boolean) => {
+    await authApi.setMode(livemode)
+    setUser(prev => (prev ? { ...prev, livemode } : prev))
+    // Mode-scoped data (customers, invoices, keys) must repopulate;
+    // stale rows from the prior mode would otherwise render until the
+    // next refetch.
+    queryClient.clear()
+  }, [queryClient])
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, refresh }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, refresh, setMode }}>
       {children}
     </AuthContext.Provider>
   )

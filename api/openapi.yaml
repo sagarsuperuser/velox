@@ -1199,6 +1199,44 @@ paths:
         "204":
           description: Session revoked
 
+  /v1/auth/mode:
+    post:
+      tags: [Auth]
+      summary: Switch the dashboard session between test and live mode
+      description: |
+        Updates `dashboard_sessions.livemode` for the cookie session.
+        All subsequent requests inherit the new mode via session middleware,
+        so customers / invoices / subscriptions / API keys reads filter to
+        the active mode without per-call mode parameters. The same operator
+        flips back and forth without re-authenticating.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [livemode]
+              properties:
+                livemode:
+                  type: boolean
+      responses:
+        "200":
+          description: Mode updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [livemode]
+                properties:
+                  livemode:
+                    type: boolean
+        "401":
+          description: Missing or expired session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /v1/auth/password-reset/request:
     post:
       tags: [Auth]

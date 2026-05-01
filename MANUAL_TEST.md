@@ -317,6 +317,24 @@ v1; password reset is single-use 1h tokens (SMTP deferred). See ADR-011.
 - [ ] Revoke the underlying API key via the dashboard (or `DELETE /v1/api-keys/<key_id>`) → Bearer path 401s `api key revoked` immediately. Cookie sessions are user-bound and unaffected — they don't reference API keys (ADR-011).
 - [ ] Publishable key on Bearer → `whoami` returns `key_type:"publishable"`. Most write endpoints return 403, which is correct.
 
+## FLOW A3: Test/Live mode toggle
+
+The dashboard's top-right pill (`Test mode` / `Live mode`) toggles
+`dashboard_sessions.livemode` for the current cookie session. Every
+downstream API call inherits the new mode automatically — no
+re-authentication, no separate cookie per mode. Stripe/Vercel/Linear
+pattern. ADR-011.
+
+- [ ] Top-right pill: amber "Test mode" by default after fresh sign-in. Click → emerald "Live mode"; UI repopulates with live-mode data.
+- [ ] DB: `SELECT livemode FROM dashboard_sessions WHERE id_hash=...` flips between calls.
+- [ ] `GET /v1/whoami` reflects the new `livemode` immediately.
+- [ ] List endpoints (customers, invoices, subscriptions, api-keys) filter by the new mode — flipping to Test then back to Live shows the correct row counts.
+- [ ] `POST /v1/auth/mode` with no cookie → 401.
+- [ ] `POST /v1/auth/mode` with a Bearer header but no cookie → 401 (Bearer callers don't have a session to toggle; they choose mode via key prefix).
+- [ ] Test-mode banner (amber strip at top) is visible whenever livemode is false.
+- [ ] Live-mode + missing live Stripe credentials → red destructive banner replaces the test banner with "Connect Stripe" link.
+- [ ] Two browser tabs in the same session: toggle mode in tab A → tab B's pill goes stale until next refetch (or refresh). Acceptable v1 — last toggle wins on the server.
+
 ---
 
 ## API Keys

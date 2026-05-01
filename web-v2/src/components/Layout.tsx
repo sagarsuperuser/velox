@@ -101,19 +101,31 @@ function NavLink({
   )
 }
 
-// ModeBadge — a read-only Test/Live indicator. Mode follows the API
-// key (test vs live key prefix), not a per-session toggle, so this is
-// display-only. Switching modes means signing out and pasting a key
-// in the other mode.
-function ModeBadge({ livemode }: { livemode: boolean }) {
+// ModeToggle — operator switches the dashboard between test and live
+// without signing out. Backed by POST /v1/auth/mode, which updates
+// dashboard_sessions.livemode for the current cookie session; every
+// downstream API call inherits the new mode via session middleware.
+// Stripe / Vercel / Linear all use a top-of-chrome toggle in this
+// position.
+function ModeToggle({ livemode, busy, onToggle }: { livemode: boolean; busy: boolean; onToggle: () => void }) {
   return (
-    <div
-      title={livemode ? 'Live mode (paste a test key on /login to switch)' : 'Test mode (paste a live key on /login to switch)'}
-      className="flex items-center gap-1.5 rounded-full border border-border bg-muted px-3 py-1 text-xs font-medium text-foreground"
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={busy}
+      aria-label={livemode ? 'Switch to test mode' : 'Switch to live mode'}
+      title={livemode ? 'Live mode — click to switch to Test' : 'Test mode — click to switch to Live'}
+      className={cn(
+        'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+        livemode
+          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/15'
+          : 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300 hover:bg-amber-500/15',
+        busy && 'opacity-60 cursor-not-allowed',
+      )}
     >
-      {livemode && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />}
-      {livemode ? 'Live' : 'Test'}
-    </div>
+      <span className={cn('h-1.5 w-1.5 rounded-full', livemode ? 'bg-emerald-500' : 'bg-amber-500')} />
+      {livemode ? 'Live' : 'Test'} mode
+    </button>
   )
 }
 
@@ -124,7 +136,22 @@ export function Layout({ children }: { children: ReactNode }) {
   const [commandOpen, setCommandOpen] = useState(false)
   const [navCounts, setNavCounts] = useState<Record<string, number>>({})
   const { dark, toggle: toggleDark } = useDarkMode()
-  const { user, logout } = useAuth()
+  const { user, logout, setMode } = useAuth()
+  const [modeBusy, setModeBusy] = useState(false)
+  const handleToggleMode = async () => {
+    if (!user || modeBusy) return
+    setModeBusy(true)
+    try {
+      await setMode(!user.livemode)
+    } catch (err) {
+      // Surface as toast so the operator knows the flip didn't take.
+      const msg = err instanceof Error ? err.message : 'Failed to switch mode'
+      const { toast } = await import('sonner')
+      toast.error(msg)
+    } finally {
+      setModeBusy(false)
+    }
+  }
   // Drives the live-mode Stripe-missing hard-blocker. The launcher itself
   // calls the same hook — React Query dedupes by key, so no duplicate fetches.
   const { hasLiveStripe } = useOnboardingSteps()
@@ -135,10 +162,6 @@ export function Layout({ children }: { children: ReactNode }) {
   }
 
   // Global keyboard shortcut: Cmd/Ctrl+K opens the command palette.
-  // The earlier Shift+M (test/live toggle) was removed when livemode
-  // became a property of the API key rather than a session toggle —
-  // see ADR-007/008. Switching modes now means signing out and
-  // pasting a key in the other mode.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -386,7 +409,13 @@ export function Layout({ children }: { children: ReactNode }) {
               <VeloxLogo size="sm" />
             </div>
             <div className="flex-1" />
-            {user && <ModeBadge livemode={user.livemode} />}
+            {user && (
+              <ModeToggle
+                livemode={user.livemode}
+                busy={modeBusy}
+                onToggle={handleToggleMode}
+              />
+            )}
           </div>
         </div>
         <div className="max-w-7xl mx-auto p-4 md:p-8">
