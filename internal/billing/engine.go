@@ -767,21 +767,12 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	)
 	defer span.End()
 
-	// Guard: bill active, trialing, past_due, and unpaid subscriptions.
-	// Trialing subs flow through to the trial state machine below.
-	// past_due/unpaid subs continue cycling per Stripe parity — past_due
-	// generates finalized invoices and keeps trying, unpaid generates
-	// drafts only (engine.go:1245 area). Skip canceled / paused (no
-	// pause_collection — that's a different flag) / archived /
-	// draft-status subs.
-	switch sub.Status {
-	case domain.SubscriptionActive,
-		domain.SubscriptionTrialing,
-		domain.SubscriptionPastDue,
-		domain.SubscriptionUnpaid:
-		// proceed
-	default:
-		slog.Info("skipping billing (not billable)", "subscription_id", sub.ID, "status", sub.Status)
+	// Guard: only bill active or trialing subscriptions. Trialing subs flow
+	// through to the trial state machine below, which either advances the
+	// cycle without billing (trial active) or atomically flips to active and
+	// then bills (trial elapsed).
+	if sub.Status != domain.SubscriptionActive && sub.Status != domain.SubscriptionTrialing {
+		slog.Info("skipping billing (not active)", "subscription_id", sub.ID, "status", sub.Status)
 		return false, nil
 	}
 
@@ -1244,14 +1235,6 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 	}
 	collectionPaused := sub.PauseCollection != nil
 	if collectionPaused {
-		invStatus = domain.InvoiceDraft
-	}
-	// Subscription is terminally delinquent (dunning exhausted; ADR-
-	// 013). Stripe parity: keep generating per-cycle invoices so the
-	// audit trail is preserved, but as DRAFT — no charge attempt, no
-	// dunning, no per-cycle customer email. Operator decides what
-	// happens next (mark paid offline, void, cancel sub, etc).
-	if sub.Status == domain.SubscriptionUnpaid {
 		invStatus = domain.InvoiceDraft
 	}
 

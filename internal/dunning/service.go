@@ -58,21 +58,6 @@ type EmailNotifier interface {
 	SendDunningEscalation(tenantID, to, customerName, invoiceNumber, action, publicToken string) error
 }
 
-// SubscriptionStatusUpdater wires subscription past_due/unpaid/active
-// transitions onto dunning lifecycle events. The status field on
-// subscriptions is a *projection* of dunning state (not a parallel
-// state machine) — it gives DPs a queryable label without dunning
-// owning subscription semantics. Optional: when nil, dunning runs as
-// before with no status side-effects. ADR-013 follow-up.
-type SubscriptionStatusUpdater interface {
-	// MarkPastDue: active/trialing → past_due. Idempotent.
-	MarkPastDueForInvoice(ctx context.Context, tenantID, invoiceID string, at time.Time) error
-	// MarkUnpaid: past_due → unpaid. Idempotent.
-	MarkUnpaidForInvoice(ctx context.Context, tenantID, invoiceID string, at time.Time) error
-	// RecoverFromPastDue: past_due → active when retry succeeds.
-	RecoverFromPastDueForInvoice(ctx context.Context, tenantID, invoiceID string, at time.Time) error
-}
-
 type Service struct {
 	store         Store
 	retrier       PaymentRetrier
@@ -81,7 +66,6 @@ type Service struct {
 	events        domain.EventDispatcher
 	emailNotifier EmailNotifier
 	customerEmail CustomerEmailFetcher
-	subStatus     SubscriptionStatusUpdater
 	clock         clock.Clock
 }
 
@@ -110,14 +94,6 @@ func (s *Service) SetEmailNotifier(notifier EmailNotifier) {
 // SetCustomerEmailFetcher configures customer email resolution for dunning notifications.
 func (s *Service) SetCustomerEmailFetcher(fetcher CustomerEmailFetcher) {
 	s.customerEmail = fetcher
-}
-
-// SetSubscriptionStatusUpdater wires the past_due/unpaid status
-// transitions. Optional — when nil, dunning runs without touching
-// subscription status (existing behaviour, only the dunning_run state
-// machine moves).
-func (s *Service) SetSubscriptionStatusUpdater(u SubscriptionStatusUpdater) {
-	s.subStatus = u
 }
 
 // SetEventDispatcher configures outbound webhook event firing.
@@ -203,16 +179,6 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 	})
 
 	slog.Info("dunning started", "run_id", run.ID, "invoice_id", invoiceID)
-
-	// Project dunning lifecycle onto the subscription status field.
-	// Best-effort — a failed status flip shouldn't fail the dunning
-	// start (status is a label, not the source of truth). ADR-013.
-	if s.subStatus != nil {
-		if err := s.subStatus.MarkPastDueForInvoice(ctx, tenantID, invoiceID, s.clock.Now()); err != nil {
-			slog.Warn("dunning: mark sub past_due failed",
-				"invoice_id", invoiceID, "error", err)
-		}
-	}
 
 	s.fireEvent(ctx, tenantID, domain.EventDunningStarted, map[string]any{
 		"run_id":      run.ID,
@@ -369,14 +335,6 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 			"attempt", run.AttemptCount,
 		)
 
-		// Recover sub status: past_due → active. Best-effort.
-		if s.subStatus != nil {
-			if err := s.subStatus.RecoverFromPastDueForInvoice(ctx, tenantID, run.InvoiceID, now); err != nil {
-				slog.Warn("dunning: recover sub from past_due failed",
-					"invoice_id", run.InvoiceID, "error", err)
-			}
-		}
-
 		if _, err := s.store.UpdateRun(ctx, tenantID, run); err != nil {
 			return err
 		}
@@ -434,18 +392,6 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 	run.Resolution = domain.ResolutionRetriesExhausted
 	run.ResolvedAt = &now
 	run.NextActionAt = nil
-
-	// Project to subscription status: past_due → unpaid. Independent
-	// of policy.FinalAction (which decides what HAPPENS in unpaid;
-	// status flip captures that we're terminally delinquent regardless
-	// of whether the operator chose pause / write-off / manual_review).
-	// Best-effort. ADR-013.
-	if s.subStatus != nil {
-		if err := s.subStatus.MarkUnpaidForInvoice(ctx, tenantID, run.InvoiceID, now); err != nil {
-			slog.Warn("dunning: mark sub unpaid failed",
-				"invoice_id", run.InvoiceID, "error", err)
-		}
-	}
 
 	switch policy.FinalAction {
 	case domain.DunningActionManualReview:

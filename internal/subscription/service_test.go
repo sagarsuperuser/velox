@@ -220,45 +220,6 @@ func (m *memStore) ClearPauseCollection(_ context.Context, tenantID, id string) 
 	return s, nil
 }
 
-func (m *memStore) MarkPastDue(_ context.Context, tenantID, id string, at time.Time) error {
-	s, ok := m.subs[id]
-	if !ok || s.TenantID != tenantID {
-		return nil
-	}
-	if s.Status == domain.SubscriptionActive || s.Status == domain.SubscriptionTrialing || s.Status == domain.SubscriptionPastDue {
-		s.Status = domain.SubscriptionPastDue
-		s.UpdatedAt = at
-		m.subs[id] = s
-	}
-	return nil
-}
-
-func (m *memStore) MarkUnpaid(_ context.Context, tenantID, id string, at time.Time) error {
-	s, ok := m.subs[id]
-	if !ok || s.TenantID != tenantID {
-		return nil
-	}
-	if s.Status == domain.SubscriptionPastDue || s.Status == domain.SubscriptionUnpaid {
-		s.Status = domain.SubscriptionUnpaid
-		s.UpdatedAt = at
-		m.subs[id] = s
-	}
-	return nil
-}
-
-func (m *memStore) RecoverFromPastDue(_ context.Context, tenantID, id string, at time.Time) error {
-	s, ok := m.subs[id]
-	if !ok || s.TenantID != tenantID {
-		return nil
-	}
-	if s.Status == domain.SubscriptionPastDue {
-		s.Status = domain.SubscriptionActive
-		s.UpdatedAt = at
-		m.subs[id] = s
-	}
-	return nil
-}
-
 func (m *memStore) ActivateAfterTrial(_ context.Context, tenantID, id string, at time.Time) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {

@@ -12,17 +12,6 @@ const (
 	SubscriptionDraft    SubscriptionStatus = "draft"
 	SubscriptionTrialing SubscriptionStatus = "trialing"
 	SubscriptionActive   SubscriptionStatus = "active"
-	// SubscriptionPastDue: at least one invoice has failed payment and
-	// dunning is currently running. Reversible — a successful retry
-	// flips the sub back to active. New billing cycles still generate
-	// finalized invoices (Stripe parity); the engine keeps trying.
-	SubscriptionPastDue SubscriptionStatus = "past_due"
-	// SubscriptionUnpaid: dunning has exhausted all retries. Engine has
-	// stopped automatic recovery. New billing cycles generate as DRAFT
-	// (not finalized) — audit trail without stacked failures or
-	// repeated dunning emails. Reversible only by operator action
-	// (mark paid, void, or cancel sub). Stripe parity.
-	SubscriptionUnpaid   SubscriptionStatus = "unpaid"
 	SubscriptionPaused   SubscriptionStatus = "paused"
 	SubscriptionCanceled SubscriptionStatus = "canceled"
 	SubscriptionArchived SubscriptionStatus = "archived"

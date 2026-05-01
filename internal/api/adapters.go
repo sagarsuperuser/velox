@@ -170,49 +170,6 @@ func (a *subscriptionPauserAdapter) Pause(ctx context.Context, tenantID, id stri
 	return err
 }
 
-// subscriptionStatusUpdaterAdapter projects dunning lifecycle events
-// onto the subscription status field (past_due / unpaid / active).
-// Resolves invoice → subscription_id via invoiceStore, then calls the
-// corresponding subStore transition. Best-effort: missing subscription
-// (one-off invoice) and missing-row are silent — status is a label,
-// not the source of truth. ADR-013 follow-up.
-type subscriptionStatusUpdaterAdapter struct {
-	invoiceStore *invoice.PostgresStore
-	subStore     *subscription.PostgresStore
-}
-
-func (a *subscriptionStatusUpdaterAdapter) resolveSubID(ctx context.Context, tenantID, invoiceID string) (string, error) {
-	inv, err := a.invoiceStore.Get(ctx, tenantID, invoiceID)
-	if err != nil {
-		return "", err
-	}
-	return inv.SubscriptionID, nil
-}
-
-func (a *subscriptionStatusUpdaterAdapter) MarkPastDueForInvoice(ctx context.Context, tenantID, invoiceID string, at time.Time) error {
-	subID, err := a.resolveSubID(ctx, tenantID, invoiceID)
-	if err != nil || subID == "" {
-		return nil
-	}
-	return a.subStore.MarkPastDue(ctx, tenantID, subID, at)
-}
-
-func (a *subscriptionStatusUpdaterAdapter) MarkUnpaidForInvoice(ctx context.Context, tenantID, invoiceID string, at time.Time) error {
-	subID, err := a.resolveSubID(ctx, tenantID, invoiceID)
-	if err != nil || subID == "" {
-		return nil
-	}
-	return a.subStore.MarkUnpaid(ctx, tenantID, subID, at)
-}
-
-func (a *subscriptionStatusUpdaterAdapter) RecoverFromPastDueForInvoice(ctx context.Context, tenantID, invoiceID string, at time.Time) error {
-	subID, err := a.resolveSubID(ctx, tenantID, invoiceID)
-	if err != nil || subID == "" {
-		return nil
-	}
-	return a.subStore.RecoverFromPastDue(ctx, tenantID, subID, at)
-}
-
 // dunningTimelineAdapter bridges dunning.Store → invoice.DunningTimelineFetcher.
 type dunningTimelineAdapter struct {
 	store *dunning.PostgresStore
