@@ -487,15 +487,22 @@ func classifyAwaitingPayment(inv Invoice) *Attention {
 // invoice" collection mode look alarming.
 func classifyNoPaymentMethod(inv Invoice) *Attention {
 	since := inv.UpdatedAt
+	// Two-step framing: attaching a PM does NOT auto-resolve. The
+	// engine has already moved past its auto-charge trigger (it ran at
+	// finalize, found no PM, skipped — and crucially didn't set
+	// auto_charge_pending, so no scheduler retry queues either). The
+	// operator has to manually trigger Collect Payment after attaching
+	// a PM. Naming the second step here removes the trap of "I added
+	// the card, why isn't it charging?".
 	return &Attention{
 		Severity: AttentionSeverityWarning,
 		Reason:   AttentionReasonNoPaymentMethod,
 		Code:     "payment.no_payment_method",
-		Message:  "No payment method on file. The engine won't auto-charge until one is attached. Add a payment method, send the invoice link for self-pay, or void the invoice.",
+		Message:  "No payment method on file. To charge, attach a method then click Collect Payment. To let the customer pay themselves, share the invoice link.",
 		DocURL:   docBaseURL + "no-payment-method",
 		Actions: []AttentionActionItem{
 			{Code: AttentionActionAddPaymentMethod, Label: "Add payment method"},
-			{Code: AttentionActionSendReminder, Label: "Send invoice link"},
+			{Code: AttentionActionSendReminder, Label: "Share invoice link"},
 		},
 		Since: &since,
 		DueBy: inv.DueAt,

@@ -164,17 +164,24 @@ export default function InvoiceDetailPage() {
   })
   const timeline = timelineData ?? []
 
-  // Payment-method snapshot for the success-state card. v1 uses the
-  // customer's current default method as a stand-in for the actual
-  // charged method; if the customer rotated cards after payment we'd
-  // show the new one, which is wrong. A proper fix snapshots
-  // brand+last4 onto the invoice at payment-time (deferred — needs a
-  // schema migration).
+  // Payment-method snapshot serves two purposes on this page:
+  //   1. The success-state card on paid invoices (brand •••• last4).
+  //   2. The Collect Payment button's disabled state — when no PM is
+  //      ready, charging will fail, so the button gates on
+  //      paymentSetup.setup_status === 'ready'. Mirrors the disable-
+  //      with-tooltip pattern Velox uses for Finalize-on-tax-failure.
+  //
+  // Fetched whenever the invoice exists (and isn't a draft) so the
+  // button has data before render. v1 caveat on the success card: uses
+  // the customer's CURRENT default method, which may differ from what
+  // was actually charged (deferred — needs a schema migration to
+  // snapshot brand+last4 onto the invoice at payment time).
   const { data: paymentSetup } = useQuery({
     queryKey: ['payment-setup', invoice?.customer_id],
     queryFn: () => api.getPaymentStatus(invoice!.customer_id),
-    enabled: !!invoice?.customer_id && invoice?.status === 'paid',
+    enabled: !!invoice?.customer_id && invoice?.status !== 'draft',
   })
+  const hasPaymentMethod = paymentSetup?.setup_status === 'ready'
 
   // Dunning runs for this invoice — only fetched when the invoice is in a
   // pending-like state where dunning context is actionable. Drafts and paid
@@ -408,9 +415,30 @@ export default function InvoiceDetailPage() {
           )}
 
           {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.amount_due_cents > 0 && (
-            <Button size="sm" onClick={() => collectMutation.mutate()} disabled={acting}>
-              Collect Payment
-            </Button>
+            // Disabled-with-tooltip when the customer has no PM ready.
+            // Calling Collect Payment with no PM would 4xx; the
+            // attention banner already surfaces the path forward
+            // (Add payment method). Tooltip cross-links the constraint
+            // so the disabled button isn't a dead-end. Same pattern as
+            // Finalize-disabled-on-tax-failure.
+            !hasPaymentMethod ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-block cursor-not-allowed">
+                    <Button size="sm" disabled className="pointer-events-none">
+                      Collect Payment
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Attach a payment method first.
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <Button size="sm" onClick={() => collectMutation.mutate()} disabled={acting}>
+                Collect Payment
+              </Button>
+            )
           )}
 
           <Button
