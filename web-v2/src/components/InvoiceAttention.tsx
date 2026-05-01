@@ -6,7 +6,7 @@ import type {
   AttentionAction,
   AttentionSeverity,
 } from '@/lib/api'
-import { formatDateTime } from '@/lib/api'
+import { formatDate, formatDateTime } from '@/lib/api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -75,9 +75,15 @@ export function InvoiceAttention({
               </p>
             )}
             {att.due_by && (
+              // Date-only on purpose. due_at is computed as
+              // finalize_at + net_payment_term_days; that arithmetic
+              // carries finalize-time hour precision (e.g. "8:16 PM
+              // GMT+5:30") which is meaningless to operators or
+              // customers — the deadline is "this calendar date".
+              // Stripe's banner uses date-only too.
               <p className="text-xs text-muted-foreground flex items-center gap-1.5">
                 <Calendar size={11} className="shrink-0" />
-                Due by: <span className="text-foreground">{formatDateTime(att.due_by)}</span>
+                Due by: <span className="text-foreground">{formatDate(att.due_by)}</span>
               </p>
             )}
           </div>
@@ -294,7 +300,12 @@ function defaultLabel(action: AttentionAction): string {
     reconcile_payment: 'Reconcile',
     review_registration: 'Review tax registration',
     charge_now: 'Charge now',
-    send_reminder: 'Send reminder',
+    // send_reminder = server-side email to the customer with a
+    // payment link. Verb is "Email" not "Share" — operators
+    // mistakenly expected a clipboard action with the older "Share
+    // invoice link" copy. Server picks the appropriate template per
+    // attention reason; the UI label is generic.
+    send_reminder: 'Email payment link',
     add_payment_method: 'Add payment method',
   }
   return map[action] ?? action
