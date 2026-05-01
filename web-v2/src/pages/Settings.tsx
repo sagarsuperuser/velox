@@ -787,9 +787,14 @@ export default function SettingsPage() {
         </div>
       </Tabs>
 
-      {/* Sticky save bar */}
+      {/* Sticky save bar. pr-44 reserves the right edge so the
+          Save button doesn't sit under the OnboardingLauncher pill
+          (also fixed bottom-right, z-30). Both elements stay
+          accessible side-by-side — Stripe/Linear use the same
+          right-edge-reserve pattern when a floating help/onboarding
+          element coexists with a save bar. */}
       {hasChanges && (
-        <div className="fixed bottom-0 left-0 right-0 z-30 md:left-60">
+        <div className="fixed bottom-0 left-0 right-0 z-30 md:left-60 pr-44">
           <div className="max-w-7xl mx-auto px-4 md:px-8">
             <div className="bg-card border-t border-border shadow-[0_-4px_12px_rgba(0,0,0,0.05)] rounded-t-xl px-6 py-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
