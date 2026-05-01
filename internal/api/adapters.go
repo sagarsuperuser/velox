@@ -17,6 +17,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/customerportal"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
+	"github.com/sagarsuperuser/velox/internal/email"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
@@ -205,6 +206,35 @@ func (a *customerEmailFetcherAdapter) GetCustomerEmail(ctx context.Context, tena
 		}
 	}
 	return email, name, nil
+}
+
+// invoiceEmailEventsAdapter bridges email.OutboxStore.ListByInvoice
+// → invoice.EmailEventLister so the invoice timeline can surface
+// customer-notification email rows alongside Stripe webhooks and
+// dunning events. Pure shape conversion; the underlying query
+// already filters to invoice-relevant email types.
+type invoiceEmailEventsAdapter struct {
+	store *email.OutboxStore
+}
+
+func (a *invoiceEmailEventsAdapter) ListByInvoice(ctx context.Context, tenantID, invoiceNumber string) ([]invoice.EmailEventRow, error) {
+	rows, err := a.store.ListByInvoice(ctx, tenantID, invoiceNumber)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]invoice.EmailEventRow, 0, len(rows))
+	for _, r := range rows {
+		to, _ := r.Payload["to"].(string)
+		out = append(out, invoice.EmailEventRow{
+			EmailType:    r.EmailType,
+			Status:       r.Status,
+			CreatedAt:    r.CreatedAt,
+			DispatchedAt: r.DispatchedAt,
+			LastError:    r.LastError,
+			To:           to,
+		})
+	}
+	return out, nil
 }
 
 // noPaymentMethodNotifierAdapter bridges payment.EmailPaymentUpdate

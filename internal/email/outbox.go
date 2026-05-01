@@ -279,6 +279,56 @@ func (s *OutboxStore) PendingCount(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// ListByInvoice returns all email_outbox rows whose payload references the
+// given invoice_number. Used by the invoice timeline to surface
+// customer-notification events ("Customer notified — payment method
+// required", dunning reminders, receipts) alongside Stripe webhook
+// events. Filters to invoice-relevant email types; portal magic links
+// and password resets are excluded by their email_type since they
+// aren't invoice-scoped.
+func (s *OutboxStore) ListByInvoice(ctx context.Context, tenantID, invoiceNumber string) ([]OutboxRow, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, tenant_id, email_type, payload, status, attempts,
+		       next_attempt_at, COALESCE(last_error,''), created_at, dispatched_at
+		FROM email_outbox
+		WHERE email_type IN ('invoice', 'payment_receipt', 'payment_failed',
+		                     'payment_update_request', 'dunning_warning',
+		                     'dunning_escalation')
+		  AND payload->>'invoice_number' = $1
+		ORDER BY created_at ASC
+	`, invoiceNumber)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []OutboxRow
+	for rows.Next() {
+		var r OutboxRow
+		var payload []byte
+		var dispatchedAt sql.NullTime
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.EmailType, &payload, &r.Status,
+			&r.Attempts, &r.NextAttemptAt, &r.LastError, &r.CreatedAt, &dispatchedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(payload, &r.Payload); err != nil {
+			return nil, fmt.Errorf("decode payload for %s: %w", r.ID, err)
+		}
+		if dispatchedAt.Valid {
+			t := dispatchedAt.Time
+			r.DispatchedAt = &t
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // FailedCount returns rows currently in the DLQ — used for alerting. If this
 // grows, SMTP is persistently broken or a producer is emitting malformed
 // payloads.
