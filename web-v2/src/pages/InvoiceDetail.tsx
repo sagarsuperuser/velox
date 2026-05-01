@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -310,9 +311,36 @@ export default function InvoiceDetailPage() {
                   Apply Coupon
                 </Button>
               )}
-              <Button size="sm" onClick={() => finalizeMutation.mutate()} disabled={acting}>
-                Finalize
-              </Button>
+              {/* Finalize is server-blocked when tax_status != 'ok'
+                  (sending an invoice with wrong/missing tax creates
+                  compliance exposure). Mirror the server gate on the
+                  UI so operators see the constraint without clicking
+                  through to a 409 toast. Stripe Dashboard does the
+                  same on drafts with automatic_tax.status !=
+                  complete. See ADR-009 / FLOW I5b. */}
+              {(() => {
+                const taxBlocked = invoice.tax_status === 'pending' || invoice.tax_status === 'failed'
+                if (!taxBlocked) {
+                  return (
+                    <Button size="sm" onClick={() => finalizeMutation.mutate()} disabled={acting}>
+                      Finalize
+                    </Button>
+                  )
+                }
+                const reason = invoice.tax_status === 'pending'
+                  ? 'Tax calculation is still pending — retry in progress. Finalize unblocks once tax_status = ok.'
+                  : 'Tax calculation has failed after retries. Resolve the customer billing profile or retry tax before finalizing.'
+                return (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-block cursor-not-allowed">
+                        <Button size="sm" disabled>Finalize</Button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>{reason}</TooltipContent>
+                  </Tooltip>
+                )
+              })()}
             </>
           )}
 
