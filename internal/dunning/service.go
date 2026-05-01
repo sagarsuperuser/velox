@@ -541,7 +541,13 @@ func (s *Service) UpsertPolicy(ctx context.Context, tenantID string, policy doma
 	case domain.DunningActionManualReview, domain.DunningActionPause, domain.DunningActionWriteOff:
 		// valid
 	case "":
-		policy.FinalAction = domain.DunningActionManualReview
+		// Default = pause (matches DB column default in migration
+		// 0071). Without this, the engine would keep generating
+		// finalized invoices for delinquent customers every cycle —
+		// stacking failures + dunning emails. pause + keep_as_draft
+		// is the operator-protective choice. Operators who want a
+		// different terminal action set it explicitly.
+		policy.FinalAction = domain.DunningActionPause
 	default:
 		return domain.DunningPolicy{}, errs.Invalid("final_action", "must be one of: manual_review, pause, write_off_later")
 	}
