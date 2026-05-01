@@ -6,14 +6,12 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, formatRelativeTime, type ApiKeyInfo } from '@/lib/api'
 import { addDaysInTZ, endOfDayInTZ, formatExpiryHintInTZ } from '@/lib/dates'
-import { useAuth } from '@/contexts/AuthContext'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -80,18 +78,9 @@ export default function ApiKeysPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null)
-  const [isRevokingSelf, setIsRevokingSelf] = useState(false)
   const [showRevoked, setShowRevoked] = useState(false)
   const [showExpired, setShowExpired] = useState(false)
   const queryClient = useQueryClient()
-
-  // Current-session key id comes from /v1/whoami via AuthContext.
-  // Pre-ADR-008 this read from localStorage, but the credential is now
-  // an httpOnly cookie — JS can't see it. The whoami round-trip is
-  // already in flight at app boot (AuthContext.refreshUser), so this
-  // value is populated by the time the page renders.
-  const { user } = useAuth()
-  const currentKeyId = user?.key_id ?? ''
 
   // Tenant timezone for displaying expires_at — see CreateKeyDialog
   // for the "why tenant TZ" rationale. UTC fallback covers the
@@ -126,32 +115,6 @@ export default function ApiKeysPage() {
   const activeKeys = keys.filter(k => !k.revoked_at && !isExpired(k))
   const expiredKeys = keys.filter(k => !k.revoked_at && isExpired(k))
   const revokedKeys = keys.filter(k => !!k.revoked_at)
-
-  // Last-active-secret-or-platform safeguard (mirrors the server-side
-  // rule in auth.Store.Revoke). If revoking a secret/platform key
-  // would leave zero such keys, the tenant is locked out: can't sign
-  // in, can't create new keys.
-  //
-  // DEFENSE-IN-DEPTH ONLY in v1: this UI path is unreachable in
-  // normal operator flows. When a tenant has exactly one active
-  // secret/platform key, the operator's session was minted from that
-  // same key — so the row's `isCurrent` self-revoke tooltip fires
-  // first ("Cannot revoke the API key your dashboard session
-  // uses..."), and the orphan tooltip ("Cannot revoke the only
-  // active secret/platform key...") never appears. We keep the
-  // check anyway so multi-user accounts (when they ship) get the
-  // right behaviour without a code change — at that point session-
-  // key and active-secret/platform keys can diverge and the orphan
-  // path becomes live. The server-side safeguard is the real
-  // enforcement (see TestRevokeKey_Safeguard).
-  const otherActiveSecretOrPlatform = (target: ApiKeyInfo) =>
-    activeKeys.filter(
-      k => k.id !== target.id && (k.key_type === 'secret' || k.key_type === 'platform'),
-    ).length
-
-  const wouldOrphanTenant = (k: ApiKeyInfo) =>
-    (k.key_type === 'secret' || k.key_type === 'platform') &&
-    otherActiveSecretOrPlatform(k) === 0
 
   return (
     <Layout>
@@ -194,96 +157,61 @@ export default function ApiKeysPage() {
         </Card>
       ) : (
         <>
-          {/* Active keys */}
+          {/* Active keys. Per ADR-011 dashboard sessions are user-bound,
+              not key-bound — there's no "current session key" concept on
+              this page anymore, so Revoke is always enabled (server still
+              enforces tier-level permissions). */}
           <div className="mt-6 space-y-3">
-            {activeKeys.map(k => {
-              const isCurrent = !!currentKeyId && k.id === currentKeyId
-              const orphan = wouldOrphanTenant(k)
-              const disabledReason = isCurrent
-                ? 'Cannot revoke the API key your dashboard session uses — sign out and sign back in with another key first.'
-                : orphan
-                  ? 'Cannot revoke the only active secret/platform key — create another first.'
-                  : ''
-              return (
-                <Card key={k.id} className={cn(isCurrent && 'ring-2 ring-primary/20')}>
-                  <CardContent className="px-6 py-4">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-start gap-3">
-                        <div className={cn(
-                          'w-9 h-9 rounded-lg flex items-center justify-center shrink-0 mt-0.5',
-                          k.key_type === 'secret' ? 'bg-violet-50 dark:bg-violet-500/10' : 'bg-blue-50 dark:bg-blue-500/10'
-                        )}>
-                          {k.key_type === 'secret'
-                            ? <Shield size={16} className="text-violet-500" />
-                            : <Eye size={16} className="text-blue-500" />}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm font-medium text-foreground">{k.name}</p>
-                            {isCurrent && (
-                              <Badge variant="info" className="text-[10px]">Current session</Badge>
-                            )}
-                            <ExpiryBadge expiresAt={k.expires_at} />
-                          </div>
-                          <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded mt-1 inline-block">
-                            {k.key_prefix}--------
-                          </code>
-                          <div className="flex items-center gap-4 mt-2">
-                            <Badge variant={keyTypeVariant(k.key_type)}>{k.key_type}</Badge>
-                            <span className="text-xs text-muted-foreground">Created {relativeTime(k.created_at)}</span>
-                            <span className="text-xs text-muted-foreground">
-                              {k.last_used_at ? `Last used ${relativeTime(k.last_used_at)}` : 'Never used'}
-                            </span>
-                            {k.expires_at && (
-                              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                <Clock size={11} />
-                                Expires {formatDate(k.expires_at, tenantTZ)}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-1.5">
-                            {k.key_type === 'secret'
-                              ? 'Full access -- use server-side only. Never expose in client code.'
-                              : 'Read-only access -- safe for frontend and client-side use.'}
-                          </p>
-                        </div>
+            {activeKeys.map(k => (
+              <Card key={k.id}>
+                <CardContent className="px-6 py-4">
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-start gap-3">
+                      <div className={cn(
+                        'w-9 h-9 rounded-lg flex items-center justify-center shrink-0 mt-0.5',
+                        k.key_type === 'secret' ? 'bg-violet-50 dark:bg-violet-500/10' : 'bg-blue-50 dark:bg-blue-500/10'
+                      )}>
+                        {k.key_type === 'secret'
+                          ? <Shield size={16} className="text-violet-500" />
+                          : <Eye size={16} className="text-blue-500" />}
                       </div>
-                      {/* shadcn Tooltip wraps the disabled button — the
-                          native `title` attribute is unreliable on
-                          disabled-button-in-span across browsers
-                          (Button uses disabled:pointer-events-none, which
-                          interferes with hit-testing for the wrapper's
-                          title). Same swap applied to date-picker's
-                          Today button in commit 7a0dc97. */}
-                      {(isCurrent || orphan) ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="inline-block shrink-0 cursor-not-allowed">
-                              <Button variant="outline" size="sm"
-                                className="text-destructive hover:text-destructive"
-                                disabled
-                              >
-                                Revoke
-                              </Button>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-foreground">{k.name}</p>
+                          <ExpiryBadge expiresAt={k.expires_at} />
+                        </div>
+                        <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded mt-1 inline-block">
+                          {k.key_prefix}--------
+                        </code>
+                        <div className="flex items-center gap-4 mt-2">
+                          <Badge variant={keyTypeVariant(k.key_type)}>{k.key_type}</Badge>
+                          <span className="text-xs text-muted-foreground">Created {relativeTime(k.created_at)}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {k.last_used_at ? `Last used ${relativeTime(k.last_used_at)}` : 'Never used'}
+                          </span>
+                          {k.expires_at && (
+                            <span className="text-xs text-muted-foreground flex items-center gap-1">
+                              <Clock size={11} />
+                              Expires {formatDate(k.expires_at, tenantTZ)}
                             </span>
-                          </TooltipTrigger>
-                          <TooltipContent>{disabledReason}</TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        <Button variant="outline" size="sm"
-                          className="shrink-0 text-destructive hover:text-destructive"
-                          onClick={() => {
-                            setIsRevokingSelf(!!isCurrent)
-                            setRevokeTarget(k)
-                          }}>
-                          Revoke
-                        </Button>
-                      )}
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1.5">
+                          {k.key_type === 'secret'
+                            ? 'Full access -- use server-side only. Never expose in client code.'
+                            : 'Read-only access -- safe for frontend and client-side use.'}
+                        </p>
+                      </div>
                     </div>
-                  </CardContent>
-                </Card>
-              )
-            })}
+                    <Button variant="outline" size="sm"
+                      className="shrink-0 text-destructive hover:text-destructive"
+                      onClick={() => setRevokeTarget(k)}>
+                      Revoke
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
           </div>
 
           {/* Expired keys */}
@@ -310,10 +238,7 @@ export default function ApiKeysPage() {
                           </div>
                           <Button variant="outline" size="sm"
                             className="shrink-0 text-destructive hover:text-destructive"
-                            onClick={() => {
-                              setIsRevokingSelf(false)
-                              setRevokeTarget(k)
-                            }}>
+                            onClick={() => setRevokeTarget(k)}>
                             Revoke
                           </Button>
                         </div>
@@ -408,20 +333,18 @@ export default function ApiKeysPage() {
       )}
 
       {/* Revoke confirmation */}
-      <AlertDialog open={!!revokeTarget} onOpenChange={(open) => { if (!open) { setRevokeTarget(null); setIsRevokingSelf(false) } }}>
+      <AlertDialog open={!!revokeTarget} onOpenChange={(open) => { if (!open) setRevokeTarget(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{isRevokingSelf ? 'Revoke Current Session Key?' : 'Revoke API Key'}</AlertDialogTitle>
+            <AlertDialogTitle>Revoke API Key</AlertDialogTitle>
             <AlertDialogDescription>
               {revokeTarget
-                ? isRevokingSelf
-                  ? "This is the API key you're currently logged in with. Revoking it will log you out immediately. Are you sure?"
-                  : `Are you sure you want to revoke "${revokeTarget.name}" (${revokeTarget.key_prefix}...)? This action cannot be undone.`
+                ? `Are you sure you want to revoke "${revokeTarget.name}" (${revokeTarget.key_prefix}...)? This action cannot be undone.`
                 : ''}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => { setRevokeTarget(null); setIsRevokingSelf(false) }}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel onClick={() => setRevokeTarget(null)}>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleRevoke} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
               Revoke Key
             </AlertDialogAction>

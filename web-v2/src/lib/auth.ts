@@ -1,30 +1,41 @@
-// Dashboard auth: the operator pastes a `vlx_secret_…` key into the
-// login screen; the backend's POST /v1/auth/exchange validates the key
-// and issues an httpOnly session cookie. Subsequent requests ride the
-// cookie via `credentials: 'include'`. The raw key never touches
-// localStorage or any other JS-readable storage — the only place it
-// exists in the browser is in the form field for the duration of the
-// submit. See ADR-008 for the rationale.
+// Dashboard auth: the operator signs in with email + password; the
+// backend's POST /v1/auth/login validates the credentials and mints
+// an httpOnly session cookie. Subsequent requests ride the cookie via
+// `credentials: 'include'`. The password never touches localStorage
+// or any other JS-readable storage — only the login form field for
+// the duration of the submit. See ADR-011.
+//
+// API keys are now SDK/curl-only credentials; they don't sign in to
+// the dashboard.
 
 import { apiRequest } from './api'
 
 export interface SessionInfo {
   tenant_id: string
-  key_id: string
-  key_type: string
+  // Either user_id (cookie path, post-ADR-011) or key_id (Bearer
+  // path) is set, never both — depends on which middleware
+  // resolved the request. The dashboard cookie path always
+  // populates user_id; SDK Bearer callers see key_id.
+  user_id?: string
+  key_id?: string
+  key_type?: string
+  email?: string
   livemode: boolean
 }
 
-export interface ExchangeResponse extends SessionInfo {
+export interface LoginResponse {
+  user_id: string
+  tenant_id: string
+  email: string
+  livemode: boolean
   expires_at: string
 }
 
 export const authApi = {
-  // exchange takes a pasted API key, validates it server-side, and
-  // sets the httpOnly session cookie on the response. The raw key is
-  // never echoed back; the response carries only the resolved context.
-  exchange: (apiKey: string) =>
-    apiRequest<ExchangeResponse>('POST', '/auth/exchange', { api_key: apiKey }),
+  // login takes email + password, validates server-side, and sets the
+  // httpOnly session cookie on the response.
+  login: (email: string, password: string) =>
+    apiRequest<LoginResponse>('POST', '/auth/login', { email, password }),
 
   // logout revokes the server-side session row and clears the cookie.
   logout: () => apiRequest<void>('POST', '/auth/logout'),
@@ -33,4 +44,14 @@ export const authApi = {
   // callers) to its tenant context. Throws ApiError(401) when neither
   // credential is present or both are stale.
   whoami: () => apiRequest<SessionInfo>('GET', '/whoami'),
+
+  // requestPasswordReset triggers the "send a reset link" flow.
+  // Always 200; never confirms whether the email was on file.
+  requestPasswordReset: (email: string) =>
+    apiRequest<{ message: string }>('POST', '/auth/password-reset/request', { email }),
+
+  // confirmPasswordReset consumes a reset token and sets a new
+  // password. Token from the email link's ?token= param.
+  confirmPasswordReset: (token: string, password: string) =>
+    apiRequest<{ message: string }>('POST', '/auth/password-reset/confirm', { token, password }),
 }
