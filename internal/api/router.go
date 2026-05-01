@@ -346,6 +346,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// (bounces logged, customer.email_status stays 'unknown').
 	// Attached inside the blinder branch below once emailBlinder exists.
 	emailOutboxStore := email.NewOutboxStore(db)
+	// Surface customer-notification email rows on the invoice timeline.
+	// Without this wiring, the timeline still renders, but operators
+	// have no signal that the customer was actually notified about
+	// no_payment_method / payment_failed / dunning events.
+	invoiceH.SetEmailEvents(&invoiceEmailEventsAdapter{store: emailOutboxStore})
 	emailOutboxEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_EMAIL_OUTBOX_ENABLED"))) != "false"
 
 	// Any one of the six domain email interfaces; all are satisfied by

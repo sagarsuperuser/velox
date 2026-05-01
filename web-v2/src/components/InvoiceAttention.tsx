@@ -56,17 +56,22 @@ export function InvoiceAttention({
               <Badge variant="outline" className={cn('text-xs', styles.badge)}>
                 {humanReason(att.reason)}
               </Badge>
-              {att.code && (
-                <code className="text-[10px] text-muted-foreground font-mono">
-                  {att.code}
-                </code>
-              )}
-              {att.since && (
+              {/* `since` reads as duration but is sourced from
+                  inv.UpdatedAt — for fresh invoices that's the
+                  finalize moment. Hide for the first 24h to avoid the
+                  misleading "since 5m ago" copy on a just-finalized
+                  invoice; surface only when the state has actually
+                  persisted long enough to matter. */}
+              {att.since && isOlderThan(att.since, 24 * 60 * 60 * 1000) && (
                 <span className="text-[10px] text-muted-foreground">
                   · since {formatRelative(att.since)}
                 </span>
               )}
             </div>
+            {/* Tech code — useful for support tickets but visually
+                noisy at the headline. Demoted to a small disclosure
+                under the actions row (line ~110) so the human-readable
+                badge + message dominate the banner. */}
             <p className="text-sm text-foreground">{att.message}</p>
             {att.next_attempt_at && (
               <p className="text-xs text-muted-foreground flex items-center gap-1.5">
@@ -115,6 +120,28 @@ export function InvoiceAttention({
               </Button>
             )}
           </div>
+        )}
+
+        {/* Auto-collect armed indicator: for the no_payment_method
+            state, the engine has queued for scheduler retry — the
+            moment a PM goes ready, the invoice charges automatically
+            without operator intervention. Surface this so the
+            operator knows the system is "watching" and the manual
+            Collect Payment click is an override, not a requirement. */}
+        {att.reason === 'no_payment_method' && (
+          <p className="text-xs text-muted-foreground flex items-center gap-1.5 pl-7">
+            <Info size={11} className="shrink-0" />
+            Engine will auto-charge once a payment method is attached.
+          </p>
+        )}
+
+        {/* Tech code — useful for support tickets, demoted from the
+            headline. Shown inline-mono next to the doc anchor so a
+            screenshot sent to support carries the routing hint. */}
+        {att.code && (
+          <p className="text-[10px] text-muted-foreground/60 font-mono pl-7">
+            {att.code}
+          </p>
         )}
 
         {att.detail && (
@@ -309,6 +336,17 @@ function defaultLabel(action: AttentionAction): string {
     add_payment_method: 'Add payment method',
   }
   return map[action] ?? action
+}
+
+// isOlderThan returns true when the ISO timestamp is older than
+// `thresholdMs`. Used to gate the "since X ago" badge so we don't
+// surface "since 5m ago" on a just-finalized invoice — `since` is
+// sourced from inv.UpdatedAt which reflects the most recent state
+// change, not necessarily when the *problem* started.
+function isOlderThan(iso: string, thresholdMs: number): boolean {
+  const ts = new Date(iso).getTime()
+  if (Number.isNaN(ts)) return false
+  return Date.now() - ts > thresholdMs
 }
 
 function formatRelative(iso: string): string {

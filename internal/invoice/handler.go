@@ -83,6 +83,27 @@ type EmailSender interface {
 	SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
 }
 
+// EmailEventLister surfaces customer-notification email rows
+// (queued/dispatched/failed) tied to an invoice for the timeline.
+// Without this, operators have no signal that the customer was
+// notified — the no-PM finalize email goes out asynchronously and
+// the only trace is the email_outbox row. Satisfied by
+// email.OutboxStore.ListByInvoice.
+type EmailEventLister interface {
+	ListByInvoice(ctx context.Context, tenantID, invoiceNumber string) ([]EmailEventRow, error)
+}
+
+// EmailEventRow is the timeline-friendly view of an email_outbox row.
+// Trimmed to the fields the timeline renderer needs.
+type EmailEventRow struct {
+	EmailType    string
+	Status       string  // pending / dispatched / failed
+	CreatedAt    time.Time
+	DispatchedAt *time.Time
+	LastError    string
+	To           string  // resolved from payload
+}
+
 // RefundIssuer issues a direct refund on a paid invoice. Concretely this
 // creates + issues a refund credit note atomically; the handler doesn't need
 // to know about credit notes as a data model. Backed by creditnote.Service.
@@ -136,6 +157,7 @@ type Handler struct {
 	paymentCancel   PaymentCanceler
 	dunning         DunningResolver
 	webhookEvents   WebhookEventLister
+	emailEvents     EmailEventLister
 	dunningTimeline DunningTimelineFetcher
 	events          domain.EventDispatcher
 	emailSender     EmailSender
@@ -151,6 +173,7 @@ type HandlerDeps struct {
 	PaymentCancel   PaymentCanceler
 	Dunning         DunningResolver
 	WebhookEvents   WebhookEventLister
+	EmailEvents     EmailEventLister
 	DunningTimeline DunningTimelineFetcher
 	Events          domain.EventDispatcher
 	RefundIssuer    RefundIssuer
@@ -166,6 +189,7 @@ func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter,
 		h.paymentCancel = deps[0].PaymentCancel
 		h.dunning = deps[0].Dunning
 		h.webhookEvents = deps[0].WebhookEvents
+		h.emailEvents = deps[0].EmailEvents
 		h.dunningTimeline = deps[0].DunningTimeline
 		h.events = deps[0].Events
 		h.refundIssuer = deps[0].RefundIssuer
@@ -176,6 +200,14 @@ func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter,
 // SetEmailSender configures email sending for invoice notifications.
 func (h *Handler) SetEmailSender(sender EmailSender) {
 	h.emailSender = sender
+}
+
+// SetEmailEvents wires the email_outbox lister used by the timeline
+// to surface customer-notification events. Optional — when nil, the
+// timeline omits the email rows but the rest of it (lifecycle,
+// stripe webhooks, dunning) renders unchanged.
+func (h *Handler) SetEmailEvents(lister EmailEventLister) {
+	h.emailEvents = lister
 }
 
 // SetAuditLogger configures audit logging for financial operations.
@@ -870,6 +902,42 @@ var relevantDunningEvents = map[string]bool{
 	"escalated":       true,
 }
 
+// describeEmailEvent maps an email_outbox row to a timeline-friendly
+// description + status. Returns empty description for email types
+// that don't belong on the invoice timeline (catch-all so adding new
+// templates doesn't accidentally surface them). Status maps to the
+// existing dot-color grammar: succeeded (emerald), processing (blue),
+// failed (red).
+func describeEmailEvent(emailType, outboxStatus, _ string) (string, string) {
+	desc := ""
+	switch emailType {
+	case "invoice":
+		desc = "Invoice emailed to customer"
+	case "payment_receipt":
+		desc = "Payment receipt emailed"
+	case "payment_failed":
+		desc = "Payment-failed email sent to customer"
+	case "payment_update_request":
+		desc = "Customer notified — payment method required"
+	case "dunning_warning":
+		desc = "Dunning reminder emailed"
+	case "dunning_escalation":
+		desc = "Dunning escalation emailed"
+	default:
+		return "", ""
+	}
+	// Map outbox row status to timeline-status grammar.
+	switch outboxStatus {
+	case "dispatched":
+		return desc, "succeeded"
+	case "failed":
+		return desc + " (delivery failed)", "failed"
+	case "pending":
+		return desc + " (queued)", "processing"
+	}
+	return desc, "succeeded"
+}
+
 func describeDunningEvent(eventType, reason string, attemptCount int) (string, string) {
 	switch eventType {
 	case "dunning_started":
@@ -970,6 +1038,37 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 			AmountCents: &amt,
 			Currency:    inv.Currency,
 		})
+	}
+
+	// Customer-notification email events. Surfaces "Customer notified
+	// — payment method required" / "Receipt sent" / "Dunning warning
+	// emailed" alongside the Stripe + dunning rows. Without this,
+	// operators have no signal that the customer was actually told
+	// about the issue — the email outbox is the durable trace.
+	if h.emailEvents != nil {
+		emailEvts, err := h.emailEvents.ListByInvoice(r.Context(), tenantID, inv.InvoiceNumber)
+		if err == nil {
+			for _, evt := range emailEvts {
+				desc, status := describeEmailEvent(evt.EmailType, evt.Status, evt.LastError)
+				if desc == "" {
+					continue
+				}
+				// Use dispatched_at when the row was actually delivered
+				// so the timeline reflects send-time, not enqueue-time.
+				ts := evt.CreatedAt
+				if evt.DispatchedAt != nil {
+					ts = *evt.DispatchedAt
+				}
+				events = append(events, timelineEvent{
+					Timestamp:   ts.Format(time.RFC3339),
+					Source:      "email",
+					EventType:   "email." + evt.EmailType,
+					Status:      status,
+					Description: desc,
+					Error:       evt.LastError,
+				})
+			}
+		}
 	}
 
 	// Fetch Stripe webhook events — only operator-relevant ones
