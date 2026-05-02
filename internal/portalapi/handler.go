@@ -12,6 +12,7 @@ package portalapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"maps"
@@ -58,22 +59,37 @@ type CreditNoteLister interface {
 	List(ctx context.Context, tenantID, invoiceID string) ([]domain.CreditNote, error)
 }
 
+// PaymentMethodUpdater starts a customer-self-serve PM update flow.
+// Returns a Stripe Checkout (setup mode) URL that the customer
+// redirects to; success callback flips PaymentSetup → ready and the
+// scheduler auto-collects any auto_charge_pending invoices on next
+// sweep (Chargebee parity).
+//
+// returnURL is where Stripe redirects after success/cancel; the
+// portal frontend usually wants to land back on its own page with a
+// confirmation banner.
+type PaymentMethodUpdater interface {
+	CreateUpdateSession(ctx context.Context, tenantID, customerID, returnURL string) (string, error)
+}
+
 type Handler struct {
 	invoices      InvoiceService
 	subscriptions SubscriptionService
 	customers     CustomerGetter
 	settings      SettingsGetter
 	creditNotes   CreditNoteLister
+	pmUpdater     PaymentMethodUpdater
 	events        domain.EventDispatcher
 }
 
 type Deps struct {
-	Invoices      InvoiceService
-	Subscriptions SubscriptionService
-	Customers     CustomerGetter
-	Settings      SettingsGetter
-	CreditNotes   CreditNoteLister
-	Events        domain.EventDispatcher
+	Invoices             InvoiceService
+	Subscriptions        SubscriptionService
+	Customers            CustomerGetter
+	Settings             SettingsGetter
+	CreditNotes          CreditNoteLister
+	PaymentMethodUpdater PaymentMethodUpdater
+	Events               domain.EventDispatcher
 }
 
 func New(deps Deps) *Handler {
@@ -83,6 +99,7 @@ func New(deps Deps) *Handler {
 		customers:     deps.Customers,
 		settings:      deps.Settings,
 		creditNotes:   deps.CreditNotes,
+		pmUpdater:     deps.PaymentMethodUpdater,
 		events:        deps.Events,
 	}
 }
@@ -93,6 +110,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/invoices/{id}/pdf", h.downloadInvoicePDF)
 	r.Get("/subscriptions", h.listSubscriptions)
 	r.Post("/subscriptions/{id}/cancel", h.cancelSubscription)
+	r.Post("/payment-method/update", h.updatePaymentMethod)
 	r.Get("/branding", h.branding)
 	return r
 }
@@ -412,6 +430,56 @@ func (h *Handler) cancelSubscription(w http.ResponseWriter, r *http.Request) {
 	})
 
 	respond.JSON(w, r, http.StatusOK, toPortalSubscription(canceled))
+}
+
+// ---- Payment method update ----
+
+type updatePaymentMethodRequest struct {
+	// ReturnURL is where Stripe Checkout redirects after success/
+	// cancel. Optional; the portal supplies a default landing back on
+	// its own page if unset.
+	ReturnURL string `json:"return_url,omitempty"`
+}
+
+type updatePaymentMethodResponse struct {
+	URL string `json:"url"`
+}
+
+// updatePaymentMethod kicks off a Stripe Checkout (setup mode) flow
+// the customer redirects to. On success, Stripe captures the new
+// payment method server-side, the webhook reconciler flips
+// PaymentSetup status → ready, and the engine's RetryPendingCharges
+// scheduler auto-collects any auto_charge_pending invoices on its
+// next tick. Operator never has to intervene.
+//
+// 503 if no PM updater is wired (e.g. Stripe not configured for this
+// mode). 400 if the customer has no Stripe customer record yet —
+// they must complete the initial setup flow first; this endpoint
+// updates an EXISTING setup, doesn't create one.
+func (h *Handler) updatePaymentMethod(w http.ResponseWriter, r *http.Request) {
+	tenantID, customerID, ok := identity(r)
+	if !ok {
+		respond.Unauthorized(w, r, "missing portal session context")
+		return
+	}
+	if h.pmUpdater == nil {
+		respond.Error(w, r, http.StatusServiceUnavailable, "api_error", "stripe_unavailable",
+			"payment method updates are not available — tenant has no Stripe configuration for this mode")
+		return
+	}
+
+	var req updatePaymentMethodRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req) // body optional
+	}
+
+	url, err := h.pmUpdater.CreateUpdateSession(r.Context(), tenantID, customerID, req.ReturnURL)
+	if err != nil {
+		respond.FromError(w, r, err, "payment_method")
+		return
+	}
+
+	respond.JSON(w, r, http.StatusCreated, updatePaymentMethodResponse{URL: url})
 }
 
 func (h *Handler) fireSubscriptionEvent(ctx context.Context, tenantID, eventType string, sub domain.Subscription, extra map[string]any) {

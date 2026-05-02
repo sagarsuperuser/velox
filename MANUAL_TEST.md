@@ -438,6 +438,47 @@ under a "Test mode" sidebar header below System.
 
 ---
 
+## Customer Portal (`/v1/me/*` and public magic-link)
+
+## FLOW CP1: Magic-link login
+
+- [ ] `curl -X POST $API/v1/public/customer-portal/magic-link -H 'Content-Type: application/json' -d '{"email":"any@example.com"}'` → 202 (always, regardless of whether email matches a customer).
+- [ ] When email matches a real customer, server logs include the magic-link URL with a tokenized path.
+- [ ] `curl -X POST $API/v1/public/customer-portal/magic/consume -H 'Content-Type: application/json' -d '{"token":"<raw>"}'` → 200 `{token, customer_id, livemode, expires_at}`.
+- [ ] Re-using the same token returns 401 `invalid or expired magic link`.
+- [ ] Using the returned session `token` as `Authorization: Bearer <token>` on `/v1/me/invoices` succeeds with the customer's invoice list.
+
+## FLOW CP2: Subscription cancel by customer
+
+- [ ] `curl -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/subscriptions"` → list of customer's own subs only.
+- [ ] `curl -X POST -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/subscriptions/$SUB_ID/cancel"` → 200, sub status flipped to canceled.
+- [ ] Cancel a sub belonging to a different customer → 404 (not 403; no existence leak).
+- [ ] Webhook delivery for `subscription.canceled` includes `canceled_by: "customer"`.
+- [ ] Subsequent billing cycle ticks skip the canceled sub.
+
+## FLOW CP3: Payment method update by customer
+
+- [ ] Customer must have an existing PaymentSetup (operator-driven `/v1/checkout/setup` ran first).
+- [ ] `curl -X POST -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/payment-method/update" -H 'Content-Type: application/json' -d '{"return_url":"https://app.example.com/billing"}'` → 201 `{url}`.
+- [ ] URL is a Stripe Checkout setup-mode session; opening in a browser asks for new card details.
+- [ ] On success, Stripe redirects to `return_url`; webhook fires; `payment_setups.setup_status` flips to `ready`.
+- [ ] If the customer had `auto_charge_pending=true` invoices, `RetryPendingCharges` scheduler tick collects them automatically (no operator action).
+- [ ] Customer with no PaymentSetup → 400 `missing_payment_setup`.
+- [ ] Tenant with no Stripe configured for active livemode → 503 `stripe_unavailable`.
+
+## FLOW CP4: Invoice PDF download
+
+- [ ] `curl -OJ -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/invoices/$INV_ID/pdf"` downloads the PDF.
+- [ ] Response carries `Content-Type: application/pdf` and `Content-Disposition: attachment; filename="..."`.
+- [ ] PDF for a different customer's invoice → 404.
+
+## FLOW CP5: Branding endpoint
+
+- [ ] `curl -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/branding"` → tenant's branding (company name, logo URL, brand color, support URL).
+- [ ] DPs use this to render their embedded portal in tenant-branded chrome.
+
+---
+
 ## Billing Engine
 
 ## FLOW B1: Billing model sanity (arrears + proration)

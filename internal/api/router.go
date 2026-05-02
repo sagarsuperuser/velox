@@ -975,7 +975,16 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		Customers:     customerStore,
 		Settings:      settingsStore,
 		CreditNotes:   &creditNoteListerAdapter{svc: creditNoteSvc},
-		Events:        eventDispatcher,
+		// Customer-self-serve PM update via Stripe Checkout (setup
+		// mode). Reuses the same Stripe path as the operator-driven
+		// /v1/portal endpoint; the adapter wires customer ctx + a
+		// portal-default return URL.
+		PaymentMethodUpdater: &portalPaymentMethodUpdaterAdapter{
+			clients:   stripeClients,
+			store:     customerStore,
+			portalURL: portalURL,
+		},
+		Events: eventDispatcher,
 	})
 	r.Route("/v1/me", func(r chi.Router) {
 		r.Use(portalSvc.Middleware())
