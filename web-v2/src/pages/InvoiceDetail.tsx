@@ -403,14 +403,24 @@ export default function InvoiceDetailPage() {
               and hasn't been pre-addendum-finalized without a rotate. */}
           {invoice.public_token && invoice.status !== 'draft' && (
             <>
-              <Button variant="outline" size="sm" onClick={copyPublicLink} disabled={acting} title={publicInvoiceURL}>
-                <Link2 size={14} className="mr-1.5" />
-                Copy Link
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => setShowRotatePublicTokenConfirm(true)} disabled={acting} title="Invalidate the current URL and mint a new one">
-                <RotateCw size={14} className="mr-1.5" />
-                Rotate
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="outline" size="sm" onClick={copyPublicLink} disabled={acting}>
+                    <Link2 size={14} className="mr-1.5" />
+                    Copy Link
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-md break-all">{publicInvoiceURL}</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="outline" size="sm" onClick={() => setShowRotatePublicTokenConfirm(true)} disabled={acting}>
+                    <RotateCw size={14} className="mr-1.5" />
+                    Rotate
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Invalidate the current URL and mint a new one</TooltipContent>
+              </Tooltip>
             </>
           )}
 

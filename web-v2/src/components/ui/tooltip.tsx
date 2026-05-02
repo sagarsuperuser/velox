@@ -2,8 +2,12 @@ import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
 
 import { cn } from "@/lib/utils"
 
+// 150ms matches Linear / Stripe / Vercel — fast enough to feel
+// intentional on hover, slow enough not to flash on cursor flick-over.
+// Pure 0 looks jittery; OS-controlled native title="…" lands ~750ms+
+// which is what the user-reported "so slow" complaint was about.
 function TooltipProvider({
-  delay = 0,
+  delay = 150,
   ...props
 }: TooltipPrimitive.Provider.Props) {
   return (

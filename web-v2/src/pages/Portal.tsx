@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -359,15 +360,19 @@ export default function Portal() {
                     <div className="text-sm font-medium text-foreground tabular-nums shrink-0">
                       {formatCurrency(inv.total_amount_cents, inv.currency)}
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="shrink-0"
-                      onClick={() => void downloadInvoicePDF(inv)}
-                      title="Download PDF"
-                    >
-                      <Download size={14} />
-                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() => void downloadInvoicePDF(inv)}
+                        >
+                          <Download size={14} />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Download PDF</TooltipContent>
+                    </Tooltip>
                   </CardContent>
                 </Card>
               ))}
