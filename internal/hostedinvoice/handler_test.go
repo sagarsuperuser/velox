@@ -32,12 +32,12 @@ func newFakeInvoices() *fakeInvoices {
 	}
 }
 
-func (f *fakeInvoices) GetByPublicToken(_ context.Context, token string) (domain.Invoice, error) {
+func (f *fakeInvoices) GetByPublicToken(_ context.Context, token string) (domain.Invoice, bool, error) {
 	inv, ok := f.byToken[token]
 	if !ok {
-		return domain.Invoice{}, errs.ErrNotFound
+		return domain.Invoice{}, false, errs.ErrNotFound
 	}
-	return inv, nil
+	return inv, false, nil
 }
 
 func (f *fakeInvoices) GetWithLineItems(_ context.Context, tenantID, id string) (domain.Invoice, []domain.InvoiceLineItem, error) {

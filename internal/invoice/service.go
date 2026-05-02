@@ -304,17 +304,19 @@ func (s *Service) GetWithLineItems(ctx context.Context, tenantID, id string) (do
 	return s.attachAttention(ctx, inv), items, nil
 }
 
-// GetByPublicToken resolves a hosted-invoice-URL token to the invoice.
-// Exposed on the service so the public hosted-invoice handler can look
-// up the invoice (and hence the owning tenant) before any tenant context
-// is available. Thin forward to the store — the store method is the one
-// that uses TxBypass.
-func (s *Service) GetByPublicToken(ctx context.Context, token string) (domain.Invoice, error) {
-	inv, err := s.store.GetByPublicToken(ctx, token)
+// GetByPublicToken resolves a hosted-invoice-URL token to the invoice and
+// its livemode. Exposed on the service so the public hosted-invoice
+// handler can look up the invoice (and hence the owning tenant + mode)
+// before any tenant context is available. Thin forward to the store —
+// the store method is the one that uses TxBypass. The livemode return
+// is what the handler uses to pin postgres.WithLivemode on the request
+// context for every downstream RLS-scoped read.
+func (s *Service) GetByPublicToken(ctx context.Context, token string) (domain.Invoice, bool, error) {
+	inv, livemode, err := s.store.GetByPublicToken(ctx, token)
 	if err != nil {
-		return domain.Invoice{}, err
+		return domain.Invoice{}, false, err
 	}
-	return s.attachAttention(ctx, inv), nil
+	return s.attachAttention(ctx, inv), livemode, nil
 }
 
 // SetPublicToken persists a rotated public_token on a non-draft invoice.

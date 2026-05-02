@@ -1153,29 +1153,33 @@ func (s *PostgresStore) SetPublicToken(ctx context.Context, tenantID, invoiceID,
 // exist. Runs under TxBypass for exactly that reason; the token's 256 bits
 // of entropy plus the UNIQUE index make cross-tenant probing infeasible.
 // Empty token returns ErrNotFound rather than querying a null match.
-func (s *PostgresStore) GetByPublicToken(ctx context.Context, token string) (domain.Invoice, error) {
+func (s *PostgresStore) GetByPublicToken(ctx context.Context, token string) (domain.Invoice, bool, error) {
 	if token == "" {
-		return domain.Invoice{}, errs.ErrNotFound
+		return domain.Invoice{}, false, errs.ErrNotFound
 	}
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
-		return domain.Invoice{}, err
+		return domain.Invoice{}, false, err
 	}
 	defer postgres.Rollback(tx)
 
-	var inv domain.Invoice
-	err = tx.QueryRowContext(ctx, `SELECT `+invCols+` FROM invoices WHERE public_token = $1`, token).
-		Scan(scanInvDest(&inv)...)
+	var (
+		inv      domain.Invoice
+		livemode bool
+	)
+	dest := append(scanInvDest(&inv), &livemode)
+	err = tx.QueryRowContext(ctx, `SELECT `+invCols+`, livemode FROM invoices WHERE public_token = $1`, token).
+		Scan(dest...)
 	if err == sql.ErrNoRows {
-		return domain.Invoice{}, errs.ErrNotFound
+		return domain.Invoice{}, false, errs.ErrNotFound
 	}
 	if err != nil {
-		return domain.Invoice{}, err
+		return domain.Invoice{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return domain.Invoice{}, err
+		return domain.Invoice{}, false, err
 	}
-	return inv, nil
+	return inv, livemode, nil
 }
 
 // GetByStripeInvoiceID resolves a Stripe invoice id (in_xxx) to its imported

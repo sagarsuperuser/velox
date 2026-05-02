@@ -100,16 +100,16 @@ func (m *memStore) SetPublicToken(_ context.Context, tenantID, invoiceID, token 
 	return nil
 }
 
-func (m *memStore) GetByPublicToken(_ context.Context, token string) (domain.Invoice, error) {
+func (m *memStore) GetByPublicToken(_ context.Context, token string) (domain.Invoice, bool, error) {
 	if token == "" {
-		return domain.Invoice{}, errs.ErrNotFound
+		return domain.Invoice{}, false, errs.ErrNotFound
 	}
 	for _, inv := range m.invoices {
 		if inv.PublicToken == token {
-			return inv, nil
+			return inv, false, nil
 		}
 	}
-	return domain.Invoice{}, errs.ErrNotFound
+	return domain.Invoice{}, false, errs.ErrNotFound
 }
 
 func (m *memStore) GetByStripeInvoiceID(_ context.Context, tenantID, stripeInvoiceID string) (domain.Invoice, error) {
