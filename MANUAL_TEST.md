@@ -290,8 +290,8 @@ v1; password reset is single-use 1h tokens (SMTP deferred). See ADR-011.
 
 ### Password reset
 
-- [ ] `/login` → "Forgot password?" → enter email → submit → server returns 204 regardless of whether the email exists (no enumeration). Reset link is logged to stdout (SMTP integration deferred).
-- [ ] Copy the link from logs → `/reset-password?token=…` → set new password (12-char min) → redirect to `/login?reset=success` → sign in with the new password.
+- [ ] `/login` → "Forgot password?" → enter email → submit → server returns 200 regardless of whether the email exists (no enumeration). With Mailpit running (`docker compose up -d mailpit`) and `SMTP_HOST=localhost:1025`, the reset email lands at http://localhost:8025. With SMTP unconfigured, server logs show `password reset email send failed err="email: SMTP not configured (SMTP_HOST unset)"` — there is no stdout fallback link.
+- [ ] Open the reset email in Mailpit → click link → `/reset-password?token=…` → set new password (12-char min) → redirect to `/login?reset=success` → sign in with the new password.
 - [ ] Reuse the same token → 422 "token already used or expired".
 - [ ] Wait past the 1h TTL on a fresh token → 422 "token already used or expired".
 - [ ] Submit a password under 12 chars → 422 with `field=password`.
@@ -445,7 +445,7 @@ under a "Test mode" sidebar header below System.
 API surface:
 
 - [ ] `curl -X POST $API/v1/public/customer-portal/magic-link -H 'Content-Type: application/json' -d '{"email":"any@example.com"}'` → 202 (always, regardless of whether email matches a customer).
-- [ ] When email matches a real customer, server logs include the magic-link URL pointing at `/portal/magic?token=…`.
+- [ ] When email matches a real customer, the magic-link email lands in Mailpit (http://localhost:8025) with a link to `/portal/magic?token=…`. With `CUSTOMER_PORTAL_URL` unset, server logs show `magic-link delivery failed err="customerportal: CUSTOMER_PORTAL_URL not set"` — no stub stdout token.
 - [ ] `curl -X POST $API/v1/public/customer-portal/magic/consume -H 'Content-Type: application/json' -d '{"token":"<raw>"}'` → 200 `{token, customer_id, livemode, expires_at}`.
 - [ ] Re-using the same token returns 401 `invalid or expired magic link`.
 - [ ] Using the returned session `token` as `Authorization: Bearer <token>` on `/v1/me/invoices` succeeds with the customer's invoice list.
@@ -454,7 +454,7 @@ UI surface (web-v2):
 
 - [ ] Visit `/portal/login` → email input form with "Send sign-in link" button.
 - [ ] Submit a real customer's email → confirmation card shows "Check your email" + the email value.
-- [ ] Click the magic-link URL from server logs → lands on `/portal/magic?token=…` → shows "Signing you in…" briefly → redirects to `/portal`.
+- [ ] Open the magic-link email in Mailpit → click → lands on `/portal/magic?token=…` → shows "Signing you in…" briefly → redirects to `/portal`.
 - [ ] Visit `/portal/magic` without a token → "Sign-in link not valid" + "Request a new link" button.
 - [ ] Visit `/portal/magic?token=invalid` → same error card.
 - [ ] Visit `/portal` without a session → redirects to `/portal/login`.
@@ -509,12 +509,22 @@ UI surface:
 - [ ] Response carries `Content-Type: application/pdf` and `Content-Disposition: attachment; filename="..."`.
 - [ ] PDF for a different customer's invoice → 404.
 
-## FLOW E1-3: Email delivery (SMTP)
+## FLOW E1-5: Email delivery (SMTP)
 
 Velox sends customer-facing emails (invoices, dunning, payment-
 update-request, magic-link, password-reset) via SMTP. Configuration
-via env vars (see `docs/ops/email-setup.md`); when unconfigured, the
-sender logs the email body to stdout instead of failing.
+via env vars (see `docs/ops/email-setup.md`). Single delivery path:
+when SMTP isn't configured, every send returns
+`ErrSMTPNotConfigured` — there is no stdout fallback. Local dev
+runs Mailpit (`docker compose up -d mailpit`); point
+`SMTP_HOST=localhost:1025` and view delivered mail at
+http://localhost:8025.
+
+Boot warnings to look for in the API log on startup (one line each
+when the corresponding var is unset; never fatal):
+- `SMTP NOT CONFIGURED — every customer-facing email … will fail`
+- `CUSTOMER_PORTAL_URL NOT SET — magic-link requests will fail`
+- `PAYMENT_UPDATE_URL NOT SET — payment-update-request emails … will fail`
 
 - [ ] **E1: STARTTLS happy path** — set `SMTP_HOST` / `SMTP_PORT=587` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` / `SMTP_TLS=starttls`. Trigger an invoice email (`POST /v1/invoices/<id>/email`). Confirm:
   - Outbox row appears in `email_outbox` with `status='pending'`.
@@ -522,12 +532,13 @@ sender logs the email body to stdout instead of failing.
   - Recipient inbox receives the email.
   - Application logs `email sent to=… subject=…`.
 - [ ] **E2: Implicit TLS (port 465)** — switch to `SMTP_TLS=implicit` + `SMTP_PORT=465`. Same trigger; same expected outcome. Verifies the `tls.Dial`-based path works against providers that don't accept STARTTLS.
-- [ ] **E3: SMTP not configured** — unset `SMTP_HOST`. Trigger any email-emitting action. Outbox row goes to `status='pending'` (because dispatcher still claims it), but `Send*` returns nil and logs `email (not sent — SMTP not configured)`. The dispatcher will keep retrying until SMTP is configured; OR mark the row dispatched if you've decided to skip emails entirely.
+- [ ] **E3: SMTP not configured (single failure path)** — unset `SMTP_HOST`. Boot the API; confirm `SMTP NOT CONFIGURED` warning fires once at startup. Trigger an invoice email. Outbox row goes to `status='pending'`; dispatcher claims it, then logs `email send failed err="email: SMTP not configured (SMTP_HOST unset)"` and retries with backoff. After max retries the row lands in DLQ. There is no stdout email body, no silent success.
 - [ ] **E4: SMTP rejects with 5xx (synchronous bounce)** — point `SMTP_HOST` at a server that hard-rejects RCPT TO (e.g. send to a malformed address `foo@invalid`). Confirm:
   - Customer's row in `customers.email_status` flips to `bounced`.
   - `customers.email_bounce_reason` carries the SMTP error string.
   - Outbox row may still mark as dispatched (a 5xx is "delivered to ESP, ESP rejected") OR retried — depends on the error code shape.
 - [ ] **E5: Provider-specific configs work** — verify each ESP per `docs/ops/email-setup.md` (SendGrid, Postmark, SES, Mailgun, Resend) by setting their env vars and triggering an email.
+- [ ] **E6: Mailpit local dev path** — `docker compose up -d mailpit`; export `SMTP_HOST=localhost:1025 SMTP_PORT=1025 SMTP_FROM=billing@local.test SMTP_TLS=none`. Trigger any email path; confirm it lands at http://localhost:8025 with the rendered HTML+text body.
 
 ## FLOW EX1-4: Streaming CSV exports
 
