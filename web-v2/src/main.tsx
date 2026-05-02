@@ -121,6 +121,9 @@ const CreditNotesPage = lazy(() => import('@/pages/CreditNotes'))
 const AuditLogPage = lazy(() => import('@/pages/AuditLog'))
 const UpdatePaymentPage = lazy(() => import('@/pages/UpdatePayment'))
 const HostedInvoicePage = lazy(() => import('@/pages/HostedInvoice'))
+const PortalLoginPage = lazy(() => import('@/pages/PortalLogin'))
+const PortalMagicPage = lazy(() => import('@/pages/PortalMagic'))
+const PortalPage = lazy(() => import('@/pages/Portal'))
 const CheckoutSuccessPage = lazy(() => import('@/pages/CheckoutSuccess'))
 const CustomerDetailPage = lazy(() => import('@/pages/CustomerDetail'))
 const InvoiceDetailPage = lazy(() => import('@/pages/InvoiceDetail'))
@@ -175,6 +178,13 @@ const App = () => (
               <Route path="/meters/:id" element={<ProtectedRoute><MeterDetailPage /></ProtectedRoute>} />
               <Route path="/update-payment" element={<UpdatePaymentPage />} />
               <Route path="/invoice/:token" element={<HostedInvoicePage />} />
+              {/* Customer-facing self-service portal — magic-link auth, no
+                  operator dashboard chrome. /portal/login + /portal/magic
+                  are unauthenticated; /portal reads the session token from
+                  localStorage and redirects to /portal/login on miss. */}
+              <Route path="/portal/login" element={<PortalLoginPage />} />
+              <Route path="/portal/magic" element={<PortalMagicPage />} />
+              <Route path="/portal" element={<PortalPage />} />
               <Route path="/checkout/success" element={<CheckoutSuccessPage />} />
             </Routes>
           </Suspense>
