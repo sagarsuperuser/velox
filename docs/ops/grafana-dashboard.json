@@ -1,0 +1,371 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Velox billing engine — operator-grade observability. Imports against any Prometheus datasource scraping /v1/metrics. Panels grouped by concern: HTTP, Billing engine, Payments, Dunning, Outboxes, Stripe.",
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "HTTP",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Request rate by route + status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "sum by (route, status) (rate(velox_http_requests_total[5m]))",
+          "legendFormat": "{{route}} {{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Request latency p50/p95/p99",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, route) (rate(velox_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{route}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(velox_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(velox_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Requests in flight",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 9 },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "velox_http_requests_in_flight",
+          "legendFormat": "in flight",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "id": 200,
+      "title": "Billing engine",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Billing cycles per minute",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "sum(rate(velox_billing_cycles_total[1m])) * 60",
+          "legendFormat": "cycles/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Billing cycle duration p50/p95",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(velox_billing_cycle_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(velox_billing_cycle_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Billing cycle errors (PAGE: rate > 0.1/s for 5m)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "sum(rate(velox_billing_cycle_errors_total[5m]))",
+          "legendFormat": "errors/sec",
+          "refId": "A"
+        }
+      ],
+      "alert": {
+        "name": "Billing cycle errors",
+        "conditions": [
+          {
+            "evaluator": { "type": "gt", "params": [0.1] },
+            "query": { "params": ["A", "5m", "now"] },
+            "reducer": { "type": "avg" },
+            "type": "query"
+          }
+        ],
+        "for": "5m",
+        "frequency": "1m"
+      }
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Invoices generated rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "sum(rate(velox_invoices_generated_total[5m])) * 60",
+          "legendFormat": "invoices/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "id": 300,
+      "title": "Payments",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Charge outcomes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "id": 8,
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(velox_payment_charges_total[5m])) * 60",
+          "legendFormat": "{{outcome}}/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Auto-charge retries",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "id": 9,
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(velox_auto_charge_retries_total[5m])) * 60",
+          "legendFormat": "{{outcome}}/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Stripe circuit breaker (1 = open, 0 = closed)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+      "id": 10,
+      "targets": [
+        {
+          "expr": "velox_stripe_breaker_state",
+          "legendFormat": "{{tenant}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Tax provider outcomes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
+      "id": 11,
+      "targets": [
+        {
+          "expr": "sum by (provider, outcome) (rate(velox_tax_outcome_total[5m])) * 60",
+          "legendFormat": "{{provider}}/{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 },
+      "id": 400,
+      "title": "Dunning",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Dunning runs processed",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 50 },
+      "id": 12,
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(velox_dunning_runs_processed_total[5m])) * 60",
+          "legendFormat": "{{outcome}}/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Active dunning runs (DB query, recording rule recommended)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 50 },
+      "id": 13,
+      "targets": [
+        {
+          "expr": "velox_dunning_active_runs",
+          "legendFormat": "active",
+          "refId": "A"
+        }
+      ],
+      "description": "This gauge isn't exposed yet — see runbook.md for SQL alternative. Add as a metric if dunning operations grow."
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 58 },
+      "id": 500,
+      "title": "Outboxes",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Webhook deliveries",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 59 },
+      "id": 14,
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(velox_webhook_deliveries_total[5m])) * 60",
+          "legendFormat": "{{outcome}}/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Outbox queue depth (recording rule needed)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 59 },
+      "id": 15,
+      "targets": [
+        {
+          "expr": "velox_email_outbox_pending OR vector(0)",
+          "legendFormat": "email pending",
+          "refId": "A"
+        },
+        {
+          "expr": "velox_webhook_outbox_pending OR vector(0)",
+          "legendFormat": "webhook pending",
+          "refId": "B"
+        }
+      ],
+      "description": "These gauges aren't exposed yet. Either add metrics in OutboxStore.PendingCount or query Postgres via postgres_exporter."
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 67 },
+      "id": 600,
+      "title": "System",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Audit write errors (PAGE if rate > 0)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 68 },
+      "id": 16,
+      "targets": [
+        {
+          "expr": "sum(rate(velox_audit_write_errors_total[5m]))",
+          "legendFormat": "audit errors/sec",
+          "refId": "A"
+        }
+      ],
+      "alert": {
+        "name": "Audit write failures",
+        "conditions": [
+          {
+            "evaluator": { "type": "gt", "params": [0] },
+            "query": { "params": ["A", "5m", "now"] },
+            "reducer": { "type": "avg" },
+            "type": "query"
+          }
+        ],
+        "for": "5m"
+      }
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Usage events ingested",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 68 },
+      "id": 17,
+      "targets": [
+        {
+          "expr": "sum(rate(velox_usage_events_ingested_total[5m])) * 60",
+          "legendFormat": "events/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "title": "Credit operations",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 76 },
+      "id": 18,
+      "targets": [
+        {
+          "expr": "sum by (operation) (rate(velox_credit_operations_total[5m])) * 60",
+          "legendFormat": "{{operation}}/min",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["velox", "billing"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Velox — Billing engine ops",
+  "uid": "velox-ops",
+  "version": 1
+}

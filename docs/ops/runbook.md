@@ -1,0 +1,382 @@
+# Operations Runbook
+
+What pages oncall, what doesn't, and what to do when Velox is in
+trouble. Velox-specific failure modes only — generic Postgres / K8s /
+Stripe troubleshooting is out of scope.
+
+## Health endpoints
+
+| Endpoint | Purpose | Use for |
+|---|---|---|
+| `GET /v1/healthz` | Liveness — process running, DB reachable | Kubernetes liveness probe |
+| `GET /v1/readyz` | Readiness — scheduler ran recently, DB write-OK | Kubernetes readiness probe + LB health check |
+| `GET /v1/metrics` | Prometheus scrape | Metrics-collection job |
+
+`/v1/readyz` flips to "not ready" if the scheduler hasn't ticked in
+2× the configured interval — this catches scheduler stalls without
+requiring liveness restart. See "Scheduler stalled" below.
+
+## Key metrics to alert on
+
+All metrics are exported under `/v1/metrics`. The set below is the
+alerting tier — what should page someone vs. what's informational.
+
+### Page (critical)
+
+| Metric | Threshold | What it means |
+|---|---|---|
+| `velox_http_request_duration_seconds` p99 | > 5s for 5m | Server is unhealthy |
+| `velox_billing_cycle_errors_total` | rate > 0.1/s for 5m | Billing cycles failing systematically |
+| `up{job="velox"}` | == 0 | Process down |
+| Postgres connection errors (count) | > 10/min | DB connectivity broken |
+| Scheduler `last_run` age | > 2× tick interval | Scheduler stalled |
+
+### Warn (slack/email, not page)
+
+| Metric | Threshold | What it means |
+|---|---|---|
+| `velox_payment_charges_total{outcome="failed"}` | rate spikes 5× baseline | Stripe issue or systematic decline |
+| `velox_dunning_runs_processed_total{outcome="failed"}` | rate > 0.5/s | Dunning machinery struggling |
+| `velox_webhook_deliveries_total{outcome="failed"}` | sustained failure | Customer's webhook endpoint down or signature wrong |
+| `velox_stripe_breaker_state` | == 1 (open) | Stripe API circuit-breaker tripped |
+| `email_outbox` pending count | > 1000 | Email dispatcher stuck or SMTP provider issue |
+| `webhook_outbox` pending count | > 1000 | Webhook dispatcher stuck |
+| `velox_auto_charge_retries_total{outcome="failed"}` | growing rapidly | Many invoices stuck in retry |
+| `velox_audit_write_errors_total` | rate > 0/s | Audit log writes failing — SOC 2 evidence at risk |
+
+### Info (dashboards, no alert)
+
+- `velox_billing_cycles_total` — cycle throughput
+- `velox_invoices_generated_total` — invoice volume
+- `velox_usage_events_ingested_total` — usage ingest rate
+- `velox_billing_cycle_duration_seconds` — cycle latency
+- `velox_credit_operations_total` — credit ledger activity
+- `velox_tax_outcome_total{provider, outcome}` — tax-provider success/failure breakdown
+- `velox_scheduled_cleanup_rows_total` — periodic cleanup activity
+
+## Failure modes — diagnosis + fix
+
+### 1. Scheduler stalled
+
+**Symptom**: `/v1/readyz` returns 503; subscriptions due for billing
+aren't being invoiced; `velox_billing_cycles_total` rate drops to 0.
+
+**Why it happens**:
+- Long-running transaction holding row locks (e.g., a tenant with
+  millions of usage events on a single sub).
+- DB primary failover; connections lost mid-tick.
+- Scheduler goroutine panic'd (rare; `slog.Error` logs it).
+
+**Diagnose**:
+```sql
+-- Long-running queries
+SELECT pid, now() - query_start AS duration, state, query
+FROM pg_stat_activity
+WHERE state = 'active' AND query_start < now() - interval '30 seconds'
+ORDER BY duration DESC;
+
+-- Scheduler last-run timestamp (from /v1/readyz response body)
+curl -s http://localhost:8080/v1/readyz
+```
+
+**Fix**:
+1. Check application logs for panics; restart pod if found.
+2. Cancel long queries with `SELECT pg_cancel_backend(<pid>)` if
+   appropriate.
+3. If the cycle for a specific tenant is hot-spotting, scale
+   `BILLING_BATCH_SIZE` down (env var) so each tick processes fewer
+   subs.
+
+### 2. Email outbox backed up
+
+**Symptom**: `email_outbox` table growing past 1000 rows in
+`status='pending'`; customers report missing invoice emails.
+
+**Why**:
+- SMTP provider rate-limiting or down.
+- Provider rejected mail (auth, sender domain, etc).
+- Dispatcher stopped (rare).
+
+**Diagnose**:
+```sql
+SELECT email_type, status, count(*), max(attempts) AS max_attempts
+FROM email_outbox
+WHERE status IN ('pending', 'failed')
+GROUP BY email_type, status
+ORDER BY count(*) DESC;
+
+-- Most-recent failure messages (truncated to most-recent N)
+SELECT email_type, last_error, count(*)
+FROM email_outbox
+WHERE status = 'failed' AND last_error IS NOT NULL
+GROUP BY email_type, last_error
+ORDER BY count(*) DESC
+LIMIT 10;
+```
+
+**Fix**:
+1. Diagnose SMTP provider via `last_error`.
+2. Once provider is healthy, the dispatcher drains automatically;
+   pending rows fire on their `next_attempt_at` schedule.
+3. To speed recovery, mass-reset `next_attempt_at` to now:
+   ```sql
+   UPDATE email_outbox SET next_attempt_at = now()
+   WHERE status = 'pending' AND attempts < 15;
+   ```
+4. Failed (DLQ'd) rows: investigate root cause, then either fix-and-
+   retry (`UPDATE ... SET status='pending', attempts=0`) or accept
+   loss + alert affected customers.
+
+### 3. Webhook outbox backed up
+
+**Symptom**: Same as email outbox but for `webhook_outbox`.
+
+**Why**:
+- Customer's webhook endpoint is down or rejecting.
+- HMAC signature mismatch (customer rotated secret without telling
+  Velox).
+
+**Diagnose**:
+```sql
+SELECT we.event_type, wo.status, count(*), max(wo.attempts) AS max_attempts
+FROM webhook_outbox wo
+JOIN webhook_endpoints we ON we.id = wo.endpoint_id
+WHERE wo.status IN ('pending', 'failed')
+GROUP BY we.event_type, wo.status;
+
+-- Per-endpoint failure rate
+SELECT endpoint_id, last_error, count(*)
+FROM webhook_outbox
+WHERE status = 'failed' AND last_error IS NOT NULL
+GROUP BY endpoint_id, last_error
+ORDER BY count(*) DESC
+LIMIT 20;
+```
+
+**Fix**:
+1. Contact customer; confirm endpoint is up.
+2. If signature mismatch: rotate signing secret in dashboard
+   (`Webhooks → Endpoint → Rotate secret`), customer updates their
+   side, replay failed events.
+
+### 4. Dunning circuit breaker open
+
+**Symptom**: `velox_stripe_breaker_state == 1`; dunning retries
+silently skipping (correct behaviour); customers report they
+expected retries but no email arrived.
+
+**Why**:
+- Stripe API has been failing repeatedly; breaker tripped to protect
+  the retry budget.
+- Tenant's Stripe credentials are invalid (per-tenant breaker).
+
+**Diagnose**:
+```sql
+-- Check recent payment retry outcomes
+SELECT outcome, count(*) FROM (
+  SELECT
+    CASE WHEN reason LIKE '%breaker%' OR reason LIKE '%transient%'
+         THEN 'transient_skip'
+         ELSE 'real_failure' END AS outcome
+  FROM invoice_dunning_events
+  WHERE event_type = 'retry_attempted' AND created_at > now() - interval '1 hour'
+) t GROUP BY outcome;
+```
+
+**Fix**:
+1. Check Stripe status (`status.stripe.com`).
+2. If tenant-specific: verify Stripe credentials in
+   `Settings → Stripe`; rotate if needed.
+3. Breaker auto-resets after cool-off; no manual intervention
+   normally required.
+
+### 5. Stale `payment_status='unknown'` invoices
+
+**Symptom**: Invoices stuck at `payment_unconfirmed` for hours;
+attention banner says "reconciler will resolve."
+
+**Why**:
+- Stripe webhook delivery delayed or lost.
+- Reconciler isn't running (single-instance assumption broken?).
+
+**Diagnose**:
+```sql
+SELECT id, payment_status, stripe_payment_intent_id, updated_at
+FROM invoices
+WHERE payment_status = 'unknown' AND updated_at < now() - interval '1 hour'
+LIMIT 20;
+```
+
+**Fix**:
+1. Check application logs for "reconciler" entries; should run
+   every 60s.
+2. Manually trigger reconcile: hit `POST /v1/admin/reconcile-payments`
+   (if exposed) or the per-invoice retry-payment action in the
+   dashboard.
+
+### 6. Test-clock advance hung
+
+**Symptom**: `test_clocks.status='advancing'` for >5min; operator
+sees Advancing badge stuck.
+
+**Why**:
+- Catchup loop processing many cycles — large jump on a monthly sub
+  can require dozens of billing-engine sweeps.
+- Billing-engine error mid-catchup; sub flipped to
+  `internal_failure`.
+
+**Diagnose**:
+```sql
+SELECT id, name, status, frozen_time, updated_at
+FROM test_clocks WHERE status = 'advancing';
+
+-- Check catchup progress: subscriptions on this clock
+SELECT s.id, s.next_billing_at, count(i.id) AS invoices_generated
+FROM subscriptions s
+LEFT JOIN invoices i ON i.subscription_id = s.id AND i.created_at > tc.updated_at
+JOIN test_clocks tc ON tc.id = s.test_clock_id
+WHERE tc.id = '<clock_id>'
+GROUP BY s.id, s.next_billing_at, tc.updated_at;
+```
+
+**Fix**:
+1. If progress is happening (invoices being generated), wait — large
+   jumps take time.
+2. If `internal_failure`, the operator needs to delete the clock and
+   start over (per ADR-011 Test Clocks design).
+
+### 7. RLS leakage suspected
+
+**Symptom**: A tenant reports seeing another tenant's data, OR a
+support ticket includes data from a different tenant than the
+operator's session.
+
+**This is a SEV-1.** RLS leakage is the worst-case bug.
+
+**Diagnose**:
+1. Lock down — set Velox to read-only via env var if possible.
+2. Verify RLS is enabled on every tenant-scoped table:
+   ```sql
+   SELECT schemaname, tablename, rowsecurity
+   FROM pg_tables WHERE schemaname = 'public' AND rowsecurity = false
+   ORDER BY tablename;
+   ```
+   Anything unexpected here = isolation broken.
+3. Check the leaked query: was it run with `app.tenant_id` correctly
+   set? `app.bypass_rls`?
+
+**Fix**:
+- Patch the path that bypassed RLS.
+- Audit `audit_log` for affected tenant pair.
+- Notify both customers + breach review.
+
+## Scheduler interval tuning
+
+Default tick is 5 minutes. Lower for tenants with high cycle
+frequency (per-day billing); raise to reduce DB load on large
+deployments.
+
+```bash
+# env vars
+BILLING_SCHEDULER_INTERVAL=5m   # default
+BILLING_BATCH_SIZE=50           # default — subs per tick
+```
+
+If you raise the interval, watch `velox_billing_cycle_duration_seconds`
+to ensure each tick fits inside the interval; otherwise the next
+tick collides with the previous and you'll see lock waits.
+
+## Manual operator interventions
+
+Documented operator-side actions for incidents:
+
+### Force-resolve a stuck dunning run
+
+```sql
+UPDATE invoice_dunning_runs
+SET state = 'resolved', resolution = 'manually_resolved',
+    resolved_at = now(), next_action_at = NULL
+WHERE id = '<run_id>';
+
+INSERT INTO invoice_dunning_events (run_id, invoice_id, event_type, state, reason)
+VALUES ('<run_id>', '<invoice_id>', 'resolved', 'resolved', 'manually_resolved');
+```
+
+Use only when dashboard "Resolve" action is unavailable. Audit log
+this action.
+
+### Force-mark an invoice paid (offline payment received)
+
+Use the dashboard's `Mark as paid` action. Direct SQL alternative:
+
+```sql
+UPDATE invoices
+SET payment_status = 'paid', paid_at = now(),
+    auto_charge_pending = false, updated_at = now()
+WHERE id = '<invoice_id>';
+```
+
+Audit log this action manually if running SQL directly.
+
+### Reset a customer's PaymentSetup to ready
+
+If Stripe webhook missed setting status:
+
+```sql
+UPDATE payment_setups
+SET setup_status = 'ready', updated_at = now()
+WHERE customer_id = '<customer_id>';
+```
+
+Verify via Stripe dashboard that the customer actually has a saved
+PM before doing this.
+
+## Logs to grep when paged
+
+Velox uses structured logging via `slog`. Useful greps:
+
+```bash
+# Billing cycle errors
+grep "billing cycle complete" log | jq 'select(.errors > 0)'
+
+# Auto-charge failures
+grep "auto-charge failed" log
+
+# Webhook delivery failures
+grep "webhook delivery failed" log
+
+# Tax provider failures
+grep "tax outcome" log | jq 'select(.outcome == "failed")'
+
+# Scheduler last run
+grep "billing cycle started" log | tail -5
+```
+
+Trace IDs (`Velox-Request-Id` header) propagate across logs and
+appear in error responses — paste a request ID into your log
+aggregator to see the full request chain.
+
+## Escalation
+
+For SEV-1 (data leakage, billing-correctness bug, all customer
+charges failing):
+
+1. Stop the bleeding: read-only mode if possible; pause webhook
+   delivery (rotate webhook secrets to invalidate in-flight).
+2. Snapshot DB state for forensic review.
+3. Assemble responders: backend lead + DBA + (if customer-facing)
+   support lead.
+4. Communicate: status page, affected customer notifications.
+5. Postmortem within 5 business days.
+
+For SEV-2 (subset of customers affected; financial impact bounded):
+
+1. Identify affected scope via DB query.
+2. Page on-call engineer (don't wait for next business day on
+   billing issues).
+3. Patch + retroactive correction (credit notes, manual reconcile).
+4. Postmortem.
+
+For SEV-3 (small operator UX issue, edge case):
+
+- File an issue, schedule for next sprint.
