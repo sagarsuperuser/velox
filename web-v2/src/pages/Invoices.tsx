@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
+import { TestClockBadge } from '@/components/TestClockBadge'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -100,6 +101,15 @@ export default function InvoicesPage() {
     queryFn: () => api.listCustomers(),
   })
 
+  // subscriptionsForChip → test_clock_id lookup so each row can carry
+  // a TestClockBadge inline. Fetch is cheap (subs list is small in
+  // practice; the dashboard already pages other lists) and avoids a
+  // backend JOIN in the invoice list query.
+  const { data: subscriptionsData } = useQuery({
+    queryKey: ['subscriptions-for-test-clock-chip'],
+    queryFn: () => api.listSubscriptions(),
+  })
+
   const invoices = invoicesData?.data ?? []
   const total = invoicesData?.total ?? 0
   const loadError = loadErrorObj instanceof Error ? loadErrorObj.message : loadErrorObj ? String(loadErrorObj) : null
@@ -109,6 +119,12 @@ export default function InvoicesPage() {
     ;(customersData?.data ?? []).forEach(c => { cMap[c.id] = c })
     return cMap
   }, [customersData])
+
+  const subTestClockMap = useMemo(() => {
+    const m: Record<string, string> = {}
+    ;(subscriptionsData?.data ?? []).forEach(s => { if (s.test_clock_id) m[s.id] = s.test_clock_id })
+    return m
+  }, [subscriptionsData])
 
   // Client-side search + date filter on current page data
   const filtered = useMemo(() => invoices.filter((inv: Invoice) => {
@@ -319,6 +335,9 @@ export default function InvoicesPage() {
                             {inv.invoice_number}
                           </Link>
                           <AttentionDot attention={inv.attention} />
+                          {inv.subscription_id && subTestClockMap[inv.subscription_id] && (
+                            <TestClockBadge testClockId={subTestClockMap[inv.subscription_id]} />
+                          )}
                         </div>
                       </TableCell>
                       <TableCell className="text-sm">

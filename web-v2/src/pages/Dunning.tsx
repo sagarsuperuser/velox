@@ -13,6 +13,7 @@ import {
   type Customer,
 } from '@/lib/api'
 import { Layout } from '@/components/Layout'
+import { TestClockBadge } from '@/components/TestClockBadge'
 import { useAuth } from '@/contexts/AuthContext'
 import { showApiError } from '@/lib/formErrors'
 import { cn } from '@/lib/utils'
@@ -466,18 +467,22 @@ function RunsTab() {
       api.listDunningRuns(queryParams),
       api.listInvoices().catch(() => ({ data: [] as Invoice[], total: 0 })),
       api.listCustomers().catch(() => ({ data: [] as Customer[], total: 0 })),
-    ]).then(([runsRes, invoicesRes, custRes]) => {
+      api.listSubscriptions().catch(() => ({ data: [], total: 0 })),
+    ]).then(([runsRes, invoicesRes, custRes, subsRes]) => {
       const iMap: Record<string, Invoice> = {}
       invoicesRes.data.forEach(inv => { iMap[inv.id] = inv })
       const cMap: Record<string, Customer> = {}
       custRes.data.forEach(c => { cMap[c.id] = c })
-      return { runs: runsRes.data || [], total: runsRes.total || 0, invoiceMap: iMap, customerMap: cMap }
+      const sMap: Record<string, string> = {}
+      subsRes.data.forEach(s => { if (s.test_clock_id) sMap[s.id] = s.test_clock_id })
+      return { runs: runsRes.data || [], total: runsRes.total || 0, invoiceMap: iMap, customerMap: cMap, subTestClockMap: sMap }
     }),
   })
 
   const runs = runsData?.runs ?? []
   const total = runsData?.total ?? 0
   const invoiceMap = runsData?.invoiceMap ?? {}
+  const subTestClockMap = runsData?.subTestClockMap ?? {}
   const customerMap = runsData?.customerMap ?? {}
 
   const loadRunEvents = async (runId: string) => {
@@ -639,10 +644,15 @@ function RunsTab() {
                             </div>
                           </TableCell>
                           <TableCell>
-                            <Link to={`/invoices/${run.invoice_id}`} onClick={e => e.stopPropagation()}
-                              className="text-sm font-mono text-primary hover:underline">
-                              {inv?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
-                            </Link>
+                            <div className="flex items-center gap-1.5">
+                              <Link to={`/invoices/${run.invoice_id}`} onClick={e => e.stopPropagation()}
+                                className="text-sm font-mono text-primary hover:underline">
+                                {inv?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
+                              </Link>
+                              {inv?.subscription_id && subTestClockMap[inv.subscription_id] && (
+                                <TestClockBadge testClockId={subTestClockMap[inv.subscription_id]} />
+                              )}
+                            </div>
                           </TableCell>
                           <TableCell className="text-right tabular-nums font-mono text-sm">
                             {inv ? formatCents(inv.amount_due_cents) : '\u2014'}

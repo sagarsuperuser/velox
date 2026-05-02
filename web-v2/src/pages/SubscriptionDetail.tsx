@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Subscription, type SubscriptionItem, type Plan, type ItemChangeResult } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
+import { TestClockBanner } from '@/components/TestClockBanner'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
@@ -313,6 +314,14 @@ export default function SubscriptionDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Test-clock banner — sets expectation that period_end / next_billing /
+          dunning timestamps below may reflect simulated time, not wall-clock.
+          The header already carries a small badge linking to the clock; the
+          banner is the explainer. */}
+      {sub.test_clock_id && (
+        <TestClockBanner testClockId={sub.test_clock_id} />
+      )}
 
       {/* Scheduled cancellation banner. Surfaces both modes (at_period_end
           and explicit cancel_at) with an obvious Undo so an operator who
