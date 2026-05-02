@@ -8,7 +8,7 @@ import { toast } from 'sonner'
 import { api, formatDate } from '@/lib/api'
 import type { Customer } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
-import { downloadCSV } from '@/lib/csv'
+import { downloadServerCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
@@ -168,17 +168,17 @@ export default function CustomersPage() {
     createMutation.mutate(data)
   })
 
-  const handleExport = () => {
-    api.listCustomers().then(res => {
-      const rows = res.data.map((c: Customer) => [
-        c.display_name,
-        c.external_id,
-        c.email || '',
-        c.status,
-        formatDate(c.created_at),
-      ])
-      downloadCSV('customers.csv', ['Name', 'External ID', 'Email', 'Status', 'Created'], rows)
-    })
+  // Export uses the server-side streaming endpoint so the full
+  // tenant dataset is dumped (not just the page currently in view).
+  // Client-side row-build approach previously here only exported
+  // the visible page — wrong for "I take my data" use case.
+  const handleExport = async () => {
+    try {
+      await downloadServerCSV('/v1/exports/customers.csv', 'customers.csv')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Export failed'
+      toast.error(msg)
+    }
   }
 
   return (

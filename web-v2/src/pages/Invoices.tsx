@@ -5,7 +5,7 @@ import { api, downloadPDF, formatCents, formatDate, formatDateTime } from '@/lib
 import { formatYMDInTZ } from '@/lib/dates'
 import type { Customer, Invoice } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
-import { downloadCSV } from '@/lib/csv'
+import { downloadServerCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
@@ -139,21 +139,16 @@ export default function InvoicesPage() {
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
-  const handleExport = () => {
-    api.listInvoices().then(invRes => {
-      const rows = invRes.data.map((inv: Invoice) => [
-        inv.invoice_number,
-        customerMap[inv.customer_id]?.display_name || 'Unknown',
-        inv.status,
-        inv.payment_status,
-        (inv.amount_due_cents / 100).toFixed(2),
-        inv.currency,
-        inv.billing_period_start,
-        inv.billing_period_end,
-        formatDateTime(inv.created_at),
-      ])
-      downloadCSV('invoices.csv', ['Invoice Number', 'Customer', 'Status', 'Payment Status', 'Amount', 'Currency', 'Period Start', 'Period End', 'Created'], rows)
-    })
+  // Server-side streaming export: full tenant dataset (every column
+  // on Invoice including period boundaries + lifecycle timestamps),
+  // not just the currently-visible page.
+  const handleExport = async () => {
+    try {
+      await downloadServerCSV('/v1/exports/invoices.csv', 'invoices.csv')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Export failed'
+      toast.error(msg)
+    }
   }
 
   return (

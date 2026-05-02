@@ -472,6 +472,22 @@ under a "Test mode" sidebar header below System.
 - [ ] Response carries `Content-Type: application/pdf` and `Content-Disposition: attachment; filename="..."`.
 - [ ] PDF for a different customer's invoice → 404.
 
+## FLOW EX1-4: Streaming CSV exports
+
+Operator-facing data export so a tenant can take their data out
+without bespoke tooling. Each endpoint requires the matching *Read
+permission; downloads stream paginated rows via `csv.Writer` so
+multi-million-row dumps don't OOM.
+
+- [ ] **EX1 customers**: `curl -OJ -H "Authorization: Bearer $KEY" "$API/v1/exports/customers.csv"` → downloads `customers-YYYYMMDD-HHMMSS.csv` with header + tenant's customer rows.
+- [ ] Date filter: `?from=2026-01-01T00:00:00Z&to=2026-05-01T00:00:00Z` returns only customers created in range.
+- [ ] Invalid `from` → 400 `must be RFC3339`.
+- [ ] **EX2 invoices**: `curl -OJ "$API/v1/exports/invoices.csv"` returns invoice rows including amount columns + period boundaries + lifecycle timestamps.
+- [ ] **EX3 subscriptions**: `curl -OJ "$API/v1/exports/subscriptions.csv"` returns sub rows including `plan_ids` (pipe-delimited list of plan IDs on the sub).
+- [ ] **EX4 usage-events**: requires `from` + `to`. Without them → 400 `requires from and to`. Span > 366 days → 400 `date range exceeds`.
+- [ ] Permissions: `vlx_pub_test_…` publishable key (no PermInvoiceWrite, no PermSubscriptionWrite) can still call `customers.csv`, `invoices.csv`, `subscriptions.csv`, `usage-events.csv` since each gates on the *Read perm only.
+- [ ] Streaming: a large export (>10k rows) starts producing output immediately; `tail -f /tmp/customers.csv` shows rows being written progressively, not all at the end.
+
 ## FLOW CP5: Branding endpoint
 
 - [ ] `curl -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/branding"` → tenant's branding (company name, logo URL, brand color, support URL).

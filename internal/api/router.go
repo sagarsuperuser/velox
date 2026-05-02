@@ -945,6 +945,17 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/feature-flags", featureH.Routes())
 		r.With(auth.Require(auth.PermTestClockWrite)).Mount("/test-clocks", testClockH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
+		// Streaming CSV exports — one per resource. Each endpoint
+		// requires the corresponding *Read permission, so a
+		// publishable key restricted to one resource can only export
+		// what it can list. Sprint 2 of the DP-readiness plan.
+		exportsH := newExportsHandler(customerStore, invoiceStore, subStore, usageStore)
+		r.Mount("/exports", exportsH.Routes(
+			auth.Require(auth.PermCustomerRead),
+			auth.Require(auth.PermInvoiceRead),
+			auth.Require(auth.PermSubscriptionRead),
+			auth.Require(auth.PermUsageRead),
+		))
 		if checkoutH != nil {
 			r.With(auth.Require(auth.PermCustomerWrite)).Mount("/checkout", checkoutH.Routes())
 		}
