@@ -324,7 +324,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		Customers:   customerStore,
 		Settings:    settingsStore,
 		CreditNotes: &creditNoteListerAdapter{svc: creditNoteSvc},
-		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients, db: db},
+		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients},
 		BaseURL:     strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
 	})
 

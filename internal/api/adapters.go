@@ -490,9 +490,10 @@ func (a *bounceReporterAdapter) ReportBounce(ctx context.Context, tenantID, emai
 
 // hostedInvoiceStripeAdapter bridges *payment.StripeClients →
 // hostedinvoice.CheckoutSessionCreator. The caller is a public
-// unauthenticated request: we resolve livemode from the invoice row itself
-// (not from any request context), pick the matching Stripe key, and build
-// a Checkout Session in payment mode with a single pre-totaled line item.
+// unauthenticated request: livemode is read from the request ctx
+// (pinned by hostedinvoice.resolveInvoice from the GetByPublicToken
+// row), then we pick the matching Stripe key and build a Checkout
+// Session in payment mode with a single pre-totaled line item.
 // Velox owns the tax computation, so Stripe's automatic_tax is
 // intentionally off — the UnitAmount already includes tax from the
 // invoice row.
@@ -503,7 +504,6 @@ func (a *bounceReporterAdapter) ReportBounce(ctx context.Context, tenantID, emai
 // these as subscription-billing charges.
 type hostedInvoiceStripeAdapter struct {
 	clients *payment.StripeClients
-	db      *postgres.DB
 }
 
 func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
@@ -512,15 +512,12 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 	if a == nil || a.clients == nil {
 		return "", fmt.Errorf("stripe not configured")
 	}
-	// Livemode isn't part of domain.Invoice (see invoice/postgres.go
-	// scanInvDest — the test-mode migration added the column but kept the
-	// struct thin). Separate read keeps the adapter self-contained and
-	// matches the pattern in payment/public_handler.go.
-	var livemode bool
-	if err := a.db.Pool.QueryRowContext(ctx,
-		`SELECT livemode FROM invoices WHERE id = $1`, inv.ID).Scan(&livemode); err != nil {
-		return "", fmt.Errorf("resolve livemode: %w", err)
-	}
+	// Livemode comes from ctx, pinned by resolveInvoice off the
+	// public_token lookup. Previous version did a raw db.Pool query
+	// on `invoices` which has RLS — without app.tenant_id /
+	// app.bypass_rls set on the session, the policy returned zero
+	// rows ("resolve livemode: sql: no rows in result set").
+	livemode := postgres.Livemode(ctx)
 	sc := a.clients.For(ctx, tenantID, livemode)
 	if sc == nil {
 		return "", fmt.Errorf("stripe not configured for mode livemode=%v", livemode)
