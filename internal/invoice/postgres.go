@@ -881,6 +881,22 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 	if taxStatus == "" {
 		taxStatus = domain.InvoiceTaxOK
 	}
+	// Public token is a property of the finalized state. Service.Finalize
+	// mints one for the operator-driven path; the billing engine
+	// (engine.go + threshold_scan.go) inserts directly with status=
+	// finalized and previously skipped the mint, leaving every
+	// engine-generated invoice without a hosted_invoice_url. That breaks
+	// every customer-facing email CTA. Mint here so the invariant
+	// "finalized ⇒ has public_token" holds at the data boundary
+	// regardless of which caller produced the invoice. A generation
+	// failure is non-fatal — the row still inserts; operators can
+	// repair via the rotate endpoint.
+	publicToken := inv.PublicToken
+	if publicToken == "" && inv.Status == domain.InvoiceFinalized {
+		if t, tokenErr := GeneratePublicToken(); tokenErr == nil {
+			publicToken = t
+		}
+	}
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO invoices (id, tenant_id, customer_id, subscription_id, invoice_number,
 			status, payment_status, currency, subtotal_cents, discount_cents, tax_amount_cents,
@@ -891,8 +907,8 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
 			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, tax_error_code, billing_reason,
-			stripe_invoice_id, paid_at, voided_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44)
+			stripe_invoice_id, public_token, paid_at, voided_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -912,6 +928,7 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 		postgres.NullableString(inv.TaxErrorCode),
 		postgres.NullableString(string(inv.BillingReason)),
 		postgres.NullableString(inv.StripeInvoiceID),
+		postgres.NullableString(publicToken),
 		postgres.NullableTime(inv.PaidAt), postgres.NullableTime(inv.VoidedAt),
 	).Scan(scanInvDest(&inv)...)
 
