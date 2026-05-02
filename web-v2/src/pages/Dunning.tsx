@@ -20,6 +20,7 @@ import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -315,10 +316,15 @@ function PolicyTab() {
                     <p className="text-sm font-medium text-foreground">Retry {i + 1}</p>
                     <span className="ml-auto text-xs text-muted-foreground tabular-nums">Day {timelineSteps[i]?.day ?? 0}</span>
                     {retryCount > 1 && i === retryCount - 1 && (
-                      <Button variant="ghost" size="sm" onClick={() => setRetryCount(retryCount - 1)}
-                        className="shrink-0 text-muted-foreground hover:text-destructive h-7 w-7 p-0" title="Remove retry">
-                        <X size={14} />
-                      </Button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="ghost" size="sm" onClick={() => setRetryCount(retryCount - 1)}
+                            className="shrink-0 text-muted-foreground hover:text-destructive h-7 w-7 p-0">
+                            <X size={14} />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Remove retry</TooltipContent>
+                      </Tooltip>
                     )}
                   </div>
 

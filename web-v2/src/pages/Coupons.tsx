@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { DatePicker } from '@/components/ui/date-picker'
 
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -468,21 +469,26 @@ export default function CouponsPage() {
                             {c.code}
                           </Link>
                           {c.customer_id && (
-                            <span
-                              className="inline-flex items-center shrink-0"
-                              title="Private — redeemable by one customer only"
-                              aria-label="Private coupon"
-                            >
-                              <Lock size={12} className="text-muted-foreground" />
-                            </span>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="inline-flex items-center shrink-0" aria-label="Private coupon">
+                                  <Lock size={12} className="text-muted-foreground" />
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>Private — redeemable by one customer only</TooltipContent>
+                            </Tooltip>
                           )}
-                          <button
-                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(c.code); toast.success('Code copied') }}
-                            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                            title="Copy code"
-                          >
-                            <Copy size={13} />
-                          </button>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(c.code); toast.success('Code copied') }}
+                                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                              >
+                                <Copy size={13} />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent>Copy code</TooltipContent>
+                          </Tooltip>
                         </div>
                       </TableCell>
                       <TableCell>
@@ -518,45 +524,53 @@ export default function CouponsPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setRedemptionsCoupon(c)}
-                            title="View redemptions"
-                          >
-                            <Eye size={16} />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setSearchParams(prev => {
-                              const next = new URLSearchParams(prev)
-                              next.set('duplicate', c.id)
-                              return next
-                            }, { replace: true })}
-                            title="Duplicate"
-                          >
-                            <CopyPlus size={16} />
-                          </Button>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button variant="ghost" size="sm" onClick={() => setRedemptionsCoupon(c)}>
+                                <Eye size={16} />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>View redemptions</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setSearchParams(prev => {
+                                  const next = new URLSearchParams(prev)
+                                  next.set('duplicate', c.id)
+                                  return next
+                                }, { replace: true })}
+                              >
+                                <CopyPlus size={16} />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Duplicate</TooltipContent>
+                          </Tooltip>
                           {status === 'archived' ? (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setUnarchiveId(c.id)}
-                              title="Restore"
-                            >
-                              <ArchiveRestore size={16} />
-                            </Button>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button variant="ghost" size="sm" onClick={() => setUnarchiveId(c.id)}>
+                                  <ArchiveRestore size={16} />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Restore</TooltipContent>
+                            </Tooltip>
                           ) : (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setArchiveId(c.id)}
-                              title="Archive"
-                              className="text-destructive hover:text-destructive"
-                            >
-                              <Archive size={16} />
-                            </Button>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setArchiveId(c.id)}
+                                  className="text-destructive hover:text-destructive"
+                                >
+                                  <Archive size={16} />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Archive</TooltipContent>
+                            </Tooltip>
                           )}
                         </div>
                       </TableCell>
@@ -790,15 +804,19 @@ function CreateCouponDialog({ open, onOpenChange, onCreated, initialValues }: {
                         onChange={e => field.onChange(e.target.value.toUpperCase())}
                       />
                       {field.value && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => field.onChange('')}
-                          title="Clear — auto-generate a random code on create"
-                        >
-                          <Sparkles size={14} />
-                        </Button>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => field.onChange('')}
+                            >
+                              <Sparkles size={14} />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Clear — auto-generate a random code on create</TooltipContent>
+                        </Tooltip>
                       )}
                     </div>
                   </FormControl>

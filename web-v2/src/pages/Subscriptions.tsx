@@ -607,16 +607,20 @@ export default function SubscriptionsPage() {
                           <TooltipContent>A subscription requires at least one item.</TooltipContent>
                         </Tooltip>
                       ) : (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          className="h-9 px-2 text-muted-foreground hover:text-destructive"
-                          onClick={() => itemsArray.remove(idx)}
-                          title="Remove"
-                        >
-                          <Trash2 size={14} />
-                        </Button>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-9 px-2 text-muted-foreground hover:text-destructive"
+                              onClick={() => itemsArray.remove(idx)}
+                            >
+                              <Trash2 size={14} />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Remove</TooltipContent>
+                        </Tooltip>
                       )}
                     </div>
                   ))}
