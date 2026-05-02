@@ -209,6 +209,28 @@ func (a *customerEmailFetcherAdapter) GetCustomerEmail(ctx context.Context, tena
 	return email, name, nil
 }
 
+// passwordResetEmailAdapter bridges email.OutboxSender (or the
+// direct *email.Sender) to user.EmailSender's narrower 2-arg
+// signature. The user package emits password-reset emails before
+// the operator authenticates, so it has no tenant or display-name
+// context — empty values flow through to email.Sender.brandingFor,
+// which falls back to platform defaults. Production wires the
+// outbox-backed sender so reset emails are durable.
+type passwordResetEmailAdapter struct {
+	sender interface {
+		SendPasswordReset(tenantID, to, displayName, resetURL string) error
+	}
+}
+
+func (a *passwordResetEmailAdapter) SendPasswordReset(email, resetLink string) error {
+	// Empty tenantID + email-as-display-name. Body shows "Hi
+	// alice@example.com" rather than "Hi Alice" — acceptable trade
+	// for not having to plumb tenant lookup through the password-
+	// reset request flow. Multi-tenant customisation can ship later
+	// if a DP asks.
+	return a.sender.SendPasswordReset("", email, email, resetLink)
+}
+
 // portalPaymentMethodUpdaterAdapter bridges Stripe Checkout (setup
 // mode) into portalapi.PaymentMethodUpdater. The customer's portal
 // session ctx supplies tenantID + customerID; this adapter mints the
