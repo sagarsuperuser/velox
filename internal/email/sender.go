@@ -2,6 +2,7 @@ package email
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -30,6 +31,16 @@ type Sender struct {
 	username string
 	password string
 	from     string
+	// tlsMode controls the transport security model:
+	//   "starttls" — connect plain, upgrade with STARTTLS (port 587).
+	//                Default; works with SendGrid, Postmark, Mailgun,
+	//                AWS SES port 587.
+	//   "implicit" — TLS-from-the-handshake (port 465). Required by
+	//                AWS SES port 465 and a few legacy providers.
+	//   "none"     — plain SMTP, no TLS. ONLY for local dev with a
+	//                tool like Mailtrap/MailHog. Rejects in prod via
+	//                a config check.
+	tlsMode string
 
 	// hostedInvoiceBaseURL controls where email CTAs point for the
 	// Stripe-parity hosted invoice page (T0-17). When unset, emails
@@ -71,12 +82,25 @@ type BounceReporter interface {
 // a sender that logs instead of sending when SMTP is not configured, so
 // `make dev` works without SMTP credentials.
 func NewSender() *Sender {
+	tlsMode := strings.ToLower(strings.TrimSpace(os.Getenv("SMTP_TLS")))
+	switch tlsMode {
+	case "starttls", "implicit", "none":
+		// valid
+	case "":
+		tlsMode = "starttls"
+	default:
+		// Invalid value — log and fall back to safe default. The
+		// dispatcher would otherwise silently use the wrong transport.
+		slog.Warn("SMTP_TLS unrecognized, defaulting to starttls", "got", tlsMode)
+		tlsMode = "starttls"
+	}
 	return &Sender{
 		host:                 strings.TrimSpace(os.Getenv("SMTP_HOST")),
 		port:                 envOr("SMTP_PORT", "587"),
 		username:             strings.TrimSpace(os.Getenv("SMTP_USERNAME")),
 		password:             strings.TrimSpace(os.Getenv("SMTP_PASSWORD")),
 		from:                 envOr("SMTP_FROM", "billing@velox.dev"),
+		tlsMode:              tlsMode,
 		hostedInvoiceBaseURL: strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
 	}
 }
@@ -531,14 +555,64 @@ func (s *Sender) sendRich(msg richMessage) error {
 		fmt.Fprintf(&body, "\r\n--%s--\r\n", mixedBoundary)
 	}
 
-	auth := smtp.PlainAuth("", s.username, s.password, s.host)
-	addr := fmt.Sprintf("%s:%s", s.host, s.port)
-	if err := smtp.SendMail(addr, auth, s.from, []string{msg.To}, []byte(body.String())); err != nil {
+	if err := s.deliver(msg.To, []byte(body.String())); err != nil {
 		slog.Error("send email failed", "to", msg.To, "subject", msg.Subject, "error", err)
 		s.reportBounceIfPermanent(msg.TenantID, msg.To, err)
 		return fmt.Errorf("send email: %w", err)
 	}
 	slog.Info("email sent", "to", msg.To, "subject", msg.Subject, "html", true)
+	return nil
+}
+
+// deliver dispatches the rendered RFC-5322 message via SMTP, picking
+// the transport based on s.tlsMode. STARTTLS (default, port 587) and
+// `none` rides through stdlib net/smtp.SendMail; implicit TLS (port
+// 465) requires tls.Dial first then a manual smtp.Client handshake.
+func (s *Sender) deliver(to string, body []byte) error {
+	addr := fmt.Sprintf("%s:%s", s.host, s.port)
+	auth := smtp.PlainAuth("", s.username, s.password, s.host)
+
+	if s.tlsMode != "implicit" {
+		// STARTTLS (default — net/smtp negotiates upgrade) or none
+		// (no TLS at all; only for local dev SMTP sandboxes). Both
+		// flow through SendMail.
+		return smtp.SendMail(addr, auth, s.from, []string{to}, body)
+	}
+
+	// Implicit TLS (port 465 / SMTPS): TLS-from-handshake. net/smtp's
+	// SendMail can't do this; manually dial + start the SMTP client
+	// over the TLS connection.
+	tlsConn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: s.host})
+	if err != nil {
+		return fmt.Errorf("tls dial: %w", err)
+	}
+	c, err := smtp.NewClient(tlsConn, s.host)
+	if err != nil {
+		_ = tlsConn.Close()
+		return fmt.Errorf("smtp client: %w", err)
+	}
+	defer func() { _ = c.Quit() }()
+
+	if err := c.Auth(auth); err != nil {
+		return fmt.Errorf("smtp auth: %w", err)
+	}
+	if err := c.Mail(s.from); err != nil {
+		return fmt.Errorf("smtp mail from: %w", err)
+	}
+	if err := c.Rcpt(to); err != nil {
+		return fmt.Errorf("smtp rcpt to: %w", err)
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("smtp data: %w", err)
+	}
+	if _, err := w.Write(body); err != nil {
+		_ = w.Close()
+		return fmt.Errorf("smtp write: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("smtp data close: %w", err)
+	}
 	return nil
 }
 
@@ -562,9 +636,7 @@ func (s *Sender) sendPlain(tenantID, to, fromName, subject, body string) error {
 	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
 	msg.WriteString(body)
 
-	auth := smtp.PlainAuth("", s.username, s.password, s.host)
-	addr := fmt.Sprintf("%s:%s", s.host, s.port)
-	if err := smtp.SendMail(addr, auth, s.from, []string{to}, []byte(msg.String())); err != nil {
+	if err := s.deliver(to, []byte(msg.String())); err != nil {
 		slog.Error("send email failed", "to", to, "subject", subject, "error", err)
 		s.reportBounceIfPermanent(tenantID, to, err)
 		return fmt.Errorf("send email: %w", err)
