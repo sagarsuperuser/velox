@@ -1,22 +1,17 @@
 # Velox Manual Test Runbook
 
-A practical runbook for exercising Velox end-to-end. Flows are grouped into three
-tiers so you can pick the right subset for the situation you're in.
+Practical runbook for exercising Velox end-to-end. Three tiers — pick the
+subset that matches the change you made.
 
-## How to use this runbook
+| Tier | When | Time |
+|------|------|------|
+| **1 — Smoke** | Pre-merge / nightly | ~15 min |
+| **2 — Full** | Pre-release | ~2 hrs |
+| **3 — Deep** | Major releases, infra changes, post-mortems | ~3 hrs |
 
-| Tier | When | Time | What it covers |
-|------|------|------|----------------|
-| **Tier 1 — Smoke** | Every pre-merge + nightly | ~15 min | Infra + auth + create→bill→charge happy path |
-| **Tier 2 — Full Suite** | Before a release cut | ~2–3 hrs | Every shipping domain, one flow per feature |
-| **Tier 3 — Deep / Rare** | Major releases, infra changes, incident post-mortems | ~4 hrs | RLS, security headers, encryption at rest, rate limit, migrations, OTel, config validation |
-
-Each flow has a stable FLOW ID (A1, B2, …). Reference them in bug reports and PRs.
-The ID doesn't change when flows are reordered. New flows get the next free number
-in their section.
-
-Flow steps use `- [ ]` checkboxes. Copy the section into a scratch doc when running
-a tier — this file stays as the canonical source, not a progress tracker.
+Each flow has a stable ID (A1, B2, …) for cross-referencing. Steps use
+`- [ ]`; copy a section into a scratch doc when running it. This file is
+the canonical source, not a progress tracker.
 
 ---
 
@@ -24,92 +19,41 @@ a tier — this file stays as the canonical source, not a progress tracker.
 
 ### Prerequisites
 
-- Go 1.25+
-- Docker & Docker Compose
-- Node.js 22+ and npm
-- [Stripe CLI](https://stripe.com/docs/stripe-cli) (`brew install stripe/stripe-cli/stripe`)
-- A Stripe test account with keys from https://dashboard.stripe.com/test/apikeys
-  (credentials are configured **per-tenant in the dashboard**, not via env vars)
+- Go 1.25+, Docker & Compose, Node.js 22+, [Stripe CLI](https://stripe.com/docs/stripe-cli)
+- A Stripe test account (keys go in the dashboard per-tenant, not env vars)
 
 ### First-time config
 
 ```bash
 cp .env.example .env
-# Edit .env — the only required fields for local dev are:
-#   VELOX_BOOTSTRAP_TOKEN=...         (generate with: openssl rand -hex 32)
-#   VELOX_ENCRYPTION_KEY=...          (64 hex chars; openssl rand -hex 32)
+# Required for local dev:
+#   VELOX_BOOTSTRAP_TOKEN=<openssl rand -hex 32>
+#   VELOX_ENCRYPTION_KEY=<openssl rand -hex 32>   (64 hex chars)
 ```
 
-`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` are **not** env vars any more —
-each tenant enters their own in Settings → Payments after sign-in. The operator
-never holds any tenant's Stripe secrets.
-
-### Start everything (4 terminals)
+### Start the stack (4 terminals)
 
 ```bash
-# Terminal 1 — Infrastructure (Postgres + Redis)
-make up
-
-# Terminal 2 — Backend API (runs migrations on boot via RUN_MIGRATIONS_ON_BOOT=true)
-make dev
-# Log should show "migrations: applied N, current version 64"
-# and "using app database connection (RLS enforced)"
-
-# Terminal 3 — Frontend (web-v2)
-cd web-v2 && npm install        # first time only
-cd web-v2 && npm run dev        # http://localhost:5173
-
-# Terminal 4 — Stripe webhooks (skip until you've connected a Stripe account in the UI)
-# The endpoint_id is the vlx_spc_... returned from Settings → Payments → Connect.
-stripe listen --forward-to localhost:8080/v1/webhooks/stripe/<endpoint_id>
-# Copy the whsec_... secret back into Settings → Payments as the signing secret.
+make up                      # 1: Postgres + Redis + Mailpit
+make dev                     # 2: API on :8080 (auto-migrates)
+cd web-v2 && npm run dev     # 3: Dashboard on :5173
+stripe listen --forward-to localhost:8080/v1/webhooks/stripe/<vlx_spc_id>   # 4: Stripe webhooks (after Settings → Payments → Connect)
 ```
 
-### Bootstrap (first run only)
+`make bootstrap` (first run only) prints operator email + password and the
+test/live API keys. Mailpit web UI at http://localhost:8025 captures all
+outbound mail.
 
-```bash
-make bootstrap                  # Creates the first tenant + user + API keys
-```
-
-Bootstrap prints an operator email + password (use these for the dashboard) and the
-secret/publishable API keys (use the secret as `$KEY` for curl). Dashboard auth and
-API auth are independent: dashboard uses email+password sessions, API uses Bearer
-keys (see ADR-011 / FLOW A1).
-
-### Shell setup for curl examples
-
-Every curl example below assumes `$API` and `$KEY` are exported. Set them once
-per terminal session:
+### Shell setup
 
 ```bash
 export API=http://localhost:8080
-export KEY=vlx_secret_test_…    # paste your secret-test key from bootstrap output
+export KEY=vlx_secret_test_…
 ```
 
-**Quoting rule:** shell variables don't expand inside single quotes, so
-`-d '{"api_key": $KEY }'` ships the literal string `$KEY` and the API rejects
-it as invalid JSON. Use **double-quoted JSON with backslash-escaped quotes**
-when the body references a shell var:
-
-```bash
--d "{\"api_key\":\"$KEY\"}"
-```
-
-For bodies that don't reference any shell var, single quotes are fine and
-cleaner: `-d '{"api_key":"vlx_secret_test_..."}'`.
-
-### Useful commands
-
-| Command | What it does |
-|---------|--------------|
-| `make dev` | Start backend (auto-migrates via `RUN_MIGRATIONS_ON_BOOT=true`) |
-| `make web-dev` | Start the frontend (also `cd web-v2 && npm run dev`) |
-| `make test-unit` | Run all 35 test packages (short mode, `-p 1`) |
-| `make test-integration` | Run full suite including integration tests |
-| `make up` / `make down` | Start / stop Postgres + Redis |
-| `make migrate` / `make migrate-status` | Apply migrations / show version |
-| `docker compose down -v && make up` | Destroy + recreate DB (nuclear reset) |
-| `make stats` | Go + TS lines, packages, test packages |
+JSON bodies referencing shell vars must use double-quoted JSON with
+backslash-escaped quotes: `-d "{\"api_key\":\"$KEY\"}"`. Single-quoted
+JSON works when no shell var is referenced.
 
 ### Test cards
 
@@ -123,956 +67,538 @@ cleaner: `-d '{"api_key":"vlx_secret_test_..."}'`.
 
 # Tier 1 — Smoke (~15 min)
 
-One continuous flow: brings the stack up, signs in, exercises the core money path,
-signs out. Run this before every merge to main and as a nightly canary.
-
 ## FLOW S1: End-to-end smoke
 
-### S1.1 Stack comes up clean
-- [ ] `make up` — Postgres + Redis containers start without errors
-- [ ] `make dev` — backend starts, logs show `migrations: applied N, current version 64`
-  and `using app database connection (RLS enforced)`
-- [ ] `curl http://localhost:8080/health` → `{"status":"ok"}`
-- [ ] `curl http://localhost:8080/health/ready` → 200 with `database: ok`, `scheduler: ok`
-- [ ] Frontend at http://localhost:5173 loads (white page is fine — not signed in yet)
+Brings the stack up, runs the full money path, signs out. Pre-merge canary.
+
+### S1.1 Stack health
+- [ ] `make up` — containers start clean.
+- [ ] `make dev` — logs show `migrations: applied N` + `using app database connection (RLS enforced)`.
+- [ ] `curl localhost:8080/health` → `{"status":"ok"}`.
+- [ ] `curl localhost:8080/health/ready` → 200 with `database`, `scheduler` ok.
+- [ ] Frontend at http://localhost:5173 loads.
 
 ### S1.2 Bootstrap + sign in
-- [ ] `make bootstrap` if no tenants exist — bootstrap prints a paired Secret Test key (`vlx_secret_test_…`) and Secret Live key (`vlx_secret_live_…`) plus a Publishable test key. Copy the Secret Test key for the smoke flow.
-- [ ] Sign in via UI at `/login` by pasting the Secret Test key
-- [ ] Verify: redirected to dashboard
-- [ ] Verify: DevTools → Cookies → `velox_session` set with `HttpOnly: ✓`
-- [ ] Verify: `localStorage` does NOT contain the API key (credential is in the httpOnly cookie, not in JS-readable storage)
-- [ ] Verify: subsequent requests have no `Authorization` header but include the cookie (Network tab → request headers)
+- [ ] `make bootstrap` (if no tenants) prints test/live secret keys + publishable test key. Copy the secret test key.
+- [ ] Sign in at `/login`. Redirect to dashboard.
+- [ ] Cookie `velox_session` set, `HttpOnly: ✓`. No API key in localStorage.
 
-### S1.3 Tenant Stripe connection
-- [ ] Settings → Payments → paste `sk_test_...` + `pk_test_...` → Connect
-- [ ] Verify: `vlx_spc_...` endpoint id is displayed; copy it
-- [ ] Terminal 4: `stripe listen --forward-to localhost:8080/v1/webhooks/stripe/<vlx_spc_...>`
-- [ ] Paste the `whsec_...` from the CLI back into Settings → Payments
-- [ ] Verify: "Connected" status and Stripe account identifier shown
+### S1.3 Stripe connection
+- [ ] Settings → Payments → paste `sk_test_...` + `pk_test_...` → Connect. `vlx_spc_...` shown.
+- [ ] Terminal 4: `stripe listen --forward-to localhost:8080/v1/webhooks/stripe/<vlx_spc_...>`. Paste the `whsec_...` back.
+- [ ] Settings shows "Connected".
 
-### S1.4 Create the core graph
-- [ ] Pricing → create rating rule: key `api_calls`, flat, $0.01/call
-- [ ] Pricing → create meter: key `api_calls`, aggregation `sum`, link to rule
-- [ ] Pricing → create plan: code `starter`, $29/mo, attach `api_calls` meter
-- [ ] Customers → create: "Smoke Corp", `external_id=smoke_corp`, email any@any.test
-- [ ] Customer detail → Billing Profile → set address + `USD` + `10%` tax rate
-- [ ] Customer detail → Set Up Payment → test card `4242 4242 4242 4242`
-- [ ] **Mint a test clock** so we don't have to wait 30 days for the cycle to end.
-  `internal/testclock/` is locked to test-mode by DB constraint, so it's safe.
+### S1.4 Build the graph
+- [ ] Pricing → rating rule `api_calls` flat $0.01. Meter `api_calls` sum, link to rule. Plan `starter` $29/mo, attach meter.
+- [ ] Customers → create "Smoke Corp", external_id `smoke_corp`, email any@any.test. Billing profile: address + USD + 10% tax.
+- [ ] Customer detail → Set Up Payment → `4242 4242 4242 4242`.
+- [ ] Mint a test clock (avoids 30-day wait):
   ```bash
-  # Assumes $API and $KEY exported per "Shell setup for curl examples" above.
-  curl -sS -X POST "$API/v1/test-clocks" \
-    -H "Authorization: Bearer $KEY" \
+  curl -sS -X POST "$API/v1/test-clocks" -H "Authorization: Bearer $KEY" \
     -H "Content-Type: application/json" \
     -d "{\"name\":\"smoke\",\"frozen_time\":\"$(date -u +%FT%TZ)\"}" | jq .
-  # → {"id":"vlx_clk_…","frozen_time":"…","status":"ready"}
   ```
-- [ ] Customer detail → New Subscription → Starter plan, calendar billing, start today.
-  **Pin it to the test clock**: pass `test_clock_id` (UI form field, or the
-  create-subscription POST body). Subscription is now time-bound to the clock,
-  not wall-clock.
+- [ ] Customer detail → New Subscription → Starter plan, **pin to test clock**.
 
 ### S1.5 Bill + charge
-
-The billing engine fires on `current_billing_period_end <= clock.Now()`. A
-freshly-created subscription's period end is ~30 days out, so a bare
-`/v1/billing/run` right after creation finds nothing due. We advance the
-test clock past the cycle end so the engine has something to do.
-
-- [ ] Usage → ingest 1,000 events for `api_calls` on `smoke_corp`. Single
-  curl batch (≤1000 events per call):
+- [ ] Ingest 1,000 events:
   ```bash
   TS=$(date -u +%FT%TZ)
-  jq -n --arg ts "$TS" '[range(1000) | {external_customer_id: "smoke_corp", event_name: "api_calls", quantity: "1", idempotency_key: "smoke_\($ts)_\(.)"}]' > /tmp/events.json
+  jq -n --arg ts "$TS" '[range(1000) | {external_customer_id:"smoke_corp",event_name:"api_calls",quantity:"1",idempotency_key:"smoke_\($ts)_\(.)"}]' > /tmp/events.json
   curl -sS -X POST "$API/v1/usage-events/batch" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" --data-binary @/tmp/events.json | jq .
-  # → {"ingested":1000,"errors":[]}
   ```
-- [ ] Advance the test clock past `current_billing_period_end` (31 days
-  forward covers a 30-day calendar cycle):
-  ```bash
-  export CLK=vlx_clk_…   # from S1.4 above
-  # macOS (uses BSD date's -v):
-  curl -sS -X POST "$API/v1/test-clocks/$CLK/advance" \
-    -H "Authorization: Bearer $KEY" \
-    -H "Content-Type: application/json" \
-    -d "{\"frozen_time\":\"$(date -u -v+31d +%FT%TZ)\"}" | jq .
-  # Linux (uses GNU date's -d):
-  #   -d "{\"frozen_time\":\"$(date -u -d '+31 days' +%FT%TZ)\"}"
-  ```
-- [ ] Trigger billing via API (no UI button on the dashboard):
-  ```bash
-  curl -sS -X POST "$API/v1/billing/run" \
-    -H "Authorization: Bearer $KEY" | jq .
-  # → {"invoices_generated":1, "errors":[]}
-  ```
-- [ ] Verify: exactly 1 invoice generated; auto-finalized, `payment_status = succeeded`
-- [ ] Invoice detail → line items: base fee (prorated), usage ($10.00), tax (10%)
-- [ ] Verify: Stripe CLI terminal shows `payment_intent.succeeded`
-- [ ] Dashboard: MRR > $0, revenue chart updated, Recent Activity shows the invoice
-
-> **Skip the test clock?** Only as a debugging shortcut — backdate via psql:
-> `UPDATE subscriptions SET current_billing_period_end = NOW() - INTERVAL '1 minute' WHERE customer_id = (SELECT id FROM customers WHERE external_id='smoke_corp');`
-> then run the billing curl. Bypasses trial-flip / proration / cycle-bookkeeping
-> logic the test clock exercises — fine for "I want one invoice now," wrong for
-> a smoke flow where the test-clock path is the thing being smoked.
+- [ ] Advance the clock 31 days: `POST /v1/test-clocks/$CLK/advance` with `frozen_time = now+31d` (BSD `date -u -v+31d` / GNU `date -u -d '+31 days'`).
+- [ ] `curl -sS -X POST "$API/v1/billing/run" -H "Authorization: Bearer $KEY"` → 1 invoice generated.
+- [ ] Invoice auto-finalized, `payment_status=succeeded`. Line items: prorated base + usage + tax.
+- [ ] Stripe CLI shows `payment_intent.succeeded`. Dashboard MRR > $0.
 
 ### S1.6 Sign out
-- [ ] Sidebar → Sign Out
-- [ ] Verify: redirect to /login; back-button still lands you on /login
-- [ ] Verify: `curl -i -b <stale_cookie> http://localhost:8080/v1/whoami` → 401
-  `invalid or expired session` (the cookie value still hashes to a row in
-  `dashboard_sessions` but `revoked_at` is now NOT NULL — `session.Service.Resolve`
-  rejects revoked rows even though the row physically exists)
+- [ ] Sidebar → Sign Out. Redirect to /login.
+- [ ] Stale cookie on `/v1/whoami` → 401.
 
-**If all of S1 passes, the core engine is healthy.**
+**S1 passing = core engine healthy.**
 
 ---
 
 # Tier 2 — Full Suite
 
-One flow per shipping feature, organized by domain. You do not need to run these
-in order — pick the domain the change touched.
-
----
+One flow per shipping feature. Run only what your change touched.
 
 ## Tenant timezone
 
-Velox uses a single tenant-wide timezone for all date-grade input
-interpretation and all dashboard timestamp display. UTC for storage
-and billing math, tenant TZ for everything operators see and type.
-Set in Settings → Account → Timezone (defaults to UTC). See
-ADR-010 for the model.
+Single tenant-wide timezone used for date input and timestamp display
+(UTC for storage and billing math). Set in Settings → Account → Timezone.
 
-The behaviour you'll see across the dashboard:
-- **Date pickers** (API key expiry, coupon valid-until, credit
-  expiry, list-page from/to filters): operator-picked civil dates
-  are interpreted as start/end of day in tenant TZ.
-- **Display of stored timestamps**: rendered in tenant TZ via
-  `formatDate` / `formatDateTime`. `formatDateTime` includes the
-  zone abbreviation (`"May 5, 2026, 2:14 PM PDT"`); `formatDate`
-  is bare.
-- **Chart axes + audit-log section headers**: tenant TZ.
-- **Storage + wire format**: always UTC ISO 8601 with `Z`. No naive
-  local strings on the wire.
-- **Subscription billing math**: UTC, follow Stripe — `monthly on
-  the 5th` means 5th UTC, not 5th in tenant TZ. Don't confuse with
-  date-grade pickers.
+- [ ] Change timezone to `Asia/Kolkata` or `America/Los_Angeles` → dashboard timestamps shift, zone abbreviation appended (e.g. `2:14 PM PDT`).
+- [ ] API key expiry / coupon valid-until / list-page from-to filters interpret civil dates as start/end of day in tenant TZ.
+- [ ] Subscription billing math stays UTC ("monthly on the 5th" = 5th UTC).
+- [ ] Wire format always UTC ISO 8601 with `Z`.
 
-To validate end-to-end: change Settings → Account → Timezone to
-something offset from UTC (e.g. `Asia/Kolkata` or `America/Los_
-Angeles`), refresh, and confirm dashboard timestamps shift to that
-zone with the abbreviation appended.
+## FLOW A1: Sign-in
 
-## Auth
-
-Dashboard uses email + password — `POST /v1/auth/login` mints an httpOnly
-`velox_session` cookie bound to `users.id`. SDK / curl callers send
-`Authorization: Bearer <vlx_…>` directly. The two paths are independent:
-revoking an API key never invalidates a dashboard session. Single-user
-v1; password reset is single-use 1h tokens (SMTP deferred). See ADR-011.
-
-## FLOW A1: Dashboard sign-in (email + password → httpOnly cookie)
-
-- [ ] `make bootstrap` prints an operator email + password and the API keys. Copy both.
-- [ ] `make dev` starts the API on `:8080`. `cd web-v2 && npm run dev` starts the dashboard on `:5173`.
-- [ ] Visit `http://localhost:5173`. Login screen shows Email and Password fields and a "Forgot password?" link.
-- [ ] Submit empty form → inline error "Email and password are required". No request fired.
-- [ ] Wrong password → `POST /v1/auth/login` returns 401; UI shows "Invalid email or password".
-- [ ] Five wrong-password attempts in a minute → 429; UI shows "Too many attempts — try again in 15 minutes". DB row: `SELECT locked_until FROM users WHERE email='<email>';` is ~15 min out.
-- [ ] Right credentials → redirect to `/`. Dashboard loads.
-- [ ] DevTools → Application → Cookies → `velox_session` is set, `HttpOnly: ✓`, `SameSite: Lax`, `Path: /`. `localStorage` has no `velox_*` keys.
-- [ ] Reload the page → still signed in (`whoami` re-runs on mount; cookie attaches automatically).
-- [ ] Session row: `SELECT id_hash, user_id, tenant_id, expires_at FROM dashboard_sessions ORDER BY created_at DESC LIMIT 1;` — `user_id` populated, `expires_at` ~7 days out.
-- [ ] Sign out → `POST /v1/auth/logout` returns 204; cookie cleared; redirect to `/login`.
-- [ ] `SELECT revoked_at FROM dashboard_sessions WHERE id_hash='<id_hash>';` — now NOT NULL.
-- [ ] Reusing the cleared cookie value via devtools → next protected request → 401 `invalid or expired session`.
+- [ ] Empty form → inline error, no request.
+- [ ] Wrong password → 401 "Invalid email or password".
+- [ ] 5 wrong attempts in 1 min → 429, locked 15 min.
+- [ ] Right credentials → redirect to `/`, dashboard loads.
+- [ ] Cookie `velox_session`: HttpOnly, SameSite=Lax. No `velox_*` in localStorage.
+- [ ] Reload → still signed in.
+- [ ] Sign out → cookie cleared, redirect to /login. Stale cookie → 401.
 
 ### Password reset
 
-- [ ] `/login` → "Forgot password?" → enter email → submit → server returns 200 regardless of whether the email exists (no enumeration). With Mailpit running (`docker compose up -d mailpit`) and `SMTP_HOST=localhost:1025`, the reset email lands at http://localhost:8025. With SMTP unconfigured, server logs show `password reset email send failed err="email: SMTP not configured (SMTP_HOST unset)"` — there is no stdout fallback link.
-- [ ] Open the reset email in Mailpit → click link → `/reset-password?token=…` → set new password (12-char min) → redirect to `/login?reset=success` → sign in with the new password.
-- [ ] Reuse the same token → 422 "token already used or expired".
-- [ ] Wait past the 1h TTL on a fresh token → 422 "token already used or expired".
-- [ ] Submit a password under 12 chars → 422 with `field=password`.
+- [ ] Forgot password → submit any email → 200 (no enumeration).
+- [ ] Reset email lands in Mailpit (http://localhost:8025).
+- [ ] Click link → set new password (12+ chars) → /login?reset=success → sign in.
+- [ ] Reused token → 422. Token >1h old → 422. Password <12 chars → 422.
 
-## FLOW A2: /v1/whoami contract — cookie OR Bearer
+## FLOW A2: /v1/whoami
 
-- [ ] **Cookie path** (dashboard): sign in via the UI; then
-  ```bash
-  curl -b /tmp/c.txt "$API/v1/whoami"
-  ```
-  → `200 {"tenant_id":"vlx_ten_...","user_id":"vlx_usr_...","email":"…","livemode":false}`.
-- [ ] **Bearer path** (SDK / curl):
-  ```bash
-  curl -H "Authorization: Bearer $KEY" "$API/v1/whoami"
-  ```
-  → `200 {"tenant_id":"vlx_ten_...","key_id":"vlx_key_...","key_type":"secret","livemode":false}`.
-- [ ] **No credentials**:
-  ```bash
-  curl "$API/v1/whoami"
-  ```
-  → `401 missing credentials — sign in at /login or send Authorization: Bearer vlx_secret_...`.
-- [ ] Cookie + Bearer on the same request, with **disagreeing** identities → cookie wins (whoami returns the cookie's user/tenant).
-- [ ] Revoke the underlying API key via the dashboard (or `DELETE /v1/api-keys/<key_id>`) → Bearer path 401s `api key revoked` immediately. Cookie sessions are user-bound and unaffected — they don't reference API keys (ADR-011).
-- [ ] Publishable key on Bearer → `whoami` returns `key_type:"publishable"`. Most write endpoints return 403, which is correct.
+- [ ] Cookie path: `curl -b /tmp/c.txt $API/v1/whoami` → `{tenant_id, user_id, email, livemode}`.
+- [ ] Bearer path: `curl -H "Authorization: Bearer $KEY" $API/v1/whoami` → `{tenant_id, key_id, key_type, livemode}`.
+- [ ] No credentials → 401.
+- [ ] Cookie + Bearer with disagreeing identities → cookie wins.
+- [ ] Revoked API key on Bearer → 401 immediately. Cookie sessions unaffected.
+- [ ] Publishable key on Bearer → `key_type:"publishable"`. Most write endpoints → 403.
 
 ## FLOW A3: Test/Live mode toggle
 
-The dashboard's top-right pill (`Test mode` / `Live mode`) toggles
-`dashboard_sessions.livemode` for the current cookie session. Every
-downstream API call inherits the new mode automatically — no
-re-authentication, no separate cookie per mode. Stripe/Vercel/Linear
-pattern. ADR-011.
-
-- [ ] Top-right pill: amber "Test mode" by default after fresh sign-in. Click → emerald "Live mode"; UI repopulates with live-mode data.
-- [ ] DB: `SELECT livemode FROM dashboard_sessions WHERE id_hash=...` flips between calls.
-- [ ] `GET /v1/whoami` reflects the new `livemode` immediately.
-- [ ] List endpoints (customers, invoices, subscriptions, api-keys) filter by the new mode — flipping to Test then back to Live shows the correct row counts.
-- [ ] `POST /v1/auth/mode` with no cookie → 401.
-- [ ] `POST /v1/auth/mode` with a Bearer header but no cookie → 401 (Bearer callers don't have a session to toggle; they choose mode via key prefix).
-- [ ] Test-mode banner (amber strip at top) is visible whenever livemode is false.
-- [ ] Live-mode + missing live Stripe credentials → red destructive banner replaces the test banner with "Connect Stripe" link.
-- [ ] Two browser tabs in the same session: toggle mode in tab A → tab B's pill goes stale until next refetch (or refresh). Acceptable v1 — last toggle wins on the server.
+- [ ] Top-right pill: amber "Test mode" default. Click → emerald "Live mode"; data repopulates.
+- [ ] `/v1/whoami` reflects new `livemode` immediately.
+- [ ] List endpoints filter by mode — flipping shows different counts.
+- [ ] `POST /v1/auth/mode` without cookie → 401.
+- [ ] Live mode + missing live Stripe creds → red banner with "Connect Stripe" link.
 
 ---
 
-## API Keys
+## FLOW K1: API key permissions
 
-## FLOW K1: Permissions
-
-- [ ] Secret key: full access to create/read/update on every resource
-- [ ] Publishable key: read-only — POST to /v1/plans → 403
-- [ ] Revoked key: any request → 401 `"api key revoked"`
-- [ ] API Keys page → Create → verify raw key shown once with copy button and the
-  "You won't be able to see this again" warning
+- [ ] Secret key: full read/write everywhere.
+- [ ] Publishable key: read-only — POST → 403.
+- [ ] Revoked key: any request → 401 `api key revoked`.
+- [ ] Create dialog: raw key shown once, copy button, "you won't see this again" warning.
 
 ## FLOW K2: Expiration
 
-- [ ] Create key → expiration presets: No expiration, 30 days, 90 days, 1 year, Custom
-- [ ] Select Custom → calendar picker uses the same branded component as rest of app
-- [ ] Today's date is **disabled** in the calendar grid AND on the "Today" footer button (`cursor-not-allowed`); hover the disabled Today button → shadcn tooltip reads "Today is below the minimum allowed date (<minDate>)." (FLOW K2-TZ explains why minDate = tomorrow.)
-- [ ] Tenant timezone consistency (FLOW K2-TZ): pick "30d" preset at 14:30 today → "Key will expire on May 31, 2026 at 11:59 PM PDT" (or whatever tenant TZ Settings is configured to). The date and TZ in the hint match Settings → Tenant → Timezone exactly. ADR-010.
-- [ ] Tenant timezone consistency, custom branch: pick a custom date → hint reads "Key will expire on <PickedDate> at 11:59 PM <TenantTZ>". Two operators picking the same date in different physical timezones produce the same UTC `expires_at` for the same tenant.
-- [ ] Created `expires_at` row matches: `SELECT expires_at FROM api_keys WHERE id='<...>'` returns the UTC instant equivalent to "23:59:59.999 in tenant TZ" — e.g. tenant Asia/Kolkata + picked May 5 → `2026-05-05T18:29:59.999Z`.
-- [ ] Create a key with `expires_at = now + 90s` (use the API directly to bypass the tomorrow-or-later UI floor) — verify 200 until expiry, then 401 `"api key expired"` after the timestamp passes. (Same code path as the psql backdate below, faster to test.)
-- [ ] `UPDATE api_keys SET expires_at = NOW() - INTERVAL '1 hour' WHERE ...` → 401 `"api key expired"`
-- [ ] Keys expiring within 7 days show yellow "Expires in Xd" badge
-- [ ] Expired keys grouped into a collapsed "Expired keys" section
-- [ ] Expired-keys-section Revoke button is **enabled** (revoking an expired key is allowed cleanup).
+- [ ] Create key with presets: No expiration / 30d / 90d / 1y / Custom.
+- [ ] Custom: today is disabled in calendar grid + Today button (tooltip explains minDate).
+- [ ] Tenant TZ consistency: pick "30d" → hint "Key will expire on <date> at 11:59 PM <TenantTZ>". Stored UTC matches "23:59:59.999 in tenant TZ".
+- [ ] Create with `expires_at = now+90s` via API → 200 until expiry, 401 `api key expired` after.
+- [ ] Backdate `expires_at` via psql → 401 `api key expired`.
+- [ ] Keys ≤7 days from expiry → yellow "Expires in Xd" badge.
+- [ ] Expired keys collapsed under "Expired keys" section; Revoke still enabled.
 
 ## FLOW K3: API Keys page UX
 
-`/api-keys` — full operator surface for create / inspect / revoke.
-
-- [ ] Header: "API Keys" title with `· N active` count next to subtitle when any active keys exist
-- [ ] Empty tenant: `EmptyState` with key icon, copy "No API keys yet", and "Create API Key" button (no list rendered)
-- [ ] Each active card shows: name, masked prefix (`sk_live_xxxx--------`), key-type badge (secret = violet shield, publishable = blue eye), `Created Xago`, `Last used Xago` or "Never used", `Expires DATE` row when set
-- [ ] "Expired keys" section is collapsed by default behind chevron toggle showing count; expanding reveals one-line cards with `expired` destructive badge and a Revoke button (revoking an already-expired key is allowed and useful for cleanup)
-- [ ] "Revoked keys" section is collapsed by default; expanded rows show strikethrough name, `revoked` badge, and "Revoked Xago"
-- [ ] Create dialog: Name input (max 100 chars, required), Key Type 2-col selector (Secret default vs Publishable), Expiration preset row (No expiration / 30 days / 90 days / 1 year / Custom)
-- [ ] Selecting `Custom` reveals a `DatePicker` constrained to `minDate = tomorrow`; submit without picking a date inline-errors "Please select an expiration date"
-- [ ] Selecting any non-custom preset shows a "Key will expire on FullDate" hint below the row
-- [ ] Submit success → Create dialog closes, `API Key Created` dialog opens with amber callout, full raw key in selectable monospace, Copy button (toast "Copied to clipboard"), and a single "I've saved this key" dismiss action
-- [ ] Closing the created-key dialog removes the raw key from memory — refreshing the page only ever shows the masked prefix again
-- [ ] Per-row Revoke → AlertDialog "Revoke API Key" with name + prefix in copy → confirm → toast "API key revoked" + list refetches; Cancel dismisses without changes. Revoke is always enabled — dashboard sessions are user-bound (ADR-011), so revoking any key never locks the operator out.
-- [ ] Per-row Rotate → modal "Rotate API Key" with grace presets (Now / 1h / 24h / 7d, default 24h) → confirm → toast "API key rotated" + reveals the new raw key once via the same dialog used for create. Old key keeps working through the chosen window then expires automatically.
-- [ ] Server validation errors surface inline via `applyApiError` against `name` / `key_type` / `expires_at` fields, not as a generic toast. The Zod client-side schema catches most invalid inputs before submit, so to actually exercise the server-side path bypass the UI: `curl -i -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"name":"  ","key_type":"secret"}' "$API/v1/api-keys"` → 422 with `error.param = "name"` and `error.code = "required"`. (Note: `api_keys.name` has no UNIQUE constraint so "duplicate name" cannot fire — server validations that actually fire are `Required(name)` and `Invalid(key_type, ...)`.)
+- [ ] Empty tenant: EmptyState with "Create API Key" button.
+- [ ] Active card shows: name, masked prefix, key-type badge, Created/Last-used/Expires.
+- [ ] "Expired keys" + "Revoked keys" sections collapsed by default.
+- [ ] Create dialog: name (≤100 chars), key type (Secret/Publishable), expiration preset. Custom requires date.
+- [ ] Submit success → "API Key Created" dialog with raw key + Copy button (toast "Copied"). Closing removes key from memory.
+- [ ] Per-row Revoke → typed AlertDialog → revoke. Always enabled (sessions are user-bound, not key-bound).
+- [ ] Per-row Rotate → modal with grace presets (Now / 1h / 24h / 7d). Old key works through window.
+- [ ] Server validation surfaces inline (e.g. blank name → 422 with `field=name`).
 
 ## FLOW K4: Rotate
 
-`POST /v1/api-keys/<id>/rotate` mints a replacement and either revokes
-the old key immediately (`expires_in_seconds=0`) or schedules its
-expiry for the grace window. Dashboard surface in FLOW K3.
-
-- [ ] Rotate KEY_X with `expires_in_seconds=300` → new key returned with fresh raw_key; `SELECT expires_at FROM api_keys WHERE id='<KEY_X_id>'` is ~5 min out, `revoked_at IS NULL`. Bearer using KEY_X still authenticates until expiry.
-- [ ] Rotate KEY_Y with `expires_in_seconds=0` → old key has `revoked_at NOT NULL`; Bearer using KEY_Y → 401 `invalid api key` (revoked + nonexistent collapse into one generic message; Stripe pattern, avoids leaking existence).
-- [ ] Rotate a revoked key → 422 `cannot rotate a revoked key`.
-- [ ] `expires_in_seconds` > 7 days (`> 604800`) → 422 with `field=expires_in_seconds`.
-
-> ADR-011 removed the previous "last-active-secret/platform safeguard",
-> "self-revoke 422", and "cookie fan-out on revoke" rules. With
-> user-bound dashboard sessions, none of those failure modes apply:
-> revoking every API key never locks the operator out, and revoking the
-> key a Bearer request rode in on is a deliberate, reversible action
-> (mint a new key from the dashboard).
+- [ ] Rotate with `expires_in_seconds=300` → new raw_key returned; old key works ~5 min.
+- [ ] Rotate with `expires_in_seconds=0` → old key 401 `invalid api key` immediately.
+- [ ] Rotate revoked key → 422 `cannot rotate a revoked key`.
+- [ ] `expires_in_seconds > 604800` → 422.
 
 ---
 
 ## Test Clocks (test mode only)
 
-## FLOW TC1: Test Clocks page UX
+## FLOW TC1: Test Clocks page
 
-The `/test-clocks` page is hidden in live mode. In test mode, it lives
-under a "Test mode" sidebar header below System.
+- [ ] Sidebar "Test mode" group + "Test Clocks" entry only when livemode=false. Live mode → entry hidden, `/test-clocks` redirects to `/`.
+- [ ] Empty state with "New test clock" button.
+- [ ] New dialog: optional name + datetime-local picker (defaults to now). Submit → detail page.
 
-- [ ] Sidebar shows "Test mode" group + "Test Clocks" entry only when `user.livemode === false`. Flip the top-right toggle to live → entry disappears, navigating to `/test-clocks` redirects to `/`.
-- [ ] `/test-clocks` empty state: clock icon + "No test clocks yet" copy + "New test clock" button.
-- [ ] **New test clock** dialog: optional name (≤200 chars) + `datetime-local` picker for initial frozen time (defaults to now). Submit creates the clock and navigates to its detail page.
-- [ ] Index list rows: name (or "Unnamed clock"), status badge (Ready/Advancing/Failed), clock time + created-at. Click row → detail page.
+## FLOW TC2: Detail + Advance
 
-## FLOW TC2: Test Clock detail + Advance
+- [ ] Detail header: name + status pill + Advance/Delete. Advance disabled when status≠ready.
+- [ ] Advance dialog presets: `+1h / +1d / +1mo` + custom. Earlier-than-current time → inline error.
+- [ ] Submit → status flips to **Advancing** with spinner; polls every ~1.5s until ready.
+- [ ] Catchup failure → status **Failed** with destructive banner.
+- [ ] Subscriptions table on detail page lists pinned subs.
 
-- [ ] Detail header: name + status pill + Advance / Delete buttons. "Advance" is disabled when status ≠ ready.
-- [ ] "Current clock time" panel renders large/monospace.
-- [ ] **Advance** dialog: presets `+1h / +1d / +1mo` + custom `datetime-local`. Default is `frozen_time + 1h`. Submitting an earlier time toasts an error inline.
-- [ ] Advance button → status flips to **Advancing** with a spinner badge; the page polls `/v1/test-clocks/{id}` every ~1.5s until status returns to `ready` (no manual refresh needed).
-- [ ] If catchup fails server-side, status flips to **Failed** with a destructive banner explaining the next step (inspect billing, then delete).
-- [ ] Subscriptions table on detail page lists every sub pinned to this clock with their current `status` + `next_billing_at`. Click row → existing `/subscriptions/:id`.
+## FLOW TC3: Pinning
 
-## FLOW TC3: Pinning a subscription to a clock
-
-- [ ] Customer detail → Create Subscription → in test mode, an extra **Pin to test clock** dropdown appears below "Start immediately". Empty selection (default) creates a wall-clock sub.
-- [ ] Selecting a clock from the dropdown sets `test_clock_id` on `POST /v1/subscriptions`. Verify the new sub appears on the clock's detail page.
-- [ ] In live mode, the dropdown is hidden entirely (matching the sidebar guard).
-- [ ] `/subscriptions/:id` for a clock-pinned sub shows a **Test clock** badge linking to the clock detail page.
+- [ ] Test mode → Create Subscription has "Pin to test clock" dropdown. Empty = wall-clock sub.
+- [ ] Live mode → dropdown hidden.
+- [ ] `/subscriptions/:id` for pinned sub → "Test clock" badge linking to detail.
 
 ## FLOW TC4: Catchup correctness
 
-- [ ] Pin a monthly subscription to a fresh clock at "now".
-- [ ] Advance the clock by 1 month → exactly 1 invoice is generated for that sub. Subsequent invoices have `created_at` matching the clock's `frozen_time` window, not wall-clock.
-- [ ] Advance by 3 months → 3 invoices generated (one per cycle), all with sequential periods.
-- [ ] Advance to a backwards time → 422 `must be strictly after current frozen_time`.
-- [ ] While status=advancing, a second advance returns 409.
-- [ ] After delete, the pinned subs are gone; standalone (non-pinned) subs unaffected.
+- [ ] Pin monthly sub at "now". Advance 1 month → exactly 1 invoice.
+- [ ] Advance 3 months → 3 sequential-period invoices.
+- [ ] Advance backwards → 422 `must be strictly after current frozen_time`.
+- [ ] Second advance while advancing → 409.
+- [ ] Delete clock → pinned subs gone; standalone subs unaffected.
 
 ---
 
-## Customer Portal (`/v1/me/*` and public magic-link)
+## Customer Portal
 
-## FLOW CP1: Magic-link login (UI + API)
+## FLOW CP1: Magic-link login
 
-API surface:
+- [ ] `POST /v1/public/customer-portal/magic-link {email}` → 202 (always, any email).
+- [ ] Real customer → email lands in Mailpit with link to `/portal/magic?token=…`.
+- [ ] `CUSTOMER_PORTAL_URL` unset → server logs `magic-link delivery failed err="customerportal: CUSTOMER_PORTAL_URL not set"`.
+- [ ] `POST /v1/public/customer-portal/magic/consume {token}` → 200 `{token, customer_id, livemode, expires_at}`. Reused token → 401.
+- [ ] Returned token as Bearer on `/v1/me/invoices` → invoice list.
+- [ ] `/portal/login` → email form. Submit real customer's email → "Check your email" card.
+- [ ] Click email link → `/portal/magic?token=…` → "Signing you in…" → `/portal`.
+- [ ] `/portal/magic` no token / invalid token → "Sign-in link not valid" + "Request a new link".
+- [ ] `/portal` without session → redirect to `/portal/login`.
+- [ ] `/portal` loads: Payment method, Subscriptions, Invoices sections. Header shows tenant company name + Sign out.
 
-- [ ] `curl -X POST $API/v1/public/customer-portal/magic-link -H 'Content-Type: application/json' -d '{"email":"any@example.com"}'` → 202 (always, regardless of whether email matches a customer).
-- [ ] When email matches a real customer, the magic-link email lands in Mailpit (http://localhost:8025) with a link to `/portal/magic?token=…`. With `CUSTOMER_PORTAL_URL` unset, server logs show `magic-link delivery failed err="customerportal: CUSTOMER_PORTAL_URL not set"` — no stub stdout token.
-- [ ] `curl -X POST $API/v1/public/customer-portal/magic/consume -H 'Content-Type: application/json' -d '{"token":"<raw>"}'` → 200 `{token, customer_id, livemode, expires_at}`.
-- [ ] Re-using the same token returns 401 `invalid or expired magic link`.
-- [ ] Using the returned session `token` as `Authorization: Bearer <token>` on `/v1/me/invoices` succeeds with the customer's invoice list.
+## FLOW CP2: Customer cancels subscription
 
-UI surface (web-v2):
+- [ ] `GET /v1/me/subscriptions` (Bearer = portal token) → only that customer's subs.
+- [ ] `POST /v1/me/subscriptions/{id}/cancel` → 200, status canceled.
+- [ ] Cancel another customer's sub → 404 (no enumeration).
+- [ ] Webhook `subscription.canceled` payload includes `canceled_by:"customer"`.
+- [ ] UI: each non-canceled sub has Cancel button → typed confirm dialog (`CANCEL`) → row shows `canceled` badge after.
 
-- [ ] Visit `/portal/login` → email input form with "Send sign-in link" button.
-- [ ] Submit a real customer's email → confirmation card shows "Check your email" + the email value.
-- [ ] Open the magic-link email in Mailpit → click → lands on `/portal/magic?token=…` → shows "Signing you in…" briefly → redirects to `/portal`.
-- [ ] Visit `/portal/magic` without a token → "Sign-in link not valid" + "Request a new link" button.
-- [ ] Visit `/portal/magic?token=invalid` → same error card.
-- [ ] Visit `/portal` without a session → redirects to `/portal/login`.
-- [ ] After session expires (1h), any portal action lands the user back at `/portal/login`.
+## FLOW CP3: Customer updates payment method
 
-## FLOW CP1.5: Portal home (UI)
-
-- [ ] After successful magic-link consume, `/portal` loads with three sections: Payment method, Subscriptions, Invoices.
-- [ ] Header shows the tenant's company name (from `/v1/me/branding`) + a Sign out button.
-- [ ] Empty states: "No subscriptions on this account" / "No invoices yet" when applicable.
-- [ ] Clicking Sign out clears the session and redirects to `/portal/login`.
-
-## FLOW CP2: Subscription cancel by customer
-
-API surface:
-
-- [ ] `curl -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/subscriptions"` → list of customer's own subs only.
-- [ ] `curl -X POST -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/subscriptions/$SUB_ID/cancel"` → 200, sub status flipped to canceled.
-- [ ] Cancel a sub belonging to a different customer → 404 (not 403; no existence leak).
-- [ ] Webhook delivery for `subscription.canceled` includes `canceled_by: "customer"`.
-- [ ] Subsequent billing cycle ticks skip the canceled sub.
-
-UI surface:
-
-- [ ] On `/portal`, each non-canceled subscription shows a Cancel button.
-- [ ] Clicking Cancel opens a confirmation dialog naming the sub.
-- [ ] "Keep subscription" closes the dialog without changes.
-- [ ] "Cancel subscription" fires the API call, toasts "Subscription canceled", reloads the list, and the row now shows a `canceled` badge with no Cancel button.
-
-## FLOW CP3: Payment method update by customer
-
-API surface:
-
-- [ ] Customer must have an existing PaymentSetup (operator-driven `/v1/checkout/setup` ran first).
-- [ ] `curl -X POST -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/payment-method/update" -H 'Content-Type: application/json' -d '{"return_url":"https://app.example.com/billing"}'` → 201 `{url}`.
-- [ ] URL is a Stripe Checkout setup-mode session; opening in a browser asks for new card details.
-- [ ] On success, Stripe redirects to `return_url`; webhook fires; `payment_setups.setup_status` flips to `ready`.
-- [ ] If the customer had `auto_charge_pending=true` invoices, `RetryPendingCharges` scheduler tick collects them automatically (no operator action).
-- [ ] Customer with no PaymentSetup → 400 `missing_payment_setup`.
-- [ ] Tenant with no Stripe configured for active livemode → 503 `stripe_unavailable`.
-
-UI surface:
-
-- [ ] On `/portal`, the Payment method section shows an "Update card" button.
-- [ ] Clicking it opens a Stripe Checkout setup page in a new browser tab.
-- [ ] After the customer completes setup, Stripe redirects them back to `/portal` (return_url defaults to current URL); webhook flips `payment_setups.setup_status=ready`.
-- [ ] If the customer's invoices had `auto_charge_pending=true`, the next scheduler tick collects them — visible in `/portal` invoice list as `paid`.
+- [ ] Customer must have existing PaymentSetup.
+- [ ] `POST /v1/me/payment-method/update {return_url}` → 201 `{url}` (Stripe Checkout setup-mode).
+- [ ] Open URL → enter new card → Stripe redirects to return_url → webhook flips `payment_setups.setup_status=ready`.
+- [ ] If invoices had `auto_charge_pending=true` → next scheduler tick collects them.
+- [ ] No PaymentSetup → 400 `missing_payment_setup`. No live Stripe → 503 `stripe_unavailable`.
 
 ## FLOW CP4: Invoice PDF download
 
-- [ ] `curl -OJ -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/invoices/$INV_ID/pdf"` downloads the PDF.
-- [ ] Response carries `Content-Type: application/pdf` and `Content-Disposition: attachment; filename="..."`.
-- [ ] PDF for a different customer's invoice → 404.
+- [ ] `curl -OJ -H "Authorization: Bearer $PORTAL_TOKEN" $API/v1/me/invoices/$INV_ID/pdf` → PDF, `Content-Type: application/pdf`, `Content-Disposition: attachment`.
+- [ ] Different customer's invoice → 404.
 
-## FLOW E1-5: Email delivery (SMTP)
+## FLOW CP5: Branding
 
-Velox sends customer-facing emails (invoices, dunning, payment-
-update-request, magic-link, password-reset) via SMTP. Configuration
-via env vars (see `docs/ops/email-setup.md`). Single delivery path:
-when SMTP isn't configured, every send returns
-`ErrSMTPNotConfigured` — there is no stdout fallback. Local dev
-runs Mailpit (`docker compose up -d mailpit`); point
-`SMTP_HOST=localhost:1025` and view delivered mail at
-http://localhost:8025.
+- [ ] `GET /v1/me/branding` (Bearer = portal token) → tenant company name, logo URL, brand color, support URL.
 
-Boot warnings to look for in the API log on startup (one line each
-when the corresponding var is unset; never fatal):
-- `SMTP NOT CONFIGURED — every customer-facing email … will fail`
-- `CUSTOMER_PORTAL_URL NOT SET — magic-link requests will fail`
-- `PAYMENT_UPDATE_URL NOT SET — payment-update-request emails … will fail`
+## FLOW E: Email delivery (SMTP)
 
-- [ ] **E1: STARTTLS happy path** — set `SMTP_HOST` / `SMTP_PORT=587` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` / `SMTP_TLS=starttls`. Trigger an invoice email (`POST /v1/invoices/<id>/email`). Confirm:
-  - Outbox row appears in `email_outbox` with `status='pending'`.
-  - Within seconds, dispatcher updates row to `status='dispatched'` with non-null `dispatched_at`.
-  - Recipient inbox receives the email.
-  - Application logs `email sent to=… subject=…`.
-- [ ] **E2: Implicit TLS (port 465)** — switch to `SMTP_TLS=implicit` + `SMTP_PORT=465`. Same trigger; same expected outcome. Verifies the `tls.Dial`-based path works against providers that don't accept STARTTLS.
-- [ ] **E3: SMTP not configured (single failure path)** — unset `SMTP_HOST`. Boot the API; confirm `SMTP NOT CONFIGURED` warning fires once at startup. Trigger an invoice email. Outbox row goes to `status='pending'`; dispatcher claims it, then logs `email send failed err="email: SMTP not configured (SMTP_HOST unset)"` and retries with backoff. After max retries the row lands in DLQ. There is no stdout email body, no silent success.
-- [ ] **E4: SMTP rejects with 5xx (synchronous bounce)** — point `SMTP_HOST` at a server that hard-rejects RCPT TO (e.g. send to a malformed address `foo@invalid`). Confirm:
-  - Customer's row in `customers.email_status` flips to `bounced`.
-  - `customers.email_bounce_reason` carries the SMTP error string.
-  - Outbox row may still mark as dispatched (a 5xx is "delivered to ESP, ESP rejected") OR retried — depends on the error code shape.
-- [ ] **E5: Provider-specific configs work** — verify each ESP per `docs/ops/email-setup.md` (SendGrid, Postmark, SES, Mailgun, Resend) by setting their env vars and triggering an email.
-- [ ] **E6: Mailpit local dev path** — `docker compose up -d mailpit`; export `SMTP_HOST=localhost:1025 SMTP_PORT=1025 SMTP_FROM=billing@local.test SMTP_TLS=none`. Trigger any email path; confirm it lands at http://localhost:8025 with the rendered HTML+text body.
+Single delivery path: when SMTP isn't configured every send returns
+`ErrSMTPNotConfigured`. No stdout fallback. Local dev = Mailpit
+(`docker compose up -d mailpit`, `SMTP_HOST=localhost:1025 SMTP_TLS=none`).
 
-## FLOW EX1-4: Streaming CSV exports
+Boot warnings on startup (one each when var unset; never fatal):
+- `SMTP NOT CONFIGURED`
+- `CUSTOMER_PORTAL_URL NOT SET`
+- `PAYMENT_UPDATE_URL NOT SET`
 
-Operator-facing data export so a tenant can take their data out
-without bespoke tooling. Each endpoint requires the matching *Read
-permission; downloads stream paginated rows via `csv.Writer` so
-multi-million-row dumps don't OOM.
+- [ ] **E1 STARTTLS**: `SMTP_TLS=starttls SMTP_PORT=587` + creds. Trigger invoice email → `email_outbox` row pending → dispatched within seconds → recipient receives.
+- [ ] **E2 Implicit TLS**: `SMTP_TLS=implicit SMTP_PORT=465`. Same expectation; verifies `tls.Dial` path.
+- [ ] **E3 Not configured**: unset `SMTP_HOST`. Boot → `SMTP NOT CONFIGURED` warning. Trigger send → outbox claims, logs `ErrSMTPNotConfigured`, retries with backoff, lands in DLQ.
+- [ ] **E4 5xx bounce**: send to `foo@invalid` → `customers.email_status='bounced'`, `email_bounce_reason` carries the SMTP error.
+- [ ] **E5 Per-provider**: verify SendGrid / Postmark / SES / Mailgun / Resend per `docs/ops/email-setup.md`.
+- [ ] **E6 Mailpit dev path**: `SMTP_HOST=localhost:1025 SMTP_TLS=none` → mail lands at http://localhost:8025 with HTML+text bodies.
 
-- [ ] **EX1 customers**: `curl -OJ -H "Authorization: Bearer $KEY" "$API/v1/exports/customers.csv"` → downloads `customers-YYYYMMDD-HHMMSS.csv` with header + tenant's customer rows.
-- [ ] Date filter: `?from=2026-01-01T00:00:00Z&to=2026-05-01T00:00:00Z` returns only customers created in range.
-- [ ] Invalid `from` → 400 `must be RFC3339`.
-- [ ] **EX2 invoices**: `curl -OJ "$API/v1/exports/invoices.csv"` returns invoice rows including amount columns + period boundaries + lifecycle timestamps.
-- [ ] **EX3 subscriptions**: `curl -OJ "$API/v1/exports/subscriptions.csv"` returns sub rows including `plan_ids` (pipe-delimited list of plan IDs on the sub).
-- [ ] **EX4 usage-events**: requires `from` + `to`. Without them → 400 `requires from and to`. Span > 366 days → 400 `date range exceeds`.
-- [ ] Permissions: `vlx_pub_test_…` publishable key (no PermInvoiceWrite, no PermSubscriptionWrite) can still call `customers.csv`, `invoices.csv`, `subscriptions.csv`, `usage-events.csv` since each gates on the *Read perm only.
-- [ ] Streaming: a large export (>10k rows) starts producing output immediately; `tail -f /tmp/customers.csv` shows rows being written progressively, not all at the end.
+## FLOW EX: Streaming CSV exports
 
-## FLOW CP5: Branding endpoint
-
-- [ ] `curl -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/branding"` → tenant's branding (company name, logo URL, brand color, support URL).
-- [ ] DPs use this to render their embedded portal in tenant-branded chrome.
+- [ ] **EX1 customers**: `curl -OJ $API/v1/exports/customers.csv` → `customers-YYYYMMDD-HHMMSS.csv`. Date filter `?from=…&to=…` works. Invalid `from` → 400.
+- [ ] **EX2 invoices**: `$API/v1/exports/invoices.csv` → invoice rows incl. amounts, period, lifecycle timestamps.
+- [ ] **EX3 subscriptions**: `$API/v1/exports/subscriptions.csv` → subs with `plan_ids` (pipe-delimited).
+- [ ] **EX4 usage-events**: requires `from`+`to`; missing → 400. Span >366d → 400.
+- [ ] Publishable key can call all exports (read-only perm).
+- [ ] Streaming verified: large export shows progressive output via `tail -f`.
 
 ---
 
 ## Billing Engine
 
-## FLOW B1: Billing model sanity (arrears + proration)
+## FLOW B1: Arrears + proration
 
-Billing is arrears — the engine bills **after** the period closes. Calendar
-billing aligns to the 1st of the month; first partial period is prorated.
+- [ ] New sub mid-month → `billing_period_end` = 1st of next month.
+- [ ] Run billing before period close → 0 invoices.
+- [ ] Backdate `current_period_end` → 1 invoice with prorated base + usage + tax + due date + invoice-number prefix.
 
-- [ ] New subscription starts mid-month — verify first `billing_period_end` = 1st of next month
-- [ ] Run billing before the period closes → 0 invoices generated
-- [ ] Advance `current_period_end` to yesterday, run billing → 1 invoice:
-  - Base fee prorated (e.g., `13/30 × $29 = $12.57`)
-  - Usage (full-period aggregation)
-  - Tax per the tenant's basis-point rate
-  - Due date = issued + net terms (from tenant settings)
-  - Invoice number uses tenant prefix
+## FLOW B2: Tax precision (basis points)
 
-## FLOW B2: Basis-point tax precision
+- [ ] Tax `7.25%` → `tax_rate_bp=725` (no float column).
+- [ ] $100 subtotal → tax exactly $7.25.
+- [ ] 3 line items $33.33+$33.33+$33.34: per-line tax sums exactly to invoice tax.
 
-- [ ] Settings → tax rate `7.25%` → `tax_rate_bp = 725` in DB (no float column exists)
-- [ ] Run billing with a $100 subtotal → tax = $7.25 exactly
-- [ ] Invoice detail page displays `Tax (7.25%)`
-- [ ] 3 line items $33.33 + $33.33 + $33.34: per-line tax sums exactly to invoice total tax
+## FLOW B3: Idempotency
 
-## FLOW B3: Invoice idempotency
-
-- [ ] Run billing, note the generated invoice
-- [ ] Run billing again immediately (same period) → no duplicate invoice
-- [ ] Server logs: `"invoice already exists for billing period (idempotent skip)"`
-- [ ] ```sql
-      SELECT COUNT(*) FROM invoices WHERE subscription_id = '<id>'
-        AND billing_period_start = '<start>' AND billing_period_end = '<end>'
-        AND status != 'voided';
-      ```
-  → exactly 1
+- [ ] Run billing twice in same period → no duplicate invoice. Logs `invoice already exists for billing period (idempotent skip)`.
 
 ## FLOW B4: Auto-charge retry
 
-- [ ] Customer with decline-on-charge card (`4000 0000 0000 0341`)
-- [ ] Ingest usage, run billing → invoice has `auto_charge_pending = true`, `payment_status = pending`
-- [ ] Update the card to a working one via Stripe Checkout
-- [ ] Wait for next scheduler tick (or manually trigger) → `auto_charge_pending` clears,
-  `payment_status = succeeded`
+- [ ] Decline-on-charge card → invoice has `auto_charge_pending=true`, `payment_status=pending`.
+- [ ] Update card → next scheduler tick → `payment_status=succeeded`, `auto_charge_pending=false`.
 
 ## FLOW B5: Idempotency-Key header
 
-- [ ] POST /v1/customers with `Idempotency-Key: test-123` → 201
-- [ ] Repeat same body + same key → same response, only one row created
-- [ ] Same key, different body → 409 (conflict — key already used with different payload)
-- [ ] New key → new customer created
+- [ ] POST with `Idempotency-Key: test-123` → 201.
+- [ ] Same body + key → same response, 1 row.
+- [ ] Same key + different body → 409.
 
 ## FLOW B6: Subscription lifecycle
 
-- [ ] Create subscription with `trial_days = 7` → status active, trial end date shown;
-  billing during trial produces no invoice
-- [ ] Pause active subscription → confirmation dialog; billing skipped; usage not metered
-- [ ] Resume → active; billing runs at next period close
-- [ ] Cancel → confirmation dialog; status `canceled`; no future billing
+- [ ] Trial 7 days → no invoice during trial. After trial → first invoice generated.
+- [ ] Pause → confirm dialog → no billing, no metering. Resume → bills next period.
+- [ ] Cancel → confirm dialog → status canceled, no future billing.
 
 ## FLOW B7: Plan change + proration
 
-- [ ] Active sub on Starter; create Enterprise plan ($99/mo)
-- [ ] Change to Enterprise "Apply immediately" → proration invoice generated, toast confirms $XX.XX
-- [ ] Change back to Starter immediately → downgrade credits customer balance; toast confirms
-- [ ] Change plan without "immediately" → no proration; plan changes at next period boundary
+- [ ] Active sub on Starter → change to Enterprise "immediately" → proration invoice generated.
+- [ ] Downgrade immediately → credits to balance.
+- [ ] Plan change without immediately → no proration; applies at next period boundary.
 
 ## FLOW B8: Usage caps
 
-- [ ] Sub with `usage_cap_units = 5000`, `overage_action = block`, ingest 8,000
-- [ ] Run billing → usage capped at 5,000 (proportional across meters)
-- [ ] Change `overage_action = charge`, ingest another 8,000, run billing → full 8,000 billed
+- [ ] `usage_cap_units=5000`, `overage_action=block`, ingest 8000 → billed 5000.
+- [ ] Switch to `overage_action=charge`, ingest 8000 → billed 8000.
 
 ## FLOW B9: Customer price overrides
 
-- [ ] POST /v1/price-overrides `{ customer_id, rating_rule_id, flat_amount_cents }`
-- [ ] Ingest usage for that customer, run billing → invoice uses override price
-- [ ] Same usage for another customer → invoice uses default rule price
+- [ ] POST /v1/price-overrides → that customer's invoice uses override price.
+- [ ] Other customers → default rule price.
 
-## FLOW B10: Manual tax with cross-border zero-rating
+## FLOW B10: Manual tax + cross-border zero-rating
 
-Tests Velox's tenant-side fallback when Stripe Tax is off. See Tier 3 X7 for the
-Stripe-Tax-enabled path.
+- [ ] `tax_home_country="IN"`, `tax_rate_bp=1800`, `tax_name="IGST"`.
+- [ ] Domestic IN customer: $100 → $18, name `IGST`, PDF `IGST (18.00%)`.
+- [ ] Export US customer: $100 → $0, name `IGST (zero-rated export)`.
+- [ ] Customer with no country → 18% applies.
+- [ ] Customer with `tax_exempt=true` → $0, blank name.
+- [ ] Clear `tax_home_country` → US customer back to 18%.
+- [ ] India B2B reverse-charge: PDF carries supplier GSTIN under company line + "Tax payable on reverse charge basis: YES".
+- [ ] EU reverse-charge: PDF retains EU wording.
+- [ ] Stripe Tax `taxability_reason=not_collecting` round-trip → line item `tax_reason='not_collecting'`, badge in dashboard.
+- [ ] `tax_status='exempt'` customer → `tax_reason='customer_exempt'`, PDF carries customer-exemption legend.
+- [ ] Invalid country codes (`INDIA`, `in `, `XX`) → 422.
 
-- [ ] Settings → `tax_home_country = "IN"`, `tax_rate_bp = 1800`, `tax_name = "IGST"`
-- [ ] Invalid country codes ("INDIA", "in ", "XX") rejected with ISO-3166 validation error
-- [ ] Empty `tax_home_country` is accepted (legacy tenants)
-- [ ] Domestic customer (`country = "IN"`): $100 subtotal → tax = $18, `tax_name = "IGST"`, PDF shows `IGST (18.00%)`
-- [ ] Export customer (`country = "US"`): $100 subtotal → tax = $0, `tax_name = "IGST (zero-rated export)"`, PDF shows the annotation
-- [ ] Customer with no country: normal 18% applies (can't prove export)
-- [ ] Export customer with `tax_exempt = true`: tax = $0, `tax_name = ""` (exempt overrides export annotation)
-- [ ] Clear `tax_home_country`: US customer now charged 18% (no home country → can't zero-rate)
-- [ ] India B2B reverse-charge invoice PDF shows supplier GSTIN in header (e.g. `GSTIN: 27AAEPM1234C1Z5`) under the company contact line
-- [ ] India reverse-charge legend reads "Tax payable on reverse charge basis: YES" (not the EU "VAT to be accounted for" wording)
-- [ ] EU reverse-charge invoice PDF retains EU wording ("Reverse charge — VAT to be accounted for by the recipient.")
-- [ ] **Stripe Tax `taxability_reason` round-trip (issue #4)**: trigger a no-registration jurisdiction (e.g. Texas with no Stripe Tax registration). Calc returns `tax_amount=0` with `taxability_reason=not_collecting`. After invoice finalize, line item shows the *Not collecting in this jurisdiction* badge in the dashboard, and the database `invoice_line_items.tax_reason='not_collecting'`.
-- [ ] **Customer-exempt path**: customer with `tax_status='exempt'` + exemption certificate. After finalize, line item `tax_reason='customer_exempt'` and PDF footer carries the customer-exemption legend ("One or more lines are exempt from tax based on the customer's exemption certificate.") in addition to the reverse-charge legend if applicable.
+## FLOW B11: Tax-ID validation
 
-## FLOW B12: Subscription activity timeline (T0-18)
+- [ ] `in_gst` + `27AAEPM1234C1Z5` → accepted. Legacy `gstin` → normalized to `in_gst` on write.
+- [ ] `eu_vat` + `DE123456789`, `au_abn` + `51824753556` → accepted.
+- [ ] Unknown Stripe code (`za_vat`, `br_cnpj`) → accepted as-is.
+- [ ] Malformed `in_gst` / `eu_vat` / `au_abn` → 422 with format-specific message.
+- [ ] Empty `tax_id` → always accepted.
 
-Chronological feed of lifecycle events sourced from the audit log. CS reps land here for "why was my sub cancelled / plan changed" tickets.
+## FLOW B12: Subscription activity timeline
 
-- [ ] Create a subscription → activate → pause → resume → change plan → cancel — at least 5 mutations
-- [ ] `GET /v1/subscriptions/{id}/timeline` returns `{events: [...]}` — entries in ascending timestamp order
-- [ ] Each event carries `timestamp`, `source: "audit"`, `event_type`, `status`, `description`, `actor_type`, `actor_name`, `actor_id`
-- [ ] Descriptions are human-readable ("Subscription activated", "Subscription paused", "Plan changed", "Subscription canceled")
-- [ ] Operator-initiated cancel: `description` = "Subscription canceled" (no "by" suffix)
-- [ ] Portal-initiated cancel (via customer portal /v1/me route): metadata carries `canceled_by = "customer"` → description becomes "Subscription canceled **by customer**"
-- [ ] Status tags color-code: `succeeded` (emerald), `warning` (amber), `canceled` (destructive/red), `escalated` (violet), `info` (blue default)
-- [ ] SPA: Subscription detail page shows an **Activity** card under the period visualization
-- [ ] Card mirrors the invoice payment-activity timeline layout (colored dot, description left, timestamp right-aligned)
-- [ ] When an actor is resolved (API key name, operator email), a second line shows "by {actor_name}" underneath
-- [ ] Nonexistent subscription ID: **404** (not an empty events array — silent-empty masquerade is worse than a clear miss)
+- [ ] Create → activate → pause → resume → plan change → cancel.
+- [ ] `GET /v1/subscriptions/{id}/timeline` → events ascending; each carries timestamp, source, event_type, status, description, actor.
+- [ ] Operator cancel → "Subscription canceled". Customer cancel → "Subscription canceled by customer".
+- [ ] Status colors: emerald/amber/red/violet/blue.
+- [ ] Subscription detail UI shows Activity card; resolved actor renders "by {actor_name}".
+- [ ] Nonexistent sub ID → 404.
 
 ## FLOW B13: Multi-dimensional meters
 
-Shipped Week 2. The wedge primitive — events carry `dimensions JSONB` and pricing
-rules match by dimension subsets. Migration 0054 adds the column + GIN index;
-migration 0062 makes the GIN index concurrent.
+- [ ] `POST /v1/usage-events` with dimensions `{model, operation, cached, tier}` → 201; value stored as NUMERIC.
+- [ ] Decimal preserved end-to-end (`10000.5` round-trips).
+- [ ] Replay same idempotency_key → 200 with original event id, no duplicate.
+- [ ] Rule with `dimension_match={"operation":"input"}` claims only input events. More-specific match (`+cached:true`) wins over less-specific.
+- [ ] Aggregations sum / count / max / last_during_period / last_ever all bill correctly. Switching aggregation between cycles re-bills next cycle without affecting past invoices.
+- [ ] `cmd/velox-bench` sustains 50k events/sec on local Postgres.
 
-### Decimal quantities + dimensioned ingest
+## FLOW B14: Billing thresholds
 
-- [ ] `POST /v1/usage-events` with body `{"meter":"tokens","customer":"<id>","dimensions":{"model":"gpt-4o","operation":"input","cached":true,"tier":1},"value":10000.5,"timestamp":"<iso>","idempotency_key":"k1"}` → 201; `value` stored as NUMERIC (Stripe parity for `quantity_decimal`)
-- [ ] Decimal value is preserved end-to-end: `SELECT value FROM usage_events ORDER BY created_at DESC LIMIT 1;` → `10000.5` (not truncated)
-- [ ] Replay the same body with the same `idempotency_key` → 200 with the original event id; no duplicate row
+- [ ] PATCH sub `billing_thresholds:[{meter_id, usage_gte:10000}]`. Ingest 9999 → no early finalize. Ingest 1 more → invoice auto-finalized within 1 tick, `billing_reason="threshold"`. New events start a new period.
+- [ ] PATCH `{amount_gte:50000}` → cross $500 → same shape.
+- [ ] Cross threshold + immediately `POST /v1/billing/run` → idempotent skip.
+- [ ] Subscription detail "Spend Thresholds" card: empty state with Set button. Edit dialog has subtotal cap, reset_billing_cycle checkbox, per-item rows. Save shows `$1,000.00` (from cents) and `≥10000.5 units`. Clear thresholds → flips to empty.
+- [ ] Canceled/archived subs → Set/Edit hidden.
 
-### Dimension subset matching at finalize
+### Billing alerts (backend-only — no UI page after lean-cut)
 
-- [ ] Create rating rule keyed `tokens_input` with `dimension_match = {"operation":"input"}`
-- [ ] Ingest events with `{operation:"input"}` and `{operation:"output"}` for the same meter
-- [ ] Run billing → only `operation=input` events priced under `tokens_input`; `operation=output` falls through to the default rule (or remains unpriced if no fallback)
-- [ ] Add a second rule `tokens_input_cached` with `dimension_match = {"operation":"input","cached":true}` → it wins over `tokens_input` for cached input (more-specific match wins)
+- [ ] `POST /v1/billing/alerts {customer_id, meter_id, threshold:1000, recurrence:"one_time"}` → 201. Cross threshold → `billing.alert.triggered` webhook + dashboard notification.
+- [ ] Cross again same period → no second fire (one_time).
+- [ ] `recurrence:"per_period"` → fires once per cycle.
+- [ ] Webhook payload: `customer_id, meter_id, threshold, current_value, period_start, period_end, recurrence`.
 
-### Aggregation modes per pricing rule
+## FLOW B17: Meter Detail page
 
-All five Stripe Tier-1 modes expressed as a per-rule choice:
-
-- [ ] `aggregation = sum` (default) — bills the cumulative quantity over the period
-- [ ] `aggregation = count` — bills the number of events regardless of value
-- [ ] `aggregation = max` — bills the largest single value over the period (e.g., peak concurrent VMs)
-- [ ] `aggregation = last_during_period` — bills the value of the last event in the period (e.g., end-of-period gauge)
-- [ ] `aggregation = last_ever` — bills the value of the last event ever (across all periods, latest snapshot)
-- [ ] Switching a rule's aggregation between cycles re-bills the next cycle correctly without affecting past invoices
-
-### Throughput
-
-- [ ] `cmd/velox-bench` ingests 50k events/sec sustained on a single tenant against a local Postgres (matches the Week 2 plan deliverable)
-
-## FLOW B14: Billing thresholds (per-item + per-subscription)
-
-Shipped Week 5 (migration 0056). Stripe Tier-1 parity for
-`subscription.billing_thresholds`. Crossing a threshold mid-cycle finalizes the
-invoice early with `billing_reason="threshold"`.
-
-### Per-item `usage_gte`
-
-- [ ] PATCH a subscription with `{"billing_thresholds":[{"meter_id":"<m>","usage_gte":10000}]}` → 200
-- [ ] Ingest 9,999 units → no early finalize
-- [ ] Ingest 1 more unit (cumulative 10,000) → invoice auto-finalized within 1 scheduler tick; `billing_reason="threshold"` on the invoice; `billing.alert.triggered` webhook fires (if an alert is configured — see B15)
-- [ ] Verify: subsequent events for the same period start a NEW billing window (the early-finalize closes the period)
-
-### Per-subscription `amount_gte`
-
-- [ ] PATCH a subscription with `{"billing_thresholds":{"amount_gte":50000}}` (i.e., $500) → 200
-- [ ] Ingest enough usage to bring the running total to $499.99 → no finalize
-- [ ] Ingest one more event that crosses $500 → early finalize, same shape as per-item
-
-### Threshold + manual run interaction
-
-- [ ] Cross a threshold, then immediately run `POST /v1/billing/run` → idempotent skip (the scheduler already finalized the period)
-
-### Dashboard UI (Track B, PR #70)
-
-Subscription detail → "Spend Thresholds" card sits between Items and Properties. Backed by `PUT/DELETE /v1/subscriptions/{id}/billing-thresholds`.
-
-- [ ] Subscription detail with no thresholds set → empty-state copy explains the cycle scan is the only invoice-emitting path; "Set thresholds" button on the right
-- [ ] Click Set / Edit → dialog opens with subtotal cap input (major units, e.g. `1000.00` for $1,000), `reset_billing_cycle` checkbox with both modes documented inline, and one row per subscription item with `usage_gte` decimal-string input
-- [ ] Save with subtotal `1000.00` only → backend stores `amount_gte=100000` (cents); card shows `$1,000.00` with currency suffix and reset hint
-- [ ] Save with one per-item `usage_gte=10000.5` → card shows `≥ 10000.5 units` (trailing zeros stripped from the NUMERIC(38,12) wire string per ADR-005)
-- [ ] Edit and clear all fields + save → no-op (validation blocks empty submit)
-- [ ] Click "Clear thresholds" (destructive button) → DELETE fires; card flips back to empty state
-- [ ] On a `canceled` or `archived` subscription → Set/Edit button is hidden (backend rejects there anyway)
-
-Shipped Week 5 (migration 0057). `POST /v1/billing/alerts` with `recurrence`
-controls whether the alert fires once-ever or once-per-billing-period.
-
-- [ ] `POST /v1/billing/alerts` `{"customer_id":"<c>","meter_id":"<m>","threshold":1000,"recurrence":"one_time"}` → 201
-- [ ] Cross the threshold once → `billing.alert.triggered` webhook + dashboard notification appear
-- [ ] Cross again in the same period → no second fire (one-time)
-- [ ] Repeat with `recurrence:"per_period"` → fires once per billing period (resets at period boundary)
-- [ ] Webhook payload includes: `customer_id`, `meter_id`, `threshold`, `current_value`, `period_start`, `period_end`, `recurrence`
-- [ ] Dashboard notification: bell icon shows unread count; clicking the alert navigates to the customer detail page with the meter highlighted
-
-### Backend-only today
-
-The `/billing-alerts` dashboard page was cut on the lean-cut. The
-backend handlers + alert engine remain — operators can manage alerts
-via curl until a UI returns. To create / list / archive alerts use
-the API directly (`POST /v1/billing/alerts`,
-`GET /v1/billing/alerts?status=`, `POST /v1/billing/alerts/{id}/archive`).
-Webhook firing + the engine logic are unchanged.
-
-## FLOW B11: Tax-ID format validation
-
-`UpsertBillingProfile` normalizes (trim + uppercase) and format-validates `tax_id`
-against `tax_id_type`. Storage uses Stripe-canonical codes (`in_gst`, `eu_vat`,
-`au_abn`); legacy Velox shorthand (`gstin`, `vat`, `abn`) is still accepted on
-input and normalized to the canonical code before write. Unknown kinds pass through.
-
-- [ ] `in_gst` + `27AAEPM1234C1Z5` → saved as `27AAEPM1234C1Z5`, `tax_id_type` stored as `in_gst`
-- [ ] Legacy `gstin` input → normalized to `in_gst` on write (backend `NormalizeTaxIDType`)
-- [ ] `eu_vat` + `DE123456789` → accepted
-- [ ] `au_abn` + `51824753556` → accepted
-- [ ] Unknown Stripe code (`za_vat` + any value) → accepted as-is
-- [ ] Customer detail → Edit billing profile: `tax_id_type` Combobox shows alphabetized list of Stripe codes with country-code badges, searchable by code or label
-- [ ] Malformed: `in_gst` + `27INVALID` → 422 `"invalid GSTIN format: expected 15-char code like 27AAEPM1234C1Z5"`
-- [ ] Malformed: `eu_vat` + `12` → 422 `"invalid EU VAT format"`
-- [ ] Malformed: `au_abn` + `123` → 422 `"invalid ABN format: expected 11 digits"`
-- [ ] Unknown kind: `br_cnpj` + `12.345.678/0001-90` → accepted as-is
-- [ ] Empty `tax_id` → always accepted regardless of kind
-
-## FLOW B17: Meter Detail page UX
-
-`/meters/:id` — operator surface for inspecting a meter, its default rating
-rule, dimension-matched pricing rules (multi-dim), and which plans use it.
-
-- [ ] Breadcrumb: `Pricing / <meter name>` — clicking "Pricing" returns to `/pricing`
-- [ ] Header: meter name, ID pill with CopyButton, default-aggregation badge (e.g. `sum`)
-- [ ] Properties card lists: Key (monospace), Unit, Default aggregation badge, Created datetime, ID with CopyButton
-- [ ] Default pricing rule card renders the linked rating rule's *latest version for the same `rule_key`* — not the snapshot version stored on the meter (verify by editing the rule and reloading; version badge bumps)
-- [ ] Mode = `flat`: 3xl price + "per unit" caption + currency uppercase tag
-- [ ] Mode = `graduated`: tiers table with `First N units` / `Next M units` / `Beyond X units` labels (last tier: `up_to=0` or `-1`); right-aligned price column
-- [ ] Mode = `package`: `<size>` units per package at `<price>` rendered inline
-- [ ] Default rule absent (rare): card shows "No pricing rule linked"
-- [ ] Dimension-matched rules table columns: Priority (mono/tabular), Dimension match (chips like `model=gpt-4` or italic "all events" when empty), Aggregation badge, Rating rule (name with `<id>` tooltip, falls back to truncated id when rule deleted), Created, trash icon
-- [ ] Empty multi-dim state: "No dimension-matched rules. Every event uses the default pricing rule above." + outline "Add a rule" button
-- [ ] "Add rule" dialog: Dimension match rows (key + `=` + value, trash to remove, `Add dimension` button); Aggregation Select with per-mode helper text (sum/count/last_during_period/last_ever/max); Priority numeric input ("Higher priority claims events first"); Rating-rule Select ("No rating rules — create one first" when empty)
-- [ ] Dimension values: `true` / `false` coerce to bool, numeric strings coerce to number, everything else stays a string — verify by submitting `model=gpt-4` (string), `count=10` (number), `featured=true` (bool) and inspecting the persisted rule via API
-- [ ] Submit with no rating rule selected → button disabled
-- [ ] Submit success → toast "Pricing rule created" + table refetches with new row; rules render in priority order (higher first)
-- [ ] Per-row trash → `TypedConfirmDialog` requiring typed `delete` confirmation; copy explicitly states "stops applying to new events at finalize time. Invoices already finalized are unaffected"
-- [ ] Confirmed delete → toast "Pricing rule deleted" + row removed; the rule's stored events on already-finalized invoices remain on those invoices (verify by checking an in-flight upcoming invoice doesn't change after delete)
-- [ ] "Used by N plans" section: lists every plan whose `meter_ids` contains this meter; columns Name (link to `/plans/:id`), Code, Interval, Base price, Status badge; row click navigates to plan detail (excluding nested button/link clicks)
-- [ ] Plans-empty state: "No plans are currently using this meter"
-- [ ] Multi-dim endpoint failure: page still renders (rules query swallows errors and shows empty state) — useful for tenants on pre-multi-dim builds
+- [ ] Breadcrumb `Pricing / <meter>`. Header: name, ID, default-aggregation badge.
+- [ ] Default rule card renders latest version of linked rating rule (verify by editing rule → version badge bumps).
+- [ ] Mode rendering: flat = price + per-unit; graduated = tiers table; package = inline.
+- [ ] Dimension-matched rules table: Priority, Dimension chips, Aggregation, Rating rule, Created, trash.
+- [ ] Add rule dialog: dimension k=v rows, aggregation select with helper text, priority input, rating-rule select.
+- [ ] Dimension values coerce: `true/false` → bool, numeric strings → number, else string.
+- [ ] Submit success → toast + table refetches in priority order.
+- [ ] Per-row trash → typed `delete` confirm. Already-finalized invoices unaffected after delete.
+- [ ] "Used by N plans" section lists plans with this meter.
 
 ---
 
 ## Pricing Recipes
 
-Five built-in YAML recipes ship with the binary (`internal/recipe/recipes/`):
-`anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`,
-`marketplace_gmv`. Each defines products + prices + meters + dunning policy +
-webhook endpoint as one atomic graph. Cuts time-to-first-invoice from "read
-docs for an hour" to a single API call.
-
 ## FLOW R1: List + preview
 
-- [ ] `GET /v1/recipes` → 5 entries; each has `key`, `name`, `description`, `tags`
-- [ ] `POST /v1/recipes/{key}/preview` for each key → 200 with `products[]`,
-  `prices[]`, `meters[]`, `dunning_policy`, `webhook_endpoints[]` projected (no DB writes)
-- [ ] Unknown key → 404 `"recipe not found"` (no partial state, no log spam)
+- [ ] `GET /v1/recipes` → 5 entries (anthropic_style, openai_style, replicate_style, b2b_saas_pro, marketplace_gmv).
+- [ ] `POST /v1/recipes/{key}/preview` → projected products/prices/meters/dunning/webhooks (no DB writes).
+- [ ] Unknown key → 404.
 
-## FLOW R2: Instantiate end-to-end (`anthropic_style`)
+## FLOW R2: Instantiate
 
-- [ ] `POST /v1/recipes/anthropic_style/instantiate` with `{"livemode": false}` → 201
-- [ ] Response includes IDs for every created resource
-- [ ] DB now contains: 1 product (Claude family), N prices (one per model × cache tier),
-  N meters (input/output/cache_read/cache_write), 1 dunning policy, 1 outbound webhook endpoint
-- [ ] Pricing rules carry `dimension_match` JSONB so meters share a single product
-- [ ] Audit log: one entry per resource created, all with `actor=recipe:anthropic_style`
-- [ ] Repeat for `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv` →
-  each produces a clean graph in <500ms
+- [ ] `POST /v1/recipes/anthropic_style/instantiate {livemode:false}` → 201 with all created IDs. DB now has products + prices + meters + dunning policy + webhook endpoint.
+- [ ] Pricing rules carry `dimension_match` JSONB.
+- [ ] Audit log: one entry per resource, `actor=recipe:<key>`.
+- [ ] Repeat for all 5 recipes — each completes <500ms.
 
-## FLOW R3: Idempotency on (tenant_id, recipe_key)
+## FLOW R3: Per-tenant idempotency
 
-- [ ] Instantiate `b2b_saas_pro` once → 201
-- [ ] Instantiate again same tenant → 409 `"recipe already instantiated"`; no duplicate writes
-- [ ] Different tenant, same recipe → 201 (key is per-tenant, not global)
-- [ ] Force re-instantiate via `?force=true` is **not** supported — operator must
-  `DELETE /v1/recipes/{key}/instance` first; verify that endpoint cleans up
-  product+prices+meters+webhook+dunning atomically
+- [ ] Instantiate same recipe twice → second call 409 `recipe already instantiated`.
+- [ ] Different tenant, same recipe → 201.
+- [ ] `DELETE /v1/recipes/{key}/instance` cleans up product+prices+meters+webhook+dunning atomically.
 
-## FLOW R4: Atomic rollback on partial failure
+## FLOW R4: Atomic rollback
 
-- [ ] Inject a failure mid-instantiate (e.g., webhook endpoint URL fails URL validation)
-  → 422; verify **zero** rows created (products, prices, meters all rolled back)
-- [ ] `SELECT * FROM tenant_recipe_instances WHERE tenant_id = ?` → no row
-- [ ] Logs show the single failure reason — not a cascade of unrelated errors
+- [ ] Inject mid-instantiate failure (e.g. invalid webhook URL) → 422; zero rows created.
+- [ ] No `tenant_recipe_instances` row.
 
-## FLOW R5: Dashboard UI flow
+## FLOW R5: Dashboard UI
 
-- [ ] `/recipes` → grid of 5 cards with name, description, tag chips, "Preview" button
-- [ ] Click Preview → side panel renders projected resources (read-only table per category)
-- [ ] "Instantiate" button at panel footer; confirm dialog names the side-effects ("creates 4 products + 12 prices + 3 meters + 1 dunning policy + 1 webhook endpoint")
-- [ ] Post-instantiate: redirected to `/products` with the new product IDs visible
-- [ ] Recipe card on `/recipes` now shows "Instantiated 2026-04-27" with link to detail page
+- [ ] `/recipes` → 5 cards, Preview opens side panel with projected resources.
+- [ ] Instantiate dialog names side-effects ("creates 4 products + 12 prices + …"). Confirm → redirect to `/products`.
+- [ ] Recipe card flips to "Installed" with date.
 
-### Uninstall (Track B, PR #73)
+### Uninstall
 
-Backed by `DELETE /v1/recipes/instances/{id}`. Uninstall is **no-cascade by design** — only the `recipe_instances` row drops; the plans / meters / rating rules / dunning policy / webhook endpoint stay so live subscriptions don't lose billing data.
-
-- [ ] Recipe card flagged "Installed" → open the configure dialog → Uninstall button visible on the footer left (destructive-coloured), separate from the install/preview/cancel actions on the right
-- [ ] Card NOT installed → no Uninstall button; install button enabled
-- [ ] Click Uninstall → AlertDialog with copy explaining: (a) recipe link drops only, (b) plans/meters/etc. stay, (c) re-install will name-collide unless you archived/renamed the originals first
-- [ ] Confirm Uninstall → toast `"Uninstalled <recipe name>"`; recipe card flips back to "not installed" without manual refresh; install button re-enables
-- [ ] After uninstall, verify in `/pricing` and `/meters` that the originally-created plans + meters are still there (no cascade)
-- [ ] Re-install the same recipe without renaming originals → 422 with name-collision error (this is by design)
-- [ ] Re-install after archiving the originals → succeeds with fresh `recipe_instances` row
+- [ ] Installed card → configure dialog has Uninstall button.
+- [ ] Confirm uninstall → `recipe_instances` row drops; plans/meters/etc. stay (no cascade).
+- [ ] Re-install without renaming originals → 422 name collision.
+- [ ] Re-install after archiving originals → succeeds.
 
 ---
 
 ## Invoices
 
-## FLOW I1: Multiple meters on one plan
+## FLOW I1: Multiple meters
 
-- [ ] Add `storage_gb` rule ($0.10/GB) + meter (aggregation `max`), attach to plan
-- [ ] Ingest 2000 API calls + 50 GB storage, run billing
-- [ ] Invoice has 3 line items: base ($29) + API ($20) + storage ($5)
+- [ ] Plan with API ($0.01/call) + Storage ($0.10/GB max). Ingest 2000 calls + 50 GB → invoice has 3 line items: base $29 + API $20 + storage $5.
 
-## FLOW I2: Negative usage (corrections)
+## FLOW I2: Negative usage
 
-- [ ] Ingest 1000 events, then ingest -200 (correction) for same meter
-- [ ] Usage Events page shows -200 in red
-- [ ] Meter breakdown shows net 800
-- [ ] Run billing → billed for 800, not 1000
+- [ ] Ingest 1000 then -200 (correction) → meter shows net 800, billed for 800.
 
 ## FLOW I3: Manual line items
 
-- [ ] POST /v1/invoices → create draft invoice
-- [ ] Invoice detail → Add Line Item: "Setup fee", Add-On, qty 1, $250
-- [ ] Add "Consulting", qty 2, $150 → total $550
-- [ ] Finalize → auto-charges via Stripe
+- [ ] POST /v1/invoices → draft. Add Line Item "Setup fee" $250, "Consulting" 2×$150 → total $550.
+- [ ] Finalize → auto-charges via Stripe.
 
-## FLOW I4: Void invoice
+## FLOW I4: Void
 
-- [ ] Void a finalized invoice that has credits applied
-- [ ] Verify: credits reversed, balance restored
-- [ ] Verify: Stripe PaymentIntent canceled
-- [ ] Verify: active dunning run (if any) is resolved
-- [ ] Audit log shows `Voided invoice <number>`
+- [ ] Void invoice with credits applied → credits reversed, balance restored, Stripe PI canceled, active dunning resolved, audit log entry.
 
 ## FLOW I5: Collect + payment timeline
 
-- [ ] Finalized unpaid invoice for a customer with a payment method
-- [ ] POST /v1/invoices/{id}/collect → Stripe PaymentIntent created, payment_status updates
-- [ ] GET /v1/invoices/{id}/payment-timeline → all attempts with ts, amount, status, PI id
-- [ ] For a failed-then-succeeded invoice, both attempts are shown in order
+- [ ] Finalized unpaid → POST /v1/invoices/{id}/collect → PI created.
+- [ ] GET /v1/invoices/{id}/payment-timeline → all attempts in order with ts/amount/status/PI id.
 
-## FLOW I5b: Invoice Attention banner (ADR-009)
+## FLOW I5b: Invoice attention banner
 
-Unified "this invoice needs operator attention" surface. Server-derived from
-the invoice's durable fields (`tax_status`, `tax_error_code`, `payment_status`,
-`last_payment_error`, `payment_overdue`, `auto_charge_pending`). Renders as a
-severity-tinted banner above the invoice document with a typed reason badge,
-human message, prescribed action buttons, optional `doc_url` "Learn more" link,
-and a collapsible "Provider response" disclosure.
+Server-derived from invoice fields. Suppressed for healthy / paid / voided / draft invoices.
 
-Healthy and terminal-state invoices (paid, voided) suppress the banner. Drafts
-also suppress — the page already screams DRAFT.
+### Critical
+- [ ] **tax_location_required**: US customer missing postal_code, finalize → red banner "Customer address required", primary action **Edit billing profile**, secondary **Retry tax**.
+- [ ] **tax_calculation_failed (provider auth)**: revoke Stripe key → red banner code `tax.provider_auth`, action **Rotate API key**.
+- [ ] **payment_failed**: card `4000 0000 0000 9995` → red banner code `payment.declined`, message = truncated `last_payment_error`.
 
-### Critical-tier reasons
+### Warning
+- [ ] **tax pending**: amber banner with same code/actions, severity warning.
+- [ ] **overdue**: past `due_at` → amber banner code `lifecycle.overdue`, actions **Charge now** + **Send reminder**.
 
-- [ ] **tax_location_required** — finalize an invoice for a US customer whose billing profile is missing `postal_code`. The Stripe Tax 422 on calculate causes the engine to defer; the next read shows a red-tinted banner with badge "Customer address required", message about the customer's billing profile, code `tax.customer_data_invalid`, primary action **Edit billing profile** (deep-links to `/customers/<id>`), secondary **Retry tax**.
-- [ ] **tax_calculation_failed** (provider outage) — simulate by temporarily revoking the tenant's Stripe key in Settings → Payments. Trigger billing → engine defers with `provider_auth` code → banner shows "Tax calculation failed", code `tax.provider_auth`, primary action **Rotate API key** (deep-links to `/settings`).
-- [ ] **payment_failed** — invoice with `payment_status='failed'` (use Stripe test card `4000 0000 0000 9995`) → red-tinted banner, code `payment.declined`, message is the truncated `last_payment_error`, action **Retry payment** (currently disabled — wiring deferred).
+### Info
+- [ ] **payment_processing**: muted banner, no actions.
+- [ ] **payment_scheduled**: `auto_charge_pending=true` → muted banner, action **Charge now**.
+- [ ] **awaiting_payment**: muted banner, actions **Charge now** + **Send reminder**.
 
-### Warning-tier reasons
+### Banner shape
+- [ ] Severity styling: critical=red+AlertCircle, warning=amber+AlertTriangle, info=muted+Info.
+- [ ] Reason badge + dotted code in mono. `since` = relative time. `doc_url` → "Learn more ↗".
+- [ ] `detail` (raw provider payload) → `<details>` "Provider response" disclosure.
+- [ ] Healthy/paid/voided/draft → no banner.
 
-- [ ] **tax_calculation_failed (pending)** — same as the failed variants above but `tax_status='pending'` (retry worker hasn't exhausted yet) → amber-tinted banner with same code/actions but Severity = warning.
-- [ ] **overdue** — finalized invoice past `due_at`, still unpaid → amber banner with reason "Past due", code `lifecycle.overdue`, actions **Charge now** + **Send reminder** (Send disabled — wiring deferred).
+### Retry tax
+- [ ] Banner showing → click **Retry tax** → button "Retrying…" → audit log row `action='retry_tax'` with before/after attention codes.
+- [ ] Issue fixed → invoice has `tax_status='ok'`, banner disappears, toast "Tax recalculated successfully".
+- [ ] Still failing → banner refreshes with new reason. Each click bumps `tax_retry_count`.
+- [ ] Retry on non-pending/non-failed invoice → 409.
 
-### Info-tier reasons
-
-- [ ] **payment_processing** — `payment_status='processing'` → muted banner "Payment processing — payment is in flight at the provider", no actions.
-- [ ] **payment_scheduled** — finalized invoice with `auto_charge_pending=true` → muted banner "Auto-charge scheduled — the engine will attempt the charge on its next tick", primary action **Charge now**.
-- [ ] **awaiting_payment** — finalized invoice, `payment_status='pending'`, no auto-charge queued → muted banner "Awaiting payment — invoice is finalized and awaiting payment. No charge attempt has fired yet", actions **Charge now** + **Send reminder**.
-
-### Banner shape (any reason)
-
-- [ ] Severity styling: `critical` = red border + red-tinted bg + `AlertCircle` icon; `warning` = amber border + amber-tinted bg + `AlertTriangle` icon; `info` = muted border + muted bg + `Info` icon.
-- [ ] Reason badge displays the human label (mapped from `attention.reason` typed code). Open dotted `attention.code` shows next to it in monospace muted text.
-- [ ] `attention.since` renders as relative time ("2h ago", "3d ago"). For tax reasons it's `tax_deferred_at`; for `overdue` it's `due_at`; for `payment_*` it's `updated_at`.
-- [ ] `attention.doc_url` renders as a "Learn more ↗" Button.ghost link beside the actions. The URL points at `https://docs.velox.dev/errors/<reason>`.
-- [ ] `attention.detail` (raw provider payload, e.g. Stripe Tax JSON envelope) renders inside a `<details>` disclosure labeled "Provider response", code-formatted, monospace.
-- [ ] **Healthy** invoice (status=finalized, payment_status=succeeded, tax_status=ok) → banner is omitted entirely (no `attention` key in the API response).
-- [ ] **Paid / voided** invoice → banner suppressed regardless of underlying field state.
-- [ ] **Draft** invoice → banner suppressed (the page's existing DRAFT pill + "Draft invoice — finalize to issue and begin collection." hint cover this state).
-
-### Retry tax flow (operator action)
-
-- [ ] Tax-deferred invoice (banner showing) → click **Retry tax**. Button shows "Retrying…" while pending. `POST /v1/invoices/{id}/retry-tax` is fired.
-- [ ] Server: `audit_logs` table gets a row with `action='retry_tax'`, `resource_type='invoice'`, and metadata containing `before_attention` + `after_attention` reason codes.
-- [ ] If the underlying issue was fixed (e.g. customer postal code now set) → response invoice has `tax_status='ok'`, `tax_error_code` cleared, banner disappears on the page refresh, toast "Tax recalculated successfully".
-- [ ] If still failing → response invoice still has `tax_status='pending'/'failed'` with a possibly-different `tax_error_code` (e.g. transient provider outage → permanent jurisdiction issue). Banner refreshes with the new reason. Toast "Tax retry attempted — still pending. See the attention card for the latest reason."
-- [ ] Idempotent under retry: each click increments `tax_retry_count` (visible via SQL or via re-deferral history). Concurrent clicks do not corrupt state.
-- [ ] Gate: revoking-tax on a non-pending/non-failed invoice (e.g. status=finalized + tax_status=ok) → 409 `InvalidState`.
-
-### List-row attention chip
-
-- [ ] On `/invoices`, every row whose `invoice.attention.severity != null` shows a small severity-tinted dot next to the invoice number (red/amber/blue for critical/warning/info). Hovering surfaces the typed reason + message via `title` tooltip.
-- [ ] Healthy invoices show no dot. Drafts also show no dot — Attention is suppressed.
-
-### Draft pill cleanup (related)
-
-- [ ] Invoices list, Dashboard recent-invoices, SubscriptionDetail invoices table: rows with `status='draft'` show a "draft" pill (Dashboard) or em dash (Invoices, SubscriptionDetail) in place of the misleading `payment_status='pending'` pill. (Pre-fix: both pills rendered side-by-side, making drafts look stuck on payment.)
-- [ ] InvoiceDetail header on a draft row shows the muted hint "Draft invoice — finalize to issue and begin collection." just below the id/copy row.
+### List + draft cleanup
+- [ ] `/invoices` rows: severity-tinted dot next to invoice number; tooltip surfaces typed reason. Healthy/draft = no dot.
+- [ ] Draft rows show "draft" pill (Dashboard) or em dash (Invoices, Subscription detail) instead of `payment_status='pending'`.
+- [ ] Invoice detail draft row: muted "Draft invoice — finalize to issue and begin collection." hint.
 
 ## FLOW I6: Email + PDF preview
 
-- [ ] Invoice detail → Email → send to any address
-- [ ] Verify: email queued in `email_outbox`, PDF attached; SMTP logs (or Mailtrap) show delivery
-- [ ] Invoice detail → Preview PDF → renders in overlay iframe; close via X or backdrop
+- [ ] Invoice detail → Email → outbox row → PDF attached → Mailpit shows delivery.
+- [ ] Preview PDF → renders in overlay; close via X / backdrop.
 
-### Branded HTML body (T0-16, 2026-04-24)
+### Branded HTML body
 
-Every customer-facing email renders as multipart/alternative (text + HTML) with tenant chrome. Check the HTML part in Mailtrap/inbox.
+Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_url`, `brand_color`, `support_url`.
 
-- [ ] Configure tenant with `company_name`, `logo_url` (e.g. `https://via.placeholder.com/200x60`), `brand_color` (`#1f6feb`), `support_url`
-- [ ] Trigger invoice-ready email → HTML body includes: tenant logo + company name in header, 2px brand-color accent bar at top, line items summary, "Amount due" amount card, **View & pay invoice** CTA button styled with `brand_color`
-- [ ] CTA URL points at `{HOSTED_INVOICE_BASE_URL}/invoice/{public_token}` (or Velox defaults if unset) — copy + open it in an incognito window (covered in FLOW I10)
-- [ ] Footer shows "Contact support" link + "Powered by Velox Billing" micro-credit
-- [ ] Plain-text part (view source, pick `text/plain`) is still present for deliverability fallback
-- [ ] Payment-receipt email after a successful charge: similar chrome, CTA labelled **View receipt**
-- [ ] Dunning warning email: shows attempt N of M + next retry date, CTA **Update payment**
-- [ ] Payment-update-request email: CTA uses the token URL from `PAYMENT_UPDATE_URL`, not the hosted invoice URL (different flow)
-- [ ] Operator emails (portal magic link) intentionally stay **plain text** — no HTML chrome, no tenant branding, since they carry security-sensitive tokens
+- [ ] Invoice email HTML: tenant logo + name in header, 2px brand-color accent bar, line-items summary, "Amount due" card, **View & pay invoice** CTA styled with brand_color.
+- [ ] CTA URL → `{HOSTED_INVOICE_BASE_URL}/invoice/{public_token}`.
+- [ ] Footer: "Contact support" + "Powered by Velox Billing".
+- [ ] Plain-text part still present.
+- [ ] Receipt email: same chrome, CTA "View receipt".
+- [ ] Dunning email: attempt N of M, next retry date, CTA "Update payment".
+- [ ] Payment-update-request email: CTA uses `PAYMENT_UPDATE_URL` token URL.
+- [ ] Operator emails (portal magic-link, password-reset) intentionally plain text — no HTML chrome.
 
 ## FLOW I7: Zero-amount invoice
 
-- [ ] Plan with `base_amount_cents = 0`, no meters → subscription → run billing
-- [ ] Verify behavior: either no invoice generated, or $0 invoice auto-marked paid (no Stripe charge)
+- [ ] Plan `base_amount_cents=0`, no meters → either no invoice or $0 auto-paid (no Stripe charge).
 
 ## FLOW I8: Currency consistency
 
-- [ ] Default currency USD, create some invoices
-- [ ] Change tenant `default_currency` to EUR → NEW invoices in EUR, existing unchanged
-- [ ] Customer with `billing_profile.currency = GBP` → their invoices in GBP regardless of tenant default
+- [ ] Tenant default USD → switch to EUR → new invoices EUR, existing unchanged.
+- [ ] Customer with `billing_profile.currency=GBP` → invoices GBP regardless of tenant default.
 
-## FLOW I9: Credit note on voided invoice
+## FLOW I9: Credit note on void
 
-- [ ] Void an invoice, then try to issue a credit note → error `"cannot issue credit note on voided invoice"`
-- [ ] CN is NOT created
+- [ ] Void invoice → issue CN → error "cannot issue credit note on voided invoice". CN not created.
 
-## FLOW I11: `POST /v1/invoices/create_preview`
+## FLOW I11: `create_preview`
 
-Shipped Week 5. Computes a draft invoice for an in-progress period without
-committing to the DB. Powers the cost dashboard's "projected bill" line, the
-plan-change confirmation dialog, and the operator plan-migration preview (B16).
-
-- [ ] `POST /v1/invoices/create_preview {"subscription_id":"<sub>"}` → 200 with the same shape as a finalized invoice (line items + totals + tax) but `id` is null and no DB row exists
-- [ ] Plan-change confirmation: from a sub detail page, click "Change plan" → preview dialog shows the proration line + new amount due before commit; cancelling the dialog does not write
-- [ ] Cost dashboard reflects the preview: `projected_total_cents` field on the public dashboard projection (FLOW CU8) is populated when the engine returns a value
+- [ ] `POST /v1/invoices/create_preview {subscription_id}` → invoice shape with `id=null`, no DB row.
+- [ ] Plan-change confirmation dialog renders preview before commit.
+- [ ] Cost-dashboard projection populated when engine returns a value.
 
 ## FLOW I12: One-off invoice composer
 
-Shipped Week 7 (migration 0060 makes `subscription_id` nullable so off-sub
-invoices are supported). Operator-side 30-second flow on the customer detail
-page — no leaving the page.
+- [ ] Customer detail → "New invoice" → inline composer.
+- [ ] Add line items → totals tick live → Save draft → row in customer's invoice list with `status=draft`, `subscription_id=null`.
+- [ ] Finalize → standard PaymentIntent path.
 
-- [ ] Customer detail → "New invoice" → composer opens inline (no full-page navigation)
-- [ ] Add 1+ line items (description, qty, unit, amount) → totals tick live
-- [ ] Save as draft → invoice appears in the customer's invoice list with `status=draft`, `subscription_id=null`
-- [ ] Finalize from the draft → goes through the normal Stripe PaymentIntent path
-- [ ] Subscription_id is empty in the DB (`SELECT subscription_id FROM invoices WHERE id=...` → NULL) — confirms migration 0060
+## FLOW I10: Hosted invoice page
 
-## FLOW I10: Hosted invoice page (public tokenized URL — T0-17)
+- [ ] Draft invoice has no `public_token`. Finalize → token minted (`vlx_pinv_` + 64 hex).
+- [ ] Detail page: **Copy Link** button. **Rotate** typed-confirm dialog (type `ROTATE`). Buttons hidden on draft.
 
-Stripe-equivalent `hosted_invoice_url`. End customer clicks the CTA in an invoice/receipt email and lands on a branded, unauthenticated page where they can pay. Token is the sole credential.
+### Public render (open in incognito)
+- [ ] Loads without login. Header: tenant logo + company_name + support_url. Optional 3px accent bar.
+- [ ] Invoice meta: number (mono), amount due (large tabular), due date.
+- [ ] Bill-to + From columns. Line-items table with tabular numerals.
+- [ ] Totals: subtotal, optional discount, optional tax with rate, reverse-charge note if applicable, total, amount paid, **Amount due** bold.
+- [ ] **Pay {amount}** primary button (brand_color). **Download PDF** secondary.
+- [ ] Footer: "Secured by Stripe" + "Powered by Velox Billing".
 
-### Token minting + dashboard affordances
+### Pay
+- [ ] Click Pay → `POST /v1/public/invoices/{token}/checkout` → Stripe Checkout. Pay with `4242…` → redirect to `{baseURL}/invoice/{token}?paid=1`.
+- [ ] Provisional "Processing your payment…" banner (green spinner).
+- [ ] Webhook arrives → invoice paid → page auto-refetches → "Paid on {date}" banner; Pay button gone.
+- [ ] PDF still downloads on paid.
 
-- [ ] Create a customer + subscription, run billing (or create an invoice manually) → result: a **draft** invoice has no `public_token`
-- [ ] Finalize the invoice → `public_token` minted (query `SELECT public_token FROM invoices WHERE id = ...` → starts with `vlx_pinv_` + 64 hex chars)
-- [ ] Invoice detail page: **Copy Link** button copies `{HOSTED_INVOICE_BASE_URL}/invoice/{public_token}` (falls back to `window.location.origin` if env unset) — toast confirms
-- [ ] **Rotate** button opens `TypedConfirmDialog` requiring the word `ROTATE` — confirm → new token minted, old URL stops resolving
-- [ ] Buttons are **hidden** for draft invoices
+### Variants
+- [ ] Voided invoice → "Voided on {date}" banner, no Pay, PDF works.
+- [ ] Draft invoice URL → 404.
+- [ ] Rotated → old URL 404, new works.
 
-### Public page render
-
-Open the copied URL in an **incognito window** (no session cookie, no auth):
-
-- [ ] Page loads without a login prompt
-- [ ] Header: tenant logo (if `logo_url` set) + `company_name` + optional `support_url` link
-- [ ] Optional 3px `brand_color` accent bar at top
-- [ ] Invoice meta: invoice number (mono), amount due (large, tabular numerals), due date
-- [ ] Bill-to + From columns show structured address
-- [ ] Line-items table: description + qty + unit + amount, tabular numerals on numbers
-- [ ] Totals card: subtotal, optional discount (−), optional tax with rate "(XX.XX%)", reverse-charge note if applicable, total, amount paid, **Amount due** bold
-- [ ] Primary **Pay {amount}** button with tenant `brand_color` background (falls back to theme primary if unset)
-- [ ] **Download PDF** secondary button — opens the same PDF the operator gets
-- [ ] Footer: "Secured by Stripe" micro-credit + "Powered by Velox Billing"
-
-### Pay flow (Stripe test mode)
-
-- [ ] Click **Pay** → `POST /v1/public/invoices/{token}/checkout` → redirected to `checkout.stripe.com`
-- [ ] Use test card `4242 4242 4242 4242` → complete payment → Stripe redirects back to `{baseURL}/invoice/{token}?paid=1`
-- [ ] Page shows a provisional **"Processing your payment…"** banner (green with animated spinner) while the webhook catches up
-- [ ] `payment_intent.succeeded` webhook arrives → invoice flips to `paid` → page auto-refetches and shows the **Paid on {date}** banner; Pay button disappears
-- [ ] PDF download still works on a paid invoice
-
-### State-gated variants
-
-- [ ] Void a finalized invoice → visit its public URL → **Voided on {date}** banner, no Pay button, PDF still downloads (customers revisit for records)
-- [ ] Visit the URL of a **draft** invoice (craft via psql or pre-finalize) → **404** (draft never leaks — belt-and-suspenders guard in `resolveInvoice`)
-- [ ] Rotate the token → old URL returns **404**; new URL works
-
-### Security checks
-
-- [ ] Inspect the JSON response at `GET /v1/public/invoices/{token}` → **no** `tenant_id`, `subscription_id`, `tax_id`, `stripe_payment_intent_id`, or `stripe_customer_id` fields (safe-projection audit)
-- [ ] Hit the public route 61+ times in a minute from the same IP → rate-limit bucket (`hostedInvoiceRL`, 60/min) kicks in with 429 + `Retry-After`
-- [ ] Operator `POST /v1/invoices/{id}/rotate-public-token` requires `PermInvoiceWrite`; unauthenticated call returns 401
+### Security
+- [ ] Public JSON has no `tenant_id, subscription_id, tax_id, stripe_*_id`.
+- [ ] 61+ req/min same IP → 429 with `Retry-After`.
+- [ ] Operator `POST /v1/invoices/{id}/rotate-public-token` requires `PermInvoiceWrite`.
 
 ---
 
@@ -1080,84 +606,57 @@ Open the copied URL in an **incognito window** (no session cookie, no auth):
 
 ## FLOW D1: Retry cycle + escalation
 
-- [ ] Customer with declining card → subscription → usage → run billing → dunning run created
-- [ ] Dunning page: stat cards (Active, Escalated, Recovered, At Risk $), tab filters with counts
-- [ ] Run shows state `Active`, "No retries yet", `next_action_at` scheduled
-- [ ] Sidebar Dunning badge shows count
-- [ ] Fast-forward `next_action_at` in DB, wait for scheduler → attempt count increments
-- [ ] After max retries → state `Escalated`
+- [ ] Decline card → run billing → dunning run created. Page shows stat cards (Active, Escalated, Recovered, At Risk $) + tab filters with counts.
+- [ ] Sidebar Dunning badge shows count.
+- [ ] Run state Active, "No retries yet", `next_action_at` scheduled.
+- [ ] Backdate `next_action_at` → next tick increments attempt count.
+- [ ] After max retries → state Escalated.
 
-## FLOW D2: Resolution modes
+## FLOW D2: Resolution
 
-- [ ] Click "Resolve" on an active run → "Payment recovered" → invoice marked paid
-- [ ] On another run, "Manually resolved" → run resolved without touching the invoice
+- [ ] "Payment recovered" → invoice marked paid.
+- [ ] "Manually resolved" → run resolved without touching invoice.
 
 ## FLOW D3: Per-customer override
 
-- [ ] Customer detail → Dunning Override → Configure → max_retries 5, grace 7 days
-- [ ] Verify displayed in properties card; takes effect on next failure
-- [ ] Reset to Default → override removed
+- [ ] Customer detail → Dunning Override → max_retries=5, grace=7d → applies on next failure.
+- [ ] Reset to Default → override removed.
 
-## FLOW D4: Self-service payment update (token)
+## FLOW D4: Self-service payment update
 
-- [ ] Trigger a payment failure
-- [ ] Server logs: `"payment update email"` with URL `http://localhost:5173/update-payment?token=vlx_pt_...`
-- [ ] Open the URL in incognito (NOT logged in)
-- [ ] Verify: page loads without login, shows customer name + invoice + amount; "Secured by Stripe"
-- [ ] Click "Update Payment Method" → Stripe Checkout (setup mode); enter good card; complete
-- [ ] Verify: redirected back; Stripe fires `checkout.session.completed`; customer PM updated
-- [ ] Re-open the same URL → "Link expired or invalid" (single-use)
-- [ ] Random token → same error
-- [ ] No token → "No payment update token provided"
-- [ ] Manually expire a token and re-open → same error
+- [ ] Trigger payment failure → email/log carries `http://localhost:5173/update-payment?token=vlx_pt_…`.
+- [ ] Open in incognito → page loads without login, shows customer + invoice + amount, "Secured by Stripe".
+- [ ] Click Update → Stripe Checkout setup → new card → redirect → webhook updates PM.
+- [ ] Re-open same URL → "Link expired or invalid". Random token → same. No token → "No payment update token provided".
 
 ---
 
 ## Credits & Credit Notes
 
-## FLOW C1: Credits (grant, apply, expire, deduct)
+## FLOW C1: Credits lifecycle
 
-- [ ] Credits → Grant $50 to a customer, description "Welcome credit", expires 30d
-- [ ] Balance = $50, ledger shows Expires column
-- [ ] Ingest usage → run billing → credits applied, amount_due reduced, Stripe charged only the remainder
-- [ ] Ledger: `Applied to invoice <number>` with negative amount
-- [ ] Grant $500, generate $79 invoice → credits applied $79, amount_due $0, balance $421, Stripe NOT charged
-- [ ] Deduct $20 → confirmation dialog → balance reduced, ledger entry created
+- [ ] Grant $50 expires 30d → balance $50, ledger Expires column populated.
+- [ ] Run billing → applied, amount_due reduced, Stripe charged remainder. Ledger entry "Applied to invoice <number>".
+- [ ] Grant $500 + $79 invoice → fully credited, amount_due $0, balance $421, Stripe NOT charged.
+- [ ] Deduct $20 → confirmation → balance reduced, ledger entry.
 
 ## FLOW C2: Credit notes
 
-- [ ] Unpaid invoice → Issue Credit → "Billing error" $20 → preview "will reduce amount due by $20"
-- [ ] Issue → amount_due reduced; CN page stat cards update
-- [ ] Paid invoice → Issue Credit → $15 type "Credit to balance" → customer credit balance +$15;
-  invoice detail shows CN in "Post-payment adjustments"
-- [ ] Paid invoice → Issue Credit → $10 type "Refund to payment method" → Stripe refund processed;
-  CN badge "Refunded"; credit balance unchanged
-- [ ] CN > amount_due on unpaid → error
-- [ ] CN > amount_paid on paid → error
-- [ ] CN page: stat cards (Total Credited, Refunded, Applied to Balance, Issued); tab filters with counts;
-  search by number/customer/reason; draft CNs show Issue + Void, issued CNs don't
+- [ ] Unpaid invoice → Issue Credit "Billing error" $20 → preview → Issue → amount_due reduced.
+- [ ] Paid invoice → "Credit to balance" $15 → customer balance +$15; CN listed in invoice "Post-payment adjustments".
+- [ ] Paid invoice → "Refund to payment method" $10 → Stripe refund; CN badge "Refunded"; balance unchanged.
+- [ ] CN > amount_due (unpaid) or > amount_paid (paid) → error.
+- [ ] CN page: stat cards (Total Credited, Refunded, Applied to Balance, Issued), tab filters with counts, search, draft CNs show Issue+Void.
 
-## FLOW C3: Coupons + plan restrictions
+## FLOW C3: Coupons
 
-- [ ] Create `PRO20`, 20% off, restricted to Enterprise
-- [ ] Redeem for Starter sub → error `"coupon is not valid for this plan"`
-- [ ] Redeem for Enterprise sub → discount applied
-- [ ] Copy code button works; toast "Code copied"
-
-### Edit dialog (Track B, PR #72)
-
-Coupon detail page → Edit button between Duplicate and Archive. Backed by `PATCH /v1/coupons/{id}`. Covers the Stripe-parity mutable subset: name, max_redemptions, expires_at, restrictions (min_amount / first_time_only / max_per_customer). Discount type/value/currency, duration, stackability, and plan/customer scope are write-once — the dialog deliberately doesn't expose them; duplicate-and-archive is the path there.
-
-- [ ] On a non-archived coupon detail → Edit button visible between Duplicate and Archive
-- [ ] On an archived coupon → Edit button hidden, Restore visible (existing behaviour preserved)
-- [ ] Click Edit → dialog opens pre-populated with the coupon's current name / max_redemptions / expires_at / restrictions
-- [ ] Change name + save → header h1 updates without manual refresh; audit log records `coupon.updated` with `changed_fields=[name]`
-- [ ] Clear `expires_at` and save → backend receives `expires_at: null`; header "Expires" tile flips to "No expiry"
-- [ ] Set `expires_at` to a future date and save → "Expires" tile shows the date with `<ExpiryBadge warningDays={7}>` if within the warning window
-- [ ] Clear `max_redemptions` and save → backend receives `max_redemptions: null`; header "Redemptions" tile reads "N redeemed" without the `/cap` suffix
-- [ ] Set `min_amount` only + uncheck first_time + clear max_per_customer → Restrictions card collapses to a single row (Minimum purchase)
-- [ ] Clear all three restriction fields and save → Restrictions card disappears entirely (full-overwrite to `{}` clears the block)
-- [ ] Submit a `min_amount` of `-50` → server-side 422 surfaces inline on the Minimum purchase field, not as a global toast
+- [ ] Create `PRO20` 20% off, restricted to Enterprise.
+- [ ] Redeem on Starter → "coupon is not valid for this plan". Enterprise → applied.
+- [ ] Coupon detail Edit dialog: change name → header h1 updates without refresh; audit log records `coupon.updated`.
+- [ ] Clear `expires_at` / `max_redemptions` → header tiles flip to "No expiry" / "N redeemed".
+- [ ] Restrictions: setting only `min_amount` collapses card to single row. Clearing all three → card disappears.
+- [ ] `min_amount: -50` → 422 inline on field.
+- [ ] Archived coupon → Edit hidden, Restore visible.
 
 ---
 
@@ -1165,197 +664,78 @@ Coupon detail page → Edit button between Duplicate and Archive. Backed by `PAT
 
 ## FLOW W1: Stripe signature verification
 
-- [ ] Valid webhook payload + signature within 300s → 200, event processed
-- [ ] Replay the same payload 5+ min later → rejected (timestamp tolerance exceeded)
-- [ ] Modify payload but keep original signature → rejected (signature mismatch)
+- [ ] Valid payload + signature ≤300s → 200, processed.
+- [ ] Replay 5+ min later → rejected (timestamp tolerance).
+- [ ] Modified payload + original signature → rejected.
 
-## FLOW W2: Outbound webhook secret rotation (72h grace period — T0-19)
+## FLOW W2: Outbound secret rotation (72h grace)
 
-Stripe-parity dual-signing window. Outbound events are signed with BOTH the new and previous secrets for 72 hours so partner verifiers can stage a deploy without a production outage.
-
-- [ ] Webhooks → Endpoints → Rotate Secret on an endpoint → modal shows the new `whsec_...` **and** a green card: *"Previous secret valid until {timestamp}"* with "during this window, both secrets sign outbound webhooks — deploy at your own pace" copy
-- [ ] API response on `POST /v1/webhook-endpoints/{id}/rotate-secret`: body includes `secret` + `secondary_valid_until` (ISO 8601, ~72h in the future)
-- [ ] Endpoints table: row shows a subtle *"Dual-signing until {timestamp}"* hint under the URL
-- [ ] Trigger any outbound event (finalize an invoice, etc.) while the grace window is open → `Velox-Signature` header carries **two** `v1=` entries: `t=<ts>,v1=<newSig>,v1=<oldSig>`
-- [ ] Verify with new secret: valid ✓
-- [ ] Verify with old secret: **still valid** ✓ (this is the grace-window guarantee)
-- [ ] Simulate expiry: manually set `secondary_secret_expires_at` in the past via psql → trigger another event → header now carries **one** `v1=` entry, only the new secret verifies
-- [ ] Hard-replace path: `RotateEndpointSecret(..., gracePeriod=0)` skips the secondary entirely (not exposed via UI; library-level test only)
-
-## FLOW W4: Live webhook event stream + replay (Week 6)
-
-Server-sent events at `GET /v1/webhook_events/stream` (auth required, secret
-key with `PermAPIKeyRead` scope). The Webhooks → Events page in the dashboard
-streams new deliveries in real time, lets you replay a delivery, and shows the
-payload diff between retries.
-
-- [ ] Webhooks → Events → page shows recent deliveries with state dot (succeeded/failed/pending)
-- [ ] Trigger any outbound webhook (finalize an invoice, etc.) → new row streams in within ~1 second without a manual refresh (SSE-driven)
-- [ ] Click a delivery → side panel shows request URL, response status, headers, body
-- [ ] Click "Replay" on a failed delivery → fresh attempt fires; new row appears for the replay; original row preserved
-- [ ] Multiple retries on the same event → "Diff" tab shows the payload diff between attempts (useful when the receiver changed shape between retries)
-- [ ] Disconnect Redis or stop the dispatcher → readiness goes degraded; UI still loads but stops streaming new rows (graceful)
+- [ ] Rotate Secret on endpoint → modal shows new `whsec_…` + green "Previous secret valid until {ts}" card.
+- [ ] API response includes `secret` + `secondary_valid_until`.
+- [ ] Endpoints table row shows "Dual-signing until {ts}".
+- [ ] Trigger event during grace → header carries TWO `v1=` entries; both old and new verify.
+- [ ] Backdate `secondary_secret_expires_at` → header carries one entry; only new verifies.
 
 ## FLOW W3: Delivery stats
 
-- [ ] Webhooks → Endpoints → Success Rate column
-- [ ] Green ≥95%, amber 70–94%, red <70%
-- [ ] Replay a failed event → success rate updates
+- [ ] Endpoints page Success Rate column: green ≥95%, amber 70–94%, red <70%.
+- [ ] Replay failed event → success rate updates.
+
+## FLOW W4: Live event stream + replay
+
+- [ ] Webhooks → Events → recent deliveries with state dot.
+- [ ] Trigger event → row streams in <1s without refresh (SSE).
+- [ ] Click delivery → side panel: URL, status, headers, body.
+- [ ] Replay failed → fresh attempt fires; original preserved.
+- [ ] Multi-retry event → "Diff" tab shows payload diff between attempts.
+- [ ] Stop Redis or dispatcher → readiness degraded; UI loads but stops streaming.
 
 ---
 
-## Customers & Portal
+## Customers
 
 ## FLOW CU1: Settings + billing profile
 
-- [ ] Settings: change company name → save → "Saved" indicator; navigating away with unsaved changes prompts
-- [ ] Change currency → NEW invoices use it; existing invoices unchanged
-- [ ] Customer detail → edit billing profile (address, tax ID) → PDF reflects updated bill-to
+- [ ] Settings: company name change → "Saved" indicator. Navigating with unsaved changes prompts.
+- [ ] Currency change → new invoices use it; existing unchanged.
+- [ ] Edit billing profile (address, tax ID) → PDF reflects update.
 
-## FLOW CU2: Operator-facing customer portal API
+## FLOW CU2: Operator customer-portal API
 
-Operator view (API-key auth, `PermCustomerRead`). This is what the dashboard hits to render
-a customer's portal-eye view; it is NOT what end customers use — see CU5 for that.
-
-- [ ] GET /v1/customer-portal/{customer_id}/overview → active subs, recent invoices, credit balance
-- [ ] GET /v1/customer-portal/{customer_id}/subscriptions → only that customer's subs
-- [ ] GET /v1/customer-portal/{customer_id}/invoices → only that customer's invoices
+- [ ] `GET /v1/customer-portal/{customer_id}/overview` → active subs, recent invoices, credit balance.
+- [ ] `/subscriptions`, `/invoices` scoped to that customer.
 
 ## FLOW CU3: GDPR export + erasure
 
-- [ ] GET /v1/customers/{id}/export → includes customer, profile, invoices, subs, credit ledger, balance
-- [ ] Stripe IDs redacted (last 4 visible); payment method details redacted
-- [ ] Try delete on customer with active subs → `"customer has active subscriptions; cancel them before deletion"`
-- [ ] Cancel sub, POST /v1/customers/{id}/delete-data → display_name → "Deleted Customer", email cleared,
-  profile PII anonymized, status `archived`, invoices preserved, audit log entry created
-- [ ] Export endpoint for deleted customer returns anonymized data
+- [ ] `GET /v1/customers/{id}/export` → customer + profile + invoices + subs + ledger + balance.
+- [ ] Stripe IDs redacted (last 4 visible); PM details redacted.
+- [ ] Delete with active subs → "cancel them before deletion".
+- [ ] Cancel subs, `POST /v1/customers/{id}/delete-data` → display_name="Deleted Customer", email cleared, profile PII anonymized, status archived, invoices preserved, audit entry.
+- [ ] Re-export deleted customer → anonymized.
 
-## FLOW CU4: Archival cascade
+## FLOW CU4: Archive cascade
 
-- [ ] Customer detail → Archive → confirmation dialog → amber banner "…data is read-only"
-- [ ] All action buttons hidden (Edit, Set Up Billing, Configure, Set Up Payment, Add)
-- [ ] "Restore Customer" visible in the banner; customer badge `archived`
-- [ ] Run billing → no invoices for the archived customer's subs; existing invoices still readable;
-  credit balance still visible
-- [ ] Restore → banner disappears, actions reappear, badge `active`
-- [ ] Customers list → Archived tab → shows archived rows (or empty + Clear filter)
+- [ ] Archive → confirm → amber banner "data is read-only". Action buttons hidden.
+- [ ] Run billing → no invoices for archived customer's subs. Existing invoices and credits still readable.
+- [ ] Restore → banner gone, actions reappear.
+- [ ] Customers list → Archived tab.
 
-## FLOW CU5: Customer-facing self-service portal (`/v1/me/*`)
+## FLOW CU6: Brand color + logo URL
 
-End-customer surface added in T0-8. Bearer-token auth (`vlx_cps_...`) via customer portal
-session. UI lives at `web-v2/src/pages/CustomerPortal.tsx` with tabs: Invoices, Subscriptions,
-Payment Methods.
+- [ ] Settings → Business → Logo URL accepts public HTTPS URL. Live thumbnail renders. Invalid → "Couldn't load image".
+- [ ] Brand color: native color picker + hex input + Clear. Invalid hex (`#zzz`, missing `#`, uppercase) → 422 client+server.
+- [ ] Save → invoice PDF: company name tinted, 2px accent bar.
+- [ ] Clear color → next PDF byte-identical to pre-migration neutral.
 
-Endpoints (all bearer-auth, scoped to the session's customer):
-- `GET /v1/me/invoices` — list
-- `GET /v1/me/invoices/{id}/pdf` — download (blob fetch; cannot use `<a href>` because endpoint is bearer-protected)
-- `GET /v1/me/subscriptions` — list
-- `POST /v1/me/subscriptions/{id}/cancel` — cancel
-- `GET /v1/me/branding` — tenant branding (logo, company name, support URL, brand color)
-- `GET /v1/me/payment-methods` — list + update
+## FLOW CU8: Cost-dashboard widget
 
-### Magic-link flow
-- [ ] Operator mints a portal session: `POST /v1/customer-portal-sessions {"customer_id":"..."}` → returns bearer token
-- [ ] Public magic-link request/consume at `/v1/public/customer-portal/*` — untested end-to-end in this runbook; verify token expiry and single-use
-- [ ] Load `CustomerPortal` page with the token → header shows partner logo + company name + support URL (from `/me/branding`)
-
-### Self-service
-- [ ] Invoices tab → list renders newest first; drafts filtered out
-- [ ] Click PDF → blob download triggers (not a direct link); filename matches invoice number
-- [ ] Subscriptions tab → only the session customer's subs appear
-- [ ] Cancel a subscription → `TypedConfirmDialog` requires typing `CANCEL` (case-insensitive)
-- [ ] Webhook emitted: `subscription.canceled` with `canceled_by: customer` in payload
-- [ ] Payment Methods tab → attach / detach via Stripe SetupIntent
-- [ ] Cross-customer probe: swap the bearer token for one scoped to a different customer; hitting the first customer's invoice ID → **404** (not 403 — avoids enumeration)
-
-## FLOW CU8: Embeddable cost-dashboard widget
-
-Per-customer iframe-able URL with token auth. Migration 0064 adds
-`customers.cost_dashboard_token` (partial unique, 256-bit `vlx_pcd_` prefix).
-Operator mints the token via API; the tenant embeds the
-`<VeloxCostDashboard>` React component (or hits the public JSON endpoint
-directly) into their own product. The in-dashboard preview page was
-deleted on the lean-cut; this flow exercises the API + the embeddable
-React wrapper.
-
-### Mint + read
-
-- [ ] `POST /v1/customers/{id}/rotate-cost-dashboard-token` (API-key auth) returns `{token, public_url, customer_id}` — token starts with `vlx_pcd_` + 64 hex chars (72 chars total)
-- [ ] `GET /v1/public/cost-dashboard/{token}` (no auth) returns the sanitised projection: `customer_id`, `tenant_id`, `billing_period {from, to, source}`, `subscriptions[]`, `usage[{meter_id, meter_key, meter_name, unit, currency, total_quantity, total_amount_cents, rules[]}]`, `totals[{currency, amount_cents}]`, `thresholds[]` (reserved), `warnings[]`, `projected_total_cents`
-- [ ] Confirm absent: `email`, `display_name`, `external_id`, `metadata`, `billing_profile` (sanitisation contract)
-- [ ] Customer with no active subscription → empty arrays + `billing_period.source = no_subscription`, NOT a 5xx
-- [ ] Hard-refreshing the public URL stays under the 60/min/IP `hostedInvoiceRL` rate limit; 61+ requests/min/IP from the same source → 429
-
-### Rotation invalidates
-
-- [ ] Rotate the token (call the rotate endpoint again) → previous URL returns 404 immediately; new URL works
-- [ ] Audit log records the rotation with `previous_token_was_unset` flag; plaintext token is **never** in the audit log
-
-### Typed React wrapper
-
-- [ ] `web-v2/src/components/embeds/VeloxCostDashboard.tsx` renders the iframe via `<VeloxCostDashboard token={t} baseUrl={u} theme="dark" accent="#10b981" />`
-- [ ] Tenant app importing the component compiles cleanly with `tsc --noEmit`
-- [ ] `?theme=light` / `?theme=dark` query params switch theme on the iframe
-- [ ] `?accent=#10b981` repaints accent; invalid hex silently ignored
-
-## FLOW CU7: Email bounce capture + badge (T0-20 — 🟡 pipeline only)
-
-Pipeline is complete, UI is ready, webhook event defined — but synchronous SMTP 5xx detection covers only a minority of real-world bounces because most providers emit bounces as async NDRs, not synchronous `RCPT TO` failures. Test the pipeline end-to-end with the psql shortcut below; real bounce detection for most partner traffic ships with T1-8 (SES/SendGrid/Postmark webhook handlers) plugging into the same `customer.MarkEmailBounced` seam.
-
-### Setup a deliberately-bouncing address
-
-Easiest path: use Mailtrap with a rule that 5xx's specific addresses, or point `SMTP_HOST` at a fake SMTP that rejects `RCPT TO: <bounce@example.invalid>` with `550 5.1.1 User unknown`.
-
-Alternative psql-based manual test (for quick verification without infra):
-```sql
--- Simulate a bounce by calling the service method directly through the
--- public customer_svc.MarkEmailBounced path (see TestCustomerService tests).
-UPDATE customers SET email_status = 'bounced',
-    email_last_bounced_at = NOW(),
-    email_bounce_reason = '550 5.1.1 User unknown'
-WHERE id = '<customer_id>';
-```
-
-### Capture path (preferred: real SMTP)
-
-- [ ] Create a customer with email `bounce@example.invalid`
-- [ ] Trigger an invoice email send to that customer
-- [ ] Server logs show: `send email failed ... error="550 5.1.1 User unknown"`
-- [ ] Within ~5 seconds: `customers.email_status` flips to `bounced`, `email_last_bounced_at` populated, `email_bounce_reason` captured
-- [ ] `VELOX_EMAIL_BIDX_KEY` must be set — without the blinder, bounces are logged but NOT persisted (graceful degradation; the dashboard stays "unknown")
-
-### Dashboard badge
-
-- [ ] Customer detail page top metrics: email displays a small red **Bounced** badge next to the address
-- [ ] Details card: email row shows `Bounced · {formatDate(email_last_bounced_at)}` badge
-- [ ] Hover the badge → `title` attribute surfaces the `email_bounce_reason`
-- [ ] Customers with `email_status` ∈ `{unknown, ok, complained}` show **no** badge
-
-### Webhook event
-
-- [ ] Register a webhook endpoint subscribed to `customer.email_bounced`
-- [ ] Trigger a bounce → `webhook_outbox` gets a row; dispatcher delivers
-- [ ] Delivery payload: `{customer_id, reason}` + the standard envelope
-- [ ] `webhook_deliveries` log records a 2xx from the receiver
-
-### Heuristic boundaries
-
-- [ ] 4xx transient error (`421 try again later`) does NOT flip status — email outbox handles the retry
-- [ ] Error string containing "5xx-like-digits" in unrelated context (zip code 95014) does NOT flip — the parser anchors on word boundaries
-- [ ] Deliberately-deferred surfaces (tracked in T1-8): async NDR parsing, SES/SendGrid provider webhooks, auto-suppression on subsequent sends, complaint-vs-bounce differentiation. All plug into the same `customer.MarkEmailBounced` seam.
-
-## FLOW CU6: Brand color + logo URL (tenant settings)
-
-Shipped in T0-12. URL-only logo (no upload infra); brand accent color applied to invoice PDF.
-
-- [ ] Settings → Business tab → Logo URL field accepts public HTTPS URL (example hosts in help text: Cloudinary, S3 public object, CDN)
-- [ ] Paste `https://via.placeholder.com/200x60` → live `LogoPreview` thumbnail renders inline
-- [ ] Paste an invalid / non-HTTPS URL → thumbnail shows "Couldn't load image"
-- [ ] Brand color field: native `<input type="color">` + hex text input (lowercased on save) + Clear button
-- [ ] Invalid hex (`#zzz`, `#12345`, missing `#`, uppercase `#FF00AA`): client rejects on save with `"Must be a 7-character hex like #1f6feb"`; server validates the same pattern `^#[0-9a-f]{6}$`
-- [ ] Save → generate an invoice PDF → company name tinted in the brand color, thin 2px accent bar under the header block
-- [ ] Clear the brand color → save → new PDF has neutral palette (no accent bar); output is byte-identical to the pre-migration look
-- [ ] Branded email (T0-16, 2026-04-24): trigger any customer-facing email with `brand_color` set → HTML body renders the 2px accent bar at top, CTA button background uses the brand color, logo + company name in header. See FLOW I6 for the full checklist.
+- [ ] `POST /v1/customers/{id}/rotate-cost-dashboard-token` → `{token, public_url}`. Token starts `vlx_pcd_` + 64 hex.
+- [ ] `GET /v1/public/cost-dashboard/{token}` (no auth) → sanitized projection: customer_id, tenant_id, billing_period, subscriptions, usage[meter+rules+totals], totals, projected_total_cents.
+- [ ] Absent fields: email, display_name, external_id, metadata, billing_profile.
+- [ ] No active sub → empty arrays, `billing_period.source='no_subscription'`, NOT 5xx.
+- [ ] Rotate → old URL 404 immediately. Audit log records rotation; plaintext token never logged.
+- [ ] Rate limit: 61+ req/min/IP → 429.
+- [ ] `<VeloxCostDashboard token baseUrl theme accent />` compiles cleanly with `tsc --noEmit`. Theme/accent params switch iframe styling.
 
 ---
 
@@ -1363,293 +743,183 @@ Shipped in T0-12. URL-only logo (no upload infra); brand accent color applied to
 
 ## FLOW P1: Feature flags
 
-- [ ] GET /v1/feature-flags → seeded flags returned: `billing.auto_charge`, `billing.tax_basis_points`,
-  `webhooks.enabled`, `dunning.enabled`, `credits.auto_apply`, `billing.stripe_tax`
-  (each with key / enabled / description / timestamps)
-- [ ] `billing.stripe_tax` is **legacy** — tax provider selection is now authoritative at
-  `tenant_settings.tax_provider` (`none` / `manual` / `stripe_tax`, migration 0031). The flag
-  is still seeded for backward compat but per-tenant settings override it.
-- [ ] PUT /v1/feature-flags/webhooks.enabled `{"enabled":false}` → flag disabled globally;
-  trigger an event → NOT delivered; re-enable → delivery resumes
-- [ ] PUT /v1/feature-flags/dunning.enabled/overrides/{tenant_id} `{"enabled":false}` → disabled for tenant only
-- [ ] DELETE .../overrides/{tenant_id} → tenant falls back to global
-- [ ] Cache TTL: toggles reflect within 30s
+- [ ] `GET /v1/feature-flags` → seeded flags: `billing.auto_charge`, `billing.tax_basis_points`, `webhooks.enabled`, `dunning.enabled`, `credits.auto_apply`, `billing.stripe_tax`.
+- [ ] `PUT /v1/feature-flags/webhooks.enabled {enabled:false}` → events not delivered. Re-enable → resumes.
+- [ ] Per-tenant override: `PUT /…/overrides/{tenant_id}` disables for one tenant; DELETE falls back to global.
+- [ ] Toggle reflects within 30s.
 
 ## FLOW P2: Audit log
 
-- [ ] Perform several actions (create customer, grant credits, void invoice, change plan)
-- [ ] Audit Log page: all logged
-- [ ] Stat cards: Total, Today, Unique Actors, Destructive Actions
-- [ ] Destructive actions have red left border
-- [ ] Expand a row → metadata (amounts, IDs); "View" link navigates to the resource
-- [ ] Filters: resource type, action, date range (server-side)
-- [ ] Export CSV → all entries exported
+- [ ] Several actions (create customer, grant credits, void invoice, change plan) → all logged.
+- [ ] Stat cards: Total, Today, Unique Actors, Destructive Actions.
+- [ ] Destructive rows have red left border. Expand → metadata + "View" link.
+- [ ] Filters: resource type, action, date range. Export CSV → all entries.
 
-## FLOW P3: Usage summary API
+## FLOW P3: Usage summary
 
-- [ ] Ingest events for multiple meters for a customer
-- [ ] GET /v1/usage-summary/{customer_id}?from=YYYY-MM-DD&to=YYYY-MM-DD
-- [ ] Aggregated totals per meter; quantities match ingestion
+- [ ] `GET /v1/usage-summary/{customer_id}?from=…&to=…` → per-meter aggregated totals matching ingestion.
 
 ## FLOW P4: Empty billing cycle
 
-- [ ] No subs due (all already billed, or none exist)
-- [ ] Trigger billing → "0 invoice(s) generated", clean exit, no errors, dashboard stats unchanged
+- [ ] No subs due → trigger billing → "0 invoice(s) generated", clean exit, dashboard unchanged.
 
 ## FLOW P5: Health checks
 
-- [ ] GET /health → 200 `{"status":"ok"}`
-- [ ] GET /health/ready → 200 with checks `{api, database, scheduler: ok}`
-- [ ] Stop Postgres → GET /health/ready → 503 `degraded` with `database: error:...`;
-  GET /health still 200 (liveness ≠ readiness)
-- [ ] Scheduler stalled (kill its goroutine or wait past 2× interval) → readiness shows scheduler degraded
+- [ ] `/health` → 200 `{"status":"ok"}`. `/health/ready` → 200 with database, scheduler ok.
+- [ ] Stop Postgres → `/health/ready` → 503 `degraded` with `database: error:…`. `/health` still 200.
+- [ ] Kill scheduler goroutine or wait past 2× interval → readiness shows scheduler degraded.
 
 ## FLOW P6: Tax fallback metrics
 
-Counter `velox_tax_fallback_total{reason}` increments every time `StripeCalculator`
-falls through to `ManualCalculator`. Operators alert on sustained non-zero values.
-
-- [ ] `curl -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics | grep velox_tax_fallback_total`
-  → counter registered (HELP + TYPE lines)
-- [ ] Reason `no_country`: billing.stripe_tax on + customer with no country → counter `reason="no_country"` +1
-- [ ] Reason `no_client_for_mode`: connected tenant in one mode only, bill in the other mode → +1
-- [ ] Reason `api_error`: invalid Stripe key + fully-addressed customer → +1; restore key
-- [ ] Happy path: valid key + addressed customer → counter unchanged
+- [ ] `curl -H "Authorization: Bearer $METRICS_TOKEN" /metrics | grep velox_tax_fallback_total` → counter registered.
+- [ ] Reasons increment correctly: `no_country` (customer missing country), `no_client_for_mode` (one-mode tenant), `api_error` (invalid Stripe key).
+- [ ] Happy path → counter unchanged.
 
 ---
 
 ## UI / UX
 
-## FLOW U0: Quickstart wizard / TTFI
+## FLOW U0: Quickstart wizard (TTFI)
 
-`/onboarding` — 5-step setup wizard. Goal: time-to-first-invoice (TTFI) under
-5 minutes for a new tenant. Each step persists progress so a refresh resumes.
-
-- [ ] Fresh tenant lands on `/onboarding` automatically post-bootstrap
-- [ ] **Step 1 — Template**: 5 recipe cards (anthropic, openai, replicate,
-  b2b_saas_pro, marketplace_gmv). Pick one → preview panel renders → "Use this template" instantiates (FLOW R2)
-- [ ] **Step 2 — Stripe**: connect tenant Stripe key (S1.3 minus the manual UI dance — wizard inlines it). Failure → step gates; success → green tick + masked key
-- [ ] **Step 3 — Tax**: pick `stripe_tax` vs `manual` (default `manual`); tax registration tax-id field with FLOW B11 validation inline
-- [ ] **Step 4 — Branding**: brand color picker + logo URL (FLOW CU6 inputs); preview chip updates live
-- [ ] **Step 5 — First test invoice**: "Create demo invoice" button → spawns 1 demo customer + 1 active subscription on the recipe's primary plan, ingests one usage event, runs `/v1/billing/run`, opens hosted invoice URL in new tab — total elapsed shown in the success card (target: under 30 seconds end-to-end)
-- [ ] On finish: TTFI telemetry recorded; `GET /v1/billing/dashboard` shows `time_to_first_invoice_seconds` for that tenant
-- [ ] Refresh mid-wizard → resumes on the last incomplete step (state in `tenant_onboarding_state` row)
-- [ ] "Skip wizard" link → marks `onboarding_skipped_at`, lands on `/dashboard` empty state with the same Get Started checklist (U1)
-- [ ] Re-running the wizard after skip is allowed via `/onboarding?force=true`; does **not** create duplicate demo customer (idempotent on `tenant_id`)
+- [ ] Fresh tenant lands on `/onboarding`.
+- [ ] Step 1 Template: 5 recipe cards. Pick → preview → "Use this template" instantiates.
+- [ ] Step 2 Stripe: connect tenant key inline.
+- [ ] Step 3 Tax: pick `stripe_tax`/`manual`; tax-id field with FLOW B11 validation.
+- [ ] Step 4 Branding: brand color + logo URL.
+- [ ] Step 5 First test invoice: spawns demo customer + sub + ingests event + runs billing → opens hosted invoice. Total elapsed shown (target <30s).
+- [ ] On finish: TTFI recorded; `/v1/billing/dashboard` shows `time_to_first_invoice_seconds`.
+- [ ] Refresh mid-wizard → resumes on last incomplete step.
+- [ ] "Skip" → marks `onboarding_skipped_at`, lands on dashboard. Re-run `/onboarding?force=true` is idempotent on tenant_id.
 
 ## FLOW U1: Dashboard
 
-- [ ] 4 KPI cards: MRR (sparkline + trend %), Active Customers, Failed Payments (red if >0), Revenue 30d
-- [ ] Revenue bar chart (compact, no axes)
-- [ ] Recent Activity: last 5 invoices with status dot, badge, amount, relative time — clicking navigates to detail
-- [ ] Get Started checklist: **6 steps** — Connect Stripe, Create first plan, Add first customer, Create subscription, Set up webhook endpoint, Complete company profile. Each auto-tracks against server state (no manual checkoff). Self-hides at 100%.
-- [ ] Dismiss button persists per-tenant in localStorage (`velox:getstarted-dismissed:${tenantID}`) — dismissing in Tenant A does not hide it in Tenant B
-- [ ] "Trigger Billing" button is **not** on the dashboard — use `POST /v1/billing/run` via API (see S1.5)
+- [ ] 4 KPI cards: MRR (sparkline+trend), Active Customers, Failed Payments (red if >0), Revenue 30d.
+- [ ] Revenue bar chart, Recent Activity (last 5 invoices clickable).
+- [ ] Get Started checklist: 6 steps, auto-tracks against server state, self-hides at 100%. Dismiss persists per-tenant.
+- [ ] No "Trigger Billing" button (use `POST /v1/billing/run`).
 
 ## FLOW U3: Usage Events page
 
-- [ ] Stat cards: Total Events, Total Units, Active Meters, Active Customers
-- [ ] Meter breakdown with horizontal bars
-- [ ] Filter by customer → breakdown updates
-- [ ] Filter by date range
-- [ ] Export CSV
-- [ ] Stat cards stay constant when paging (page=1 → page=2 → page=3) — `total_events` reflects all filtered rows, NOT the 25-event page (issue #7)
-- [ ] Filter by customer → all four stat cards AND breakdown bars recompute server-side; `Total Units` reflects every matching event in scope, not the visible page
-- [ ] Filter by meter → breakdown collapses to a single row; `Active Meters` shows 1
-- [ ] Decimal precision: ingest three events with quantities `0.5`, `0.5`, `0.0001` for one customer/meter → `Total Units` displays `1.0001` (no precision loss, no toLocaleString rounding)
+- [ ] Stat cards: Total Events, Total Units, Active Meters, Active Customers.
+- [ ] Meter breakdown bars.
+- [ ] Filters: customer, date range. Stat cards stay constant when paging (reflect all filtered rows).
+- [ ] Decimal precision: `0.5 + 0.5 + 0.0001` → `1.0001` (no rounding).
+- [ ] Export CSV.
 
 ## FLOW U5: Dark mode
 
-- [ ] Toggle in sidebar footer → UI switches (sidebar, cards, tables, modals, forms, charts)
-- [ ] Badges and status colors still distinguishable
-- [ ] Refresh → persists (localStorage `velox-theme`)
-- [ ] Toggle back → clean switch
-- [ ] Delete `velox-theme` → follows system preference
+- [ ] Toggle in sidebar footer → sidebar/cards/tables/modals/forms/charts switch.
+- [ ] Refresh → persists (`localStorage:velox-theme`). Delete key → follows system preference.
 
 ## FLOW U6: Responsive
 
-- [ ] Tablet width (768px): tables scroll horizontally with fade indicator
-- [ ] Sidebar collapses to hamburger; open/close via Menu/X
-- [ ] Stat cards stack to 2-col grid
-- [ ] Modals don't overflow
+- [ ] 768px tablet: tables scroll horizontally with fade. Sidebar → hamburger.
+- [ ] Stat cards stack 2-col. Modals don't overflow.
 
 ## FLOW U7: Edge cases
 
 | Case | Expected |
 |------|----------|
-| Zero usage | Base fee only invoice |
+| Zero usage | Base fee only |
 | Meter without rating rule | Usage silently skipped |
-| Duplicate idempotency key (same body) | Cached response, one row |
-| Duplicate idempotency key (different body) | 409 Conflict |
-| Invalid `external_customer_id` on ingest | `"customer not found"` error |
-| Invalid `event_name` on ingest | `"meter not found"` error |
-| Void already voided invoice | Error message |
-| Finalize non-draft invoice | Error message |
+| Duplicate idempotency key, same body | Cached response, 1 row |
+| Duplicate idempotency key, different body | 409 |
+| Invalid `external_customer_id` on ingest | "customer not found" |
+| Invalid `event_name` on ingest | "meter not found" |
+| Void already voided invoice | Error |
+| Finalize non-draft invoice | Error |
 | Duplicate subscription code | Humanized error |
-| Cancel canceled subscription | Error message |
-| Revoke current session's API key | Warning dialog about logout |
-| Create subscription for archived customer | Allowed (backend permits) |
-| Esc from modal with form data | "Unsaved changes" confirmation |
+| Cancel canceled subscription | Error |
+| Esc from modal with form data | "Unsaved changes" prompt |
 
-## FLOW U8: Error toasts carry the Request ID
+## FLOW U8: Request-ID in error toasts
 
-Every error toast (via `showApiError` from `lib/formErrors.ts`) surfaces the server-assigned
-`Velox-Request-Id` so you can correlate to server logs. Every successful request also records
-the latest Request-Id via `lib/lastRequestId.ts` for the Report-an-issue flow (U11).
+- [ ] Force any API error → toast shows `Request ID: req_…` (clickable to copy).
+- [ ] Even when response envelope fails to parse → Request-Id from `Velox-Request-Id` header still appears.
+- [ ] `grep req_… server.log` matches the toast.
 
-- [ ] Force any API error (e.g. create a customer with a duplicate external_id) → toast shows
-  `Request ID: req_...` as the bottom line; click to copy
-- [ ] Trigger an error even when the response envelope fails to parse — the Request-Id from the
-  `Velox-Request-Id` response header should still appear in the toast
-- [ ] Run `grep "req_abc..." server.log` → matches the toast's trace handle
+## FLOW U9: Typed destructive confirms
 
-## FLOW U9: Typed destructive confirmations (`TypedConfirmDialog`)
+- [ ] Type `VOID` to confirm: void invoice, void credit note.
+- [ ] Type `CANCEL`: cancel subscription (operator + customer portal).
+- [ ] Type `DELETE`: delete webhook endpoint.
+- [ ] Wrong word → confirm button disabled. Cancel always closes.
 
-High-blast-radius actions require typing a specific word before the confirm button enables.
-Match is case-insensitive. Used on:
+## FLOW U10: Public pages
 
-- [ ] Void invoice (type `VOID`) — `InvoiceDetail.tsx`
-- [ ] Void credit note (type `VOID`) — `CreditNotes.tsx`
-- [ ] Cancel subscription from operator UI (type `CANCEL`) — `SubscriptionDetail.tsx`
-- [ ] Cancel subscription from customer portal (type `CANCEL`) — `CustomerPortal.tsx`
-- [ ] Delete webhook endpoint (type `DELETE`) — `Webhooks.tsx`
-- [ ] Typing the wrong word leaves the confirm button disabled
-- [ ] Cancel button always closes the dialog
+- [ ] `/invoice/:token` (FLOW I10), `/update-payment` (FLOW D4), `/checkout/success`, `/login` all load without auth.
 
-## FLOW U10: Public pages (no auth required)
+## FLOW U11: Report-an-issue
 
-Most public pages were cut on the lean-cut (Status, Privacy, Terms,
-DPA, Security, the embedded `/docs` site, in-app Changelog). The
-remaining unauthenticated surface is invoice + payment-update flows —
-the only public pages a real customer touches.
-
-- [ ] `/invoice/:token` — `HostedInvoice.tsx`. Sign out, hit the URL with a valid `public_token` → invoice renders, Pay button works (full FLOW I10 below covers it).
-- [ ] `/update-payment` — `UpdatePayment.tsx`. Token-authenticated card-update flow (FLOW D4 covers it).
-- [ ] `/checkout/success` — Stripe Checkout return URL. Lands a session with a success message; no auth needed.
-- [ ] `/login` — paste-API-key form (FLOW A1). Loads without auth.
-
-## FLOW U11: In-app support channel (Report-an-issue mailto)
-
-Added in T0-10. Two entry points; both build the mailto body at click-time so the
-freshest trace context is included.
-
-- [ ] Signed-in: account menu → "Report an issue" → opens mail client with:
-  - `To:` the configured support address
-  - Body includes `tenant_id`, current URL, user agent, and the most recent `Velox-Request-Id`
-    from `lib/lastRequestId.ts` (set after any API call — success or error)
-- [ ] Trigger a failing API request, then click "Report an issue" → the Request ID in the
-  mailto body matches the one from the error toast
-- [ ] Sign out, open `/login`, click "Trouble signing in? Contact support" → same mailto scaffold
-  with URL + user agent (no Request-Id in pre-auth mode)
+- [ ] Signed-in: account menu → "Report an issue" → mailto with `tenant_id`, current URL, user agent, latest `Velox-Request-Id`.
+- [ ] Trigger failing request, click report → Request-Id in mailto matches the toast.
+- [ ] Signed out `/login` "Trouble signing in?" → mailto with URL + UA (no Request-Id pre-auth).
 
 ---
 
 # Tier 3 — Deep / Rare
 
-Run before major releases, after infra changes (RLS, encryption, rate limiter,
-migrations), or when investigating an incident. These flows exercise properties
-that are easy to miss in day-to-day work.
+Major releases, infra changes, post-mortems.
 
-## FLOW X1: Multi-tenant RLS isolation
+## FLOW X1: RLS multi-tenant isolation
 
-- [ ] Bootstrap Tenant A with API key A; create customer "Alpha Corp" with key A
-- [ ] Bootstrap Tenant B with API key B; list customers with key B → Alpha Corp NOT visible
-- [ ] GET /v1/customers/{alpha_id} with key B → 404
-- [ ] Create "Beta Corp" with key B; list with key A → Beta Corp NOT visible
-- [ ] Repeat for invoices, subscriptions, credits — cross-tenant reads must 404
+- [ ] Bootstrap Tenant A + key A; create "Alpha Corp". Bootstrap Tenant B + key B; list customers with key B → Alpha NOT visible.
+- [ ] `GET /v1/customers/{alpha_id}` with key B → 404.
+- [ ] Same check for invoices, subs, credits — cross-tenant reads must 404.
 
 ## FLOW X2: Bootstrap lockdown
 
-- [ ] Start server without `VELOX_BOOTSTRAP_TOKEN` → POST /v1/bootstrap → 403
-  `"bootstrap disabled — set VELOX_BOOTSTRAP_TOKEN env var to enable"`
-- [ ] Start with `VELOX_BOOTSTRAP_TOKEN=my-secret`, POST `{"token":"wrong"}` → 403 `"invalid bootstrap token"`
-- [ ] Correct token after tenants already exist → 409 `"bootstrap already completed — tenants exist"`
-
-`make bootstrap` (CLI) always works and creates additional tenants — only the
-HTTP endpoint is guarded.
+- [ ] No `VELOX_BOOTSTRAP_TOKEN` → POST /v1/bootstrap → 403 `bootstrap disabled`.
+- [ ] Wrong token → 403 `invalid bootstrap token`.
+- [ ] Correct token, tenants exist → 409 `bootstrap already completed`.
+- [ ] `make bootstrap` CLI always works.
 
 ## FLOW X3: Rate limiting
 
-Rate limiter runs AFTER auth middleware — per-tenant GCRA buckets in Redis at
-100 req/min. Unauthenticated + public endpoints (`/health`, `/metrics`,
-`/v1/bootstrap`) are NOT rate limited.
-
-- [ ] Send 100+ concurrent requests (Go test or parallel curl; sequential curl is too slow)
-- [ ] First 100 → 200, rest → 429 with `Retry-After`; headers include `X-RateLimit-Limit/Remaining/Reset`
-- [ ] Wait ~10s, send 20 more → ~16 allowed (GCRA smooth refill at 1.67/sec)
-- [ ] Exhaust Tenant A → Tenant B still succeeds (separate buckets keyed by tenant_id)
-- [ ] Stop Redis → requests still succeed; logs `"rate_limiter: redis error, failing open"`
-  (in `APP_ENV=production`, fails closed instead)
-- [ ] Restart Redis → rate limiting resumes
-- [ ] Under rate limit: `/health`, `/health/ready`, `/metrics` still return 200
+- [ ] 100+ concurrent requests → first 100 ok, rest 429 with `Retry-After` + `X-RateLimit-*` headers.
+- [ ] Wait 10s, 20 more → ~16 allowed (GCRA refill 1.67/sec).
+- [ ] Tenant A exhausted → Tenant B succeeds (separate buckets).
+- [ ] Stop Redis → requests succeed (fail-open in dev). `APP_ENV=production` → fail-closed.
+- [ ] `/health`, `/health/ready`, `/metrics` not rate-limited.
 
 ## FLOW X4: Security headers + metrics auth
 
-- [ ] `curl -I http://localhost:8080/v1/customers`
-  - `X-Content-Type-Options: nosniff`
-  - `X-Frame-Options: DENY`
-  - `Cache-Control: no-store`
-  - `Referrer-Policy: strict-origin-when-cross-origin`
-- [ ] In staging/prod (`APP_ENV != local`): `Strict-Transport-Security` present
-- [ ] Set `METRICS_TOKEN=secret123`, restart → GET /metrics → 401
-- [ ] `curl -H "Authorization: Bearer secret123" /metrics` → 200, Prometheus output
-- [ ] Unset `METRICS_TOKEN`, restart → /metrics accessible unauth (dev mode only)
+- [ ] `curl -I /v1/customers` carries: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Cache-Control: no-store`, `Referrer-Policy: strict-origin-when-cross-origin`.
+- [ ] Staging/prod: `Strict-Transport-Security` present.
+- [ ] `METRICS_TOKEN=secret123` set → `/metrics` 401 unauth, 200 with Bearer. Unset → `/metrics` accessible (dev).
 
 ## FLOW X5: PII encryption at rest
 
-- [ ] Set `VELOX_ENCRYPTION_KEY` (64 hex chars), restart
-- [ ] Create customer with email + display_name
-- [ ] `SELECT display_name, email FROM customers ORDER BY created_at DESC LIMIT 1;`
-  → values prefixed `enc:`; API responses show decrypted plaintext
-- [ ] Create billing profile with legal_name, email, phone, tax_id
-- [ ] `SELECT legal_name, email, phone, tax_id FROM customer_billing_profiles ORDER BY created_at DESC LIMIT 1;`
-  → all 4 fields prefixed `enc:`; API responses show decrypted values
-- [ ] Pre-encryption plaintext rows still read correctly (no `enc:` prefix → returned as-is)
+- [ ] `VELOX_ENCRYPTION_KEY` set (64 hex). Create customer + billing profile.
+- [ ] `SELECT display_name, email FROM customers …` → values prefixed `enc:`. API returns plaintext.
+- [ ] `SELECT legal_name, email, phone, tax_id FROM customer_billing_profiles …` → all 4 prefixed `enc:`.
+- [ ] Pre-encryption rows still read correctly (no `enc:` prefix → returned as-is).
 
-## FLOW X6: Webhook replay attack
+## FLOW X6: Webhook replay
 
-- [ ] Capture a real Stripe webhook payload + `Stripe-Signature` from `stripe listen` logs
-- [ ] Replay via curl 5+ min later → rejected (timestamp tolerance >300s)
-- [ ] Replay with modified payload + same signature → rejected (signature mismatch)
+- [ ] Capture real Stripe payload + signature → replay 5+ min later → rejected (timestamp tolerance >300s).
+- [ ] Modified payload + original signature → rejected.
 
-## FLOW X7: Stripe Tax integration
+## FLOW X7: Stripe Tax
 
-Requires a Stripe account home country that supports `V1TaxCalculations.Create`
-(US/GB/EU/AU/…). India-registered accounts are account-level blocked (not
-key-level) and return `"Stripe Tax isn't yet supported for your country"` — use
-FLOW B10 for those tenants.
-
-- [ ] PUT /v1/feature-flags/billing.stripe_tax `{"enabled": true}`
-- [ ] Customer with full address (country, state, postal code) in billing profile
-- [ ] Run billing → invoice tax calculated by Stripe; `tax_name` shows jurisdiction
-  (e.g. "CA Sales Tax"); per-line-item tax amounts populated
-- [ ] Set invalid Stripe key → billing still generates invoice with $0 tax (graceful fallback);
-  logs warn "tax calculation failed"; counter `velox_tax_fallback_total{reason="api_error"}` +1
-- [ ] Restore key; flip customer `tax_exempt = true` → $0 tax regardless of setting
+- [ ] `PUT /v1/feature-flags/billing.stripe_tax {enabled:true}`. Customer with full address → invoice tax calculated by Stripe; `tax_name` shows jurisdiction; per-line tax populated.
+- [ ] Invalid Stripe key → invoice generates with $0 tax (graceful fallback); counter `velox_tax_fallback_total{reason="api_error"}` +1.
+- [ ] `tax_exempt=true` → $0 tax regardless.
+- [ ] India-registered Stripe account → blocked at account level → use FLOW B10.
 
 ## FLOW X8: Migration rollback
 
-- [ ] `make migrate-status` → note version N
-- [ ] `go run ./cmd/velox migrate rollback` → version N-1
-- [ ] `make migrate` → back to N
-- [ ] `docker compose down -v && make up && make dev` → fresh DB migrates to latest version;
-  `make migrate-status` matches `ls internal/platform/migrate/sql/*.up.sql | wc -l`
+- [ ] `make migrate-status` → version N. `migrate rollback` → N-1. `make migrate` → N.
+- [ ] `docker compose down -v && make up && make dev` → fresh DB applies all migrations; status matches `ls migrations/*.up.sql | wc -l`.
 
 ## FLOW X9: Config validation
 
-Direct `go run ./cmd/velox` lets you control env vars individually. The
-validator emits warnings for non-fatal issues and errors for fatal ones.
-
-- [ ] No `VELOX_ENCRYPTION_KEY` in production: fatal — `"VELOX_ENCRYPTION_KEY is required in production"`
-- [ ] `VELOX_ENCRYPTION_KEY` not exactly 64 hex chars: fatal — exact length in message
-- [ ] `VELOX_ENCRYPTION_KEY` not valid hex: fatal — `"not valid hex"`
-- [ ] `APP_ENV=production` without `REDIS_URL`: warning — `"REDIS_URL is not set — rate limiting will fail open"`
-- [ ] `APP_ENV="foo"` (unrecognized): warning listing expected values
-- [ ] `PORT="not-a-port"`: warning
-- [ ] `DB_MAX_IDLE_CONNS > DB_MAX_OPEN_CONNS`: warning
-- [ ] All valid (`make dev` with a good `.env`): zero WARN-level config logs
-
-Stripe is no longer validated at boot (per-tenant credentials in DB).
+- [ ] No `VELOX_ENCRYPTION_KEY` in production → fatal.
+- [ ] Key not 64 hex / not valid hex → fatal.
+- [ ] `APP_ENV=production` no `REDIS_URL` → warn "rate limiting will fail open".
+- [ ] `APP_ENV=foo` → warn listing expected values. `PORT=not-a-port` → warn.
+- [ ] `DB_MAX_IDLE_CONNS > DB_MAX_OPEN_CONNS` → warn.
+- [ ] All valid → zero WARN-level config logs.
 
 ## FLOW X10: OpenTelemetry tracing
 
@@ -1658,110 +928,70 @@ docker run -d --name jaeger -p 16686:16686 -p 4318:4318 jaegertracing/jaeger:2
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 ```
 
-- [ ] Hit several endpoints (create customer, ingest usage, run billing)
-- [ ] Jaeger UI at http://localhost:16686, service `velox`
-- [ ] HTTP spans: method + path (e.g. `POST /v1/customers`)
-- [ ] `billing.RunCycle` span with `batch_size` attribute
-- [ ] `billing.BillSubscription` spans with `subscription_id`, `tenant_id`
-- [ ] Parent-child relationship: HTTP span → billing span
+- [ ] Hit several endpoints. Jaeger UI at :16686, service `velox`.
+- [ ] HTTP spans (method+path), `billing.RunCycle` with `batch_size`, `billing.BillSubscription` with `subscription_id`/`tenant_id`.
+- [ ] HTTP → billing parent-child relationship visible.
 
 ## FLOW X11: Large batch usage ingestion
 
-- [ ] POST /v1/usage-events/batch with 1,000 events
-- [ ] Response `{accepted: 1000, rejected: 0}`; Usage Events page total matches
-- [ ] Include duplicate idempotency keys → duplicates rejected, rest accepted
-- [ ] Run billing → aggregated correctly
+- [ ] POST /v1/usage-events/batch with 1000 events → `{accepted:1000, rejected:0}`.
+- [ ] Include duplicate idempotency keys → duplicates rejected.
+- [ ] Run billing → aggregated correctly.
 
 ## FLOW X12: Operator CLI (`velox-cli`)
 
-Cobra-based binary at `./cmd/velox-cli`. Two subcommands today: `sub list` and
-`invoice send`. Reads `VELOX_API_URL` + `VELOX_API_KEY` from env (or `--api-url`
-/ `--api-key` flags). Wire shape mirrors server respond.List `{data, total}`
-exactly so `--output json` is byte-identical to the HTTP response.
-
-- [ ] `go build -o /tmp/velox-cli ./cmd/velox-cli && /tmp/velox-cli --help` lists `sub`, `invoice`, `--api-url`, `--api-key`
-- [ ] `velox-cli sub list` → table with columns ID / CUSTOMER / STATUS / PLAN / PERIOD_END
-- [ ] `velox-cli sub list --status=active --limit=10 --output=json` → JSON `{data:[…], total:N}`
-- [ ] `velox-cli sub list --customer=cus_xxx` → only that customer's subs
-- [ ] `velox-cli sub list --plan=plan_xxx` → only that plan's subs
-- [ ] Multi-item subscriptions: PLAN column joins plan IDs with `,`; JSON output preserves the array
-- [ ] Missing API key → exit code 1, stderr `"VELOX_API_KEY (or --api-key) is required"`
-- [ ] Wrong API key → exit code 1, server's 401 message surfaced verbatim
-- [ ] `velox-cli invoice send <inv_id>` → 202 → "Invoice queued for delivery"; `email_outbox` row appears
-- [ ] `velox-cli invoice send <unknown>` → exit code 1, server's 404 surfaced
-- [ ] `velox-cli invoice send <inv_id> --output=json` → `{queued_at, recipient}` JSON
+- [ ] `--help` lists `sub`, `invoice`, `--api-url`, `--api-key`.
+- [ ] `velox-cli sub list` → table; `--status`, `--limit`, `--customer`, `--plan` filters work.
+- [ ] `--output=json` → `{data:[…], total:N}`. Multi-item subs: PLAN col joins with `,`; JSON preserves array.
+- [ ] Missing/wrong key → exit 1 with stderr message.
+- [ ] `invoice send <inv>` → 202; outbox row appears. Unknown id → 404.
 
 ## FLOW X14: Self-host (Compose)
 
-Compose-on-single-VM is the supported v1 deployment shape. Helm /
-Terraform / multi-replica HA paths are explicitly deferred — see
-`docs/self-host.md` and the lean-cut entry in CHANGELOG for the
-rationale.
-
-- [ ] `docker compose up -d postgres redis mailpit` brings the three sidecars up healthy
-- [ ] `make bootstrap` creates a tenant + secret/publishable test keys; banner points at `/login` to paste the secret key
-- [ ] `make dev` starts the API on `:8080`; `/health` and `/health/ready` both return `{"status":"ok"}`
-- [ ] `cd web-v2 && npm run dev` brings the dashboard up on `:5173`; pasting the secret key loads `/`
-- [ ] On first dev startup, `RUN_MIGRATIONS_ON_BOOT=true` (default for `make dev`) applies all forward migrations idempotently
-- [ ] Outbound transactional mail catches in mailpit at `http://localhost:8025` (no real SMTP needed for local eval)
+- [ ] `docker compose up -d postgres redis mailpit` → 3 sidecars healthy.
+- [ ] `make bootstrap` + `make dev` + `cd web-v2 && npm run dev`. `/health` and `/health/ready` 200.
+- [ ] `RUN_MIGRATIONS_ON_BOOT=true` (default) applies all migrations idempotently.
+- [ ] Mail catches at `localhost:8025`.
 
 ---
 
 # Diagnostics
 
-Common failure modes and where to look first.
-
 ## Server won't start
+- `VELOX_ENCRYPTION_KEY` rejected → FLOW X9 (must be 64 hex chars).
+- Postgres unreachable → `docker compose ps`, `make up`.
+- Port 8080 in use → `lsof -i :8080`, kill stale.
+- Migration dirty → resolve SQL error, then `migrate force <version>`.
 
-- `VELOX_ENCRYPTION_KEY` rejected → see FLOW X9; must be exactly 64 hex chars
-- Postgres unreachable → `docker compose ps`; `docker compose logs postgres`; `make up`
-- Port 8080 in use → `lsof -i :8080` → kill the stale process
-- Migration dirty → `SELECT * FROM schema_migrations;` — `dirty=true` means a prior
-  run failed partway. Resolve the underlying SQL error, then
-  `go run ./cmd/velox migrate force <version>` to clear the dirty flag before
-  re-running `make migrate`
-
-## Dashboard sign-in fails
-
-- 401 on `POST /v1/auth/login` → wrong email or password. Run `make bootstrap` again to print fresh credentials, or use the password-reset flow.
-- 429 on `POST /v1/auth/login` → 5 wrong-password attempts in a minute trigger a 15-min lockout. `SELECT locked_until FROM users WHERE email='<email>';` — wait for it to pass.
-- CORS: `CORS_ALLOWED_ORIGINS` must include the frontend origin (`http://localhost:5173` for local dev). The cookie won't attach without the right CORS preflight either.
-- Cookie not set after login → check `Set-Cookie` on the login response; `Secure` flag in dev should be off (we set it only when `APP_ENV` is `staging`/`production`). If it's on in dev, the browser drops the cookie over plain HTTP.
-- `velox_session` cookie present but every request 401s → `dashboard_sessions.expires_at` may have passed, or `revoked_at` is set. Check the row.
-- Password-reset link 422 on confirm → token already used or past its 1h TTL. Re-request a fresh link.
+## Sign-in fails
+- 401 → wrong creds. Re-bootstrap or use password-reset.
+- 429 → 5 wrong attempts, 15-min lockout. Check `users.locked_until`.
+- CORS: `CORS_ALLOWED_ORIGINS` must include frontend origin.
+- Cookie not set → check `Set-Cookie` on response. `Secure` in dev should be off.
+- Cookie present but every request 401s → check `dashboard_sessions.expires_at` / `revoked_at`.
 
 ## Invoice didn't generate
+- Subscription not due → period end in future. Backdate for testing.
+- Already billed → FLOW B3 (idempotent skip).
+- Subscription paused / customer archived / trial active → no billing.
+- `billing.auto_charge` off → invoice generated but not charged.
 
-- Subscription not due → billing period end is in the future. Advance it in DB for testing
-- Already billed → see FLOW B3; logs say `"invoice already exists for billing period"`
-- Subscription paused / customer archived → no billing
-- Trial active → no billing until trial ends (FLOW B6)
-- Feature flag `billing.auto_charge` off → invoice generated but not charged
-
-## Stripe Tax returning errors
-
-- Unsupported home country → FLOW X7 disclaimer; fall back to FLOW B10 manual tax
-- Missing customer address → counter `velox_tax_fallback_total{reason="no_country"}` +1 (FLOW P6)
-- Tenant in mode without connected Stripe → `{reason="no_client_for_mode"}`
-- Invalid/expired Stripe key → `{reason="api_error"}`
+## Stripe Tax errors
+- Unsupported home country → FLOW B10 manual fallback.
+- Missing customer address → counter `velox_tax_fallback_total{reason="no_country"}` +1.
+- Tenant in disconnected mode → `{reason="no_client_for_mode"}`.
+- Invalid key → `{reason="api_error"}`.
 
 ## Rate limit not triggering
+- Redis not connected → `redis-cli ping`, check `REDIS_URL`.
+- Sequential curl too slow — use parallel.
+- Public endpoints (`/health`, `/metrics`, `/v1/bootstrap`) intentionally unrestricted.
 
-- Redis not connected → `redis-cli ping`; check `REDIS_URL`; server logs
-  `"rate_limiter: redis error, failing open"`
-- Testing with sequential curl — GCRA refills too fast; use parallel (FLOW X3)
-- Endpoint is public (`/health`, `/metrics`, `/v1/bootstrap`) — intentionally not limited
-
-## PII not encrypted in DB
-
-- `VELOX_ENCRYPTION_KEY` wasn't set when the row was created → pre-encryption rows
-  stay plaintext (backward compat, FLOW X5). New rows post-key-set are encrypted
-- Wrong field — only customer display_name/email and billing profile
-  legal_name/email/phone/tax_id are encrypted (see `cipher.EncryptString` call sites)
+## PII not encrypted
+- `VELOX_ENCRYPTION_KEY` not set when row created → backward-compat plaintext (FLOW X5).
+- Wrong field — only customer display_name/email + billing profile legal_name/email/phone/tax_id are encrypted.
 
 ## Webhook signature fails
-
-- Wrong `whsec_...` pasted into Settings → Payments after `stripe listen` restarted
-  (CLI rotates the secret each run)
-- Clock skew > 5 min between Stripe and local → webhook rejected (FLOW X6)
-- Using `/v1/webhooks/stripe` (no endpoint id) — must be `/v1/webhooks/stripe/<vlx_spc_...>`
+- Wrong `whsec_…` after `stripe listen` restart (CLI rotates per run).
+- Clock skew >5 min → rejected (FLOW X6).
+- Wrong webhook URL — must be `/v1/webhooks/stripe/<vlx_spc_…>`.
