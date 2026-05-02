@@ -519,9 +519,22 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		}
 	}
 
-	// Send payment update request email asynchronously with tokenized URL
-	if s.emailPaymentUpdate != nil && s.customerEmail != nil && s.paymentUpdateURL != "" {
+	// Send payment update request email asynchronously with tokenized URL.
+	// Single path: always attempt if the sender is wired. Missing config
+	// (URL or customer-email resolver) surfaces as a logged error per
+	// attempt rather than a silent skip, so operators see the failure.
+	if s.emailPaymentUpdate != nil {
 		go func() {
+			if s.paymentUpdateURL == "" {
+				slog.Error("payment update email failed — PAYMENT_UPDATE_URL not configured",
+					"invoice_id", inv.ID)
+				return
+			}
+			if s.customerEmail == nil {
+				slog.Error("payment update email failed — customer email resolver not wired",
+					"invoice_id", inv.ID)
+				return
+			}
 			email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
 			if err != nil || email == "" {
 				slog.Warn("skip payment update email — cannot resolve customer email",

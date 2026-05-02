@@ -395,17 +395,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	dunningSvc.SetCustomerEmailFetcher(customerEmailAdapter)
 	stripeAdapter.SetEmailReceipt(receiptEmail, customerEmailAdapter)
 	paymentUpdateURL := strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_URL"))
-	if paymentUpdateURL != "" {
-		stripeAdapter.SetEmailPaymentUpdate(paymentUpdate, customerEmailAdapter, paymentUpdateURL)
-	} else {
-		// Without this URL, the no-PM-at-finalize and payment-failed
-		// emails can't include a working "Update payment method"
-		// link, so they're skipped entirely (not silently broken with
-		// a dead link). Loud warning so production deployments don't
-		// run for weeks before someone notices customers aren't
-		// being told to update their cards.
-		slog.Warn("PAYMENT_UPDATE_URL NOT SET — payment-update-request emails (no-PM-at-finalize, charge-failure) will be skipped. Set this to your customer-portal payment-update page URL.")
+	if paymentUpdateURL == "" {
+		slog.Warn("PAYMENT_UPDATE_URL NOT SET — payment-update-request emails (no-PM-at-finalize, charge-failure) will fail at send time. Set this to your customer-portal payment-update page URL.")
 	}
+	stripeAdapter.SetEmailPaymentUpdate(paymentUpdate, customerEmailAdapter, paymentUpdateURL)
 
 	// Audit logging for financial operations
 	creditH.SetAuditLogger(auditLogger)
@@ -442,13 +435,15 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// email at charge-failure time; we extend the same pattern to the
 	// no-PM-at-finalize case for symmetric customer experience.
 	// ADR-013.
-	if paymentUpdateURL != "" {
-		engine.SetNoPaymentMethodNotifier(&noPaymentMethodNotifierAdapter{
-			email:            paymentUpdate,
-			customerEmail:    customerEmailAdapter,
-			paymentUpdateURL: paymentUpdateURL,
-		})
-	}
+	//
+	// Always wired. If paymentUpdateURL is empty the adapter surfaces
+	// the misconfiguration at send time per the boot WARN above —
+	// single send path, no silent skip.
+	engine.SetNoPaymentMethodNotifier(&noPaymentMethodNotifierAdapter{
+		email:            paymentUpdate,
+		customerEmail:    customerEmailAdapter,
+		paymentUpdateURL: paymentUpdateURL,
+	})
 
 	// Tax: per-tenant provider resolution (none|manual|stripe_tax) + durable
 	// audit trail in tax_calculations. Resolver reads tenant_settings and
@@ -613,21 +608,17 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	}
 	magicLinkStore := customerportal.NewPostgresMagicLinkStore(db)
 	magicLinkSvc := customerportal.NewMagicLinkService(magicLinkStore, portalSvc)
-	// Email delivery: when CUSTOMER_PORTAL_URL is configured, wire the
-	// real email path so customers receive a clickable /login URL. Without
-	// that URL the delivery would email only the raw token, which is
-	// worse than no email — fall back to the logger stub so ops notices
-	// and configures the var rather than silently shipping broken emails.
-	var magicLinkDelivery customerportal.MagicLinkDelivery
+	// Single delivery path: EmailMagicLinkDelivery. When
+	// CUSTOMER_PORTAL_URL is empty it returns ErrPortalURLNotConfigured
+	// per request — boot logs a warning so the misconfiguration is
+	// visible without preventing the server from starting.
 	portalURL := strings.TrimSpace(os.Getenv("CUSTOMER_PORTAL_URL"))
-	if portalURL != "" {
-		magicLinkDelivery = customerportal.NewEmailMagicLinkDelivery(
-			magicLinkEmail, customerEmailAdapter, portalURL, slog.Default(),
-		)
-	} else {
-		slog.Warn("CUSTOMER_PORTAL_URL not set — magic-link emails disabled, logging tokens instead")
-		magicLinkDelivery = customerportal.NewLogMagicLinkDelivery(slog.Default())
+	if portalURL == "" {
+		slog.Warn("CUSTOMER_PORTAL_URL NOT SET — magic-link requests will fail with ErrPortalURLNotConfigured. Set this to your customer-portal base URL (e.g. https://billing.example.com).")
 	}
+	magicLinkDelivery := customerportal.NewEmailMagicLinkDelivery(
+		magicLinkEmail, customerEmailAdapter, portalURL, slog.Default(),
+	)
 	magicLinkRequestSvc := customerportal.NewMagicLinkRequestService(
 		magicLinkSvc,
 		&customerLookupAdapter{store: customerStore},

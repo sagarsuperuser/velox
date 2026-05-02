@@ -23,7 +23,7 @@ type Handler struct {
 	users    *Service
 	sessions *session.Service
 	cookie   session.CookieConfig
-	email    EmailSender // optional; nil = no email send attempted (tests)
+	email    EmailSender // required — production always wires the adapter
 }
 
 // EmailSender is the narrow surface this handler uses to dispatch
@@ -35,9 +35,8 @@ type EmailSender interface {
 	SendPasswordReset(email, resetLink string) error
 }
 
-// NewHandler wires the dependencies. emailSender may be nil only in
-// tests — production must wire a real sender or password-reset
-// requests are accepted but never dispatched.
+// NewHandler wires the dependencies. emailSender is required —
+// password-reset requests will nil-panic if it's nil.
 func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender) *Handler {
 	return &Handler{
 		users:    users,
@@ -213,12 +212,12 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		// Generic response — don't expose internal failures
 	}
 
-	if plaintext != "" && h.email != nil {
+	if plaintext != "" {
 		// Send is best-effort: failure is logged but never surfaces to
 		// the response, since the response shape is fixed at "if your
 		// email is on file, you'll get a link" to avoid email
 		// enumeration. SMTP misconfiguration shows up as a logged
-		// SendPasswordReset error, not as a stdout-leaked link.
+		// SendPasswordReset error.
 		resetLink := buildResetLink(r, plaintext)
 		if sendErr := h.email.SendPasswordReset(req.Email, resetLink); sendErr != nil {
 			slog.Error("password reset email send failed", "err", sendErr)
