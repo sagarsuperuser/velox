@@ -472,6 +472,26 @@ under a "Test mode" sidebar header below System.
 - [ ] Response carries `Content-Type: application/pdf` and `Content-Disposition: attachment; filename="..."`.
 - [ ] PDF for a different customer's invoice → 404.
 
+## FLOW E1-3: Email delivery (SMTP)
+
+Velox sends customer-facing emails (invoices, dunning, payment-
+update-request, magic-link, password-reset) via SMTP. Configuration
+via env vars (see `docs/ops/email-setup.md`); when unconfigured, the
+sender logs the email body to stdout instead of failing.
+
+- [ ] **E1: STARTTLS happy path** — set `SMTP_HOST` / `SMTP_PORT=587` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` / `SMTP_TLS=starttls`. Trigger an invoice email (`POST /v1/invoices/<id>/email`). Confirm:
+  - Outbox row appears in `email_outbox` with `status='pending'`.
+  - Within seconds, dispatcher updates row to `status='dispatched'` with non-null `dispatched_at`.
+  - Recipient inbox receives the email.
+  - Application logs `email sent to=… subject=…`.
+- [ ] **E2: Implicit TLS (port 465)** — switch to `SMTP_TLS=implicit` + `SMTP_PORT=465`. Same trigger; same expected outcome. Verifies the `tls.Dial`-based path works against providers that don't accept STARTTLS.
+- [ ] **E3: SMTP not configured** — unset `SMTP_HOST`. Trigger any email-emitting action. Outbox row goes to `status='pending'` (because dispatcher still claims it), but `Send*` returns nil and logs `email (not sent — SMTP not configured)`. The dispatcher will keep retrying until SMTP is configured; OR mark the row dispatched if you've decided to skip emails entirely.
+- [ ] **E4: SMTP rejects with 5xx (synchronous bounce)** — point `SMTP_HOST` at a server that hard-rejects RCPT TO (e.g. send to a malformed address `foo@invalid`). Confirm:
+  - Customer's row in `customers.email_status` flips to `bounced`.
+  - `customers.email_bounce_reason` carries the SMTP error string.
+  - Outbox row may still mark as dispatched (a 5xx is "delivered to ESP, ESP rejected") OR retried — depends on the error code shape.
+- [ ] **E5: Provider-specific configs work** — verify each ESP per `docs/ops/email-setup.md` (SendGrid, Postmark, SES, Mailgun, Resend) by setting their env vars and triggering an email.
+
 ## FLOW EX1-4: Streaming CSV exports
 
 Operator-facing data export so a tenant can take their data out
