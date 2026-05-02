@@ -148,6 +148,16 @@ export default function InvoiceDetailPage() {
     enabled: !!invoice?.subscription_id,
   })
 
+  // Test-clock frozen_time becomes the "now" for relative-time badges
+  // (Due in N days) on this page. Without this the badge reads from
+  // wall-clock and understates urgency on simulated invoices —
+  // "Due in 45d" while the engine perceives 15d.
+  const { data: testClock } = useQuery({
+    queryKey: ['test-clock', subscription?.test_clock_id],
+    queryFn: () => api.getTestClock(subscription!.test_clock_id!),
+    enabled: !!subscription?.test_clock_id,
+  })
+
   const { data: creditNotesData } = useQuery({
     queryKey: ['invoice-credit-notes', id],
     queryFn: async () => {
@@ -612,7 +622,7 @@ export default function InvoiceDetailPage() {
               <div className="flex items-center gap-2">
                 <p className="text-sm text-foreground">{invoice.due_at ? formatDate(invoice.due_at) : '\u2014'}</p>
                 {invoice.due_at && invoice.payment_status !== 'paid' && (
-                  <ExpiryBadge expiresAt={invoice.due_at} label="Due" warningDays={3} />
+                  <ExpiryBadge expiresAt={invoice.due_at} label="Due" warningDays={3} now={testClock?.frozen_time} />
                 )}
               </div>
             </div>

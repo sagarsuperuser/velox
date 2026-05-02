@@ -6,6 +6,14 @@ interface ExpiryBadgeProps {
   noExpiryLabel?: string
   label?: string
   className?: string
+  // now overrides Date.now() for the days-until calculation. Pass the
+  // test clock's frozen_time when the entity is pinned to a clock so
+  // the badge reads "Due in N days" relative to simulation time, not
+  // wall-clock. Engine actions (dunning, finalize) fire on simulation
+  // time; the badge has to match or it understates urgency. Stripe /
+  // Lago / Orb pattern: every relative-time UI on a test-clock
+  // entity reads from the simulation, not real time.
+  now?: string | Date
 }
 
 export function ExpiryBadge({
@@ -14,6 +22,7 @@ export function ExpiryBadge({
   noExpiryLabel,
   label = 'Expires',
   className,
+  now,
 }: ExpiryBadgeProps) {
   if (!expiresAt) {
     return noExpiryLabel ? (
@@ -21,7 +30,10 @@ export function ExpiryBadge({
     ) : null
   }
 
-  const days = Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86400000)
+  const referenceMs = now
+    ? (typeof now === 'string' ? new Date(now).getTime() : now.getTime())
+    : Date.now()
+  const days = Math.ceil((new Date(expiresAt).getTime() - referenceMs) / 86400000)
 
   if (days < 0) {
     return <Badge variant="destructive" className={className}>Expired</Badge>
