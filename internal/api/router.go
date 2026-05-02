@@ -339,6 +339,16 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// branding (logo, brand color, company name, support URL). Cold-start
 	// tenants without settings gracefully fall back to Velox defaults.
 	emailSender.SetSettingsGetter(settingsStore)
+	// Loud startup log so operators don't run prod without SMTP and
+	// only discover it when a customer never receives their invoice.
+	// Per-email "not sent — SMTP not configured" logs still fire
+	// downstream, but those are easy to miss inside per-request log
+	// volume; this sits at the top of the boot sequence.
+	if !emailSender.IsConfigured() {
+		slog.Warn("SMTP NOT CONFIGURED — all customer-facing emails (invoices, dunning, password-reset, magic-link) will be logged to stdout instead of delivered. Set SMTP_HOST + credentials in production. See docs/ops/email-setup.md.")
+	} else {
+		slog.Info("SMTP configured", "host", emailSender.SMTPHost())
+	}
 	// bounceReporterAdapter wires Sender SMTP 5xx errors to
 	// customer.MarkEmailBounced. Requires an email blinder (configured
 	// later from VELOX_EMAIL_BIDX_KEY); if the blinder is missing, the
@@ -353,22 +363,29 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	invoiceH.SetEmailEvents(&invoiceEmailEventsAdapter{store: emailOutboxStore})
 	emailOutboxEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_EMAIL_OUTBOX_ENABLED"))) != "false"
 
-	// Any one of the six domain email interfaces; all are satisfied by
-	// both *email.Sender and *email.OutboxSender, so we pick once and wire
-	// the same value everywhere.
+	// Any one of the seven domain email interfaces; all are satisfied
+	// by both *email.Sender and *email.OutboxSender, so we pick once
+	// and wire the same value everywhere. passwordResetEmail is the
+	// shared concrete reference we'll wrap via an adapter to satisfy
+	// user.EmailSender's narrower 2-arg signature.
 	var (
-		invoiceEmail   invoice.EmailSender
-		dunningEmail   dunning.EmailNotifier
-		receiptEmail   payment.EmailReceipt
-		paymentUpdate  payment.EmailPaymentUpdate
-		magicLinkEmail customerportal.MagicLinkEmailSender
+		invoiceEmail       invoice.EmailSender
+		dunningEmail       dunning.EmailNotifier
+		receiptEmail       payment.EmailReceipt
+		paymentUpdate      payment.EmailPaymentUpdate
+		magicLinkEmail     customerportal.MagicLinkEmailSender
+		passwordResetEmail interface {
+			SendPasswordReset(tenantID, to, displayName, resetURL string) error
+		}
 	)
 	if emailOutboxEnabled {
 		outboxSender := email.NewOutboxSender(emailOutboxStore)
 		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail = outboxSender, outboxSender, outboxSender, outboxSender, outboxSender
+		passwordResetEmail = outboxSender
 		slog.Info("email outbox enabled — producers will enqueue emails via email_outbox")
 	} else {
 		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail = emailSender, emailSender, emailSender, emailSender, emailSender
+		passwordResetEmail = emailSender
 		slog.Warn("email outbox DISABLED — using direct-SMTP path (set VELOX_EMAIL_OUTBOX_ENABLED=true to re-enable)")
 	}
 	invoiceH.SetEmailSender(invoiceEmail)
@@ -379,6 +396,14 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	paymentUpdateURL := strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_URL"))
 	if paymentUpdateURL != "" {
 		stripeAdapter.SetEmailPaymentUpdate(paymentUpdate, customerEmailAdapter, paymentUpdateURL)
+	} else {
+		// Without this URL, the no-PM-at-finalize and payment-failed
+		// emails can't include a working "Update payment method"
+		// link, so they're skipped entirely (not silently broken with
+		// a dead link). Loud warning so production deployments don't
+		// run for weeks before someone notices customers aren't
+		// being told to update their cards.
+		slog.Warn("PAYMENT_UPDATE_URL NOT SET — payment-update-request emails (no-PM-at-finalize, charge-failure) will be skipped. Set this to your customer-portal payment-update page URL.")
 	}
 
 	// Audit logging for financial operations
@@ -640,7 +665,18 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// ADR-011. The auth handler wires /v1/auth/login,
 	// /v1/auth/logout, and the password-reset flow.
 	userSvc := user.NewService(user.NewPostgresStore(db), nil)
-	dashboardAuthH := user.NewHandler(userSvc, sessionSvc, session.DefaultCookieConfig(), nil)
+	// Password-reset emails ride the same email infrastructure as
+	// every other transactional email. The user.EmailSender interface
+	// is narrower than email.OutboxSender's signature (no tenant or
+	// display-name context at password-reset time, since the operator
+	// hasn't authenticated yet), so we wrap with an adapter that
+	// passes empty tenant + the email-as-name. brandingFor() falls
+	// back to platform defaults on empty tenantID — fine for an
+	// operator-grade email.
+	dashboardAuthH := user.NewHandler(
+		userSvc, sessionSvc, session.DefaultCookieConfig(),
+		&passwordResetEmailAdapter{sender: passwordResetEmail},
+	)
 
 	s := &Server{
 		BillingEngine:         engine,

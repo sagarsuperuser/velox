@@ -107,6 +107,11 @@ func NewSender() *Sender {
 
 func (s *Sender) IsConfigured() bool { return s.host != "" }
 
+// SMTPHost returns the configured SMTP relay host (no port) for
+// startup-log diagnostics. Empty string when unconfigured. Only the
+// host name is exposed — never the credentials.
+func (s *Sender) SMTPHost() string { return s.host }
+
 // SetSettingsGetter wires the tenant settings store so Send* methods can
 // look up branding per email. Called from router.go; optional for tests.
 func (s *Sender) SetSettingsGetter(g SettingsGetter) { s.settings = g }
