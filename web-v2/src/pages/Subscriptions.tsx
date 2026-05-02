@@ -8,7 +8,7 @@ import { toast } from 'sonner'
 import { api, formatDate, formatDateTime } from '@/lib/api'
 import type { Customer, Subscription } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
-import { downloadCSV } from '@/lib/csv'
+import { downloadServerCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
@@ -221,20 +221,16 @@ export default function SubscriptionsPage() {
     createMutation.mutate(data)
   })
 
-  const handleExport = () => {
-    api.listSubscriptions().then(res => {
-      const rows = res.data.map((sub: Subscription) => [
-        sub.display_name,
-        customerMap[sub.customer_id]?.display_name || 'Unknown',
-        sub.code,
-        sub.status,
-        sub.current_billing_period_start && sub.current_billing_period_end
-          ? `${formatDate(sub.current_billing_period_start)} - ${formatDate(sub.current_billing_period_end)}`
-          : '',
-        formatDateTime(sub.created_at),
-      ])
-      downloadCSV('subscriptions.csv', ['Name', 'Customer', 'Code', 'Status', 'Billing Period', 'Created'], rows)
-    })
+  // Server-side streaming export: full tenant dataset (every column
+  // on Subscription including item plan_ids, trial/started/canceled
+  // timestamps), not just the currently-visible page.
+  const handleExport = async () => {
+    try {
+      await downloadServerCSV('/v1/exports/subscriptions.csv', 'subscriptions.csv')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Export failed'
+      toast.error(msg)
+    }
   }
 
   return (
