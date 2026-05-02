@@ -412,15 +412,24 @@ export default function InvoiceDetailPage() {
                 </TooltipTrigger>
                 <TooltipContent className="max-w-md break-all">{publicInvoiceURL}</TooltipContent>
               </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="outline" size="sm" onClick={() => setShowRotatePublicTokenConfirm(true)} disabled={acting}>
-                    <RotateCw size={14} className="mr-1.5" />
-                    Rotate
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Invalidate the current URL and mint a new one</TooltipContent>
-              </Tooltip>
+              {/* Rotate is unpaid-only. The hosted URL on a paid invoice
+                  acts as the customer's receipt page; rotation rarely
+                  matters once paid (no scenario where a stale URL is
+                  abused — the page just reads "Paid"). Hidden here
+                  matches Stripe; operators who genuinely need to
+                  invalidate a paid-receipt URL can hit
+                  POST /v1/invoices/{id}/rotate-public-token directly. */}
+              {invoice.status !== 'paid' && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="outline" size="sm" onClick={() => setShowRotatePublicTokenConfirm(true)} disabled={acting}>
+                      <RotateCw size={14} className="mr-1.5" />
+                      Rotate
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Invalidate the current URL and mint a new one</TooltipContent>
+                </Tooltip>
+              )}
             </>
           )}
 
@@ -532,11 +541,14 @@ export default function InvoiceDetailPage() {
               domain-code and visually noisy. */}
           <div className="flex items-center gap-2 mt-5">
             <Badge variant={statusVariant(invoice.status)}>{humaniseInvoiceStatus(invoice.status)}</Badge>
+            {/* Bare date — the badge already says "Paid"/"Voided", so
+                prefixing the date with the same word is redundant.
+                "Paid Paid May 2, 2026" → "Paid · May 2, 2026". */}
             {invoice.status === 'voided' && invoice.voided_at && (
-              <span className="text-xs text-muted-foreground ml-1">Voided {formatDate(invoice.voided_at)}</span>
+              <span className="text-xs text-muted-foreground ml-1">{formatDate(invoice.voided_at)}</span>
             )}
             {invoice.status === 'paid' && invoice.paid_at && (
-              <span className="text-xs text-muted-foreground ml-1">Paid {formatDate(invoice.paid_at)}</span>
+              <span className="text-xs text-muted-foreground ml-1">{formatDate(invoice.paid_at)}</span>
             )}
           </div>
 
