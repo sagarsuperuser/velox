@@ -154,7 +154,8 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 		firstRetryDelay = 24 * time.Hour // minimum 1 day before first retry
 	}
 
-	t := s.clock.Now().Add(firstRetryDelay)
+	now := s.clock.Now()
+	t := now.Add(firstRetryDelay)
 	nextActionAt := &t
 
 	run, err := s.store.CreateRun(ctx, tenantID, domain.InvoiceDunningRun{
@@ -165,6 +166,10 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 		Reason:       "payment_failed",
 		AttemptCount: 0,
 		NextActionAt: nextActionAt,
+		// CreatedAt on test-clock time so engine-triggered runs
+		// match their related invoice's issued_at when a clock-advance
+		// finalize-and-charge cycle creates the run.
+		CreatedAt: now,
 	})
 	if err != nil {
 		return domain.InvoiceDunningRun{}, fmt.Errorf("create dunning run: %w", err)

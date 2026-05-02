@@ -107,7 +107,14 @@ func (s *PostgresStore) CreateRun(ctx context.Context, tenantID string, run doma
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_drun")
-	now := time.Now().UTC()
+	// Honor caller-provided CreatedAt — dunning Service passes
+	// s.clock.Now() so test-clock-driven runs (started during a
+	// clock-advance billing cycle) have created_at on simulation
+	// time, matching the related invoice's issued_at.
+	now := run.CreatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO invoice_dunning_runs (id, tenant_id, invoice_id, customer_id, policy_id,
 			state, reason, attempt_count, next_action_at, created_at, updated_at)
