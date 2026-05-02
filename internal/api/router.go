@@ -350,6 +350,16 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	} else {
 		slog.Info("SMTP configured", "host", emailSender.SMTPHost())
 	}
+	// HOSTED_INVOICE_BASE_URL is the public origin the email "View & pay
+	// invoice" / "View receipt" CTAs link at (resolves to /invoice/<token>
+	// hosted page). When unset, the templates render NO link in the CTA —
+	// the customer receives an email that looks broken. Same loud-boot
+	// shape as the SMTP/PORTAL/PAYMENT_UPDATE warns so this can't quietly
+	// ship to production.
+	hostedInvoiceBaseURL := strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL"))
+	if hostedInvoiceBaseURL == "" {
+		slog.Warn("HOSTED_INVOICE_BASE_URL NOT SET — invoice / receipt / dunning / payment-failed emails will render with NO payment link in the CTA. Set this to your hosted-invoice page origin (e.g. https://billing.example.com).")
+	}
 	// bounceReporterAdapter wires Sender SMTP 5xx errors to
 	// customer.MarkEmailBounced. Requires an email blinder (configured
 	// later from VELOX_EMAIL_BIDX_KEY); if the blinder is missing, the

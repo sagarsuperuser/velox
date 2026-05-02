@@ -292,6 +292,7 @@ Single delivery path: when SMTP isn't configured every send returns
 
 Boot warnings on startup (one each when var unset; never fatal):
 - `SMTP NOT CONFIGURED`
+- `HOSTED_INVOICE_BASE_URL NOT SET` — invoice / receipt / dunning / payment-failed CTAs render with no link
 - `CUSTOMER_PORTAL_URL NOT SET`
 - `PAYMENT_UPDATE_URL NOT SET`
 
