@@ -386,7 +386,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		paymentUpdate      payment.EmailPaymentUpdate
 		magicLinkEmail     customerportal.MagicLinkEmailSender
 		passwordResetEmail interface {
-			SendPasswordReset(tenantID, to, displayName, resetURL string) error
+			SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
 		}
 	)
 	if emailOutboxEnabled {

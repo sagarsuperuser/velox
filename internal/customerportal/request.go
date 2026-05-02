@@ -128,7 +128,7 @@ func (s *MagicLinkRequestService) RequestByEmail(ctx context.Context, email stri
 // (enqueue into email_outbox). Defined here — not imported — so
 // customerportal stays independent of the email package.
 type MagicLinkEmailSender interface {
-	SendPortalMagicLink(tenantID, to, customerName, magicLinkURL string) error
+	SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error
 }
 
 // CustomerEmailResolver looks up a customer's email + display name for
@@ -187,7 +187,7 @@ func (d *EmailMagicLinkDelivery) DeliverMagicLink(ctx context.Context, tenantID,
 		return nil
 	}
 	url := buildMagicLinkURL(d.baseURL, rawToken)
-	return d.sender.SendPortalMagicLink(tenantID, email, name, url)
+	return d.sender.SendPortalMagicLink(ctx, tenantID, email, name, url)
 }
 
 // buildMagicLinkURL assembles the URL the email points at. The

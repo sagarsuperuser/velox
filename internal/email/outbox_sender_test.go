@@ -1,6 +1,7 @@
 package email
 
 import (
+	"context"
 	"testing"
 
 	"github.com/sagarsuperuser/velox/internal/dunning"
@@ -35,7 +36,7 @@ func TestOutboxSender_RequiresTenantID(t *testing.T) {
 	// access, so we never reach the store call.
 	s := NewOutboxSender(nil)
 
-	err := s.SendInvoice("", "to@x.com", "n", "inv", 1, "USD", nil, "")
+	err := s.SendInvoice(context.Background(), "", "to@x.com", "n", "inv", 1, "USD", nil, "")
 	if err == nil {
 		t.Error("SendInvoice with empty tenantID should error")
 	}

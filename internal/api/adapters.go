@@ -218,17 +218,17 @@ func (a *customerEmailFetcherAdapter) GetCustomerEmail(ctx context.Context, tena
 // outbox-backed sender so reset emails are durable.
 type passwordResetEmailAdapter struct {
 	sender interface {
-		SendPasswordReset(tenantID, to, displayName, resetURL string) error
+		SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
 	}
 }
 
-func (a *passwordResetEmailAdapter) SendPasswordReset(email, resetLink string) error {
+func (a *passwordResetEmailAdapter) SendPasswordReset(ctx context.Context, email, resetLink string) error {
 	// Empty tenantID + email-as-display-name. Body shows "Hi
 	// alice@example.com" rather than "Hi Alice" — acceptable trade
 	// for not having to plumb tenant lookup through the password-
 	// reset request flow. Multi-tenant customisation can ship later
 	// if a DP asks.
-	return a.sender.SendPasswordReset("", email, email, resetLink)
+	return a.sender.SendPasswordReset(ctx, "", email, email, resetLink)
 }
 
 // portalPaymentMethodUpdaterAdapter bridges Stripe Checkout (setup
@@ -358,7 +358,7 @@ func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Conte
 		return nil
 	}
 	updateURL := fmt.Sprintf("%s?invoice_id=%s&customer_id=%s", a.paymentUpdateURL, inv.ID, inv.CustomerID)
-	return a.email.SendPaymentUpdateRequest(tenantID, to, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL)
+	return a.email.SendPaymentUpdateRequest(ctx, tenantID, to, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL)
 }
 
 // prorationCreditGranterAdapter bridges credit.Service → subscription.ProrationCreditGranter.

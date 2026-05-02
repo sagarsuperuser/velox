@@ -45,8 +45,9 @@ type CustomerEmailFetcher interface {
 // EmailNotifier sends dunning-related emails. publicToken is the
 // hosted-invoice URL credential (T0-17) — pass empty when unavailable
 // (drafts, pre-addendum invoices); the sender gracefully omits the CTA.
+// ctx carries livemode for the underlying enqueue / brand lookup.
 type EmailNotifier interface {
-	SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
+	SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
 	// SendDunningWarning emails the customer about a failed retry.
 	// failureReason is the latest decline reason (from the retrier's
 	// error message) — surfaced inline so customers can act
@@ -54,8 +55,8 @@ type EmailNotifier interface {
 	// reason renders without the diagnostic block. The template
 	// branches on attemptNumber == maxAttempts for "Last attempt"
 	// urgency tone.
-	SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
-	SendDunningEscalation(tenantID, to, customerName, invoiceNumber, action, publicToken string) error
+	SendDunningWarning(ctx context.Context, tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
+	SendDunningEscalation(ctx context.Context, tenantID, to, customerName, invoiceNumber, action, publicToken string) error
 }
 
 type Service struct {
@@ -308,7 +309,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 				if run.NextActionAt != nil {
 					nextRetry = run.NextActionAt.Format("January 2, 2006")
 				}
-				if err := s.emailNotifier.SendDunningWarning(tenantID, email, name, invoiceNumber, run.AttemptCount, policy.MaxRetryAttempts, nextRetry, retryErr.Error(), publicToken); err != nil {
+				if err := s.emailNotifier.SendDunningWarning(ctx, tenantID, email, name, invoiceNumber, run.AttemptCount, policy.MaxRetryAttempts, nextRetry, retryErr.Error(), publicToken); err != nil {
 					slog.Error("failed to send dunning warning email",
 						"run_id", run.ID, "email", email, "error", err)
 				}
@@ -449,7 +450,7 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 					publicToken = inv.PublicToken
 				}
 			}
-			if err := s.emailNotifier.SendDunningEscalation(tenantID, email, name, invoiceNumber, string(policy.FinalAction), publicToken); err != nil {
+			if err := s.emailNotifier.SendDunningEscalation(ctx, tenantID, email, name, invoiceNumber, string(policy.FinalAction), publicToken); err != nil {
 				slog.Error("failed to send dunning escalation email",
 					"run_id", run.ID, "email", email, "error", err)
 			}

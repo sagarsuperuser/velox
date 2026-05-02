@@ -71,7 +71,7 @@ func NewOutboxSender(store *OutboxStore) *OutboxSender {
 	return &OutboxSender{store: store}
 }
 
-func (s *OutboxSender) enqueue(tenantID, emailType string, msg outboxMessage) error {
+func (s *OutboxSender) enqueue(ctx context.Context, tenantID, emailType string, msg outboxMessage) error {
 	if tenantID == "" {
 		return fmt.Errorf("email outbox sender: tenant_id required for %s", emailType)
 	}
@@ -98,13 +98,21 @@ func (s *OutboxSender) enqueue(tenantID, emailType string, msg outboxMessage) er
 	if len(msg.PDF) > 0 {
 		payload["pdf"] = msg.PDF
 	}
-	_, err := s.store.EnqueueStandalone(context.Background(), tenantID, emailType, payload)
+	// ctx must carry livemode (set by caller's auth middleware or, for
+	// system-initiated emails fired from background workers, derived
+	// from the originating row). EnqueueStandalone opens TxTenant; the
+	// email_outbox BEFORE INSERT trigger reads app.livemode from the
+	// session and stamps it on the row, so emails enqueued in test mode
+	// land on test-mode rows and the dispatcher routes them correctly.
+	// Pre-fix this used context.Background() and every email_outbox row
+	// got stamped livemode=true regardless of the actual mode.
+	_, err := s.store.EnqueueStandalone(ctx, tenantID, emailType, payload)
 	return err
 }
 
 // SendInvoice enqueues an invoice email. Satisfies invoice.EmailSender.
-func (s *OutboxSender) SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error {
-	return s.enqueue(tenantID, TypeInvoice, outboxMessage{
+func (s *OutboxSender) SendInvoice(ctx context.Context, tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error {
+	return s.enqueue(ctx, tenantID, TypeInvoice, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
@@ -116,8 +124,8 @@ func (s *OutboxSender) SendInvoice(tenantID, to, customerName, invoiceNumber str
 }
 
 // SendPaymentReceipt enqueues a receipt email. Satisfies payment.EmailReceipt.
-func (s *OutboxSender) SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error {
-	return s.enqueue(tenantID, TypePaymentReceipt, outboxMessage{
+func (s *OutboxSender) SendPaymentReceipt(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error {
+	return s.enqueue(ctx, tenantID, TypePaymentReceipt, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
@@ -128,8 +136,8 @@ func (s *OutboxSender) SendPaymentReceipt(tenantID, to, customerName, invoiceNum
 }
 
 // SendDunningWarning enqueues a dunning-warning email. Satisfies dunning.EmailNotifier.
-func (s *OutboxSender) SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
-	return s.enqueue(tenantID, TypeDunningWarning, outboxMessage{
+func (s *OutboxSender) SendDunningWarning(ctx context.Context, tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
+	return s.enqueue(ctx, tenantID, TypeDunningWarning, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
@@ -142,8 +150,8 @@ func (s *OutboxSender) SendDunningWarning(tenantID, to, customerName, invoiceNum
 }
 
 // SendDunningEscalation enqueues a dunning-escalation email. Satisfies dunning.EmailNotifier.
-func (s *OutboxSender) SendDunningEscalation(tenantID, to, customerName, invoiceNumber, action, publicToken string) error {
-	return s.enqueue(tenantID, TypeDunningEscalation, outboxMessage{
+func (s *OutboxSender) SendDunningEscalation(ctx context.Context, tenantID, to, customerName, invoiceNumber, action, publicToken string) error {
+	return s.enqueue(ctx, tenantID, TypeDunningEscalation, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
@@ -153,8 +161,8 @@ func (s *OutboxSender) SendDunningEscalation(tenantID, to, customerName, invoice
 }
 
 // SendPaymentFailed enqueues a payment-failed email. Satisfies dunning.EmailNotifier.
-func (s *OutboxSender) SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason, publicToken string) error {
-	return s.enqueue(tenantID, TypePaymentFailed, outboxMessage{
+func (s *OutboxSender) SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error {
+	return s.enqueue(ctx, tenantID, TypePaymentFailed, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
@@ -165,8 +173,8 @@ func (s *OutboxSender) SendPaymentFailed(tenantID, to, customerName, invoiceNumb
 
 // SendPaymentUpdateRequest enqueues a payment-update-request email. Satisfies
 // payment.EmailPaymentUpdate.
-func (s *OutboxSender) SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
-	return s.enqueue(tenantID, TypePaymentUpdateRequest, outboxMessage{
+func (s *OutboxSender) SendPaymentUpdateRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
+	return s.enqueue(ctx, tenantID, TypePaymentUpdateRequest, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
@@ -180,8 +188,8 @@ func (s *OutboxSender) SendPaymentUpdateRequest(tenantID, to, customerName, invo
 // customerportal.MagicLinkEmailSender (narrow interface at the wiring
 // layer). The URL carries the one-time-use raw token that lands the
 // customer at the frontend /login page for consumption.
-func (s *OutboxSender) SendPortalMagicLink(tenantID, to, customerName, magicLinkURL string) error {
-	return s.enqueue(tenantID, TypePortalMagicLink, outboxMessage{
+func (s *OutboxSender) SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error {
+	return s.enqueue(ctx, tenantID, TypePortalMagicLink, outboxMessage{
 		To:           to,
 		CustomerName: customerName,
 		MagicLinkURL: magicLinkURL,
@@ -191,8 +199,8 @@ func (s *OutboxSender) SendPortalMagicLink(tenantID, to, customerName, magicLink
 // SendPasswordReset enqueues a password-reset email. The URL carries the
 // one-time-use raw reset token that lands the dashboard user on the
 // frontend password-reset confirmation page.
-func (s *OutboxSender) SendPasswordReset(tenantID, to, displayName, resetURL string) error {
-	return s.enqueue(tenantID, TypePasswordReset, outboxMessage{
+func (s *OutboxSender) SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error {
+	return s.enqueue(ctx, tenantID, TypePasswordReset, outboxMessage{
 		To:               to,
 		CustomerName:     displayName,
 		PasswordResetURL: resetURL,
@@ -202,8 +210,8 @@ func (s *OutboxSender) SendPasswordReset(tenantID, to, displayName, resetURL str
 // SendMemberInvite enqueues a team-invite email. The URL carries the
 // raw invite token. Unlike the other flows this is tenant-initiated
 // (inviter sits inside tenantID) rather than system-initiated.
-func (s *OutboxSender) SendMemberInvite(tenantID, to, inviterEmail, tenantName, acceptURL string) error {
-	return s.enqueue(tenantID, TypeMemberInvite, outboxMessage{
+func (s *OutboxSender) SendMemberInvite(ctx context.Context, tenantID, to, inviterEmail, tenantName, acceptURL string) error {
+	return s.enqueue(ctx, tenantID, TypeMemberInvite, outboxMessage{
 		To:           to,
 		InviterEmail: inviterEmail,
 		TenantName:   tenantName,
