@@ -2,6 +2,7 @@ package customerportal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -122,34 +123,6 @@ func (s *MagicLinkRequestService) RequestByEmail(ctx context.Context, email stri
 	return nil
 }
 
-// LogMagicLinkDelivery is a stub delivery that writes the token prefix to
-// slog. Used in early wiring and tests before the email outbox is wired
-// in. It never logs the full raw token — even at debug level that would
-// land in log aggregators with a 15-minute window of reusability.
-type LogMagicLinkDelivery struct {
-	logger *slog.Logger
-}
-
-func NewLogMagicLinkDelivery(logger *slog.Logger) *LogMagicLinkDelivery {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &LogMagicLinkDelivery{logger: logger}
-}
-
-func (d *LogMagicLinkDelivery) DeliverMagicLink(_ context.Context, tenantID, customerID, rawToken string) error {
-	prefix := rawToken
-	if len(prefix) > 12 {
-		prefix = prefix[:12] + "…"
-	}
-	d.logger.Info("magic-link delivery (stub)",
-		"tenant_id", tenantID,
-		"customer_id", customerID,
-		"token_prefix", prefix,
-	)
-	return nil
-}
-
 // MagicLinkEmailSender is the narrow email surface the delivery needs.
 // Satisfied by both *email.Sender (direct SMTP) and *email.OutboxSender
 // (enqueue into email_outbox). Defined here — not imported — so
@@ -189,12 +162,21 @@ func NewEmailMagicLinkDelivery(sender MagicLinkEmailSender, resolver CustomerEma
 	}
 }
 
+// ErrPortalURLNotConfigured is returned when CUSTOMER_PORTAL_URL is
+// empty. The magic-link email is useless without a clickable URL, so
+// rather than emitting a tokens-only message that confuses customers
+// we surface a real error and let the request log capture it.
+var ErrPortalURLNotConfigured = errors.New("customerportal: CUSTOMER_PORTAL_URL not set")
+
 // DeliverMagicLink resolves the customer's email, builds the magic-link
 // URL, and enqueues the email. A missing email is logged and skipped —
 // it's legitimate (not every customer has an email on file) and the
 // caller must NOT surface it as a failure, or the shape of the /magic-
 // link endpoint's response could leak "is there an email on file?".
 func (d *EmailMagicLinkDelivery) DeliverMagicLink(ctx context.Context, tenantID, customerID, rawToken string) error {
+	if d.baseURL == "" {
+		return ErrPortalURLNotConfigured
+	}
 	email, name, err := d.resolver.GetCustomerEmail(ctx, tenantID, customerID)
 	if err != nil {
 		return fmt.Errorf("resolve customer email: %w", err)
@@ -209,21 +191,12 @@ func (d *EmailMagicLinkDelivery) DeliverMagicLink(ctx context.Context, tenantID,
 }
 
 // buildMagicLinkURL assembles the URL the email points at. The
-// frontend route is /portal/magic — it reads ?token=... from the
-// URL, POSTs to /v1/public/customer-portal/magic/consume, stores the
-// returned session token in localStorage, then redirects into
-// /portal (the customer dashboard).
-//
-// The /portal namespace is operator-safe (operator auth lives at
-// /login on the same SPA) and short enough to read in support
-// channels.
+// frontend route is /portal/magic — it reads ?token=... from the URL,
+// POSTs to /v1/public/customer-portal/magic/consume, stores the
+// returned session token in localStorage, then redirects into /portal
+// (the customer dashboard). Caller MUST validate base != "" before
+// calling.
 func buildMagicLinkURL(base, rawToken string) string {
-	if base == "" {
-		// No portal URL configured — return just the token so the email
-		// still has something useful. Ops has to fix CUSTOMER_PORTAL_URL
-		// for this to be a clickable link.
-		return rawToken
-	}
 	base = strings.TrimRight(base, "/")
 	return base + "/portal/magic?token=" + rawToken
 }

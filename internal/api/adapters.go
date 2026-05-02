@@ -348,10 +348,13 @@ type noPaymentMethodNotifierAdapter struct {
 }
 
 func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error {
+	if a.paymentUpdateURL == "" {
+		return errors.New("PAYMENT_UPDATE_URL not configured")
+	}
 	to, name, err := a.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
 	if err != nil || to == "" {
-		// Skip without erroring — missing email isn't a billing
-		// failure, just a delivery gap. Engine logs the warning.
+		// Missing email is a delivery gap, not a billing failure.
+		// Engine logs the warning and continues.
 		return nil
 	}
 	updateURL := fmt.Sprintf("%s?invoice_id=%s&customer_id=%s", a.paymentUpdateURL, inv.ID, inv.CustomerID)

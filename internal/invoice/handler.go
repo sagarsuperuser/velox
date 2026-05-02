@@ -389,7 +389,7 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 	//
 	// context.WithoutCancel detaches from the request context so the email
 	// job survives the HTTP handler returning.
-	if h.emailSender != nil && h.customers != nil {
+	{
 		emailCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 60*time.Second)
 		go func() {
 			defer cancel()
@@ -579,11 +579,6 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		return
-	}
-
-	if h.emailSender == nil {
-		respond.Validation(w, r, "email sender not configured")
 		return
 	}
 
