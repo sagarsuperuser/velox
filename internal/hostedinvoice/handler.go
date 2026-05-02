@@ -48,13 +48,17 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/invoice"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
-// InvoiceResolver covers the invoice reads the hosted page needs. The
-// GetByPublicToken call is intentionally un-scoped: it's the token lookup
-// itself, used to discover which tenant owns the invoice.
+// InvoiceResolver covers the invoice reads the hosted page needs.
+// GetByPublicToken returns the invoice + its livemode (the second
+// return), looked up under TxBypass since the public route is
+// unauthenticated and has no tenant context yet. The livemode is what
+// resolveInvoice pins on the request context so every downstream
+// RLS-scoped read (line items, customer, settings) hits the right rows.
 type InvoiceResolver interface {
-	GetByPublicToken(ctx context.Context, token string) (domain.Invoice, error)
+	GetByPublicToken(ctx context.Context, token string) (domain.Invoice, bool, error)
 	GetWithLineItems(ctx context.Context, tenantID, id string) (domain.Invoice, []domain.InvoiceLineItem, error)
 }
 
@@ -216,7 +220,7 @@ func (h *Handler) resolveInvoice(w http.ResponseWriter, r *http.Request) (domain
 		respond.NotFound(w, r, "invoice")
 		return domain.Invoice{}, false
 	}
-	inv, err := h.invoices.GetByPublicToken(r.Context(), token)
+	inv, livemode, err := h.invoices.GetByPublicToken(r.Context(), token)
 	if errors.Is(err, errs.ErrNotFound) {
 		respond.NotFound(w, r, "invoice")
 		return domain.Invoice{}, false
@@ -234,6 +238,15 @@ func (h *Handler) resolveInvoice(w http.ResponseWriter, r *http.Request) (domain
 		respond.NotFound(w, r, "invoice")
 		return domain.Invoice{}, false
 	}
+	// Pin the request context to the invoice's livemode so every
+	// subsequent TxTenant read (line items, customer, settings, credit
+	// notes) opens with the correct mode and RLS picks up the right
+	// rows. Without this the public route defaulted to live and a
+	// test-mode invoice's line items query 404'd at the data layer —
+	// 500 to the customer who clicked the email CTA. GetByPublicToken
+	// itself is mode-agnostic (TxBypass per the package doc); the pin
+	// has to happen here, after we know the row's livemode.
+	*r = *r.WithContext(postgres.WithLivemode(r.Context(), livemode))
 	return inv, true
 }
 

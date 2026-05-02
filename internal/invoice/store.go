@@ -69,13 +69,18 @@ type Store interface {
 	// errs.ErrNotFound if the invoice is missing or still draft.
 	SetPublicToken(ctx context.Context, tenantID, invoiceID, token string) error
 
-	// GetByPublicToken resolves the hosted-invoice-URL token to its invoice.
-	// Runs under TxBypass because the caller is unauthenticated: the public
-	// route receives a raw token from the URL and must resolve it to a
-	// tenant BEFORE any tenant context can be set. The token itself is the
-	// credential (256 bits of entropy, UNIQUE indexed) so cross-tenant
-	// probing isn't feasible. Returns errs.ErrNotFound on miss.
-	GetByPublicToken(ctx context.Context, token string) (domain.Invoice, error)
+	// GetByPublicToken resolves the hosted-invoice-URL token to its invoice
+	// AND its livemode (the second return value). Runs under TxBypass because
+	// the caller is unauthenticated: the public route receives a raw token
+	// from the URL and must resolve it to a tenant + mode BEFORE any tenant
+	// context can be set. The livemode return is what callers need to pin
+	// `postgres.WithLivemode(ctx, …)` on the request context for every
+	// downstream RLS-scoped read; without it, the public route defaults to
+	// live and a test-mode invoice's line items / customer / settings reads
+	// silently 404. The token itself is the credential (256 bits of entropy,
+	// UNIQUE indexed) so cross-tenant probing isn't feasible. Returns
+	// errs.ErrNotFound on miss.
+	GetByPublicToken(ctx context.Context, token string) (domain.Invoice, bool, error)
 
 	// GetByStripeInvoiceID resolves a Stripe invoice id (in_xxx) to its
 	// imported Velox invoice row. Backs the velox-import CLI's idempotency
