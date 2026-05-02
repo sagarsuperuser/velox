@@ -31,6 +31,7 @@ import { Download, Activity, Hash, Gauge, Users } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 import { useUrlState } from '@/hooks/useUrlState'
+import { useAuth } from '@/contexts/AuthContext'
 
 const PAGE_SIZE = 25
 
@@ -45,6 +46,11 @@ export default function UsageEventsPage() {
   })
   const { customer: filterCustomer, meter: filterMeter, from: filterFrom, to: filterTo, dim: filterDim } = urlState
   const page = Math.max(1, parseInt(urlState.page) || 1)
+  // livemode is captured so toggling Test↔Live retriggers the fetch; the
+  // cookie carries the mode server-side, so the value isn't read inside
+  // the request — it's only here to invalidate the loader.
+  const { user } = useAuth()
+  const livemode = user?.livemode
   const [events, setEvents] = useState<UsageEvent[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -106,7 +112,7 @@ export default function UsageEventsPage() {
     api.listUsageEvents(params)
       .then(res => { setEvents(res.data || []); setTotal(res.total || 0); setLoading(false) })
       .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load usage events'); setEvents([]); setTotal(0); setLoading(false) })
-  }, [page, filterQs])
+  }, [page, filterQs, livemode])
 
   useEffect(() => { loadEvents() }, [loadEvents])
 
