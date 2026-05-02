@@ -10,6 +10,7 @@ import { applyApiError, showApiError } from '@/lib/formErrors'
 import { useAuth } from '@/contexts/AuthContext'
 import { Layout } from '@/components/Layout'
 import { CostDashboard } from '@/components/CostDashboard'
+import { TestClockBadge } from '@/components/TestClockBadge'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
@@ -713,7 +714,12 @@ export default function CustomerDetailPage() {
               {allSubs?.map(sub => (
                 <Link key={sub.id} to={`/subscriptions/${sub.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-accent/50 transition-colors">
                   <div>
-                    <p className="text-sm font-medium text-foreground">{sub.display_name}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-medium text-foreground">{sub.display_name}</p>
+                      {sub.test_clock_id && (
+                        <TestClockBadge testClockId={sub.test_clock_id} />
+                      )}
+                    </div>
                     <p className="text-xs text-muted-foreground">{sub.code}</p>
                   </div>
                   <Badge variant={statusVariant(sub.status)}>{sub.status}</Badge>
@@ -733,18 +739,29 @@ export default function CustomerDetailPage() {
           </CardHeader>
           <CardContent className="p-0">
             <div className="divide-y divide-border">
-              {overview?.recent_invoices.map(inv => (
-                <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-accent/50 transition-colors">
-                  <div>
-                    <p className="text-sm font-medium text-foreground">{inv.invoice_number}</p>
-                    <p className="text-xs text-muted-foreground">{formatDate(inv.created_at)}</p>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <Badge variant={statusVariant(inv.status)}>{inv.status}</Badge>
-                    <span className="text-sm font-medium">{formatCents(inv.total_amount_cents)}</span>
-                  </div>
-                </Link>
-              ))}
+              {overview?.recent_invoices.map(inv => {
+                // Look up the invoice's subscription to surface a
+                // test-clock chip when applicable; allSubs is the
+                // already-fetched per-customer subscription set.
+                const subClock = inv.subscription_id
+                  ? allSubs?.find(s => s.id === inv.subscription_id)?.test_clock_id
+                  : undefined
+                return (
+                  <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-accent/50 transition-colors">
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm font-medium text-foreground">{inv.invoice_number}</p>
+                        {subClock && <TestClockBadge testClockId={subClock} />}
+                      </div>
+                      <p className="text-xs text-muted-foreground">{formatDate(inv.created_at)}</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Badge variant={statusVariant(inv.status)}>{inv.status}</Badge>
+                      <span className="text-sm font-medium">{formatCents(inv.total_amount_cents)}</span>
+                    </div>
+                  </Link>
+                )
+              })}
               {(!overview?.recent_invoices.length) && (
                 <p className="px-6 py-4 text-sm text-muted-foreground">No invoices</p>
               )}

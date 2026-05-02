@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice } from '@/lib/api'
 import { InvoiceAttention } from '@/components/InvoiceAttention'
+import { TestClockBanner } from '@/components/TestClockBanner'
 import { useGetInvoice } from '@/lib/gen/queries.gen'
 import type { Invoice } from '@/lib/gen/schemas/invoice'
 import type { InvoiceLineItem as LineItem } from '@/lib/gen/schemas/invoiceLineItem'
@@ -483,6 +484,13 @@ export default function InvoiceDetailPage() {
         </div>
       </div>
 
+      {/* Test-clock banner — sets expectation upfront when this
+          invoice's subscription is pinned to a clock. Some dates in
+          the activity feed (finalize, dunning) reflect simulated time. */}
+      {subscription?.test_clock_id && (
+        <TestClockBanner testClockId={subscription.test_clock_id} />
+      )}
+
       {/* Unified attention banner — typed reason + prescribed actions
           for tax/payment/overdue. Computed server-side; renders only
           when invoice.attention is set (healthy + terminal-state
@@ -948,7 +956,19 @@ export default function InvoiceDetailPage() {
           </CardHeader>
           <CardContent>
             <div className="relative">
-              {timeline.map((event, i) => (
+              {timeline.map((event, i) => {
+                // Simulated chip: when this invoice's subscription is
+                // pinned to a test clock and the event's timestamp is
+                // in the future relative to wall-clock, the event was
+                // produced by a clock-advanced engine run (finalize,
+                // dunning attempt scheduling, etc.). Webhook arrivals
+                // and operator actions stay on real time, so they
+                // never trip the future-vs-now check. The chip
+                // anchors the operator's expectation that this
+                // timestamp is simulated.
+                const isSimulated = !!subscription?.test_clock_id &&
+                  new Date(event.timestamp).getTime() > Date.now()
+                return (
                 <div key={i} className="flex gap-4 pb-4 last:pb-0">
                   <div className="flex flex-col items-center">
                     <div className={cn(
@@ -963,7 +983,17 @@ export default function InvoiceDetailPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <p className="text-sm text-foreground">{event.description}</p>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <p className="text-sm text-foreground">{event.description}</p>
+                        {isSimulated && (
+                          <span
+                            title="Timestamp came from a test-clock-advanced engine run, not wall-clock"
+                            className="inline-flex shrink-0 items-center rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-800 dark:text-amber-300"
+                          >
+                            simulated
+                          </span>
+                        )}
+                      </div>
                       <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.timestamp)}</span>
                     </div>
                     {event.error && event.status === 'failed' && (
@@ -974,7 +1004,8 @@ export default function InvoiceDetailPage() {
                     )}
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           </CardContent>
         </Card>

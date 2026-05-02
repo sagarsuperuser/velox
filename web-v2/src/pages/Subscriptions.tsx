@@ -15,6 +15,7 @@ import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
+import { TestClockBadge } from '@/components/TestClockBadge'
 
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -358,13 +359,18 @@ export default function SubscriptionsPage() {
                       }}
                     >
                       <TableCell>
-                        <Link
-                          to={`/subscriptions/${sub.id}`}
-                          className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[180px]"
-                          title={sub.display_name}
-                        >
-                          {sub.display_name}
-                        </Link>
+                        <div className="flex items-center gap-1.5">
+                          <Link
+                            to={`/subscriptions/${sub.id}`}
+                            className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[180px]"
+                            title={sub.display_name}
+                          >
+                            {sub.display_name}
+                          </Link>
+                          {sub.test_clock_id && (
+                            <TestClockBadge testClockId={sub.test_clock_id} />
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="text-sm">
                         <div className="flex items-center gap-2.5">
