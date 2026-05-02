@@ -234,7 +234,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 - Helm chart + Terraform AWS module + multi-replica HA
 - Stripe Billing migration tool (`velox-import`)
 - SOC 2 / GDPR-deletion / audit-log retention / encryption-at-rest enterprise-readiness docs
-- Member invitations + dashboard email+password auth (revisit alongside SSO direction)
+- Member invitations + RBAC (single-user v1; SSO direction predetermined per ADR-014 — embedded OIDC/SAML libs in-process when a DP asks, never a SaaS auth vendor)
 - Operator polish: bulk actions, billing-alerts UI, plan-migration cohort UI, live event stream, embedded dashboard docs site
 
 These are paused — not killed. They land when a real customer names the specific shape they need; pre-launch, pre-evidence builds optimise the wrong version of each.
