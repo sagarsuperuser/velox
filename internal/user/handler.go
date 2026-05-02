@@ -23,20 +23,21 @@ type Handler struct {
 	users    *Service
 	sessions *session.Service
 	cookie   session.CookieConfig
-	email    EmailSender // optional; nil = print reset link to logs (dev only)
+	email    EmailSender // optional; nil = no email send attempted (tests)
 }
 
 // EmailSender is the narrow surface this handler uses to dispatch
-// password-reset emails. Satisfied by internal/email's Service in
-// production; the bootstrap CLI implementation prints to stdout
-// instead.
+// password-reset emails. Satisfied in production by an adapter over
+// internal/email's Sender / OutboxSender. SMTP misconfiguration
+// surfaces as a SendPasswordReset error logged here; the response to
+// the user stays generic to prevent enumeration.
 type EmailSender interface {
 	SendPasswordReset(email, resetLink string) error
 }
 
-// NewHandler wires the dependencies. emailSender may be nil (e.g.
-// when SMTP isn't configured); in that case password-reset emails
-// fail silently and operators must use `make reset-password` CLI.
+// NewHandler wires the dependencies. emailSender may be nil only in
+// tests — production must wire a real sender or password-reset
+// requests are accepted but never dispatched.
 func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender) *Handler {
 	return &Handler{
 		users:    users,
@@ -213,19 +214,15 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if plaintext != "" && h.email != nil {
-		// Best-effort send. Failure is logged but doesn't affect the
-		// response — the operator gets the same "if your email is on
-		// file, you'll get a link" message regardless.
+		// Send is best-effort: failure is logged but never surfaces to
+		// the response, since the response shape is fixed at "if your
+		// email is on file, you'll get a link" to avoid email
+		// enumeration. SMTP misconfiguration shows up as a logged
+		// SendPasswordReset error, not as a stdout-leaked link.
 		resetLink := buildResetLink(r, plaintext)
 		if sendErr := h.email.SendPasswordReset(req.Email, resetLink); sendErr != nil {
 			slog.Error("password reset email send failed", "err", sendErr)
 		}
-	} else if plaintext != "" {
-		// Dev / no-SMTP fallback: log the link so the operator can
-		// retrieve it from server logs. Production deployments should
-		// always have an EmailSender wired.
-		slog.Info("password reset link issued (no email sender configured)",
-			"email", req.Email, "reset_link", buildResetLink(r, plaintext))
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{

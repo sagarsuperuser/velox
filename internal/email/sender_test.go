@@ -1,6 +1,7 @@
 package email
 
 import (
+	"errors"
 	"html/template"
 	"strings"
 	"testing"
@@ -12,12 +13,13 @@ func TestSender_NotConfigured(t *testing.T) {
 		t.Error("should not be configured without host")
 	}
 
-	// Should not error — just logs. publicToken intentionally empty here
-	// because we're only exercising the "SMTP unconfigured → log + return"
-	// short-circuit; the template render is covered separately.
+	// Contract: every send path must surface ErrSMTPNotConfigured when
+	// SMTP_HOST is unset. Silent stdout fallback was removed so
+	// misconfiguration is an operator-visible failure, not invisible
+	// drops.
 	err := s.SendInvoice("t1", "test@example.com", "Test Customer", "VLX-000001", 19900, "USD", []byte("%PDF"), "")
-	if err != nil {
-		t.Errorf("unconfigured sender should not error: %v", err)
+	if !errors.Is(err, ErrSMTPNotConfigured) {
+		t.Errorf("unconfigured sender should return ErrSMTPNotConfigured, got: %v", err)
 	}
 }
 
