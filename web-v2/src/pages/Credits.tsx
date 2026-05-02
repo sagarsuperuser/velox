@@ -13,6 +13,7 @@ import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
+import { useAuth } from '@/contexts/AuthContext'
 import { cn } from '@/lib/utils'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 import { DatePicker } from '@/components/ui/date-picker'
@@ -112,6 +113,11 @@ function entryTypeVariant(type: string): 'default' | 'secondary' | 'destructive'
 }
 
 export default function CreditsPage() {
+  // livemode dep on the loaders refetches when operator toggles
+  // Test↔Live; cookie carries the mode, so the value isn't read in the
+  // request itself.
+  const { user } = useAuth()
+  const livemode = user?.livemode
   const [customers, setCustomers] = useState<Customer[]>([])
   const [balances, setBalances] = useState<CreditBalance[]>([])
   const [loading, setLoading] = useState(true)
@@ -166,7 +172,7 @@ export default function CreditsPage() {
       loadLedger(urlState.customer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [livemode])
 
   const loadLedger = (customerId: string) => {
     setLedgerLoading(true)

@@ -1,5 +1,4 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
 import { authApi, type SessionInfo } from '@/lib/auth'
 import { ApiError } from '@/lib/api'
 
@@ -46,7 +45,6 @@ function toUserContext(s: SessionInfo): UserContext | null {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserContext | null>(null)
   const [loading, setLoading] = useState(true)
-  const queryClient = useQueryClient()
 
   const refresh = useCallback(async () => {
     try {
@@ -75,10 +73,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email: res.email,
       livemode: res.livemode,
     })
-    // Fresh session, fresh data — stale cache from any prior session
-    // must not leak across login boundaries.
-    queryClient.clear()
-  }, [queryClient])
+    // Cache-clear is automatic: ModeAwareQueryProvider keys its
+    // QueryClient instances on user identity, so any prior-session
+    // cache is gc'd as soon as setUser fires.
+  }, [])
 
   const logout = useCallback(async () => {
     try {
@@ -86,20 +84,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       // Cookie may already be expired server-side; treat as a local
       // clear and keep going.
-      console.warn('logout request failed, clearing client state anyway:', err)
+      console.warn('logout request failed:', err)
     }
     setUser(null)
-    queryClient.clear()
-  }, [queryClient])
+  }, [])
 
   const setMode = useCallback(async (livemode: boolean) => {
     await authApi.setMode(livemode)
     setUser(prev => (prev ? { ...prev, livemode } : prev))
-    // Mode-scoped data (customers, invoices, keys) must repopulate;
-    // stale rows from the prior mode would otherwise render until the
-    // next refetch.
-    queryClient.clear()
-  }, [queryClient])
+    // Mode flip swaps the active QueryClient inside
+    // ModeAwareQueryProvider, so every useQuery / useMutation
+    // re-binds to the new mode's cache automatically. No explicit
+    // clear, no nav. Going back the other way reuses the prior
+    // cache instead of refetching.
+  }, [])
 
   return (
     <AuthContext.Provider value={{ user, loading, login, logout, refresh, setMode }}>

@@ -2,10 +2,10 @@ import { StrictMode, lazy, Suspense, Component } from 'react'
 import type { ReactNode, ErrorInfo } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
+import { ModeAwareQueryProvider } from '@/contexts/QueryProvider'
 import { TenantTimezoneBootstrap } from '@/lib/TenantTimezoneBootstrap'
 import '@fontsource-variable/geist/index.css'
 import '@fontsource-variable/geist-mono/index.css'
@@ -49,17 +49,6 @@ class ErrorBoundary extends Component<
     return this.props.children
   }
 }
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5_000,
-      retry: 1,
-      refetchOnWindowFocus: true,
-      refetchOnMount: true,
-    },
-  },
-})
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth()
@@ -135,8 +124,8 @@ const RecipesPage = lazy(() => import('@/pages/Recipes'))
 
 const App = () => (
   <ErrorBoundary>
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
+    <AuthProvider>
+      <ModeAwareQueryProvider>
       <TenantTimezoneBootstrap />
       <TooltipProvider>
         <BrowserRouter>
@@ -191,8 +180,8 @@ const App = () => (
         </BrowserRouter>
         <Toaster position="bottom-right" richColors closeButton />
       </TooltipProvider>
-      </AuthProvider>
-    </QueryClientProvider>
+      </ModeAwareQueryProvider>
+    </AuthProvider>
   </ErrorBoundary>
 )
 

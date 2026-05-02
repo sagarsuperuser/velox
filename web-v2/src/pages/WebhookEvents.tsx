@@ -12,6 +12,7 @@ import {
 } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
+import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -46,8 +47,18 @@ export default function WebhookEventsPage() {
   const [status, setStatus] = useState<StreamStatus>('connecting')
   const [expanded, setExpanded] = useState<string | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
+  // SSE stream is cookie-authed and the cookie carries the operator's
+  // current livemode. When the operator toggles modes the previously-
+  // opened EventSource keeps draining test-mode frames into a live-mode
+  // page (or vice versa). Tear down + reopen on every mode change so
+  // the stream is always scoped to the active mode. Also drop the
+  // accumulated frame buffer — the prior mode's events don't belong on
+  // the new mode's page.
+  const { user } = useAuth()
+  const livemode = user?.livemode
 
   useEffect(() => {
+    setFrames([])
     // EventSource opens with credentials: 'include' on same-origin reqs
     // by default in the browsers we support. We're cookie-authed so this
     // is the only thing we need to do — no Authorization header.
@@ -93,7 +104,7 @@ export default function WebhookEventsPage() {
       es.close()
       eventSourceRef.current = null
     }
-  }, [])
+  }, [livemode])
 
   // Sort by created_at desc as a stability guard — the buffer is mostly
   // ordered by arrival but a snapshot frame interleaved with a live one

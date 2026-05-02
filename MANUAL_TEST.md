@@ -163,12 +163,15 @@ Single tenant-wide timezone used for date input and timestamp display
 ## FLOW A3: Test/Live mode toggle
 
 - [ ] Top-right pill: amber "Test mode" default. Click → emerald "Live mode"; toast "Switched to live mode".
-- [ ] **Toggle navigates to `/`** (dashboard). URL bar shows `/` regardless of where you were. Detail-page entity IDs (mode-scoped) and component-local state in non-RQ pages can't strand the UI on stale data.
-- [ ] Customers / Invoices / Subscriptions / API Keys / Audit Log / Usage Events / Credits / Dunning all show new-mode rows after navigating into them post-toggle.
-- [ ] On a detail page (e.g. `/customers/cus_test_…`), toggle → land on `/` (entity in URL doesn't exist in new mode).
+- [ ] **Stays on the same page** (no nav). On `/customers`, `/invoices`, `/audit-log`, `/usage`, `/credits`, `/dunning`, `/webhooks/events` — the page rerenders with the new mode's rows in place.
+- [ ] **Back-and-forth is fast**: toggle Test→Live, scroll the list; toggle Live→Test → prior cache renders instantly (no spinner) before any background refetch.
+- [ ] Mode-scoped pages reflect the new mode after toggle (no stale rows): Customers, Invoices, Subscriptions, API Keys, Audit Log, Usage Events, Credits, Dunning, Webhooks event stream.
+- [ ] On a detail page (e.g. `/customers/cus_test_…`), toggle → page refetches and surfaces a 404 / "Not found" cleanly (entity doesn't exist in the other mode).
+- [ ] WebhookEvents `/webhooks/events` SSE stream tears down + reopens on toggle — the frame buffer empties and fills with new-mode events; status pill goes connecting → live.
 - [ ] `/v1/whoami` reflects new `livemode` immediately.
 - [ ] `POST /v1/auth/mode` without cookie → 401.
 - [ ] Live mode + missing live Stripe creds → red banner with "Connect Stripe" link.
+- [ ] Logout while in either mode → both per-mode caches gc'd; signing back in starts fresh.
 
 ---
 
