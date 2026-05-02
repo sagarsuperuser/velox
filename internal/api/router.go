@@ -341,11 +341,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	emailSender.SetSettingsGetter(settingsStore)
 	// Loud startup log so operators don't run prod without SMTP and
 	// only discover it when a customer never receives their invoice.
-	// Per-email "not sent — SMTP not configured" logs still fire
-	// downstream, but those are easy to miss inside per-request log
-	// volume; this sits at the top of the boot sequence.
+	// Sender returns ErrSMTPNotConfigured per send when unconfigured —
+	// every customer-facing email producer surfaces that error in its
+	// own request handler / job log. This boot-time line sits above
+	// the per-request volume so the misconfiguration is unmissable.
 	if !emailSender.IsConfigured() {
-		slog.Warn("SMTP NOT CONFIGURED — all customer-facing emails (invoices, dunning, password-reset, magic-link) will be logged to stdout instead of delivered. Set SMTP_HOST + credentials in production. See docs/ops/email-setup.md.")
+		slog.Warn("SMTP NOT CONFIGURED — every customer-facing email (invoices, dunning, password-reset, magic-link) will fail with ErrSMTPNotConfigured. Set SMTP_HOST + credentials. See docs/ops/email-setup.md.")
 	} else {
 		slog.Info("SMTP configured", "host", emailSender.SMTPHost())
 	}

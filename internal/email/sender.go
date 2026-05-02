@@ -17,8 +17,17 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
-// Sender sends emails via SMTP. If SMTP is not configured, it logs the
-// email instead of sending (graceful degradation for local dev).
+// ErrSMTPNotConfigured is returned by every send path when SMTP_HOST
+// (and creds) are not set. We surface a real error rather than silently
+// pretending success — operator-visible failures beat invisible drops.
+// Local dev is expected to run MailHog or similar; the path "no SMTP
+// at all" is treated as a misconfiguration, not a graceful mode.
+var ErrSMTPNotConfigured = errors.New("email: SMTP not configured (SMTP_HOST unset)")
+
+// Sender sends emails via SMTP. If SMTP is not configured, every send
+// returns ErrSMTPNotConfigured — callers must treat that as a real
+// failure, not a silent drop. Local dev should run MailHog or set
+// SMTP_HOST to a real relay.
 //
 // Customer-facing emails render as multipart/alternative (text + HTML)
 // with tenant-branded chrome pulled via SettingsGetter. Operator emails
@@ -78,9 +87,10 @@ type BounceReporter interface {
 	ReportBounce(ctx context.Context, tenantID, email, reason string)
 }
 
-// NewSender creates an email sender from environment variables. Returns
-// a sender that logs instead of sending when SMTP is not configured, so
-// `make dev` works without SMTP credentials.
+// NewSender creates an email sender from environment variables. When
+// SMTP_HOST is unset every send returns ErrSMTPNotConfigured —
+// `make dev` should run MailHog (docs/ops/email-setup.md) so the
+// dev path exercises the same error contract as production.
 func NewSender() *Sender {
 	tlsMode := strings.ToLower(strings.TrimSpace(os.Getenv("SMTP_TLS")))
 	switch tlsMode {
@@ -503,11 +513,7 @@ type richMessage struct {
 
 func (s *Sender) sendRich(msg richMessage) error {
 	if !s.IsConfigured() {
-		slog.Info("email (not sent — SMTP not configured)",
-			"tenant_id", msg.TenantID, "to", msg.To, "subject", msg.Subject,
-			"has_html", msg.HTMLBody != "", "attachment", msg.AttachmentName,
-		)
-		return nil
+		return ErrSMTPNotConfigured
 	}
 
 	var body strings.Builder
@@ -624,10 +630,7 @@ func (s *Sender) deliver(to string, body []byte) error {
 // sendPlain is the text-only path for operator emails that stay simple.
 func (s *Sender) sendPlain(tenantID, to, fromName, subject, body string) error {
 	if !s.IsConfigured() {
-		slog.Info("email (not sent — SMTP not configured)",
-			"tenant_id", tenantID, "to", to, "subject", subject,
-		)
-		return nil
+		return ErrSMTPNotConfigured
 	}
 	var msg strings.Builder
 	fromHeader := s.from
