@@ -24,9 +24,12 @@ SMTP_TLS=starttls         # starttls (default) | implicit | none
 ```
 
 Restart Velox; the next email queued in `email_outbox` dispatches via
-your provider. If `SMTP_HOST` is empty, Velox logs emails to stdout
-instead of sending — useful for local dev without crashing on
-unconfigured email infra.
+your provider. If `SMTP_HOST` is empty, every send returns
+`ErrSMTPNotConfigured` and the dispatcher retries until the row
+lands in DLQ — there is no stdout fallback. The server boots with a
+loud `SMTP NOT CONFIGURED` warning so the misconfiguration is
+visible without preventing startup. For local dev, point at the
+Mailpit container in `docker-compose.yml` (see "Local dev" below).
 
 ## Sender domain authentication (DP responsibility)
 
@@ -151,21 +154,30 @@ SMTP_TLS=starttls
 Emails appear in the Mailtrap dashboard; nothing reaches the actual
 recipient inbox. [docs](https://help.mailtrap.io/article/12-getting-started-guide)
 
-### MailHog (local dev — self-host)
+### Mailpit (local dev — bundled in `docker-compose.yml`)
+
+The repo's `docker-compose.yml` already runs Mailpit alongside
+Postgres and Redis. Bring it up with:
 
 ```bash
-docker run -d --rm -p 1025:1025 -p 8025:8025 mailhog/mailhog
+docker compose up -d mailpit
 ```
 
-Then:
+Then point Velox at it:
+
 ```bash
 SMTP_HOST=localhost
 SMTP_PORT=1025
 SMTP_USERNAME=
 SMTP_PASSWORD=
-SMTP_FROM=billing@example.com
+SMTP_FROM=billing@local.test
 SMTP_TLS=none
 ```
+
+View captured email at <http://localhost:8025>. Nothing leaves
+your machine. The dev path now exercises the same SMTP code path
+as production — the previous "log to stdout when SMTP_HOST is
+unset" fallback was removed so dev and prod can't drift.
 
 Emails appear at `http://localhost:8025`. Local-only; no DNS or auth
 required. Don't use `SMTP_TLS=none` in production — emails travel
