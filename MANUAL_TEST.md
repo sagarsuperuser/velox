@@ -162,9 +162,11 @@ Single tenant-wide timezone used for date input and timestamp display
 
 ## FLOW A3: Test/Live mode toggle
 
-- [ ] Top-right pill: amber "Test mode" default. Click → emerald "Live mode"; data repopulates.
+- [ ] Top-right pill: amber "Test mode" default. Click → emerald "Live mode"; toast "Switched to live mode".
+- [ ] **Toggle navigates to `/`** (dashboard). URL bar shows `/` regardless of where you were. Detail-page entity IDs (mode-scoped) and component-local state in non-RQ pages can't strand the UI on stale data.
+- [ ] Customers / Invoices / Subscriptions / API Keys / Audit Log / Usage Events / Credits / Dunning all show new-mode rows after navigating into them post-toggle.
+- [ ] On a detail page (e.g. `/customers/cus_test_…`), toggle → land on `/` (entity in URL doesn't exist in new mode).
 - [ ] `/v1/whoami` reflects new `livemode` immediately.
-- [ ] List endpoints filter by mode — flipping shows different counts.
 - [ ] `POST /v1/auth/mode` without cookie → 401.
 - [ ] Live mode + missing live Stripe creds → red banner with "Connect Stripe" link.
 
