@@ -163,6 +163,18 @@ export default function SubscriptionsPage() {
     queryFn: () => api.listPlans(),
   })
 
+  // Test clocks → frozen_time map so per-row "Trial ends in N days"
+  // reads from simulation time when the sub is pinned to a clock.
+  const { data: testClocksData } = useQuery({
+    queryKey: ['test-clocks-for-trial-badge'],
+    queryFn: () => api.listTestClocks(),
+  })
+  const clockFrozenMap = useMemo(() => {
+    const m: Record<string, string> = {}
+    ;(testClocksData?.data ?? []).forEach(c => { m[c.id] = c.frozen_time })
+    return m
+  }, [testClocksData])
+
   const subs = subsData?.data ?? []
   const total = subsData?.total ?? 0
   const loadError = loadErrorObj instanceof Error ? loadErrorObj.message : loadErrorObj ? String(loadErrorObj) : null
@@ -406,7 +418,12 @@ export default function SubscriptionsPage() {
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Badge variant={statusBadgeVariant(sub.status)}>{sub.status}</Badge>
-                          <ExpiryBadge expiresAt={sub.trial_end_at} label="Trial ends" warningDays={3} />
+                          <ExpiryBadge
+                            expiresAt={sub.trial_end_at}
+                            label="Trial ends"
+                            warningDays={3}
+                            now={sub.test_clock_id ? clockFrozenMap[sub.test_clock_id] : undefined}
+                          />
                         </div>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">

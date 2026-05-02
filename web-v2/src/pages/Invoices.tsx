@@ -110,6 +110,15 @@ export default function InvoicesPage() {
     queryFn: () => api.listSubscriptions(),
   })
 
+  // Test clocks list → frozen_time lookup so per-row "Due in N days"
+  // badges read from simulation time when the row's subscription is
+  // pinned to a clock. Without this, the badge defaults to wall-clock
+  // and understates urgency on test-clock-driven invoices.
+  const { data: testClocksData } = useQuery({
+    queryKey: ['test-clocks-for-due-badge'],
+    queryFn: () => api.listTestClocks(),
+  })
+
   const invoices = invoicesData?.data ?? []
   const total = invoicesData?.total ?? 0
   const loadError = loadErrorObj instanceof Error ? loadErrorObj.message : loadErrorObj ? String(loadErrorObj) : null
@@ -125,6 +134,12 @@ export default function InvoicesPage() {
     ;(subscriptionsData?.data ?? []).forEach(s => { if (s.test_clock_id) m[s.id] = s.test_clock_id })
     return m
   }, [subscriptionsData])
+
+  const clockFrozenMap = useMemo(() => {
+    const m: Record<string, string> = {}
+    ;(testClocksData?.data ?? []).forEach(c => { m[c.id] = c.frozen_time })
+    return m
+  }, [testClocksData])
 
   // Client-side search + date filter on current page data
   const filtered = useMemo(() => invoices.filter((inv: Invoice) => {
@@ -367,7 +382,14 @@ export default function InvoicesPage() {
                             <Badge variant={statusBadgeVariant(inv.payment_status)}>{inv.payment_status}</Badge>
                           )}
                           {inv.due_at && inv.payment_status !== 'paid' && inv.status !== 'draft' && (
-                            <ExpiryBadge expiresAt={inv.due_at} label="Due" warningDays={3} />
+                            <ExpiryBadge
+                              expiresAt={inv.due_at}
+                              label="Due"
+                              warningDays={3}
+                              now={inv.subscription_id && subTestClockMap[inv.subscription_id]
+                                ? clockFrozenMap[subTestClockMap[inv.subscription_id]]
+                                : undefined}
+                            />
                           )}
                           {inv.status === 'draft' && (
                             <span className="text-xs text-muted-foreground">—</span>

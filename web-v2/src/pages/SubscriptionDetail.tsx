@@ -94,6 +94,15 @@ export default function SubscriptionDetailPage() {
     enabled: !!id,
   })
 
+  // Test-clock frozen_time for relative-time badges (Trial ends in N
+  // days). Without it the trial-end countdown reads from wall-clock,
+  // not the simulation time the engine bills under.
+  const { data: testClock } = useQuery({
+    queryKey: ['test-clock', sub?.test_clock_id],
+    queryFn: () => api.getTestClock(sub!.test_clock_id!),
+    enabled: !!sub?.test_clock_id,
+  })
+
   const { data: preview, error: previewError } = useQuery({
     queryKey: ['subscription-preview', id],
     queryFn: () => api.invoicePreview(id!),
@@ -303,7 +312,7 @@ export default function SubscriptionDetailPage() {
           )}
           <Badge variant={statusVariant(sub.status)}>{sub.status}</Badge>
           {sub.status === 'trialing' && sub.trial_end_at && (
-            <ExpiryBadge expiresAt={sub.trial_end_at} label="Trial ends" warningDays={3} />
+            <ExpiryBadge expiresAt={sub.trial_end_at} label="Trial ends" warningDays={3} now={testClock?.frozen_time} />
           )}
           {sub.test_clock_id && (
             <Link to={`/test-clocks/${sub.test_clock_id}`} className="inline-block">
