@@ -1,6 +1,7 @@
 package email
 
 import (
+	"context"
 	"errors"
 	"html/template"
 	"strings"
@@ -17,7 +18,7 @@ func TestSender_NotConfigured(t *testing.T) {
 	// SMTP_HOST is unset. Silent stdout fallback was removed so
 	// misconfiguration is an operator-visible failure, not invisible
 	// drops.
-	err := s.SendInvoice("t1", "test@example.com", "Test Customer", "VLX-000001", 19900, "USD", []byte("%PDF"), "")
+	err := s.SendInvoice(context.Background(), "t1", "test@example.com", "Test Customer", "VLX-000001", 19900, "USD", []byte("%PDF"), "")
 	if !errors.Is(err, ErrSMTPNotConfigured) {
 		t.Errorf("unconfigured sender should return ErrSMTPNotConfigured, got: %v", err)
 	}

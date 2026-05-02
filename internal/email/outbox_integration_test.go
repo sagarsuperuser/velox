@@ -264,7 +264,7 @@ func TestEmailOutbox_OutboxSender_RoundTrip(t *testing.T) {
 	sender := email.NewOutboxSender(store)
 
 	pdf := []byte("%PDF-fake")
-	if err := sender.SendInvoice(tenantID, "ada@example.com", "Ada", "VLX-7", 25_000, "USD", pdf, "vlx_pinv_roundtrip"); err != nil {
+	if err := sender.SendInvoice(ctx, tenantID, "ada@example.com", "Ada", "VLX-7", 25_000, "USD", pdf, "vlx_pinv_roundtrip"); err != nil {
 		t.Fatalf("enqueue SendInvoice: %v", err)
 	}
 
@@ -357,21 +357,21 @@ type fakeDeliverer struct {
 	lastPublicToken string
 }
 
-func (f *fakeDeliverer) SendInvoice(tenantID, to, name, inv string, total int64, cur string, pdf []byte, publicToken string) error {
+func (f *fakeDeliverer) SendInvoice(_ context.Context, tenantID, to, name, inv string, total int64, cur string, pdf []byte, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeInvoice, tenantID, to, name, inv
 	f.lastAmount, f.lastCurrency, f.lastPDF = total, cur, pdf
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendPaymentReceipt(tenantID, to, name, inv string, amount int64, cur, publicToken string) error {
+func (f *fakeDeliverer) SendPaymentReceipt(_ context.Context, tenantID, to, name, inv string, amount int64, cur, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypePaymentReceipt, tenantID, to, name, inv
 	f.lastAmount, f.lastCurrency = amount, cur
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendDunningWarning(tenantID, to, name, inv string, n, max int, next, failureReason, publicToken string) error {
+func (f *fakeDeliverer) SendDunningWarning(_ context.Context, tenantID, to, name, inv string, n, max int, next, failureReason, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeDunningWarning, tenantID, to, name, inv
 	f.lastAttemptN, f.lastMaxN, f.lastNextDate = n, max, next
@@ -379,39 +379,39 @@ func (f *fakeDeliverer) SendDunningWarning(tenantID, to, name, inv string, n, ma
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendDunningEscalation(tenantID, to, name, inv, action, publicToken string) error {
+func (f *fakeDeliverer) SendDunningEscalation(_ context.Context, tenantID, to, name, inv, action, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeDunningEscalation, tenantID, to, name, inv
 	f.lastAction = action
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendPaymentFailed(tenantID, to, name, inv, reason, publicToken string) error {
+func (f *fakeDeliverer) SendPaymentFailed(_ context.Context, tenantID, to, name, inv, reason, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypePaymentFailed, tenantID, to, name, inv
 	f.lastReason = reason
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendPaymentUpdateRequest(tenantID, to, name, inv string, amount int64, cur, url string) error {
+func (f *fakeDeliverer) SendPaymentUpdateRequest(_ context.Context, tenantID, to, name, inv string, amount int64, cur, url string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypePaymentUpdateRequest, tenantID, to, name, inv
 	f.lastAmount, f.lastCurrency, f.lastUpdateURL = amount, cur, url
 	return nil
 }
-func (f *fakeDeliverer) SendPortalMagicLink(tenantID, to, name, url string) error {
+func (f *fakeDeliverer) SendPortalMagicLink(_ context.Context, tenantID, to, name, url string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName = email.TypePortalMagicLink, tenantID, to, name
 	f.lastUpdateURL = url
 	return nil
 }
-func (f *fakeDeliverer) SendPasswordReset(tenantID, to, name, url string) error {
+func (f *fakeDeliverer) SendPasswordReset(_ context.Context, tenantID, to, name, url string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName = email.TypePasswordReset, tenantID, to, name
 	f.lastUpdateURL = url
 	return nil
 }
-func (f *fakeDeliverer) SendMemberInvite(tenantID, to, inviter, tenantName, url string) error {
+func (f *fakeDeliverer) SendMemberInvite(_ context.Context, tenantID, to, inviter, tenantName, url string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName = email.TypeMemberInvite, tenantID, to, inviter
 	f.lastUpdateURL = url
@@ -422,7 +422,7 @@ func (f *fakeDeliverer) SendMemberInvite(tenantID, to, inviter, tenantName, url 
 // dispatcher's handle method is unexported; re-implementing the decode here
 // keeps the round-trip test independent of Start/tick timing without
 // exposing internals purely for testing.
-func callDeliverer(_ context.Context, d email.EmailDeliverer, row email.OutboxRow) error {
+func callDeliverer(ctx context.Context, d email.EmailDeliverer, row email.OutboxRow) error {
 	raw, err := json.Marshal(row.Payload)
 	if err != nil {
 		return err
@@ -449,19 +449,19 @@ func callDeliverer(_ context.Context, d email.EmailDeliverer, row email.OutboxRo
 	}
 	switch row.EmailType {
 	case email.TypeInvoice:
-		return d.SendInvoice(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PDF, m.PublicToken)
+		return d.SendInvoice(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PDF, m.PublicToken)
 	case email.TypePaymentReceipt:
-		return d.SendPaymentReceipt(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PublicToken)
+		return d.SendPaymentReceipt(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PublicToken)
 	case email.TypeDunningWarning:
-		return d.SendDunningWarning(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AttemptNumber, m.MaxAttempts, m.NextRetryDate, m.FailureReason, m.PublicToken)
+		return d.SendDunningWarning(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AttemptNumber, m.MaxAttempts, m.NextRetryDate, m.FailureReason, m.PublicToken)
 	case email.TypeDunningEscalation:
-		return d.SendDunningEscalation(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Action, m.PublicToken)
+		return d.SendDunningEscalation(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Action, m.PublicToken)
 	case email.TypePaymentFailed:
-		return d.SendPaymentFailed(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Reason, m.PublicToken)
+		return d.SendPaymentFailed(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Reason, m.PublicToken)
 	case email.TypePaymentUpdateRequest:
-		return d.SendPaymentUpdateRequest(row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.UpdateURL)
+		return d.SendPaymentUpdateRequest(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.UpdateURL)
 	case email.TypePortalMagicLink:
-		return d.SendPortalMagicLink(row.TenantID, m.To, m.CustomerName, m.MagicLinkURL)
+		return d.SendPortalMagicLink(ctx, row.TenantID, m.To, m.CustomerName, m.MagicLinkURL)
 	default:
 		return fmt.Errorf("unknown email_type %q", row.EmailType)
 	}

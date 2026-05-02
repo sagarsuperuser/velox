@@ -347,7 +347,7 @@ type fakeMagicLinkSender struct {
 	lastURL    string
 }
 
-func (f *fakeMagicLinkSender) SendPortalMagicLink(tenantID, to, name, url string) error {
+func (f *fakeMagicLinkSender) SendPortalMagicLink(_ context.Context, tenantID, to, name, url string) error {
 	f.lastTenant, f.lastTo, f.lastName, f.lastURL = tenantID, to, name, url
 	return nil
 }

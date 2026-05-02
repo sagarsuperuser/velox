@@ -1,6 +1,7 @@
 package user
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -32,7 +33,7 @@ type Handler struct {
 // surfaces as a SendPasswordReset error logged here; the response to
 // the user stays generic to prevent enumeration.
 type EmailSender interface {
-	SendPasswordReset(email, resetLink string) error
+	SendPasswordReset(ctx context.Context, email, resetLink string) error
 }
 
 // NewHandler wires the dependencies. emailSender is required —
@@ -219,7 +220,7 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		// enumeration. SMTP misconfiguration shows up as a logged
 		// SendPasswordReset error.
 		resetLink := buildResetLink(r, plaintext)
-		if sendErr := h.email.SendPasswordReset(req.Email, resetLink); sendErr != nil {
+		if sendErr := h.email.SendPasswordReset(r.Context(), req.Email, resetLink); sendErr != nil {
 			slog.Error("password reset email send failed", "err", sendErr)
 		}
 	}

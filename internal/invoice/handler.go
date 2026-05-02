@@ -78,9 +78,11 @@ type DunningTimelineFetcher interface {
 	ListEvents(ctx context.Context, tenantID, runID string) ([]domain.InvoiceDunningEvent, error)
 }
 
-// EmailSender sends invoice-related emails.
+// EmailSender sends invoice-related emails. ctx must carry livemode
+// (set by auth middleware) so the underlying enqueue / brand lookup
+// stamps the right tenant_settings + email_outbox row.
 type EmailSender interface {
-	SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
+	SendInvoice(ctx context.Context, tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
 }
 
 // EmailEventLister surfaces customer-notification email rows
@@ -435,7 +437,7 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 					"invoice_id", inv.ID, "error", err)
 				return
 			}
-			if err := h.emailSender.SendInvoice(tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
+			if err := h.emailSender.SendInvoice(emailCtx, tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
 				slog.ErrorContext(emailCtx, "failed to send invoice email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
@@ -622,7 +624,7 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.emailSender.SendInvoice(tenantID, body.Email, bt.Name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
+	if err := h.emailSender.SendInvoice(r.Context(), tenantID, body.Email, bt.Name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
 		respond.Validation(w, r, fmt.Sprintf("failed to send email: %s", err.Error()))
 		return
 	}

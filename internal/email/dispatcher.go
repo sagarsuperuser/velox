@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // DispatcherConfig controls the outbox dispatcher loop.
@@ -40,17 +42,19 @@ type DispatchLocker interface {
 
 // EmailDeliverer is the SMTP-sending narrow interface the dispatcher calls.
 // Satisfied by *email.Sender. Defined here so tests can inject fakes without
-// touching the production Sender.
+// touching the production Sender. ctx carries the row's livemode (set by
+// Dispatcher.handle from the email_outbox row) so brand lookups inside
+// the Sender resolve against the correct tenant_settings row.
 type EmailDeliverer interface {
-	SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
-	SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
-	SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
-	SendDunningEscalation(tenantID, to, customerName, invoiceNumber, action, publicToken string) error
-	SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
-	SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
-	SendPortalMagicLink(tenantID, to, customerName, magicLinkURL string) error
-	SendPasswordReset(tenantID, to, displayName, resetURL string) error
-	SendMemberInvite(tenantID, to, inviterEmail, tenantName, acceptURL string) error
+	SendInvoice(ctx context.Context, tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
+	SendPaymentReceipt(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
+	SendDunningWarning(ctx context.Context, tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
+	SendDunningEscalation(ctx context.Context, tenantID, to, customerName, invoiceNumber, action, publicToken string) error
+	SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
+	SendPaymentUpdateRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
+	SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error
+	SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
+	SendMemberInvite(ctx context.Context, tenantID, to, inviterEmail, tenantName, acceptURL string) error
 }
 
 // Dispatcher drains the email_outbox by deserialising each row's payload and
@@ -146,31 +150,38 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 		return fmt.Errorf("decode payload: %w", err)
 	}
 
+	// Pin the row's livemode on the per-call ctx so the Sender's
+	// settings.Get for branding hits the right tenant_settings row
+	// (TxTenant under the hood). Without this, dispatcher-driven
+	// sends would default to live regardless of which mode the
+	// email was enqueued under.
+	ctx = postgres.WithLivemode(ctx, row.Livemode)
+
 	switch row.EmailType {
 	case TypeInvoice:
-		return d.sender.SendInvoice(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendInvoice(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.AmountCents, msg.Currency, msg.PDF, msg.PublicToken)
 	case TypePaymentReceipt:
-		return d.sender.SendPaymentReceipt(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendPaymentReceipt(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.AmountCents, msg.Currency, msg.PublicToken)
 	case TypeDunningWarning:
-		return d.sender.SendDunningWarning(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendDunningWarning(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.AttemptNumber, msg.MaxAttempts, msg.NextRetryDate, msg.FailureReason, msg.PublicToken)
 	case TypeDunningEscalation:
-		return d.sender.SendDunningEscalation(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendDunningEscalation(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.Action, msg.PublicToken)
 	case TypePaymentFailed:
-		return d.sender.SendPaymentFailed(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendPaymentFailed(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.Reason, msg.PublicToken)
 	case TypePaymentUpdateRequest:
-		return d.sender.SendPaymentUpdateRequest(row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendPaymentUpdateRequest(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.AmountCents, msg.Currency, msg.UpdateURL)
 	case TypePortalMagicLink:
-		return d.sender.SendPortalMagicLink(row.TenantID, msg.To, msg.CustomerName, msg.MagicLinkURL)
+		return d.sender.SendPortalMagicLink(ctx, row.TenantID, msg.To, msg.CustomerName, msg.MagicLinkURL)
 	case TypePasswordReset:
-		return d.sender.SendPasswordReset(row.TenantID, msg.To, msg.CustomerName, msg.PasswordResetURL)
+		return d.sender.SendPasswordReset(ctx, row.TenantID, msg.To, msg.CustomerName, msg.PasswordResetURL)
 	case TypeMemberInvite:
-		return d.sender.SendMemberInvite(row.TenantID, msg.To, msg.InviterEmail, msg.TenantName, msg.InviteURL)
+		return d.sender.SendMemberInvite(ctx, row.TenantID, msg.To, msg.InviterEmail, msg.TenantName, msg.InviteURL)
 	default:
 		return fmt.Errorf("unknown email_type %q", row.EmailType)
 	}

@@ -183,16 +183,18 @@ func (s *Sender) reportBounceIfPermanent(tenantID, to string, err error) {
 }
 
 // brandingFor resolves branding for tenantID. Never errors — a missing
-// tenant or a cold-start settings row just gets Velox defaults.
-func (s *Sender) brandingFor(tenantID string) Branding {
+// tenant or a cold-start settings row just gets Velox defaults. ctx
+// must carry livemode (set by the request middleware for direct-send,
+// or constructed from the email_outbox row's livemode by the
+// dispatcher for the durable path).
+func (s *Sender) brandingFor(ctx context.Context, tenantID string) Branding {
 	b := Branding{}
 	if s.settings == nil || tenantID == "" {
 		return b.fill()
 	}
-	// Fresh context per lookup — the send path is fire-and-forget from
-	// an outbox worker, so we don't have a request ctx to inherit. 5s
-	// bound so a slow tenant settings query doesn't stall email dispatch.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 5s bound on settings query so a slow tenant lookup doesn't stall
+	// the send path. Inherits livemode + tenant from the caller's ctx.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	ts, err := s.settings.Get(ctx, tenantID)
 	if err != nil {
@@ -226,8 +228,11 @@ func (s *Sender) hostedInvoiceURL(publicToken string) string {
 
 // SendInvoice sends an invoice email with PDF attachment. publicToken
 // is the hosted_invoice_url credential (T0-17) — empty means no pay CTA.
-func (s *Sender) SendInvoice(tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error {
-	brand := s.brandingFor(tenantID)
+// ctx must carry livemode for the branding lookup; the request handler
+// sets it via auth middleware, the outbox dispatcher derives it from
+// the email_outbox row.
+func (s *Sender) SendInvoice(ctx context.Context, tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error {
+	brand := s.brandingFor(ctx, tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 	amount := formatAmount(totalCents, currency)
 
@@ -256,8 +261,8 @@ func (s *Sender) SendInvoice(tenantID, to, customerName, invoiceNumber string, t
 }
 
 // SendPaymentReceipt sends a receipt after successful payment.
-func (s *Sender) SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error {
-	brand := s.brandingFor(tenantID)
+func (s *Sender) SendPaymentReceipt(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error {
+	brand := s.brandingFor(ctx, tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 	amount := formatAmount(amountCents, currency)
 
@@ -284,8 +289,8 @@ func (s *Sender) SendPaymentReceipt(tenantID, to, customerName, invoiceNumber st
 // tone on the final attempt ("Last attempt before service impact").
 // CTA is a "Pay invoice" button on the hosted invoice page (Stripe
 // Checkout there handles both PM update and pay).
-func (s *Sender) SendDunningWarning(tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
-	brand := s.brandingFor(tenantID)
+func (s *Sender) SendDunningWarning(ctx context.Context, tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
+	brand := s.brandingFor(ctx, tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 
 	subject, contentHTML, ctaURL, ctaLabel := renderDunningWarningHTML(customerName, invoiceNumber, attemptNumber, maxAttempts, nextRetryDate, failureReason, hostedURL)
@@ -306,8 +311,8 @@ func (s *Sender) SendDunningWarning(tenantID, to, customerName, invoiceNumber st
 }
 
 // SendDunningEscalation emails the "retries exhausted" escalation.
-func (s *Sender) SendDunningEscalation(tenantID, to, customerName, invoiceNumber, action, publicToken string) error {
-	brand := s.brandingFor(tenantID)
+func (s *Sender) SendDunningEscalation(ctx context.Context, tenantID, to, customerName, invoiceNumber, action, publicToken string) error {
+	brand := s.brandingFor(ctx, tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 
 	subject, contentHTML, ctaURL, ctaLabel := renderDunningEscalationHTML(customerName, invoiceNumber, action, hostedURL)
@@ -328,8 +333,8 @@ func (s *Sender) SendDunningEscalation(tenantID, to, customerName, invoiceNumber
 }
 
 // SendPaymentFailed notifies a customer about a failed charge.
-func (s *Sender) SendPaymentFailed(tenantID, to, customerName, invoiceNumber, reason, publicToken string) error {
-	brand := s.brandingFor(tenantID)
+func (s *Sender) SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error {
+	brand := s.brandingFor(ctx, tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 
 	subject, contentHTML, ctaURL, ctaLabel := renderPaymentFailedHTML(customerName, invoiceNumber, reason, hostedURL)
@@ -352,8 +357,8 @@ func (s *Sender) SendPaymentFailed(tenantID, to, customerName, invoiceNumber, re
 // SendPaymentUpdateRequest emails the tokenized payment-method-update
 // link. CTA points at updateURL (NOT the hosted invoice URL — this flow
 // changes the saved payment method, a separate concern).
-func (s *Sender) SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
-	brand := s.brandingFor(tenantID)
+func (s *Sender) SendPaymentUpdateRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
+	brand := s.brandingFor(ctx, tenantID)
 	amount := formatAmount(amountDueCents, currency)
 
 	subject, contentHTML, ctaURL, ctaLabel := renderPaymentUpdateRequestHTML(customerName, invoiceNumber, amount, updateURL)
@@ -376,7 +381,7 @@ func (s *Sender) SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNum
 // ---- Operator-facing emails (plain text; carry security tokens, no
 // tenant branding context) ----
 
-func (s *Sender) SendPasswordReset(tenantID, to, displayName, resetURL string) error {
+func (s *Sender) SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error {
 	subject := "Reset your Velox password"
 	body := fmt.Sprintf(`Hi %s,
 
@@ -391,7 +396,7 @@ If you didn't request this, you can safely ignore this email — your current pa
 	return s.sendPlain(tenantID, to, "", subject, body)
 }
 
-func (s *Sender) SendMemberInvite(tenantID, to, inviterEmail, tenantName, acceptURL string) error {
+func (s *Sender) SendMemberInvite(ctx context.Context, tenantID, to, inviterEmail, tenantName, acceptURL string) error {
 	subject := fmt.Sprintf("You've been invited to %s on Velox", tenantName)
 	body := fmt.Sprintf(`Hi,
 
@@ -406,7 +411,7 @@ If you weren't expecting this invitation, you can safely ignore this email.
 	return s.sendPlain(tenantID, to, "", subject, body)
 }
 
-func (s *Sender) SendPortalMagicLink(tenantID, to, customerName, magicLinkURL string) error {
+func (s *Sender) SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error {
 	subject := "Your Velox customer portal sign-in link"
 	body := fmt.Sprintf(`Hi %s,
 

@@ -41,9 +41,10 @@ type CardFetcher interface {
 	FetchCardDetails(ctx context.Context, stripeCustomerID string) (CardDetails, error)
 }
 
-// EmailReceipt sends payment receipt emails.
+// EmailReceipt sends payment receipt emails. ctx carries livemode so
+// the enqueue/brand lookup runs against the right tenant_settings row.
 type EmailReceipt interface {
-	SendPaymentReceipt(tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
+	SendPaymentReceipt(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
 }
 
 // CustomerEmailResolver resolves customer contact info for email notifications.
@@ -53,7 +54,7 @@ type CustomerEmailResolver interface {
 
 // EmailPaymentUpdate sends payment update request emails.
 type EmailPaymentUpdate interface {
-	SendPaymentUpdateRequest(tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
+	SendPaymentUpdateRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
 }
 
 type Stripe struct {
@@ -457,7 +458,7 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
 				return
 			}
-			if err := s.emailReceipt.SendPaymentReceipt(tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, inv.PublicToken); err != nil {
+			if err := s.emailReceipt.SendPaymentReceipt(ctx, tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, inv.PublicToken); err != nil {
 				slog.Error("failed to send payment receipt email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
@@ -556,7 +557,7 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 				updateURL = fmt.Sprintf("%s?invoice_id=%s&customer_id=%s", s.paymentUpdateURL, inv.ID, inv.CustomerID)
 			}
 
-			if err := s.emailPaymentUpdate.SendPaymentUpdateRequest(tenantID, email, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
+			if err := s.emailPaymentUpdate.SendPaymentUpdateRequest(ctx, tenantID, email, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
 				slog.Error("failed to send payment update email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
