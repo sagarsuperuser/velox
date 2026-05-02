@@ -375,6 +375,9 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		BillingPeriodEnd:   now,
 		IssuedAt:           &now,
 		DueAt:              &dueAt,
+		// CreatedAt on test-clock time — keeps engine-driven rows
+		// internally consistent (Stripe / Lago / Orb pattern).
+		CreatedAt:          now,
 		NetPaymentTermDays: netDays,
 		BillingReason:      domain.BillingReasonThreshold,
 	}, eval.LineItems)

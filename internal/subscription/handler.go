@@ -1212,6 +1212,9 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			BillingPeriodEnd:         periodEnd,
 			IssuedAt:                 &now,
 			DueAt:                    &dueAt,
+			// CreatedAt on the same `now` so test-clock-driven plan
+			// changes have created_at == issued_at on simulation time.
+			CreatedAt:                now,
 			NetPaymentTermDays:       30,
 			Memo:                     memo,
 			SourcePlanChangedAt:      &changeAt,

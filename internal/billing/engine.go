@@ -1270,6 +1270,12 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		BillingPeriodEnd:   periodEnd,
 		IssuedAt:           &now,
 		DueAt:              &dueAt,
+		// CreatedAt = clock.Now() so test-clock-driven invoices land
+		// created_at on simulation time (matching issued_at). Pre-fix
+		// the store fell back to time.Now() (wall-clock) and the
+		// activity timeline showed split-brain timestamps — created
+		// on real time, issued on test-clock time.
+		CreatedAt:          now,
 		NetPaymentTermDays: netDays,
 		BillingReason:      domain.BillingReasonSubscriptionCycle,
 	}, lineItems)

@@ -44,7 +44,13 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_inv")
-	now := time.Now().UTC()
+	// Honor caller-provided CreatedAt — engine paths pass clk.Now()
+	// so test-clock-driven invoices align with their issued_at /
+	// due_at on simulation time. Zero falls back to wall-clock.
+	now := inv.CreatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	metaJSON, _ := json.Marshal(inv.Metadata)
 	if inv.Metadata == nil {
 		metaJSON = []byte("{}")
@@ -871,7 +877,13 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_inv")
-	now := time.Now().UTC()
+	// Honor caller-provided CreatedAt — engine paths pass clk.Now()
+	// so test-clock-driven invoices align with their issued_at /
+	// due_at on simulation time. Zero falls back to wall-clock.
+	now := inv.CreatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	metaJSON, _ := json.Marshal(inv.Metadata)
 	if inv.Metadata == nil {
 		metaJSON = []byte("{}")
