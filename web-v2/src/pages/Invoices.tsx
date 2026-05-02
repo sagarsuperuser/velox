@@ -381,7 +381,13 @@ export default function InvoicesPage() {
                           {inv.status !== 'draft' && (
                             <Badge variant={statusBadgeVariant(inv.payment_status)}>{inv.payment_status}</Badge>
                           )}
-                          {inv.due_at && inv.payment_status !== 'paid' && inv.status !== 'draft' && (
+                          {/* Due-date countdown only on open invoices
+                              (status='finalized'). 'paid' and
+                              'voided' are terminal; 'draft' has no
+                              issued state yet. Pre-fix gate used
+                              payment_status !== 'paid' which never
+                              matched (domain uses 'succeeded'). */}
+                          {inv.due_at && inv.status === 'finalized' && (
                             <ExpiryBadge
                               expiresAt={inv.due_at}
                               label="Due"

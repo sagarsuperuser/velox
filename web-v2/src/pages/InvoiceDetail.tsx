@@ -621,7 +621,14 @@ export default function InvoiceDetailPage() {
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Due</p>
               <div className="flex items-center gap-2">
                 <p className="text-sm text-foreground">{invoice.due_at ? formatDate(invoice.due_at) : '\u2014'}</p>
-                {invoice.due_at && invoice.payment_status !== 'paid' && (
+                {/* Due-date countdown only applies while the invoice
+                    is open (finalized). status='paid' or 'voided'
+                    are terminal — countdown becomes meaningless. The
+                    pre-fix gate checked payment_status !== 'paid'
+                    but payment_status uses 'succeeded' for paid
+                    invoices ('paid' is never the value), so the
+                    badge leaked onto paid rows. */}
+                {invoice.due_at && invoice.status === 'finalized' && (
                   <ExpiryBadge expiresAt={invoice.due_at} label="Due" warningDays={3} now={testClock?.frozen_time} />
                 )}
               </div>
