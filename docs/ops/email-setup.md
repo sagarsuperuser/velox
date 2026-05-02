@@ -12,7 +12,7 @@ the ESP side instead.
 
 ## Quickstart
 
-Five env vars cover most setups:
+SMTP relay (six env vars cover most setups):
 
 ```bash
 SMTP_HOST=smtp.your-provider.com
@@ -23,13 +23,27 @@ SMTP_FROM=billing@yourdomain.com
 SMTP_TLS=starttls         # starttls (default) | implicit | none
 ```
 
+Plus three URL vars that build the CTAs in customer-facing emails:
+
+```bash
+HOSTED_INVOICE_BASE_URL=https://billing.example.com    # email "View & pay invoice" / "View receipt" CTA target → /invoice/<public_token>
+CUSTOMER_PORTAL_URL=https://billing.example.com        # magic-link emails → <base>/portal/magic?token=<...>
+PAYMENT_UPDATE_URL=https://billing.example.com/update-payment   # payment-update-request emails (no-PM-at-finalize, charge-failure)
+```
+
 Restart Velox; the next email queued in `email_outbox` dispatches via
-your provider. If `SMTP_HOST` is empty, every send returns
-`ErrSMTPNotConfigured` and the dispatcher retries until the row
-lands in DLQ — there is no stdout fallback. The server boots with a
-loud `SMTP NOT CONFIGURED` warning so the misconfiguration is
-visible without preventing startup. For local dev, point at the
-Mailpit container in `docker-compose.yml` (see "Local dev" below).
+your provider. The server boots with WARN lines for each missing
+env, so misconfiguration is unmissable without preventing startup:
+
+| Env var unset | Boot warning | Customer-visible failure |
+|---|---|---|
+| `SMTP_HOST` | `SMTP NOT CONFIGURED — …` | Every send returns `ErrSMTPNotConfigured`, dispatcher retries → DLQ. No stdout fallback. |
+| `HOSTED_INVOICE_BASE_URL` | `HOSTED_INVOICE_BASE_URL NOT SET — …` | Invoice / receipt / dunning / payment-failed emails render with **no link** in the CTA button. |
+| `CUSTOMER_PORTAL_URL` | `CUSTOMER_PORTAL_URL NOT SET — …` | Magic-link requests fail with `ErrPortalURLNotConfigured`. |
+| `PAYMENT_UPDATE_URL` | `PAYMENT_UPDATE_URL NOT SET — …` | Payment-update-request emails (no-PM-at-finalize, charge-failure) skipped at send time. |
+
+For local dev, point at the Mailpit container in `docker-compose.yml`
+(see "Local dev" below).
 
 ## Sender domain authentication (DP responsibility)
 
@@ -163,7 +177,9 @@ Postgres and Redis. Bring it up with:
 docker compose up -d mailpit
 ```
 
-Then point Velox at it:
+Then point Velox at it (all five URL/SMTP vars together — leaving any
+of HOSTED_INVOICE_BASE_URL / CUSTOMER_PORTAL_URL / PAYMENT_UPDATE_URL
+unset will leave the corresponding email links blank):
 
 ```bash
 SMTP_HOST=localhost
@@ -172,6 +188,9 @@ SMTP_USERNAME=
 SMTP_PASSWORD=
 SMTP_FROM=billing@local.test
 SMTP_TLS=none
+HOSTED_INVOICE_BASE_URL=http://localhost:5173
+CUSTOMER_PORTAL_URL=http://localhost:5173
+PAYMENT_UPDATE_URL=http://localhost:5173/update-payment
 ```
 
 View captured email at <http://localhost:8025>. Nothing leaves
