@@ -18,6 +18,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
@@ -206,6 +207,80 @@ func (a *customerEmailFetcherAdapter) GetCustomerEmail(ctx context.Context, tena
 		}
 	}
 	return email, name, nil
+}
+
+// portalPaymentMethodUpdaterAdapter bridges Stripe Checkout (setup
+// mode) into portalapi.PaymentMethodUpdater. The customer's portal
+// session ctx supplies tenantID + customerID; this adapter mints the
+// Stripe Checkout URL the customer redirects to. On success, the
+// existing webhook reconciler flips PaymentSetup → ready and the
+// engine's RetryPendingCharges scheduler auto-collects pending
+// invoices on its next tick.
+//
+// Reuses the same Stripe client + store the operator-driven
+// /v1/portal endpoint uses; the only difference is identity comes
+// from the portal session, not a Bearer key.
+type portalPaymentMethodUpdaterAdapter struct {
+	clients   *payment.StripeClients
+	store     payment.PaymentSetupStore
+	portalURL string
+}
+
+func (a *portalPaymentMethodUpdaterAdapter) CreateUpdateSession(ctx context.Context, tenantID, customerID, returnURL string) (string, error) {
+	sc := a.clients.ForCtx(ctx)
+	if sc == nil {
+		return "", errs.New("stripe_unavailable", "Stripe is not configured for this mode")
+	}
+	ps, err := a.store.GetPaymentSetup(ctx, tenantID, customerID)
+	if err != nil || ps.StripeCustomerID == "" {
+		return "", errs.Invalid("customer", "no Stripe payment setup yet — complete the initial setup flow first")
+	}
+	if returnURL == "" {
+		base := a.portalURL
+		if base == "" {
+			base = "http://localhost:5173/portal"
+		}
+		returnURL = fmt.Sprintf("%s?payment=updated", base)
+	}
+
+	sess, err := sc.V1CheckoutSessions.Create(ctx, &stripe.CheckoutSessionCreateParams{
+		Customer:           stripe.String(ps.StripeCustomerID),
+		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
+		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
+		SuccessURL:         stripe.String(returnURL),
+		CancelURL:          stripe.String(returnURL),
+		Params: stripe.Params{
+			Metadata: map[string]string{
+				"velox_customer_id": customerID,
+				"velox_tenant_id":   tenantID,
+				"velox_purpose":     "update_payment_method",
+				"velox_initiator":   "customer_portal",
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("create checkout session: %w", err)
+	}
+
+	// Mark setup as pending update — preserves existing card details
+	// until the new ones arrive via webhook (avoids a flicker where
+	// PaymentSetup briefly shows "missing").
+	now := time.Now().UTC()
+	_, _ = a.store.UpsertPaymentSetup(ctx, tenantID, domain.CustomerPaymentSetup{
+		CustomerID:                  customerID,
+		TenantID:                    tenantID,
+		SetupStatus:                 domain.PaymentSetupPending,
+		StripeCustomerID:            ps.StripeCustomerID,
+		CardBrand:                   ps.CardBrand,
+		CardLast4:                   ps.CardLast4,
+		CardExpMonth:                ps.CardExpMonth,
+		CardExpYear:                 ps.CardExpYear,
+		StripePaymentMethodID:       ps.StripePaymentMethodID,
+		DefaultPaymentMethodPresent: ps.DefaultPaymentMethodPresent,
+		PaymentMethodType:           ps.PaymentMethodType,
+		UpdatedAt:                   now,
+	})
+	return sess.URL, nil
 }
 
 // invoiceEmailEventsAdapter bridges email.OutboxStore.ListByInvoice
