@@ -440,15 +440,36 @@ under a "Test mode" sidebar header below System.
 
 ## Customer Portal (`/v1/me/*` and public magic-link)
 
-## FLOW CP1: Magic-link login
+## FLOW CP1: Magic-link login (UI + API)
+
+API surface:
 
 - [ ] `curl -X POST $API/v1/public/customer-portal/magic-link -H 'Content-Type: application/json' -d '{"email":"any@example.com"}'` → 202 (always, regardless of whether email matches a customer).
-- [ ] When email matches a real customer, server logs include the magic-link URL with a tokenized path.
+- [ ] When email matches a real customer, server logs include the magic-link URL pointing at `/portal/magic?token=…`.
 - [ ] `curl -X POST $API/v1/public/customer-portal/magic/consume -H 'Content-Type: application/json' -d '{"token":"<raw>"}'` → 200 `{token, customer_id, livemode, expires_at}`.
 - [ ] Re-using the same token returns 401 `invalid or expired magic link`.
 - [ ] Using the returned session `token` as `Authorization: Bearer <token>` on `/v1/me/invoices` succeeds with the customer's invoice list.
 
+UI surface (web-v2):
+
+- [ ] Visit `/portal/login` → email input form with "Send sign-in link" button.
+- [ ] Submit a real customer's email → confirmation card shows "Check your email" + the email value.
+- [ ] Click the magic-link URL from server logs → lands on `/portal/magic?token=…` → shows "Signing you in…" briefly → redirects to `/portal`.
+- [ ] Visit `/portal/magic` without a token → "Sign-in link not valid" + "Request a new link" button.
+- [ ] Visit `/portal/magic?token=invalid` → same error card.
+- [ ] Visit `/portal` without a session → redirects to `/portal/login`.
+- [ ] After session expires (1h), any portal action lands the user back at `/portal/login`.
+
+## FLOW CP1.5: Portal home (UI)
+
+- [ ] After successful magic-link consume, `/portal` loads with three sections: Payment method, Subscriptions, Invoices.
+- [ ] Header shows the tenant's company name (from `/v1/me/branding`) + a Sign out button.
+- [ ] Empty states: "No subscriptions on this account" / "No invoices yet" when applicable.
+- [ ] Clicking Sign out clears the session and redirects to `/portal/login`.
+
 ## FLOW CP2: Subscription cancel by customer
+
+API surface:
 
 - [ ] `curl -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/subscriptions"` → list of customer's own subs only.
 - [ ] `curl -X POST -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/subscriptions/$SUB_ID/cancel"` → 200, sub status flipped to canceled.
@@ -456,7 +477,16 @@ under a "Test mode" sidebar header below System.
 - [ ] Webhook delivery for `subscription.canceled` includes `canceled_by: "customer"`.
 - [ ] Subsequent billing cycle ticks skip the canceled sub.
 
+UI surface:
+
+- [ ] On `/portal`, each non-canceled subscription shows a Cancel button.
+- [ ] Clicking Cancel opens a confirmation dialog naming the sub.
+- [ ] "Keep subscription" closes the dialog without changes.
+- [ ] "Cancel subscription" fires the API call, toasts "Subscription canceled", reloads the list, and the row now shows a `canceled` badge with no Cancel button.
+
 ## FLOW CP3: Payment method update by customer
+
+API surface:
 
 - [ ] Customer must have an existing PaymentSetup (operator-driven `/v1/checkout/setup` ran first).
 - [ ] `curl -X POST -H "Authorization: Bearer $PORTAL_TOKEN" "$API/v1/me/payment-method/update" -H 'Content-Type: application/json' -d '{"return_url":"https://app.example.com/billing"}'` → 201 `{url}`.
@@ -465,6 +495,13 @@ under a "Test mode" sidebar header below System.
 - [ ] If the customer had `auto_charge_pending=true` invoices, `RetryPendingCharges` scheduler tick collects them automatically (no operator action).
 - [ ] Customer with no PaymentSetup → 400 `missing_payment_setup`.
 - [ ] Tenant with no Stripe configured for active livemode → 503 `stripe_unavailable`.
+
+UI surface:
+
+- [ ] On `/portal`, the Payment method section shows an "Update card" button.
+- [ ] Clicking it opens a Stripe Checkout setup page in a new browser tab.
+- [ ] After the customer completes setup, Stripe redirects them back to `/portal` (return_url defaults to current URL); webhook flips `payment_setups.setup_status=ready`.
+- [ ] If the customer's invoices had `auto_charge_pending=true`, the next scheduler tick collects them — visible in `/portal` invoice list as `paid`.
 
 ## FLOW CP4: Invoice PDF download
 
