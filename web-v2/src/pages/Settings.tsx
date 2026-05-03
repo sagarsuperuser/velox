@@ -492,7 +492,7 @@ export default function SettingsPage() {
                       placeholder="Select timezone..."
                       className="mt-1"
                     />
-                    <p className="text-xs text-muted-foreground mt-1">All dashboard timestamps render in this zone. Billing math stays UTC. ADR-010.</p>
+                    <p className="text-xs text-muted-foreground mt-1">All dashboard timestamps show in this zone.</p>
                   </div>
                 </div>
               </CardContent>
