@@ -12,6 +12,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // RateLimiter implements distributed rate limiting using the GCRA (Generic Cell
@@ -135,12 +136,14 @@ func (rl *RateLimiter) allow(r *http.Request, key string) (int, time.Time, bool)
 // Stripe-style:
 //
 //  1. API key id when present — per-key buckets so a runaway integration
-//     can't starve the tenant's dashboard or a parallel worker. Matches the
-//     "each key has its own throughput" expectation operators bring from
-//     Stripe / Twilio / OpenAI.
-//  2. Tenant id for session-authed UI traffic (no key attached) so every
-//     logged-in operator for the tenant shares a single bucket. Dashboards
-//     are low-volume; a shared bucket is the right default.
+//     can't starve the tenant's dashboard or a parallel worker. Each key
+//     has a fixed livemode (vlx_secret_test_* vs vlx_secret_live_*) so
+//     per-key keying is naturally per-mode.
+//  2. Tenant id for session-authed UI traffic (no key attached). Suffixed
+//     with the active mode so dashboard test-mode exploration and live-mode
+//     operations do NOT share quota — Stripe's pattern. Without the suffix,
+//     one operator's heavy test load could throttle another operator's
+//     legitimate live action.
 //  3. Remote IP for wholly-unauthenticated paths (bootstrap, login, public
 //     health probes that slipped past the skip-list) so an unauthenticated
 //     flood can't bypass the limiter entirely.
@@ -149,7 +152,11 @@ func rateLimitKey(r *http.Request) string {
 		return "key:" + keyID
 	}
 	if tenantID := auth.TenantID(r.Context()); tenantID != "" {
-		return "tenant:" + tenantID
+		mode := "test"
+		if postgres.Livemode(r.Context()) {
+			mode = "live"
+		}
+		return "tenant:" + tenantID + ":" + mode
 	}
 	ip := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(ip); err == nil {

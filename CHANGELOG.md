@@ -99,6 +99,17 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Fixed
 
+- **Rate limiting is now per-mode for cookie-session callers.**
+  `rateLimitKey` for cookie-session traffic was `tenant:<id>` — a
+  single bucket shared by test and live operations from the same
+  tenant. One operator's heavy test exploration could throttle
+  another operator's legitimate live action on the same dashboard.
+  Now keyed `tenant:<id>:test` / `tenant:<id>:live` so the two modes
+  have independent quotas. API-key callers were already implicitly
+  per-mode (each `vlx_secret_test_*` / `vlx_secret_live_*` is a
+  separate key with a separate `key_id` bucket). Industry consensus
+  pattern — Stripe, Twilio, Lago all keep mode buckets independent.
+
 - **Mode toggle: cross-tab sync, URL-cursor strip, per-mode invoice
   numbering.** Three issues found during a brutal audit of test↔live
   toggle behaviour:
