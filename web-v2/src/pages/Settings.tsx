@@ -268,12 +268,16 @@ export default function SettingsPage() {
   const suggestedTaxName = form.company_country ? DEFAULT_TAX_NAME_BY_COUNTRY[form.company_country] : undefined
   const typicalRate = form.company_country ? TYPICAL_TAX_RATE_BY_COUNTRY[form.company_country] : undefined
 
-  const tab = ((): 'business' | 'invoicing' | 'tax' | 'payments' => {
+  // Tab values: 'general' is the default home; 'business' is accepted
+  // as a back-compat alias since older bookmarks / external links
+  // (docs, support emails) point at ?tab=business.
+  const tab = ((): 'general' | 'invoicing' | 'tax' | 'payments' => {
     const q = searchParams.get('tab')
     if (q === 'invoicing' || q === 'tax' || q === 'payments') return q
-    return 'business'
+    if (q === 'business') return 'general'
+    return 'general'
   })()
-  const setTab = (t: string) => setSearchParams(t === 'business' ? {} : { tab: t })
+  const setTab = (t: string) => setSearchParams(t === 'general' ? {} : { tab: t })
 
   const countryOptions = COUNTRIES.map(([code, name]) => ({
     value: code,
@@ -307,7 +311,7 @@ export default function SettingsPage() {
 
       <Tabs value={tab} onValueChange={setTab} className="mt-6">
         <TabsList>
-          <TabsTrigger value="business"><Building2 size={14} /> Business</TabsTrigger>
+          <TabsTrigger value="general"><Building2 size={14} /> General</TabsTrigger>
           <TabsTrigger value="invoicing"><FileText size={14} /> Invoicing</TabsTrigger>
           <TabsTrigger value="tax"><Receipt size={14} /> Tax</TabsTrigger>
           <TabsTrigger value="payments"><CreditCard size={14} /> Payments</TabsTrigger>
@@ -315,8 +319,10 @@ export default function SettingsPage() {
 
         <div className="max-w-3xl mt-6 pb-24">
 
-          {/* Business: identity + address */}
-          <TabsContent value="business" className="space-y-6">
+          {/* General: identity, address, and tenant-wide preferences
+              (timezone). "Business" was misleading — timezone affects
+              every formatDate in the dashboard, not just invoicing. */}
+          <TabsContent value="general" className="space-y-6">
             <Card>
               <CardContent className="p-6">
                 <div className="mb-5">
@@ -469,6 +475,28 @@ export default function SettingsPage() {
                 </div>
               </CardContent>
             </Card>
+
+            <Card>
+              <CardContent className="p-6">
+                <div className="mb-5">
+                  <h2 className="text-sm font-semibold text-foreground">Preferences</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Tenant-wide display and date conventions</p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div>
+                    <Label>Timezone</Label>
+                    <Combobox
+                      value={form.timezone}
+                      onChange={v => setValue('timezone', v, { shouldDirty: true })}
+                      options={timezoneOptions}
+                      placeholder="Select timezone..."
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">All dashboard timestamps render in this zone. Billing math stays UTC. ADR-010.</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* Invoicing: numbering, currency, locale, footer */}
@@ -490,17 +518,6 @@ export default function SettingsPage() {
                       className="mt-1"
                     />
                     <p className="text-xs text-muted-foreground mt-1">Used across invoices, plans, and charges</p>
-                  </div>
-                  <div>
-                    <Label>Timezone</Label>
-                    <Combobox
-                      value={form.timezone}
-                      onChange={v => setValue('timezone', v, { shouldDirty: true })}
-                      options={timezoneOptions}
-                      placeholder="Select timezone..."
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Billing cycle boundaries and reports</p>
                   </div>
                   <div>
                     <Label>Invoice prefix</Label>
@@ -573,7 +590,7 @@ export default function SettingsPage() {
                 <div className="mb-5">
                   <h2 className="text-sm font-semibold text-foreground">Your tax identity</h2>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    The tax ID you print on invoices. The seller's jurisdiction is your business address (set in Business tab).
+                    The tax ID you print on invoices. The seller's jurisdiction is your business address (set in General tab).
                   </p>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -589,7 +606,7 @@ export default function SettingsPage() {
                   <div>
                     <Label>Seller country</Label>
                     <div className="mt-1 px-3 py-2 rounded-md border border-border bg-muted/30 text-sm text-muted-foreground">
-                      {form.company_country ? (COUNTRY_NAME[form.company_country] || form.company_country) : 'Set business address in Business tab'}
+                      {form.company_country ? (COUNTRY_NAME[form.company_country] || form.company_country) : 'Set business address in General tab'}
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">Drives tax name/rate suggestions and cross-border VAT handling</p>
                   </div>
