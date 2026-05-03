@@ -304,28 +304,42 @@ func (s *Service) RecordFailedAttempt(ctx context.Context, email string) {
 
 // IssueResetToken generates a fresh reset token for the user with the
 // given email, persists the hash, and returns the plaintext (caller
-// emails it to the user via the reset link). Returns no error if the
-// email doesn't match a user — the caller should always render the
-// same "if your email is on file, you'll get a link" response so we
-// don't leak account existence.
-func (s *Service) IssueResetToken(ctx context.Context, email string) (string, error) {
+// emails it to the user via the reset link) along with the user's
+// tenant_id (caller threads it into the email-outbox row so the
+// password-reset email lands on the right tenant for operator
+// visibility). Returns ("", "", nil) if the email doesn't match — the
+// caller should always render the same "if your email is on file,
+// you'll get a link" response so we don't leak account existence.
+func (s *Service) IssueResetToken(ctx context.Context, email string) (plaintext, tenantID string, err error) {
 	u, err := s.store.GetByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, errs.ErrNotFound) {
-			return "", nil
+			return "", "", nil
 		}
-		return "", err
+		return "", "", err
 	}
 
-	plaintext, hash, err := generateResetToken()
+	tenants, err := s.store.TenantsForUser(ctx, u.ID)
 	if err != nil {
-		return "", err
+		return "", "", fmt.Errorf("load tenants for reset: %w", err)
+	}
+	if len(tenants) == 0 {
+		// User exists but isn't attached to any tenant — same posture
+		// as Authenticate's "no tenant memberships" check. Refuse to
+		// mint a token rather than enqueue an email with empty
+		// tenant_id (which the outbox FK would reject anyway).
+		return "", "", nil
+	}
+
+	rawToken, hash, err := generateResetToken()
+	if err != nil {
+		return "", "", err
 	}
 	expiresAt := s.clock.Now().Add(PasswordResetTokenTTL)
 	if _, err := s.store.CreateResetToken(ctx, u.ID, hash, expiresAt); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return plaintext, nil
+	return rawToken, tenants[0].TenantID, nil
 }
 
 // ConsumeResetToken validates the token, sets the new password, and
