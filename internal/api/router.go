@@ -675,9 +675,21 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// passes empty tenant + the email-as-name. brandingFor() falls
 	// back to platform defaults on empty tenantID — fine for an
 	// operator-grade email.
+	// Dashboard SPA origin used for password-reset links. Optional in
+	// single-origin prod (the request Host already serves both the API
+	// and the SPA, so the bare host works) but required in split-origin
+	// dev where the Vite server (:5173) and API (:8080) are different
+	// origins — without it, the reset link points at the API server
+	// which doesn't serve a /reset-password route, and the operator
+	// hits a 404 when clicking the email.
+	dashboardBaseURL := strings.TrimSpace(os.Getenv("DASHBOARD_BASE_URL"))
+	if dashboardBaseURL == "" {
+		slog.Warn("DASHBOARD_BASE_URL NOT SET — password-reset links will use the API server's Host header. Fine for single-origin prod (api + dashboard share a domain), but for split-origin dev set this to the dashboard SPA URL (e.g. http://localhost:5173).")
+	}
 	dashboardAuthH := user.NewHandler(
 		userSvc, sessionSvc, session.DefaultCookieConfig(),
 		&passwordResetEmailAdapter{sender: passwordResetEmail},
+		dashboardBaseURL,
 	)
 
 	s := &Server{

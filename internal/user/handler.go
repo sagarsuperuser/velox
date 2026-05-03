@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -21,10 +22,11 @@ import (
 //   POST /password-reset/request    — email → send reset link
 //   POST /password-reset/confirm    — token + new password → set
 type Handler struct {
-	users    *Service
-	sessions *session.Service
-	cookie   session.CookieConfig
-	email    EmailSender // required — production always wires the adapter
+	users           *Service
+	sessions        *session.Service
+	cookie          session.CookieConfig
+	email           EmailSender // required — production always wires the adapter
+	dashboardBaseURL string     // optional; overrides r.Host for reset links (split-origin dev)
 }
 
 // EmailSender is the narrow surface this handler uses to dispatch
@@ -37,13 +39,18 @@ type EmailSender interface {
 }
 
 // NewHandler wires the dependencies. emailSender is required —
-// password-reset requests will nil-panic if it's nil.
-func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender) *Handler {
+// password-reset requests will nil-panic if it's nil. dashboardBaseURL
+// is optional; when empty, reset-link URLs are built from the request's
+// Host header (works for single-origin prod deployments where the API
+// and SPA share a domain). For split-origin dev (Vite on :5173 vs API
+// on :8080) set DASHBOARD_BASE_URL so the link points at the SPA.
+func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender, dashboardBaseURL string) *Handler {
 	return &Handler{
-		users:    users,
-		sessions: sessions,
-		cookie:   cookie,
-		email:    emailSender,
+		users:           users,
+		sessions:        sessions,
+		cookie:          cookie,
+		email:           emailSender,
+		dashboardBaseURL: strings.TrimRight(strings.TrimSpace(dashboardBaseURL), "/"),
 	}
 }
 
@@ -219,7 +226,7 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		// email is on file, you'll get a link" to avoid email
 		// enumeration. SMTP misconfiguration shows up as a logged
 		// SendPasswordReset error.
-		resetLink := buildResetLink(r, plaintext)
+		resetLink := h.buildResetLink(r, plaintext)
 		if sendErr := h.email.SendPasswordReset(r.Context(), tenantID, req.Email, resetLink); sendErr != nil {
 			slog.Error("password reset email send failed", "err", sendErr)
 		}
@@ -270,9 +277,15 @@ func (h *Handler) confirmPasswordReset(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildResetLink constructs the operator-facing URL for the reset
-// confirmation page. Uses the request's Host header (dashboard and
-// API are same-origin in standard deployments).
-func buildResetLink(r *http.Request, token string) string {
+// confirmation page. When DASHBOARD_BASE_URL is set (split-origin
+// deployments — typical local dev where the SPA on :5173 and the
+// API on :8080 are different origins) it's used as the base. Otherwise
+// falls back to the request's Host header — correct for single-origin
+// prod deployments where the API and SPA share a domain.
+func (h *Handler) buildResetLink(r *http.Request, token string) string {
+	if h.dashboardBaseURL != "" {
+		return h.dashboardBaseURL + "/reset-password?token=" + token
+	}
 	scheme := "https"
 	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
 		scheme = "http"
