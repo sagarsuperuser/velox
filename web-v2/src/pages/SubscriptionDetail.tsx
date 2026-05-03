@@ -127,6 +127,17 @@ export default function SubscriptionDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['subscription-preview', id] })
     queryClient.invalidateQueries({ queryKey: ['subscription-activity-timeline', id] })
     queryClient.invalidateQueries({ queryKey: ['subscriptions'] })
+    // Cross-page caches that surface this subscription's state.
+    // CustomerDetail's overview + sub list show a sub badge / status
+    // pill; the Subscriptions list-with-test-clock-chip uses the same
+    // base query. Without these, pausing/canceling here left the
+    // CustomerDetail page stale until a hard refresh.
+    if (sub?.customer_id) {
+      queryClient.invalidateQueries({ queryKey: ['customer-overview', sub.customer_id] })
+      queryClient.invalidateQueries({ queryKey: ['customer-subscriptions', sub.customer_id] })
+    }
+    queryClient.invalidateQueries({ queryKey: ['subscriptions-for-test-clock-chip'] })
+    queryClient.invalidateQueries({ queryKey: ['subscriptions-for-trial-badge'] })
   }
 
   const activateMutation = useMutation({

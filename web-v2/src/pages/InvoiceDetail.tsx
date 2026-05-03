@@ -223,6 +223,20 @@ export default function InvoiceDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['invoice-credit-notes', id] })
     queryClient.invalidateQueries({ queryKey: ['invoice-timeline', id] })
     queryClient.invalidateQueries({ queryKey: ['invoices'] })
+    // Cross-page caches that surface this invoice. Dashboard recent
+    // invoices renders status/payment_status/amount for the most
+    // recent rows; CustomerDetail's overview returns recent_invoices
+    // for the same set; SubscriptionDetail's invoices tab is keyed
+    // per-sub. Without these, finalizing or voiding here left the
+    // dashboard / customer / sub pages on stale state.
+    queryClient.invalidateQueries({ queryKey: ['dashboard-recent-invoices'] })
+    queryClient.invalidateQueries({ queryKey: ['dashboard-overview'] })
+    if (invoice?.customer_id) {
+      queryClient.invalidateQueries({ queryKey: ['customer-overview', invoice.customer_id] })
+    }
+    if (invoice?.subscription_id) {
+      queryClient.invalidateQueries({ queryKey: ['subscription-invoices', invoice.subscription_id] })
+    }
   }
 
   const finalizeMutation = useMutation({
