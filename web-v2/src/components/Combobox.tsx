@@ -53,7 +53,21 @@ export function Combobox({
   const [maxHeight, setMaxHeight] = React.useState<number>(340)
   const ref = React.useRef<HTMLDivElement>(null)
 
-  const selected = options.find(o => o.value === value)
+  // Dedupe options by value defensively. CommandItem keys on
+  // opt.value; a caller that hands us duplicates (e.g. tzdb listing
+  // the same canonical zone twice) blows up React with a duplicate-
+  // key warning and renders the same row twice. Map preserves the
+  // first occurrence of each value, which is the conventional pick
+  // for sorted lists.
+  const dedupedOptions = React.useMemo(() => {
+    const seen = new Map<string, ComboboxOption>()
+    for (const o of options) {
+      if (!seen.has(o.value)) seen.set(o.value, o)
+    }
+    return Array.from(seen.values())
+  }, [options])
+
+  const selected = dedupedOptions.find(o => o.value === value)
 
   React.useEffect(() => {
     if (!open || !ref.current) return
@@ -171,7 +185,7 @@ export function Combobox({
             <CommandList className="flex-1 min-h-0 overflow-y-auto">
               <CommandEmpty>{emptyMessage}</CommandEmpty>
               <CommandGroup>
-                {options.map(opt => (
+                {dedupedOptions.map(opt => (
                   <CommandItem
                     key={opt.value}
                     value={opt.label}

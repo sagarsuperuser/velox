@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, setActiveCurrency, formatCents, type StripeProviderCredentials } from '@/lib/api'
+import { api, setActiveCurrency, setTenantTimezone, formatCents, type StripeProviderCredentials } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { useAuth } from '@/contexts/AuthContext'
@@ -219,13 +219,14 @@ export default function SettingsPage() {
       }
       reset(f)
       if (updated.default_currency) setActiveCurrency(updated.default_currency)
-      // Invalidate the shared ['settings'] query so
-      // TenantTimezoneBootstrap refetches and reseeds the
-      // module-scoped tenant TZ. Without this, formatDate /
-      // formatDateTime calls anywhere else in the dashboard keep
-      // rendering in the old timezone until the operator hard-
-      // refreshes — exactly what happened on the /usage page after
-      // changing TZ here.
+      // Synchronously reseed the module-scoped tenant TZ so the
+      // very next render of any page (including a navigation that
+      // happens before TenantTimezoneBootstrap's refetch lands)
+      // uses the new value. The refetch chain via invalidate is
+      // belt-and-suspenders — keeps the bootstrap's cached data
+      // coherent with the module state — but the direct call
+      // closes the race that left /usage on stale TZ in practice.
+      setTenantTimezone(updated.timezone ? normalizeTimezone(updated.timezone) : null)
       queryClient.invalidateQueries({ queryKey: ['settings'] })
       toast.success('Settings saved')
     } catch (err) {
