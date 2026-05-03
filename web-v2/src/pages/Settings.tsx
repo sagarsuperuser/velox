@@ -139,7 +139,6 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
-  const queryClient = useQueryClient()
 
   const formMethods = useForm<SettingsFormData>({
     resolver: zodResolver(settingsSchema),
@@ -219,15 +218,13 @@ export default function SettingsPage() {
       }
       reset(f)
       if (updated.default_currency) setActiveCurrency(updated.default_currency)
-      // Synchronously reseed the module-scoped tenant TZ so the
-      // very next render of any page (including a navigation that
-      // happens before TenantTimezoneBootstrap's refetch lands)
-      // uses the new value. The refetch chain via invalidate is
-      // belt-and-suspenders — keeps the bootstrap's cached data
-      // coherent with the module state — but the direct call
-      // closes the race that left /usage on stale TZ in practice.
+      // Synchronously reseed the module-scoped tenant TZ so the very
+      // next render of any page (including a navigation that happens
+      // before any async refetch could land) uses the new value.
+      // TenantTimezoneBootstrap is the only consumer of the shared
+      // ['settings'] query, so the module-state write is the single
+      // authoritative path — no parallel cache invalidation needed.
       setTenantTimezone(updated.timezone ? normalizeTimezone(updated.timezone) : null)
-      queryClient.invalidateQueries({ queryKey: ['settings'] })
       toast.success('Settings saved')
     } catch (err) {
       applyApiError(formMethods, err, [
