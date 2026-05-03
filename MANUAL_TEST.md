@@ -138,7 +138,8 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Empty form → inline error, no request.
 - [ ] Wrong password → 401 "Invalid email or password".
-- [ ] 5 wrong attempts in 1 min → 429, locked 15 min.
+- [ ] 5 consecutive wrong passwords → 5th returns 429 "too many failed attempts — try again in 15 minutes". A 6th attempt during the lock returns 429 again WITHOUT extending the timer (fixed window from the lockout-trigger time, not sliding). Successful login before hitting 5 resets the counter.
+- [ ] Without REDIS_URL set, the lockout doesn't enforce — a real DP must run Redis. Boot logs a warning if Redis is unreachable.
 - [ ] Right credentials → redirect to `/`, dashboard loads.
 - [ ] Cookie `velox_session`: HttpOnly, SameSite=Lax. No `velox_*` in localStorage.
 - [ ] Reload → still signed in.
