@@ -52,7 +52,6 @@ type TenantSettings struct {
 	DefaultCurrency string `json:"default_currency"`
 	Timezone        string `json:"timezone"`
 	InvoicePrefix   string `json:"invoice_prefix"`
-	InvoiceNextSeq  int    `json:"invoice_next_seq"`
 	NetPaymentTerms int    `json:"net_payment_terms"`
 	TaxRateBP       int64  `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
 	TaxName         string `json:"tax_name,omitempty"`
