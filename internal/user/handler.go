@@ -33,7 +33,7 @@ type Handler struct {
 // surfaces as a SendPasswordReset error logged here; the response to
 // the user stays generic to prevent enumeration.
 type EmailSender interface {
-	SendPasswordReset(ctx context.Context, email, resetLink string) error
+	SendPasswordReset(ctx context.Context, tenantID, email, resetLink string) error
 }
 
 // NewHandler wires the dependencies. emailSender is required —
@@ -207,20 +207,20 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plaintext, err := h.users.IssueResetToken(r.Context(), req.Email)
+	plaintext, tenantID, err := h.users.IssueResetToken(r.Context(), req.Email)
 	if err != nil {
 		slog.Error("password reset issue failed", "err", err)
 		// Generic response — don't expose internal failures
 	}
 
-	if plaintext != "" {
+	if plaintext != "" && tenantID != "" {
 		// Send is best-effort: failure is logged but never surfaces to
 		// the response, since the response shape is fixed at "if your
 		// email is on file, you'll get a link" to avoid email
 		// enumeration. SMTP misconfiguration shows up as a logged
 		// SendPasswordReset error.
 		resetLink := buildResetLink(r, plaintext)
-		if sendErr := h.email.SendPasswordReset(r.Context(), req.Email, resetLink); sendErr != nil {
+		if sendErr := h.email.SendPasswordReset(r.Context(), tenantID, req.Email, resetLink); sendErr != nil {
 			slog.Error("password reset email send failed", "err", sendErr)
 		}
 	}

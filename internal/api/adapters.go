@@ -222,13 +222,13 @@ type passwordResetEmailAdapter struct {
 	}
 }
 
-func (a *passwordResetEmailAdapter) SendPasswordReset(ctx context.Context, email, resetLink string) error {
-	// Empty tenantID + email-as-display-name. Body shows "Hi
-	// alice@example.com" rather than "Hi Alice" — acceptable trade
-	// for not having to plumb tenant lookup through the password-
-	// reset request flow. Multi-tenant customisation can ship later
-	// if a DP asks.
-	return a.sender.SendPasswordReset(ctx, "", email, email, resetLink)
+func (a *passwordResetEmailAdapter) SendPasswordReset(ctx context.Context, tenantID, email, resetLink string) error {
+	// Email-as-display-name: body shows "Hi alice@example.com"
+	// rather than "Hi Alice". Acceptable trade for not threading
+	// the user's display_name through the password-reset request
+	// flow. tenantID comes from user.Service.IssueResetToken so the
+	// outbox row stamps the right tenant for operator visibility.
+	return a.sender.SendPasswordReset(ctx, tenantID, email, email, resetLink)
 }
 
 // portalPaymentMethodUpdaterAdapter bridges Stripe Checkout (setup
