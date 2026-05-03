@@ -9,7 +9,6 @@ import { Layout } from '@/components/Layout'
 import { EmptyState } from '@/components/EmptyState'
 import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
-import { useAuth } from '@/contexts/AuthContext'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -158,11 +157,6 @@ function actionVariant(action: string): 'default' | 'secondary' | 'destructive' 
 }
 
 export default function AuditLogPage() {
-  // livemode dep on the loaders forces a refetch when the operator
-  // toggles Test↔Live; the cookie carries the mode server-side, so the
-  // value isn't read in the request — only as an invalidation trigger.
-  const { user } = useAuth()
-  const livemode = user?.livemode
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -213,7 +207,7 @@ export default function AuditLogPage() {
     api.listAuditLog(qs)
       .then(res => { setEntries(res.data || []); setTotal(res.total || 0); setLoading(false) })
       .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load audit log'); setEntries([]); setTotal(0); setLoading(false) })
-  }, [page, resourceType, action, resourceIdFilter, actorFilter, dateFrom, dateTo, livemode])
+  }, [page, resourceType, action, resourceIdFilter, actorFilter, dateFrom, dateTo])
 
   useEffect(() => { loadEntries() }, [loadEntries])
 
@@ -232,7 +226,7 @@ export default function AuditLogPage() {
       })
       .catch(() => { /* keep defaults */ })
     return () => { cancelled = true }
-  }, [livemode])
+  }, [])
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
   const groups = groupByDate(entries)

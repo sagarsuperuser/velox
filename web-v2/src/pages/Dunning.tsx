@@ -14,7 +14,6 @@ import {
 } from '@/lib/api'
 import { Layout } from '@/components/Layout'
 import { TestClockBadge } from '@/components/TestClockBadge'
-import { useAuth } from '@/contexts/AuthContext'
 import { showApiError } from '@/lib/formErrors'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
@@ -129,10 +128,6 @@ const FINAL_ACTIONS: { value: string; label: string; description: string }[] = [
 ]
 
 function PolicyTab() {
-  // livemode dep on the policy fetch so toggling Test↔Live reloads the
-  // mode-scoped policy in place.
-  const { user } = useAuth()
-  const livemode = user?.livemode
   const defaultPolicy: Partial<DunningPolicy> = {
     name: '',
     enabled: false,
@@ -162,7 +157,7 @@ function PolicyTab() {
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { loadPolicy() }, [livemode])
+  useEffect(() => { loadPolicy() }, [])
 
   const graceDays = form.grace_period_days ?? 3
   const retryCount = form.max_retry_attempts ?? 3
