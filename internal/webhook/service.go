@@ -300,10 +300,21 @@ func (s *Service) Dispatch(ctx context.Context, tenantID, eventType string, payl
 			continue
 		}
 
+		// Pin the event's livemode on the per-delivery ctx so every
+		// downstream TxTenant read/write (CreateDelivery, payload
+		// builder, signing-secret lookup) lands on the right mode
+		// partition. Goroutine path uses a fresh ctx (request may
+		// have returned by the time delivery fires) — pinning
+		// preserves the event's mode regardless of the request
+		// context's lifetime. Sync path inherits the caller ctx but
+		// re-pins for the same reason — the caller might have a
+		// detached or non-livemode ctx (recipe instantiation, etc).
+		dCtx := postgres.WithLivemode(context.Background(), event.Livemode)
 		if s.syncDeliver {
-			s.deliver(ctx, tenantID, ep, event)
+			dCtx = postgres.WithLivemode(ctx, event.Livemode)
+			s.deliver(dCtx, tenantID, ep, event)
 		} else {
-			go s.deliver(context.Background(), tenantID, ep, event)
+			go s.deliver(dCtx, tenantID, ep, event)
 		}
 	}
 
