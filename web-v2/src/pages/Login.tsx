@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { ApiError } from '@/lib/api'
 import { Card, CardContent } from '@/components/ui/card'
@@ -16,6 +16,11 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
   const { login } = useAuth()
+  // ?reset=success is set by ResetPassword on a clean update so the
+  // operator sees confirmation that the new password took effect.
+  // Cleared as soon as they start typing to avoid a stale banner.
+  const [searchParams] = useSearchParams()
+  const showResetSuccess = searchParams.get('reset') === 'success' && !email && !error
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -56,6 +61,13 @@ export default function LoginPage() {
 
       <Card className="w-full max-w-[420px]">
         <CardContent className="p-6">
+          {showResetSuccess && (
+            <div className="mb-4 px-3 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30">
+              <p className="text-emerald-700 dark:text-emerald-400 text-sm">
+                Password updated. Sign in with your new password.
+              </p>
+            </div>
+          )}
           <form onSubmit={handleSubmit} noValidate className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="email">Email</Label>
