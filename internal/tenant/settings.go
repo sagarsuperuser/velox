@@ -94,7 +94,7 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 
 	var ts domain.TenantSettings
 	err = tx.QueryRowContext(ctx, `
-		SELECT tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
+		SELECT tenant_id, default_currency, timezone, invoice_prefix,
 			net_payment_terms, tax_provider, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
 			COALESCE(default_product_tax_code,''), tax_on_failure,
 			COALESCE(company_name,''),
@@ -107,7 +107,7 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 			audit_fail_closed, created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1
 	`, tenantID).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
-		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
+		&ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
 		&ts.DefaultProductTaxCode, &ts.TaxOnFailure,
 		&ts.CompanyName,
 		&ts.CompanyAddressLine1, &ts.CompanyAddressLine2,
@@ -170,7 +170,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			invoice_footer = EXCLUDED.invoice_footer,
 			audit_fail_closed = EXCLUDED.audit_fail_closed,
 			updated_at = EXCLUDED.updated_at
-		RETURNING tenant_id, default_currency, timezone, invoice_prefix, invoice_next_seq,
+		RETURNING tenant_id, default_currency, timezone, invoice_prefix,
 			net_payment_terms, tax_provider, tax_rate_bp, COALESCE(tax_name,''), tax_inclusive,
 			COALESCE(default_product_tax_code,''), tax_on_failure,
 			COALESCE(company_name,''),
@@ -195,7 +195,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 		postgres.NullableString(ts.InvoiceFooter),
 		ts.AuditFailClosed, now,
 	).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
-		&ts.InvoiceNextSeq, &ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
+		&ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRateBP, &ts.TaxName, &ts.TaxInclusive,
 		&ts.DefaultProductTaxCode, &ts.TaxOnFailure,
 		&ts.CompanyName,
 		&ts.CompanyAddressLine1, &ts.CompanyAddressLine2,
@@ -214,18 +214,21 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 	return ts, nil
 }
 
-// NextInvoiceNumber atomically allocates the next invoice number for a tenant.
+// NextInvoiceNumber atomically allocates the next invoice number for a tenant
+// in the mode carried on ctx (postgres.WithLivemode). Test mode and live mode
+// each have their own monotonic sequence — Stripe-style — so test exploration
+// doesn't burn numbers that should have belonged to live invoices.
 //
 // The UPSERT form lazily initializes tenant_settings on first call so a freshly
 // bootstrapped tenant — which has a tenants row but no tenant_settings row —
 // gets VLX-000001, VLX-000002, ... without operators needing to touch the
 // settings endpoint first. Concurrent callers serialize on the row lock, so
-// no number is handed out twice.
+// no number is handed out twice within a mode.
 //
-// The INSERT uses invoice_next_seq = 2 so that RETURNING (seq - 1) yields 1
-// for the first invoice and (seq - 1) yields the pre-increment value on
-// every subsequent UPDATE call — keeping the sequence monotonic and gap-free
-// across both code paths.
+// The INSERT seeds the active mode's column to 2 so RETURNING (seq - 1)
+// yields 1 for the first invoice and (seq - 1) yields the pre-increment value
+// on every subsequent UPDATE call — keeping the sequence monotonic and
+// gap-free across both code paths.
 func (s *SettingsStore) NextInvoiceNumber(ctx context.Context, tenantID string) (string, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -233,16 +236,23 @@ func (s *SettingsStore) NextInvoiceNumber(ctx context.Context, tenantID string) 
 	}
 	defer postgres.Rollback(tx)
 
-	var prefix string
-	var seq int
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO tenant_settings (tenant_id, invoice_next_seq)
+	col := "invoice_next_seq_test"
+	if postgres.Livemode(ctx) {
+		col = "invoice_next_seq_live"
+	}
+	// SQL is built from a fixed allow-list of column names above —
+	// no caller-controlled interpolation.
+	q := `
+		INSERT INTO tenant_settings (tenant_id, ` + col + `)
 		VALUES ($1, 2)
 		ON CONFLICT (tenant_id) DO UPDATE
-			SET invoice_next_seq = tenant_settings.invoice_next_seq + 1
-		RETURNING invoice_prefix, invoice_next_seq - 1
-	`, tenantID).Scan(&prefix, &seq)
-	if err != nil {
+			SET ` + col + ` = tenant_settings.` + col + ` + 1
+		RETURNING invoice_prefix, ` + col + ` - 1
+	`
+
+	var prefix string
+	var seq int
+	if err := tx.QueryRowContext(ctx, q, tenantID).Scan(&prefix, &seq); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {
@@ -251,8 +261,9 @@ func (s *SettingsStore) NextInvoiceNumber(ctx context.Context, tenantID string) 
 	return strings.ToUpper(prefix) + "-" + padSeq(seq), nil
 }
 
-// NextCreditNoteNumber atomically allocates the next credit note number.
-// Same upsert semantics as NextInvoiceNumber.
+// NextCreditNoteNumber atomically allocates the next credit note number in
+// the mode carried on ctx. Same per-mode-column rationale as
+// NextInvoiceNumber above.
 func (s *SettingsStore) NextCreditNoteNumber(ctx context.Context, tenantID string) (string, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -260,16 +271,21 @@ func (s *SettingsStore) NextCreditNoteNumber(ctx context.Context, tenantID strin
 	}
 	defer postgres.Rollback(tx)
 
-	var prefix string
-	var seq int
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO tenant_settings (tenant_id, credit_note_next_seq)
+	col := "credit_note_next_seq_test"
+	if postgres.Livemode(ctx) {
+		col = "credit_note_next_seq_live"
+	}
+	q := `
+		INSERT INTO tenant_settings (tenant_id, ` + col + `)
 		VALUES ($1, 2)
 		ON CONFLICT (tenant_id) DO UPDATE
-			SET credit_note_next_seq = tenant_settings.credit_note_next_seq + 1
-		RETURNING credit_note_prefix, credit_note_next_seq - 1
-	`, tenantID).Scan(&prefix, &seq)
-	if err != nil {
+			SET ` + col + ` = tenant_settings.` + col + ` + 1
+		RETURNING credit_note_prefix, ` + col + ` - 1
+	`
+
+	var prefix string
+	var seq int
+	if err := tx.QueryRowContext(ctx, q, tenantID).Scan(&prefix, &seq); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {

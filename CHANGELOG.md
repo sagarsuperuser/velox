@@ -99,6 +99,46 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Fixed
 
+- **Mode toggle: cross-tab sync, URL-cursor strip, per-mode invoice
+  numbering.** Three issues found during a brutal audit of test↔live
+  toggle behaviour:
+  1. **Cross-tab desync (production safety bug).** Tab A toggling
+     test→live left Tab B's React state stuck on test while the
+     shared session cookie flipped to live → Tab B refetched live
+     data under an amber TEST pill, and an action click could mutate
+     live data. AuthContext now broadcasts mode flips via
+     `BroadcastChannel('velox-mode')` (with a `localStorage`
+     `storage` event fallback for browsers without
+     BroadcastChannel). Other tabs receive the message and update
+     their `livemode` state without re-calling
+     `/v1/dashboard/mode`.
+  2. **URL query params survived mode toggle.** Pagination cursors
+     (`?cursor=cus_test_xxx`) and filters reference the prior mode's
+     dataset; carrying them across produced empty pages or
+     mode-mismatched filters. Toggle now `navigate(pathname)` to
+     drop the search string while keeping the path so detail-page
+     IDs surface the existing "Not found" branch.
+  3. **Shared invoice + credit-note sequence counter.**
+     `tenant_settings.invoice_next_seq` and `credit_note_next_seq`
+     were per-tenant, not per-mode — test exploration burned
+     numbers that should have belonged to live invoices, leaving
+     gaps like INV-000001…000005, then live's first real invoice
+     was INV-000006 with no record-keeping reason. Migration 0072
+     splits both counters into `_test` + `_live` columns; backfill
+     copies the prior shared value to both so no per-mode sequence
+     ever regresses. `NextInvoiceNumber` /
+     `NextCreditNoteNumber` now read `postgres.Livemode(ctx)` to
+     pick the active column. The
+     `UNIQUE (tenant_id, livemode, invoice_number)` constraint
+     from migration 0020 already permits both modes to start at
+     the same value without clash.
+
+  Mode-in-URL (Stripe-style `/test/` path prefix) was scoped during
+  this work and explicitly deferred — Stripe does it but Lago, Orb
+  and the rest of the OSS-billing field don't, so it's
+  Stripe-tier polish rather than industry-standard. Cross-tab
+  safety is solved without it.
+
 - **Usage page stat cards + meter breakdown now reflect server-side
   filtered totals, not the visible page.** Before, the four cards on
   `/usage` (Total Events, Page Units, Active Meters, Active Customers)

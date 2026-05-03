@@ -92,11 +92,65 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const setMode = useCallback(async (livemode: boolean) => {
     await authApi.setMode(livemode)
     setUser(prev => (prev ? { ...prev, livemode } : prev))
-    // Mode flip swaps the active QueryClient inside
-    // ModeAwareQueryProvider, so every useQuery / useMutation
-    // re-binds to the new mode's cache automatically. No explicit
-    // clear, no nav. Going back the other way reuses the prior
-    // cache instead of refetching.
+    // Notify other tabs sharing this session cookie. Without this,
+    // Tab B keeps its amber "TEST" pill while the server-side
+    // session is now live — next refetch in Tab B returns live
+    // data under a TEST label. BroadcastChannel is supported in
+    // every browser we care about; storage events are the fallback
+    // path (localStorage write below also fires a `storage` event
+    // in other tabs, picked up by the listener in useEffect).
+    try {
+      const ch = new BroadcastChannel('velox-mode')
+      ch.postMessage({ livemode })
+      ch.close()
+    } catch {
+      // BroadcastChannel unavailable — storage event handles it.
+    }
+    try {
+      localStorage.setItem('velox:mode-sync', JSON.stringify({ livemode, ts: Date.now() }))
+    } catch {
+      // Private-mode Safari throws on localStorage write — accept
+      // single-tab behavior in that case.
+    }
+  }, [])
+
+  // Listen for mode flips from other tabs. Either path lands here:
+  // BroadcastChannel for evergreen browsers, storage event for the
+  // localStorage-write fallback. We update the React state but
+  // don't re-call /v1/dashboard/mode — the server-side flip
+  // already happened in the originating tab.
+  useEffect(() => {
+    const apply = (livemode: boolean) => {
+      setUser(prev => {
+        if (!prev || prev.livemode === livemode) return prev
+        return { ...prev, livemode }
+      })
+    }
+    let ch: BroadcastChannel | null = null
+    try {
+      ch = new BroadcastChannel('velox-mode')
+      ch.onmessage = ev => {
+        if (ev.data && typeof ev.data.livemode === 'boolean') {
+          apply(ev.data.livemode)
+        }
+      }
+    } catch {
+      // Fall through to storage-event path.
+    }
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key !== 'velox:mode-sync' || !ev.newValue) return
+      try {
+        const { livemode } = JSON.parse(ev.newValue) as { livemode: boolean }
+        if (typeof livemode === 'boolean') apply(livemode)
+      } catch {
+        // Ignore malformed payloads.
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => {
+      ch?.close()
+      window.removeEventListener('storage', onStorage)
+    }
   }, [])
 
   return (

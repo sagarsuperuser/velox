@@ -1090,7 +1090,6 @@ export interface TenantSettings {
   default_currency: string
   timezone: string
   invoice_prefix: string
-  invoice_next_seq: number
   net_payment_terms: number
   tax_provider: 'none' | 'manual' | 'stripe_tax'
   tax_rate_bp: number

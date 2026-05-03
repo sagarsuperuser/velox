@@ -177,15 +177,15 @@ export function Layout({ children }: { children: ReactNode }) {
     try {
       await setMode(next)
       toast.success(next ? 'Switched to live mode' : 'Switched to test mode')
-      // No navigation needed — ModeAwareQueryProvider swaps the
-      // active QueryClient on the livemode flip, so every useQuery
-      // re-binds to the new mode's cache. Pages that fetch outside
-      // React Query (UsageEvents, AuditLog, Credits, Dunning policy,
-      // WebhookEvents SSE) include user.livemode in their useEffect
-      // deps, so they refetch in place. Operator stays on the page
-      // they were on. Detail-page URLs with mode-scoped entity IDs
-      // refetch and surface a 404 if the entity doesn't exist in the
-      // new mode — handled by the page's existing error UI.
+      // Strip the query string before staying on the page. URL
+      // params like ?cursor=cus_test_xxx and ?status=active reference
+      // the prior mode's dataset; carrying them across produces
+      // empty pages or mode-mismatched filters. Pathname stays so
+      // detail-page IDs surface the existing "Not found" branch
+      // for entities that don't exist in the new mode.
+      if (location.search) {
+        navigate(location.pathname, { replace: true })
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to switch mode'
       toast.error(msg)
