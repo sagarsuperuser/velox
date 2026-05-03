@@ -44,6 +44,13 @@ export function Combobox({
   const [open, setOpen] = React.useState(false)
   const [dropUp, setDropUp] = React.useState(false)
   const [alignRight, setAlignRight] = React.useState(false)
+  // Available height for the popover, computed against actual viewport
+  // room (above OR below the trigger, whichever side we pick). Without
+  // this, opening the dropdown with DevTools docked at the bottom
+  // shrinks window.innerHeight, the dropUp branch fires, but the
+  // popover still wants ~340px upward — overflowing past any sibling
+  // field above the trigger and rendering over it.
+  const [maxHeight, setMaxHeight] = React.useState<number>(340)
   const ref = React.useRef<HTMLDivElement>(null)
 
   const selected = options.find(o => o.value === value)
@@ -51,8 +58,19 @@ export function Combobox({
   React.useEffect(() => {
     if (!open || !ref.current) return
     const rect = ref.current.getBoundingClientRect()
-    const spaceBelow = window.innerHeight - rect.bottom
-    setDropUp(spaceBelow < 340)
+    const margin = 16 // breathing room from viewport edge / DevTools split
+    const spaceBelow = window.innerHeight - rect.bottom - margin
+    const spaceAbove = rect.top - margin
+    // Prefer downward unless above has materially more room AND below
+    // is too tight for a usable list. Symmetric: same threshold for
+    // both sides so flip is deterministic.
+    const useDropUp = spaceAbove > spaceBelow && spaceBelow < 240
+    setDropUp(useDropUp)
+    // Cap the popover at whichever side we picked. Floor at 160px so a
+    // truly squished viewport still shows the search input + a couple
+    // of rows scrolling.
+    const available = useDropUp ? spaceAbove : spaceBelow
+    setMaxHeight(Math.max(160, Math.min(340, available)))
     // Right-align when the trigger sits close enough to the viewport's
     // right edge that the popover (which can grow up to 32rem wide for
     // long labels like "America/Los_Angeles (UTC-08:00)") would clip.
@@ -125,6 +143,7 @@ export function Combobox({
 
       {open && (
         <div
+          style={{ maxHeight }}
           className={cn(
             // min-w-full lets the popover be at least as wide as the
             // trigger but grow up to max-w when content needs more
@@ -132,7 +151,7 @@ export function Combobox({
             // labels in narrow columns. max-w caps the natural growth
             // so the popover never overflows the viewport on small
             // screens; alignRight handles the right-edge case.
-            'absolute z-50 min-w-full max-w-[min(32rem,calc(100vw-2rem))] rounded-md border border-border bg-popover shadow-md',
+            'absolute z-50 min-w-full max-w-[min(32rem,calc(100vw-2rem))] flex flex-col overflow-hidden rounded-md border border-border bg-popover shadow-md',
             dropUp ? 'bottom-full mb-1' : 'top-full mt-1',
             alignRight ? 'right-0' : 'left-0',
           )}
@@ -142,9 +161,14 @@ export function Combobox({
               const haystack = [val, ...(keywords ?? [])].join(' ').toLowerCase()
               return haystack.includes(search.toLowerCase()) ? 1 : 0
             }}
+            className="flex flex-1 flex-col min-h-0"
           >
             <CommandInput placeholder="Search..." autoFocus />
-            <CommandList className="max-h-72">
+            {/* CommandList scrolls within the remaining vertical space
+                after the search input. flex-1 + min-h-0 is the
+                standard pattern to let a flex child actually shrink
+                below its content height. */}
+            <CommandList className="flex-1 min-h-0 overflow-y-auto">
               <CommandEmpty>{emptyMessage}</CommandEmpty>
               <CommandGroup>
                 {options.map(opt => (
