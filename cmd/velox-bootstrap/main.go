@@ -75,9 +75,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  1. Sign in with the existing credentials at http://localhost:5173/login")
 		fmt.Fprintln(os.Stderr, "  2. Create an ADDITIONAL tenant in the same deployment:")
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_EMAIL=tenant-b@local \\`)
-		fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_PASSWORD='choose-a-password' \\`)
-		fmt.Fprintln(os.Stderr, `       make bootstrap "Tenant B"`)
+		fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_EMAIL=tenant-b@local \`)
+		fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_PASSWORD='choose-a-password' \`)
+		fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_TENANT='Tenant B' \`)
+		fmt.Fprintln(os.Stderr, `       make bootstrap`)
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  3. Wipe and re-bootstrap (loses all dev data):")
 		fmt.Fprintln(os.Stderr, "")
@@ -86,11 +87,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create tenant
+	// Create tenant. Tenant name resolution order:
+	//   1. VELOX_BOOTSTRAP_TENANT env var — works through `make bootstrap`
+	//      (make swallows positional args and re-interprets them as
+	//      separate targets, so `make bootstrap "Tenant B"` would NOT
+	//      forward "Tenant B" to the binary)
+	//   2. Positional arg(s) — works when invoking the binary directly
+	//      (`go run ./cmd/velox-bootstrap "Tenant B"`)
+	//   3. Default: "Demo Tenant"
 	tenantID := postgres.NewID("vlx_ten")
-	tenantName := "Demo Tenant"
-	if len(os.Args) > 1 {
+	tenantName := strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_TENANT"))
+	if tenantName == "" && len(os.Args) > 1 {
 		tenantName = strings.Join(os.Args[1:], " ")
+	}
+	if tenantName == "" {
+		tenantName = "Demo Tenant"
 	}
 
 	_, err = db.Pool.ExecContext(ctx,
@@ -194,7 +205,8 @@ func main() {
 	fmt.Println("  different email:")
 	fmt.Println(`    VELOX_BOOTSTRAP_EMAIL=tenant-b@local \`)
 	fmt.Println(`    VELOX_BOOTSTRAP_PASSWORD='choose-a-password' \`)
-	fmt.Println(`    make bootstrap "Tenant B"`)
+	fmt.Println(`    VELOX_BOOTSTRAP_TENANT='Tenant B' \`)
+	fmt.Println(`    make bootstrap`)
 	fmt.Println("========================================")
 }
 
