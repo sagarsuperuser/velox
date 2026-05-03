@@ -714,6 +714,15 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	} else {
 		slog.Info("REDIS_URL not set, rate limiting will fail open")
 	}
+	// Per-email failed-login counter. Required for the lockout to
+	// actually behave as documented (5 misses then 15-min lock); without
+	// it RecordFailedAttempt is a no-op and accounts never lock. Same
+	// fail-open posture as the rate limiter — if Redis is unreachable
+	// we accept the lockout-not-enforced trade rather than convert a
+	// Redis blip into a DoS for the real user.
+	if rdb != nil {
+		userSvc.SetFailureCounter(user.NewRedisFailureCounter(rdb))
+	}
 	rateLimiter := mw.NewRateLimiter(rdb, 100, time.Minute)
 	// In production, refuse requests when Redis is unreachable rather than
 	// silently disabling rate limiting (DDoS vector).

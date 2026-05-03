@@ -24,8 +24,26 @@ import (
 // rule (5 fails per 1 minute → 15-minute lockout). All of this is
 // well-trodden Go stdlib + x/crypto territory.
 type Service struct {
-	store Store
-	clock clock.Clock
+	store    Store
+	clock    clock.Clock
+	failures FailureCounter
+}
+
+// FailureCounter tracks per-email login-failure counts so the lockout
+// only fires after FailedLoginThreshold consecutive misses, matching
+// the GitHub / Stripe model. Implemented Redis-backed in production
+// (incr + expire). Nil-safe — when not configured (e.g. local dev
+// without Redis) the service degrades to no lockout enforcement,
+// matching the rate limiter's fail-open default.
+type FailureCounter interface {
+	// Increment bumps the counter for email and returns the new count.
+	// First increment also seeds the TTL = LockoutDuration so a user
+	// who fails 4 times then waits long enough has the count quietly
+	// reset before they try again.
+	Increment(ctx context.Context, email string) (int, error)
+	// Reset clears the counter (called on successful login or after a
+	// lockout is triggered).
+	Reset(ctx context.Context, email string) error
 }
 
 func NewService(store Store, clk clock.Clock) *Service {
@@ -33,6 +51,13 @@ func NewService(store Store, clk clock.Clock) *Service {
 		clk = clock.Real()
 	}
 	return &Service{store: store, clock: clk}
+}
+
+// SetFailureCounter wires the per-email failure counter. Called from
+// the API wiring layer after Redis is available. Without it,
+// RecordFailedAttempt is a no-op — accounts never lock.
+func (s *Service) SetFailureCounter(fc FailureCounter) {
+	s.failures = fc
 }
 
 const (
@@ -232,22 +257,49 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (do
 	_ = s.store.TouchLastLogin(ctx, u.ID, now)
 	u.LastLoginAt = &now
 	u.LockedUntil = nil
+	// Successful login resets the consecutive-failure counter so a
+	// user who typed wrong twice then succeeded doesn't carry those
+	// misses into a future session.
+	if s.failures != nil {
+		_ = s.failures.Reset(ctx, email)
+	}
 	return u, tenants, nil
 }
 
-// RecordFailedAttempt is called by the login handler after a failed
-// authenticate. If the user exists and the configured failure
-// threshold would be exceeded by this attempt, sets locked_until to
-// now+LockoutDuration. The caller is responsible for the running
-// counter (via the Redis rate limiter); this method only flips the
-// DB lock state.
+// RecordFailedAttempt is called by the login handler after a bad-
+// credentials response. Bumps the per-email counter; only locks the
+// account once the counter crosses FailedLoginThreshold. Counter
+// auto-expires after LockoutDuration so a user who fails 4 times then
+// waits doesn't accumulate misses indefinitely. Email-as-key (not
+// user_id) means failed attempts against non-existent emails still
+// register, denying enumeration via "wrong-password vs no-such-user"
+// timing — but they don't trigger a Lock() since there's no user row
+// to flip.
 func (s *Service) RecordFailedAttempt(ctx context.Context, email string) {
-	u, err := s.store.GetByEmail(ctx, email)
-	if err != nil {
-		return // user doesn't exist; nothing to lock
+	if s.failures == nil {
+		// No counter wired (e.g. local dev without Redis). Match the
+		// rate-limiter's fail-open default — no enforcement.
+		return
 	}
-	until := s.clock.Now().Add(LockoutDuration)
-	_ = s.store.Lock(ctx, u.ID, until)
+	count, err := s.failures.Increment(ctx, email)
+	if err != nil {
+		// Redis hiccup — fail open, same as rate limiter. We could
+		// fail closed and lock immediately for security, but that
+		// converts a Redis blip into a DoS for the real user.
+		return
+	}
+	if count < FailedLoginThreshold {
+		return
+	}
+	// Threshold crossed. Try to find the user row and lock it. A miss
+	// here (counter incremented for a non-existent email) is fine —
+	// there's nothing to flip. Reset the counter either way so the
+	// next 15-minute window starts fresh after the lockout expires.
+	if u, err := s.store.GetByEmail(ctx, email); err == nil {
+		until := s.clock.Now().Add(LockoutDuration)
+		_ = s.store.Lock(ctx, u.ID, until)
+	}
+	_ = s.failures.Reset(ctx, email)
 }
 
 // IssueResetToken generates a fresh reset token for the user with the
