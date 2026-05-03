@@ -292,7 +292,12 @@ export default function CustomerDetailPage() {
                     onClick={() => {
                       api.updateCustomer(customer.id, { status: 'archived' } as any).then(() => {
                         toast.success('Customer archived')
-                        refetch()
+                        // invalidateAll() covers ['customers'] (list)
+                        // + per-customer queries. refetch() alone
+                        // updated only the local detail view, so the
+                        // archived customer kept appearing on the
+                        // /customers list until a hard refresh.
+                        invalidateAll()
                       }).catch((err: Error) => showApiError(err, 'Failed to update'))
                     }}
                   >
@@ -778,6 +783,10 @@ export default function CustomerDetailPage() {
           onSaved={() => {
             setShowEditCustomer(false)
             queryClient.invalidateQueries({ queryKey: ['customer', id] })
+            // Display name / email change must propagate to the
+            // /customers list too. Pre-fix only the detail page
+            // refreshed; list rows stayed on the old name.
+            queryClient.invalidateQueries({ queryKey: ['customers'] })
             toast.success('Customer updated')
           }}
         />
