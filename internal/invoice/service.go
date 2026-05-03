@@ -10,6 +10,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // InvoiceNumberer allocates the next invoice number for a tenant.
@@ -316,6 +317,14 @@ func (s *Service) GetByPublicToken(ctx context.Context, token string) (domain.In
 	if err != nil {
 		return domain.Invoice{}, false, err
 	}
+	// Pin livemode on the ctx before attachAttention. attachAttention
+	// reads payment_setups under TxTenant; without the pin it would
+	// default to live and either return a stale-mode row or trip the
+	// "livemode propagation missing" WARN. The hosted-invoice handler
+	// pins again on the request ctx for its own downstream reads, but
+	// service-level pinning here keeps callers (and the attention
+	// classification specifically) honest regardless of who's calling.
+	ctx = postgres.WithLivemode(ctx, livemode)
 	return s.attachAttention(ctx, inv), livemode, nil
 }
 
