@@ -342,6 +342,27 @@ func (s *Service) IssueResetToken(ctx context.Context, email string) (plaintext,
 	return rawToken, tenants[0].TenantID, nil
 }
 
+// CheckResetToken is the non-consuming counterpart of
+// ConsumeResetToken. The reset-password page calls it on mount and
+// renders the form only when nil is returned; otherwise it shows
+// "this link is no longer valid". Stops the operator from filling
+// in the form and only learning at submit-time that the token was
+// already used (e.g. they reset earlier and clicked the email link
+// from history).
+func (s *Service) CheckResetToken(ctx context.Context, plaintext string) error {
+	if plaintext == "" {
+		return errs.Invalid("token", "reset token is invalid, expired, or already used")
+	}
+	tokenHash := hashResetToken(plaintext)
+	if _, err := s.store.LookupResetToken(ctx, tokenHash); err != nil {
+		if errors.Is(err, errs.ErrNotFound) {
+			return errs.Invalid("token", "reset token is invalid, expired, or already used")
+		}
+		return err
+	}
+	return nil
+}
+
 // ConsumeResetToken validates the token, sets the new password, and
 // returns the user it belonged to. Single-use: the token is stamped
 // used_at atomically inside ConsumeResetToken, so a concurrent second

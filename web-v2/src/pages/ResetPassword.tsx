@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { authApi } from '@/lib/auth'
 import { ApiError } from '@/lib/api'
@@ -28,7 +28,20 @@ export default function ResetPasswordPage() {
   const [showConfirm, setShowConfirm] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  // tokenState: 'checking' (initial probe in flight), 'valid' (form
+  // renderable), 'invalid' (already-used / expired / unknown — show
+  // "link no longer valid" + a re-request CTA).
+  const [tokenState, setTokenState] = useState<'checking' | 'valid' | 'invalid'>(token ? 'checking' : 'invalid')
   const navigate = useNavigate()
+
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    authApi.checkPasswordResetToken(token)
+      .then(() => { if (!cancelled) setTokenState('valid') })
+      .catch(() => { if (!cancelled) setTokenState('invalid') })
+    return () => { cancelled = true }
+  }, [token])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -73,9 +86,15 @@ export default function ResetPasswordPage() {
 
       <Card className="w-full max-w-[420px]">
         <CardContent className="p-6">
-          {!token ? (
+          {tokenState === 'checking' ? (
+            <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
+              <Loader2 size={16} className="animate-spin mr-2" /> Validating link…
+            </div>
+          ) : tokenState === 'invalid' ? (
             <div className="space-y-4 text-sm">
-              <p className="text-destructive">Reset link is missing the token.</p>
+              <p className="text-foreground">
+                This reset link is no longer valid. It may have been used already or expired.
+              </p>
               <Link to="/forgot-password">
                 <Button variant="outline" className="w-full">Request a new reset link</Button>
               </Link>

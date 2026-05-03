@@ -231,3 +231,29 @@ func (s *PostgresStore) ConsumeResetToken(ctx context.Context, tokenHash string)
 	}
 	return userID, nil
 }
+
+// LookupResetToken is the read-only counterpart — same validity gate
+// (un-used, un-expired) but no UPDATE. Used by the reset-password
+// page on mount to decide between rendering the form vs. an "this
+// link is no longer valid" message.
+func (s *PostgresStore) LookupResetToken(ctx context.Context, tokenHash string) (string, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return "", err
+	}
+	defer postgres.Rollback(tx)
+	var userID string
+	row := tx.QueryRowContext(ctx, `
+		SELECT user_id FROM password_reset_tokens
+		WHERE token_hash = $1
+		  AND used_at IS NULL
+		  AND expires_at > now()
+	`, tokenHash)
+	if err := row.Scan(&userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errs.ErrNotFound
+		}
+		return "", err
+	}
+	return userID, nil
+}
