@@ -55,6 +55,13 @@ export const authApi = {
   confirmPasswordReset: (token: string, password: string) =>
     apiRequest<{ message: string }>('POST', '/auth/password-reset/confirm', { token, password }),
 
+  // checkPasswordResetToken validates a token without consuming it.
+  // The reset-password page calls this on mount so it can render
+  // "link no longer valid" instead of a form the user fills in only
+  // to be rejected at submit. Throws ApiError(422) when invalid.
+  checkPasswordResetToken: (token: string) =>
+    apiRequest<{ valid: boolean }>('GET', `/auth/password-reset/check?token=${encodeURIComponent(token)}`),
+
   // setMode flips the active mode (test/live) on the cookie session.
   // All subsequent requests inherit the new mode automatically.
   setMode: (livemode: boolean) =>

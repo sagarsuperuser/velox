@@ -48,4 +48,13 @@ type Store interface {
 	// it isn't used or expired, and stamps used_at. Returns the token's
 	// owning user_id.
 	ConsumeResetToken(ctx context.Context, tokenHash string) (string, error)
+
+	// LookupResetToken is the non-consuming counterpart of
+	// ConsumeResetToken — returns the owning user_id if the token is
+	// currently valid (not used, not expired) without flipping
+	// used_at. Backs the page-mount validity check on the reset-
+	// password screen so the operator who clicks an already-used
+	// email link gets "this link is no longer valid" instead of a
+	// form that rejects them at submit time.
+	LookupResetToken(ctx context.Context, tokenHash string) (string, error)
 }

@@ -65,6 +65,10 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/mode", h.setMode)
 	r.Post("/password-reset/request", h.requestPasswordReset)
 	r.Post("/password-reset/confirm", h.confirmPasswordReset)
+	// GET /password-reset/check?token=… — non-consuming validity probe
+	// for the reset-password page on mount. 200 = renderable form, 422
+	// = link is invalid/expired/used. Idempotent so it's a GET.
+	r.Get("/password-reset/check", h.checkPasswordResetToken)
 	return r
 }
 
@@ -240,6 +244,24 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 type confirmResetReq struct {
 	Token    string `json:"token"`
 	Password string `json:"password"`
+}
+
+// checkPasswordResetToken probes a reset token's validity without
+// consuming it. 200 with {"valid": true} when the token is currently
+// usable; 422 with the same shape (valid: false) when it's expired,
+// already used, or unknown. The reset-password page hits this on
+// mount so it can render "this link is no longer valid" instead of
+// a form the user fills in only to be rejected at submit.
+func (h *Handler) checkPasswordResetToken(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if err := h.users.CheckResetToken(r.Context(), token); err != nil {
+		respond.JSON(w, r, http.StatusUnprocessableEntity, map[string]any{
+			"valid":  false,
+			"reason": "invalid_or_expired",
+		})
+		return
+	}
+	respond.JSON(w, r, http.StatusOK, map[string]any{"valid": true})
 }
 
 // confirmPasswordReset validates the reset token, applies the new
