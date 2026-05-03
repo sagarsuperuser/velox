@@ -167,9 +167,16 @@ func isDigit(c byte) bool  { return c >= '0' && c <= '9' }
 func isLetter(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
 
 // reportBounceIfPermanent forwards a permanent-failure SMTP error to
-// the configured BounceReporter. Fresh 5s context so a slow DB lookup
-// doesn't starve the next send.
-func (s *Sender) reportBounceIfPermanent(tenantID, to string, err error) {
+// the configured BounceReporter. ctx must carry livemode (caller
+// inherits it from the request middleware or the dispatcher's per-row
+// pin) — bounceReporter eventually opens a TxTenant on customers,
+// without livemode the row update would default to live mode and
+// either trip the propagation WARN or flip status on the wrong row.
+//
+// the configured BounceReporter. 5s timeout derived from the caller's
+// ctx so a slow DB lookup doesn't starve the next send and the
+// livemode pin propagates into customers.MarkEmailBounced.
+func (s *Sender) reportBounceIfPermanent(ctx context.Context, tenantID, to string, err error) {
 	if s.bounceReporter == nil {
 		return
 	}
@@ -177,7 +184,7 @@ func (s *Sender) reportBounceIfPermanent(tenantID, to string, err error) {
 	if !permanent {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	s.bounceReporter.ReportBounce(ctx, tenantID, to, reason)
 }
@@ -248,7 +255,7 @@ func (s *Sender) SendInvoice(ctx context.Context, tenantID, to, customerName, in
 	}
 	textBody := invoiceTextBody(customerName, invoiceNumber, amount, currency, hostedURL)
 
-	return s.sendRich(richMessage{
+	return s.sendRich(ctx, richMessage{
 		TenantID:       tenantID,
 		To:             to,
 		Subject:        subject,
@@ -277,7 +284,7 @@ func (s *Sender) SendPaymentReceipt(ctx context.Context, tenantID, to, customerN
 	}
 	textBody := receiptTextBody(customerName, invoiceNumber, amount, hostedURL)
 
-	return s.sendRich(richMessage{
+	return s.sendRich(ctx, richMessage{
 		TenantID: tenantID, To: to, Subject: subject,
 		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
 	})
@@ -304,7 +311,7 @@ func (s *Sender) SendDunningWarning(ctx context.Context, tenantID, to, customerN
 	}
 	textBody := dunningWarningTextBody(customerName, invoiceNumber, attemptNumber, maxAttempts, nextRetryDate, failureReason, hostedURL)
 
-	return s.sendRich(richMessage{
+	return s.sendRich(ctx, richMessage{
 		TenantID: tenantID, To: to, Subject: subject,
 		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
 	})
@@ -326,7 +333,7 @@ func (s *Sender) SendDunningEscalation(ctx context.Context, tenantID, to, custom
 	}
 	textBody := dunningEscalationTextBody(customerName, invoiceNumber, action, hostedURL)
 
-	return s.sendRich(richMessage{
+	return s.sendRich(ctx, richMessage{
 		TenantID: tenantID, To: to, Subject: subject,
 		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
 	})
@@ -348,7 +355,7 @@ func (s *Sender) SendPaymentFailed(ctx context.Context, tenantID, to, customerNa
 	}
 	textBody := paymentFailedTextBody(customerName, invoiceNumber, reason, hostedURL)
 
-	return s.sendRich(richMessage{
+	return s.sendRich(ctx, richMessage{
 		TenantID: tenantID, To: to, Subject: subject,
 		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
 	})
@@ -372,7 +379,7 @@ func (s *Sender) SendPaymentUpdateRequest(ctx context.Context, tenantID, to, cus
 	}
 	textBody := paymentUpdateRequestTextBody(customerName, invoiceNumber, amount, updateURL)
 
-	return s.sendRich(richMessage{
+	return s.sendRich(ctx, richMessage{
 		TenantID: tenantID, To: to, Subject: subject,
 		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
 	})
@@ -393,7 +400,7 @@ If you didn't request this, you can safely ignore this email — your current pa
 
 — Velox
 `, displayName, resetURL)
-	return s.sendPlain(tenantID, to, "", subject, body)
+	return s.sendPlain(ctx, tenantID, to, "", subject, body)
 }
 
 func (s *Sender) SendMemberInvite(ctx context.Context, tenantID, to, inviterEmail, tenantName, acceptURL string) error {
@@ -408,7 +415,7 @@ If you weren't expecting this invitation, you can safely ignore this email.
 
 — Velox
 `, inviterEmail, tenantName, acceptURL)
-	return s.sendPlain(tenantID, to, "", subject, body)
+	return s.sendPlain(ctx, tenantID, to, "", subject, body)
 }
 
 func (s *Sender) SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error {
@@ -423,7 +430,7 @@ If you didn't request this, you can safely ignore this email — nobody can sign
 
 — Velox
 `, customerName, magicLinkURL)
-	return s.sendPlain(tenantID, to, "", subject, body)
+	return s.sendPlain(ctx, tenantID, to, "", subject, body)
 }
 
 // ---- Plaintext fallback bodies (multipart/alternative text part) ----
@@ -516,7 +523,7 @@ type richMessage struct {
 	AttachmentData []byte
 }
 
-func (s *Sender) sendRich(msg richMessage) error {
+func (s *Sender) sendRich(ctx context.Context, msg richMessage) error {
 	if !s.IsConfigured() {
 		return ErrSMTPNotConfigured
 	}
@@ -573,7 +580,7 @@ func (s *Sender) sendRich(msg richMessage) error {
 
 	if err := s.deliver(msg.To, []byte(body.String())); err != nil {
 		slog.Error("send email failed", "to", msg.To, "subject", msg.Subject, "error", err)
-		s.reportBounceIfPermanent(msg.TenantID, msg.To, err)
+		s.reportBounceIfPermanent(ctx, msg.TenantID, msg.To, err)
 		return fmt.Errorf("send email: %w", err)
 	}
 	slog.Info("email sent", "to", msg.To, "subject", msg.Subject, "html", true)
@@ -633,7 +640,7 @@ func (s *Sender) deliver(to string, body []byte) error {
 }
 
 // sendPlain is the text-only path for operator emails that stay simple.
-func (s *Sender) sendPlain(tenantID, to, fromName, subject, body string) error {
+func (s *Sender) sendPlain(ctx context.Context, tenantID, to, fromName, subject, body string) error {
 	if !s.IsConfigured() {
 		return ErrSMTPNotConfigured
 	}
@@ -651,7 +658,7 @@ func (s *Sender) sendPlain(tenantID, to, fromName, subject, body string) error {
 
 	if err := s.deliver(to, []byte(msg.String())); err != nil {
 		slog.Error("send email failed", "to", to, "subject", subject, "error", err)
-		s.reportBounceIfPermanent(tenantID, to, err)
+		s.reportBounceIfPermanent(ctx, tenantID, to, err)
 		return fmt.Errorf("send email: %w", err)
 	}
 	slog.Info("email sent", "to", to, "subject", subject, "html", false)
