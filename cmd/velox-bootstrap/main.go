@@ -41,6 +41,51 @@ func main() {
 	db := postgres.NewDB(pool, 5*time.Second)
 	ctx := context.Background()
 
+	// Resolve bootstrap email + password upfront so we can pre-check
+	// uniqueness before inserting tenant/keys. Without this, a re-run
+	// with the default email would commit a fresh tenant + 3 API keys
+	// then fail at user-create, leaving orphans in the DB.
+	bootstrapEmail := strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_EMAIL"))
+	if bootstrapEmail == "" {
+		bootstrapEmail = "admin@velox.local"
+	}
+	bootstrapPassword := strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_PASSWORD"))
+	passwordGenerated := false
+	if bootstrapPassword == "" {
+		bootstrapPassword = generatePassword()
+		passwordGenerated = true
+	}
+
+	// Pre-check: refuse early with actionable guidance if this email
+	// already owns a tenant. The CLI does NOT block additional-tenant
+	// creation — Velox's model is multi-tenant in the data layer; just
+	// pass a different email to spin up a second tenant in the same
+	// deployment, useful for cross-tenant tests (FLOW X1, A2-disagreeing-
+	// identities) and ahead of any "platform admin" UI.
+	var existingCount int
+	if err := db.Pool.QueryRowContext(ctx,
+		`SELECT count(*) FROM users WHERE email = $1`, bootstrapEmail,
+	).Scan(&existingCount); err != nil {
+		fatal("check existing user: %v", err)
+	}
+	if existingCount > 0 {
+		fmt.Fprintf(os.Stderr, "ERROR: an account already exists for %s.\n\n", bootstrapEmail)
+		fmt.Fprintln(os.Stderr, "Velox is already bootstrapped for this email. Pick one:")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  1. Sign in with the existing credentials at http://localhost:5173/login")
+		fmt.Fprintln(os.Stderr, "  2. Create an ADDITIONAL tenant in the same deployment:")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_EMAIL=tenant-b@local \\`)
+		fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_PASSWORD='choose-a-password' \\`)
+		fmt.Fprintln(os.Stderr, `       make bootstrap "Tenant B"`)
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  3. Wipe and re-bootstrap (loses all dev data):")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "       docker compose down -v && docker compose up -d postgres redis mailpit")
+		fmt.Fprintln(os.Stderr, "       make bootstrap")
+		os.Exit(1)
+	}
+
 	// Create tenant
 	tenantID := postgres.NewID("vlx_ten")
 	tenantName := "Demo Tenant"
@@ -103,20 +148,13 @@ func main() {
 		fatal("commit: %v", err)
 	}
 
-	// Bootstrap a dashboard user (ADR-011). Email + password come from
-	// VELOX_BOOTSTRAP_EMAIL / VELOX_BOOTSTRAP_PASSWORD env or sensible
-	// defaults (admin@velox.local / a randomly-generated password
-	// printed once below).
-	bootstrapEmail := strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_EMAIL"))
-	if bootstrapEmail == "" {
-		bootstrapEmail = "admin@velox.local"
-	}
-	bootstrapPassword := strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_PASSWORD"))
-	passwordGenerated := false
-	if bootstrapPassword == "" {
-		bootstrapPassword = generatePassword()
-		passwordGenerated = true
-	}
+	// Create the dashboard user. Email + password were resolved earlier
+	// so we could pre-check uniqueness before any inserts; this call
+	// is the actual create. If it fails (e.g. password validation,
+	// tenant attach) the tenant + keys are already committed — that's
+	// rare given the pre-check, but kept best-effort. Operators can
+	// re-run with the same email after fixing the cause; the
+	// pre-check will skip and a second user-create attempt will run.
 	userSvc := user.NewService(user.NewPostgresStore(db), nil)
 	createdUser, err := userSvc.CreateUser(ctx, bootstrapEmail, bootstrapPassword, tenantID, "owner")
 	if err != nil {
@@ -151,6 +189,12 @@ func main() {
 	fmt.Println()
 	fmt.Println("  Try it on the API:")
 	fmt.Printf("  curl -H 'Authorization: Bearer %s' http://localhost:8080/v1/customers\n", testSecretKey)
+	fmt.Println()
+	fmt.Println("  Need a second tenant for cross-tenant tests? Re-run with a")
+	fmt.Println("  different email:")
+	fmt.Println(`    VELOX_BOOTSTRAP_EMAIL=tenant-b@local \`)
+	fmt.Println(`    VELOX_BOOTSTRAP_PASSWORD='choose-a-password' \`)
+	fmt.Println(`    make bootstrap "Tenant B"`)
 	fmt.Println("========================================")
 }
 
