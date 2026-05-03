@@ -139,6 +139,7 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
+  const queryClient = useQueryClient()
 
   const formMethods = useForm<SettingsFormData>({
     resolver: zodResolver(settingsSchema),
@@ -218,6 +219,14 @@ export default function SettingsPage() {
       }
       reset(f)
       if (updated.default_currency) setActiveCurrency(updated.default_currency)
+      // Invalidate the shared ['settings'] query so
+      // TenantTimezoneBootstrap refetches and reseeds the
+      // module-scoped tenant TZ. Without this, formatDate /
+      // formatDateTime calls anywhere else in the dashboard keep
+      // rendering in the old timezone until the operator hard-
+      // refreshes — exactly what happened on the /usage page after
+      // changing TZ here.
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
       toast.success('Settings saved')
     } catch (err) {
       applyApiError(formMethods, err, [
