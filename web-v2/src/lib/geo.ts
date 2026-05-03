@@ -208,8 +208,13 @@ const TZ_CANONICAL: Record<string, string> = (() => {
 
 const TZ_BY_NAME: Record<string, TimeZone> = Object.fromEntries(TZ_DATA.map(z => [z.name, z]))
 
-// Canonical IANA zone names, alphabetically sorted.
-export const TIMEZONES: string[] = TZ_DATA.map(z => z.name).sort()
+// Canonical IANA zone names, alphabetically sorted. Deduped via Set
+// because @vvo/tzdb's getTimeZones can return multiple entries that
+// resolve to the same canonical name (the library lists primary
+// zones AND legacy aliases that share a canonical) — without the
+// dedupe the Timezone Combobox emitted duplicate React keys
+// (e.g. "Africa/Nairobi") and warned about non-unique children.
+export const TIMEZONES: string[] = Array.from(new Set(TZ_DATA.map(z => z.name))).sort()
 
 // Remap any IANA name (including legacy aliases like Asia/Calcutta) to its
 // modern canonical form. Pass-through if unrecognized. Use when hydrating
