@@ -61,10 +61,6 @@ export default function ForgotPasswordPage() {
                 If an account exists for <strong>{email}</strong>, we&rsquo;ve sent a password-reset link.
                 The link expires in 1 hour.
               </p>
-              <p className="text-muted-foreground text-xs">
-                Self-hosted Velox without SMTP configured? Check the API server&rsquo;s logs for
-                the reset link — it&rsquo;s emitted there as a v1 fallback.
-              </p>
               <Link to="/login">
                 <Button variant="outline" className="w-full">
                   Back to sign in
