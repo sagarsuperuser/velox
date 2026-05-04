@@ -10,6 +10,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -296,6 +297,8 @@ func (e *Engine) CommitTax(ctx context.Context, tenantID, invoiceID, calculation
 	if e.taxProviders == nil || e.settings == nil {
 		return nil
 	}
+	// Pin tenant on ctx — see ApplyTaxToLineItems for the rationale.
+	ctx = auth.WithTenantID(ctx, tenantID)
 	ts, err := e.settings.Get(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("load tenant settings: %w", err)
@@ -332,6 +335,8 @@ func (e *Engine) ReverseTax(ctx context.Context, tenantID string, req tax.Revers
 	if e.taxProviders == nil || e.settings == nil {
 		return &tax.ReversalResult{}, nil
 	}
+	// Pin tenant on ctx — see ApplyTaxToLineItems for the rationale.
+	ctx = auth.WithTenantID(ctx, tenantID)
 	ts, err := e.settings.Get(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("load tenant settings: %w", err)
@@ -545,6 +550,19 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 	if e.taxProviders == nil || e.settings == nil {
 		return app, nil
 	}
+
+	// Pin tenant_id on ctx before resolving the provider. The
+	// StripeTaxProvider's clientForCtx reads auth.TenantID(ctx) to
+	// look up per-tenant Stripe credentials; background workers
+	// (scheduler tick, test-clock catchup) build ctx with
+	// WithLivemode but never set the tenant. Without this pin,
+	// every tax call from a worker resolved a nil Stripe client
+	// and surfaced as "no client configured for livemode=…" even
+	// when credentials existed in the DB. HTTP-handler-driven
+	// calls were unaffected because session/auth middleware pins
+	// tenant_id on the request ctx.
+	ctx = auth.WithTenantID(ctx, tenantID)
+
 	ts, err := e.settings.Get(ctx, tenantID)
 	if err != nil {
 		slog.Warn("tax: failed to load tenant settings, proceeding with zero tax",
