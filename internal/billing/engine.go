@@ -1719,9 +1719,55 @@ func (e *Engine) RetryTaxForInvoice(ctx context.Context, tenantID, invoiceID str
 		TaxPendingReason: taxApp.TaxPendingReason,
 		TaxErrorCode:     taxApp.TaxErrorCode,
 		TotalAmountCents: totalWithTax,
+		TaxNextRetryAt:   nextTaxRetry(taxApp.TaxStatus, taxApp.TaxErrorCode, inv.TaxRetryCount),
 	}
 
 	return e.invoices.UpdateTaxAtomic(ctx, tenantID, invoiceID, update, items)
+}
+
+// nextTaxRetry decides whether the reconciler should pick this row
+// up again, and when. Three outcomes encoded as a return:
+//
+//   - ok / exempt: nil → "ready now" (the row leaves the retryable
+//     filter anyway because tax_status flips out of pending/failed,
+//     so the value doesn't matter; nil keeps the column tidy).
+//   - retryable failure (provider_outage / unknown) under cap:
+//     time.Now + taxRetryBackoff(attempts). The next reconciler
+//     tick that crosses this timestamp picks it up.
+//   - non-retryable failure (auth / customer_data / jurisdiction /
+//     provider_not_configured): nil. The reconciler skips because
+//     the code is outside taxRetryableCodes; nil keeps the row out
+//     of any future retry timing logic.
+//   - retryable but at-or-over cap: nil. The cap-check in
+//     ListPendingTaxRetry stops fetching this row; nil is correct
+//     because there's no next retry to schedule.
+//
+// `attempts` is the number of retries the row has already had
+// (i.e. inv.TaxRetryCount BEFORE this retry runs). UpdateTaxAtomic
+// increments it server-side.
+func nextTaxRetry(status domain.InvoiceTaxStatus, errCode string, attempts int) *time.Time {
+	if status == domain.InvoiceTaxOK {
+		return nil
+	}
+	retryable := false
+	for _, c := range taxRetryableCodes() {
+		if c == errCode {
+			retryable = true
+			break
+		}
+	}
+	if !retryable {
+		return nil
+	}
+	// attempts here is BEFORE the increment that UpdateTaxAtomic
+	// applies, so the next attempt index is `attempts` (0-based
+	// schedule).
+	if attempts >= maxTaxRetryAttempts-1 {
+		// This was the final attempt; no next retry to schedule.
+		return nil
+	}
+	t := time.Now().UTC().Add(taxRetryBackoff(attempts))
+	return &t
 }
 
 func advanceBillingPeriod(from time.Time, interval domain.BillingInterval) time.Time {

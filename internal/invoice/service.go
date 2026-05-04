@@ -401,11 +401,17 @@ func (s *Service) ApplyCoupon(ctx context.Context, tenantID, invoiceID, code, id
 	return s.attachAttention(ctx, inv), nil
 }
 
-// RetryTax routes an operator-triggered "Retry tax" action through the
-// billing engine. The engine owns the recompute and atomic persist;
-// the service is the HTTP-facing entry. Returns the updated invoice
-// with its Attention re-derived so the caller can render the new
-// banner state immediately.
+// RetryTax routes a "Retry tax" action through the billing engine.
+// Called from both the operator-triggered HTTP handler and the
+// background reconciler (RetryPendingTax). The engine owns the
+// recompute and atomic persist; this service method layers
+// auto-finalize on top: when the retry succeeds AND the invoice
+// is engine-generated (billing_reason != "manual"), finalize in
+// the same call. Manual invoices stay draft so the operator
+// retains the explicit finalize step.
+//
+// Returns the updated invoice with its Attention re-derived so
+// the caller renders the new state immediately.
 func (s *Service) RetryTax(ctx context.Context, tenantID, invoiceID string) (domain.Invoice, error) {
 	if s.taxRetrier == nil {
 		return domain.Invoice{}, errs.InvalidState("tax retry is not configured")
@@ -414,5 +420,90 @@ func (s *Service) RetryTax(ctx context.Context, tenantID, invoiceID string) (dom
 	if err != nil {
 		return domain.Invoice{}, err
 	}
+	if shouldAutoFinalizeAfterRetry(inv) {
+		final, ferr := s.Finalize(ctx, tenantID, invoiceID)
+		if ferr != nil {
+			// Tax already updated and persisted; finalize-side
+			// failure shouldn't unwind the recompute. Return the
+			// post-retry invoice so the operator at least sees the
+			// tax decision; finalize remains available as a
+			// follow-up click. Logged so post-mortems can see why
+			// auto-finalize didn't fire.
+			slog.Warn("invoice: auto-finalize after tax retry failed; tax recomputed but invoice stays draft",
+				"error", ferr, "tenant_id", tenantID, "invoice_id", invoiceID,
+				"billing_reason", inv.BillingReason)
+			return s.attachAttention(ctx, inv), nil
+		}
+		return s.attachAttention(ctx, final), nil
+	}
 	return s.attachAttention(ctx, inv), nil
+}
+
+// shouldAutoFinalizeAfterRetry encodes the gate for chaining a
+// successful retry into Finalize. Both must be true:
+//
+//   - Tax is now resolved (status=ok). Pending/failed retries leave
+//     the invoice draft regardless.
+//   - Invoice came from the engine, not a manual draft. Manual
+//     drafts can still be works-in-progress (operator may add line
+//     items, edit memo, etc.); auto-finalize would surprise them.
+//     billing_reason='manual' marks operator-created drafts;
+//     subscription_cycle / threshold / proration / etc. all qualify
+//     for auto-finalize.
+//
+// Subscription PaymentMethod readiness is intentionally not gated
+// here — Finalize doesn't require a PM (PM matters for collection,
+// which fires post-finalize via the auto-charge path).
+func shouldAutoFinalizeAfterRetry(inv domain.Invoice) bool {
+	if inv.Status != domain.InvoiceDraft {
+		return false
+	}
+	if inv.TaxStatus != domain.InvoiceTaxOK {
+		return false
+	}
+	if string(inv.BillingReason) == "" || string(inv.BillingReason) == "manual" {
+		return false
+	}
+	return true
+}
+
+// RetryPendingTax is the background-reconciler entry. Scans
+// invoices whose retryable-coded tax failure is due for another
+// attempt, calls RetryTax for each (which may auto-finalize on
+// success), returns counts for telemetry.
+//
+// Cross-tenant: each invoice carries its tenant_id, and RetryTax
+// re-pins it on ctx through the engine's path. Bounded by `batch`
+// per tick so a Stripe Tax outage that stuck thousands of
+// invoices doesn't burn the entire scheduler tick on tax retries.
+//
+// Errors per invoice are collected, not aborted-on — one bad row
+// (e.g. concurrent operator-driven Finalize racing the reconciler)
+// shouldn't stall the rest of the batch.
+func (s *Service) RetryPendingTax(ctx context.Context, batch int) (int, []error) {
+	if s.taxRetrier == nil {
+		return 0, nil
+	}
+	codes := []string{"provider_outage", "unknown"}
+	const maxAttempts = 8
+	stuck, err := s.store.ListPendingTaxRetry(ctx, batch, codes, maxAttempts)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list pending tax retries: %w", err)}
+	}
+	var (
+		processed int
+		errs      []error
+	)
+	for _, inv := range stuck {
+		// RetryTax pins tenant via the engine entry point that
+		// already does WithTenantID. We pass the per-row tenant
+		// explicitly here rather than relying on ctx because this
+		// loop is cross-tenant.
+		if _, retryErr := s.RetryTax(ctx, inv.TenantID, inv.ID); retryErr != nil {
+			errs = append(errs, fmt.Errorf("invoice %s: %w", inv.ID, retryErr))
+			continue
+		}
+		processed++
+	}
+	return processed, errs
 }

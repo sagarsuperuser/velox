@@ -128,6 +128,9 @@ func serve() {
 	if server.TestClockSvc != nil {
 		scheduler.SetTestClockSweeper(server.TestClockSvc)
 	}
+	if server.InvoiceSvc != nil {
+		scheduler.SetTaxRetrier(server.InvoiceSvc)
+	}
 	if server.PaymentReconciler != nil {
 		scheduler.SetPaymentReconciler(server.PaymentReconciler)
 	}

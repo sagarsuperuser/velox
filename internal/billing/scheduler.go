@@ -39,6 +39,15 @@ type TestClockSweeper interface {
 	SweepDueDeletes(ctx context.Context, batch int) (int, error)
 }
 
+// TaxRetrier is the narrow hook the scheduler uses to drive the
+// background tax-retry reconciler (ADR-017). Implemented by
+// *invoice.Service. Returns (processed, per-row errors); the
+// errors slice is non-fatal — one bad row doesn't abort the
+// batch.
+type TaxRetrier interface {
+	RetryPendingTax(ctx context.Context, batch int) (int, []error)
+}
+
 // TokenCleaner cleans up expired payment update tokens.
 type TokenCleaner interface {
 	Cleanup(ctx context.Context) (int, error)
@@ -78,6 +87,7 @@ type Scheduler struct {
 	tokenCleaner      TokenCleaner
 	idempotencyClean  IdempotencyCleaner
 	testClockSweeper  TestClockSweeper
+	taxRetrier        TaxRetrier
 	paymentReconciler PaymentReconciler
 	locker            Locker
 	billingLockKey    int64
@@ -133,6 +143,16 @@ func (s *Scheduler) SetIdempotencyCleaner(cleaner IdempotencyCleaner) {
 // dev / test runs that don't care about retention).
 func (s *Scheduler) SetTestClockSweeper(sw TestClockSweeper) {
 	s.testClockSweeper = sw
+}
+
+// SetTaxRetrier wires the background tax-retry reconciler. Each
+// tick scans invoices stuck at tax_status pending|failed with a
+// retryable code (provider_outage, unknown) past their backoff
+// timestamp, recomputes tax, and (on success + non-manual
+// invoices) auto-finalizes. Without this hook, tax-pending
+// invoices wait on an operator click forever. ADR-017.
+func (s *Scheduler) SetTaxRetrier(r TaxRetrier) {
+	s.taxRetrier = r
 }
 
 // SetPaymentReconciler wires a resolver for PaymentUnknown invoices. Runs
@@ -265,6 +285,23 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		}
 		for _, e := range rErrs {
 			slog.Error("payment reconciler error", "mode", mode, "error", e)
+		}
+	}
+
+	// 0a. Tax-retry reconciler. Recompute tax for invoices stuck at
+	// tax_status pending|failed with a retryable code (provider_outage,
+	// unknown) past their backoff timestamp. On success and engine-
+	// generated invoices, auto-finalize fires inside RetryTax. Runs
+	// BEFORE auto-charge retries so a freshly-finalized invoice's
+	// finalize-time auto-charge doesn't slip past this tick.
+	// ADR-017.
+	if s.taxRetrier != nil {
+		processed, taxErrs := s.taxRetrier.RetryPendingTax(ctx, s.batch)
+		if processed > 0 || len(taxErrs) > 0 {
+			slog.Info("tax retries", "mode", mode, "processed", processed, "errors", len(taxErrs))
+		}
+		for _, e := range taxErrs {
+			slog.Error("tax retry error", "mode", mode, "error", e)
 		}
 	}
 
