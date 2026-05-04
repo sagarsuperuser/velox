@@ -36,9 +36,21 @@ type CardDetails struct {
 	ExpYear         int
 }
 
-// CardFetcher fetches card details from Stripe for a customer.
+// CardFetcher fetches card details from Stripe.
+//
+// FetchCardDetails returns the customer's *default* PM card. Used
+// by dunning to render "we'll retry charging Visa •••• 4242 in 3
+// days" copy.
+//
+// FetchCardForPaymentIntent returns the card actually charged on a
+// specific PaymentIntent. Used by the payment-succeeded webhook
+// handler to stamp the invoice's `payment_card_brand` /
+// `payment_card_last4` columns (ADR-020). Works for one-off
+// Checkout cards too — the customer doesn't have to save the PM
+// for the timeline to show what was charged.
 type CardFetcher interface {
 	FetchCardDetails(ctx context.Context, stripeCustomerID string) (CardDetails, error)
+	FetchCardForPaymentIntent(ctx context.Context, paymentIntentID string) (CardDetails, error)
 }
 
 // EmailReceipt sends payment receipt emails. ctx carries livemode so
@@ -102,6 +114,11 @@ type InvoiceUpdater interface {
 	UpdatePayment(ctx context.Context, tenantID, id string, paymentStatus domain.InvoicePaymentStatus, stripePaymentIntentID, lastPaymentError string, paidAt *time.Time) (domain.Invoice, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error)
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
+	// SetPaymentCard stamps the card brand + last4 used to settle
+	// an invoice. Optional — empty values render no sub-line in
+	// the timeline. Called by handlePaymentSucceeded after MarkPaid
+	// lands. ADR-020.
+	SetPaymentCard(ctx context.Context, tenantID, id, brand, last4 string) error
 	GetByStripePaymentIntentID(ctx context.Context, tenantID, stripePaymentIntentID string) (domain.Invoice, error)
 	Get(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 }
@@ -440,6 +457,26 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 		"invoice_id", inv.ID,
 		"payment_intent_id", event.PaymentIntentID,
 	)
+
+	// Stamp the card actually charged onto the invoice so the
+	// activity timeline can show "Invoice paid · via Visa •••• 4242"
+	// (ADR-020). Best-effort — a missing CardFetcher, a non-card
+	// PM, or a transient Stripe API error all fall through to
+	// "Invoice paid · $29.00" with no sub-line. Lookup goes
+	// directly through Stripe (not our paymentmethods table) so
+	// one-off Checkout cards the customer never saved still show.
+	if s.cardFetcher != nil {
+		card, cardErr := s.cardFetcher.FetchCardForPaymentIntent(ctx, event.PaymentIntentID)
+		if cardErr != nil {
+			slog.Warn("payment succeeded: card resolve failed (timeline sub-line will be empty)",
+				"invoice_id", inv.ID, "payment_intent_id", event.PaymentIntentID, "error", cardErr)
+		} else if card.Brand != "" || card.Last4 != "" {
+			if err := s.invoices.SetPaymentCard(ctx, tenantID, inv.ID, card.Brand, card.Last4); err != nil {
+				slog.Warn("payment succeeded: persist card details failed",
+					"invoice_id", inv.ID, "error", err)
+			}
+		}
+	}
 
 	s.fireEvent(ctx, tenantID, domain.EventPaymentSucceeded, map[string]any{
 		"invoice_id":        inv.ID,

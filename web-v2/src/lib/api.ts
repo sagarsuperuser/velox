@@ -809,6 +809,11 @@ export interface TimelineEvent {
   currency?: string
   payment_intent_id?: string
   attempt_count?: number
+  // Sub-line rendered beneath the row description. Used today by
+  // invoice.paid for the payment instrument ("via Visa •••• 4242");
+  // event types may add their own contextual detail later.
+  // ADR-020.
+  detail?: string
   // Audit-sourced events carry the actor who performed the action. The
   // invoice payment timeline never populates these (webhook + dunning are
   // system-driven) so they're strictly optional.

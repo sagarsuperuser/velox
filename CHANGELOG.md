@@ -99,6 +99,29 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Changed
 
+- **Invoice timeline coalesces redundant rows + surfaces charged
+  card (ADR-020).** Pre-fix the activity timeline rendered
+  implementation-detail state-transition tuples instead of
+  operator-meaningful milestones — a paid invoice showed both
+  "Invoice paid" (lifecycle column flip) AND "Payment succeeded"
+  (Stripe webhook), same minute, same amount. Dunning recovery
+  added a third + fourth duplicate row. Server-side dedup now:
+  drops Stripe `payment_intent.succeeded` when invoice.PaidAt is
+  set; drops `payment_intent.canceled` when VoidedAt is set
+  (PI-expired-without-void case still renders standalone); drops
+  dunning `resolved` (`payment_recovered`) when PaidAt is set,
+  with `attempt_count` rolled up onto the lifecycle row's
+  sub-line ("after 3 retry attempts"). Migration 0077 adds
+  `invoices.payment_card_brand` and `payment_card_last4`;
+  `payment_intent.succeeded` webhook handler now retrieves the
+  PI from Stripe with `expand=payment_method` and stamps the
+  card details — works for one-off Checkout cards the customer
+  didn't save (operator-reported case). Timeline `Detail` field
+  surfaces "via Visa •••• 4242" beneath the "Invoice paid" row.
+  `MarkPaid` signature unchanged (many upstream callers without
+  card info); card-stamp is a separate `SetPaymentCard` update,
+  best-effort with graceful no-sub-line fallback.
+
 - **Stripe re-connect flushes stuck tax invoices (ADR-019).**
   When `POST /v1/settings/stripe` succeeds (verify returns 200),
   the service now fans out a background goroutine that retries

@@ -1033,6 +1033,15 @@ export default function InvoiceDetailPage() {
                     {event.amount_cents != null && event.amount_cents > 0 && (
                       <p className="text-xs text-muted-foreground mt-0.5">{formatCents(event.amount_cents, invoice.currency)}</p>
                     )}
+                    {/* Sub-line: payment instrument, attempt count, etc. */}
+                    {event.detail && (
+                      <p className="text-xs text-muted-foreground mt-0.5">{event.detail}</p>
+                    )}
+                    {event.event_type === 'invoice.paid' && (event.attempt_count ?? 0) > 0 && (
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        after {event.attempt_count} retry attempt{event.attempt_count === 1 ? '' : 's'}
+                      </p>
+                    )}
                   </div>
                 </div>
                 )

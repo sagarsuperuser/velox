@@ -209,6 +209,47 @@ func (c *LiveStripeClient) FetchCardDetails(ctx context.Context, stripeCustomerI
 	}, nil
 }
 
+// FetchCardForPaymentIntent retrieves the card actually charged on
+// a specific PaymentIntent. Unlike FetchCardDetails (which returns
+// the customer's default PM), this works for one-off Checkout
+// payments where the customer didn't save the PM — Stripe still
+// creates an ephemeral PaymentMethod object for the charge that
+// stays accessible through the PI's `payment_method` field. ADR-020.
+func (c *LiveStripeClient) FetchCardForPaymentIntent(ctx context.Context, paymentIntentID string) (CardDetails, error) {
+	sc := c.clients.ForCtx(ctx)
+	if sc == nil {
+		return CardDetails{}, ErrStripeNotConfigured
+	}
+	pi, err := sc.V1PaymentIntents.Retrieve(ctx, paymentIntentID, &stripe.PaymentIntentRetrieveParams{
+		Expand: []*string{stripe.String("payment_method")},
+	})
+	if err != nil {
+		return CardDetails{}, classifyStripeError(err)
+	}
+	if pi.PaymentMethod == nil || pi.PaymentMethod.Card == nil {
+		// Non-card payment method (bank, wallet) or expansion
+		// returned the bare ID — we don't render anything.
+		return CardDetails{}, nil
+	}
+	// Prefer DisplayBrand: it accounts for dual-branded cards where
+	// the customer chose which network to use (e.g. Cartes
+	// Bancaires vs Visa on a French co-branded card). Fall back to
+	// Brand when DisplayBrand isn't populated by older Stripe API
+	// versions. Both fields are Stripe's lowercase enum form;
+	// invoice.brandDisplayName handles the title-cased presentation.
+	brand := pi.PaymentMethod.Card.DisplayBrand
+	if brand == "" {
+		brand = string(pi.PaymentMethod.Card.Brand)
+	}
+	return CardDetails{
+		PaymentMethodID: pi.PaymentMethod.ID,
+		Brand:           brand,
+		Last4:           pi.PaymentMethod.Card.Last4,
+		ExpMonth:        int(pi.PaymentMethod.Card.ExpMonth),
+		ExpYear:         int(pi.PaymentMethod.Card.ExpYear),
+	}, nil
+}
+
 func (c *LiveStripeClient) CancelPaymentIntent(ctx context.Context, paymentIntentID string) error {
 	sc := c.clients.ForCtx(ctx)
 	if sc == nil {

@@ -114,6 +114,15 @@ type Invoice struct {
 	// time per the exponential backoff curve in
 	// internal/billing/tax_retry.go. Migration 0074. ADR-017.
 	TaxNextRetryAt *time.Time `json:"tax_next_retry_at,omitempty"`
+	// PaymentCardBrand / PaymentCardLast4 capture the card used to
+	// settle this invoice — populated at payment_intent.succeeded
+	// time by looking up the PI's payment_method against the
+	// payment_methods table. Empty when the PM is unknown to us
+	// (one-off Checkout cards). Migration 0077. Surfaces in the
+	// activity timeline as a sub-line on the "Invoice paid" row.
+	// ADR-020.
+	PaymentCardBrand string `json:"payment_card_brand,omitempty"`
+	PaymentCardLast4 string `json:"payment_card_last4,omitempty"`
 	// Attention is the unified "needs operator attention" surface,
 	// computed on read by ClassifyInvoiceAttention. Never persisted —
 	// always derived from the durable fields above (tax_status,

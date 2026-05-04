@@ -34,6 +34,7 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	tax_reverse_charge, tax_exempt_reason,
 	tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason,
 	COALESCE(tax_error_code,''), tax_next_retry_at,
+	COALESCE(payment_card_brand,''), COALESCE(payment_card_last4,''),
 	COALESCE(public_token,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,'')`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
@@ -299,6 +300,40 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 		return domain.Invoice{}, err
 	}
 	return inv, nil
+}
+
+// SetPaymentCard stamps the card brand + last4 used to settle an
+// invoice. Called from the payment_intent.succeeded webhook handler
+// AFTER MarkPaid lands; kept as a separate update so MarkPaid stays
+// backward-compatible (many call sites — dunning retrier, public
+// payment-page handler, payment reconciler — none of which know
+// about the card). Best-effort: card resolution failure leaves the
+// columns empty, which renders no sub-line in the timeline.
+// Migration 0077 / ADR-020.
+func (s *PostgresStore) SetPaymentCard(ctx context.Context, tenantID, id, brand, last4 string) error {
+	if brand == "" && last4 == "" {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE invoices SET
+			payment_card_brand = $1,
+			payment_card_last4 = $2,
+			updated_at = now()
+		WHERE id = $3
+	`, postgres.NullableString(brand), postgres.NullableString(last4), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errs.ErrNotFound
+	}
+	return tx.Commit()
 }
 
 func (s *PostgresStore) ApplyCreditNote(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
@@ -1220,6 +1255,7 @@ func scanInvDest(inv *domain.Invoice) []any {
 		&inv.TaxReverseCharge, &inv.TaxExemptReason,
 		(*string)(&inv.TaxStatus), &inv.TaxDeferredAt, &inv.TaxRetryCount, &inv.TaxPendingReason,
 		&inv.TaxErrorCode, &inv.TaxNextRetryAt,
+		&inv.PaymentCardBrand, &inv.PaymentCardLast4,
 		&inv.PublicToken, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
 	}
 }
