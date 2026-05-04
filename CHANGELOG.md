@@ -227,6 +227,44 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   seconds), couples test-clock UX to production-billing cadence,
   unusable when self-hosters run the scheduler at 1h+ intervals.
 
+### Changed
+
+- **Tax engine: removed silent zero-tax fallbacks. Fail loudly
+  instead.** Pre-fix the engine had three zero-tax fallback
+  branches (boot-time wiring nil, settings-missing,
+  resolver-error) that masked production misconfigurations as
+  "$0 tax invoices." That trade-off favoured availability over
+  correctness — wrong for billing. Removed:
+  1. **Resolver-error path: dead code.** The Resolver is
+     exhaustive (none / manual / stripe_tax → falls back to
+     manual when Stripe wiring is absent); never returns nil
+     or error. The post-Resolve check never fired in production.
+     Deleted.
+  2. **Settings-missing path: fixed at the data layer.**
+     `tenant.SettingsStore.Get` now synthesizes Velox defaults
+     on `ErrNotFound` instead of bubbling the error — single
+     source of truth via new `tenant.DefaultSettings()`. The
+     HTTP handler (which already did this inline) now calls
+     the helper. The engine never sees `ErrNotFound` again;
+     orphan tenants from earlier failed bootstraps stop
+     producing reconciler error spam.
+  3. **Boot-time nil wiring: now fails fast.**
+     `ApplyTaxToLineItems` returns an error when the resolver
+     or settings store isn't wired. Previously this branch
+     produced silent zero-tax for tests; tests now wire
+     `tax.NewResolver(nil)` (NoneProvider for tax_provider="")
+     explicitly via a `wireBaseTax` helper. Production has
+     always wired both deps; this just makes the requirement
+     enforceable instead of optional.
+  Bootstrap now creates `tenant_settings` unconditionally
+  alongside `tenants` so future tenants always have a settings
+  row from creation. Belt-and-suspenders default
+  (`TaxProvider:"none"` struct-init) from earlier today's
+  hotfix removed — data-layer fix makes it unreachable.
+  No new typed `tax_error_code` value added (you flagged the
+  taxonomy fit was wrong — settings-missing is data integrity,
+  not a tax-calculation failure).
+
 ### Fixed
 
 - **Payment-update email link now tokenized everywhere.** Pre-fix

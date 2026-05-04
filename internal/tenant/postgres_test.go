@@ -51,6 +51,35 @@ func TestPostgresStore_GetNotFound(t *testing.T) {
 	}
 }
 
+// TestSettingsStore_GetSynthesizesDefaultsOnMiss covers the
+// data-layer fix for orphan tenants without settings rows. Get
+// must return Velox defaults (no ErrNotFound) so the engine
+// path never sees the missing-row case.
+func TestSettingsStore_GetSynthesizesDefaultsOnMiss(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	store := tenant.NewSettingsStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "Settings Defaults Tenant")
+
+	// Note: CreateTestTenant doesn't seed tenant_settings — bootstrap
+	// path does that, but the test fixture intentionally leaves it
+	// empty so we can exercise the synthesize-defaults branch.
+
+	got, err := store.Get(context.Background(), tenantID)
+	if err != nil {
+		t.Fatalf("Get on missing settings should synthesize defaults, got error: %v", err)
+	}
+	want := tenant.DefaultSettings(tenantID)
+	if got.TenantID != want.TenantID ||
+		got.DefaultCurrency != want.DefaultCurrency ||
+		got.Timezone != want.Timezone ||
+		got.InvoicePrefix != want.InvoicePrefix ||
+		got.NetPaymentTerms != want.NetPaymentTerms ||
+		got.TaxProvider != want.TaxProvider ||
+		got.TaxOnFailure != want.TaxOnFailure {
+		t.Errorf("synthesized defaults mismatch:\n  got  %+v\n  want %+v", got, want)
+	}
+}
+
 func TestPostgresStore_List(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := tenant.NewPostgresStore(db)

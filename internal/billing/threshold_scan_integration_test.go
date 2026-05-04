@@ -14,6 +14,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/subscription"
+	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 	"github.com/sagarsuperuser/velox/internal/usage"
@@ -69,6 +70,10 @@ func newThresholdFixture(t *testing.T, name string) *thresholdFixture {
 		&invoiceStoreAdapter{invoiceStore},
 		nil, settingsStore, nil, nil, nil,
 	)
+	// Production wires a tax resolver; engine fails loudly without
+	// one (no silent zero-tax fallback). NoneProvider is the
+	// minimal wiring for tests that don't exercise tax behavior.
+	engine.SetTaxProviderResolver(tax.NewResolver(nil))
 
 	ctx := context.Background()
 

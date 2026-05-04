@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -381,16 +382,19 @@ func TestApplyTaxToLineItems_RoundingReconciliation(t *testing.T) {
 	}
 }
 
-func TestApplyTaxToLineItems_NoProvidersSkipsTax(t *testing.T) {
-	// Safety net: engine without a resolver must not panic or apply tax.
+func TestApplyTaxToLineItems_NoProvidersFailsLoudly(t *testing.T) {
+	// Engine must fail with a clear error when the tax provider
+	// resolver isn't wired — pre-fix this silently zero-taxed,
+	// which masked production misconfigurations. Tests that need
+	// a no-tax shape must wire NoneProvider explicitly.
 	e := &Engine{settings: &taxSettings{provider: "manual", rateBP: 1800}}
 	lineItems := []domain.InvoiceLineItem{{AmountCents: 10000, Quantity: 1}}
 
-	r, err := e.ApplyTaxToLineItems(context.Background(), "t1", "cus_1", "USD", 10000, 0, lineItems)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := e.ApplyTaxToLineItems(context.Background(), "t1", "cus_1", "USD", 10000, 0, lineItems)
+	if err == nil {
+		t.Fatal("expected error when tax provider resolver is unwired, got nil")
 	}
-	if r.TaxAmountCents != 0 {
-		t.Errorf("got tax %d, want 0 without resolver", r.TaxAmountCents)
+	if !strings.Contains(err.Error(), "tax provider resolver not wired") {
+		t.Errorf("error should reference unwired resolver, got: %v", err)
 	}
 }

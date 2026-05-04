@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -85,6 +84,26 @@ func (s *SettingsStore) IsAuditFailClosed(ctx context.Context, tenantID string) 
 	return v, nil
 }
 
+// DefaultSettings returns a fresh TenantSettings populated with
+// Velox defaults. Single source of truth for "what does an
+// uninitialized tenant look like" — used by SettingsStore.Get
+// when no row exists yet AND by bootstrap when seeding a new
+// tenant. Pulling this here means the engine path and the API
+// handler path produce identical defaults; pre-fix only the API
+// handler synthesized them (line 333), so the engine path saw
+// ErrNotFound and silently zero-taxed instead.
+func DefaultSettings(tenantID string) domain.TenantSettings {
+	return domain.TenantSettings{
+		TenantID:        tenantID,
+		DefaultCurrency: "USD",
+		Timezone:        "UTC",
+		InvoicePrefix:   "VLX",
+		NetPaymentTerms: 30,
+		TaxProvider:     "manual",
+		TaxOnFailure:    "block",
+	}
+}
+
 func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.TenantSettings, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -119,7 +138,12 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 		&ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
 
 	if err == sql.ErrNoRows {
-		return domain.TenantSettings{}, errs.ErrNotFound
+		// Synthesize Velox defaults so callers don't have to handle
+		// the missing-row case. Mirrors the API handler's behavior;
+		// the engine path previously fell through to silent zero-tax
+		// when ErrNotFound bubbled up. Now Get always returns a
+		// usable struct unless something more serious broke.
+		return DefaultSettings(tenantID), nil
 	}
 	if err != nil {
 		return domain.TenantSettings{}, err
@@ -329,19 +353,10 @@ func (h *SettingsHandler) Routes() chi.Router {
 func (h *SettingsHandler) get(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 
+	// Get now synthesizes defaults on miss internally — the
+	// ErrNotFound branch that used to live here became unreachable.
+	// Any error coming back from Get is a real DB or scan failure.
 	ts, err := h.store.Get(r.Context(), tenantID)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.JSON(w, r, http.StatusOK, domain.TenantSettings{
-			TenantID:        tenantID,
-			DefaultCurrency: "USD",
-			Timezone:        "UTC",
-			InvoicePrefix:   "VLX",
-			NetPaymentTerms: 30,
-			TaxProvider:     "manual",
-			TaxOnFailure:    "block",
-		})
-		return
-	}
 	if err != nil {
 		slog.Error("get settings", "error", err)
 		respond.InternalError(w, r)
