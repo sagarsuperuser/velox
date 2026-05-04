@@ -145,6 +145,84 @@ func TestAdvance_RunsBillingUntilQuiet(t *testing.T) {
 	}
 }
 
+// TestAdvance_AsyncEnqueuesAndReturnsAdvancing covers the production
+// path: with a CatchupQueue wired, Advance returns synchronously
+// after MarkAdvancing + Enqueue and does NOT run catchup inline.
+// The clock should remain in status='advancing' on return; the
+// worker is expected to drive it to 'ready' separately. ADR-015.
+func TestAdvance_AsyncEnqueuesAndReturnsAdvancing(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newTime := start.Add(60 * 24 * time.Hour)
+
+	store := newMockStore()
+	store.clocks["c1"] = domain.TestClock{
+		ID: "c1", TenantID: "t1", Status: domain.TestClockStatusReady, FrozenTime: start,
+	}
+	store.subsOnClock["c1"] = nil
+
+	queue := &recordingQueue{}
+	s := NewService(store)
+	s.SetCatchupQueue(queue)
+	// Deliberately NO SetBillingRunner — the async path must not
+	// invoke billing during the request handler at all.
+
+	clk, err := s.Advance(context.Background(), "t1", "c1", AdvanceInput{FrozenTime: newTime})
+	if err != nil {
+		t.Fatalf("advance failed: %v", err)
+	}
+	if clk.Status != domain.TestClockStatusAdvancing {
+		t.Errorf("status on return: got %q, want advancing (worker drives to ready async)", clk.Status)
+	}
+	if !clk.FrozenTime.Equal(newTime) {
+		t.Errorf("frozen_time: got %v, want %v", clk.FrozenTime, newTime)
+	}
+	if len(queue.jobs) != 1 {
+		t.Fatalf("expected 1 job enqueued, got %d", len(queue.jobs))
+	}
+	if queue.jobs[0].ClockID != "c1" || queue.jobs[0].TenantID != "t1" {
+		t.Errorf("job identity: %+v", queue.jobs[0])
+	}
+}
+
+// TestRecoverInFlight_ReEnqueuesAdvancingClocks covers the boot
+// recovery path: a clock left in 'advancing' from a prior process
+// (server restart mid-catchup) is re-enqueued so the worker
+// resumes it rather than leaving it stuck.
+func TestRecoverInFlight_ReEnqueuesAdvancingClocks(t *testing.T) {
+	store := newMockStore()
+	store.clocks["c1"] = domain.TestClock{
+		ID: "c1", TenantID: "t1", Status: domain.TestClockStatusAdvancing,
+	}
+	store.clocks["c2"] = domain.TestClock{
+		ID: "c2", TenantID: "t2", Status: domain.TestClockStatusReady,
+	}
+
+	queue := &recordingQueue{}
+	s := NewService(store)
+	s.SetCatchupQueue(queue)
+
+	if err := s.RecoverInFlight(context.Background()); err != nil {
+		t.Fatalf("recover failed: %v", err)
+	}
+	if len(queue.jobs) != 1 {
+		t.Fatalf("expected 1 job enqueued (only c1 was advancing), got %d", len(queue.jobs))
+	}
+	if queue.jobs[0].ClockID != "c1" {
+		t.Errorf("re-enqueued wrong clock: %s", queue.jobs[0].ClockID)
+	}
+}
+
+// recordingQueue is a CatchupQueue test double that captures jobs
+// in-memory for assertions instead of dispatching them.
+type recordingQueue struct {
+	jobs []CatchupJob
+}
+
+func (q *recordingQueue) Enqueue(job CatchupJob) error {
+	q.jobs = append(q.jobs, job)
+	return nil
+}
+
 func TestAdvance_BillingFailureMarksClockFailed(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	store := newMockStore()
@@ -266,6 +344,16 @@ func (m *mockStore) MarkFailed(_ context.Context, _, id string) (domain.TestCloc
 
 func (m *mockStore) ListSubscriptionsOnClock(_ context.Context, _, clockID string) ([]domain.Subscription, error) {
 	return m.subsOnClock[clockID], nil
+}
+
+func (m *mockStore) ListAllAdvancing(_ context.Context) ([]domain.TestClock, error) {
+	var out []domain.TestClock
+	for _, c := range m.clocks {
+		if c.Status == domain.TestClockStatusAdvancing {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 // stubRunner simulates one invoice per billing cycle by bumping the sub's

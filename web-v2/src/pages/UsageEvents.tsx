@@ -245,6 +245,7 @@ export default function UsageEventsPage() {
           onChange={v => setUrlState({ to: v, page: '1' })}
           placeholder="To date"
           className="w-44"
+          minDate={filterFrom ? new Date(filterFrom + 'T00:00:00') : undefined}
         />
         <input
           type="text"

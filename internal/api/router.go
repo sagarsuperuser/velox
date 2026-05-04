@@ -102,6 +102,13 @@ type Server struct {
 	// Started by main.go alongside the billing scheduler so leader
 	// gating is consistent across all background workers.
 	BillingAlertEvaluator *billingalert.Evaluator
+
+	// TestClockSvc lets main.go wire the async catchup queue + worker
+	// (per ADR-015 — Stripe-style async test-clock advance) and run
+	// boot recovery for any clocks left in 'advancing' from a prior
+	// process. Construction is here in router.go, lifecycle is in
+	// main.go alongside the rest of the background workers.
+	TestClockSvc *testclock.Service
 }
 
 func NewServer(db *postgres.DB, clk clock.Clock) *Server {
@@ -707,6 +714,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		TokenSvc:              tokenSvc,
 		PaymentReconciler:     paymentReconciler,
 		BillingAlertEvaluator: billingAlertEvaluator,
+		TestClockSvc:          testClockSvc,
 	}
 
 	// Redis for distributed rate limiting (fail-open if not configured)

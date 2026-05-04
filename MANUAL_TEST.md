@@ -231,8 +231,11 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Detail header: name + status pill + Advance/Delete. Advance disabled when status≠ready.
 - [ ] Advance dialog presets: `+1h / +1d / +1mo` + custom. Earlier-than-current time → inline error.
-- [ ] Submit → status flips to **Advancing** with spinner; polls every ~1.5s until ready.
-- [ ] Catchup failure → status **Failed** with destructive banner.
+- [ ] Submit → API responds in <500ms with `status: "advancing"` and the new `frozen_time`. Dashboard shows "Advancing…" badge (non-blocking — operator can navigate to other pages and the clock continues catching up in the background; ADR-015).
+- [ ] `psql` (or any tab) shows `test_clocks.status='advancing'` while the worker runs. Polling `/v1/test-clocks/{id}` every 1.5s flips to `status='ready'` when the worker's catchup loop completes.
+- [ ] Generated invoices appear in `/invoices` for the elapsed cycles — one per closed billing period, with `created_at` / `issued_at` aligned to the test-clock timeline (not wall-clock).
+- [ ] Catchup failure (e.g. simulated by killing the billing engine or hitting the 10-min wall-clock cap) → status **internal_failure** with destructive banner. Partial invoices remain visible; operator can delete the clock to recover.
+- [ ] **Restart resilience**: kick off a long advance (e.g. 1 year forward), `kill -TERM` the velox process while status is `advancing`, restart. On boot the recovery scan re-enqueues the in-flight clock, the worker resumes, and the clock eventually flips to `ready`. No manual intervention.
 - [ ] Subscriptions table on detail page lists pinned subs.
 
 ## FLOW TC3: Pinning

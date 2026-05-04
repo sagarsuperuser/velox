@@ -28,12 +28,17 @@ type BillingRunner interface {
 const MaxAdvanceCatchupLoops = 120
 
 // Service provides the test-clock API surface. Depends on Store for
-// persistence and (optionally) BillingRunner to kick off a billing catchup
-// when the clock advances. When billing is nil, advance just updates
-// frozen_time without emitting invoices — useful for narrow unit tests.
+// persistence, optionally BillingRunner to drive the billing engine
+// during catchup, and optionally CatchupQueue to dispatch catchup
+// asynchronously after Advance. When the queue is wired, Advance
+// returns as soon as the clock is marked advancing — a worker
+// picks up the job and runs the catchup off the request path. When
+// the queue is nil (narrow unit tests), Advance runs catchup
+// inline so tests can assert end-state synchronously.
 type Service struct {
 	store   Store
 	billing BillingRunner
+	queue   CatchupQueue
 }
 
 func NewService(store Store) *Service {
@@ -47,6 +52,13 @@ func NewService(store Store) *Service {
 // we break by deferred injection.
 func (s *Service) SetBillingRunner(b BillingRunner) {
 	s.billing = b
+}
+
+// SetCatchupQueue wires the async dispatch path. Production code
+// always sets this; unit tests that want sync behaviour leave it
+// nil so Advance runs catchup inline.
+func (s *Service) SetCatchupQueue(q CatchupQueue) {
+	s.queue = q
 }
 
 type CreateInput struct {
@@ -95,12 +107,27 @@ type AdvanceInput struct {
 	FrozenTime time.Time `json:"frozen_time"`
 }
 
-// Advance moves the clock forward to FrozenTime and synchronously catches
-// up billing for every subscription attached to the clock. Catchup runs the
-// billing engine in a loop because a large jump (e.g. 3 months forward on a
-// monthly sub) closes multiple cycles — each engine sweep processes the
-// cycles that are now due, advances next_billing_at, and the next sweep
-// picks up the following cycle.
+// Advance moves the clock forward to FrozenTime and dispatches a
+// billing catchup for every subscription attached to it. Catchup
+// runs the billing engine in a loop because a large jump (e.g.
+// 3 months forward on a monthly sub) closes multiple cycles —
+// each engine sweep processes the cycles that are now due,
+// advances next_billing_at, and the next sweep picks up the
+// following cycle.
+//
+// Async dispatch: when SetCatchupQueue has been wired (the
+// production path), Advance returns as soon as the clock is
+// marked advancing and a CatchupJob has been enqueued. A worker
+// picks up the job, runs the catchup, and flips the clock to
+// ready / internal_failure when done. The dashboard polls
+// /v1/test-clocks/{id} every 1.5s while status === 'advancing'
+// to surface the transition. This matches Stripe's Test Clocks
+// shape — the HTTP advance call returns in milliseconds, the
+// catchup runs in the background.
+//
+// Sync fallback: when the queue is nil (narrow unit tests),
+// Advance runs the catchup inline. RunCatchup contains the same
+// logic the worker calls.
 //
 // State machine:
 //
@@ -128,32 +155,105 @@ func (s *Service) Advance(ctx context.Context, tenantID, id string, input Advanc
 		return domain.TestClock{}, errs.Invalid("frozen_time", "must be strictly after current frozen_time")
 	}
 
-	if _, err := s.store.MarkAdvancing(ctx, tenantID, id, newTime); err != nil {
+	advancing, err := s.store.MarkAdvancing(ctx, tenantID, id, newTime)
+	if err != nil {
 		return domain.TestClock{}, err
 	}
 
-	if s.billing != nil {
-		if err := s.runCatchup(ctx, tenantID, id); err != nil {
-			// Flip to internal_failure and surface the error. The clock's
-			// frozen_time stays at the new value — partial catchup is still
-			// applied, and the tenant can inspect invoices and delete the
-			// clock to unstick themselves.
+	if s.queue != nil {
+		// Async path. The worker drains the queue and calls
+		// RunCatchup. If enqueue fails (buffer full), revert to
+		// internal_failure so the operator gets visible feedback
+		// rather than a clock stuck in 'advancing' forever.
+		if err := s.queue.Enqueue(CatchupJob{TenantID: tenantID, ClockID: id}); err != nil {
 			if _, ferr := s.store.MarkFailed(ctx, tenantID, id); ferr != nil {
-				slog.Error("test clock: failed to mark clock as failed after catchup error",
-					"clock_id", id, "catchup_err", err, "mark_err", ferr)
+				slog.Error("test clock: failed to mark clock as failed after enqueue error",
+					"clock_id", id, "enqueue_err", err, "mark_err", ferr)
 			}
-			return domain.TestClock{}, fmt.Errorf("billing catchup failed: %w", err)
+			return domain.TestClock{}, fmt.Errorf("dispatch catchup: %w", err)
 		}
+		return advancing, nil
 	}
 
-	return s.store.CompleteAdvance(ctx, tenantID, id)
+	// Sync fallback (tests / narrow setups without a queue).
+	if err := s.RunCatchup(ctx, CatchupJob{TenantID: tenantID, ClockID: id}); err != nil {
+		return domain.TestClock{}, err
+	}
+	return s.store.Get(ctx, tenantID, id)
 }
 
-// runCatchup repeatedly runs the billing engine until no more subs on this
-// clock come back as "due". Stops early on MaxAdvanceCatchupLoops to avoid
-// an infinite loop if some bug kept producing "due" results.
-func (s *Service) runCatchup(ctx context.Context, tenantID, clockID string) error {
+// RunCatchup is the worker's entry point. Repeatedly runs the
+// billing engine until no more subs on this clock come back as
+// "due". Stops early on MaxAdvanceCatchupLoops to avoid an
+// infinite loop if some bug kept producing "due" results, and
+// gets capped externally by the worker's wall-clock timeout
+// (CatchupTimeout). On any error, flips the clock to
+// internal_failure and returns the error so the worker can log it.
+func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
+	if s.billing == nil {
+		// No billing wired — just complete the state transition.
+		// Used by narrow unit tests that exercise the state machine
+		// without standing up the full engine.
+		_, err := s.store.CompleteAdvance(ctx, job.TenantID, job.ClockID)
+		return err
+	}
+
+	if err := s.runCatchupLoop(ctx, job.TenantID, job.ClockID); err != nil {
+		// Flip to internal_failure. The clock's frozen_time stays at
+		// the new value — partial catchup is still applied, and the
+		// tenant can inspect invoices and delete the clock to unstick
+		// themselves.
+		if _, ferr := s.store.MarkFailed(ctx, job.TenantID, job.ClockID); ferr != nil {
+			slog.Error("test clock: failed to mark clock as failed after catchup error",
+				"clock_id", job.ClockID, "catchup_err", err, "mark_err", ferr)
+		}
+		return fmt.Errorf("billing catchup failed: %w", err)
+	}
+
+	if _, err := s.store.CompleteAdvance(ctx, job.TenantID, job.ClockID); err != nil {
+		return fmt.Errorf("complete advance: %w", err)
+	}
+	return nil
+}
+
+// RecoverInFlight scans for clocks left in status='advancing' from
+// a prior process — typically because the server restarted while a
+// catchup was running — and re-enqueues them. Idempotent:
+// runCatchupLoop only processes subs with next_billing_at <=
+// frozen_time, so resuming partial work just continues from where
+// it stopped.
+//
+// Called once on boot AFTER the worker is wired. If the queue is
+// nil (test path), this is a no-op.
+func (s *Service) RecoverInFlight(ctx context.Context) error {
+	if s.queue == nil {
+		return nil
+	}
+	clocks, err := s.store.ListAllAdvancing(ctx)
+	if err != nil {
+		return fmt.Errorf("list advancing clocks: %w", err)
+	}
+	for _, c := range clocks {
+		if err := s.queue.Enqueue(CatchupJob{TenantID: c.TenantID, ClockID: c.ID}); err != nil {
+			slog.Error("test clock: failed to re-enqueue in-flight catchup on boot",
+				"clock_id", c.ID, "tenant_id", c.TenantID, "error", err)
+			continue
+		}
+		slog.Info("test clock: re-enqueued in-flight catchup on boot",
+			"clock_id", c.ID, "tenant_id", c.TenantID)
+	}
+	return nil
+}
+
+// runCatchupLoop is the inner loop. Extracted from the previous
+// runCatchup so RunCatchup can wrap it with state-flip handling.
+func (s *Service) runCatchupLoop(ctx context.Context, tenantID, clockID string) error {
 	for range MaxAdvanceCatchupLoops {
+		// Honour ctx deadline (the worker wraps with CatchupTimeout).
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("catchup ctx done: %w", err)
+		}
+
 		subs, err := s.store.ListSubscriptionsOnClock(ctx, tenantID, clockID)
 		if err != nil {
 			return fmt.Errorf("list subscriptions on clock: %w", err)

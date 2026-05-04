@@ -867,8 +867,9 @@ function EditCouponDialog({
                     value={field.value}
                     onChange={field.onChange}
                     placeholder="No expiration"
+                    minDate={new Date()}
                   />
-                  <FormDescription>Leave empty for no expiration</FormDescription>
+                  <FormDescription>Leave empty for no expiration. Past dates are blocked — a coupon expiring before today would be useless.</FormDescription>
                   <FormMessage />
                 </FormItem>
               )}

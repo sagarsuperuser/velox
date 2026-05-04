@@ -263,6 +263,7 @@ export default function InvoicesPage() {
             onChange={(v) => setUrlState({ dateTo: v })}
             placeholder="To date"
             className="w-44"
+            minDate={dateFrom ? new Date(dateFrom + 'T00:00:00') : undefined}
           />
           {(search || dateFrom || dateTo) && (
             <span className="text-xs text-muted-foreground">Filtering within current page</span>

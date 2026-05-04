@@ -1,7 +1,7 @@
 import * as React from 'react'
-import { format } from 'date-fns'
+import { format, parse, isValid } from 'date-fns'
 import { DayPicker } from 'react-day-picker'
-import { Calendar, X } from 'lucide-react'
+import { Calendar, X, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -14,13 +14,94 @@ interface DatePickerProps {
   minDate?: Date                   // Disable dates before this
 }
 
+// Display format the user sees ("May 4, 2026"). Source of truth on
+// commit is yyyy-MM-dd via onChange.
+const DISPLAY_FORMAT = 'MMM d, yyyy'
+
+// Accepted typed input formats, tried in order. Looser formats sit
+// last so a precise match wins when ambiguous (e.g. "01-02-2026"
+// matches MM-dd-yyyy before falling through to d/M/yyyy guesses).
+const PARSE_FORMATS = [
+  'yyyy-MM-dd',
+  'MMM d, yyyy', 'MMM d yyyy',
+  'MMMM d, yyyy', 'MMMM d yyyy',
+  'd MMM yyyy', 'd MMMM yyyy',
+  'M/d/yyyy', 'MM/dd/yyyy',
+  'M-d-yyyy', 'MM-dd-yyyy',
+] as const
+
+// ParseResult discriminates the two ways typed input can fail. The
+// caller renders different copy for each so the user knows whether
+// to fix the format or pick a later date.
+type ParseResult =
+  | { ok: true; value: string }              // parsed + within range
+  | { ok: false; reason: 'format' }          // didn't match any accepted format
+  | { ok: false; reason: 'min'; min: Date }  // parsed fine but earlier than minDate
+
+// parseTypedDate accepts the strings users actually type and returns
+// a discriminated result. Whitespace runs are collapsed to single
+// spaces before matching so copy-paste with weird spacing
+// ("Jul   1,  2026") still parses.
+function parseTypedDate(input: string, minDate?: Date): ParseResult | { ok: true; value: '' } {
+  const trimmed = input.trim().replace(/\s+/g, ' ')
+  if (!trimmed) return { ok: true, value: '' }
+  for (const f of PARSE_FORMATS) {
+    const d = parse(trimmed, f, new Date())
+    if (isValid(d)) {
+      if (minDate) {
+        const minStart = new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate())
+        const dStart = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+        if (dStart < minStart) return { ok: false, reason: 'min', min: minDate }
+      }
+      return { ok: true, value: format(d, 'yyyy-MM-dd') }
+    }
+  }
+  return { ok: false, reason: 'format' }
+}
+
 export function DatePicker({ value, onChange, placeholder = 'Pick a date', className, minDate }: DatePickerProps) {
   const [open, setOpen] = React.useState(false)
   const [dropUp, setDropUp] = React.useState(false)
   const [alignRight, setAlignRight] = React.useState(false)
+  const [inputText, setInputText] = React.useState('')
+  const [errorReason, setErrorReason] = React.useState<null | 'format' | 'min'>(null)
+  const hasError = errorReason !== null
   const ref = React.useRef<HTMLDivElement>(null)
+  const inputRef = React.useRef<HTMLInputElement>(null)
+  const errorId = React.useId()
 
   const selectedDate = value ? new Date(value + 'T00:00:00') : undefined
+
+  // Sync the input text when the external value changes (e.g. caller
+  // resets the field, or the calendar popover commits a date).
+  // Three things must be true to skip the sync:
+  //  1. The user is mid-typing — never overwrite their draft.
+  //  2. The field is currently in an error state — the parent's value
+  //     just got cleared by our own commit() failure path; mirroring
+  //     that empty back into inputText would erase the user's bad
+  //     input that they need to see in red to fix.
+  //  3. (implicit via setState bailout) text already matches.
+  React.useEffect(() => {
+    if (inputRef.current && document.activeElement === inputRef.current) return
+    if (hasError) return
+    setInputText(value ? format(new Date(value + 'T00:00:00'), DISPLAY_FORMAT) : '')
+  }, [value, hasError])
+
+  // Clear stale 'min' errors when the minDate constraint shifts (e.g.
+  // upstream a sibling field changes "From" so "To" might now be
+  // valid). Format errors are about the user's input, not the
+  // constraint, so they don't clear here.
+  //
+  // errorReason is read via functional setState so it stays out of
+  // the deps array — including it would cause a self-clearing loop
+  // the moment commitInput() set the value to 'min', because this
+  // effect would re-run on the errorReason change and immediately
+  // null it. Bug discovered when typing a back date made the field
+  // appear to vanish instead of showing the constraint message.
+  const minDateKey = minDate ? minDate.toISOString() : null
+  React.useEffect(() => {
+    setErrorReason(prev => (prev === 'min' ? null : prev))
+  }, [minDateKey])
 
   // Determine if calendar should open upward and/or right-align.
   // Popover is ~300px wide; right-align when the trigger is close enough to
@@ -52,38 +133,117 @@ export function DatePicker({ value, onChange, placeholder = 'Pick a date', class
     return () => document.removeEventListener('keydown', handler)
   }, [open])
 
+  const commitInput = () => {
+    const result = parseTypedDate(inputText, minDate)
+    if (!result.ok) {
+      // Invalid: surface a red border + inline error AND clear the
+      // parent's value so any submit gating tied to a non-empty date
+      // flips to disabled. The user's bad input stays visible (the
+      // sync effect skips while hasError is true) so they can fix
+      // it without losing what they typed.
+      setErrorReason(result.reason)
+      if (value !== '') onChange('')
+      return
+    }
+    setErrorReason(null)
+    if (result.value === '') {
+      if (value) onChange('')
+    } else if (result.value !== value) {
+      onChange(result.value)
+      // Reformat the input so "5/4/2026" snaps to "May 4, 2026"
+      // immediately after blur, without waiting for a re-render
+      // round-trip via the value sync effect.
+      setInputText(format(new Date(result.value + 'T00:00:00'), DISPLAY_FORMAT))
+    }
+  }
+
   const handleSelect = (day: Date | undefined) => {
     if (day) {
+      // Clear any pending error BEFORE onChange. The sync effect
+      // skips while hasError is true, so without this the input
+      // would keep showing the bad typed text after the user picked
+      // a fresh date from the calendar — value updates, field stays
+      // wrong.
+      setErrorReason(null)
       onChange(format(day, 'yyyy-MM-dd'))
       setOpen(false)
     }
   }
 
+  const handleClear = () => {
+    onChange('')
+    setInputText('')
+    setErrorReason(null)
+    inputRef.current?.focus()
+  }
+
   return (
     <div ref={ref} className={cn('relative', className)}>
-      <Button
-        type="button"
-        variant="outline"
-        onClick={() => setOpen(!open)}
+      <div
         className={cn(
-          'w-full justify-start text-left font-normal h-9',
-          !value && 'text-muted-foreground'
+          'flex h-9 items-center gap-1.5 rounded-md border bg-transparent dark:bg-input/30 px-2.5 transition-colors cursor-text',
+          'has-[input:focus-visible]:border-ring has-[input:focus-visible]:ring-3 has-[input:focus-visible]:ring-ring/50',
+          hasError ? 'border-destructive' : 'border-input',
         )}
+        onClick={(e) => {
+          // Click anywhere on the wrapper focuses the input — except
+          // when the click landed on one of the trailing buttons,
+          // which manage their own focus.
+          if (e.target === e.currentTarget) inputRef.current?.focus()
+        }}
       >
-        <Calendar className="mr-2 h-4 w-4 shrink-0" />
-        <span className="flex-1 truncate">
-          {selectedDate ? format(selectedDate, 'MMM d, yyyy') : placeholder}
-        </span>
+        <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+        <input
+          ref={inputRef}
+          type="text"
+          value={inputText}
+          onChange={(e) => { setInputText(e.target.value); if (hasError) setErrorReason(null) }}
+          onBlur={commitInput}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              commitInput()
+              setOpen(false)
+            } else if (e.key === 'ArrowDown' && !open) {
+              e.preventDefault()
+              setOpen(true)
+            }
+          }}
+          placeholder={placeholder}
+          aria-invalid={hasError || undefined}
+          aria-describedby={hasError ? errorId : undefined}
+          autoComplete="off"
+          spellCheck={false}
+          className="flex-1 min-w-0 bg-transparent outline-none text-sm placeholder:text-muted-foreground"
+        />
         {value && (
-          <span
-            role="button"
-            onClick={(e) => { e.stopPropagation(); onChange(''); }}
-            className="ml-1 p-0.5 rounded-sm hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+          <button
+            type="button"
+            onClick={handleClear}
+            aria-label="Clear date"
+            className="p-0.5 rounded-sm hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
           >
             <X className="h-3.5 w-3.5" />
-          </span>
+          </button>
         )}
-      </Button>
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-label={open ? 'Close calendar' : 'Open calendar'}
+          aria-expanded={open}
+          className="p-0.5 rounded-sm hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
+        </button>
+      </div>
+      {errorReason === 'format' && (
+        <p id={errorId} role="alert" className="text-xs text-destructive mt-1">Couldn’t read that date. Try <span className="font-mono">2026-05-04</span> or <span className="font-mono">May 4, 2026</span>.</p>
+      )}
+      {errorReason === 'min' && minDate && (
+        <p id={errorId} role="alert" className="text-xs text-destructive mt-1">
+          Date must be on or after <span className="font-mono">{format(minDate, DISPLAY_FORMAT)}</span>.
+        </p>
+      )}
 
       {open && (
         <div className={cn(
@@ -145,7 +305,14 @@ export function DatePicker({ value, onChange, placeholder = 'Pick a date', class
                 size="sm"
                 className="text-xs"
                 disabled={todayBlocked}
-                onClick={() => { onChange(format(new Date(), 'yyyy-MM-dd')); setOpen(false); }}
+                onClick={() => {
+                  // Same error-clear contract as handleSelect: a
+                  // calendar-driven commit must reset any typed-input
+                  // error so the field reflects the new value.
+                  setErrorReason(null)
+                  onChange(format(new Date(), 'yyyy-MM-dd'))
+                  setOpen(false)
+                }}
               >
                 Today
               </Button>
