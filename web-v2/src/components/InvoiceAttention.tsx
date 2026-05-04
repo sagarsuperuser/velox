@@ -230,6 +230,16 @@ function ActionButton({
           <Link to="/settings">{display}</Link>
         </Button>
       )
+    case 'connect_tax_provider':
+      // Deep-link to Settings → Payments tab. The Payments tab is
+      // mode-scoped (see the Settings audit) so landing the operator
+      // there in the active mode lets them connect the right
+      // credentials without a second mode toggle.
+      return (
+        <Button asChild variant={variant} size="sm">
+          <Link to="/settings?tab=payments">{display}</Link>
+        </Button>
+      )
     case 'charge_now':
       return (
         <Button
@@ -334,6 +344,7 @@ function defaultLabel(action: AttentionAction): string {
     // attention reason; the UI label is generic.
     send_reminder: 'Email payment link',
     add_payment_method: 'Add payment method',
+    connect_tax_provider: 'Connect Stripe',
   }
   return map[action] ?? action
 }
