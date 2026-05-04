@@ -99,6 +99,30 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Changed
 
+- **Test clocks are soft-deleted with cascade-cancel of pinned
+  subs (ADR-016).** Migration 0073 adds
+  `test_clocks.deleted_at TIMESTAMPTZ` plus a partial index for
+  the live (non-deleted) set. `DELETE /v1/test-clocks/{id}` no
+  longer hard-deletes the row + leaves orphaned subs (pre-fix
+  behavior under `ON DELETE SET NULL`). Instead it stamps
+  `deleted_at = now()` and cascade-cancels every pinned
+  subscription whose status isn't already terminal —
+  atomically, in one tx. Generated invoices stay in place
+  (Velox's invoice immutability rule). Aligns `test_clocks`
+  with Velox's everywhere-else soft-delete convention
+  (`status` columns, `archived_at`, `revoked_at`); fixes the
+  silent-orphan-sub footgun where detached subs sat dormant
+  with simulation-time `next_billing_at` values the wall-clock
+  scheduler couldn't reconcile. Dialog copy truthed up:
+  "This removes the clock and cancels its N pinned subscriptions."
+  TTL sweeper for `deletes_after` (column existed since 0020
+  with no sweeper) now wired into the scheduler tick — Stripe-
+  parity 30-day idle cleanup, soft-deletes via the same path.
+  Considered Stripe's hard-delete-with-cascade pattern; rejected
+  because Velox runs test + live mode through a single audit_log
+  + RLS partition and a special case for test-mode audit refs
+  would break the uniform model.
+
 - **Test-clock advance runs catchup asynchronously (ADR-015).** The
   HTTP advance handler now returns in milliseconds with the clock
   in `status: "advancing"` and a `CatchupJob` enqueued; a

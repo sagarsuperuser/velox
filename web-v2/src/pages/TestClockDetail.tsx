@@ -238,8 +238,16 @@ export default function TestClockDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete test clock?</AlertDialogTitle>
             <AlertDialogDescription>
-              This deletes the clock and any subscriptions pinned to it. Invoices and
-              other downstream data already generated stay in place.
+              {subs.length > 0 ? (
+                <>
+                  This removes the clock and cancels {subs.length === 1 ? 'its 1 pinned subscription' : `its ${subs.length} pinned subscriptions`}.
+                  Generated invoices and other downstream data stay in place.
+                </>
+              ) : (
+                <>
+                  This removes the clock. No subscriptions are pinned to it; nothing else changes.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

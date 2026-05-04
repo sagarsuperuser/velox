@@ -93,6 +93,13 @@ func (s *Service) Delete(ctx context.Context, tenantID, id string) error {
 	return s.store.Delete(ctx, tenantID, id)
 }
 
+// SweepDueDeletes runs the TTL cleanup. Pass-through to the store
+// so the scheduler tick (cmd/velox main wiring) doesn't need to
+// reach across the store boundary directly.
+func (s *Service) SweepDueDeletes(ctx context.Context, batch int) (int, error) {
+	return s.store.SweepDueDeletes(ctx, batch)
+}
+
 // ListSubscriptions returns the subscriptions pinned to the given clock.
 // Verifies the clock exists first so a missing-clock id surfaces as 404
 // rather than an empty list (which would look like an empty clock).
