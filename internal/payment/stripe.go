@@ -11,10 +11,11 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
-	"github.com/sagarsuperuser/velox/internal/auth"
+	veloxauth "github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // Stripe is the payment adapter. It creates PaymentIntents for finalized invoices
@@ -251,7 +252,7 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 	// driven charges arrive on background ctx without tenant stamped.
 	// Livemode is already carried on ctx by authenticated callers; for
 	// background workers it defaults to live (postgres.Livemode default).
-	ctx = auth.WithTenantID(ctx, tenantID)
+	ctx = veloxauth.WithTenantID(ctx, tenantID)
 
 	// Idempotency: use invoice ID as the key so retries don't create duplicate PIs
 	metadata := map[string]string{
@@ -486,16 +487,29 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 		"currency":          inv.Currency,
 	})
 
-	// Send payment receipt email asynchronously
+	// Send payment receipt email asynchronously. The goroutine
+	// outlives the webhook request, so the request ctx would be
+	// canceled by the time GetCustomerEmail / SendPaymentReceipt
+	// runs — observed in prod logs as "context canceled" warnings.
+	// Build a detached ctx with a 30s timeout, pinning the tenant
+	// + mode the request was operating in (per the ctx-attribute
+	// audit pattern). Captures everything the downstream
+	// code reads off ctx without inheriting the request lifecycle.
 	if s.emailReceipt != nil && s.customerEmail != nil {
+		livemode := postgres.Livemode(ctx)
 		go func() {
-			email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
+			workerCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			workerCtx = veloxauth.WithTenantID(workerCtx, tenantID)
+			workerCtx = postgres.WithLivemode(workerCtx, livemode)
+
+			email, name, err := s.customerEmail.GetCustomerEmail(workerCtx, tenantID, inv.CustomerID)
 			if err != nil || email == "" {
 				slog.Warn("skip payment receipt email — cannot resolve customer email",
 					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
 				return
 			}
-			if err := s.emailReceipt.SendPaymentReceipt(ctx, tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, inv.PublicToken); err != nil {
+			if err := s.emailReceipt.SendPaymentReceipt(workerCtx, tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, inv.PublicToken); err != nil {
 				slog.Error("failed to send payment receipt email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
@@ -562,7 +576,17 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 	// (URL or customer-email resolver) surfaces as a logged error per
 	// attempt rather than a silent skip, so operators see the failure.
 	if s.emailPaymentUpdate != nil {
+		// Same detached-ctx pattern as the receipt email above:
+		// goroutine outlives the webhook request, so the request
+		// ctx would cancel mid-call. Build a fresh ctx with
+		// tenant + livemode pinned + a 30s timeout.
+		livemode := postgres.Livemode(ctx)
 		go func() {
+			workerCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			workerCtx = veloxauth.WithTenantID(workerCtx, tenantID)
+			workerCtx = postgres.WithLivemode(workerCtx, livemode)
+
 			if s.paymentUpdateURL == "" {
 				slog.Error("payment update email failed — PAYMENT_UPDATE_URL not configured",
 					"invoice_id", inv.ID)
@@ -573,7 +597,7 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 					"invoice_id", inv.ID)
 				return
 			}
-			email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
+			email, name, err := s.customerEmail.GetCustomerEmail(workerCtx, tenantID, inv.CustomerID)
 			if err != nil || email == "" {
 				slog.Warn("skip payment update email — cannot resolve customer email",
 					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
@@ -592,7 +616,7 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 					"invoice_id", inv.ID)
 				return
 			}
-			rawToken, err := s.tokenSvc.Create(ctx, tenantID, inv.CustomerID, inv.ID)
+			rawToken, err := s.tokenSvc.Create(workerCtx, tenantID, inv.CustomerID, inv.ID)
 			if err != nil {
 				slog.Error("failed to create payment update token",
 					"invoice_id", inv.ID, "error", err)
@@ -604,7 +628,7 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 			// React Router catch-all.
 			updateURL := fmt.Sprintf("%s?token=%s", s.paymentUpdateURL, rawToken)
 
-			if err := s.emailPaymentUpdate.SendPaymentUpdateRequest(ctx, tenantID, email, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
+			if err := s.emailPaymentUpdate.SendPaymentUpdateRequest(workerCtx, tenantID, email, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
 				slog.Error("failed to send payment update email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
