@@ -773,8 +773,14 @@ func (s *PostgresStore) ApplyDiscountAtomic(
 		invoiceID,
 		update.SubtotalCents, update.DiscountCents, update.TaxAmountCents, update.TaxRateBP,
 		update.TaxName, update.TaxCountry, update.TaxID,
-		postgres.NullableString(update.TaxProvider),
-		postgres.NullableString(update.TaxCalculationID),
+		// tax_provider + tax_calculation_id are NOT NULL DEFAULT ''
+		// — pass empty string directly. NullableString would
+		// convert "" → SQLNULL → constraint violation. Bug surfaced
+		// 2026-05-04 when tax retry on orphan invoices wrote empty
+		// calculation_ids (none/manual providers don't issue them)
+		// and tripped SQLSTATE 23502.
+		update.TaxProvider,
+		update.TaxCalculationID,
 		update.TaxReverseCharge, update.TaxExemptReason,
 		update.TaxStatus, postgres.NullableTime(update.TaxDeferredAt), update.TaxPendingReason,
 		postgres.NullableString(update.TaxErrorCode),
