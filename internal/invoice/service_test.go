@@ -429,7 +429,7 @@ func (m *memStore) ListProviderConfigErrors(_ context.Context, tenantID string, 
 	return out, nil
 }
 
-func (m *memStore) ListPendingTaxRetry(_ context.Context, batch int, retryableCodes []string, maxAttempts int) ([]domain.Invoice, error) {
+func (m *memStore) ListPendingTaxRetry(_ context.Context, batch int, retryableCodes []string, maxAttempts int, _ bool) ([]domain.Invoice, error) {
 	if batch <= 0 {
 		batch = 50
 	}

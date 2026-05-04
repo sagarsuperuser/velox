@@ -580,19 +580,29 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 				return
 			}
 
-			// Generate a secure token for the payment update link
-			var updateURL string
-			if s.tokenSvc != nil {
-				rawToken, err := s.tokenSvc.Create(ctx, tenantID, inv.CustomerID, inv.ID)
-				if err != nil {
-					slog.Error("failed to create payment update token",
-						"invoice_id", inv.ID, "error", err)
-					return
-				}
-				updateURL = fmt.Sprintf("%s/%s", s.paymentUpdateURL, rawToken)
-			} else {
-				updateURL = fmt.Sprintf("%s?invoice_id=%s&customer_id=%s", s.paymentUpdateURL, inv.ID, inv.CustomerID)
+			// Generate a secure token for the payment update link.
+			// No fallback when tokenSvc is unwired: the SPA enforces
+			// ?token= and rejects URLs without it. Sending a
+			// tokenless URL would put the customer on a broken page —
+			// strictly worse than logging the misconfiguration and
+			// not sending. Operators see the slog error and wire
+			// SetTokenService.
+			if s.tokenSvc == nil {
+				slog.Error("payment update email failed — TokenService not wired (SetTokenService never called)",
+					"invoice_id", inv.ID)
+				return
 			}
+			rawToken, err := s.tokenSvc.Create(ctx, tenantID, inv.CustomerID, inv.ID)
+			if err != nil {
+				slog.Error("failed to create payment update token",
+					"invoice_id", inv.ID, "error", err)
+				return
+			}
+			// Query-style ?token=… matches the SPA route
+			// /update-payment which reads searchParams.get('token').
+			// Path-style /update-payment/{token} would 404 the
+			// React Router catch-all.
+			updateURL := fmt.Sprintf("%s?token=%s", s.paymentUpdateURL, rawToken)
 
 			if err := s.emailPaymentUpdate.SendPaymentUpdateRequest(ctx, tenantID, email, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
 				slog.Error("failed to send payment update email",
