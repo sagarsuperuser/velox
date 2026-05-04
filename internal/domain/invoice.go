@@ -106,6 +106,14 @@ type Invoice struct {
 	// lets webhook consumers route alerts. Empty for invoices defered
 	// before this column existed (migration 0067).
 	TaxErrorCode string `json:"tax_error_code,omitempty"`
+	// TaxNextRetryAt is the soonest the background reconciler may
+	// re-run tax calculation. NULL means "ready now" (either never
+	// tried or operator-driven retry just reset the schedule).
+	// Future timestamp means a previous attempt failed with a
+	// retryable code and the next attempt should wait until this
+	// time per the exponential backoff curve in
+	// internal/billing/tax_retry.go. Migration 0074. ADR-017.
+	TaxNextRetryAt *time.Time `json:"tax_next_retry_at,omitempty"`
 	// Attention is the unified "needs operator attention" surface,
 	// computed on read by ClassifyInvoiceAttention. Never persisted —
 	// always derived from the durable fields above (tax_status,
@@ -245,6 +253,16 @@ type InvoiceTaxRetryUpdate struct {
 	TaxPendingReason string
 	TaxErrorCode     string
 	TotalAmountCents int64
+	// TaxNextRetryAt schedules the next reconciler attempt. nil
+	// means "ready now"; a future timestamp gates the row out of
+	// the worker's scan until the backoff window expires. Set
+	// per the exponential schedule in internal/billing/tax_retry.go
+	// when Status remains pending/failed; cleared (nil) when
+	// status flips to ok/exempt. Auto-finalize on a clean tax
+	// outcome happens at the service layer (so it shares the same
+	// public-token + tax-commit side-effects as manual Finalize),
+	// not inside this atomic update.
+	TaxNextRetryAt *time.Time
 }
 
 type InvoiceLineItem struct {

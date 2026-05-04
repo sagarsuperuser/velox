@@ -319,6 +319,7 @@ func (m *memStore) UpdateTaxAtomic(_ context.Context, tenantID, invoiceID string
 	inv.TaxDeferredAt = update.TaxDeferredAt
 	inv.TaxPendingReason = update.TaxPendingReason
 	inv.TaxErrorCode = update.TaxErrorCode
+	inv.TaxNextRetryAt = update.TaxNextRetryAt
 	inv.TaxRetryCount++
 	inv.TotalAmountCents = update.TotalAmountCents
 	due := inv.TotalAmountCents - inv.AmountPaidCents - inv.CreditsAppliedCents
@@ -329,6 +330,40 @@ func (m *memStore) UpdateTaxAtomic(_ context.Context, tenantID, invoiceID string
 	inv.UpdatedAt = time.Now().UTC()
 	m.invoices[invoiceID] = inv
 	return inv, nil
+}
+
+func (m *memStore) ListPendingTaxRetry(_ context.Context, batch int, retryableCodes []string, maxAttempts int) ([]domain.Invoice, error) {
+	if batch <= 0 {
+		batch = 50
+	}
+	allowed := make(map[string]struct{}, len(retryableCodes))
+	for _, c := range retryableCodes {
+		allowed[c] = struct{}{}
+	}
+	now := time.Now().UTC()
+	var out []domain.Invoice
+	for _, inv := range m.invoices {
+		if inv.Status != domain.InvoiceDraft {
+			continue
+		}
+		if inv.TaxStatus != domain.InvoiceTaxPending && inv.TaxStatus != domain.InvoiceTaxFailed {
+			continue
+		}
+		if _, ok := allowed[inv.TaxErrorCode]; !ok {
+			continue
+		}
+		if inv.TaxRetryCount >= maxAttempts {
+			continue
+		}
+		if inv.TaxNextRetryAt != nil && inv.TaxNextRetryAt.After(now) {
+			continue
+		}
+		out = append(out, inv)
+		if len(out) >= batch {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (m *memStore) CreateWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {

@@ -33,7 +33,7 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	tax_provider, tax_calculation_id, COALESCE(tax_transaction_id,''),
 	tax_reverse_charge, tax_exempt_reason,
 	tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason,
-	COALESCE(tax_error_code,''),
+	COALESCE(tax_error_code,''), tax_next_retry_at,
 	COALESCE(public_token,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,'')`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
@@ -840,9 +840,10 @@ func (s *PostgresStore) UpdateTaxAtomic(
 			tax_pending_reason = $13,
 			tax_error_code = $14,
 			tax_retry_count = tax_retry_count + 1,
-			total_amount_cents = $15,
-			amount_due_cents = GREATEST($15 - amount_paid_cents - credits_applied_cents, 0),
-			updated_at = $16
+			tax_next_retry_at = $15,
+			total_amount_cents = $16,
+			amount_due_cents = GREATEST($16 - amount_paid_cents - credits_applied_cents, 0),
+			updated_at = $17
 		WHERE id = $1
 		RETURNING `+invCols,
 		invoiceID,
@@ -853,6 +854,7 @@ func (s *PostgresStore) UpdateTaxAtomic(
 		update.TaxReverseCharge, update.TaxExemptReason,
 		string(update.TaxStatus), postgres.NullableTime(update.TaxDeferredAt),
 		update.TaxPendingReason, postgres.NullableString(update.TaxErrorCode),
+		postgres.NullableTime(update.TaxNextRetryAt),
 		update.TotalAmountCents, now,
 	).Scan(scanInvDest(&inv)...)
 	if err != nil {
@@ -1106,6 +1108,60 @@ func (s *PostgresStore) ListUnknownPayments(ctx context.Context, olderThan time.
 	return invoices, rows.Err()
 }
 
+// ListPendingTaxRetry powers the background tax-retry reconciler
+// (ADR-017). RLS-bypassed because the sweeper crosses tenants;
+// returned rows carry their tenant_id so the caller dispatches
+// per-row under the correct RLS partition.
+//
+// Filter:
+//   - status='draft' AND tax_status IN (pending, failed)
+//   - tax_error_code IN retryableCodes (e.g. provider_outage,
+//     unknown). Empty list short-circuits to "none".
+//   - tax_retry_count < maxAttempts (per-invoice cap)
+//   - tax_next_retry_at IS NULL OR tax_next_retry_at <= now()
+//
+// Postgres uses idx_invoices_tax_retry_due (migration 0074) to
+// narrow the scan; the predicate matches the index where clause
+// exactly so the planner picks it.
+func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retryableCodes []string, maxAttempts int) ([]domain.Invoice, error) {
+	if batch <= 0 {
+		batch = 50
+	}
+	if len(retryableCodes) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+invCols+` FROM invoices
+		WHERE status = 'draft'
+		  AND tax_status IN ('pending', 'failed')
+		  AND COALESCE(tax_error_code, '') = ANY($1)
+		  AND tax_retry_count < $2
+		  AND (tax_next_retry_at IS NULL OR tax_next_retry_at <= now())
+		ORDER BY tax_next_retry_at ASC NULLS FIRST
+		LIMIT $3
+	`, postgres.StringArray(retryableCodes), maxAttempts, batch)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
 func scanInvDest(inv *domain.Invoice) []any {
 	var metaJSON []byte
 	return []any{
@@ -1123,7 +1179,7 @@ func scanInvDest(inv *domain.Invoice) []any {
 		&inv.TaxProvider, &inv.TaxCalculationID, &inv.TaxTransactionID,
 		&inv.TaxReverseCharge, &inv.TaxExemptReason,
 		(*string)(&inv.TaxStatus), &inv.TaxDeferredAt, &inv.TaxRetryCount, &inv.TaxPendingReason,
-		&inv.TaxErrorCode,
+		&inv.TaxErrorCode, &inv.TaxNextRetryAt,
 		&inv.PublicToken, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
 	}
 }

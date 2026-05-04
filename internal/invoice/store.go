@@ -56,6 +56,17 @@ type Store interface {
 	// errs.ErrNotFound when the invoice doesn't exist (caller surfaces 404).
 	UpdateTaxAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error)
 
+	// ListPendingTaxRetry returns draft invoices awaiting another
+	// tax-calculation attempt: tax_status in (pending, failed),
+	// tax_error_code is in the retryable set (the worker filters
+	// further on this side), tax_next_retry_at is NULL or in the
+	// past, and tax_retry_count is below the per-invoice cap.
+	// Ordered by tax_next_retry_at ASC (NULLS FIRST) so newly-
+	// stuck invoices process first. Cross-tenant; returned rows
+	// carry their tenant_id so the caller can dispatch per-row
+	// with the right RLS partition.
+	ListPendingTaxRetry(ctx context.Context, batch int, retryableCodes []string, maxAttempts int) ([]domain.Invoice, error)
+
 	// HasSucceededInvoice reports whether the customer has any invoice with
 	// payment_status = 'succeeded'. Backs the coupon first_time_customer_only
 	// restriction — existence-only so the query can use LIMIT 1 instead of

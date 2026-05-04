@@ -99,6 +99,28 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Changed
 
+- **Background tax-retry reconciler + auto-finalize on success
+  (ADR-017).** Migration 0074 adds
+  `invoices.tax_next_retry_at TIMESTAMPTZ`. The billing scheduler
+  grows a tax-retry tick that picks up draft invoices stuck at
+  `tax_status` pending / failed with retryable error codes
+  (`provider_outage`, `unknown`) past their backoff timestamp,
+  recomputes tax, and on success **auto-finalizes** when the
+  invoice is engine-generated (`billing_reason != 'manual'`).
+  Operator-driven "Retry tax" click follows the same auto-
+  finalize rule. Backoff curve: 8 attempts over ~10 days
+  (5min → 15min → 1h → 4h → 12h → 1d → 2d → 4d) with ±10% jitter
+  to avoid thundering herd on outage recovery. Non-retryable
+  codes (`provider_auth`, `provider_not_configured`,
+  `customer_data_invalid`, `jurisdiction_unsupported`) are
+  intentionally NOT retried — they need operator action and
+  auto-retry would burn provider quota for nothing. Closes the
+  half-built design from migration 0039 ("a background worker
+  retries") that was never wired. Eliminates the two-click
+  "Retry tax → Finalize" recovery for engine invoices; manual
+  drafts still require explicit Finalize so operators can keep
+  building.
+
 - **Test clocks are soft-deleted with cascade-cancel of pinned
   subs (ADR-016).** Migration 0073 adds
   `test_clocks.deleted_at TIMESTAMPTZ` plus a partial index for
