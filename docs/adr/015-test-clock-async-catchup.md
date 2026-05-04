@@ -128,32 +128,6 @@ freely.
   operators can manually delete stuck clocks if recovery
   permanently fails.
 
-### Why not lean on the existing billing scheduler?
-
-The `Scheduler` already runs `Engine.RunCycle` on a configurable
-interval (default 1h, 5min in local). Tempting to argue advance
-just needs to `MarkAdvancing` and let the next scheduler tick
-catch up.
-
-Three reasons no:
-
-1. **Latency.** Operator expects invoices to appear in seconds —
-   Stripe's bar. Waiting 5–60 minutes for the next scheduler
-   tick fails the UX.
-2. **Coupling.** Scheduler interval is tuned for production
-   billing concerns (live cycles closing, dunning sweep, credit
-   expiry). Tying test-clock catchup latency to it means changing
-   the test-clock UX forces re-tuning the production billing
-   cadence. Two different concerns sharing one knob.
-3. **Configurability blast radius.** Self-hosters running at 1h or
-   6h scheduler intervals (legitimate for low-volume tenants —
-   saves DB load) would have an unusable test-clock UX as a side
-   effect.
-
-The scheduler's job is "every N minutes, catch up production".
-The advance worker's job is "right now, catch up THIS clock".
-Different demand patterns deserve different workers.
-
 ## Compatibility
 
 - API surface unchanged. `POST /v1/test-clocks/{id}/advance`
