@@ -668,6 +668,37 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 		return nil
 	}
 
+	// A checkout.session.completed event fires for BOTH save-PM and
+	// no-save-PM flows. We only want to mark the customer's setup
+	// as 'ready' when a PM was actually attached to the Stripe
+	// customer (= can be auto-charged for future invoices).
+	// FetchCardDetails lists PMs attached to the customer; success
+	// confirms attachment, failure means no PM saved (a one-off
+	// hosted-invoice payment without ticking "save card").
+	//
+	// Pre-fix the upsert ran unconditionally with status='ready'
+	// + empty card details on no-save flows — operator-reported
+	// inconsistency: dashboard showed "Payment method active" with
+	// no card on file. Now no-save flows leave the setup row at
+	// its prior state.
+	if s.cardFetcher == nil || event.CustomerExternalID == "" {
+		slog.Info("checkout.session.completed: no cardFetcher or stripe customer — skipping setup update",
+			"customer_id", customerID)
+		return nil
+	}
+	card, err := s.cardFetcher.FetchCardDetails(ctx, event.CustomerExternalID)
+	if err != nil {
+		// No PM attached to the Stripe customer — operator chose
+		// not to save. The PI on this checkout session still
+		// succeeded (payment_intent.succeeded handles invoice
+		// state); we just don't update the customer's PM record.
+		slog.Info("checkout.session.completed: no saved PM (one-off payment) — leaving customer setup unchanged",
+			"customer_id", customerID,
+			"stripe_customer_id", event.CustomerExternalID,
+			"reason", err.Error())
+		return nil
+	}
+
 	now := time.Now().UTC()
 	setup := domain.CustomerPaymentSetup{
 		CustomerID:                  customerID,
@@ -678,23 +709,14 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 		StripeCustomerID:            event.CustomerExternalID,
 		LastVerifiedAt:              &now,
 		UpdatedAt:                   now,
+		CardBrand:                   card.Brand,
+		CardLast4:                   card.Last4,
+		CardExpMonth:                card.ExpMonth,
+		CardExpYear:                 card.ExpYear,
+		StripePaymentMethodID:       card.PaymentMethodID,
 	}
 
-	// Fetch card details from Stripe for display
-	if s.cardFetcher != nil && event.CustomerExternalID != "" {
-		if card, err := s.cardFetcher.FetchCardDetails(ctx, event.CustomerExternalID); err == nil {
-			setup.CardBrand = card.Brand
-			setup.CardLast4 = card.Last4
-			setup.CardExpMonth = card.ExpMonth
-			setup.CardExpYear = card.ExpYear
-			setup.StripePaymentMethodID = card.PaymentMethodID
-		} else {
-			slog.Warn("failed to fetch card details", "stripe_customer_id", event.CustomerExternalID, "error", err)
-		}
-	}
-
-	_, err := s.paymentSetups.UpsertPaymentSetup(ctx, tenantID, setup)
-	if err != nil {
+	if _, err := s.paymentSetups.UpsertPaymentSetup(ctx, tenantID, setup); err != nil {
 		return fmt.Errorf("update payment setup: %w", err)
 	}
 
