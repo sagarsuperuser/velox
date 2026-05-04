@@ -44,4 +44,12 @@ type Store interface {
 	// by the service during advance to drive the billing catchup. RLS scopes
 	// the result to the tenant already; clock-ID filter narrows further.
 	ListSubscriptionsOnClock(ctx context.Context, tenantID, clockID string) ([]domain.Subscription, error)
+
+	// ListAllAdvancing returns every clock currently in status='advancing'
+	// across ALL tenants. Used at boot to recover catchup jobs that were
+	// in-flight when the previous process exited (server restart, deploy,
+	// crash). RLS-bypassed because it needs to surface clocks for tenants
+	// the caller isn't scoped to. The recovery path then re-enqueues each
+	// onto the catchup queue and the worker resumes them.
+	ListAllAdvancing(ctx context.Context) ([]domain.TestClock, error)
 }

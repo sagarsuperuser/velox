@@ -23,6 +23,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/platform/telemetry"
+	"github.com/sagarsuperuser/velox/internal/testclock"
 	"github.com/sagarsuperuser/velox/internal/webhook"
 )
 
@@ -136,6 +137,20 @@ func serve() {
 	api.SetSchedulerInterval(billingInterval)
 	scheduler.SetOnRun(api.RecordSchedulerRun)
 
+	// Test-clock async catchup (ADR-015). The Advance HTTP handler
+	// flips the clock to status='advancing' and enqueues a job; this
+	// worker drains the queue and runs the billing catchup
+	// off-request. Buffer of 100 is generous — at expected operator
+	// volumes there's never more than a handful of in-flight
+	// advances.
+	catchupQueue := testclock.NewCatchupQueue(100)
+	if server.TestClockSvc != nil {
+		server.TestClockSvc.SetCatchupQueue(catchupQueue)
+	}
+	catchupWorker := testclock.NewCatchupWorker(catchupQueue, func(ctx context.Context, job testclock.CatchupJob) error {
+		return server.TestClockSvc.RunCatchup(ctx, job)
+	})
+
 	srv := &http.Server{
 		Addr:           fmt.Sprintf(":%s", cfg.Port),
 		Handler:        server,
@@ -163,6 +178,22 @@ func serve() {
 		defer workers.Done()
 		server.WebhookOutSvc.StartRetryWorker(ctx, 30*time.Second)
 	}()
+
+	// Test-clock catchup worker. Started AFTER the queue is wired
+	// onto the service so any boot-recovered clock has somewhere to
+	// land. Recovery is best-effort: stuck clocks from a prior
+	// process get re-enqueued; the worker drains them like any other
+	// job. If recovery itself errors, log loudly but don't block
+	// boot — operators can still create new clocks; only legacy
+	// stuck ones miss out, and they can be deleted manually.
+	catchupWorker.Start()
+	if server.TestClockSvc != nil {
+		recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := server.TestClockSvc.RecoverInFlight(recoveryCtx); err != nil {
+			slog.Error("test-clock catchup recovery failed", "error", err)
+		}
+		recoveryCancel()
+	}
 
 	// Outbox dispatcher: drains webhook_outbox → Service.Dispatch. Only runs
 	// when the outbox producer path is enabled (VELOX_WEBHOOK_OUTBOX_ENABLED
@@ -220,6 +251,16 @@ func serve() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("http shutdown error", "error", err)
+	}
+
+	// Stop the test-clock catchup worker. Bounded by the same wall-
+	// clock cap that the worker uses internally (CatchupTimeout) so an
+	// in-flight catchup gets a chance to finish; if it doesn't, the
+	// clock stays in 'advancing' and recovery on next boot will
+	// resume it. ctx.Err on the catchup ctx itself is also signalled
+	// via the parent ctx cancellation above.
+	if !catchupWorker.Stop(testclock.CatchupTimeout) {
+		slog.Warn("test-clock catchup worker did not drain within timeout")
 	}
 
 	// Wait for scheduler + webhook worker to return. Both exit cleanly when

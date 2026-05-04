@@ -97,6 +97,29 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   `api/openapi.yaml`. Eliminates the drift risk of two specs that
   needed to stay in sync by hand.
 
+### Changed
+
+- **Test-clock advance runs catchup asynchronously (ADR-015).** The
+  HTTP advance handler now returns in milliseconds with the clock
+  in `status: "advancing"` and a `CatchupJob` enqueued; a
+  dedicated `CatchupWorker` goroutine drains the queue and runs
+  the billing catchup off the request path. Matches the Stripe /
+  Lago / Orb / Recurly / Chargebee shape — none of them tie
+  catchup to an HTTP request lifetime. Eliminates load-balancer
+  timeouts on long jumps, frees HTTP workers, and lets the
+  operator navigate away while catchup runs. Boot recovery scans
+  for clocks left in `advancing` from a prior process and
+  re-enqueues them automatically — `kubectl rollout` or `velox`
+  restart mid-catchup no longer leaves stuck clocks. 10-minute
+  wall-clock timeout per catchup (was: unbounded; bounded only by
+  `MaxAdvanceCatchupLoops=120`). The dashboard already polls
+  `/v1/test-clocks/{id}` every 1.5s on `status==='advancing'`,
+  so the status transition surfaces with no frontend change.
+  Considered relying on the existing 5-minute billing scheduler
+  to drive catchup — rejected: latency too high (operator wants
+  seconds), couples test-clock UX to production-billing cadence,
+  unusable when self-hosters run the scheduler at 1h+ intervals.
+
 ### Fixed
 
 - **Rate limiting is now per-mode for cookie-session callers.**

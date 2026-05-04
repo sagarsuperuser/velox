@@ -74,8 +74,21 @@ export default function TestClockDetailPage() {
     try {
       await api.deleteTestClock(id)
       toast.success('Test clock deleted')
-      queryClient.invalidateQueries({ queryKey: ['test-clocks'] })
+      // Order matters here:
+      //  1. removeQueries (not invalidate) for the just-deleted
+      //     entity's keys — invalidate would refetch the still-
+      //     mounted detail page's queries against a now-gone ID and
+      //     surface a 404. removeQueries cancels any in-flight
+      //     request and drops the cache entry.
+      //  2. navigate — unmounts the detail page so its query
+      //     observers unsubscribe.
+      //  3. invalidate the LIST so /test-clocks shows the post-
+      //     delete state. The list page is the only mounted
+      //     subscriber for this key now, so the refetch hits the
+      //     right surface.
+      queryClient.removeQueries({ queryKey: ['test-clocks', id] })
       navigate('/test-clocks')
+      queryClient.invalidateQueries({ queryKey: ['test-clocks'], exact: true })
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to delete'
       toast.error(msg)
@@ -362,9 +375,13 @@ function AdvanceClockDialog({
                 time={timePart}
                 onDateChange={setDatePart}
                 onTimeChange={setTimePart}
+                minDate={new Date(clock.frozen_time)}
               />
             </div>
-            <p className="text-xs text-muted-foreground mt-1.5">Times in tenant timezone ({tz}).</p>
+            <p className="text-xs text-muted-foreground mt-1.5">Times in tenant timezone ({tz}). Must be after the current clock time — clocks cannot be rewound.</p>
+            {targetIso !== null && new Date(targetIso) <= new Date(clock.frozen_time) && (
+              <p className="text-xs text-destructive mt-1">Target time must be after the current clock time.</p>
+            )}
           </div>
 
           {overlongWarning && (
@@ -377,7 +394,10 @@ function AdvanceClockDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>
-          <Button onClick={handleSubmit} disabled={submitting}>
+          <Button
+            onClick={handleSubmit}
+            disabled={submitting || targetIso === null || new Date(targetIso) <= new Date(clock.frozen_time)}
+          >
             {submitting ? <><Loader2 size={14} className="animate-spin mr-2" />Advancing…</> : 'Advance clock'}
           </Button>
         </DialogFooter>

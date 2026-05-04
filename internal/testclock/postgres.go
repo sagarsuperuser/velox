@@ -212,6 +212,43 @@ func (s *PostgresStore) ListSubscriptionsOnClock(ctx context.Context, tenantID, 
 	return subs, rows.Err()
 }
 
+// ListAllAdvancing scans test_clocks for rows in status='advancing'
+// across every tenant. Used at boot to recover catchup jobs that
+// were in-flight when the previous process exited. RLS-bypassed
+// (TxBypass) because the recovery path runs before any tenant ctx
+// is established and needs to see all tenants. Limited to 1000 to
+// bound the recovery enqueue burst — at expected pre-launch
+// volumes there will rarely be more than 0-1 stuck clocks; the
+// limit is a sanity cap, not a paging target.
+func (s *PostgresStore) ListAllAdvancing(ctx context.Context) ([]domain.TestClock, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+clockCols+` FROM test_clocks
+		WHERE status = 'advancing'
+		ORDER BY updated_at ASC
+		LIMIT 1000
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var clocks []domain.TestClock
+	for rows.Next() {
+		var clk domain.TestClock
+		if err := rows.Scan(scanDest(&clk)...); err != nil {
+			return nil, err
+		}
+		clocks = append(clocks, clk)
+	}
+	return clocks, rows.Err()
+}
+
 func scanDest(c *domain.TestClock) []any {
 	return []any{
 		&c.ID, &c.TenantID, &c.Name, &c.FrozenTime, &c.Status,

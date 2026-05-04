@@ -653,8 +653,9 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
                         value={field.value}
                         onChange={field.onChange}
                         placeholder="Never expires"
+                        minDate={new Date()}
                       />
-                      <FormDescription>Leave empty for credits that never expire</FormDescription>
+                      <FormDescription>Leave empty for credits that never expire. Past dates are blocked — a credit that expires before today would be unusable.</FormDescription>
                     </FormItem>
                   )}
                 />

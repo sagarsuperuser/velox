@@ -346,6 +346,7 @@ export default function AuditLogPage() {
           onChange={v => setUrlState({ date_to: v, page: '1' })}
           placeholder="To date"
           className="w-44"
+          minDate={dateFrom ? new Date(dateFrom + 'T00:00:00') : undefined}
         />
         {hasFilters && (
           <Button
