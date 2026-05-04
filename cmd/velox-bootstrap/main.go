@@ -111,6 +111,27 @@ func main() {
 		fatal("create tenant: %v", err)
 	}
 
+	// Hard invariant: every tenant has a tenant_settings row.
+	// Without this, the engine path (ApplyTaxToLineItems → settings.Get)
+	// previously fell through to silent zero-tax when settings were
+	// missing — now SettingsStore.Get synthesizes defaults on miss,
+	// but bootstrap should still seed an explicit row so operators
+	// can immediately edit settings via the API without an implicit
+	// upsert side-effect on first invoice. Defaults match
+	// tenant.DefaultSettings; deliberately written with raw SQL
+	// (not via the SettingsStore) because bootstrap runs before
+	// the tenant has any auth context.
+	if _, err := db.Pool.ExecContext(ctx, `
+		INSERT INTO tenant_settings (
+			tenant_id, default_currency, timezone, invoice_prefix,
+			net_payment_terms, tax_provider, tax_on_failure
+		)
+		VALUES ($1, 'USD', 'UTC', 'VLX', 30, 'manual', 'block')
+		ON CONFLICT (tenant_id) DO NOTHING
+	`, tenantID); err != nil {
+		fatal("create tenant settings: %v", err)
+	}
+
 	// Use bypass RLS for bootstrap.
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {

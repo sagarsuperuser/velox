@@ -11,6 +11,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
 // stubClockReader is a TestClockReader spy used by TestEffectiveNow. It
@@ -35,6 +36,17 @@ func (s *stubClockReader) Get(_ context.Context, tenantID, id string) (domain.Te
 // mockSettings is a minimal SettingsReader for engine tests. Hands out
 // VLX-000001, VLX-000002, ... deterministically; Get returns a zero-value
 // TenantSettings so net_payment_terms defaults to the engine's fallback.
+// wireBaseTax wires a tax resolver onto an engine — required for
+// any path that calls ApplyTaxToLineItems. Production engine
+// always has this wired; the engine fails loudly when it's not
+// (no silent zero-tax fallback). Tests that don't exercise
+// tax-specific behavior use this to satisfy the wiring without
+// boilerplate.
+func wireBaseTax(e *Engine) *Engine {
+	e.SetTaxProviderResolver(tax.NewResolver(nil))
+	return e
+}
+
 type mockSettings struct{ next int }
 
 func (m *mockSettings) NextInvoiceNumber(_ context.Context, _ string) (string, error) {
@@ -558,7 +570,7 @@ func setupEngine() (*Engine, *mockSubs, *mockUsage, *mockPricing, *mockInvoices)
 
 	invoices := &mockInvoices{}
 
-	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 	return engine, subs, usage, pricing, invoices
 }
 
@@ -821,7 +833,7 @@ func TestRunCycle_UnitAmountRoundsBankers(t *testing.T) {
 		},
 	}
 	invoices := &mockInvoices{}
-	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 
 	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
@@ -891,7 +903,7 @@ func TestRunCycle_AppliesScheduledPlanChangeAtBoundary(t *testing.T) {
 
 	invoices := &mockInvoices{}
 	usage := &mockUsage{totals: map[string]int64{}}
-	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 
 	count, errs := engine.RunCycle(context.Background(), 50)
 	if len(errs) > 0 {
@@ -958,7 +970,7 @@ func TestRunCycle_SkipsPendingChangeNotYetDue(t *testing.T) {
 
 	invoices := &mockInvoices{}
 	usage := &mockUsage{totals: map[string]int64{}}
-	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 
 	_, errs := engine.RunCycle(context.Background(), 50)
 	if len(errs) > 0 {
@@ -1090,7 +1102,7 @@ func TestRunCycle_FiresPendingChangeAppliedEvent(t *testing.T) {
 	invoices := &mockInvoices{}
 	usage := &mockUsage{totals: map[string]int64{}}
 	dispatcher := &capturingEventDispatcher{}
-	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 	engine.SetEventDispatcher(dispatcher)
 
 	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
@@ -1166,7 +1178,7 @@ func TestRunCycle_OneSubFailsOthersContinue(t *testing.T) {
 	}
 	invoices := &mockInvoices{}
 	usage := &mockUsage{totals: map[string]int64{"mtr_missing": 100}}
-	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 
 	count, runErrs := engine.RunCycle(context.Background(), 50)
 
@@ -1390,7 +1402,7 @@ func TestRunCycle_NoPendingChangeNoAppliedEvent(t *testing.T) {
 	invoices := &mockInvoices{}
 	usage := &mockUsage{totals: map[string]int64{}}
 	dispatcher := &capturingEventDispatcher{}
-	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 	engine.SetEventDispatcher(dispatcher)
 
 	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
@@ -1686,7 +1698,7 @@ func TestRunCycle_CancelAtPeriodEnd_FiresAtBoundary(t *testing.T) {
 	}
 	invoices := &mockInvoices{}
 	dispatcher := &capturingEventDispatcher{}
-	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 	engine.SetEventDispatcher(dispatcher)
 
 	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
@@ -1763,7 +1775,7 @@ func TestRunCycle_CancelAt_FiresWhenTimestampReached(t *testing.T) {
 		},
 	}
 	invoices := &mockInvoices{}
-	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 
 	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
@@ -1880,7 +1892,7 @@ func TestRunCycle_PauseCollection_GeneratesDraft(t *testing.T) {
 		},
 	}
 	invoices := &mockInvoices{}
-	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 
 	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
@@ -1943,7 +1955,7 @@ func TestRunCycle_PauseCollection_AutoResumesWhenResumesAtPasses(t *testing.T) {
 	}
 	invoices := &mockInvoices{}
 	dispatcher := &capturingEventDispatcher{}
-	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 	engine.SetEventDispatcher(dispatcher)
 
 	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
@@ -2012,7 +2024,7 @@ func TestRunCycle_Trial_Active_SkipsBillingAndAdvancesCycle(t *testing.T) {
 	}
 	invoices := &mockInvoices{}
 	dispatcher := &capturingEventDispatcher{}
-	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 	engine.SetEventDispatcher(dispatcher)
 
 	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
@@ -2061,7 +2073,7 @@ func TestRunCycle_Trial_Ended_AutoActivatesAndBills(t *testing.T) {
 	}
 	invoices := &mockInvoices{}
 	dispatcher := &capturingEventDispatcher{}
-	engine := NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 	engine.SetEventDispatcher(dispatcher)
 
 	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {

@@ -541,21 +541,23 @@ func truncateReason(s string, max int) string {
 // Safe to call with subtotal-discount <= 0 — returns zero tax and leaves
 // line items untouched.
 func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, currency string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (TaxApplication, error) {
-	// TaxProvider defaults to "none" so any zero-tax fallback below
-	// (resolver unwired, settings missing for orphan tenants,
-	// provider resolve failed) still produces a row that satisfies
-	// invoices.tax_provider NOT NULL. Without this default, the
-	// reconciler retried orphan-tenant invoices and tripped
-	// SQLSTATE 23502 every tick — observed in prod logs 2026-05-04.
+	// Wiring is required, not optional. Tests that don't need tax
+	// must wire NoneProvider explicitly (e.NewResolver(nil) +
+	// e.SetTaxProviderResolver) — the previous silent zero-tax
+	// fallback masked misconfiguration in production. Fail loudly
+	// here so the caller sees the misconfiguration in the log
+	// instead of getting a $0-tax invoice.
+	if e.taxProviders == nil {
+		return TaxApplication{}, fmt.Errorf("tax provider resolver not wired (call SetTaxProviderResolver)")
+	}
+	if e.settings == nil {
+		return TaxApplication{}, fmt.Errorf("settings store not wired")
+	}
+
 	app := TaxApplication{
 		SubtotalCents: subtotal,
 		DiscountCents: discount,
 		TaxStatus:     domain.InvoiceTaxOK,
-		TaxProvider:   "none",
-	}
-
-	if e.taxProviders == nil || e.settings == nil {
-		return app, nil
 	}
 
 	// Pin tenant_id on ctx before resolving the provider. The
@@ -570,24 +572,25 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 	// tenant_id on the request ctx.
 	ctx = auth.WithTenantID(ctx, tenantID)
 
+	// SettingsStore.Get synthesizes Velox defaults on miss
+	// (tenant.DefaultSettings) — this Get returns a real error
+	// only on a true DB failure, never on missing-row. Bootstrap
+	// always creates the settings row, so missing-row is itself
+	// rare.
 	ts, err := e.settings.Get(ctx, tenantID)
 	if err != nil {
-		slog.Warn("tax: failed to load tenant settings, proceeding with zero tax",
-			"error", err, "tenant_id", tenantID)
-		return app, nil
+		return TaxApplication{}, fmt.Errorf("load tenant settings: %w", err)
 	}
 	app.TaxName = ts.TaxName
 
+	// Resolver is exhaustive: switch over ts.TaxProvider always
+	// returns a non-nil Provider with nil error
+	// (none / manual / stripe_tax → falls back to manual when
+	// Stripe wiring isn't there). The previous err-or-nil branch
+	// was dead code.
 	provider, err := e.taxProviders.Resolve(ctx, ts)
-	if err != nil || provider == nil {
-		slog.Warn("tax: failed to resolve provider, proceeding with zero tax",
-			"error", err, "tenant_id", tenantID, "provider", ts.TaxProvider)
-		for i := range lineItems {
-			lineItems[i].TaxRateBP = 0
-			lineItems[i].TaxAmountCents = 0
-			lineItems[i].TotalAmountCents = lineItems[i].AmountCents
-		}
-		return app, nil
+	if err != nil {
+		return TaxApplication{}, fmt.Errorf("resolve tax provider: %w", err)
 	}
 	app.TaxProvider = provider.Name()
 

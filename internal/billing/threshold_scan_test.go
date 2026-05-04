@@ -81,7 +81,7 @@ func setupThresholdEngine(thresholds *domain.BillingThresholds, usageQty int64) 
 
 	invoices := &mockInvoices{}
 
-	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil)
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
 	return engine, subs, invoices
 }
 

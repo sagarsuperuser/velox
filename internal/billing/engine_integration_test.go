@@ -14,6 +14,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/subscription"
+	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 	"github.com/sagarsuperuser/velox/internal/usage"
@@ -294,6 +295,11 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 		&invoiceStoreAdapter{invoiceStore},
 		nil, settingsStore, nil, nil, nil,
 	)
+	// Production engine always has a tax resolver wired; the
+	// engine fails loudly without one (ApplyTaxToLineItems → error).
+	// Test harness wires NoneProvider explicitly so the integration
+	// path matches production shape.
+	engine.SetTaxProviderResolver(tax.NewResolver(nil))
 
 	count, errs := engine.RunCycle(ctx, 50)
 	if len(errs) > 0 {
