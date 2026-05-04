@@ -45,6 +45,7 @@ export default function TestClockDetailPage() {
 
   const [showAdvance, setShowAdvance] = useState(false)
   const [showDelete, setShowDelete] = useState(false)
+  const [retryingAdvance, setRetryingAdvance] = useState(false)
 
   // Test-mode-only — same redirect guard as the index page.
   useEffect(() => {
@@ -68,6 +69,27 @@ export default function TestClockDetailPage() {
 
   const clock = clockQ.data
   const subs = subsQ.data?.data ?? []
+
+  const handleRetryAdvance = async () => {
+    if (!id) return
+    setRetryingAdvance(true)
+    try {
+      await api.retryAdvanceTestClock(id)
+      toast.success('Retrying — catchup running in background')
+      // Refresh the clock + its subs. The detail query's poll
+      // (every 1.5s while status==='advancing', set up below)
+      // picks up the worker-driven transition without us doing
+      // anything else. Forcing one immediate refetch makes the
+      // status badge flip to "Advancing" without waiting for the
+      // first poll tick.
+      queryClient.invalidateQueries({ queryKey: ['test-clocks', id] })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to retry'
+      toast.error(msg)
+    } finally {
+      setRetryingAdvance(false)
+    }
+  }
 
   const handleDelete = async () => {
     if (!id) return
@@ -158,12 +180,28 @@ export default function TestClockDetailPage() {
         <Card className="mt-4 border-destructive/30 bg-destructive/5">
           <CardContent className="px-6 py-4 flex items-start gap-3">
             <AlertTriangle size={16} className="text-destructive shrink-0 mt-0.5" />
-            <div className="text-sm">
+            <div className="text-sm flex-1 min-w-0">
               <p className="font-medium text-destructive">Catchup failed during last advance.</p>
-              <p className="text-muted-foreground mt-1">
-                Some invoices may have been generated before the failure. Inspect billing
-                state, then delete this clock to start a new simulation.
+              {clock.last_failure_reason && (
+                <p className="text-xs text-muted-foreground mt-1.5 font-mono break-all">
+                  Reason: {clock.last_failure_reason}
+                </p>
+              )}
+              <p className="text-muted-foreground mt-2">
+                Some invoices may have been generated before the failure — review them below.
+                Click <span className="font-medium text-foreground">Retry advance</span> to resume from where catchup stopped, or
+                delete this clock to start over.
               </p>
+              <div className="mt-3 flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleRetryAdvance}
+                  disabled={retryingAdvance}
+                >
+                  {retryingAdvance ? <><Loader2 size={14} className="animate-spin mr-2" />Retrying…</> : 'Retry advance'}
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>

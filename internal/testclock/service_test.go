@@ -184,6 +184,100 @@ func TestAdvance_AsyncEnqueuesAndReturnsAdvancing(t *testing.T) {
 	}
 }
 
+// TestRetryAdvance_ResumesFromInternalFailure covers ADR-018:
+// a clock parked at internal_failure can be retried without
+// destroying simulation state. After RetryAdvance the clock is
+// back in 'advancing' (or 'ready' on the sync path with no
+// billing wired), the prior failure reason is cleared, and the
+// catchup-job pipeline has been kicked.
+func TestRetryAdvance_ResumesFromInternalFailure(t *testing.T) {
+	store := newMockStore()
+	store.clocks["c1"] = domain.TestClock{
+		ID:                "c1",
+		TenantID:          "t1",
+		Status:            domain.TestClockStatusInternalFailed,
+		FrozenTime:        time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+		LastFailureReason: "stripe tax: provider 503",
+	}
+	queue := &recordingQueue{}
+	s := NewService(store)
+	s.SetCatchupQueue(queue)
+
+	clk, err := s.RetryAdvance(context.Background(), "t1", "c1")
+	if err != nil {
+		t.Fatalf("retry advance: %v", err)
+	}
+	if clk.Status != domain.TestClockStatusAdvancing {
+		t.Errorf("status on return: got %q, want advancing", clk.Status)
+	}
+	if clk.LastFailureReason != "" {
+		t.Errorf("last_failure_reason: got %q, want empty (cleared on retry)", clk.LastFailureReason)
+	}
+	if len(queue.jobs) != 1 || queue.jobs[0].ClockID != "c1" {
+		t.Errorf("expected 1 enqueued job for c1, got %v", queue.jobs)
+	}
+}
+
+// TestRetryAdvance_RefusesNonFailedClock covers the gate:
+// retry from ready or advancing must 409, not silently transition.
+func TestRetryAdvance_RefusesNonFailedClock(t *testing.T) {
+	for _, status := range []domain.TestClockStatus{
+		domain.TestClockStatusReady, domain.TestClockStatusAdvancing,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			store := newMockStore()
+			store.clocks["c1"] = domain.TestClock{
+				ID: "c1", TenantID: "t1", Status: status,
+				FrozenTime: time.Now(),
+			}
+			s := NewService(store)
+			s.SetCatchupQueue(&recordingQueue{})
+			_, err := s.RetryAdvance(context.Background(), "t1", "c1")
+			if err == nil {
+				t.Fatalf("expected error retrying from %s", status)
+			}
+		})
+	}
+}
+
+// TestAdvance_FailurePersistsReason covers the worker-side: when
+// catchup errors, MarkFailed gets called with the underlying
+// error string, which is captured on the row for the dashboard.
+func TestAdvance_FailurePersistsReason(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newTime := start.Add(60 * 24 * time.Hour)
+
+	store := newMockStore()
+	store.clocks["c1"] = domain.TestClock{
+		ID: "c1", TenantID: "t1", Status: domain.TestClockStatusReady, FrozenTime: start,
+	}
+	sub := domain.Subscription{
+		ID: "s1", TenantID: "t1", TestClockID: "c1", Status: domain.SubscriptionActive,
+	}
+	nextBilling := start.Add(1 * time.Hour)
+	sub.NextBillingAt = &nextBilling
+	store.subsOnClock["c1"] = []domain.Subscription{sub}
+
+	runner := &stubRunner{
+		store: store, clockID: "c1", subID: "s1",
+		err: errors.New("stripe tax: 503 service unavailable"),
+	}
+	s := NewService(store)
+	s.SetBillingRunner(runner)
+	// Sync path: no queue, so Advance runs catchup inline.
+	_, err := s.Advance(context.Background(), "t1", "c1", AdvanceInput{FrozenTime: newTime})
+	if err == nil {
+		t.Fatal("expected advance to fail")
+	}
+	got := store.clocks["c1"]
+	if got.Status != domain.TestClockStatusInternalFailed {
+		t.Errorf("status: got %q, want internal_failure", got.Status)
+	}
+	if got.LastFailureReason == "" {
+		t.Error("last_failure_reason should be populated after a failed catchup")
+	}
+}
+
 // TestRecoverInFlight_ReEnqueuesAdvancingClocks covers the boot
 // recovery path: a clock left in 'advancing' from a prior process
 // (server restart mid-catchup) is re-enqueued so the worker
@@ -328,16 +422,32 @@ func (m *mockStore) CompleteAdvance(_ context.Context, _, id string) (domain.Tes
 		return domain.TestClock{}, errs.InvalidState("not advancing")
 	}
 	c.Status = domain.TestClockStatusReady
+	c.LastFailureReason = ""
 	m.clocks[id] = c
 	return c, nil
 }
 
-func (m *mockStore) MarkFailed(_ context.Context, _, id string) (domain.TestClock, error) {
+func (m *mockStore) MarkFailed(_ context.Context, _, id, reason string) (domain.TestClock, error) {
 	c, ok := m.clocks[id]
 	if !ok {
 		return domain.TestClock{}, errs.ErrNotFound
 	}
 	c.Status = domain.TestClockStatusInternalFailed
+	c.LastFailureReason = reason
+	m.clocks[id] = c
+	return c, nil
+}
+
+func (m *mockStore) RetryFromFailed(_ context.Context, _, id string) (domain.TestClock, error) {
+	c, ok := m.clocks[id]
+	if !ok {
+		return domain.TestClock{}, errs.ErrNotFound
+	}
+	if c.Status != domain.TestClockStatusInternalFailed {
+		return domain.TestClock{}, errs.InvalidState("not internal_failure")
+	}
+	c.Status = domain.TestClockStatusAdvancing
+	c.LastFailureReason = ""
 	m.clocks[id] = c
 	return c, nil
 }

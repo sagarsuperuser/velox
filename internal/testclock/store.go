@@ -35,10 +35,23 @@ type Store interface {
 	MarkAdvancing(ctx context.Context, tenantID, id string, newFrozenTime time.Time) (domain.TestClock, error)
 
 	// CompleteAdvance flips status advancing → ready. Pair with MarkAdvancing
-	// at the end of a successful catchup run.
+	// at the end of a successful catchup run. Clears any
+	// last_failure_reason from a prior failed-then-retried advance.
 	CompleteAdvance(ctx context.Context, tenantID, id string) (domain.TestClock, error)
-	// MarkFailed flips advancing → internal_failure when a catchup run errors.
-	MarkFailed(ctx context.Context, tenantID, id string) (domain.TestClock, error)
+	// MarkFailed flips advancing → internal_failure when a catchup run
+	// errors. The reason is persisted on the clock row so the dashboard
+	// can show "Catchup failed: <reason>" without forcing the operator
+	// to dig through server logs. Truncated by the caller to ~500
+	// chars; the full payload stays in structured slog. ADR-018.
+	MarkFailed(ctx context.Context, tenantID, id, reason string) (domain.TestClock, error)
+	// RetryFromFailed transitions internal_failure → advancing on a
+	// clock the operator has chosen to retry. Frozen_time is unchanged
+	// — the catchup loop only processes subs whose next_billing_at <=
+	// frozen_time, so resuming from where the previous attempt
+	// stopped is idempotent. The caller then enqueues a fresh
+	// CatchupJob; the worker drains it like any other advance.
+	// ADR-018.
+	RetryFromFailed(ctx context.Context, tenantID, id string) (domain.TestClock, error)
 
 	// ListSubscriptionsOnClock returns every sub attached to the clock. Used
 	// by the service during advance to drive the billing catchup. RLS scopes
