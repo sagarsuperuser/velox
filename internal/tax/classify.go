@@ -39,6 +39,16 @@ const (
 	// Settings."
 	ErrCodeProviderAuth ErrorCode = "provider_auth"
 
+	// ErrCodeProviderNotConfigured: the tax provider is selected in
+	// settings (e.g. tax_provider='stripe_tax') but no credentials
+	// exist for the active mode. Distinct from ErrCodeProviderAuth —
+	// here there's nothing to rotate, the connection has never been
+	// made. Operator remediation is "Connect Stripe in Settings →
+	// Payments for this mode (test or live)." Common surface point
+	// for tenants who turned on Stripe Tax in test mode without
+	// connecting their Stripe test keys first.
+	ErrCodeProviderNotConfigured ErrorCode = "provider_not_configured"
+
 	// ErrCodeUnknown: classification couldn't infer the cause. The
 	// raw error in tax_pending_reason is the source of truth. Better
 	// to be honest about uncertainty than guess wrong and route the
@@ -96,6 +106,14 @@ func Classify(err error) ErrorCode {
 	msg := err.Error()
 	low := strings.ToLower(msg)
 
+	// Not configured: provider was never connected for the active
+	// mode. Velox's own wrapper produces "no client configured for
+	// livemode=…"; this match must run BEFORE provider_auth because
+	// "configured" can co-occur with "key" / "credential" phrasings
+	// in adjacent provider error variants.
+	if reNotConfigured.MatchString(low) {
+		return ErrCodeProviderNotConfigured
+	}
 	// Auth: most provider-specific. Stripe wraps as "invalid api key
 	// provided" / "expired API key"; we match on common substrings.
 	if reAuth.MatchString(low) {
@@ -134,6 +152,9 @@ func Classify(err error) ErrorCode {
 var errSentinelContextCanceled = errors.New("context canceled")
 
 var (
+	reNotConfigured = regexp.MustCompile(
+		`no client configured|no credentials configured|provider not connected|not configured for livemode`,
+	)
 	reAuth = regexp.MustCompile(
 		`invalid api key|expired api key|authentication required|unauthorized|invalid_api_key|api_key_invalid`,
 	)

@@ -676,6 +676,7 @@ export type AttentionAction =
   | 'charge_now'
   | 'send_reminder'
   | 'add_payment_method'
+  | 'connect_tax_provider'
 
 export interface AttentionActionItem {
   code: AttentionAction

@@ -140,6 +140,11 @@ const (
 	// invoice is awaiting payment AND the customer has no PaymentSetup
 	// ready — the only state where adding a PM unblocks collection.
 	AttentionActionAddPaymentMethod AttentionAction = "add_payment_method"
+	// AttentionActionConnectTaxProvider deep-links the dashboard to
+	// Settings → Payments so the operator can connect the tax
+	// provider's credentials. Distinct from RotateAPIKey: nothing
+	// to rotate, the connection has never been made.
+	AttentionActionConnectTaxProvider AttentionAction = "connect_tax_provider"
 )
 
 // AttentionActionItem is one entry in Attention.Actions. Frontend
@@ -352,6 +357,14 @@ func classifyTaxAttention(inv Invoice, severity AttentionSeverity) *Attention {
 		att.DocURL = docBaseURL + "tax-provider-auth"
 		att.Actions = []AttentionActionItem{
 			{Code: AttentionActionRotateAPIKey, Label: "Rotate API key"},
+			{Code: AttentionActionRetryTax, Label: "Retry tax"},
+		}
+	case "provider_not_configured":
+		att.Reason = AttentionReasonTaxCalculationFailed
+		att.Message = "Stripe Tax is selected in Settings → Tax but Stripe isn't connected for this mode. Connect your Stripe keys for the active mode (test or live) in Settings → Payments."
+		att.DocURL = docBaseURL + "tax-provider-not-configured"
+		att.Actions = []AttentionActionItem{
+			{Code: AttentionActionConnectTaxProvider, Label: "Connect Stripe"},
 			{Code: AttentionActionRetryTax, Label: "Retry tax"},
 		}
 	default:
