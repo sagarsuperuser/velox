@@ -1162,6 +1162,46 @@ func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retr
 	return out, rows.Err()
 }
 
+// ListProviderConfigErrors returns draft invoices stuck on Stripe-
+// configuration tax errors (provider_not_configured / provider_auth)
+// for one (tenant, livemode). Backs the
+// tenantstripe.Connect → invoice.Service.RetryProviderConfigErrors
+// fan-out per ADR-019. Tenant-scoped via TxTenant + WithLivemode on
+// the request ctx; the per-mode filter is also explicit in the WHERE
+// so a misconfigured ctx can't accidentally surface the wrong mode's
+// rows.
+func (s *PostgresStore) ListProviderConfigErrors(ctx context.Context, tenantID string, livemode bool) ([]domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+invCols+` FROM invoices
+		WHERE livemode = $1
+		  AND status = 'draft'
+		  AND tax_status IN ('pending', 'failed')
+		  AND COALESCE(tax_error_code, '') IN ('provider_not_configured', 'provider_auth')
+		ORDER BY created_at ASC
+		LIMIT 1000
+	`, livemode)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
 func scanInvDest(inv *domain.Invoice) []any {
 	var metaJSON []byte
 	return []any{

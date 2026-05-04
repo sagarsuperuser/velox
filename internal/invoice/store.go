@@ -67,6 +67,16 @@ type Store interface {
 	// with the right RLS partition.
 	ListPendingTaxRetry(ctx context.Context, batch int, retryableCodes []string, maxAttempts int) ([]domain.Invoice, error)
 
+	// ListProviderConfigErrors returns draft invoices stuck on Stripe-
+	// configuration errors (tax_error_code IN provider_not_configured,
+	// provider_auth) for the given (tenant, livemode). Used by the
+	// tenantstripe.Connect path to fan out a one-shot retry the moment
+	// fresh credentials land — operator-driven recovery, not
+	// background polling. Tenant-scoped RLS via TxTenant; the per-mode
+	// filter is in the WHERE clause so a test-mode connect doesn't
+	// surface live-mode rows. ADR-019.
+	ListProviderConfigErrors(ctx context.Context, tenantID string, livemode bool) ([]domain.Invoice, error)
+
 	// HasSucceededInvoice reports whether the customer has any invoice with
 	// payment_status = 'succeeded'. Backs the coupon first_time_customer_only
 	// restriction — existence-only so the query can use LIMIT 1 instead of

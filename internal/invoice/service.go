@@ -467,6 +467,56 @@ func shouldAutoFinalizeAfterRetry(inv domain.Invoice) bool {
 	return true
 }
 
+// RetryProviderConfigErrors flushes every invoice in the (tenant,
+// livemode) partition that's stuck on Stripe-configuration tax
+// errors (provider_not_configured / provider_auth). Called by
+// tenantstripe.Service.Connect on verify-success — when the
+// operator just supplied fresh credentials, the system should
+// catch up the work that was waiting on that signal. ADR-019.
+//
+// Reuses RetryTax per row, which already includes the auto-finalize
+// chain (ADR-017): engine-generated invoices that recompute clean
+// will move from draft → finalized in the same call. Manual drafts
+// stay draft for explicit operator finalize.
+//
+// Errors are collected, not aborted-on. One bad row (e.g. concurrent
+// operator click racing the same retry) shouldn't stall the rest of
+// the flush.
+func (s *Service) RetryProviderConfigErrors(ctx context.Context, tenantID string, livemode bool) (int, []error) {
+	if s.taxRetrier == nil {
+		return 0, nil
+	}
+	stuck, err := s.store.ListProviderConfigErrors(ctx, tenantID, livemode)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list stuck provider-config invoices: %w", err)}
+	}
+	var (
+		processed int
+		errs      []error
+	)
+	for _, inv := range stuck {
+		if _, retryErr := s.RetryTax(ctx, tenantID, inv.ID); retryErr != nil {
+			errs = append(errs, fmt.Errorf("invoice %s: %w", inv.ID, retryErr))
+			continue
+		}
+		processed++
+	}
+	return processed, errs
+}
+
+// CountProviderConfigErrors returns how many invoices would be
+// retried by RetryProviderConfigErrors right now. Used by the
+// connect handler to populate the response body so the dashboard
+// can render "Retrying N stuck invoices" without waiting for the
+// async fan-out to finish.
+func (s *Service) CountProviderConfigErrors(ctx context.Context, tenantID string, livemode bool) (int, error) {
+	stuck, err := s.store.ListProviderConfigErrors(ctx, tenantID, livemode)
+	if err != nil {
+		return 0, err
+	}
+	return len(stuck), nil
+}
+
 // RetryPendingTax is the background-reconciler entry. Scans
 // invoices whose retryable-coded tax failure is due for another
 // attempt, calls RetryTax for each (which may auto-finalize on

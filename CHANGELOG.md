@@ -99,6 +99,25 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Changed
 
+- **Stripe re-connect flushes stuck tax invoices (ADR-019).**
+  When `POST /v1/settings/stripe` succeeds (verify returns 200),
+  the service now fans out a background goroutine that retries
+  every invoice in that (tenant, livemode) stuck on
+  `provider_not_configured` / `provider_auth` —
+  the two tax-error codes fresh Stripe credentials directly
+  resolve. Reuses the existing `Service.RetryTax` per row, so
+  engine-generated invoices that recompute clean also
+  auto-finalize via the ADR-017 chain in the same pass.
+  The Connect HTTP response includes `retries_queued: N`; the
+  Settings → Payments toast shows "Retrying N stuck invoices in
+  the background." Eliminates the per-invoice manual Retry-tax
+  clicking after a re-connect — operator's mental model matches:
+  "fixed the underlying issue → system catches up". Industry
+  parallel: Stripe Connect replays queued events on account
+  reconnect; Lago / Recurly do the equivalent. The fan-out runs
+  with a 5-min wall-clock cap and pins tenant + livemode on a
+  fresh ctx.Background (per the ctx-attribute audit pattern).
+
 - **Test-clock retry advance + persisted failure reason (ADR-018).**
   Migration 0075 adds `test_clocks.last_failure_reason TEXT`.
   When the async catchup worker errors, it now captures the

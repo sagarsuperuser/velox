@@ -332,6 +332,103 @@ func (m *memStore) UpdateTaxAtomic(_ context.Context, tenantID, invoiceID string
 	return inv, nil
 }
 
+// TestRetryProviderConfigErrors_FlushesStuckRows covers ADR-019.
+// After a successful Stripe re-connect, the service should flush
+// every invoice in the (tenant, livemode) partition that was
+// stuck on provider_not_configured / provider_auth — and skip
+// rows in unrelated states.
+func TestRetryProviderConfigErrors_FlushesStuckRows(t *testing.T) {
+	store := newMemStore()
+	now := time.Now().UTC()
+
+	// Three invoices: stuck-provider-not-configured, stuck-provider-auth,
+	// and tax-OK (already healthy — should be skipped).
+	store.invoices["inv_stuck_a"] = domain.Invoice{
+		ID: "inv_stuck_a", TenantID: "t1", CustomerID: "cus_a",
+		Status: domain.InvoiceDraft, TaxStatus: domain.InvoiceTaxPending,
+		TaxErrorCode: "provider_not_configured", BillingReason: "subscription_cycle",
+		Currency: "USD", CreatedAt: now,
+	}
+	store.invoices["inv_stuck_b"] = domain.Invoice{
+		ID: "inv_stuck_b", TenantID: "t1", CustomerID: "cus_b",
+		Status: domain.InvoiceDraft, TaxStatus: domain.InvoiceTaxFailed,
+		TaxErrorCode: "provider_auth", BillingReason: "subscription_cycle",
+		Currency: "USD", CreatedAt: now,
+	}
+	store.invoices["inv_healthy"] = domain.Invoice{
+		ID: "inv_healthy", TenantID: "t1", CustomerID: "cus_c",
+		Status: domain.InvoiceDraft, TaxStatus: domain.InvoiceTaxOK,
+		BillingReason: "subscription_cycle", Currency: "USD", CreatedAt: now,
+	}
+
+	// Stub TaxRetrier that just flips status to ok — equivalent to
+	// the engine succeeding after fresh creds land.
+	stub := &stubTaxRetrier{store: store}
+	svc := NewService(store, nil, nil)
+	svc.SetTaxRetrier(stub)
+
+	processed, errs := svc.RetryProviderConfigErrors(context.Background(), "t1", false)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if processed != 2 {
+		t.Errorf("processed: got %d, want 2 (the two stuck rows)", processed)
+	}
+	if stub.calls != 2 {
+		t.Errorf("RetryTaxForInvoice calls: got %d, want 2", stub.calls)
+	}
+	// Healthy invoice was never iterated.
+	for _, id := range stub.calledOn {
+		if id == "inv_healthy" {
+			t.Errorf("retry should not touch healthy invoice")
+		}
+	}
+}
+
+// stubTaxRetrier mimics a successful engine retry: flips
+// tax_status to ok on the row.
+type stubTaxRetrier struct {
+	store    *memStore
+	calls    int
+	calledOn []string
+}
+
+func (s *stubTaxRetrier) RetryTaxForInvoice(_ context.Context, tenantID, invoiceID string) (domain.Invoice, error) {
+	s.calls++
+	s.calledOn = append(s.calledOn, invoiceID)
+	inv, ok := s.store.invoices[invoiceID]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv.TaxStatus = domain.InvoiceTaxOK
+	inv.TaxPendingReason = ""
+	inv.TaxErrorCode = ""
+	s.store.invoices[invoiceID] = inv
+	return inv, nil
+}
+
+func (m *memStore) ListProviderConfigErrors(_ context.Context, tenantID string, _ bool) ([]domain.Invoice, error) {
+	// memStore doesn't track livemode (mock fixtures are single-mode);
+	// the real PostgresStore impl filters by livemode in the WHERE.
+	var out []domain.Invoice
+	for _, inv := range m.invoices {
+		if inv.TenantID != tenantID {
+			continue
+		}
+		if inv.Status != domain.InvoiceDraft {
+			continue
+		}
+		if inv.TaxStatus != domain.InvoiceTaxPending && inv.TaxStatus != domain.InvoiceTaxFailed {
+			continue
+		}
+		if inv.TaxErrorCode != "provider_not_configured" && inv.TaxErrorCode != "provider_auth" {
+			continue
+		}
+		out = append(out, inv)
+	}
+	return out, nil
+}
+
 func (m *memStore) ListPendingTaxRetry(_ context.Context, batch int, retryableCodes []string, maxAttempts int) ([]domain.Invoice, error) {
 	if batch <= 0 {
 		batch = 50
