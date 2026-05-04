@@ -118,6 +118,17 @@ func (m *mockInvoiceUpdater) MarkPaid(_ context.Context, _, id string, stripePI 
 	return inv, nil
 }
 
+func (m *mockInvoiceUpdater) SetPaymentCard(_ context.Context, _, id, brand, last4 string) error {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return errs.ErrNotFound
+	}
+	inv.PaymentCardBrand = brand
+	inv.PaymentCardLast4 = last4
+	m.invoices[id] = inv
+	return nil
+}
+
 func (m *mockInvoiceUpdater) ApplyCreditNote(_ context.Context, _, id string, amountCents int64) (domain.Invoice, error) {
 	inv, ok := m.invoices[id]
 	if !ok {

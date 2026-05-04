@@ -869,6 +869,105 @@ type timelineEvent struct {
 	Currency        string `json:"currency,omitempty"`
 	PaymentIntentID string `json:"payment_intent_id,omitempty"`
 	AttemptCount    int    `json:"attempt_count,omitempty"`
+	// Detail is a sub-line rendered beneath the row's main
+	// description. Used today on invoice.paid for the payment
+	// instrument ("via Visa •••• 4242"); generic enough that
+	// future event types can attach their own context (e.g.
+	// "after 3 retry attempts" on the same row in the dunning-
+	// recovered case). Empty = no sub-line. ADR-020.
+	Detail string `json:"detail,omitempty"`
+}
+
+// withinWindow reports whether |a - b| <= window. Used by the
+// timeline dedup to detect "this Stripe webhook co-occurred with
+// the lifecycle column flip" without treating long-separated
+// independent events as the same fact. Symmetric — order of args
+// doesn't matter.
+func withinWindow(a, b time.Time, window time.Duration) bool {
+	d := a.Sub(b)
+	if d < 0 {
+		d = -d
+	}
+	return d <= window
+}
+
+// formatPaymentCardDetail produces the sub-line shown under the
+// "Invoice paid" row, e.g. "via Visa •••• 4242". Returns empty
+// when card details aren't on the invoice — graceful: no
+// sub-line. Brand titlecased per Stripe convention
+// (visa→Visa, mastercard→Mastercard). ADR-020.
+func formatPaymentCardDetail(brand, last4 string) string {
+	if last4 == "" && brand == "" {
+		return ""
+	}
+	display := brandDisplayName(brand)
+	if display == "" {
+		display = "card"
+	}
+	if last4 == "" {
+		return "via " + display
+	}
+	return "via " + display + " •••• " + last4
+}
+
+// brandDisplayName converts Stripe's enum-form card brand to the
+// title-cased form operators read on the dashboard. Mirrors
+// Stripe's own display names so the timeline matches what
+// operators see in the Stripe dashboard.
+//
+// Stripe's PaymentMethodCard.DisplayBrand returns one of: visa,
+// mastercard, american_express, cartes_bancaires, diners_club,
+// discover, eftpos_australia, interac, jcb, union_pay, other —
+// "and may contain more values in the future" per the SDK
+// comment. Unknown values fall through to a defensive
+// title-case so a future-Stripe addition doesn't render as
+// "cartes_bancaires" in the dashboard.
+func brandDisplayName(brand string) string {
+	switch strings.ToLower(brand) {
+	case "visa":
+		return "Visa"
+	case "mastercard":
+		return "Mastercard"
+	case "amex", "american_express", "american express":
+		return "American Express"
+	case "discover":
+		return "Discover"
+	case "jcb":
+		return "JCB"
+	case "diners", "diners_club":
+		return "Diners Club"
+	case "unionpay", "union_pay":
+		return "UnionPay"
+	case "cartes_bancaires":
+		return "Cartes Bancaires"
+	case "eftpos_australia":
+		return "Eftpos Australia"
+	case "interac":
+		return "Interac"
+	case "other":
+		return "Card"
+	case "":
+		return ""
+	default:
+		// Unknown brand — title-case each underscore-separated
+		// segment so a future-Stripe value renders legibly without
+		// requiring a Velox release.
+		return titleCaseSnake(brand)
+	}
+}
+
+// titleCaseSnake turns "cartes_bancaires" into "Cartes Bancaires"
+// for unrecognised brands. Defensive default so new Stripe
+// networks render passably.
+func titleCaseSnake(s string) string {
+	parts := strings.Split(s, "_")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + strings.ToLower(p[1:])
+	}
+	return strings.Join(parts, " ")
 }
 
 // relevantStripeEvents filters to only operator-meaningful events.
@@ -1034,6 +1133,7 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 			Description: "Invoice paid",
 			AmountCents: &amt,
 			Currency:    inv.Currency,
+			Detail:      formatPaymentCardDetail(inv.PaymentCardBrand, inv.PaymentCardLast4),
 		})
 	}
 
@@ -1068,13 +1168,49 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fetch Stripe webhook events — only operator-relevant ones
+	// Fetch Stripe webhook events — only operator-relevant ones.
+	//
+	// Dedup vs lifecycle (ADR-020): the Stripe webhook IS what
+	// triggers the lifecycle column flip, so the rows describe one
+	// fact from two angles. Drop the Stripe row when its lifecycle
+	// counterpart is set:
+	//   payment_intent.succeeded → drop when PaidAt != nil
+	//   payment_intent.canceled  → drop when VoidedAt != nil (a PI
+	//     can also cancel without a void — e.g. expired PI — so this
+	//     is conditional, not unconditional)
+	// payment_intent.payment_failed has no lifecycle counterpart;
+	// always keep — it's the only signal of a failed charge attempt.
 	if h.webhookEvents != nil {
 		webhookEvts, err := h.webhookEvents.ListByInvoice(r.Context(), tenantID, id)
 		if err == nil {
 			for _, evt := range webhookEvts {
 				if !relevantStripeEvents[evt.EventType] {
 					continue
+				}
+				switch evt.EventType {
+				case "payment_intent.succeeded":
+					// PI succeeded ALWAYS sets PaidAt synchronously
+					// in the same handler — they co-occur within
+					// milliseconds. Unconditional drop is correct.
+					if inv.PaidAt != nil {
+						continue
+					}
+				case "payment_intent.canceled":
+					// PI cancel CAN co-occur with a void (operator
+					// voids a finalized invoice with a pending PI)
+					// but can also fire independently (PI 24h-expiry
+					// with no void; void of a draft with no PI).
+					// Use a timestamp window to dedup only the
+					// co-occurrence case — an unconditional drop on
+					// "VoidedAt is non-nil" over-suppresses when a
+					// PI cancels long before an unrelated later
+					// void. 5min covers wall-clock drift between
+					// Stripe's event time and our void time but
+					// doesn't bleed into separate operator events.
+					if inv.VoidedAt != nil &&
+						withinWindow(*inv.VoidedAt, evt.OccurredAt, 5*time.Minute) {
+						continue
+					}
 				}
 				desc, status := describeStripeEvent(evt.EventType, evt.FailureMessage)
 				events = append(events, timelineEvent{
@@ -1092,7 +1228,12 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fetch dunning events for this invoice
+	// Fetch dunning events. Track the max attempt count across the
+	// run so we can attach it to the lifecycle invoice.paid row
+	// when this run resolved into payment success — the operator
+	// then sees "Invoice paid · after 3 retry attempts" in one row
+	// instead of separate paid + dunning-resolved entries.
+	maxAttemptCount := 0
 	if h.dunningTimeline != nil {
 		runs, err := h.dunningTimeline.ListRunsByInvoice(r.Context(), tenantID, id)
 		if err == nil {
@@ -1103,6 +1244,19 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 				}
 				for _, evt := range runEvents {
 					if !relevantDunningEvents[string(evt.EventType)] {
+						continue
+					}
+					if evt.AttemptCount > maxAttemptCount {
+						maxAttemptCount = evt.AttemptCount
+					}
+					// Suppress dunning 'resolved' when the lifecycle
+					// invoice.paid row will already say it. Distinct
+					// resolution paths (manually_resolved without
+					// payment) keep the dunning row — only the
+					// payment-recovered case is redundant with paid.
+					if string(evt.EventType) == "resolved" &&
+						evt.Reason == "payment_recovered" &&
+						inv.PaidAt != nil {
 						continue
 					}
 					desc, status := describeDunningEvent(string(evt.EventType), evt.Reason, evt.AttemptCount)
@@ -1116,6 +1270,19 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 						AttemptCount: evt.AttemptCount,
 					})
 				}
+			}
+		}
+	}
+
+	// Attach attempt count to the lifecycle invoice.paid row when
+	// the invoice was collected via dunning retry. The frontend
+	// renders "after N retry attempts" as a sub-line, replacing
+	// the now-suppressed dunning 'resolved' row.
+	if inv.PaidAt != nil && maxAttemptCount > 0 {
+		for i := range events {
+			if events[i].Source == "lifecycle" && events[i].EventType == "invoice.paid" {
+				events[i].AttemptCount = maxAttemptCount
+				break
 			}
 		}
 	}

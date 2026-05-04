@@ -512,6 +512,9 @@ Boot warnings on startup (one each when var unset; never fatal):
 
 - [ ] Finalized unpaid → POST /v1/invoices/{id}/collect → PI created.
 - [ ] GET /v1/invoices/{id}/payment-timeline → all attempts in order with ts/amount/status/PI id.
+- [ ] **Coalesced rows (ADR-020)**: a paid invoice shows ONE "Invoice paid · $29.00" row, NOT a separate "Payment succeeded" row beneath it. A voided invoice with a previously-pending PI shows ONE "Invoice voided" row, NOT a duplicate "Payment canceled" row. A dunning-recovered invoice shows "Invoice paid · after 3 retry attempts" — no separate "Dunning resolved" row.
+- [ ] **Charged-card sub-line (ADR-020)**: paid invoice's "Invoice paid" row carries `via Visa •••• 4242` beneath the amount. Holds even when the customer paid via the hosted-invoice URL **without saving the PM** (lookup goes directly to Stripe, not the local payment_methods table). Non-card PMs (bank, wallet) or Stripe lookup failures render no sub-line — graceful, not broken.
+- [ ] `payment_intent.payment_failed` webhook still surfaces as its own "Payment failed" row — no lifecycle counterpart suppresses it.
 
 ## FLOW I5b: Invoice attention banner
 

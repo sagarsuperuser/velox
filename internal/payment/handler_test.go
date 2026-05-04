@@ -325,6 +325,10 @@ func (m *mockInvoiceUpdaterHandler) MarkPaid(_ context.Context, _, id string, pi
 	return domain.Invoice{ID: id, TenantID: inv.tenantID, Status: domain.InvoicePaid}, nil
 }
 
+func (m *mockInvoiceUpdaterHandler) SetPaymentCard(_ context.Context, _, _ string, _, _ string) error {
+	return nil
+}
+
 func (m *mockInvoiceUpdaterHandler) ApplyCreditNote(_ context.Context, _, id string, _ int64) (domain.Invoice, error) {
 	inv, ok := m.invoices[id]
 	if !ok {
