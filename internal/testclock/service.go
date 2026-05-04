@@ -173,7 +173,7 @@ func (s *Service) Advance(ctx context.Context, tenantID, id string, input Advanc
 		// internal_failure so the operator gets visible feedback
 		// rather than a clock stuck in 'advancing' forever.
 		if err := s.queue.Enqueue(CatchupJob{TenantID: tenantID, ClockID: id}); err != nil {
-			if _, ferr := s.store.MarkFailed(ctx, tenantID, id); ferr != nil {
+			if _, ferr := s.store.MarkFailed(ctx, tenantID, id, "catchup queue full: "+err.Error()); ferr != nil {
 				slog.Error("test clock: failed to mark clock as failed after enqueue error",
 					"clock_id", id, "enqueue_err", err, "mark_err", ferr)
 			}
@@ -183,6 +183,56 @@ func (s *Service) Advance(ctx context.Context, tenantID, id string, input Advanc
 	}
 
 	// Sync fallback (tests / narrow setups without a queue).
+	if err := s.RunCatchup(ctx, CatchupJob{TenantID: tenantID, ClockID: id}); err != nil {
+		return domain.TestClock{}, err
+	}
+	return s.store.Get(ctx, tenantID, id)
+}
+
+// RetryAdvance resumes a clock parked in status='internal_failure'
+// from a prior catchup error. Stripe-parity recovery — the catchup
+// loop is idempotent (only processes subs with next_billing_at <=
+// frozen_time), so resuming from where the previous attempt
+// stopped is safe. Frozen_time stays at its current value; the
+// operator's earlier Advance input is preserved by virtue of
+// MarkAdvancing already having stamped frozen_time before the
+// failure. ADR-018.
+//
+// Async dispatch: same as Advance — when SetCatchupQueue is
+// wired, returns as soon as the clock is back in 'advancing' and
+// a CatchupJob is enqueued. Worker drains; dashboard polls.
+//
+// Refuses to retry from any state other than internal_failure
+// with a 409. A clock currently in 'advancing' has a worker
+// already running on it; a clock in 'ready' has no failure to
+// retry.
+func (s *Service) RetryAdvance(ctx context.Context, tenantID, id string) (domain.TestClock, error) {
+	current, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.TestClock{}, err
+	}
+	if current.Status != domain.TestClockStatusInternalFailed {
+		return domain.TestClock{}, errs.InvalidState(fmt.Sprintf(
+			"retry only valid on clocks in internal_failure (current: %s)", current.Status))
+	}
+
+	advancing, err := s.store.RetryFromFailed(ctx, tenantID, id)
+	if err != nil {
+		return domain.TestClock{}, err
+	}
+
+	if s.queue != nil {
+		if err := s.queue.Enqueue(CatchupJob{TenantID: tenantID, ClockID: id}); err != nil {
+			if _, ferr := s.store.MarkFailed(ctx, tenantID, id, "catchup queue full on retry: "+err.Error()); ferr != nil {
+				slog.Error("test clock: failed to mark clock as failed after retry-enqueue error",
+					"clock_id", id, "enqueue_err", err, "mark_err", ferr)
+			}
+			return domain.TestClock{}, fmt.Errorf("dispatch retry catchup: %w", err)
+		}
+		return advancing, nil
+	}
+
+	// Sync fallback (tests).
 	if err := s.RunCatchup(ctx, CatchupJob{TenantID: tenantID, ClockID: id}); err != nil {
 		return domain.TestClock{}, err
 	}
@@ -206,11 +256,14 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
 	}
 
 	if err := s.runCatchupLoop(ctx, job.TenantID, job.ClockID); err != nil {
-		// Flip to internal_failure. The clock's frozen_time stays at
-		// the new value — partial catchup is still applied, and the
-		// tenant can inspect invoices and delete the clock to unstick
-		// themselves.
-		if _, ferr := s.store.MarkFailed(ctx, job.TenantID, job.ClockID); ferr != nil {
+		// Flip to internal_failure with the error captured so the
+		// dashboard can show "Catchup failed: <reason>" without
+		// forcing the operator to grep server logs. The clock's
+		// frozen_time stays at the value it had — partial catchup
+		// is still applied — and the operator can either Retry
+		// advance (idempotent on subs) or delete the clock to
+		// start fresh. ADR-018.
+		if _, ferr := s.store.MarkFailed(ctx, job.TenantID, job.ClockID, err.Error()); ferr != nil {
 			slog.Error("test clock: failed to mark clock as failed after catchup error",
 				"clock_id", job.ClockID, "catchup_err", err, "mark_err", ferr)
 		}

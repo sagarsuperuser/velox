@@ -431,6 +431,8 @@ export const api = {
     apiRequest<TestClock>('POST', '/test-clocks', data),
   advanceTestClock: (id: string, frozen_time: string) =>
     apiRequest<TestClock>('POST', `/test-clocks/${id}/advance`, { frozen_time }),
+  retryAdvanceTestClock: (id: string) =>
+    apiRequest<TestClock>('POST', `/test-clocks/${id}/retry-advance`),
   deleteTestClock: (id: string) =>
     apiRequest<{ status: string }>('DELETE', `/test-clocks/${id}`),
   listSubscriptionsOnClock: (id: string) =>
@@ -613,6 +615,10 @@ export interface TestClock {
   created_at: string
   updated_at: string
   deletes_after?: string | null
+  // last_failure_reason is set when status='internal_failure' to
+  // explain the prior catchup error. Cleared on retry success or
+  // a fresh advance. ADR-018.
+  last_failure_reason?: string | null
 }
 
 export interface Subscription {

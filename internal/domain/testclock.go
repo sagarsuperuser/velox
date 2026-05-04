@@ -40,4 +40,8 @@ type TestClock struct {
 	// background tooling and migrations that bypass the live filter
 	// can identify deleted rows without a second query.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	// LastFailureReason is the error captured when an advance
+	// transitioned the clock to status='internal_failure'. Cleared
+	// on the next successful advance. ADR-018.
+	LastFailureReason string `json:"last_failure_reason,omitempty"`
 }

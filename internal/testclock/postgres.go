@@ -20,7 +20,8 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 }
 
 const clockCols = `id, tenant_id, name, frozen_time, status,
-	created_at, updated_at, deletes_after, deleted_at`
+	created_at, updated_at, deletes_after, deleted_at,
+	COALESCE(last_failure_reason,'')`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, clk domain.TestClock) (domain.TestClock, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -224,14 +225,96 @@ func (s *PostgresStore) MarkAdvancing(ctx context.Context, tenantID, id string, 
 		&newFrozenTime, "can only advance a clock in status=ready")
 }
 
+// CompleteAdvance flips advancing → ready and clears any prior
+// last_failure_reason. The clear matters when the operator
+// retried a failed advance and it succeeded — the dashboard
+// shouldn't keep showing yesterday's error.
 func (s *PostgresStore) CompleteAdvance(ctx context.Context, tenantID, id string) (domain.TestClock, error) {
-	return s.transition(ctx, tenantID, id, "ready", []string{"advancing"},
-		nil, "can only complete an advance from status=advancing")
+	return s.transitionWithReason(ctx, tenantID, id, "ready",
+		[]string{"advancing"}, "", true,
+		"can only complete an advance from status=advancing")
 }
 
-func (s *PostgresStore) MarkFailed(ctx context.Context, tenantID, id string) (domain.TestClock, error) {
-	return s.transition(ctx, tenantID, id, "internal_failure", []string{"advancing"},
-		nil, "can only mark failed from status=advancing")
+// MarkFailed flips advancing → internal_failure and persists the
+// reason. Caller truncates to ~500 chars; full payload stays in
+// structured slog.
+func (s *PostgresStore) MarkFailed(ctx context.Context, tenantID, id, reason string) (domain.TestClock, error) {
+	return s.transitionWithReason(ctx, tenantID, id, "internal_failure",
+		[]string{"advancing"}, reason, false,
+		"can only mark failed from status=advancing")
+}
+
+// RetryFromFailed flips internal_failure → advancing, clearing
+// the failure reason. Frozen_time stays at its current value —
+// the catchup loop is idempotent on subs whose next_billing_at
+// has already passed it. ADR-018.
+func (s *PostgresStore) RetryFromFailed(ctx context.Context, tenantID, id string) (domain.TestClock, error) {
+	return s.transitionWithReason(ctx, tenantID, id, "advancing",
+		[]string{"internal_failure"}, "", true,
+		"can only retry from status=internal_failure")
+}
+
+// transitionWithReason is the CAS helper for transitions that
+// either write or clear last_failure_reason. clearReason=true
+// means SET last_failure_reason = NULL; false means SET
+// last_failure_reason = $reason. Used by CompleteAdvance,
+// MarkFailed, RetryFromFailed.
+func (s *PostgresStore) transitionWithReason(
+	ctx context.Context, tenantID, id, to string, allowedFrom []string,
+	reason string, clearReason bool, wrongStateMsg string,
+) (domain.TestClock, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.TestClock{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var clk domain.TestClock
+	var query string
+	var args []any
+	if clearReason {
+		query = `UPDATE test_clocks SET status = $1, last_failure_reason = NULL,
+			updated_at = now()
+			WHERE id = $2 AND status = ANY($3) AND deleted_at IS NULL
+			RETURNING ` + clockCols
+		args = []any{to, id, postgres.StringArray(allowedFrom)}
+	} else {
+		query = `UPDATE test_clocks SET status = $1, last_failure_reason = $2,
+			updated_at = now()
+			WHERE id = $3 AND status = ANY($4) AND deleted_at IS NULL
+			RETURNING ` + clockCols
+		args = []any{to, truncateReason(reason), id, postgres.StringArray(allowedFrom)}
+	}
+	err = tx.QueryRowContext(ctx, query, args...).Scan(scanDest(&clk)...)
+	if err == sql.ErrNoRows {
+		var current string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM test_clocks WHERE id = $1`, id).Scan(&current)
+		if err2 == sql.ErrNoRows {
+			return domain.TestClock{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.TestClock{}, err2
+		}
+		return domain.TestClock{}, errs.InvalidState(fmt.Sprintf("%s, current status: %s", wrongStateMsg, current))
+	}
+	if err != nil {
+		return domain.TestClock{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.TestClock{}, err
+	}
+	return clk, nil
+}
+
+// truncateReason caps the failure reason at a length the
+// dashboard can render in a single inline panel without scroll.
+// Full payload stays in slog for ops grep.
+func truncateReason(s string) string {
+	const max = 500
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
 }
 
 // transition is the atomic CAS helper for status changes: UPDATE … WHERE
@@ -362,5 +445,6 @@ func scanDest(c *domain.TestClock) []any {
 	return []any{
 		&c.ID, &c.TenantID, &c.Name, &c.FrozenTime, &c.Status,
 		&c.CreatedAt, &c.UpdatedAt, &c.DeletesAfter, &c.DeletedAt,
+		&c.LastFailureReason,
 	}
 }

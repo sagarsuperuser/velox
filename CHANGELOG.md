@@ -99,6 +99,25 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Changed
 
+- **Test-clock retry advance + persisted failure reason (ADR-018).**
+  Migration 0075 adds `test_clocks.last_failure_reason TEXT`.
+  When the async catchup worker errors, it now captures the
+  underlying error string on the clock row instead of just
+  flipping status. Dashboard's `TestClockDetail` surfaces it
+  inline: "Catchup failed during last advance. Reason: <...>"
+  Eliminates the prior "grep server logs" recovery path.
+  New `POST /v1/test-clocks/{id}/retry-advance` transitions
+  internal_failure → advancing without changing frozen_time —
+  the catchup loop is idempotent on subs (only processes rows
+  with `next_billing_at <= frozen_time`), so resuming from where
+  the previous attempt stopped is safe by construction. Operator
+  no longer has to delete + rebuild the simulation to recover
+  from a transient failure (Stripe Tax 503, intentionally-
+  removed-creds debug runs, the now-fixed tenant-id-on-ctx bug).
+  Matches Stripe Test Clocks' "Retry advance" UX. Replaces the
+  "delete this clock to start a new simulation" copy with the
+  actual recovery path.
+
 - **Background tax-retry reconciler + auto-finalize on success
   (ADR-017).** Migration 0074 adds
   `invoices.tax_next_retry_at TIMESTAMPTZ`. The billing scheduler

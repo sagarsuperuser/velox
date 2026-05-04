@@ -31,6 +31,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/{id}", h.get)
 	r.Get("/{id}/subscriptions", h.listSubscriptions)
 	r.Post("/{id}/advance", h.advance)
+	r.Post("/{id}/retry-advance", h.retryAdvance)
 	r.Delete("/{id}", h.delete)
 	return r
 }
@@ -122,6 +123,25 @@ func (h *Handler) advance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clk, err := h.svc.Advance(r.Context(), tenantID, id, input)
+	if err != nil {
+		respond.FromError(w, r, err, "test_clock")
+		return
+	}
+	respond.JSON(w, r, http.StatusOK, clk)
+}
+
+// retryAdvance resumes a clock parked at status='internal_failure'
+// after a prior catchup error. The catchup loop is idempotent on
+// subs whose next_billing_at <= frozen_time, so resuming from
+// where the previous attempt stopped is safe by construction.
+// 200 with the clock now in 'advancing' on success; 409 when the
+// clock isn't in internal_failure (refuses to retry from ready
+// or advancing). ADR-018.
+func (h *Handler) retryAdvance(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	clk, err := h.svc.RetryAdvance(r.Context(), tenantID, id)
 	if err != nil {
 		respond.FromError(w, r, err, "test_clock")
 		return
