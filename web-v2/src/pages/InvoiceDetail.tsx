@@ -13,7 +13,7 @@ import type { Invoice } from '@/lib/gen/schemas/invoice'
 import type { InvoiceLineItem as LineItem } from '@/lib/gen/schemas/invoiceLineItem'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { taxReasonLabel } from '@/lib/taxReasons'
-import { ExpiryBadge } from '@/components/ExpiryBadge'
+import { DueBadge } from '@/components/DueBadge'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
@@ -643,7 +643,7 @@ export default function InvoiceDetailPage() {
                     invoices ('paid' is never the value), so the
                     badge leaked onto paid rows. */}
                 {invoice.due_at && invoice.status === 'finalized' && (
-                  <ExpiryBadge expiresAt={invoice.due_at} label="Due" warningDays={3} now={testClock?.frozen_time} />
+                  <DueBadge dueAt={invoice.due_at} warningDays={3} now={testClock?.frozen_time} />
                 )}
               </div>
             </div>

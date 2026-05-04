@@ -12,7 +12,7 @@ import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
-import { ExpiryBadge } from '@/components/ExpiryBadge'
+import { DueBadge } from '@/components/DueBadge'
 import { TestClockBadge } from '@/components/TestClockBadge'
 
 import { Button } from '@/components/ui/button'
@@ -389,9 +389,8 @@ export default function InvoicesPage() {
                               payment_status !== 'paid' which never
                               matched (domain uses 'succeeded'). */}
                           {inv.due_at && inv.status === 'finalized' && (
-                            <ExpiryBadge
-                              expiresAt={inv.due_at}
-                              label="Due"
+                            <DueBadge
+                              dueAt={inv.due_at}
                               warningDays={3}
                               now={inv.subscription_id && subTestClockMap[inv.subscription_id]
                                 ? clockFrozenMap[subTestClockMap[inv.subscription_id]]
