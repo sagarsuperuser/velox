@@ -356,6 +356,10 @@ func (m *mockStore) ListAllAdvancing(_ context.Context) ([]domain.TestClock, err
 	return out, nil
 }
 
+func (m *mockStore) SweepDueDeletes(_ context.Context, _ int) (int, error) {
+	return 0, nil
+}
+
 // stubRunner simulates one invoice per billing cycle by bumping the sub's
 // next_billing_at forward. The service.runCatchup loop calls RunCycle until
 // next_billing_at overshoots frozen_time.

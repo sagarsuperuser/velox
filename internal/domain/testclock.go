@@ -34,4 +34,10 @@ type TestClock struct {
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 	DeletesAfter *time.Time      `json:"deletes_after,omitempty"`
+	// DeletedAt marks a soft-deleted clock (ADR-016). API responses
+	// omit deleted clocks entirely — read paths filter
+	// deleted_at IS NULL — but the field is exposed on the JSON so
+	// background tooling and migrations that bypass the live filter
+	// can identify deleted rows without a second query.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }

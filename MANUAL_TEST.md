@@ -237,6 +237,9 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] Catchup failure (e.g. simulated by killing the billing engine or hitting the 10-min wall-clock cap) → status **internal_failure** with destructive banner. Partial invoices remain visible; operator can delete the clock to recover.
 - [ ] **Restart resilience**: kick off a long advance (e.g. 1 year forward), `kill -TERM` the velox process while status is `advancing`, restart. On boot the recovery scan re-enqueues the in-flight clock, the worker resumes, and the clock eventually flips to `ready`. No manual intervention.
 - [ ] Subscriptions table on detail page lists pinned subs.
+- [ ] **Soft-delete + cascade-cancel** (ADR-016): create a clock with 2 active pinned subs, delete it. Confirmation dialog reads "This removes the clock and cancels its 2 pinned subscriptions." After delete: clock disappears from `/test-clocks`, both subs show `status='canceled'` in `/subscriptions`, and `psql` confirms `test_clocks.deleted_at IS NOT NULL` (row preserved, hidden by the live filter).
+- [ ] **Terminal-state preservation**: pin one sub manually-canceled BEFORE deleting the clock. After delete, that sub stays canceled (its status doesn't get re-stamped — already terminal).
+- [ ] **TTL sweeper**: `psql -c "UPDATE test_clocks SET deletes_after = now() - interval '1 hour' WHERE id = 'vlx_tclk_xxx';"` then wait one billing scheduler tick (default 5min in local). Clock should disappear from `/test-clocks` and pinned subs cancel — same behavior as manual delete, fired by the sweeper.
 
 ## FLOW TC3: Pinning
 

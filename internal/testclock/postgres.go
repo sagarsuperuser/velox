@@ -20,7 +20,7 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 }
 
 const clockCols = `id, tenant_id, name, frozen_time, status,
-	created_at, updated_at, deletes_after`
+	created_at, updated_at, deletes_after, deleted_at`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, clk domain.TestClock) (domain.TestClock, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -58,7 +58,7 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Te
 	defer postgres.Rollback(tx)
 
 	var clk domain.TestClock
-	err = tx.QueryRowContext(ctx, `SELECT `+clockCols+` FROM test_clocks WHERE id = $1`, id).
+	err = tx.QueryRowContext(ctx, `SELECT `+clockCols+` FROM test_clocks WHERE id = $1 AND deleted_at IS NULL`, id).
 		Scan(scanDest(&clk)...)
 	if err == sql.ErrNoRows {
 		return domain.TestClock{}, errs.ErrNotFound
@@ -74,7 +74,9 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string) ([]domain.Tes
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT `+clockCols+` FROM test_clocks ORDER BY created_at DESC LIMIT 500
+		SELECT `+clockCols+` FROM test_clocks
+		WHERE deleted_at IS NULL
+		ORDER BY created_at DESC LIMIT 500
 	`)
 	if err != nil {
 		return nil, err
@@ -92,6 +94,21 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string) ([]domain.Tes
 	return clocks, rows.Err()
 }
 
+// Delete soft-deletes a clock and cascade-cancels every subscription
+// pinned to it, atomically (ADR-016). Hard delete left silent
+// orphans: subs detached via ON DELETE SET NULL with simulated
+// next_billing_at the wall-clock scheduler couldn't reconcile.
+//
+// Idempotent on the clock: re-deleting an already-deleted clock
+// returns errs.ErrNotFound (the live filter hides it). Idempotent
+// on subs: the WHERE clause skips subs already canceled / archived
+// so a partial-failure retry doesn't trample manual operator state.
+//
+// Generated invoices are intentionally NOT touched. Velox's
+// invoice immutability rule (terminal-state finalized/paid/voided
+// rows never mutate) takes precedence; the simulated timestamps on
+// those invoices remain self-evident from the now-deleted clock,
+// and any future audit query can still resolve them via id.
 func (s *PostgresStore) Delete(ctx context.Context, tenantID, id string) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -99,7 +116,9 @@ func (s *PostgresStore) Delete(ctx context.Context, tenantID, id string) error {
 	}
 	defer postgres.Rollback(tx)
 
-	res, err := tx.ExecContext(ctx, `DELETE FROM test_clocks WHERE id = $1`, id)
+	res, err := tx.ExecContext(ctx,
+		`UPDATE test_clocks SET deleted_at = now(), updated_at = now()
+		 WHERE id = $1 AND deleted_at IS NULL`, id)
 	if err != nil {
 		return err
 	}
@@ -107,7 +126,97 @@ func (s *PostgresStore) Delete(ctx context.Context, tenantID, id string) error {
 	if n == 0 {
 		return errs.ErrNotFound
 	}
+
+	// Cascade-cancel pinned subs. Filter excludes subs already in
+	// terminal states so an operator who manually canceled a sub
+	// before deleting the clock keeps the more-specific state. We
+	// don't NULL out test_clock_id — keeping the historical pointer
+	// lets future tooling answer "which clock did this sub belong
+	// to" without a separate audit query.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE subscriptions SET status = 'canceled', updated_at = now()
+		 WHERE test_clock_id = $1 AND status NOT IN ('canceled', 'archived')`, id,
+	); err != nil {
+		return fmt.Errorf("cascade-cancel pinned subs: %w", err)
+	}
+
 	return tx.Commit()
+}
+
+// SweepDueDeletes soft-deletes any test_clocks whose deletes_after
+// is past, batching cascade cancellations for their pinned subs in
+// the same tx per clock. Returns the count of clocks soft-deleted.
+//
+// Stripe-parity 30-day idle cleanup. The deletes_after column has
+// existed since migration 0020 with no sweeper wired; this method
+// completes that design.
+//
+// RLS-bypassed (TxBypass) because the sweeper runs cross-tenant
+// from a background scheduler tick. The per-clock cascade still
+// targets only that clock's subs via test_clock_id, so the
+// blast radius is correctly scoped.
+func (s *PostgresStore) SweepDueDeletes(ctx context.Context, batch int) (int, error) {
+	if batch <= 0 {
+		batch = 100
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return 0, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Pull the IDs of clocks due for cleanup so the cascade UPDATE
+	// can target each tenant's subs in one statement. Only ready /
+	// internal_failure clocks are eligible — a clock in 'advancing'
+	// is mid-flight; the worker will wrap up and an idle TTL is
+	// short enough that next sweep picks it up cleanly.
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id FROM test_clocks
+		WHERE deletes_after < now()
+		  AND deleted_at IS NULL
+		  AND status IN ('ready', 'internal_failure')
+		ORDER BY deletes_after ASC
+		LIMIT $1
+	`, batch)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, tx.Commit()
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE test_clocks SET deleted_at = now(), updated_at = now()
+		WHERE id = ANY($1)
+	`, postgres.StringArray(ids)); err != nil {
+		return 0, fmt.Errorf("sweep soft-delete: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE subscriptions SET status = 'canceled', updated_at = now()
+		WHERE test_clock_id = ANY($1)
+		  AND status NOT IN ('canceled', 'archived')
+	`, postgres.StringArray(ids)); err != nil {
+		return 0, fmt.Errorf("sweep cascade-cancel: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
 }
 
 func (s *PostgresStore) MarkAdvancing(ctx context.Context, tenantID, id string, newFrozenTime time.Time) (domain.TestClock, error) {
@@ -140,11 +249,11 @@ func (s *PostgresStore) transition(ctx context.Context, tenantID, id, to string,
 	var args []any
 	if frozenTime != nil {
 		query = `UPDATE test_clocks SET status = $1, frozen_time = $2, updated_at = now()
-			WHERE id = $3 AND status = ANY($4) RETURNING ` + clockCols
+			WHERE id = $3 AND status = ANY($4) AND deleted_at IS NULL RETURNING ` + clockCols
 		args = []any{to, *frozenTime, id, postgres.StringArray(allowedFrom)}
 	} else {
 		query = `UPDATE test_clocks SET status = $1, updated_at = now()
-			WHERE id = $2 AND status = ANY($3) RETURNING ` + clockCols
+			WHERE id = $2 AND status = ANY($3) AND deleted_at IS NULL RETURNING ` + clockCols
 		args = []any{to, id, postgres.StringArray(allowedFrom)}
 	}
 	err = tx.QueryRowContext(ctx, query, args...).Scan(scanDest(&clk)...)
@@ -229,7 +338,7 @@ func (s *PostgresStore) ListAllAdvancing(ctx context.Context) ([]domain.TestCloc
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+clockCols+` FROM test_clocks
-		WHERE status = 'advancing'
+		WHERE status = 'advancing' AND deleted_at IS NULL
 		ORDER BY updated_at ASC
 		LIMIT 1000
 	`)
@@ -252,6 +361,6 @@ func (s *PostgresStore) ListAllAdvancing(ctx context.Context) ([]domain.TestCloc
 func scanDest(c *domain.TestClock) []any {
 	return []any{
 		&c.ID, &c.TenantID, &c.Name, &c.FrozenTime, &c.Status,
-		&c.CreatedAt, &c.UpdatedAt, &c.DeletesAfter,
+		&c.CreatedAt, &c.UpdatedAt, &c.DeletesAfter, &c.DeletedAt,
 	}
 }

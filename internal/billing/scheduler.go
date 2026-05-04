@@ -31,6 +31,14 @@ type InvoiceReminder interface {
 	ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error)
 }
 
+// TestClockSweeper is the narrow hook the scheduler uses to drive
+// the test-clocks TTL cleanup (Stripe-parity 30-day idle delete).
+// Implemented by *testclock.Service — kept as a tiny interface so
+// the billing package doesn't depend on the testclock package.
+type TestClockSweeper interface {
+	SweepDueDeletes(ctx context.Context, batch int) (int, error)
+}
+
 // TokenCleaner cleans up expired payment update tokens.
 type TokenCleaner interface {
 	Cleanup(ctx context.Context) (int, error)
@@ -69,6 +77,7 @@ type Scheduler struct {
 	reminders         InvoiceReminder
 	tokenCleaner      TokenCleaner
 	idempotencyClean  IdempotencyCleaner
+	testClockSweeper  TestClockSweeper
 	paymentReconciler PaymentReconciler
 	locker            Locker
 	billingLockKey    int64
@@ -115,6 +124,15 @@ func (s *Scheduler) SetTokenCleaner(cleaner TokenCleaner) {
 // B-tree — a slow leak that only shows up in p99 latency weeks later.
 func (s *Scheduler) SetIdempotencyCleaner(cleaner IdempotencyCleaner) {
 	s.idempotencyClean = cleaner
+}
+
+// SetTestClockSweeper wires the test-clocks TTL cleanup. Each tick
+// soft-deletes any clocks whose deletes_after has elapsed, cascade-
+// cancelling pinned subs in the same DB tx. Stripe-parity 30-day
+// idle cleanup. Optional: when nil the sweep is skipped (fine for
+// dev / test runs that don't care about retention).
+func (s *Scheduler) SetTestClockSweeper(sw TestClockSweeper) {
+	s.testClockSweeper = sw
 }
 
 // SetPaymentReconciler wires a resolver for PaymentUnknown invoices. Runs
@@ -344,6 +362,19 @@ func (s *Scheduler) runCrossModeCleanup(ctx context.Context) {
 		} else if cleaned > 0 {
 			slog.Info("expired idempotency keys cleaned up", "count", cleaned)
 			mw.RecordScheduledCleanup("idempotency_keys", cleaned)
+		}
+	}
+
+	// 7. Test-clock TTL sweeper. Soft-deletes any clocks whose
+	// deletes_after has elapsed and cascade-cancels their pinned
+	// subs (ADR-016). Stripe-parity 30-day idle cleanup.
+	if s.testClockSweeper != nil {
+		swept, err := s.testClockSweeper.SweepDueDeletes(ctx, s.batch)
+		if err != nil {
+			slog.Error("test-clock sweep error", "error", err)
+		} else if swept > 0 {
+			slog.Info("test clocks soft-deleted by TTL sweep", "count", swept)
+			mw.RecordScheduledCleanup("test_clocks", swept)
 		}
 	}
 }
