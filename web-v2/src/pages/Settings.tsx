@@ -1276,11 +1276,26 @@ function ApiKeysForm({ livemode, connected, onSuccess }: {
       if (row.last_verified_error) {
         toast.error(`Saved, but Stripe verify failed: ${row.last_verified_error}`)
       } else {
-        toast.success(
-          `${connected ? 'Rotated' : 'Connected'} ${livemode ? 'live' : 'test'} mode${
-            row.stripe_account_name ? ` as ${row.stripe_account_name}` : ''
-          }`,
-        )
+        const base = `${connected ? 'Rotated' : 'Connected'} ${livemode ? 'live' : 'test'} mode${
+          row.stripe_account_name ? ` as ${row.stripe_account_name}` : ''
+        }`
+        // ADR-019: when fresh credentials land, the server fans out
+        // a background retry of any invoices that were stuck on
+        // provider_not_configured / provider_auth. row.retries_queued
+        // is the count it found at response time. Surface so the
+        // operator knows the system is catching up — they don't
+        // need to click Retry tax per invoice.
+        const queued = row.retries_queued ?? 0
+        const description = queued > 0
+          ? queued === 1
+            ? 'Retrying 1 invoice that was stuck on tax in the background.'
+            : `Retrying ${queued} invoices that were stuck on tax in the background.`
+          : undefined
+        if (description) {
+          toast.success(base, { description })
+        } else {
+          toast.success(base)
+        }
       }
       reset()
       onSuccess()

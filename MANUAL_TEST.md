@@ -934,6 +934,7 @@ Major releases, infra changes, post-mortems.
 - [ ] Invalid Stripe key → invoice generates with $0 tax (graceful fallback); counter `velox_tax_fallback_total{reason="api_error"}` +1.
 - [ ] `tax_exempt=true` → $0 tax regardless.
 - [ ] India-registered Stripe account → blocked at account level → use FLOW B10.
+- [ ] **Re-connect flushes stuck tax (ADR-019)**: with Stripe disconnected, advance a test clock to generate an invoice → invoice goes `tax_status=pending` with `tax_error_code=provider_not_configured`. Reconnect Stripe in Settings → Payments. Toast reads `Connected test mode as <Account>` with description `Retrying 1 invoice that was stuck on tax in the background.` Reload `/invoices` after a moment — invoice flipped to `Open` (engine-generated → auto-finalized via ADR-017 chain). No per-invoice manual Retry-tax click required.
 
 ## FLOW X8: Migration rollback
 

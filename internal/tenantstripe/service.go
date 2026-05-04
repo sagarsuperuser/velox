@@ -11,7 +11,27 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	veloxauth "github.com/sagarsuperuser/velox/internal/auth"
 )
+
+// ProviderConfigErrorRetrier is the narrow contract Connect uses
+// to flush invoices stuck on Stripe-configuration tax errors when
+// fresh credentials land. Implemented by *invoice.Service. Kept
+// as a tiny interface so the tenantstripe package doesn't import
+// invoice. ADR-019.
+type ProviderConfigErrorRetrier interface {
+	RetryProviderConfigErrors(ctx context.Context, tenantID string, livemode bool) (int, []error)
+	CountProviderConfigErrors(ctx context.Context, tenantID string, livemode bool) (int, error)
+}
+
+// PostConnectRetryTimeout caps the Connect-fan-out goroutine's
+// wall-clock work. 5 minutes covers ~1500 invoices retrying at
+// the typical ~200ms/invoice Stripe Tax round-trip — far beyond
+// expected per-tenant volumes. After the timeout, in-flight
+// retries log + exit; remaining stuck rows can be cleared by an
+// operator-driven Retry tax click on each.
+const PostConnectRetryTimeout = 5 * time.Minute
 
 // StripeClientFactory builds a *stripe.Client from a secret key. Injected so
 // tests can substitute a fake without hitting the network.
@@ -21,9 +41,10 @@ type StripeClientFactory func(secretKey string) *stripe.Client
 // tenant gets immediate feedback that their key works ("Connected as Acme
 // Inc.") rather than discovering it later when their first invoice fails.
 type Service struct {
-	store  *Store
-	newCli StripeClientFactory
-	logger *slog.Logger
+	store        *Store
+	newCli       StripeClientFactory
+	logger       *slog.Logger
+	stuckRetrier ProviderConfigErrorRetrier
 }
 
 func NewService(store *Store, newCli StripeClientFactory) *Service {
@@ -32,6 +53,16 @@ func NewService(store *Store, newCli StripeClientFactory) *Service {
 		newCli: newCli,
 		logger: slog.Default(),
 	}
+}
+
+// SetStuckRetrier wires the post-connect fan-out hook. When set,
+// Connect verify-success kicks off a background retry of any
+// invoices that were stuck on provider_not_configured or
+// provider_auth in the (tenant, livemode) just connected. Optional:
+// when nil, Connect skips the fan-out (operator falls back to
+// per-invoice manual Retry tax). ADR-019.
+func (s *Service) SetStuckRetrier(r ProviderConfigErrorRetrier) {
+	s.stuckRetrier = r
 }
 
 // ConnectInput is the HTTP-facing body for POST /v1/settings/stripe. TenantID
@@ -93,7 +124,57 @@ func (s *Service) Connect(ctx context.Context, tenantID string, in ConnectInput)
 	now := time.Now().UTC()
 	creds.VerifiedAt = &now
 	creds.LastVerifiedError = ""
+
+	// Verify-success fan-out: catch up any invoices that were stuck
+	// waiting on these credentials. ADR-019. The count is computed
+	// synchronously (cheap query) so the response can tell the
+	// operator "Retrying N stuck invoices"; the actual retries run
+	// in a background goroutine so the connect HTTP call returns
+	// in milliseconds regardless of stuck-count.
+	if s.stuckRetrier != nil {
+		stuckCount, err := s.stuckRetrier.CountProviderConfigErrors(ctx, tenantID, in.Livemode)
+		if err != nil {
+			s.logger.WarnContext(ctx, "tenantstripe: count stuck invoices failed",
+				"tenant_id", tenantID, "livemode", in.Livemode, "error", err)
+		} else {
+			creds.RetriesQueued = stuckCount
+			if stuckCount > 0 {
+				go s.runPostConnectRetry(tenantID, in.Livemode, stuckCount)
+			}
+		}
+	}
 	return creds, nil
+}
+
+// runPostConnectRetry is the goroutine body that flushes stuck
+// invoices after a successful Connect. Built off context.Background
+// so it survives the connect HTTP request lifecycle, with explicit
+// WithTenantID + WithLivemode (per the ctx-attribute audit memory:
+// every ctx-detached worker must pin all relevant ctx attrs, not
+// just livemode). Capped at PostConnectRetryTimeout so a stuck
+// retry can't tie up resources indefinitely.
+func (s *Service) runPostConnectRetry(tenantID string, livemode bool, expected int) {
+	ctx, cancel := context.WithTimeout(context.Background(), PostConnectRetryTimeout)
+	defer cancel()
+	ctx = veloxauth.WithTenantID(ctx, tenantID)
+	ctx = postgres.WithLivemode(ctx, livemode)
+
+	start := time.Now()
+	processed, errs := s.stuckRetrier.RetryProviderConfigErrors(ctx, tenantID, livemode)
+	if len(errs) > 0 {
+		s.logger.ErrorContext(ctx, "tenantstripe: post-connect retry errors",
+			"tenant_id", tenantID, "livemode", livemode,
+			"expected", expected, "processed", processed, "error_count", len(errs))
+		for _, e := range errs {
+			s.logger.WarnContext(ctx, "tenantstripe: post-connect retry per-invoice error",
+				"tenant_id", tenantID, "error", e)
+		}
+		return
+	}
+	s.logger.InfoContext(ctx, "tenantstripe: post-connect retry complete",
+		"tenant_id", tenantID, "livemode", livemode,
+		"expected", expected, "processed", processed,
+		"duration_ms", time.Since(start).Milliseconds())
 }
 
 // List returns both modes' public views. Handlers enforce that the caller's

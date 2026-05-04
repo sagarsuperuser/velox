@@ -1134,6 +1134,12 @@ export interface StripeProviderCredentials {
   last_verified_error?: string
   created_at: string
   updated_at: string
+  // retries_queued is set ONLY on the POST /settings/stripe
+  // (Connect) response — the count of invoices stuck on tax
+  // provider-config errors that the server's post-connect
+  // goroutine is about to retry in the background. Always 0 / unset
+  // on List / Get responses. ADR-019.
+  retries_queued?: number
 }
 
 // InvoicePreview is the response shape for both /v1/billing/preview/{id}

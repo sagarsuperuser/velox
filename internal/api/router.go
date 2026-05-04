@@ -289,6 +289,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 
 	invoiceSvc := invoice.NewService(invoiceStore, clk, settingsStore)
 	couponSvc.SetCustomerHistoryLookup(invoiceSvc)
+	// Wire the post-connect tax-retry hook (ADR-019). When an
+	// operator (re)connects Stripe in Settings → Payments, the
+	// tenantstripe service fans out a goroutine that flushes any
+	// invoices stuck on provider_not_configured / provider_auth.
+	tenantStripeSvc.SetStuckRetrier(invoiceSvc)
 	invoiceH := invoice.NewHandler(invoiceSvc, customerStore, settingsStore, invoice.HandlerDeps{
 		CreditNotes:     &creditNoteListerAdapter{svc: creditNoteSvc},
 		Charger:         stripeAdapter,

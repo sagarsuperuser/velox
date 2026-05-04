@@ -137,4 +137,11 @@ type StripeProviderCredentials struct {
 	LastVerifiedError  string     `json:"last_verified_error,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
+	// RetriesQueued is set ONLY on the Connect-response path
+	// (ADR-019) — the count of stuck-on-provider-config invoices
+	// the post-connect goroutine is about to retry in the
+	// background. Not persisted; computed at response time so the
+	// dashboard can render "Retrying N stuck invoices" without a
+	// second round-trip. Always zero on List / Get responses.
+	RetriesQueued int `json:"retries_queued,omitempty"`
 }
