@@ -65,7 +65,12 @@ type Store interface {
 	// stuck invoices process first. Cross-tenant; returned rows
 	// carry their tenant_id so the caller can dispatch per-row
 	// with the right RLS partition.
-	ListPendingTaxRetry(ctx context.Context, batch int, retryableCodes []string, maxAttempts int) ([]domain.Invoice, error)
+	//
+	// livemode filters to a single mode partition. The reconciler
+	// runs once per mode in the scheduler tick; without this filter
+	// the cross-mode RLS-bypassed scan would return rows for the
+	// other mode that fail per-row RLS lookup with "not found".
+	ListPendingTaxRetry(ctx context.Context, batch int, retryableCodes []string, maxAttempts int, livemode bool) ([]domain.Invoice, error)
 
 	// ListProviderConfigErrors returns draft invoices stuck on Stripe-
 	// configuration errors (tax_error_code IN provider_not_configured,

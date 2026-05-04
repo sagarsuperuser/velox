@@ -229,6 +229,43 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Fixed
 
+- **Payment-update email link now tokenized everywhere.** Pre-fix
+  the no-PM-at-finalize email path
+  (`noPaymentMethodNotifierAdapter`, ADR-013) built a tokenless
+  URL of the form `?invoice_id=…&customer_id=…`. The SPA enforces
+  `?token=…` and rejected it with "Link expired or invalid · No
+  payment update token provided" — operator-reported. The adapter
+  now holds a `payment.TokenService` reference, mints a single-use
+  token, and builds the query-style
+  `${PAYMENT_UPDATE_URL}?token=${rawToken}` URL the SPA expects.
+  The charge-failure email path (`stripe.handlePaymentFailed`)
+  had a tokenized branch but its fallback (when `tokenSvc==nil`)
+  also produced a broken URL — removed. Both paths now refuse to
+  send if TokenService isn't wired, rather than email a
+  permanently-broken link. Also: `stripe.handlePaymentFailed` URL
+  shape was path-style (`${URL}/${token}`) — fixed to query-style
+  to match the SPA route.
+
+- **Tax-retry reconciler stops error-spamming the wrong-mode
+  partition.** `Store.ListPendingTaxRetry` now filters by livemode
+  read off ctx. Pre-fix the cross-tenant scan returned both
+  modes' rows and per-row `RetryTax` failed with "invoice X: not
+  found" on whichever mode didn't match the scheduler's per-mode
+  loop ctx. Six ERROR lines per scheduler tick, observed in prod
+  logs.
+
+- **Tax engine zero-tax fallback satisfies NOT-NULL constraint.**
+  When `tenant_settings` is missing for a tenant (orphan tenants
+  from earlier failed bootstrap runs), the engine logged
+  "proceeding with zero tax" and returned `TaxApplication{}` with
+  empty `TaxProvider`. `NullableString` converted that to NULL,
+  hitting SQLSTATE 23502 on `invoices.tax_provider`. The
+  reconciler retried these orphan invoices every tick. Now
+  `TaxApplication{}` defaults `TaxProvider="none"` — any fallback
+  path produces a valid row. After one tick the orphan invoices
+  flip from `tax_status='pending'` to `'ok'` and exit the
+  reconciler scan permanently.
+
 - **Rate limiting is now per-mode for cookie-session callers.**
   `rateLimitKey` for cookie-session traffic was `tenant:<id>` — a
   single bucket shared by test and live operations from the same

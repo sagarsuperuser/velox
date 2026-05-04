@@ -345,11 +345,19 @@ type noPaymentMethodNotifierAdapter struct {
 	email            payment.EmailPaymentUpdate
 	customerEmail    *customerEmailFetcherAdapter
 	paymentUpdateURL string
+	tokenSvc         *payment.TokenService
 }
 
 func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error {
 	if a.paymentUpdateURL == "" {
 		return errors.New("PAYMENT_UPDATE_URL not configured")
+	}
+	if a.tokenSvc == nil {
+		// The SPA enforces ?token= and rejects URLs without it
+		// ("Link expired or invalid · No payment update token
+		// provided"). Refusing to send is strictly better than
+		// emailing the customer a permanently-broken link.
+		return errors.New("payment update TokenService not wired")
 	}
 	to, name, err := a.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
 	if err != nil || to == "" {
@@ -357,7 +365,11 @@ func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Conte
 		// Engine logs the warning and continues.
 		return nil
 	}
-	updateURL := fmt.Sprintf("%s?invoice_id=%s&customer_id=%s", a.paymentUpdateURL, inv.ID, inv.CustomerID)
+	rawToken, err := a.tokenSvc.Create(ctx, tenantID, inv.CustomerID, inv.ID)
+	if err != nil {
+		return fmt.Errorf("create payment update token: %w", err)
+	}
+	updateURL := fmt.Sprintf("%s?token=%s", a.paymentUpdateURL, rawToken)
 	return a.email.SendPaymentUpdateRequest(ctx, tenantID, to, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL)
 }
 

@@ -465,6 +465,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		email:            paymentUpdate,
 		customerEmail:    customerEmailAdapter,
 		paymentUpdateURL: paymentUpdateURL,
+		tokenSvc:         tokenSvc,
 	})
 
 	// Tax: per-tenant provider resolution (none|manual|stripe_tax) + durable

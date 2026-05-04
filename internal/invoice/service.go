@@ -536,7 +536,14 @@ func (s *Service) RetryPendingTax(ctx context.Context, batch int) (int, []error)
 	}
 	codes := []string{"provider_outage", "unknown"}
 	const maxAttempts = 8
-	stuck, err := s.store.ListPendingTaxRetry(ctx, batch, codes, maxAttempts)
+	// Reconciler runs once per mode in the scheduler tick — pull
+	// the mode off ctx and filter the SQL scan so this tick only
+	// processes its own partition's invoices. Without the filter,
+	// the cross-mode RLS-bypassed scan returns rows for both modes
+	// and per-row RetryTax fails with "not found" on the half whose
+	// livemode doesn't match ctx.
+	livemode := postgres.Livemode(ctx)
+	stuck, err := s.store.ListPendingTaxRetry(ctx, batch, codes, maxAttempts, livemode)
 	if err != nil {
 		return 0, []error{fmt.Errorf("list pending tax retries: %w", err)}
 	}

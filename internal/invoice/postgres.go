@@ -1158,7 +1158,7 @@ func (s *PostgresStore) ListUnknownPayments(ctx context.Context, olderThan time.
 // Postgres uses idx_invoices_tax_retry_due (migration 0074) to
 // narrow the scan; the predicate matches the index where clause
 // exactly so the planner picks it.
-func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retryableCodes []string, maxAttempts int) ([]domain.Invoice, error) {
+func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retryableCodes []string, maxAttempts int, livemode bool) ([]domain.Invoice, error) {
 	if batch <= 0 {
 		batch = 50
 	}
@@ -1173,14 +1173,15 @@ func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retr
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+invCols+` FROM invoices
-		WHERE status = 'draft'
+		WHERE livemode = $1
+		  AND status = 'draft'
 		  AND tax_status IN ('pending', 'failed')
-		  AND COALESCE(tax_error_code, '') = ANY($1)
-		  AND tax_retry_count < $2
+		  AND COALESCE(tax_error_code, '') = ANY($2)
+		  AND tax_retry_count < $3
 		  AND (tax_next_retry_at IS NULL OR tax_next_retry_at <= now())
 		ORDER BY tax_next_retry_at ASC NULLS FIRST
-		LIMIT $3
-	`, postgres.StringArray(retryableCodes), maxAttempts, batch)
+		LIMIT $4
+	`, livemode, postgres.StringArray(retryableCodes), maxAttempts, batch)
 	if err != nil {
 		return nil, err
 	}

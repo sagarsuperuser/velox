@@ -541,10 +541,17 @@ func truncateReason(s string, max int) string {
 // Safe to call with subtotal-discount <= 0 — returns zero tax and leaves
 // line items untouched.
 func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, currency string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (TaxApplication, error) {
+	// TaxProvider defaults to "none" so any zero-tax fallback below
+	// (resolver unwired, settings missing for orphan tenants,
+	// provider resolve failed) still produces a row that satisfies
+	// invoices.tax_provider NOT NULL. Without this default, the
+	// reconciler retried orphan-tenant invoices and tripped
+	// SQLSTATE 23502 every tick — observed in prod logs 2026-05-04.
 	app := TaxApplication{
 		SubtotalCents: subtotal,
 		DiscountCents: discount,
 		TaxStatus:     domain.InvoiceTaxOK,
+		TaxProvider:   "none",
 	}
 
 	if e.taxProviders == nil || e.settings == nil {
