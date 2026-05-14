@@ -526,6 +526,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// (default) — best-effort path that logs but doesn't fail Create
 	// on billing errors (the cycle scheduler picks up later periods).
 	subSvc.SetBiller(engine)
+	// ADR-031 slice 3: the engine's BillOnCancel uses creditSvc to
+	// issue a credit grant for the unused portion of an in_advance
+	// period when a sub is canceled mid-cycle. No-op for in_arrears.
+	engine.SetCreditGranter(creditSvc)
 	// invoice.Service uses the resolver at Create so one-off
 	// composer invoices and manual sub-attached addenda for
 	// clock-pinned customers / subs stamp due_at in simulated time.

@@ -13,6 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/auth"
+	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -50,6 +51,7 @@ type Engine struct {
 	pricing        PricingReader
 	invoices       InvoiceWriter
 	credits        CreditApplier
+	creditGranter  CreditGranter
 	settings       SettingsReader
 	paymentSetups  PaymentSetupReader
 	charger        InvoiceCharger
@@ -62,6 +64,13 @@ type Engine struct {
 	testClocks     TestClockReader
 	events         domain.EventDispatcher
 	noPMNotifier   NoPaymentMethodNotifier
+}
+
+// SetCreditGranter wires the credit-grant issuer used by BillOnCancel
+// for cancel proration on in_advance plans (ADR-031). Optional —
+// without it, in_advance subs cancel without a proration credit.
+func (e *Engine) SetCreditGranter(g CreditGranter) {
+	e.creditGranter = g
 }
 
 // CustomerReader is the narrow read interface the engine uses to
@@ -116,6 +125,14 @@ type TestClockReader interface {
 // CreditApplier applies customer credits to an invoice before charging.
 type CreditApplier interface {
 	ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64, invoiceNumber ...string) (int64, error)
+}
+
+// CreditGranter issues a new credit grant. Used by BillOnCancel
+// (ADR-031 slice 3) to refund the unused portion of an already-
+// billed in_advance period to the customer's credit balance.
+// Implemented by *credit.Service.
+type CreditGranter interface {
+	Grant(ctx context.Context, tenantID string, input credit.GrantInput) (domain.CreditLedgerEntry, error)
 }
 
 // CouponApplier computes the coupon discount to apply to an invoice's
@@ -2116,6 +2133,116 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		"line_items", len(lineItems),
 	)
 	return inv, nil
+}
+
+// BillOnCancel emits the cancel proration credit for an in_advance
+// subscription that was canceled before its current period closed
+// (ADR-031). The base for the current period was already billed —
+// either on day 1 via BillOnCreate or at the prior cycle close — so
+// the unused portion (canceled_at → period_end) needs to flow back
+// to the customer.
+//
+// Refund mode: credit grant to the customer's balance. Operator can
+// separately issue a credit note against the original invoice for a
+// PM refund if desired (matches Stripe's out_of_band vs payment
+// refund choice). Granting to balance is the safer default — no
+// Stripe round-trip, applies automatically to future invoices.
+//
+// No-op when:
+//   - creditGranter not wired (production wires; narrow unit tests skip)
+//   - sub.Status != canceled (defensive — caller should have flipped it)
+//   - no current period set
+//   - cancel_at at/after period_end (clean cancel, no proration owed)
+//   - no item's plan is in_advance (every base was arrears, nothing prebilled)
+//   - computed unused amount rounds to zero
+//
+// Idempotency: not provided. Cancel is called once; if BillOnCancel
+// fails after the cancel succeeds, the operator can manually issue
+// a credit grant from the dashboard. Re-calling Cancel against an
+// already-canceled sub returns the existing canceled state before
+// reaching the biller (so BillOnCancel doesn't run twice in normal
+// retry).
+func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) error {
+	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillOnCancel",
+		trace.WithAttributes(
+			attribute.String("subscription_id", sub.ID),
+			attribute.String("tenant_id", sub.TenantID),
+		),
+	)
+	defer span.End()
+
+	if e.creditGranter == nil {
+		return nil
+	}
+	if sub.Status != domain.SubscriptionCanceled {
+		return nil
+	}
+	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
+		return nil
+	}
+	if sub.CanceledAt == nil {
+		return fmt.Errorf("canceled sub has no canceled_at")
+	}
+
+	periodStart := *sub.CurrentBillingPeriodStart
+	periodEnd := *sub.CurrentBillingPeriodEnd
+	cancelAt := *sub.CanceledAt
+
+	// Clean cancel (at or after period end): period was billed normally,
+	// no unused portion. Cancel-before-period-start is defensive — you
+	// can't cancel before sub start.
+	if !cancelAt.Before(periodEnd) || !cancelAt.After(periodStart) {
+		return nil
+	}
+
+	periodNanos := periodEnd.Sub(periodStart).Nanoseconds()
+	unusedNanos := periodEnd.Sub(cancelAt).Nanoseconds()
+	if periodNanos <= 0 || unusedNanos <= 0 {
+		return nil
+	}
+
+	totalUnused := int64(0)
+	for _, it := range sub.Items {
+		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
+		if err != nil {
+			return fmt.Errorf("get plan %s: %w", it.PlanID, err)
+		}
+		if plan.BaseBillTiming != domain.BillInAdvance || plan.BaseAmountCents <= 0 {
+			continue
+		}
+		baseFee := plan.BaseAmountCents * it.Quantity
+		unused := money.RoundHalfToEven(baseFee*unusedNanos, periodNanos)
+		if unused > 0 {
+			totalUnused += unused
+		}
+	}
+
+	if totalUnused <= 0 {
+		return nil
+	}
+
+	_, err := e.creditGranter.Grant(ctx, sub.TenantID, credit.GrantInput{
+		CustomerID:  sub.CustomerID,
+		AmountCents: totalUnused,
+		Description: fmt.Sprintf("Cancel proration — unused portion of %s base fee (period %s to %s, canceled %s)",
+			sub.Code,
+			periodStart.UTC().Format("2006-01-02"),
+			periodEnd.UTC().Format("2006-01-02"),
+			cancelAt.UTC().Format("2006-01-02")),
+	})
+	if err != nil {
+		return fmt.Errorf("cancel proration credit grant: %w", err)
+	}
+
+	slog.Info("cancel proration credit issued",
+		"subscription_id", sub.ID,
+		"customer_id", sub.CustomerID,
+		"amount_cents", totalUnused,
+		"period_start", periodStart,
+		"period_end", periodEnd,
+		"canceled_at", cancelAt,
+	)
+	return nil
 }
 
 // RetryPendingCharges picks up invoices flagged for auto-charge retry
