@@ -101,6 +101,15 @@ components:
         base_amount_cents:
           type: integer
           format: int64
+        base_bill_timing:
+          type: string
+          enum: [in_advance, in_arrears]
+          description: |
+            When the recurring base fee is invoiced relative to the period it covers.
+            in_arrears (default): base + usage billed at period end.
+            in_advance: base billed at period start (day 1 on create; cycle-close invoice
+            carries upcoming period's base + elapsed period's usage). Usage lines are
+            always arrears regardless of this flag. See ADR-031.
         meter_ids:
           type: array
           items:
@@ -759,6 +768,12 @@ paths:
                   enum: [monthly, yearly]
                 base_amount_cents:
                   type: integer
+                base_bill_timing:
+                  type: string
+                  enum: [in_advance, in_arrears]
+                  description: |
+                    Optional. Defaults to in_arrears. See Plan.base_bill_timing
+                    for semantics (ADR-031).
                 meter_ids:
                   type: array
                   items:

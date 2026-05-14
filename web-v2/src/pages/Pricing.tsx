@@ -605,6 +605,7 @@ function CreatePlanDialog({ onClose, onCreated, meters }: { onClose: () => void;
   const [code, setCode] = useState('')
   const [interval, setInterval] = useState('monthly')
   const [basePrice, setBasePrice] = useState('')
+  const [billTiming, setBillTiming] = useState<'in_arrears' | 'in_advance'>('in_arrears')
   const [meterIds, setMeterIds] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
 
@@ -618,6 +619,7 @@ function CreatePlanDialog({ onClose, onCreated, meters }: { onClose: () => void;
         currency: getActiveCurrency(),
         billing_interval: interval,
         base_amount_cents: Math.round(parseFloat(basePrice || '0') * 100),
+        base_bill_timing: billTiming,
         meter_ids: meterIds,
       })
       onCreated()
@@ -666,6 +668,23 @@ function CreatePlanDialog({ onClose, onCreated, meters }: { onClose: () => void;
             <Input type="number" step="0.01" min={0} max={999999.99} value={basePrice}
               onChange={e => setBasePrice(e.target.value)} placeholder="49.00" className="mt-1" />
             <p className="text-xs text-muted-foreground mt-1">Fixed {interval} charge before usage fees</p>
+          </div>
+          <div>
+            <Label>Base fee billed</Label>
+            <Select value={billTiming} onValueChange={(v) => setBillTiming((v ?? 'in_arrears') as 'in_arrears' | 'in_advance')}>
+              <SelectTrigger className="w-full mt-1">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="in_arrears">At end of period (usage-first)</SelectItem>
+                <SelectItem value="in_advance">At start of period (platform fee + usage)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground mt-1">
+              {billTiming === 'in_advance'
+                ? 'Customer is charged the base fee on day 1 of each period; usage settles at period end.'
+                : 'Customer is charged the base fee plus any usage at the end of each period.'}
+            </p>
           </div>
 
           {meters.length > 0 && (

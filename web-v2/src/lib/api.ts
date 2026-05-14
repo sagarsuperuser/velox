@@ -140,9 +140,9 @@ export const api = {
     apiRequest<{ data: Plan[] }>('GET', '/plans'),
   getPlan: (id: string) =>
     apiRequest<Plan>('GET', `/plans/${id}`),
-  createPlan: (data: { code: string; name: string; currency: string; billing_interval: string; base_amount_cents: number; meter_ids?: string[] }) =>
+  createPlan: (data: { code: string; name: string; currency: string; billing_interval: string; base_amount_cents: number; base_bill_timing?: BillTiming; meter_ids?: string[] }) =>
     apiRequest<Plan>('POST', '/plans', data),
-  updatePlan: (id: string, data: Partial<{ name: string; status: string; base_amount_cents: number; meter_ids: string[] }>) =>
+  updatePlan: (id: string, data: Partial<{ name: string; status: string; base_amount_cents: number; base_bill_timing: BillTiming; meter_ids: string[] }>) =>
     apiRequest<Plan>('PATCH', `/plans/${id}`, data),
   listRatingRules: () =>
     apiRequest<{ data: RatingRule[] }>('GET', '/rating-rules'),
@@ -795,6 +795,13 @@ export interface LineItem {
   tax_reason?: string
   currency: string
   pricing_mode?: string
+  // ADR-031: explicit per-line period covered by the charge. Stamped
+  // on base-fee lines so an invoice mixing in_advance base (next
+  // period) with in_arrears usage (elapsed period) renders the
+  // correct range per row. When null on a non-base line, the line
+  // covers the invoice's billing_period_start/end.
+  billing_period_start?: string | null
+  billing_period_end?: string | null
 }
 
 export interface TimelineEvent {
