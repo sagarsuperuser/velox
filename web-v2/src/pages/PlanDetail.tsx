@@ -234,6 +234,12 @@ export default function PlanDetailPage() {
               <Badge variant="info">{plan.billing_interval === 'yearly' ? 'yearly' : 'monthly'}</Badge>
             </div>
             <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-sm text-muted-foreground">Base fee billed</span>
+              <span className="text-sm text-foreground font-medium">
+                {plan.base_bill_timing === 'in_advance' ? 'At start of period' : 'At end of period'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Currency</span>
               <span className="text-sm text-foreground font-medium">{plan.currency.toUpperCase()}</span>
             </div>
@@ -450,6 +456,7 @@ function EditPlanDialog({ plan, onClose, onSaved }: {
 }) {
   const [basePrice, setBasePrice] = useState((plan.base_amount_cents / 100).toFixed(2))
   const [status, setStatus] = useState(plan.status)
+  const [billTiming, setBillTiming] = useState<'in_arrears' | 'in_advance'>(plan.base_bill_timing ?? 'in_arrears')
 
   const form = useForm<EditPlanData>({
     resolver: zodResolver(editPlanSchema),
@@ -460,13 +467,15 @@ function EditPlanDialog({ plan, onClose, onSaved }: {
   const name = watch('name')
   const hasChanges = name !== plan.name ||
     basePrice !== (plan.base_amount_cents / 100).toFixed(2) ||
-    status !== plan.status
+    status !== plan.status ||
+    billTiming !== (plan.base_bill_timing ?? 'in_arrears')
 
   const onSubmit = handleSubmit(async (data) => {
     try {
       await api.updatePlan(plan.id, {
         name: data.name,
         base_amount_cents: Math.round(parseFloat(basePrice || '0') * 100),
+        base_bill_timing: billTiming,
         status,
       })
       onSaved()
@@ -512,6 +521,24 @@ function EditPlanDialog({ plan, onClose, onSaved }: {
               placeholder="49.00"
             />
             <p className="text-xs text-muted-foreground">{plan.billing_interval === 'yearly' ? 'Yearly' : 'Monthly'} recurring charge</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Base fee billed</Label>
+            <Select value={billTiming} onValueChange={(v) => setBillTiming((v ?? 'in_arrears') as 'in_arrears' | 'in_advance')}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="in_arrears">At end of period</SelectItem>
+                <SelectItem value="in_advance">At start of period</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {billTiming === 'in_advance'
+                ? 'Customer charged the base fee on day 1 of each period; usage settles at period end.'
+                : 'Customer charged the base fee plus any usage at the end of each period.'}
+            </p>
           </div>
 
           <div className="space-y-2">
