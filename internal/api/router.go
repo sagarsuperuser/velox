@@ -30,6 +30,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/email"
 	"github.com/sagarsuperuser/velox/internal/feature"
 	"github.com/sagarsuperuser/velox/internal/hostedinvoice"
+	"github.com/sagarsuperuser/velox/internal/integrations/litellm"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
@@ -1042,6 +1043,14 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// keys (publishable keys are read-only).
 		r.With(auth.Require(auth.PermUsageWrite)).Post("/usage-events/backfill", usageH.Backfill)
 		r.With(auth.RequireMethod(auth.PermUsageRead, auth.PermUsageWrite)).Mount("/usage-events", usageH.Routes())
+		// LiteLLM adapter — POST /v1/integrations/litellm/spend.
+		// Authenticated with a standard secret key (the operator's
+		// LiteLLM proxy carries the Bearer token on every callback);
+		// gated on PermUsageWrite because the call shape is "write
+		// usage events on behalf of the partner." See ADR-033 +
+		// docs/integrations/litellm.md.
+		r.With(auth.Require(auth.PermUsageWrite)).Mount("/integrations/litellm",
+			litellm.New(customerStore, pricingSvc, usageSvc).Routes())
 		// create_preview must mount BEFORE /invoices because chi tries
 		// patterns in registration order — once /invoices is mounted with
 		// /{id}/... children, "create_preview" would be claimed as an

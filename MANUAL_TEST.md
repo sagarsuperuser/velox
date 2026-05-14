@@ -1118,6 +1118,38 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 - [ ] `RUN_MIGRATIONS_ON_BOOT=true` (default) applies all migrations idempotently.
 - [ ] Mail catches at `localhost:8025`.
 
+## FLOW X15: LiteLLM integration (ADR-033)
+
+The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingPayload`, resolves customer + meters, and dedupes replays.
+
+- [ ] Create a customer with `external_id="cus_litellm_test"`.
+- [ ] Instantiate the `anthropic_style` recipe (creates `tokens_input` + `tokens_output` meters).
+- [ ] Single payload happy path:
+  ```bash
+  curl -X POST "$API/v1/integrations/litellm/spend" \
+    -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+    -d '{
+      "id":"litellm_test_1","call_type":"completion",
+      "model":"claude-3-5-sonnet-20241022","custom_llm_provider":"anthropic",
+      "user":"cus_litellm_test",
+      "usage":{"prompt_tokens":1200,"completion_tokens":350,"total_tokens":1550},
+      "response_cost":0.018,"endTime":1730000000
+    }'
+  ```
+  → `{"accepted":2,"skipped":0,"errors":[]}`. `GET /v1/usage-events?external_customer_id=cus_litellm_test` shows TWO events (tokens_input qty 1200 + tokens_output qty 350), both with `dimensions.model="claude-3-5-sonnet-20241022"` + `dimensions.provider="anthropic"`.
+- [ ] Idempotent replay: same POST again → `accepted=0` (events already exist; the `(tenant, customer, meter, idempotency_key)` UNIQUE caught the replay). No duplicates in the event list.
+- [ ] Missing `user`: payload with `"user":""` → response has `errors[]` populated, batch otherwise OK. **NOT 5xx.**
+- [ ] Unknown customer: `"user":"cus_nonexistent"` → same partial-failure shape: `errors[].error` says `customer "cus_nonexistent" not found (set user=...)`.
+- [ ] Non-token-bearing call: `"call_type":"image_generation"` → `accepted=0, skipped=1`. No events emitted.
+- [ ] Zero-token completion (error / empty response): `"usage":{"prompt_tokens":0,"completion_tokens":0}` → `accepted=0, skipped=1`.
+- [ ] Batch shape: POST `{"events":[<payload1>,<payload2>,...]}` → each payload mapped independently. Per-row failures don't fail the batch.
+- [ ] Bare array shape: POST `[<payload1>,<payload2>]` → same handling as `events:[...]`.
+- [ ] Embedding call: `"call_type":"embedding","usage":{"prompt_tokens":500,"completion_tokens":0}` → ONE event (`tokens_input` only), `accepted=1`.
+- [ ] Dimension promotion: `"metadata":{"team_id":"team_eng","request_tags":["prod"],"x_other":"ignored"}` → emitted events have `dimensions.team_id="team_eng"` and `dimensions.request_tags=["prod"]`; `x_other` stays in the event's `metadata.litellm_metadata.x_other` (NOT promoted to dimensions for pricing dispatch).
+- [ ] Cost surfacing: `cost_breakdown:{input_cost:0.012,output_cost:0.045,total_cost:0.057}` → input event's `metadata.velox.litellm_cost_usd=0.012`, output event's = 0.045. Velox billing math is unaffected — pricing rules drive the invoice amount; LiteLLM's cost is audit-only.
+- [ ] Auth: POST without `Authorization` header → 401. Publishable key (no `usage:write`) → 403.
+- [ ] Audit-trail sanity: each ingested event shows `origin=api` in `usage_events.origin` (no separate "litellm" origin in v1; revisit when an operator asks).
+
 ---
 
 # Diagnostics
