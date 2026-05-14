@@ -118,7 +118,7 @@ func (e *Engine) previewWithWindow(ctx context.Context, sub domain.Subscription,
 		BillingPeriodEnd:   periodEnd,
 		Lines:              []PreviewLine{},
 		Warnings:           []string{},
-		GeneratedAt:        e.clock.Now(),
+		GeneratedAt:        e.clock.Now(ctx),
 	}
 
 	// Base-fee lines from each subscription item's plan. Quantity here is

@@ -1,6 +1,7 @@
 package creditnote
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -59,7 +60,7 @@ func TestRenderPDF_Basic(t *testing.T) {
 		Country: "US",
 	}
 
-	out, err := RenderPDF(cn, items, orig, bt, company)
+	out, err := RenderPDF(context.Background(), cn, items, orig, bt, company)
 	if err != nil {
 		t.Fatalf("RenderPDF: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestRenderPDF_ReverseCharge(t *testing.T) {
 	bt := BillToInfo{Name: "Beispiel GmbH", Country: "DE", TaxID: "DE123456789"}
 	company := CompanyInfo{Name: "Velox Ltd", Country: "IE", TaxID: "IE1234567T"}
 
-	out, err := RenderPDF(cn, items, orig, bt, company)
+	out, err := RenderPDF(context.Background(), cn, items, orig, bt, company)
 	if err != nil {
 		t.Fatalf("RenderPDF: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestRenderPDF_VoidedWatermark(t *testing.T) {
 	items := []domain.CreditNoteLineItem{
 		{Description: "x", Quantity: 1, UnitAmountCents: 1000, AmountCents: 1000},
 	}
-	out, err := RenderPDF(cn, items, OriginalInvoiceInfo{}, BillToInfo{Name: "cus_2"}, CompanyInfo{})
+	out, err := RenderPDF(context.Background(), cn, items, OriginalInvoiceInfo{}, BillToInfo{Name: "cus_2"}, CompanyInfo{})
 	if err != nil {
 		t.Fatalf("RenderPDF: %v", err)
 	}

@@ -311,6 +311,11 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		PaymentStatus:  r.URL.Query().Get("payment_status"),
 		Limit:          limit,
 		Offset:         offset,
+		// Sort + direction are validated against a closed set in
+		// the store (invoiceOrderBy). Unknown sort keys silently
+		// default to created_at; unknown dir defaults to desc.
+		Sort:    r.URL.Query().Get("sort"),
+		SortDir: r.URL.Query().Get("dir"),
 	})
 	if err != nil {
 		respond.InternalError(w, r)
@@ -426,7 +431,7 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			bt := BillToInfo{Name: name, Email: email}
-			pdfBytes, err := RenderPDF(inv, items, bt, nil, CompanyInfo{})
+			pdfBytes, err := RenderPDF(emailCtx, inv, items, bt, nil, CompanyInfo{})
 			if err != nil {
 				slog.WarnContext(emailCtx, "skip invoice email — PDF render failed",
 					"invoice_id", inv.ID, "error", err)
@@ -618,14 +623,16 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pdfBytes, err := RenderPDF(inv, items, bt, nil, ci)
+	pdfBytes, err := RenderPDF(r.Context(), inv, items, bt, nil, ci)
 	if err != nil {
 		respond.InternalError(w, r)
 		return
 	}
 
 	if err := h.emailSender.SendInvoice(r.Context(), tenantID, body.Email, bt.Name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
-		respond.Validation(w, r, fmt.Sprintf("failed to send email: %s", err.Error()))
+		// Sanitize at the boundary — SMTP errors / outbox-store errors
+		// would otherwise leak to the operator toast. ADR-026.
+		respond.FromError(w, r, err, "invoice_email")
 		return
 	}
 
@@ -672,7 +679,12 @@ func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {
 
 	charged, err := h.charger.ChargeInvoice(r.Context(), tenantID, inv, ps.StripeCustomerID)
 	if err != nil {
-		respond.Validation(w, r, fmt.Sprintf("payment failed: %s", err.Error()))
+		// ADR-026 boundary sanitization: ChargeInvoice wraps a
+		// *payment.PaymentError which respond.FromError detects and
+		// surfaces via OperatorSafeMessage() — humanized decline
+		// reason or "Payment provider rejected the request" instead
+		// of raw Stripe SDK strings (idempotency conflicts, etc.).
+		respond.FromError(w, r, err, "payment")
 		return
 	}
 
@@ -1013,8 +1025,8 @@ func describeEmailEvent(emailType, outboxStatus, _ string) (string, string) {
 		desc = "Payment receipt emailed"
 	case "payment_failed":
 		desc = "Payment-failed email sent to customer"
-	case "payment_update_request":
-		desc = "Customer notified — payment method required"
+	case "payment_setup_request":
+		desc = "Customer notified — set up payment method"
 	case "dunning_warning":
 		desc = "Dunning reminder emailed"
 	case "dunning_escalation":
@@ -1371,7 +1383,7 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pdfBytes, err := RenderPDF(inv, items, bt, cnInfos, ci)
+	pdfBytes, err := RenderPDF(r.Context(), inv, items, bt, cnInfos, ci)
 	if err != nil {
 		respond.InternalError(w, r)
 		return

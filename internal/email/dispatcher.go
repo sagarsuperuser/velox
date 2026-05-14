@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/platform/scheduler"
 )
 
 // DispatcherConfig controls the outbox dispatcher loop.
@@ -51,7 +52,7 @@ type EmailDeliverer interface {
 	SendDunningWarning(ctx context.Context, tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
 	SendDunningEscalation(ctx context.Context, tenantID, to, customerName, invoiceNumber, action, publicToken string) error
 	SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
-	SendPaymentUpdateRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
+	SendPaymentSetupRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
 	SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error
 	SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
 	SendMemberInvite(ctx context.Context, tenantID, to, inviterEmail, tenantName, acceptURL string) error
@@ -89,23 +90,11 @@ func (d *Dispatcher) SetLocker(locker DispatchLocker) {
 // Start runs the dispatcher loop until ctx is cancelled. Intended to be
 // launched as a goroutine from cmd/velox during boot.
 func (d *Dispatcher) Start(ctx context.Context) {
-	ticker := time.NewTicker(d.cfg.Interval)
-	defer ticker.Stop()
-
 	slog.Info("email outbox dispatcher started",
 		"interval", d.cfg.Interval.String(),
 		"batch_size", d.cfg.BatchSize,
 	)
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("email outbox dispatcher stopped")
-			return
-		case <-ticker.C:
-			d.tick(ctx)
-		}
-	}
+	scheduler.Run(ctx, "email_outbox", d.cfg.Interval, d.tick)
 }
 
 // tick drains one batch. Errors are logged and swallowed — the next tick will
@@ -173,8 +162,8 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 	case TypePaymentFailed:
 		return d.sender.SendPaymentFailed(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.Reason, msg.PublicToken)
-	case TypePaymentUpdateRequest:
-		return d.sender.SendPaymentUpdateRequest(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+	case TypePaymentSetupRequest:
+		return d.sender.SendPaymentSetupRequest(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
 			msg.AmountCents, msg.Currency, msg.UpdateURL)
 	case TypePortalMagicLink:
 		return d.sender.SendPortalMagicLink(ctx, row.TenantID, msg.To, msg.CustomerName, msg.MagicLinkURL)

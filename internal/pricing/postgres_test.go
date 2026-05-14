@@ -7,13 +7,14 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/pricing"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
 
 func TestPostgresStore_RatingRules(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := pricing.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 	tenantID := testutil.CreateTestTenant(t, db, "Test")
 
 	// Create flat rule
@@ -84,7 +85,7 @@ func TestPostgresStore_RatingRules(t *testing.T) {
 func TestPostgresStore_Meters(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := pricing.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 	tenantID := testutil.CreateTestTenant(t, db, "Test")
 
 	meter, err := store.CreateMeter(ctx, tenantID, domain.Meter{
@@ -130,7 +131,7 @@ func TestPostgresStore_Meters(t *testing.T) {
 func TestPostgresStore_Plans(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := pricing.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 	tenantID := testutil.CreateTestTenant(t, db, "Test")
 
 	plan, err := store.CreatePlan(ctx, tenantID, domain.Plan{
@@ -178,7 +179,7 @@ func TestPostgresStore_Plans(t *testing.T) {
 func TestPostgresStore_MeterPricingRules(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := pricing.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 	tenantID := testutil.CreateTestTenant(t, db, "Multi-Dim Test")
 
 	// Seed: one meter, two rating rules.
@@ -286,7 +287,7 @@ func TestPostgresStore_MeterPricingRules(t *testing.T) {
 func TestPostgresStore_MeterPricingRules_RLS(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := pricing.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	tenantA := testutil.CreateTestTenant(t, db, "Tenant A")
 	tenantB := testutil.CreateTestTenant(t, db, "Tenant B")

@@ -1,6 +1,7 @@
 package invoice
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -65,7 +66,7 @@ func TestRenderPDF(t *testing.T) {
 		},
 	}
 
-	pdfBytes, err := RenderPDF(inv, lineItems, BillToInfo{Name: "Acme Corp"}, nil)
+	pdfBytes, err := RenderPDF(context.Background(), inv, lineItems, BillToInfo{Name: "Acme Corp"}, nil)
 	if err != nil {
 		t.Fatalf("render pdf: %v", err)
 	}
@@ -129,7 +130,7 @@ func TestRenderPDF_IndiaSupplierGSTIN(t *testing.T) {
 		TaxID:     "27AAEPM1234C1Z5",
 		TaxIDType: "gstin",
 	}
-	out, err := RenderPDF(inv, nil, BillToInfo{Name: "Acme Corp"}, nil, company)
+	out, err := RenderPDF(context.Background(), inv, nil, BillToInfo{Name: "Acme Corp"}, nil, company)
 	if err != nil {
 		t.Fatalf("render pdf: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestRenderPDF_IndiaReverseChargeLegend(t *testing.T) {
 	}
 
 	// And the PDF still renders without error end-to-end.
-	out, err := RenderPDF(inv, nil, billTo, nil, company)
+	out, err := RenderPDF(context.Background(), inv, nil, billTo, nil, company)
 	if err != nil {
 		t.Fatalf("render pdf: %v", err)
 	}
@@ -196,7 +197,7 @@ func TestRenderPDF_EUReverseChargeLegend_Unchanged(t *testing.T) {
 		t.Errorf("legend = %q, must not contain India GST wording for EU invoices", got)
 	}
 
-	out, err := RenderPDF(inv, nil, billTo, nil, company)
+	out, err := RenderPDF(context.Background(), inv, nil, billTo, nil, company)
 	if err != nil {
 		t.Fatalf("render pdf: %v", err)
 	}
@@ -221,11 +222,11 @@ func TestRenderPDF_NoTaxID_NoGSTINLine(t *testing.T) {
 
 	billTo := BillToInfo{Name: "Acme India Ltd", Country: "IN"}
 
-	outNo, err := RenderPDF(inv, nil, billTo, nil, base)
+	outNo, err := RenderPDF(context.Background(), inv, nil, billTo, nil, base)
 	if err != nil {
 		t.Fatalf("render pdf no tax id: %v", err)
 	}
-	outYes, err := RenderPDF(inv, nil, billTo, nil, withGSTIN)
+	outYes, err := RenderPDF(context.Background(), inv, nil, billTo, nil, withGSTIN)
 	if err != nil {
 		t.Fatalf("render pdf with tax id: %v", err)
 	}
@@ -425,11 +426,11 @@ func TestRenderPDF_ExemptionLegend_PDFRenders(t *testing.T) {
 		{LineType: domain.LineTypeBaseFee, Description: "Plan", Quantity: 1, AmountCents: 1000, TotalAmountCents: 1000, Currency: "USD", TaxabilityReason: "customer_exempt"},
 	}
 
-	outPlain, err := RenderPDF(inv, plain, billTo, nil, company)
+	outPlain, err := RenderPDF(context.Background(), inv, plain, billTo, nil, company)
 	if err != nil {
 		t.Fatalf("render plain pdf: %v", err)
 	}
-	outExempt, err := RenderPDF(inv, exempt, billTo, nil, company)
+	outExempt, err := RenderPDF(context.Background(), inv, exempt, billTo, nil, company)
 	if err != nil {
 		t.Fatalf("render exempt pdf: %v", err)
 	}

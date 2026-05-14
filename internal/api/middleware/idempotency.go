@@ -53,6 +53,15 @@ func Idempotency(db *postgres.DB) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Capture livemode off the request ctx so the post-response
+			// cache write (which runs against context.Background, not
+			// r.Context, so it survives a client disconnect) carries the
+			// same mode. Without this, the BeginTx for the cache insert
+			// defaults to live mode and a test-mode response gets stamped
+			// with livemode=true on its cached row — corrupting future
+			// replays for the test partition.
+			livemode := postgres.Livemode(r.Context())
+
 			// Read the body so we can (a) hash it for the fingerprint and
 			// (b) hand a fresh reader to the downstream handler.
 			bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxIdempotentBodyBytes+1))
@@ -118,7 +127,8 @@ func Idempotency(db *postgres.DB) func(http.Handler) http.Handler {
 			// Pinning either would trap the caller.
 			if recorder.statusCode != http.StatusConflict &&
 				recorder.statusCode != http.StatusUnprocessableEntity {
-				storeCachedResponse(context.Background(), db, tenantID, key,
+				bgCtx := postgres.WithLivemode(context.Background(), livemode)
+				storeCachedResponse(bgCtx, db, tenantID, key,
 					r.Method, r.URL.Path, fingerprint,
 					recorder.statusCode, recorder.body.Bytes())
 			}

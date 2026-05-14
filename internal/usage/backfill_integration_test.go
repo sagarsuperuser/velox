@@ -19,7 +19,7 @@ import (
 // query that billing uses to generate invoices.
 func TestBackfill_PersistsOriginAndAggregates(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Backfill Test")
@@ -73,7 +73,7 @@ func TestBackfill_PersistsOriginAndAggregates(t *testing.T) {
 // is out of scope for FEAT-7 but the column must be readable.
 func verifyOriginSurvivesSelect(t *testing.T, db *postgres.DB, tenantID, eventID string, want domain.UsageEventOrigin) {
 	t.Helper()
-	tx, err := db.BeginTx(context.Background(), postgres.TxTenant, tenantID)
+	tx, err := db.BeginTx(postgres.WithLivemode(context.Background(), false), postgres.TxTenant, tenantID)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
@@ -100,7 +100,7 @@ func insertTestCustomer(t *testing.T, db *postgres.DB, tenantID, externalID stri
 	t.Helper()
 
 	id := postgres.NewID("vlx_cus")
-	tx, err := db.BeginTx(context.Background(), postgres.TxTenant, tenantID)
+	tx, err := db.BeginTx(postgres.WithLivemode(context.Background(), false), postgres.TxTenant, tenantID)
 	if err != nil {
 		t.Fatalf("begin cust: %v", err)
 	}
@@ -123,7 +123,7 @@ func insertTestMeter(t *testing.T, db *postgres.DB, tenantID, name, key string) 
 	t.Helper()
 
 	id := postgres.NewID("vlx_mtr")
-	tx, err := db.BeginTx(context.Background(), postgres.TxTenant, tenantID)
+	tx, err := db.BeginTx(postgres.WithLivemode(context.Background(), false), postgres.TxTenant, tenantID)
 	if err != nil {
 		t.Fatalf("begin meter: %v", err)
 	}

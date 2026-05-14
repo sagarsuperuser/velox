@@ -1,5 +1,8 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { toast } from 'sonner'
 import { AlertTriangle, AlertCircle, Info, ExternalLink, Calendar } from 'lucide-react'
+import { api } from '@/lib/api'
 import type {
   Invoice,
   InvoiceAttention as Attention,
@@ -7,6 +10,7 @@ import type {
   AttentionSeverity,
 } from '@/lib/api'
 import { formatDate, formatDateTime } from '@/lib/api'
+import { showApiError } from '@/lib/formErrors'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -144,13 +148,30 @@ export function InvoiceAttention({
           </p>
         )}
 
+        {/* Two distinct disclosures (ADR-025):
+            - "Detail" carries Velox's own framing (operator-safe).
+            - "Provider response" carries the literal upstream payload
+              from a third-party (Stripe etc.). Populated only when we
+              actually called the provider — pre-flight classification
+              errors render no disclosure at all. Honest labeling so an
+              operator never wonders "is this Velox talking or Stripe?" */}
         {att.detail && (
+          <details className="pl-7 text-xs text-muted-foreground">
+            <summary className="cursor-pointer hover:text-foreground">
+              Detail
+            </summary>
+            <pre className="mt-2 p-2 bg-muted/50 rounded text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all max-w-xl">
+              {att.detail}
+            </pre>
+          </details>
+        )}
+        {att.provider_response && (
           <details className="pl-7 text-xs text-muted-foreground">
             <summary className="cursor-pointer hover:text-foreground">
               Provider response
             </summary>
             <pre className="mt-2 p-2 bg-muted/50 rounded text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all max-w-xl">
-              {att.detail}
+              {att.provider_response}
             </pre>
           </details>
         )}
@@ -241,6 +262,11 @@ function ActionButton({
         </Button>
       )
     case 'charge_now':
+    case 'retry_payment':
+      // Same semantic — call the engine to attempt the charge now.
+      // retry_payment falls in here because the lower-banner pre-cleanup
+      // used the same Collect endpoint; both verbs map to the same
+      // `collectMutation` callback the parent owns.
       return (
         <Button
           variant={variant}
@@ -262,8 +288,9 @@ function ActionButton({
           {sending ? 'Sending…' : display}
         </Button>
       )
+    case 'update_payment_method':
+      return <UpdatePaymentMethodButton variant={variant} display={display} customerId={invoice.customer_id} />
     case 'reconcile_payment':
-    case 'retry_payment':
     default:
       return (
         <Button variant={variant} size="sm" disabled>
@@ -271,6 +298,37 @@ function ActionButton({
         </Button>
       )
   }
+}
+
+// UpdatePaymentMethodButton calls the customer-portal update endpoint
+// to mint a Stripe Checkout (setup mode) URL, then opens it in a new
+// tab. Same flow the customer-facing email link uses; here the
+// operator can drive it (e.g., during a support call). Local loading
+// state because no parent prop owns this — encapsulated since the
+// action only needs `customer_id` from the invoice.
+function UpdatePaymentMethodButton({ variant, display, customerId }: { variant: 'default' | 'outline'; display: string; customerId: string }) {
+  const [loading, setLoading] = useState(false)
+  const onClick = async () => {
+    setLoading(true)
+    try {
+      // Pass the operator's current page so cancel/success returns
+      // here (ADR-022). Strip any query string so we don't stack
+      // `?payment=` repeatedly.
+      const returnURL = window.location.origin + window.location.pathname
+      const res = await api.updatePaymentMethod(customerId, returnURL)
+      window.open(res.url, '_blank')
+      toast.success('Stripe payment update page opened in new tab')
+    } catch (err) {
+      showApiError(err, 'Failed to open payment update page')
+    } finally {
+      setLoading(false)
+    }
+  }
+  return (
+    <Button variant={variant} size="sm" onClick={onClick} disabled={loading}>
+      {loading ? 'Opening…' : display}
+    </Button>
+  )
 }
 
 function severityStyles(s: AttentionSeverity) {

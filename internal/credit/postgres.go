@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -68,7 +69,7 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 	`, entry.ID, tenantID, entry.CustomerID, entry.EntryType,
 		entry.AmountCents, entry.BalanceAfter, entry.Description,
 		postgres.NullableString(entry.InvoiceID), postgres.NullableTime(entry.ExpiresAt),
-		metaJSON, time.Now().UTC(),
+		metaJSON, clock.Now(ctx),
 		postgres.NullableString(entry.SourceSubscriptionID),
 		postgres.NullableString(entry.SourceSubscriptionItemID),
 		postgres.NullableTime(entry.SourcePlanChangedAt),
@@ -143,7 +144,7 @@ func (s *PostgresStore) AdjustAtomic(
 		AmountCents:  amountCents,
 		BalanceAfter: currentBalance + amountCents,
 		Description:  description,
-		CreatedAt:    time.Now().UTC(),
+		CreatedAt:    clock.Now(ctx),
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -214,7 +215,7 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 
 	entryID := postgres.NewID("vlx_ccl")
 	balanceAfter := currentBalance - deduct
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO customer_credit_ledger (id, tenant_id, customer_id, entry_type,
@@ -340,6 +341,12 @@ func (s *PostgresStore) ListBalances(ctx context.Context, tenantID string) ([]do
 	return balances, rows.Err()
 }
 
+// ListExpiredGrants — CRON path. ADR-029 Phase 4: clock-pinned
+// customers' grants are excluded; the catchup orchestrator drives
+// per-clock expiry via ListExpiredGrantsForClock against the clock's
+// frozen_time. Without this filter the wall-clock cron would expire
+// a clock-pinned customer's grants based on wall-clock time, not the
+// simulated time the customer's other consequences run on.
 func (s *PostgresStore) ListExpiredGrants(ctx context.Context) ([]domain.CreditLedgerEntry, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -347,22 +354,69 @@ func (s *PostgresStore) ListExpiredGrants(ctx context.Context) ([]domain.CreditL
 	}
 	defer postgres.Rollback(tx)
 
-	// TxBypass crosses tenants for the credit-expiry sweep; livemode filter
-	// ensures test-mode expiries don't append under live ctx (see #13).
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, customer_id, amount_cents
-		FROM customer_credit_ledger
-		WHERE entry_type = 'grant'
-		  AND expires_at IS NOT NULL
-		  AND expires_at < NOW()
-		  AND livemode = $1
+		SELECT g.id, g.tenant_id, g.customer_id, g.amount_cents
+		FROM customer_credit_ledger g
+		WHERE g.entry_type = 'grant'
+		  AND g.expires_at IS NOT NULL
+		  AND g.expires_at < NOW()
+		  AND g.livemode = $1
+		  AND NOT EXISTS (
+		    SELECT 1 FROM customers c
+		    WHERE c.id = g.customer_id
+		      AND c.test_clock_id IS NOT NULL
+		  )
 		  AND NOT EXISTS (
 		    SELECT 1 FROM customer_credit_ledger e2
-		    WHERE e2.customer_id = customer_credit_ledger.customer_id
+		    WHERE e2.customer_id = g.customer_id
 		      AND e2.entry_type = 'expiry'
-		      AND e2.description LIKE 'Expired grant %' || customer_credit_ledger.id || '%'
+		      AND e2.description LIKE 'Expired grant %' || g.id || '%'
 		  )
 	`, postgres.Livemode(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var entries []domain.CreditLedgerEntry
+	for rows.Next() {
+		var e domain.CreditLedgerEntry
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.AmountCents); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// ListExpiredGrantsForClock is the catchup-path counterpart. ADR-029
+// Phase 4 — returns grants belonging to customers pinned to the given
+// clock whose expires_at is past the clock's frozen_time (passed
+// explicitly so the comparison happens in simulated time, not wall-
+// clock now).
+func (s *PostgresStore) ListExpiredGrantsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time) ([]domain.CreditLedgerEntry, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT g.id, g.tenant_id, g.customer_id, g.amount_cents
+		FROM customer_credit_ledger g
+		JOIN customers c ON c.id = g.customer_id
+		WHERE g.entry_type = 'grant'
+		  AND g.expires_at IS NOT NULL
+		  AND g.expires_at < $3
+		  AND g.tenant_id = $1
+		  AND c.test_clock_id = $2
+		  AND NOT EXISTS (
+		    SELECT 1 FROM customer_credit_ledger e2
+		    WHERE e2.customer_id = g.customer_id
+		      AND e2.entry_type = 'expiry'
+		      AND e2.description LIKE 'Expired grant %' || g.id || '%'
+		  )
+	`, tenantID, clockID, frozenTime)
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +462,7 @@ func (s *PostgresStore) ListEntries(ctx context.Context, filter ListFilter) ([]d
 		idx++
 	}
 
-	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", idx, idx+1)
+	query += fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", creditEntryOrderBy(filter.Sort, filter.SortDir), idx, idx+1)
 	args = append(args, limit, filter.Offset)
 
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -430,4 +484,29 @@ func (s *PostgresStore) ListEntries(ctx context.Context, filter ListFilter) ([]d
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// creditEntryOrderBy validates sort + dir against a closed allow-list
+// and adds a deterministic id tie-break matching the primary
+// direction. See invoiceOrderBy for the design rationale.
+func creditEntryOrderBy(sort, dir string) string {
+	col := creditEntrySortColumn(sort)
+	d := "DESC"
+	if dir == "asc" {
+		d = "ASC"
+	}
+	return col + " " + d + ", id " + d
+}
+
+func creditEntrySortColumn(key string) string {
+	switch key {
+	case "amount_cents", "amount":
+		return "amount_cents"
+	case "entry_type":
+		return "entry_type"
+	case "expires_at":
+		return "expires_at"
+	default:
+		return "created_at"
+	}
 }

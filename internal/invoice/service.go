@@ -56,14 +56,29 @@ type PaymentMethodReader interface {
 	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
 }
 
+// StripeChecker reports whether a tenant has Stripe credentials
+// connected for a given mode. Used by the attention classifier to
+// distinguish two states that previously rendered identically on
+// invoices stuck at tax_status='pending' with code
+// 'provider_not_configured':
+//   - Stripe NOT connected → operator action required.
+//   - Stripe IS now connected (just connected, scheduler hasn't
+//     ticked yet) → calculation will retry shortly; offer Retry now.
+// Implemented by *payment.StripeClients via HasFor.
+type StripeChecker interface {
+	HasFor(ctx context.Context, tenantID string, livemode bool) bool
+}
+
 type Service struct {
 	store          Store
 	clock          clock.Clock
+	resolver       clock.Resolver
 	numberer       InvoiceNumberer
 	taxCommitter   TaxCommitter
 	couponApplier  CouponApplier
 	taxRetrier     TaxRetrier
 	paymentMethods PaymentMethodReader
+	stripeChecker  StripeChecker
 }
 
 func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service {
@@ -77,6 +92,47 @@ func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service
 // router.go with the billing engine so finalize can commit Stripe tax calcs.
 func (s *Service) SetTaxCommitter(tc TaxCommitter) {
 	s.taxCommitter = tc
+}
+
+// SetResolver wires the unified clock.Resolver used to bind
+// effective-now at invoice service entry points. Once bound on ctx
+// via clock.BindEffectiveNow, every downstream s.clock.Now(ctx)
+// (including in the postgres store's INSERT-time stamps) reads
+// frozen_time on clock-pinned entities. Optional: nil leaves binding
+// off and every callsite reads wall-clock — the test-friendly default.
+//
+// Replaces the per-service ClockResolver pattern shipped during the
+// post-ADR-029 patches; matches Stripe's "no semantic change"
+// guarantee for billing-engine resources.
+func (s *Service) SetResolver(r clock.Resolver) {
+	s.resolver = r
+}
+
+// bindForCreate binds effective-now at invoice-create time. Prefers
+// the subscription pin when set (more specific), else falls back to
+// the customer pin. Returns ctx unchanged on resolver error or
+// missing ids — wall-clock fallback at every downstream callsite.
+func (s *Service) bindForCreate(ctx context.Context, tenantID string, input CreateInput) context.Context {
+	pin := clock.Pin{TenantID: tenantID}
+	switch {
+	case input.SubscriptionID != "":
+		pin.SubscriptionID = input.SubscriptionID
+	case input.CustomerID != "":
+		pin.CustomerID = input.CustomerID
+	default:
+		return ctx
+	}
+	bound, _ := clock.BindEffectiveNow(ctx, s.resolver, pin)
+	return bound
+}
+
+// bindForInvoice binds effective-now from an invoice id. Used by
+// every per-invoice mutation entry point (Finalize, Void,
+// RecordPayment, ApplyDiscount, RetryTax, etc.) so downstream stamps
+// inherit simulated time.
+func (s *Service) bindForInvoice(ctx context.Context, tenantID, invoiceID string) context.Context {
+	bound, _ := clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, InvoiceID: invoiceID})
+	return bound
 }
 
 // SetCouponApplier wires the orchestrator behind the apply-coupon endpoint.
@@ -98,6 +154,17 @@ func (s *Service) SetTaxRetrier(r TaxRetrier) {
 // correct for healthy/transient cases).
 func (s *Service) SetPaymentMethodReader(r PaymentMethodReader) {
 	s.paymentMethods = r
+}
+
+// SetStripeChecker wires the per-tenant Stripe-connected probe used
+// by the attention classifier to distinguish "Stripe not connected"
+// from "Stripe just connected, calculation will retry shortly" on
+// tax_status='pending' invoices. Optional — when nil, the classifier
+// falls through the existing "Stripe isn't connected" copy (the
+// pre-fix behaviour) which is safe-but-less-helpful for the
+// gap-window case.
+func (s *Service) SetStripeChecker(c StripeChecker) {
+	s.stripeChecker = c
 }
 
 type CreateInput struct {
@@ -130,7 +197,8 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		netDays = 30
 	}
 
-	now := s.clock.Now()
+	ctx = s.bindForCreate(ctx, tenantID, input)
+	now := s.clock.Now(ctx)
 	// One-off invoices that omit a billing window default to "now → now" so
 	// the NOT NULL period columns get sane values. Cycle invoices always
 	// pass an explicit window from the engine.
@@ -195,6 +263,14 @@ func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domai
 			atc.HasPaymentMethod = true
 		}
 	}
+	if s.stripeChecker != nil && inv.TenantID != "" {
+		// Livemode comes off ctx (auth middleware set it) — invoice
+		// rows don't carry the column on the domain struct since the
+		// DB trigger derives it from app.livemode at insert time. The
+		// request that's reading the invoice is already mode-scoped,
+		// so the ctx value matches the row's stored mode under RLS.
+		atc.StripeConnected = s.stripeChecker.HasFor(ctx, inv.TenantID, postgres.Livemode(ctx))
+	}
 	inv.Attention = domain.ClassifyInvoiceAttention(inv, atc)
 	return inv
 }
@@ -219,6 +295,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Invoice
 }
 
 func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, id)
 	inv, err := s.store.Get(ctx, tenantID, id)
 	if err != nil {
 		return domain.Invoice{}, err
@@ -271,6 +348,7 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 }
 
 func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, id)
 	inv, err := s.store.Get(ctx, tenantID, id)
 	if err != nil {
 		return domain.Invoice{}, err
@@ -285,11 +363,13 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 }
 
 func (s *Service) RecordPayment(ctx context.Context, tenantID, id string, stripePaymentIntentID string) (domain.Invoice, error) {
-	now := s.clock.Now()
+	ctx = s.bindForInvoice(ctx, tenantID, id)
+	now := s.clock.Now(ctx)
 	return s.store.UpdatePayment(ctx, tenantID, id, domain.PaymentSucceeded, stripePaymentIntentID, "", &now)
 }
 
 func (s *Service) RecordPaymentFailure(ctx context.Context, tenantID, id, stripePaymentIntentID, errorMessage string) (domain.Invoice, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, id)
 	return s.store.UpdatePayment(ctx, tenantID, id, domain.PaymentFailed, stripePaymentIntentID, errorMessage, nil)
 }
 
@@ -343,6 +423,7 @@ type AddLineItemInput struct {
 }
 
 func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, input AddLineItemInput) (domain.InvoiceLineItem, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, invoiceID)
 	desc := strings.TrimSpace(input.Description)
 	if desc == "" {
 		return domain.InvoiceLineItem{}, errs.Required("description")
@@ -381,12 +462,21 @@ func (s *Service) ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]
 	return s.store.ListApproachingDue(ctx, daysBeforeDue)
 }
 
+// ListApproachingDueForClock returns clock-pinned invoices approaching
+// their simulated due_at. ADR-029 Phase 6 — the catchup orchestrator
+// uses this to drive reminder dispatch on operator Advance instead of
+// the wall-clock cron tick.
+func (s *Service) ListApproachingDueForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, daysBeforeDue int) ([]domain.Invoice, error) {
+	return s.store.ListApproachingDueForClock(ctx, tenantID, clockID, frozenTime, daysBeforeDue)
+}
+
 // ApplyCoupon routes an operator-initiated coupon apply against an
 // already-issued draft invoice through the billing engine, which owns the
 // redeem → tax recompute → atomic persist → mark-periods orchestration.
 // Handlers call this so the HTTP surface stays tied to the invoice
 // resource even though the engine does the heavy lifting.
 func (s *Service) ApplyCoupon(ctx context.Context, tenantID, invoiceID, code, idempotencyKey string) (domain.Invoice, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, invoiceID)
 	code = strings.TrimSpace(strings.ToUpper(code))
 	if code == "" {
 		return domain.Invoice{}, errs.Required("code")
@@ -413,6 +503,7 @@ func (s *Service) ApplyCoupon(ctx context.Context, tenantID, invoiceID, code, id
 // Returns the updated invoice with its Attention re-derived so
 // the caller renders the new state immediately.
 func (s *Service) RetryTax(ctx context.Context, tenantID, invoiceID string) (domain.Invoice, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, invoiceID)
 	if s.taxRetrier == nil {
 		return domain.Invoice{}, errs.InvalidState("tax retry is not configured")
 	}
@@ -490,6 +581,40 @@ func (s *Service) RetryProviderConfigErrors(ctx context.Context, tenantID string
 	if err != nil {
 		return 0, []error{fmt.Errorf("list stuck provider-config invoices: %w", err)}
 	}
+	return s.retryStuck(ctx, tenantID, stuck)
+}
+
+// RetryCustomerDataErrors fans out a tax retry across every draft
+// invoice for ONE customer stuck on `customer_data_invalid`. Fired
+// from customer.Service.UpsertBillingProfile after a successful
+// billing-profile save — when the operator fixes the customer's
+// country / postal_code / state / tax_id, every invoice that was
+// failing because of those fields auto-retries without per-invoice
+// clicking. Same architectural shape as RetryProviderConfigErrors
+// (which fires on Stripe-reconnect for provider-credential errors);
+// scoped per-customer instead of per-tenant. ADR-019 sibling.
+//
+// Surgical-filter principle: only `customer_data_invalid` rows. Other
+// codes (provider_outage, jurisdiction_unsupported, etc.) aren't
+// resolved by a billing-profile change, so retrying them here would
+// just burn `tax_retry_count` budget. The wall-clock scheduler's
+// RetryPendingTax + the existing per-invoice operator Retry button
+// cover those cases.
+func (s *Service) RetryCustomerDataErrors(ctx context.Context, tenantID, customerID string) (int, []error) {
+	if s.taxRetrier == nil {
+		return 0, nil
+	}
+	stuck, err := s.store.ListCustomerDataInvalidErrors(ctx, tenantID, customerID)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list customer-data-invalid invoices: %w", err)}
+	}
+	return s.retryStuck(ctx, tenantID, stuck)
+}
+
+// retryStuck is the shared per-row body of RetryProviderConfigErrors
+// and RetryCustomerDataErrors. The candidate list shape differs by
+// trigger; the per-invoice retry call is identical.
+func (s *Service) retryStuck(ctx context.Context, tenantID string, stuck []domain.Invoice) (int, []error) {
 	var (
 		processed int
 		errs      []error
@@ -547,6 +672,46 @@ func (s *Service) RetryPendingTax(ctx context.Context, batch int) (int, []error)
 	if err != nil {
 		return 0, []error{fmt.Errorf("list pending tax retries: %w", err)}
 	}
+	return s.processTaxRetryBatch(ctx, stuck)
+}
+
+// RetryPendingTaxForClock is the catchup-path counterpart to
+// RetryPendingTax. ADR-029 Phase 2: tax retries on clock-pinned
+// invoices fire only when an operator advances the clock — the
+// wall-clock cron's ListPendingTaxRetry filters them out via NOT
+// EXISTS so the two paths process disjoint row sets.
+//
+// One retry per row per Advance (no backoff gate). Operator-friendly:
+// each click does something visible. Faithful per-window retry-
+// sequence simulation (Stripe-parity event-walking) is deferred —
+// it's a niche use case operators don't typically run, and the
+// trade-off "I clicked Advance and nothing happened" is a worse
+// failure mode for the workflows operators actually exercise.
+//
+// Catchup-side ordering: this runs BEFORE the auto-charge phase so
+// any invoices that get unstuck (tax_status: pending → ok) become
+// charge-eligible in the same Advance click. Without this ordering,
+// an operator who fixes the tax provider then clicks Advance would
+// see the period-gen + auto-charge phases run, but the still-pending
+// tax invoices wouldn't retry until the NEXT advance — confusing.
+func (s *Service) RetryPendingTaxForClock(ctx context.Context, tenantID, clockID string, batch int) (int, []error) {
+	if s.taxRetrier == nil {
+		return 0, nil
+	}
+	codes := []string{"provider_outage", "unknown"}
+	const maxAttempts = 8
+	stuck, err := s.store.ListPendingTaxRetryForClock(ctx, tenantID, clockID, codes, maxAttempts, batch)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list pending tax retries for clock %s: %w", clockID, err)}
+	}
+	return s.processTaxRetryBatch(ctx, stuck)
+}
+
+// processTaxRetryBatch is the per-row body of the cron-path
+// RetryPendingTax. The catchup path (RetryPendingTaxForClock) has
+// its own event-walking loop with per-row ctx-binding; the cron
+// path doesn't need that since it's already wall-clock-driven.
+func (s *Service) processTaxRetryBatch(ctx context.Context, stuck []domain.Invoice) (int, []error) {
 	var (
 		processed int
 		errs      []error

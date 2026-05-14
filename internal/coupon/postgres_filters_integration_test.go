@@ -7,6 +7,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/coupon"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
 
@@ -19,7 +20,7 @@ import (
 // comparison would.
 func TestCoupon_ListFilters_E2E(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	tenant := testutil.CreateTestTenant(t, db, "Coupon Filters E2E")

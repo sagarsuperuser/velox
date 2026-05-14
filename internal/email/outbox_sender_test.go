@@ -22,7 +22,7 @@ func TestOutboxSender_SatisfiesAllInterfaces(t *testing.T) {
 		_ invoice.EmailSender        = s
 		_ dunning.EmailNotifier      = s
 		_ payment.EmailReceipt       = s
-		_ payment.EmailPaymentUpdate = s
+		_ payment.EmailPaymentFailed = s
 	)
 }
 

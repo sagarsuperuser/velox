@@ -12,6 +12,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/platform/scheduler"
 )
 
 // Evaluator scans active billing alerts on a periodic tick, evaluates
@@ -103,18 +104,7 @@ func (e *Evaluator) SetOnTick(fn func()) {
 // ctx is cancelled (graceful shutdown).
 func (e *Evaluator) Start(ctx context.Context) {
 	slog.Info("billing alerts evaluator started", "interval", e.interval.String(), "batch_size", e.batch)
-	ticker := time.NewTicker(e.interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("billing alerts evaluator stopped")
-			return
-		case <-ticker.C:
-			e.RunOnce(ctx)
-		}
-	}
+	scheduler.Run(ctx, "billing_alerts", e.interval, e.RunOnce)
 }
 
 // RunOnce performs one evaluator tick. Exposed for tests + manual

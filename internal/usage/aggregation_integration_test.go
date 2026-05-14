@@ -29,7 +29,7 @@ import (
 // be assigned freely.
 func TestAggregateByPricingRules(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	store := usage.NewPostgresStore(db)
@@ -344,7 +344,7 @@ func insertTestRatingRule(t *testing.T, db *postgres.DB, tenantID, key string) s
 	t.Helper()
 
 	id := postgres.NewID("vlx_rrv")
-	tx, err := db.BeginTx(context.Background(), postgres.TxTenant, tenantID)
+	tx, err := db.BeginTx(postgres.WithLivemode(context.Background(), false), postgres.TxTenant, tenantID)
 	if err != nil {
 		t.Fatalf("begin rrv: %v", err)
 	}
@@ -373,7 +373,7 @@ func insertTestPricingRule(t *testing.T, db *postgres.DB,
 ) {
 	t.Helper()
 
-	tx, err := db.BeginTx(context.Background(), postgres.TxTenant, tenantID)
+	tx, err := db.BeginTx(postgres.WithLivemode(context.Background(), false), postgres.TxTenant, tenantID)
 	if err != nil {
 		t.Fatalf("begin mpr: %v", err)
 	}

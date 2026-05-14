@@ -9,6 +9,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/customerportal"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/paymentmethods"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
 
@@ -44,7 +45,7 @@ import (
 // coordination between PMs and the summary, or the portal session token.
 func TestFullLoop_PortalCustomer_E2E(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 20*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "FEAT-3 E2E")

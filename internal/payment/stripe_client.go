@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/stripe/stripe-go/v82"
 
@@ -39,6 +40,43 @@ type PaymentError struct {
 }
 
 func (e *PaymentError) Error() string { return e.Message }
+
+// OperatorSafeMessage implements respond.SafeMessageError so the
+// boundary sanitizer (respond.FromError) surfaces a curated message
+// instead of falling through to "Internal error". For card declines
+// we look up the typed decline_code in a curated map sourced from
+// Stripe's docs (decline_codes.go) — gives operators readable
+// English ("The card has been reported lost…") rather than the
+// awkward title-cased SDK code ("Lost card."). Unknown codes fall
+// back to title-case so new Stripe codes don't break the path.
+// For non-decline errors we return a category-only message so raw
+// Stripe SDK strings (idempotency conflicts, validation errors)
+// never reach the operator UI verbatim. ADR-026.
+func (e *PaymentError) OperatorSafeMessage() string {
+	if e.DeclineCode != "" {
+		return "Card was declined: " + declineCodeToOperatorMessage(string(e.DeclineCode))
+	}
+	if e.Unknown {
+		return "Payment outcome could not be determined. Velox will reconcile shortly; refresh in a few seconds."
+	}
+	return "Payment provider rejected the request. Please retry; if the problem persists, contact support."
+}
+
+// humanizeDeclineCode converts Stripe's snake_case decline codes
+// ("card_declined", "insufficient_funds") into title-case English.
+// Used as a fallback by declineCodeToOperatorMessage when a code
+// isn't in the curated map.
+func humanizeDeclineCode(code string) string {
+	if code == "" {
+		return ""
+	}
+	parts := strings.Split(code, "_")
+	if len(parts) == 0 {
+		return code
+	}
+	parts[0] = strings.ToUpper(parts[0][:1]) + parts[0][1:]
+	return strings.Join(parts, " ")
+}
 
 // ErrPaymentTransient signals that the payment attempt was short-circuited
 // upstream of Stripe (circuit breaker open, timeout fired before the call)

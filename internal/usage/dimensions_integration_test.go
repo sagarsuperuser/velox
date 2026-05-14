@@ -31,7 +31,7 @@ import (
 func TestUsageEvents_DimensionsPersistAndJSONBSupersetMatch(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := usage.NewPostgresStore(db)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Dimensions Test")

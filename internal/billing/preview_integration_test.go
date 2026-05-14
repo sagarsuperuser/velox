@@ -176,7 +176,7 @@ func TestCreatePreview_SingleMeterFlatParity(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newPreviewFixture(t, "Create Preview Single Meter")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-72 * time.Hour)
@@ -255,7 +255,7 @@ func TestCreatePreview_MultiDimDimensionMatchEcho(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newPreviewFixture(t, "Create Preview Multi Dim")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-24 * time.Hour)
@@ -363,7 +363,7 @@ func TestCreatePreview_NoWrites(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newPreviewFixture(t, "Create Preview No Writes")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-12 * time.Hour)
@@ -418,7 +418,7 @@ func TestCreatePreview_CrossTenantIsolation(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newPreviewFixture(t, "Create Preview Cross Tenant A")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	rrv, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
@@ -453,7 +453,7 @@ func TestCreatePreview_CustomerHasNoSubscription(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newPreviewFixture(t, "Create Preview No Sub")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	cust, err := f.customerSvc.Create(ctx, f.tenantID, customer.CreateInput{
@@ -481,7 +481,7 @@ func TestCreatePreview_ExplicitSubscriptionWrongCustomer(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newPreviewFixture(t, "Create Preview Wrong Customer")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	rrv, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{

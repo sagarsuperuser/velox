@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -33,7 +34,14 @@ func Middleware(svc *Service) func(http.Handler) http.Handler {
 
 			key, err := svc.ValidateKey(r.Context(), rawKey)
 			if err != nil {
-				respond.Unauthorized(w, r, err.Error())
+				// Generic message — never reveal whether a key
+				// exists, is expired, is revoked, or whether the
+				// lookup failed at the DB layer. Prevents both
+				// key-enumeration attacks and DB-error leakage.
+				// Full reason logged with request-ID. ADR-026.
+				slog.WarnContext(r.Context(), "api key validation failed",
+					"error", err)
+				respond.Unauthorized(w, r, "invalid or expired API key")
 				return
 			}
 

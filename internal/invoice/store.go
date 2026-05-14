@@ -22,6 +22,11 @@ type Store interface {
 	UpdateTotals(ctx context.Context, tenantID, id string, subtotal, total, amountDue int64) (domain.Invoice, error)
 	ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error)
 
+	// ListApproachingDueForClock is the catchup-path counterpart.
+	// ADR-029 Phase 6: clock-pinned reminder candidates use the
+	// clock's frozen_time as the "now" anchor, not wall-clock.
+	ListApproachingDueForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, daysBeforeDue int) ([]domain.Invoice, error)
+
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
 	ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error)
 
@@ -71,6 +76,22 @@ type Store interface {
 	// the cross-mode RLS-bypassed scan would return rows for the
 	// other mode that fail per-row RLS lookup with "not found".
 	ListPendingTaxRetry(ctx context.Context, batch int, retryableCodes []string, maxAttempts int, livemode bool) ([]domain.Invoice, error)
+
+	// ListPendingTaxRetryForClock is the catchup-path counterpart to
+	// ListPendingTaxRetry — returns clock-pinned draft invoices stuck
+	// at tax_status=pending with a retryable code. ADR-029 Phase 2:
+	// clock-pinned tax retries fire only on operator Advance, never on
+	// the wall-clock tick. One retry per row per Advance (no backoff
+	// gate) — operator-friendly: each click does something visible.
+	ListPendingTaxRetryForClock(ctx context.Context, tenantID, clockID string, retryableCodes []string, maxAttempts, limit int) ([]domain.Invoice, error)
+
+	// ListCustomerDataInvalidErrors returns draft invoices for ONE
+	// customer stuck on `customer_data_invalid` — the only tax error a
+	// billing-profile update can resolve. Backs the per-customer
+	// retry-flush fired from customer.Service.UpsertBillingProfile,
+	// mirroring the ADR-019 Stripe-reconnect flush pattern at
+	// per-customer scope.
+	ListCustomerDataInvalidErrors(ctx context.Context, tenantID, customerID string) ([]domain.Invoice, error)
 
 	// ListProviderConfigErrors returns draft invoices stuck on Stripe-
 	// configuration errors (tax_error_code IN provider_not_configured,
@@ -124,4 +145,9 @@ type ListFilter struct {
 	PaymentStatus  string
 	Limit          int
 	Offset         int
+	// Sort: column name from a closed set (validated by the store).
+	// Empty string means default (created_at).
+	Sort string
+	// SortDir: "asc" or "desc". Empty string means desc.
+	SortDir string
 }

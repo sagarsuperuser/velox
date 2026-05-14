@@ -78,9 +78,15 @@ func TestWithRequiredLivemode_PassesWhenSet(t *testing.T) {
 // TestReportUnsetLivemode_WarnsOncePerSite verifies the diagnostic dedup: the
 // warning is valuable the first time per call site but noisy afterwards, so
 // it must fire exactly once per unique caller file:line.
+//
+// Self-test of the diagnostic itself: under VELOX_LIVEMODE_STRICT=true the
+// reportUnsetLivemode call below would panic, which is exactly what THIS
+// test is trying to exercise the non-strict path of. Unset strict for the
+// duration of the test so the WARN-and-dedupe behavior runs.
 func TestReportUnsetLivemode_WarnsOncePerSite(t *testing.T) {
 	// Not t.Parallel — mutates package-level slog default + dedup map.
 	resetLivemodeSeen()
+	t.Setenv("VELOX_LIVEMODE_STRICT", "false")
 
 	var buf bytes.Buffer
 	var bufMu sync.Mutex

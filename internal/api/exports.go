@@ -381,7 +381,7 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 	defer cw.Flush()
 
 	if err := cw.Write([]string{
-		"id", "customer_id", "meter_id", "subscription_id",
+		"id", "customer_id", "meter_id",
 		"quantity", "timestamp",
 		"idempotency_key", "origin",
 		"dimensions_json",
@@ -413,7 +413,7 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 				}
 			}
 			if err := cw.Write([]string{
-				ev.ID, ev.CustomerID, ev.MeterID, ev.SubscriptionID,
+				ev.ID, ev.CustomerID, ev.MeterID,
 				ev.Quantity.String(),
 				ev.Timestamp.UTC().Format(time.RFC3339),
 				ev.IdempotencyKey,

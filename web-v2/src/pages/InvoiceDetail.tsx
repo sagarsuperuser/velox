@@ -5,9 +5,10 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForInvoice, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice } from '@/lib/api'
 import { InvoiceAttention } from '@/components/InvoiceAttention'
 import { TestClockBanner } from '@/components/TestClockBanner'
+import { TestClockBadge } from '@/components/TestClockBadge'
 import { useGetInvoice } from '@/lib/gen/queries.gen'
 import type { Invoice } from '@/lib/gen/schemas/invoice'
 import type { InvoiceLineItem as LineItem } from '@/lib/gen/schemas/invoiceLineItem'
@@ -36,7 +37,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { Loader2, Mail, CreditCard, Link2, RotateCw, Info, CheckCircle2 } from 'lucide-react'
+import { Loader2, Mail, CreditCard, Link2, RotateCw, Info } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
@@ -129,8 +130,18 @@ export default function InvoiceDetailPage() {
   // `getGetInvoiceQueryKey(id)` (also exported), but we keep the
   // existing `['invoice', id]` shape for invalidations elsewhere in
   // this file. Both work — react-query keys are content-addressed.
+  //
+  // refetchInterval polls based on transient invoice state — see
+  // pollIntervalForInvoice. Operator stays on this page after clicking
+  // Pay/Retry; webhook arrives → next tick refetches → UI flips
+  // "Processing" → "Paid" without manual refresh. Returns false on
+  // terminal states so paid/voided invoices don't keep polling
+  // forever.
   const { data: invoiceData, isLoading, error: loadError, refetch } = useGetInvoice(id!, {
-    query: { queryKey: ['invoice', id] },
+    query: {
+      queryKey: ['invoice', id],
+      refetchInterval: (query) => pollIntervalForInvoice(query.state.data?.invoice as ApiInvoice | undefined),
+    },
   })
 
   const invoice = invoiceData?.invoice
@@ -168,10 +179,16 @@ export default function InvoiceDetailPage() {
   })
   const creditNotes = creditNotesData ?? []
 
+  // Timeline shares the invoice's polling cadence — both surfaces
+  // change in lock-step (webhook lands → invoice state flips +
+  // timeline gains a row). Polling the invoice without polling the
+  // timeline would surface "Paid" in the header while the activity
+  // log still shows the older state.
   const { data: timelineData } = useQuery({
     queryKey: ['invoice-timeline', id],
     queryFn: () => api.getPaymentTimeline(id!).then(r => r.events || []),
     enabled: !!id && invoice?.status !== 'draft',
+    refetchInterval: pollIntervalForInvoice(invoice as ApiInvoice | undefined),
   })
   const timeline = timelineData ?? []
 
@@ -344,7 +361,16 @@ export default function InvoiceDetailPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-semibold text-foreground">{invoice.invoice_number}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold text-foreground">{invoice.invoice_number}</h1>
+            {/* Test-clock chip in the header so operators see at-a-glance
+                that simulated time applies before they read totals or
+                dates below. Matches CustomerDetail and SubscriptionDetail
+                header treatment. */}
+            {subscription?.test_clock_id && (
+              <TestClockBadge testClockId={subscription.test_clock_id} />
+            )}
+          </div>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="text-xs font-mono text-muted-foreground">{invoice.id}</span>
             <CopyButton text={invoice.id} />
@@ -890,91 +916,14 @@ export default function InvoiceDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Payment failed banner */}
-      {invoice.payment_status === 'failed' && invoice.status !== 'voided' && (
-        <Card className="mt-6 border-destructive/30 bg-destructive/5">
-          <CardContent className="py-4">
-            <div className="flex items-start justify-between">
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-lg bg-destructive/10 flex items-center justify-center shrink-0 mt-0.5">
-                  <CreditCard size={16} className="text-destructive" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-destructive">Payment failed -- {formatCents(invoice.amount_due_cents, invoice.currency)} outstanding</p>
-                  {invoice.last_payment_error && (
-                    <p className="text-sm text-destructive/80 mt-1">{invoice.last_payment_error}</p>
-                  )}
-                  {invoice.stripe_payment_intent_id && (
-                    <p className="text-xs text-muted-foreground mt-1 font-mono">PI: {invoice.stripe_payment_intent_id}</p>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 ml-4 shrink-0">
-                <Button
-                  variant="outline" size="sm"
-                  className="border-destructive/30 text-destructive"
-                  onClick={async () => {
-                    try {
-                      const res = await api.updatePaymentMethod(invoice.customer_id)
-                      window.open(res.url, '_blank')
-                      toast.success('Stripe payment update page opened in new tab')
-                    } catch {
-                      window.location.href = `/customers/${invoice.customer_id}`
-                    }
-                  }}
-                >
-                  Update Payment Method
-                </Button>
-                {invoice.status === 'finalized' && invoice.amount_due_cents > 0 && (
-                  <Button variant="destructive" size="sm" onClick={() => collectMutation.mutate()} disabled={collectMutation.isPending}>
-                    Retry Payment
-                  </Button>
-                )}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Voided banner */}
-      {invoice.status === 'voided' && (
-        <Card className="mt-6 border-destructive/30 bg-destructive/5">
-          <CardContent className="py-4 flex items-center gap-3">
-            <span className="text-destructive font-bold text-lg">VOID</span>
-            <div>
-              <p className="text-sm font-medium text-foreground">This invoice has been voided</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {invoice.voided_at ? `Voided on ${formatDate(invoice.voided_at)}` : 'All charges and credits have been reversed'}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Payment-method snapshot — only on paid invoices. Confirms
-          which card was charged so the operator doesn't have to dig
-          through the customer detail page or Stripe Dashboard for
-          settled receipts. */}
-      {invoice.status === 'paid' && paymentSetup?.card_brand && paymentSetup?.card_last4 && (
-        <Card className="mt-6 border-emerald-500/30 bg-emerald-500/5">
-          <CardContent className="px-6 py-4 flex items-center gap-4">
-            <div className="h-9 w-9 rounded-lg bg-emerald-500/15 flex items-center justify-center shrink-0">
-              <CheckCircle2 size={18} className="text-emerald-600 dark:text-emerald-400" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-foreground">
-                Paid {invoice.paid_at ? formatDateTime(invoice.paid_at) : ''}
-              </p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                <span className="capitalize">{paymentSetup.card_brand}</span> •••• {paymentSetup.card_last4}
-                {invoice.stripe_payment_intent_id && (
-                  <span className="ml-2 font-mono text-[10px]">{invoice.stripe_payment_intent_id}</span>
-                )}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Terminal-state banners (Paid, Voided) intentionally not
+          rendered. The header status pill + the activity timeline
+          (with ADR-020's "Invoice paid · via Visa •••• 4242"
+          coalesced row) carry the same information. Stripe / Lago /
+          Recurly all follow this pattern: banners are reserved for
+          attention-required states (declined, dunning, tax pending);
+          terminal states trust the header. ADR-020 / 2026-05-05
+          cleanup. */}
 
       {/* Activity Timeline — chronology of lifecycle + payment events.
           Replaces the older "Payment Activity" framing now that
@@ -1000,7 +949,7 @@ export default function InvoiceDetailPage() {
                 const isSimulated = !!subscription?.test_clock_id &&
                   new Date(event.timestamp).getTime() > Date.now()
                 return (
-                <div key={i} className="flex gap-4 pb-4 last:pb-0">
+                <div key={i} className="flex gap-4 pb-2 last:pb-0">
                   <div className="flex flex-col items-center">
                     <div className={cn(
                       'w-2.5 h-2.5 rounded-full mt-1.5',

@@ -19,7 +19,7 @@ func TestAuditLog_AppendOnly(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	tenantID := testutil.CreateTestTenant(t, db, "Append Only Audit")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 10*time.Second)
 	defer cancel()
 
 	logger := audit.NewLogger(db)

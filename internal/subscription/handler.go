@@ -246,6 +246,8 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		Status:     r.URL.Query().Get("status"),
 		Limit:      limit,
 		Offset:     offset,
+		Sort:       r.URL.Query().Get("sort"),
+		SortDir:    r.URL.Query().Get("dir"),
 	})
 	if err != nil {
 		respond.InternalError(w, r)

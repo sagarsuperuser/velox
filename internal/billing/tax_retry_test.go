@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -63,7 +64,7 @@ func TestNextTaxRetry_Outcomes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := nextTaxRetry(tc.status, tc.errCode, tc.attempts)
+			got := nextTaxRetry(context.Background(), tc.status, tc.errCode, tc.attempts)
 			if tc.wantNil && got != nil {
 				t.Errorf("expected nil, got %v", *got)
 			}

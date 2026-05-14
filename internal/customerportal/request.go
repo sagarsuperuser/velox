@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // CustomerMatch is the narrow identity the request service needs per hit on
@@ -107,14 +108,23 @@ func (s *MagicLinkRequestService) RequestByEmail(ctx context.Context, email stri
 	// One link per (tenant, customer). We continue past per-match failures
 	// on purpose: one tenant's broken delivery must not starve another
 	// tenant's legitimate customer of their link.
+	//
+	// Each match carries its own livemode — pin it on ctx before downstream
+	// reads. Without this, the per-match Mint and DeliverMagicLink open
+	// TxTenant transactions that default to live mode, RLS hides any
+	// test-mode customer row, and the email-resolution step fails with
+	// a misleading "not found" — even though FindByEmailBlindIndex
+	// (TxBypass) just returned the row a few lines earlier. ADR-027 +
+	// the ctx-attribute audit pattern from the test-clock catchup work.
 	for _, m := range matches {
-		mint, err := s.magic.Mint(ctx, m.TenantID, m.CustomerID)
+		matchCtx := postgres.WithLivemode(ctx, m.Livemode)
+		mint, err := s.magic.Mint(matchCtx, m.TenantID, m.CustomerID)
 		if err != nil {
 			s.logger.Error("magic-link mint failed",
 				"tenant_id", m.TenantID, "customer_id", m.CustomerID, "error", err)
 			continue
 		}
-		if err := s.delivery.DeliverMagicLink(ctx, m.TenantID, m.CustomerID, mint.RawToken); err != nil {
+		if err := s.delivery.DeliverMagicLink(matchCtx, m.TenantID, m.CustomerID, mint.RawToken); err != nil {
 			s.logger.Error("magic-link delivery failed",
 				"tenant_id", m.TenantID, "customer_id", m.CustomerID, "error", err)
 			continue

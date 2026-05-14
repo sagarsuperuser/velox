@@ -20,7 +20,7 @@ import (
 // is covered by the metadata assertion plus its own integration path.
 func TestRLSIsolation_ClosedBypassTables(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), true), 10*time.Second)
 	defer cancel()
 
 	tenantA := testutil.CreateTestTenant(t, db, "RLS Test A")
@@ -176,7 +176,7 @@ func assertInsertDenied(t *testing.T, db *postgres.DB, ctx context.Context,
 // would land on the same mode and one of the assertions below would fire.
 func TestRLSIsolation_Livemode(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), true), 10*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Livemode RLS Test")
@@ -208,7 +208,7 @@ func TestRLSIsolation_Livemode(t *testing.T) {
 // clause is the exact regression this test catches.
 func TestRLSIsolation_AllModeAwareTablesHaveLivemodePredicate(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), true), 10*time.Second)
 	defer cancel()
 
 	// Kept in lockstep with the ARRAY[] block in 0020_test_mode.up.sql. When a

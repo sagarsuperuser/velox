@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
@@ -134,15 +134,15 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Cu
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_cus")
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO customers (id, tenant_id, external_id, display_name, email, email_bidx, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), $7, $8, $8)
-		RETURNING id, tenant_id, external_id, display_name, email, status, created_at, updated_at
+		INSERT INTO customers (id, tenant_id, external_id, display_name, email, email_bidx, status, test_clock_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), $7, NULLIF($8,''), $9, $9)
+		RETURNING id, tenant_id, external_id, display_name, email, status, COALESCE(test_clock_id,''), created_at, updated_at
 	`, id, tenantID, c.ExternalID, enc.DisplayName, enc.Email,
-		s.emailBlindIndex(c.Email), domain.CustomerStatusActive, now,
-	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.CreatedAt, &c.UpdatedAt)
+		s.emailBlindIndex(c.Email), domain.CustomerStatusActive, c.TestClockID, now,
+	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.TestClockID, &c.CreatedAt, &c.UpdatedAt)
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
@@ -174,11 +174,13 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
 			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
 			COALESCE(cost_dashboard_token, ''),
+			COALESCE(test_clock_id, ''),
 			created_at, updated_at
 		FROM customers WHERE id = $1
 	`, id).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
 		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
 		&c.CostDashboardToken,
+		&c.TestClockID,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -202,11 +204,13 @@ func (s *PostgresStore) GetByExternalID(ctx context.Context, tenantID, externalI
 		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
 			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
 			COALESCE(cost_dashboard_token, ''),
+			COALESCE(test_clock_id, ''),
 			created_at, updated_at
 		FROM customers WHERE external_id = $1
 	`, externalID).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
 		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
 		&c.CostDashboardToken,
+		&c.TestClockID,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -298,8 +302,10 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 		return nil, 0, err
 	}
 
-	query := `SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status, created_at, updated_at
-		FROM customers` + where + ` ORDER BY created_at DESC LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
+	query := `SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status, COALESCE(test_clock_id,''), created_at, updated_at
+		FROM customers` + where +
+		` ORDER BY ` + customerOrderBy(filter.Sort, filter.SortDir) +
+		` LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
 	args = append(args, limit, filter.Offset)
 
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -311,7 +317,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	var customers []domain.Customer
 	for rows.Next() {
 		var c domain.Customer
-		if err := rows.Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.TestClockID, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		c, err = s.decryptCustomer(c)
@@ -321,6 +327,49 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 		customers = append(customers, c)
 	}
 	return customers, total, rows.Err()
+}
+
+// ListByTestClockID returns customers pinned to the given test clock,
+// fully decrypted. The testclock domain calls this through the
+// CustomerReader interface so it never reaches into the customers
+// table directly — keeping decryption centralised on this read path
+// (encrypt-at-rest is otherwise transparently bypassed when another
+// package SELECTs display_name / email straight from the table).
+func (s *PostgresStore) ListByTestClockID(ctx context.Context, tenantID, clockID string) ([]domain.Customer, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
+			COALESCE(test_clock_id, ''),
+			created_at, updated_at
+		FROM customers
+		WHERE test_clock_id = $1
+		ORDER BY created_at ASC
+		LIMIT 1000
+	`, clockID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var customers []domain.Customer
+	for rows.Next() {
+		var c domain.Customer
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
+			&c.TestClockID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		c, err = s.decryptCustomer(c)
+		if err != nil {
+			return nil, err
+		}
+		customers = append(customers, c)
+	}
+	return customers, rows.Err()
 }
 
 func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Customer) (domain.Customer, error) {
@@ -335,13 +384,17 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Cu
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
+	// Update intentionally does NOT touch test_clock_id — Stripe parity:
+	// once a customer is attached to a clock at create time, they're
+	// pinned for life. To switch clocks, delete + recreate. The column
+	// is read back into the result so callers see the unchanged value.
 	err = tx.QueryRowContext(ctx, `
 		UPDATE customers SET display_name = $1, email = $2, email_bidx = NULLIF($3,''), status = $4, updated_at = $5
 		WHERE id = $6
-		RETURNING id, tenant_id, external_id, display_name, email, status, created_at, updated_at
+		RETURNING id, tenant_id, external_id, display_name, email, status, COALESCE(test_clock_id,''), created_at, updated_at
 	`, enc.DisplayName, enc.Email, s.emailBlindIndex(c.Email), c.Status, now, c.ID,
-	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.CreatedAt, &c.UpdatedAt)
+	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.TestClockID, &c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return domain.Customer{}, errs.ErrNotFound
@@ -403,7 +456,7 @@ func (s *PostgresStore) UpsertBillingProfile(ctx context.Context, tenantID strin
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	status := string(bp.TaxStatus)
 	if status == "" {
 		status = "standard"
@@ -497,7 +550,7 @@ func (s *PostgresStore) UpsertPaymentSetup(ctx context.Context, tenantID string,
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO customer_payment_setups (customer_id, tenant_id, setup_status,
 			default_payment_method_present, payment_method_type,
@@ -571,6 +624,33 @@ func (s *PostgresStore) GetPaymentSetup(ctx context.Context, tenantID, customerI
 		return domain.CustomerPaymentSetup{}, errs.ErrNotFound
 	}
 	return ps, err
+}
+
+// customerOrderBy validates sort + dir against a closed allow-list
+// and adds a deterministic id tie-break matching the primary
+// direction. See invoiceOrderBy for the design rationale.
+func customerOrderBy(sort, dir string) string {
+	col := customerSortColumn(sort)
+	d := "DESC"
+	if dir == "asc" {
+		d = "ASC"
+	}
+	return col + " " + d + ", id " + d
+}
+
+func customerSortColumn(key string) string {
+	switch key {
+	case "display_name", "name":
+		return "display_name"
+	case "email":
+		return "email"
+	case "external_id":
+		return "external_id"
+	case "status":
+		return "status"
+	default:
+		return "created_at"
+	}
 }
 
 func buildCustomerWhere(f ListFilter) (string, []any) {

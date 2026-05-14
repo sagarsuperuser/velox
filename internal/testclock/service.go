@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -11,21 +12,114 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
-// BillingRunner is the narrow hook the service uses to drive a billing
-// catchup after a clock advance. In production the billing.Engine satisfies
-// it (via RunCycle); tests can stub it with a spy that records calls. The
-// contract: run one sweep of due subs and return how many invoices were
-// produced plus any per-sub errors (non-fatal — failures on one sub must not
-// stall the others).
-type BillingRunner interface {
-	RunCycle(ctx context.Context, batchSize int) (int, []error)
+// envInjectCatchupFailure is the manual-test injection knob — see
+// runCatchupLoop and MANUAL_TEST.md FLOW TC2. Setting the env var to
+// any non-empty value causes the next catchup attempt to fail with
+// the value as the failure reason ("injected: <reason>"). The flag
+// is one-shot — cleared after firing — so the operator can chain
+// failure → Retry advance → success in one session.
+//
+// Off-by-default. Production processes don't set it; if they
+// accidentally do, every advance fails until they unset it (loud
+// failure, easy to spot). Not a security risk: the env is process-
+// local and only affects an operator-initiated test-clock advance.
+const envInjectCatchupFailure = "VELOX_TEST_CLOCK_INJECT_FAILURE"
+
+// injectedCatchupFailureReason reads + clears the injection env var.
+// One-shot semantics: if the var was set, the helper returns the
+// value AND unsets the env so a subsequent retry sees a clean state.
+// Returns empty when the var isn't set (production fast path).
+func injectedCatchupFailureReason() string {
+	v := os.Getenv(envInjectCatchupFailure)
+	if v == "" {
+		return ""
+	}
+	// One-shot: clear so Retry advance sees a clean state. Process-
+	// local env mutation; doesn't affect the parent shell.
+	_ = os.Unsetenv(envInjectCatchupFailure)
+	return "injected: " + v
 }
 
-// MaxAdvanceCatchupLoops caps how many times we re-run the billing sweep
-// after an advance. A monthly sub that jumps 5 years forward needs at least
-// 60 passes to emit every invoice; cap is generous to allow long simulations
-// while still terminating if a bug kept producing "due" subs indefinitely.
-const MaxAdvanceCatchupLoops = 120
+// BillingRunner is the narrow hook the service uses to drive a billing
+// catchup after a clock advance. In production billing.Engine satisfies
+// it (via RunCycleForClock); tests can stub with a spy that records calls.
+//
+// Post-ADR-028 disjoint flows: the catchup uses RunCycleForClock,
+// which scopes to subs pinned to ONE clock. The wall-clock cron's
+// generic RunCycle is a different code path and never touches
+// clock-pinned subs. This separation removes the SKIP-LOCKED race
+// and the drip-bill artifact that the dual-flow design produced.
+//
+// The per-sub period loop in billSubscription handles multi-year
+// catchup internally — one call per sub processes all due periods.
+type BillingRunner interface {
+	RunCycleForClock(ctx context.Context, tenantID, clockID string, batchSize int) (int, []error)
+
+	// RetryPendingChargesForClock retries auto-charge attempts on
+	// clock-pinned invoices flagged auto_charge_pending=true. Called
+	// during catchup AFTER period generation, so customers who attached
+	// a payment method since the last advance get charged as part of
+	// THIS advance, not on a future wall-clock tick. ADR-029 Phase 1.
+	RetryPendingChargesForClock(ctx context.Context, tenantID, clockID string, limit int) (int, []error)
+
+	// ScanThresholdsForClock fires hard-cap (Stripe-parity billing-
+	// thresholds) invoices for clock-pinned subs whose running cycle
+	// subtotal has crossed a configured threshold. Runs during catchup
+	// after period generation; without it, the wall-clock cron would
+	// (incorrectly) fire threshold invoices on clock-pinned subs.
+	// ADR-029 Phase 3.
+	ScanThresholdsForClock(ctx context.Context, tenantID, clockID string, batchSize int) (int, []error)
+}
+
+// CustomerReader is the narrow hook the service uses to list customers
+// pinned to a clock. The customer domain owns the customers table —
+// including the encrypt-at-rest wrapper around display_name / email —
+// so testclock reads through this interface instead of joining the
+// table directly. That way every caller of the "attached customers"
+// surface gets the same decrypted view that every other read path
+// (customer detail page, customer list, etc.) does.
+//
+// Per-domain rule (CLAUDE.md): zero cross-domain imports between peer
+// packages; coordination via narrow interfaces only.
+type CustomerReader interface {
+	ListByTestClockID(ctx context.Context, tenantID, clockID string) ([]domain.Customer, error)
+}
+
+// TaxRetrier is the narrow hook the catchup orchestrator uses to drive
+// the per-clock tax-retry phase. Implemented by *invoice.Service via
+// RetryPendingTaxForClock. ADR-029 Phase 2.
+//
+// Returns (processed_count, per-row errors) — same shape as every
+// other phase callback so the orchestrator can collect failures
+// uniformly.
+type TaxRetrier interface {
+	RetryPendingTaxForClock(ctx context.Context, tenantID, clockID string, batch int) (int, []error)
+}
+
+// CreditExpirer is the narrow hook the catchup orchestrator uses to
+// expire grants belonging to clock-pinned customers. ADR-029 Phase 4.
+// Takes frozenTime explicitly so the per-grant `expires_at < now`
+// comparison happens in simulated time, not wall-clock.
+type CreditExpirer interface {
+	ExpireCreditsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time) (int, []error)
+}
+
+// DunningProcessor is the narrow hook the catchup orchestrator uses to
+// advance dunning state for clock-pinned invoices. ADR-029 Phase 5.
+// Takes frozenTime explicitly so the per-run next_action_at compare
+// runs in simulated time.
+type DunningProcessor interface {
+	ProcessDueRunsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, limit int) (int, []error)
+}
+
+// ReminderLister is the narrow hook the catchup orchestrator uses to
+// list clock-pinned invoices approaching simulated due. ADR-029 Phase
+// 6. Today's cron path just logs the count (no email dispatch wired
+// yet); the catchup mirror keeps the same shape so the two paths stay
+// symmetric — when dispatch lands, both get it.
+type ReminderLister interface {
+	ListApproachingDueForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, daysBeforeDue int) ([]domain.Invoice, error)
+}
 
 // Service provides the test-clock API surface. Depends on Store for
 // persistence, optionally BillingRunner to drive the billing engine
@@ -36,13 +130,28 @@ const MaxAdvanceCatchupLoops = 120
 // the queue is nil (narrow unit tests), Advance runs catchup
 // inline so tests can assert end-state synchronously.
 type Service struct {
-	store   Store
-	billing BillingRunner
-	queue   CatchupQueue
+	store     Store
+	billing   BillingRunner
+	queue     CatchupQueue
+	customers     CustomerReader
+	taxRetry      TaxRetrier
+	creditExpirer CreditExpirer
+	dunning       DunningProcessor
+	reminders     ReminderLister
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
+}
+
+// SetCustomerReader wires the customer-domain hook used to list
+// attached customers. Late-bound (not a constructor arg) because the
+// customer service and the testclock service are built in the same
+// router-wiring step; passing a nil reader is fine for narrow unit
+// tests that don't exercise the attached-customers surface, but the
+// production producer always sets a real reader.
+func (s *Service) SetCustomerReader(r CustomerReader) {
+	s.customers = r
 }
 
 // SetBillingRunner wires the billing catchup hook. Kept as a setter rather
@@ -59,6 +168,45 @@ func (s *Service) SetBillingRunner(b BillingRunner) {
 // nil so Advance runs catchup inline.
 func (s *Service) SetCatchupQueue(q CatchupQueue) {
 	s.queue = q
+}
+
+// SetReminders wires the per-clock reminder-list phase of catchup.
+// Optional. When the cron path's reminder-dispatch eventually grows
+// from the current "list and log" to actual email sending, the
+// catchup mirror inherits it for free. ADR-029 Phase 6.
+func (s *Service) SetReminders(r ReminderLister) {
+	s.reminders = r
+}
+
+// SetDunning wires the per-clock dunning-advance phase of catchup.
+// Optional — when nil, catchup skips Phase 5 (dunning advance) for
+// clock-pinned invoices. The cron's ProcessDueRuns excludes them
+// already, so nil here means clock-pinned dunning state freezes
+// until an operator advances; for narrow tests without dunning
+// fixtures, that's fine. ADR-029 Phase 5.
+func (s *Service) SetDunning(d DunningProcessor) {
+	s.dunning = d
+}
+
+// SetCreditExpirer wires the per-clock credit-expiry phase of catchup.
+// Optional — when nil, catchup skips Phase 4 (credit expiry). The
+// cron's ListExpiredGrants would have processed those rows pre-
+// ADR-029, so nil here means clock-pinned grants don't expire until
+// an operator advances the clock; for narrow unit tests that don't
+// exercise credits, nil is fine. Production wires the real credit
+// service. ADR-029 Phase 4.
+func (s *Service) SetCreditExpirer(c CreditExpirer) {
+	s.creditExpirer = c
+}
+
+// SetTaxRetrier wires the per-clock tax-retry phase of catchup.
+// Optional — when nil, catchup skips Phase 2 (tax retry); the cron's
+// ListPendingTaxRetry would have processed those rows pre-ADR-029, so
+// nil here means clock-pinned tax retries simply don't fire (callers
+// without the wiring are typically narrow unit tests). Production
+// always wires this with the real invoice service. ADR-029 Phase 2.
+func (s *Service) SetTaxRetrier(t TaxRetrier) {
+	s.taxRetry = t
 }
 
 type CreateInput struct {
@@ -93,13 +241,6 @@ func (s *Service) Delete(ctx context.Context, tenantID, id string) error {
 	return s.store.Delete(ctx, tenantID, id)
 }
 
-// SweepDueDeletes runs the TTL cleanup. Pass-through to the store
-// so the scheduler tick (cmd/velox main wiring) doesn't need to
-// reach across the store boundary directly.
-func (s *Service) SweepDueDeletes(ctx context.Context, batch int) (int, error) {
-	return s.store.SweepDueDeletes(ctx, batch)
-}
-
 // ListSubscriptions returns the subscriptions pinned to the given clock.
 // Verifies the clock exists first so a missing-clock id surfaces as 404
 // rather than an empty list (which would look like an empty clock).
@@ -108,6 +249,21 @@ func (s *Service) ListSubscriptions(ctx context.Context, tenantID, clockID strin
 		return nil, err
 	}
 	return s.store.ListSubscriptionsOnClock(ctx, tenantID, clockID)
+}
+
+// ListAttachedCustomers returns customers pinned to this clock —
+// the Stripe-parity "attached customers" surface (ADR-027 Tier 3).
+// 404s if the clock doesn't exist. Reads through the customer
+// domain's CustomerReader so display_name / email arrive decrypted;
+// see CustomerReader doc.
+func (s *Service) ListAttachedCustomers(ctx context.Context, tenantID, clockID string) ([]domain.Customer, error) {
+	if _, err := s.store.Get(ctx, tenantID, clockID); err != nil {
+		return nil, err
+	}
+	if s.customers == nil {
+		return nil, fmt.Errorf("testclock: customer reader not wired")
+	}
+	return s.customers.ListByTestClockID(ctx, tenantID, clockID)
 }
 
 type AdvanceInput struct {
@@ -160,6 +316,24 @@ func (s *Service) Advance(ctx context.Context, tenantID, id string, input Advanc
 	}
 	if !newTime.After(current.FrozenTime) {
 		return domain.TestClock{}, errs.Invalid("frozen_time", "must be strictly after current frozen_time")
+	}
+	// Stripe-parity advance window cap (ADR-028 amendment): a single
+	// Advance call shifts frozen_time by ≤ 1 year. Larger ranges are
+	// chunked into successive advances by the operator. Reasons:
+	//   - Predictable per-click resource use (operator can't trigger
+	//     a multi-decade catchup that exceeds the 10-min worker
+	//     timeout, then has to manually retry from internal_failure).
+	//   - Iteration discipline: each chunk's invoices/dunning state
+	//     is reviewable before the next advance.
+	//   - Failure isolation: a bug in year 14 doesn't poison earlier
+	//     years' simulated billing.
+	// AddDate(1,0,0) handles leap years correctly (Mar 1 → next Feb 29
+	// or Mar 1 depending on year). Constant year-arithmetic, not a
+	// fixed nanosecond duration.
+	maxAllowed := current.FrozenTime.AddDate(1, 0, 0)
+	if newTime.After(maxAllowed) {
+		return domain.TestClock{}, errs.Invalid("frozen_time",
+			"advance cannot exceed 1 year per call — chunk longer ranges into successive advances (Stripe parity)")
 	}
 
 	advancing, err := s.store.MarkAdvancing(ctx, tenantID, id, newTime)
@@ -239,13 +413,16 @@ func (s *Service) RetryAdvance(ctx context.Context, tenantID, id string) (domain
 	return s.store.Get(ctx, tenantID, id)
 }
 
-// RunCatchup is the worker's entry point. Repeatedly runs the
-// billing engine until no more subs on this clock come back as
-// "due". Stops early on MaxAdvanceCatchupLoops to avoid an
-// infinite loop if some bug kept producing "due" results, and
-// gets capped externally by the worker's wall-clock timeout
-// (CatchupTimeout). On any error, flips the clock to
-// internal_failure and returns the error so the worker can log it.
+// RunCatchup is the worker's entry point. The "real work" — looping
+// over due periods per sub — lives in the billing engine
+// (Engine.billSubscription, ADR-028). RunCatchup is a thin
+// orchestrator: it calls RunCycle once, then flips the clock state
+// from advancing → ready (success) or → internal_failure (error)
+// with the failure reason captured for the dashboard banner.
+//
+// CatchupTimeout (10 min, set on the worker's ctx) bounds the total
+// operation. The engine's per-sub safety counter (maxPeriodsPerSubPerCall)
+// is the inner ceiling.
 func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
 	if s.billing == nil {
 		// No billing wired — just complete the state transition.
@@ -255,19 +432,147 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
 		return err
 	}
 
-	if err := s.runCatchupLoop(ctx, job.TenantID, job.ClockID); err != nil {
-		// Flip to internal_failure with the error captured so the
-		// dashboard can show "Catchup failed: <reason>" without
-		// forcing the operator to grep server logs. The clock's
-		// frozen_time stays at the value it had — partial catchup
-		// is still applied — and the operator can either Retry
-		// advance (idempotent on subs) or delete the clock to
-		// start fresh. ADR-018.
-		if _, ferr := s.store.MarkFailed(ctx, job.TenantID, job.ClockID, err.Error()); ferr != nil {
-			slog.Error("test clock: failed to mark clock as failed after catchup error",
-				"clock_id", job.ClockID, "catchup_err", err, "mark_err", ferr)
+	// Manual-test injection point (MANUAL_TEST FLOW TC2). Fires
+	// before any billing work so the failure-UI smoke test lands
+	// a fast, deterministic failure regardless of sub count.
+	var (
+		runErr         error
+		operatorReason string // sanitized via errs.SummarizeForOperator (ADR-026)
+	)
+	if reason := injectedCatchupFailureReason(); reason != "" {
+		runErr = fmt.Errorf("%s", reason)
+		// Injection text is operator-safe by construction (test-only
+		// knob, the value comes from a manual test fixture).
+		operatorReason = reason
+	} else {
+		// ADR-028 disjoint flows: RunCycleForClock scopes to
+		// THIS clock's pinned subs. Wall-clock cron uses
+		// generic RunCycle and never sees these.
+		//
+		// ADR-029 catchup orchestration sequence — every time-aware
+		// engine concern that touches clock-pinned entities runs HERE,
+		// in lockstep with simulated time, instead of on the wall-clock
+		// tick. Phases run in dependency order; a failure in any phase
+		// is collected but doesn't stop subsequent phases (failure
+		// isolation; retry-advance picks up wherever this left off).
+		var runErrs []error
+
+		// Phase 1 (ADR-028): generate any newly-due periods. Multi-period
+		// catchup happens inside billSubscription's per-sub loop.
+		_, periodErrs := s.billing.RunCycleForClock(ctx, job.TenantID, job.ClockID, 100)
+		runErrs = append(runErrs, periodErrs...)
+
+		// Phase 1.5 (ADR-029 Phase 3): threshold scan for hard-cap
+		// invoices. Runs after period generation (so the latest
+		// running cycle is the one being evaluated) but before tax
+		// retry / charge so any threshold-fired invoices get the
+		// same downstream treatment as period-generated ones.
+		_, thresholdErrs := s.billing.ScanThresholdsForClock(ctx, job.TenantID, job.ClockID, 100)
+		runErrs = append(runErrs, thresholdErrs...)
+
+		// Phase 2 (ADR-029): tax retry on clock-pinned invoices left
+		// at tax_status=pending with a retryable code. Runs BEFORE
+		// Phase 3 (charge) so a successful tax retry unblocks finalize
+		// in the same Advance — without this ordering, an invoice that
+		// gets unstuck would have to wait for the next advance to fire
+		// its charge attempt.
+		if s.taxRetry != nil {
+			_, taxErrs := s.taxRetry.RetryPendingTaxForClock(ctx, job.TenantID, job.ClockID, 100)
+			runErrs = append(runErrs, taxErrs...)
 		}
-		return fmt.Errorf("billing catchup failed: %w", err)
+
+		// Phase 3 (ADR-029): auto-charge retry on auto_charge_pending
+		// invoices for this clock's subs. Customer may have attached a
+		// PM via the customer portal between advances — without this
+		// hook, neither cron nor catchup would charge until an operator
+		// clicked Advance. This call closes that loop.
+		_, chargeErrs := s.billing.RetryPendingChargesForClock(ctx, job.TenantID, job.ClockID, 100)
+		runErrs = append(runErrs, chargeErrs...)
+
+		// Phases 4 and 5 both need frozen_time — read the clock once.
+		// (A concurrent advance can't fire because status='advancing'
+		// is the gate the operator's request hit before enqueuing.)
+		var frozen time.Time
+		needFrozen := s.creditExpirer != nil || s.dunning != nil
+		if needFrozen {
+			clk, clkErr := s.store.Get(ctx, job.TenantID, job.ClockID)
+			if clkErr != nil {
+				runErrs = append(runErrs, fmt.Errorf("read clock for time-anchored phases: %w", clkErr))
+				needFrozen = false
+			} else {
+				frozen = clk.FrozenTime
+			}
+		}
+
+		// Phase 4 (ADR-029): credit expiry for grants belonging to
+		// customers pinned to this clock. expires_at compared against
+		// simulated time, not wall-clock.
+		if s.creditExpirer != nil && needFrozen {
+			_, creditErrs := s.creditExpirer.ExpireCreditsForClock(ctx, job.TenantID, job.ClockID, frozen)
+			runErrs = append(runErrs, creditErrs...)
+		}
+
+		// Phase 5 (ADR-029): dunning advance for clock-pinned invoices.
+		// Runs after Phase 3 (charge) so a successful charge clears
+		// dunning state; no point advancing dunning on an invoice that
+		// just got paid. next_action_at compared against simulated time.
+		if s.dunning != nil && needFrozen {
+			_, dunningErrs := s.dunning.ProcessDueRunsForClock(ctx, job.TenantID, job.ClockID, frozen, 50)
+			runErrs = append(runErrs, dunningErrs...)
+		}
+
+		// Phase 6 (ADR-029): reminder candidate list for clock-pinned
+		// invoices approaching simulated due_at. Today: just logs the
+		// count, mirroring the cron's current behavior. When reminder
+		// dispatch is wired (separate work), this hook fans out the
+		// list to the email outbox in simulated time. Last phase
+		// because it's read-only — failures here don't roll back any
+		// earlier state-mutating phase.
+		if s.reminders != nil && needFrozen {
+			const daysBeforeDue = 3
+			approaching, remErr := s.reminders.ListApproachingDueForClock(ctx, job.TenantID, job.ClockID, frozen, daysBeforeDue)
+			if remErr != nil {
+				runErrs = append(runErrs, fmt.Errorf("list approaching-due for clock: %w", remErr))
+			} else if len(approaching) > 0 {
+				slog.Info("clock-pinned invoices approaching simulated due_at",
+					"clock_id", job.ClockID, "count", len(approaching))
+			}
+		}
+
+		if len(runErrs) > 0 {
+			runErr = fmt.Errorf("catchup errors: %v", runErrs)
+			// Operator-safe summary lands on the clock row's
+			// last_failure_reason, which the dashboard renders in
+			// the failure banner. Internal-only errors (SQLSTATE,
+			// panic markers, file:line) are rolled up into a
+			// generic "N internal error(s). Reference: <clock>"
+			// per ADR-026; SafeMessageError implementers pass
+			// through. Full Go-level diagnostic stays in slog
+			// below — operator gets a clean banner, support has
+			// the unredacted chain in logs.
+			operatorReason = errs.SummarizeForOperator(runErrs, job.ClockID)
+		}
+	}
+
+	if runErr != nil {
+		// Flip to internal_failure with the operator-safe reason —
+		// dashboard can show "Catchup failed: <reason>" without
+		// leaking SQLSTATE / Go internals. Partial catchup (any
+		// periods committed before the error) stays applied; the
+		// operator can Retry advance (idempotent) or delete the
+		// clock to start fresh. ADR-018, ADR-026.
+		reason := operatorReason
+		if reason == "" {
+			// Fallback: injection path (already operator-safe by
+			// construction) or unreachable. Sanitize anyway as
+			// belt-and-suspenders against future paths.
+			reason = errs.SanitizeForOperator(runErr, job.ClockID)
+		}
+		if _, ferr := s.store.MarkFailed(ctx, job.TenantID, job.ClockID, reason); ferr != nil {
+			slog.Error("test clock: failed to mark clock as failed after catchup error",
+				"clock_id", job.ClockID, "catchup_err", runErr, "mark_err", ferr)
+		}
+		return fmt.Errorf("billing catchup failed: %w", runErr)
 	}
 
 	if _, err := s.store.CompleteAdvance(ctx, job.TenantID, job.ClockID); err != nil {
@@ -307,46 +612,15 @@ func (s *Service) RecoverInFlight(ctx context.Context) error {
 
 // runCatchupLoop is the inner loop. Extracted from the previous
 // runCatchup so RunCatchup can wrap it with state-flip handling.
-func (s *Service) runCatchupLoop(ctx context.Context, tenantID, clockID string) error {
-	for range MaxAdvanceCatchupLoops {
-		// Honour ctx deadline (the worker wraps with CatchupTimeout).
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("catchup ctx done: %w", err)
-		}
-
-		subs, err := s.store.ListSubscriptionsOnClock(ctx, tenantID, clockID)
-		if err != nil {
-			return fmt.Errorf("list subscriptions on clock: %w", err)
-		}
-		anyDue := false
-		for _, sub := range subs {
-			if sub.NextBillingAt == nil {
-				continue
-			}
-			// We'd need the clock's frozen_time to decide; reload once per pass.
-			clk, err := s.store.Get(ctx, tenantID, clockID)
-			if err != nil {
-				return err
-			}
-			if !sub.NextBillingAt.After(clk.FrozenTime) {
-				anyDue = true
-				break
-			}
-		}
-		if !anyDue {
-			return nil
-		}
-
-		n, runErrs := s.billing.RunCycle(ctx, 100)
-		if len(runErrs) > 0 {
-			return fmt.Errorf("billing run errors: %v", runErrs)
-		}
-		if n == 0 {
-			// Billing didn't pick anything up despite the earlier check —
-			// likely the subs moved out of active state. Stop to avoid a
-			// busy loop.
-			return nil
-		}
-	}
-	return fmt.Errorf("billing catchup exceeded %d passes", MaxAdvanceCatchupLoops)
-}
+//
+// Post-ADR-028 the catchup is a single RunCycle call. The
+// engine's billSubscription internally loops billOnePeriod until
+// each sub catches up to its effectiveNow — N periods compress
+// into one operator action. The previous outer loop, the
+// MaxAdvanceCatchupLoops cap, and the n==0 early-exit guard all
+// went away with that change.
+//
+// The 10-minute CatchupTimeout still bounds the total operation
+// (set by the worker's ctx). Per-sub safety counter
+// (maxPeriodsPerSubPerCall in the engine) is the inner ceiling
+// for runaway-loop detection.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/platform/scheduler"
 )
 
 // DispatcherConfig controls the outbox dispatcher loop.
@@ -70,23 +71,11 @@ func (d *Dispatcher) SetLocker(locker DispatchLocker) {
 // launched as a goroutine from cmd/velox during boot, alongside the existing
 // webhook retry worker.
 func (d *Dispatcher) Start(ctx context.Context) {
-	ticker := time.NewTicker(d.cfg.Interval)
-	defer ticker.Stop()
-
 	slog.Info("webhook outbox dispatcher started",
 		"interval", d.cfg.Interval.String(),
 		"batch_size", d.cfg.BatchSize,
 	)
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("webhook outbox dispatcher stopped")
-			return
-		case <-ticker.C:
-			d.tick(ctx)
-		}
-	}
+	scheduler.Run(ctx, "webhook_outbox", d.cfg.Interval, d.tick)
 }
 
 // tick drains one batch. Errors are logged and swallowed — the next tick will

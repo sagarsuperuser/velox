@@ -2,14 +2,15 @@ package invoice
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/signintech/gopdf"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/pdffonts"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // CompanyInfo holds tenant company details for the PDF header.
@@ -200,7 +201,7 @@ var currencySymbols = map[string]string{
 
 var pdfCurrencySymbol = "$"
 
-func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo BillToInfo, creditNotes []CreditNoteInfo, company ...CompanyInfo) ([]byte, error) {
+func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo BillToInfo, creditNotes []CreditNoteInfo, company ...CompanyInfo) ([]byte, error) {
 	// Set currency symbol
 	if sym, ok := currencySymbols[strings.ToUpper(inv.Currency)]; ok {
 		pdfCurrencySymbol = sym
@@ -685,7 +686,7 @@ func RenderPDF(inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo Bi
 	y += 24
 	setFont(false, 7)
 	setColor(170, 170, 170)
-	footer := fmt.Sprintf("Generated on %s  |  %s", time.Now().UTC().Format("Jan 2, 2006 15:04 UTC"), inv.ID)
+	footer := fmt.Sprintf("Generated on %s  |  %s", clock.Now(ctx).Format("Jan 2, 2006 15:04 UTC"), inv.ID)
 	fw, _ := pdf.MeasureTextWidth(footer)
 	textAt((pageW-fw)/2, y, footer)
 

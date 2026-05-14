@@ -98,7 +98,8 @@ Brings the stack up, runs the full money path, signs out. Pre-merge canary.
     -H "Content-Type: application/json" \
     -d "{\"name\":\"smoke\",\"frozen_time\":\"$(date -u +%FT%TZ)\"}" | jq .
   ```
-- [ ] Customer detail → New Subscription → Starter plan, **pin to test clock**.
+- [ ] Create the customer pinned to the clock (ADR-027 customer-level attach): Customers → New Customer → tick **Pin to test clock** dropdown → select your clock → Create. Customer Detail header shows the test-clock badge.
+- [ ] Customer detail → New Subscription → Starter plan. No clock dropdown — the dialog shows an amber inheritance hint ("This subscription will inherit the customer's test clock — &lt;name&gt;") because the customer is pinned. Server inherits automatically.
 
 ### S1.5 Bill + charge
 - [ ] Ingest 1,000 events:
@@ -234,27 +235,98 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] Submit → API responds in <500ms with `status: "advancing"` and the new `frozen_time`. Dashboard shows "Advancing…" badge (non-blocking — operator can navigate to other pages and the clock continues catching up in the background; ADR-015).
 - [ ] `psql` (or any tab) shows `test_clocks.status='advancing'` while the worker runs. Polling `/v1/test-clocks/{id}` every 1.5s flips to `status='ready'` when the worker's catchup loop completes.
 - [ ] Generated invoices appear in `/invoices` for the elapsed cycles — one per closed billing period, with `created_at` / `issued_at` aligned to the test-clock timeline (not wall-clock).
-- [ ] Catchup failure (e.g. by intentionally disconnecting Stripe before an advance, or hitting the 10-min wall-clock cap) → status **internal_failure** with destructive banner. The card surfaces the actual error inline: "Catchup failed during last advance. Reason: <error string>" (ADR-018). Partial invoices visible.
+- [ ] Catchup failure (UI smoke): set `VELOX_TEST_CLOCK_INJECT_FAILURE="manual UI test"` on the velox process before clicking Advance → the next catchup attempt fails with "injected: manual UI test", clock flips to **internal_failure**, destructive banner surfaces "Catchup failed during last advance. Reason: injected: manual UI test" (ADR-018). The env is one-shot — cleared after firing — so the next click of **Retry advance** runs cleanly, status returns to `ready`. Partial invoices from earlier successful passes remain visible.
 - [ ] **Retry advance** (ADR-018): from the internal_failure card, click **Retry advance** → status flips back to `advancing`, the worker resumes the idempotent catchup loop, simulation state preserved (customer + sub + earlier successful advances all intact). Re-fix the underlying issue first; otherwise the retry just re-fails with a fresh reason on the card. Retry from `ready` or `advancing` → 409.
-- [ ] **Restart resilience**: kick off a long advance (e.g. 1 year forward), `kill -TERM` the velox process while status is `advancing`, restart. On boot the recovery scan re-enqueues the in-flight clock, the worker resumes, and the clock eventually flips to `ready`. No manual intervention.
-- [ ] Subscriptions table on detail page lists pinned subs.
-- [ ] **Soft-delete + cascade-cancel** (ADR-016): create a clock with 2 active pinned subs, delete it. Confirmation dialog reads "This removes the clock and cancels its 2 pinned subscriptions." After delete: clock disappears from `/test-clocks`, both subs show `status='canceled'` in `/subscriptions`, and `psql` confirms `test_clocks.deleted_at IS NOT NULL` (row preserved, hidden by the live filter).
-- [ ] **Terminal-state preservation**: pin one sub manually-canceled BEFORE deleting the clock. After delete, that sub stays canceled (its status doesn't get re-stamped — already terminal).
-- [ ] **TTL sweeper**: `psql -c "UPDATE test_clocks SET deletes_after = now() - interval '1 hour' WHERE id = 'vlx_tclk_xxx';"` then wait one billing scheduler tick (default 5min in local). Clock should disappear from `/test-clocks` and pinned subs cancel — same behavior as manual delete, fired by the sweeper.
+- [ ] **Restart resilience (UI smoke):** start velox with `VELOX_TEST_CLOCK_CATCHUP_DELAY_MS=2000` so each billing pass takes ~2s — gives a deterministic window to time `kill -TERM`. Kick off +1y advance; status flips to `advancing` and stays there for ~24s on a single-sub fixture. Within that window, `kill -TERM` the velox process. Restart **without** the env (or with it, doesn't matter). On boot, slog logs `"test clock: re-enqueued in-flight catchup on boot"`, the worker resumes from the partial frozen_time, and the clock flips to `ready` within seconds. Verify in DB: invoice count matches a single-pass run, no gaps in `billing_period_start`.
+- [ ] Detail page lists **Attached customers** (Stripe-parity primary surface, ADR-027) above **Subscriptions on this clock** (drill-down). Each customer row links to `/customers/:id`; each sub row links to `/subscriptions/:id`. Counts in the headers match: `N pinned` customers, total subs ≥ N.
+- [ ] **Soft-delete + cascade-cancel** (ADR-016 + ADR-027): create a clock; create 2 customers each pinned to it (each with one active sub) → 2 attached customers / 2 subs. Click Delete. Confirmation dialog reads `"This removes the clock and cancels every active subscription it drives (2 subscriptions across 2 customers)."` After delete: clock disappears from `/test-clocks`, both subs show `status='canceled'` in `/subscriptions`, customers stay (their `test_clock_id` retains the historical pointer for audit), and `psql` confirms `test_clocks.deleted_at IS NOT NULL` (row preserved, hidden by the live filter).
+- [ ] **Terminal-state preservation**: before deleting the clock, manually cancel one of the pinned customers' subs. After clock delete, that sub stays canceled (its status doesn't get re-stamped — already terminal). The OTHER customer's sub goes from active → canceled as expected.
 
-## FLOW TC3: Pinning
+## FLOW TC3: Pinning (ADR-027 customer-level)
 
-- [ ] Test mode → Create Subscription has "Pin to test clock" dropdown. Empty = wall-clock sub.
-- [ ] Live mode → dropdown hidden.
-- [ ] `/subscriptions/:id` for pinned sub → "Test clock" badge linking to detail.
+- [ ] Test mode → Create Customer dialog has "Pin to test clock" dropdown. Empty = wall-clock customer.
+- [ ] Live mode → dropdown hidden on Create Customer.
+- [ ] Customer Detail header shows test-clock badge when pinned.
+- [ ] Customer Detail → Create Subscription dialog has no clock dropdown. Shows amber inheritance hint when the customer is pinned. Server inherits automatically.
+- [ ] Subscriptions page → Create Subscription dialog: same behaviour driven by the customer dropdown. Pick a non-pinned customer → no hint, sub goes wall-clock. Pick a pinned customer → amber hint appears below the customer selector ("This subscription will inherit the customer's test clock — &lt;name&gt;"). Switch back to a non-pinned customer → hint disappears.
+- [ ] `/subscriptions/:id` for a sub on a pinned customer → "Test clock" badge linking to detail.
+- [ ] Test Clock Detail page → "Attached customers" section above "Subscriptions on this clock" — shows customers attached to this clock, each linking to the customer detail.
+- [ ] `POST /v1/subscriptions` against a pinned customer → response shows `test_clock_id` matching the customer's clock (server-side inherit; the API does not accept a per-sub `test_clock_id`, mirroring Stripe).
+- [ ] `POST /v1/subscriptions` with a stray `test_clock_id` field in the body → field is silently ignored; sub still inherits from the customer.
+- [ ] `PATCH /v1/customers/:id` does NOT change `test_clock_id` (immutable per ADR-027 / Stripe parity).
 
-## FLOW TC4: Catchup correctness
+## FLOW TC4: Catchup correctness (ADR-028 disjoint flows + per-sub period loop)
 
-- [ ] Pin monthly sub at "now". Advance 1 month → exactly 1 invoice.
-- [ ] Advance 3 months → 3 sequential-period invoices.
+- [ ] Pin monthly sub at "now". Advance 1 month → exactly 1 invoice generated; clock flips ready.
+- [ ] Advance 3 months → 3 sequential-period invoices in ONE Advance click (not 3 cron ticks).
+- [ ] **Large advance: pin monthly sub, Advance +1y → 12 sequential invoices in one click.** Status flips to `ready`. No `internal_failure`.
+- [ ] **+1y boundary: target == frozen_time + exactly 1 year is accepted; +1y +1s is rejected with 422 and `errs.field=frozen_time`** (Stripe-parity per-call cap).
+- [ ] **SPA: open Advance dialog, set target > +1y → submit button disabled and inline error names the maximum allowed target.** Toast on submit-attempt reads "Advance cannot exceed 1 year per call — chunk longer ranges into successive advances".
+- [ ] **Chunked +5y: click Advance four times in a row (+1y each) → 60 sequential invoices total, status returns to `ready` after each chunk.**
+- [ ] **Disjoint cron**: while a clock-pinned sub is at next_billing < frozen_time (gap state), watch slog for ≥1 wall-clock scheduler tick (5 min in dev). The tick must NOT bill the clock-pinned sub. Confirm in DB: invoice count for the sub unchanged across the tick boundary. Only operator Advance click bills clock-pinned subs.
+- [ ] **Disjoint cron — full coverage (ADR-029)**: same gap-state setup as above, but extend the assertion to every time-aware path. Across the wall-clock tick boundary: no new charge attempt (`auto_charge_pending=true` row stays untouched), no tax retry (`tax_retry_count` unchanged), no threshold scan firing, no dunning advance (`invoice_dunning_runs.next_action_at` not bumped), no credit expiry on the customer's grants, no reminder-list logging. Then click Advance: all six concerns fire in one operator action — the catchup orchestrator's Phases 1-6 process the deferred consequences in lockstep with simulated time. `slog | grep "scheduler tick"` shows the cron heartbeat is unchanged; the per-phase telemetry from catchup carries the actual work.
+- [ ] **Dunning timestamps in simulated time.** Pin a sub to a clock with `frozen_time` set deliberately in the past (e.g. 2024-02-01 while wall-clock is 2026-05-08). Trigger a payment failure on that sub's invoice. Inspect `invoice_dunning_runs`: `created_at` and `next_action_at` MUST be in the 2024 frozen-time domain, not 2026 wall-clock. Advance the clock by one retry-interval and confirm the run is picked up by catchup (state advances, `attempt_count` increments). Without the resolver wire, the run's `next_action_at` would land in 2026 wall-clock and stay invisible to catchup queries until many years of advances.
 - [ ] Advance backwards → 422 `must be strictly after current frozen_time`.
-- [ ] Second advance while advancing → 409.
-- [ ] Delete clock → pinned subs gone; standalone subs unaffected.
+- [ ] **Second advance while advancing → 409.** Force `advancing` via `psql -c "UPDATE test_clocks SET status='advancing' WHERE id='<clock>'"`, then `POST /v1/test-clocks/<clock>/advance` with any future time → `409 Conflict` + `{"error":{"type":"invalid_request_error","code":"invalid_state","message":"clock is advancing, must be ready to advance"}}`. Restore via `UPDATE … SET status='ready'`. After restore, `frozen_time` and `last_failure_reason` must match pre-test state — rejected advance leaves no side effects.
+- [ ] Delete clock → pinned subs cancelled; non-pinned subs unaffected.
+
+## FLOW TC5: Dunning via catchup (clock-pinned failure recovery)
+
+The headline test-clock use case — verifies the full Stripe-parity dunning state machine fires correctly under simulated time, including the (a) initial-run binding to frozen-time and (b) catchup-driven advance through retry → escalation → final action.
+
+- [ ] Setup: clock at `frozen_time=2024-02-01`; pinned customer with Stripe test decline card `4000 0000 0000 0341` attached; active monthly sub.
+- [ ] Advance clock to bill first cycle → invoice finalizes → auto-charges → Stripe declines → webhook → dunning run created.
+- [ ] `invoice_dunning_runs.created_at` and `.next_action_at` both in 2024-02 frozen-time domain (not 2026 wall-clock) — ADR-030 binding via `dunning.Service.bindForInvoice`.
+- [ ] Advance clock past first `next_action_at` (grace_period_days from frozen failure instant) → catchup Phase 5 fires → `attempt_count=1`, `next_action_at` advances by `retry_schedule[0]` in frozen-time.
+- [ ] Continue advancing through full retry schedule → after `max_retry_attempts` → `state=escalated`, `resolution=retries_exhausted`, `resolved_at` in frozen-time.
+- [ ] If `final_action=pause` → owning sub `status=paused`, `pause_collection_behavior=keep_as_draft` (Stripe parity).
+- [ ] Dunning emails fire at each retry — Mailpit shows expected count with simulated-time formatting in the "next retry" date.
+- [ ] Per-customer override (max_retries=5, grace=7d) re-applied → re-trigger → schedule reflects override, not policy defaults.
+
+## FLOW TC6: Trial expiration via catchup
+
+- [ ] Setup: clock-pinned customer; sub created with `trial_period_days=14` → sub `status=trialing`, `trial_end_at = frozen+14d`.
+- [ ] `customer.subscription.trial_will_end` fires 3d of simulated time before trial_end_at (Stripe parity).
+- [ ] Advance clock to `trial_end_at + 1s` → catchup flips sub to `active`, generates first cycle invoice (`billing_reason=subscription_cycle`).
+- [ ] Generated invoice `total_amount_cents` = plan base; `billing_period_start` = trial_end_at; all timestamps in frozen-time.
+- [ ] EndTrial (operator override) before clock advance → sub `status=active` immediately, no waiting for `trial_end_at` to be crossed.
+
+## FLOW TC7: Plan change at period boundary via catchup
+
+- [ ] Setup: clock-pinned active sub on plan A ($29/mo). ChangeItem with `new_plan_id=B` ($49/mo), `immediate=false`.
+- [ ] Sub item `pending_plan_id=B`, `pending_plan_effective_at = current_billing_period_end` (frozen-time-derived).
+- [ ] Advance clock past `current_billing_period_end` → catchup `billOnePeriod` swaps plan_id A→B atomically before billing next period.
+- [ ] First post-swap invoice line items reference plan B; total reflects $49 base.
+- [ ] Downgrade variant (B cheaper than A, immediate=true): proration credit appears in `customer_credit_ledger` with `entry_type=adjustment`, amount = unused portion of A.
+
+## FLOW TC8: Subscription cancellation at period end (via catchup)
+
+Yearly-sub and future-dated `cancel_at` variants are impractical to verify on wall-clock — test clock is the only path.
+
+- [ ] Setup: clock-pinned active monthly sub. `POST /subscriptions/:id/schedule-cancel` with `at_period_end=true`.
+- [ ] Sub `cancel_at_period_end=true`.
+- [ ] Advance clock past `current_billing_period_end` → catchup `FireScheduledCancellation` → sub `status=canceled`, `canceled_at` and `ended_at` in frozen-time.
+- [ ] No new invoice generated for the period after cancellation.
+- [ ] Future-dated `cancel_at` variant (set `cancel_at = frozen+200d` on a yearly sub): advance to before → sub still active. Advance past → sub canceled at the simulated `cancel_at` instant.
+
+## FLOW TC9: Pause collection auto-resume (via catchup)
+
+The ONLY end-to-end manual-test coverage of `pause_collection` with `resumes_at` auto-resume. B6's "Pause → Resume" line tests `Service.Pause` (status flip), which is a different mechanism.
+
+- [ ] Setup: clock-pinned active sub. `POST /subscriptions/:id/pause-collection` with `resumes_at = frozen+7d`, `behavior=keep_as_draft`.
+- [ ] Sub `pause_collection_resumes_at = frozen+7d`, `pause_collection_behavior=keep_as_draft`.
+- [ ] Advance clock through a cycle boundary while paused → invoice generated but stays DRAFT (no finalize, no charge, no dunning) — engine respects pause_collection.
+- [ ] Advance clock past `resumes_at` → catchup auto-clears `pause_collection_*` columns; next cycle bills normally; previously-draft invoice can be finalized manually if intended.
+
+## FLOW TC10: Credit grant expiry firing (via catchup)
+
+The ONLY end-to-end manual-test coverage of credit expiry actually firing. C1 verifies the grant is created with `expires_at` populated but doesn't exercise the cron's `ExpireCredits` job; test clock is the only practical way to verify the expiry mechanic.
+
+- [ ] Setup: clock-pinned customer. Grant $50 credit with `expires_at = frozen+30d`.
+- [ ] Customer credit balance = $50; ledger entry `entry_type=grant`.
+- [ ] Advance clock past `expires_at` → catchup Phase 4 fires → new ledger entry `entry_type=expiry`, `amount_cents=-5000`, `created_at` in frozen-time. Balance back to $0.
+- [ ] Customer detail page Credits tab shows both grant and expiry entries with frozen-time dates.
+- [ ] Non-expiring grants (`expires_at IS NULL`) survive arbitrary advances — only expirable grants get expired.
 
 ---
 
@@ -265,7 +337,13 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] `POST /v1/public/customer-portal/magic-link {email}` → 202 (always, any email).
 - [ ] Real customer → email lands in Mailpit with link to `/portal/magic?token=…`.
 - [ ] `CUSTOMER_PORTAL_URL` unset → server logs `magic-link delivery failed err="customerportal: CUSTOMER_PORTAL_URL not set"`.
-- [ ] `POST /v1/public/customer-portal/magic/consume {token}` → 200 `{token, customer_id, livemode, expires_at}`. Reused token → 401.
+- [ ] **`POST /v1/public/customer-portal/magic/consume {token}` → 200 + 401 on replay.** Recipe:
+  1. Mint: `curl -s -X POST $API/v1/public/customer-portal/magic-link -H 'Content-Type: application/json' -d '{"email":"<real-customer-email>"}'` → `202 Accepted`.
+  2. Extract the raw token from the queued email (the hash is what's stored; the raw token only exists in the email payload):
+     `TOKEN=$(psql "$DB" -At -c "SELECT split_part(payload->>'magic_link_url', 'token=', 2) FROM email_outbox WHERE email_type='portal_magic_link' ORDER BY created_at DESC LIMIT 1;")`
+  3. Consume: `curl -s -i -X POST $API/v1/public/customer-portal/magic/consume -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\"}"` → `200` + body `{"token":"vlx_cps_…","customer_id":"vlx_cus_…","livemode":false,"expires_at":"<iso ~24h out>"}`. The response `token` is a **portal session** (different prefix and secret from the input magic-link).
+  4. Replay the same token: same curl again → `401` + `{"error":{"type":"authentication_error","code":"unauthorized","message":"invalid or expired magic link"}}`. Same envelope covers never-existed / expired / already-used (anti-enumeration).
+  5. DB sanity (optional): `psql "$DB" -c "SELECT id, used_at IS NOT NULL AS consumed FROM customer_portal_magic_links ORDER BY created_at DESC LIMIT 1;"` → `consumed=t` after step 3.
 - [ ] Returned token as Bearer on `/v1/me/invoices` → invoice list.
 - [ ] `/portal/login` → email form. Submit real customer's email → "Check your email" card.
 - [ ] Click email link → `/portal/magic?token=…` → "Signing you in…" → `/portal`.
@@ -523,7 +601,7 @@ Server-derived from invoice fields. Suppressed for healthy / paid / voided / dra
 ### Critical
 - [ ] **tax_location_required**: US customer missing postal_code, finalize → red banner "Customer address required", primary action **Edit billing profile**, secondary **Retry tax**.
 - [ ] **tax_calculation_failed (provider auth)**: revoke Stripe key → red banner code `tax.provider_auth`, action **Rotate API key**.
-- [ ] **payment_failed**: card `4000 0000 0000 9995` → red banner code `payment.declined`, message = truncated `last_payment_error`.
+- [ ] **payment_failed**: card `4000 0000 0000 9995` → red banner code `payment.declined`, message = truncated `last_payment_error`, actions `[Update payment method, Retry payment]` (ADR-023). Only ONE banner — no hardcoded duplicate below the unified one. Update payment method opens Stripe Checkout in a new tab; Retry payment calls Collect.
 
 ### Warning
 - [ ] **tax pending**: amber banner with same code/actions, severity warning.
@@ -620,6 +698,8 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Provisional "Processing your payment…" banner (green spinner).
 - [ ] Webhook arrives → invoice paid → page auto-refetches → "Paid on {date}" banner; Pay button gone.
 - [ ] PDF still downloads on paid.
+- [ ] **Card saved to customer (ADR-021)**: after a successful Pay, dashboard customer detail shows the card under "Payment method" with brand + last 4 + status "Active". The next invoice for this customer auto-charges this PM (no email + Update Payment round-trip). Holds for a customer who had no PM on file before — the Stripe customer is lazily minted on first Pay.
+- [ ] **Interactive decline suppresses email (ADR-023)**: Pay with `4000 0000 0000 0002` (decline) → invoice goes to `payment_status=failed` → activity timeline shows the lifecycle row "Payment failed" but NO "Payment-failed email sent" row (customer was watching). Mailpit shows zero new emails. Auto-charge decline (e.g. dunning retry) still emails — only the interactive flow suppresses.
 
 ### Variants
 - [ ] Voided invoice → "Voided on {date}" banner, no Pay, PDF works.
@@ -730,6 +810,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Settings: company name change → "Saved" indicator. Navigating with unsaved changes prompts.
 - [ ] Currency change → new invoices use it; existing unchanged.
 - [ ] Edit billing profile (address, tax ID) → PDF reflects update.
+- [ ] **Tax-retry flush on profile update.** Customer with a draft invoice stuck on `tax_error_code = customer_data_invalid` (e.g. US customer missing `postal_code`). Edit billing profile → fill the missing field → Save. Without per-invoice clicking: invoice's `tax_status` flips to `succeeded` (or back to `failed` with a different code if still wrong), and `slog | grep "billing profile flush retried tax errors"` shows `processed >= 1`. Other stuck-tax codes (e.g. `provider_outage`) are NOT replayed by the flush — only `customer_data_invalid`.
 
 ## FLOW CU2: Operator customer-portal API
 

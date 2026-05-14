@@ -10,6 +10,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/payment"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // StripeAdapter wires the payment-methods Service to the existing
@@ -39,15 +40,22 @@ func (a *StripeAdapter) client(ctx context.Context) (*stripe.Client, error) {
 // customer_payment_setups summary — which we already use for checkout —
 // so a portal-created customer and a checkout-created customer share
 // the same upstream record.
+//
+// Stripe client lookup uses explicit (tenantID, livemode) rather than
+// `ForCtx` so this method works on BOTH authenticated portal requests
+// (auth.TenantID populated) and public token-authenticated requests
+// (hosted-invoice Pay flow — no auth ctx, tenantID comes from the
+// public_token row, livemode pinned by hostedinvoice.resolveInvoice).
 func (a *StripeAdapter) EnsureStripeCustomer(ctx context.Context, tenantID, customerID string) (string, error) {
 	ps, err := a.summary.GetPaymentSetup(ctx, tenantID, customerID)
 	if err == nil && ps.StripeCustomerID != "" {
 		return ps.StripeCustomerID, nil
 	}
 
-	sc, err := a.client(ctx)
-	if err != nil {
-		return "", err
+	livemode := postgres.Livemode(ctx)
+	sc := a.clients.For(ctx, tenantID, livemode)
+	if sc == nil {
+		return "", fmt.Errorf("stripe not configured for tenant=%s livemode=%v", tenantID, livemode)
 	}
 
 	cust, err := sc.V1Customers.Create(ctx, &stripe.CustomerCreateParams{

@@ -10,6 +10,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -37,6 +38,66 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	COALESCE(payment_card_brand,''), COALESCE(payment_card_last4,''),
 	COALESCE(public_token,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,'')`
 
+// qualifiedInvCols returns invCols with every column reference prefixed
+// by the given table alias. Used by ADR-029's per-clock queries that
+// JOIN invoices to subscriptions — without qualification, columns like
+// `id` and `tenant_id` are ambiguous (both tables have them) and
+// Postgres rejects the query with SQLSTATE 42702.
+//
+// Mirrors qualifiedSubCols in internal/subscription/postgres.go;
+// kept package-local to keep invCols a single source of truth.
+func qualifiedInvCols(alias string) string {
+	var b strings.Builder
+	for i, col := range splitTopLevelCommas(invCols) {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		col = strings.TrimSpace(col)
+		if strings.HasPrefix(col, "COALESCE(") {
+			closing := strings.IndexByte(col, ')')
+			inner := col[len("COALESCE("):closing]
+			parts := strings.SplitN(inner, ",", 2)
+			b.WriteString("COALESCE(")
+			b.WriteString(alias)
+			b.WriteByte('.')
+			b.WriteString(strings.TrimSpace(parts[0]))
+			if len(parts) == 2 {
+				b.WriteString(",")
+				b.WriteString(parts[1])
+			}
+			b.WriteString(col[closing:])
+			continue
+		}
+		b.WriteString(alias)
+		b.WriteByte('.')
+		b.WriteString(col)
+	}
+	return b.String()
+}
+
+// splitTopLevelCommas splits a column list on commas that are NOT
+// inside parentheses (so COALESCE(a, '') stays as one column).
+func splitTopLevelCommas(s string) []string {
+	var out []string
+	depth := 0
+	start := 0
+	for i, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	out = append(out, s[start:])
+	return out
+}
+
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -50,7 +111,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 	// due_at on simulation time. Zero falls back to wall-clock.
 	now := inv.CreatedAt
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = clock.Now(ctx)
 	}
 	metaJSON, _ := json.Marshal(inv.Metadata)
 	if inv.Metadata == nil {
@@ -182,8 +243,16 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.I
 		return nil, 0, err
 	}
 
+	// Sort with deterministic tie-break on id. Without the tie-break,
+	// catchup-generated invoices share microsecond-level created_at
+	// values and Postgres returns ties in arbitrary order — looks
+	// "random" to operators. Tie-break direction matches the primary
+	// sort direction so consecutive ties read as a single ordered
+	// group rather than zig-zagging.
+	orderBy := invoiceOrderBy(filter.Sort, filter.SortDir)
 	query := `SELECT ` + invCols + ` FROM invoices` + where +
-		` ORDER BY created_at DESC LIMIT $` + fmt.Sprintf("%d", len(args)+1) +
+		` ORDER BY ` + orderBy +
+		` LIMIT $` + fmt.Sprintf("%d", len(args)+1) +
 		` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
 	args = append(args, limit, filter.Offset)
 
@@ -211,7 +280,7 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var voidedAt *time.Time
 	if status == domain.InvoiceVoided {
 		voidedAt = &now
@@ -244,7 +313,7 @@ func (s *PostgresStore) UpdatePayment(ctx context.Context, tenantID, id string, 
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `
 		UPDATE invoices SET payment_status = $1, stripe_payment_intent_id = $2,
@@ -274,7 +343,7 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `
 		UPDATE invoices SET
@@ -343,7 +412,7 @@ func (s *PostgresStore) ApplyCreditNote(ctx context.Context, tenantID, id string
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `
 		UPDATE invoices SET
@@ -374,7 +443,7 @@ func (s *PostgresStore) ApplyCredits(ctx context.Context, tenantID, id string, a
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `
 		UPDATE invoices SET
@@ -405,7 +474,7 @@ func (s *PostgresStore) UpdateTotals(ctx context.Context, tenantID, id string, s
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `
 		UPDATE invoices SET subtotal_cents = $1, total_amount_cents = $2, amount_due_cents = $3, updated_at = $4
@@ -434,7 +503,7 @@ func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, ite
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_ili")
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	metaJSON, _ := json.Marshal(item.Metadata)
 	if item.Metadata == nil {
 		metaJSON = []byte("{}")
@@ -538,6 +607,13 @@ func (s *PostgresStore) HasSucceededInvoice(ctx context.Context, tenantID, custo
 	return found, nil
 }
 
+// ListApproachingDue — CRON path. ADR-029 Phase 6: clock-pinned
+// invoices are excluded; the catchup orchestrator drives per-clock
+// reminder dispatch via ListApproachingDueForClock against the clock's
+// frozen_time. Without this filter, the wall-clock cron would email
+// reminders for clock-pinned invoices "due 3 days from wall-clock now"
+// — but those invoices' due_at is in simulated time, so the email
+// would either fire never (simulated due is in 2027) or wrong-cadence.
 func (s *PostgresStore) ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error) {
 	// Cross-tenant query for the billing scheduler — bypass RLS.
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
@@ -546,19 +622,62 @@ func (s *PostgresStore) ListApproachingDue(ctx context.Context, daysBeforeDue in
 	}
 	defer postgres.Rollback(tx)
 
-	// TxBypass crosses tenants for reminder sweep; livemode filter ensures
-	// reminders only fire for invoices in the ctx's mode (see #13).
 	rows, err := tx.QueryContext(ctx, `
-		SELECT `+invCols+` FROM invoices
-		WHERE status = 'finalized'
-		  AND payment_status IN ('pending', 'failed')
-		  AND due_at IS NOT NULL
-		  AND due_at BETWEEN NOW() AND NOW() + INTERVAL '1 day' * $1
-		  AND amount_due_cents > 0
-		  AND livemode = $2
-		ORDER BY due_at ASC
+		SELECT `+invCols+` FROM invoices i
+		WHERE i.status = 'finalized'
+		  AND i.payment_status IN ('pending', 'failed')
+		  AND i.due_at IS NOT NULL
+		  AND i.due_at BETWEEN NOW() AND NOW() + INTERVAL '1 day' * $1
+		  AND i.amount_due_cents > 0
+		  AND i.livemode = $2
+		  AND NOT EXISTS (
+		    SELECT 1 FROM subscriptions s
+		    WHERE s.id = i.subscription_id
+		      AND s.test_clock_id IS NOT NULL
+		  )
+		ORDER BY i.due_at ASC
 		LIMIT 500
 	`, daysBeforeDue, postgres.Livemode(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var invoices []domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+			return nil, err
+		}
+		invoices = append(invoices, inv)
+	}
+	return invoices, rows.Err()
+}
+
+// ListApproachingDueForClock is the catchup-path counterpart to
+// ListApproachingDue. ADR-029 Phase 6 — returns clock-pinned invoices
+// whose due_at falls within `daysBeforeDue` of the clock's frozen_time
+// (passed explicitly so the comparison runs in simulated time).
+func (s *PostgresStore) ListApproachingDueForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, daysBeforeDue int) ([]domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedInvCols("i")+` FROM invoices i
+		JOIN subscriptions s ON s.id = i.subscription_id
+		WHERE i.tenant_id = $1
+		  AND s.test_clock_id = $2
+		  AND i.status = 'finalized'
+		  AND i.payment_status IN ('pending', 'failed')
+		  AND i.due_at IS NOT NULL
+		  AND i.due_at BETWEEN $3 AND $3 + INTERVAL '1 day' * $4
+		  AND i.amount_due_cents > 0
+		ORDER BY i.due_at ASC
+		LIMIT 500
+	`, tenantID, clockID, frozenTime, daysBeforeDue)
 	if err != nil {
 		return nil, err
 	}
@@ -612,7 +731,7 @@ func (s *PostgresStore) AddLineItemAtomic(
 	item.Currency = currency
 
 	itemID := postgres.NewID("vlx_ili")
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	metaJSON, _ := json.Marshal(item.Metadata)
 	if item.Metadata == nil {
 		metaJSON = []byte("{}")
@@ -725,7 +844,7 @@ func (s *PostgresStore) ApplyDiscountAtomic(
 		return domain.Invoice{}, errs.InvalidState("invoice tax has already been committed upstream")
 	}
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 
 	for _, li := range lineItems {
 		if li.ID == "" {
@@ -842,7 +961,7 @@ func (s *PostgresStore) UpdateTaxAtomic(
 			"tax retry only valid when tax_status in (pending, failed) (current: %s)", taxStatus))
 	}
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 
 	for _, li := range lineItems {
 		if li.ID == "" {
@@ -925,7 +1044,7 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 	// due_at on simulation time. Zero falls back to wall-clock.
 	now := inv.CreatedAt
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = clock.Now(ctx)
 	}
 	metaJSON, _ := json.Marshal(inv.Metadata)
 	if inv.Metadata == nil {
@@ -1038,7 +1157,7 @@ func (s *PostgresStore) SetAutoChargePending(ctx context.Context, tenantID, id s
 	defer postgres.Rollback(tx)
 
 	_, err = tx.ExecContext(ctx, `UPDATE invoices SET auto_charge_pending = $1, updated_at = $2 WHERE id = $3`,
-		pending, time.Now().UTC(), id)
+		pending, clock.Now(ctx), id)
 	if err != nil {
 		return err
 	}
@@ -1057,14 +1176,18 @@ func (s *PostgresStore) SetTaxTransaction(ctx context.Context, tenantID, id stri
 	defer postgres.Rollback(tx)
 
 	_, err = tx.ExecContext(ctx, `UPDATE invoices SET tax_transaction_id = $1, updated_at = $2 WHERE id = $3`,
-		taxTransactionID, time.Now().UTC(), id)
+		taxTransactionID, clock.Now(ctx), id)
 	if err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// ListAutoChargePending returns invoices that need auto-charge retry.
+// ListAutoChargePending returns invoices that need auto-charge retry —
+// CRON path. Excludes clock-pinned subscriptions per ADR-029: simulation
+// time progresses only on operator Advance, so the wall-clock scheduler
+// must never charge a clock-pinned invoice. The catchup worker uses
+// ListAutoChargePendingForClock as the disjoint per-clock entry point.
 func (s *PostgresStore) ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -1078,16 +1201,77 @@ func (s *PostgresStore) ListAutoChargePending(ctx context.Context, limit int) ([
 
 	// TxBypass crosses tenants for the scheduler sweep; livemode must still
 	// be honoured explicitly from ctx (see scheduler fan-out in #13).
+	//
+	// The NOT EXISTS clock-exclusion uses the subscriptions JOIN target
+	// (not invoices.subscription_id directly) so we exclude only invoices
+	// whose owning sub is clock-pinned. One-off invoices (subscription_id
+	// is empty / unknown) fall through and remain cron-eligible — they
+	// don't have a sub to be clock-pinned to.
 	rows, err := tx.QueryContext(ctx, `
-		SELECT `+invCols+` FROM invoices
-		WHERE auto_charge_pending = TRUE
-		  AND payment_status = 'pending'
-		  AND status = 'finalized'
-		  AND amount_due_cents > 0
-		  AND livemode = $1
-		ORDER BY created_at ASC
+		SELECT `+invCols+` FROM invoices i
+		WHERE i.auto_charge_pending = TRUE
+		  AND i.payment_status = 'pending'
+		  AND i.status = 'finalized'
+		  AND i.amount_due_cents > 0
+		  AND i.livemode = $1
+		  AND NOT EXISTS (
+		    SELECT 1 FROM subscriptions s
+		    WHERE s.id = i.subscription_id
+		      AND s.test_clock_id IS NOT NULL
+		  )
+		ORDER BY i.created_at ASC
 		LIMIT $2
 	`, postgres.Livemode(ctx), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var invoices []domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+			return nil, err
+		}
+		invoices = append(invoices, inv)
+	}
+	return invoices, rows.Err()
+}
+
+// ListAutoChargePendingForClock is the catchup-path counterpart to
+// ListAutoChargePending. Returns invoices whose owning subscription is
+// pinned to the given clock and need auto-charge retry. ADR-029 Phase 1.
+//
+// Time predicate is implicit: the catchup worker calls this AFTER it
+// has finalized any newly-due periods for the same clock, so any
+// auto_charge_pending row that exists is by definition due for a
+// retry attempt. No separate "due_at" filter — cycle math is owned by
+// the period-generation phase.
+//
+// Scoped by tenantID + clockID; livemode is implied (test clocks are
+// test-mode-only, enforced by the test_clocks CHECK constraint).
+func (s *PostgresStore) ListAutoChargePendingForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedInvCols("i")+` FROM invoices i
+		JOIN subscriptions s ON s.id = i.subscription_id
+		WHERE i.auto_charge_pending = TRUE
+		  AND i.payment_status = 'pending'
+		  AND i.status = 'finalized'
+		  AND i.amount_due_cents > 0
+		  AND i.tenant_id = $1
+		  AND s.test_clock_id = $2
+		ORDER BY i.created_at ASC
+		LIMIT $3
+	`, tenantID, clockID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1164,6 +1348,12 @@ func (s *PostgresStore) ListUnknownPayments(ctx context.Context, olderThan time.
 // Postgres uses idx_invoices_tax_retry_due (migration 0074) to
 // narrow the scan; the predicate matches the index where clause
 // exactly so the planner picks it.
+// ListPendingTaxRetry — CRON path. ADR-029 Phase 2: clock-pinned
+// invoices are excluded; the test-clock catchup orchestrator drives
+// tax retry for clock-pinned subs via ListPendingTaxRetryForClock.
+// Without this filter the wall-clock scheduler would retry tax on a
+// clock-pinned invoice every tick — same drip-bill smell ADR-028
+// closed for period generation.
 func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retryableCodes []string, maxAttempts int, livemode bool) ([]domain.Invoice, error) {
 	if batch <= 0 {
 		batch = 50
@@ -1178,16 +1368,84 @@ func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retr
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT `+invCols+` FROM invoices
-		WHERE livemode = $1
-		  AND status = 'draft'
-		  AND tax_status IN ('pending', 'failed')
-		  AND COALESCE(tax_error_code, '') = ANY($2)
-		  AND tax_retry_count < $3
-		  AND (tax_next_retry_at IS NULL OR tax_next_retry_at <= now())
-		ORDER BY tax_next_retry_at ASC NULLS FIRST
+		SELECT `+invCols+` FROM invoices i
+		WHERE i.livemode = $1
+		  AND i.status = 'draft'
+		  AND i.tax_status IN ('pending', 'failed')
+		  AND COALESCE(i.tax_error_code, '') = ANY($2)
+		  AND i.tax_retry_count < $3
+		  AND (i.tax_next_retry_at IS NULL OR i.tax_next_retry_at <= now())
+		  AND NOT EXISTS (
+		    SELECT 1 FROM subscriptions s
+		    WHERE s.id = i.subscription_id
+		      AND s.test_clock_id IS NOT NULL
+		  )
+		ORDER BY i.tax_next_retry_at ASC NULLS FIRST
 		LIMIT $4
 	`, livemode, postgres.StringArray(retryableCodes), maxAttempts, batch)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
+// ListPendingTaxRetryForClock is the catchup-path counterpart to
+// ListPendingTaxRetry. ADR-029 Phase 2.
+//
+// Differences from the cron path:
+//   - Scoped to (tenant, clock) — clock-pinned subs only.
+//   - No `tax_next_retry_at <= now()` predicate. The catchup
+//     orchestrator drives this exactly once per Advance, so backoff
+//     scheduling against simulated instants would silently no-op
+//     small advances and confuse operators (they click Advance
+//     expecting "one shot per pending row"). The retry-count cap
+//     (maxAttempts) still applies as a defense against runaway
+//     retries chewing through the 10-min catchup ceiling.
+//
+// Design choice (operator-friendly over production-fidelity): each
+// Advance gives every pending row exactly one retry attempt. An
+// operator running through a tax-error rehearsal scenario clicks
+// Advance, sees count go up by 1 per row, and can predict the
+// behaviour without doing backoff arithmetic. Faithful per-window
+// retry-sequence simulation (Stripe-parity event-walking) is
+// deferred to a follow-up ADR — it's a niche use case operators
+// don't typically run, while operator-confusion from "I clicked
+// Advance and nothing happened" is a daily failure mode.
+func (s *PostgresStore) ListPendingTaxRetryForClock(ctx context.Context, tenantID, clockID string, retryableCodes []string, maxAttempts, limit int) ([]domain.Invoice, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(retryableCodes) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedInvCols("i")+` FROM invoices i
+		JOIN subscriptions s ON s.id = i.subscription_id
+		WHERE i.tenant_id = $1
+		  AND s.test_clock_id = $2
+		  AND i.status = 'draft'
+		  AND i.tax_status IN ('pending', 'failed')
+		  AND COALESCE(i.tax_error_code, '') = ANY($3)
+		  AND i.tax_retry_count < $4
+		ORDER BY i.created_at ASC
+		LIMIT $5
+	`, tenantID, clockID, postgres.StringArray(retryableCodes), maxAttempts, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1228,8 +1486,41 @@ func (s *PostgresStore) ListProviderConfigErrors(ctx context.Context, tenantID s
 		ORDER BY created_at ASC
 		LIMIT 1000
 	`, livemode)
+	return s.scanInvoiceRows(rows, err)
+}
+
+// ListCustomerDataInvalidErrors returns draft invoices for ONE customer
+// stuck on `customer_data_invalid` — the only tax error a billing-
+// profile update can resolve. Mirrors ListProviderConfigErrors but
+// scoped to a customer instead of a (tenant, livemode) — fired after
+// the operator updates a customer's address/postal/state/tax_id so
+// any of that customer's stuck invoices auto-retry without
+// per-invoice clicking. Same surgical-filter principle as ADR-019.
+func (s *PostgresStore) ListCustomerDataInvalidErrors(ctx context.Context, tenantID, customerID string) ([]domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+invCols+` FROM invoices
+		WHERE customer_id = $1
+		  AND status = 'draft'
+		  AND tax_status IN ('pending', 'failed')
+		  AND COALESCE(tax_error_code, '') = 'customer_data_invalid'
+		ORDER BY created_at ASC
+		LIMIT 1000
+	`, customerID)
+	return s.scanInvoiceRows(rows, err)
+}
+
+// scanInvoiceRows is the shared per-row scanning body of the two
+// retry-fanout list queries above. Centralized so the close-on-error
+// + scan loop don't drift between the two callers.
+func (s *PostgresStore) scanInvoiceRows(rows *sql.Rows, queryErr error) ([]domain.Invoice, error) {
+	if queryErr != nil {
+		return nil, queryErr
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -1281,7 +1572,7 @@ func (s *PostgresStore) SetPublicToken(ctx context.Context, tenantID, invoiceID,
 	res, err := tx.ExecContext(ctx, `
 		UPDATE invoices SET public_token = $1, updated_at = $2
 		WHERE id = $3 AND status <> 'draft'
-	`, token, time.Now().UTC(), invoiceID)
+	`, token, clock.Now(ctx), invoiceID)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
 			// 256 bits of entropy means collisions are astronomically unlikely,
@@ -1360,6 +1651,48 @@ func (s *PostgresStore) GetByStripeInvoiceID(ctx context.Context, tenantID, stri
 		return domain.Invoice{}, errs.ErrNotFound
 	}
 	return inv, err
+}
+
+// invoiceOrderBy returns the ORDER BY clause for the invoice list,
+// validating sort + dir against a closed set. Anything outside the
+// allow-list silently falls back to the default — never interpolate
+// raw user input into SQL.
+//
+// Tie-break on id matches the primary sort direction so a sequence
+// of ties reads as a single ordered group rather than zig-zagging.
+// The id column is monotonic (ulid-prefixed); using it as the
+// secondary sort gives a stable, deterministic order.
+func invoiceOrderBy(sort, dir string) string {
+	col := invoiceSortColumn(sort)
+	d := "DESC"
+	if dir == "asc" {
+		d = "ASC"
+	}
+	return col + " " + d + ", id " + d
+}
+
+// invoiceSortColumn maps the SPA's sort key to a SQL column name.
+// Closed allow-list to prevent injection. Unknown keys default to
+// created_at (the most common sort, matches Stripe Dashboard).
+func invoiceSortColumn(key string) string {
+	switch key {
+	case "invoice_number":
+		return "invoice_number"
+	case "amount_due_cents", "amount_due":
+		return "amount_due_cents"
+	case "billing_period_start", "period":
+		return "billing_period_start"
+	case "due_at":
+		return "due_at"
+	case "issued_at":
+		return "issued_at"
+	case "status":
+		return "status"
+	case "payment_status":
+		return "payment_status"
+	default:
+		return "created_at"
+	}
 }
 
 func buildInvWhere(f ListFilter) (string, []any) {

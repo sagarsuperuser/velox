@@ -7,13 +7,14 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/tenant"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
 
 func TestPostgresStore_CreateAndGet(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := tenant.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	created, err := store.Create(ctx, domain.Tenant{Name: "Acme Corp"})
 	if err != nil {
@@ -45,7 +46,7 @@ func TestPostgresStore_GetNotFound(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := tenant.NewPostgresStore(db)
 
-	_, err := store.Get(context.Background(), "nonexistent")
+	_, err := store.Get(postgres.WithLivemode(context.Background(), false), "nonexistent")
 	if err != errs.ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -64,7 +65,7 @@ func TestSettingsStore_GetSynthesizesDefaultsOnMiss(t *testing.T) {
 	// path does that, but the test fixture intentionally leaves it
 	// empty so we can exercise the synthesize-defaults branch.
 
-	got, err := store.Get(context.Background(), tenantID)
+	got, err := store.Get(postgres.WithLivemode(context.Background(), false), tenantID)
 	if err != nil {
 		t.Fatalf("Get on missing settings should synthesize defaults, got error: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestSettingsStore_GetSynthesizesDefaultsOnMiss(t *testing.T) {
 func TestPostgresStore_List(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := tenant.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	_, _ = store.Create(ctx, domain.Tenant{Name: "Tenant A"})
 	_, _ = store.Create(ctx, domain.Tenant{Name: "Tenant B"})
@@ -109,7 +110,7 @@ func TestPostgresStore_List(t *testing.T) {
 func TestPostgresStore_UpdateStatus(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := tenant.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	created, _ := store.Create(ctx, domain.Tenant{Name: "Test"})
 

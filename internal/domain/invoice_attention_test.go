@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,8 +84,15 @@ func TestClassifyInvoiceAttention_TaxFailedSubcodes(t *testing.T) {
 			if att.DocURL == "" {
 				t.Errorf("expected DocURL to be set")
 			}
-			if att.Detail != "raw provider response" {
-				t.Errorf("expected Detail to carry raw provider response")
+			// ADR-025: upstream provider responses go in ProviderResponse,
+			// not Detail. Every code in this test fixture except
+			// provider_not_configured (not exercised here) is post-flight
+			// — the raw string came back from the provider.
+			if att.ProviderResponse != "raw provider response" {
+				t.Errorf("expected ProviderResponse to carry raw provider response, got %q", att.ProviderResponse)
+			}
+			if att.Detail != "" {
+				t.Errorf("Detail should be empty for tax codes — Velox-internal slot is reserved for our own framing, got %q", att.Detail)
 			}
 			if att.Since == nil {
 				t.Errorf("expected Since to be set from TaxDeferredAt")
@@ -94,6 +102,79 @@ func TestClassifyInvoiceAttention_TaxFailedSubcodes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestClassifyInvoiceAttention_ProviderNotConfiguredEmptyResponse asserts
+// the ADR-025 contract for the only pre-flight tax code: provider_not_
+// configured fired before any HTTP call to Stripe, so neither slot
+// should carry the Velox-internal string ("no client configured for
+// livemode=…"). The headline + Connect Stripe action carry the whole
+// UI; surfacing the internal string under "Provider response" would
+// mislead operators into thinking a 4xx came back from Stripe.
+func TestClassifyInvoiceAttention_ProviderNotConfiguredEmptyResponse(t *testing.T) {
+	inv := draft()
+	inv.TaxStatus = InvoiceTaxFailed
+	inv.TaxErrorCode = "provider_not_configured"
+	inv.TaxPendingReason = "no client configured for livemode=false" // Velox-internal, NOT a provider response
+	now := time.Now()
+	inv.TaxDeferredAt = &now
+
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
+	if att == nil {
+		t.Fatalf("expected attention, got nil")
+	}
+	if att.ProviderResponse != "" {
+		t.Errorf("ProviderResponse should be empty for pre-flight code (we never called the provider), got %q", att.ProviderResponse)
+	}
+	if att.Detail != "" {
+		t.Errorf("Detail should be empty — headline + Connect Stripe action are the whole UI, got %q", att.Detail)
+	}
+}
+
+// TestClassifyInvoiceAttention_ProviderNotConfigured_StripeConnectedSwapsCopy
+// pins the gap-window UX fix: when an invoice has tax_error_code=
+// provider_not_configured (stamped at calculation-fail time) AND the
+// tenant has now connected Stripe, the banner must NOT keep telling
+// the operator to "Connect Stripe in Settings → Payments" — Stripe
+// is connected; the only thing the invoice is waiting for is the
+// next scheduler tick. Surface the queued-and-retry-now path
+// instead.
+func TestClassifyInvoiceAttention_ProviderNotConfigured_StripeConnectedSwapsCopy(t *testing.T) {
+	inv := draft()
+	inv.TaxStatus = InvoiceTaxFailed
+	inv.TaxErrorCode = "provider_not_configured"
+
+	t.Run("not connected → connect-stripe action", func(t *testing.T) {
+		att := ClassifyInvoiceAttention(inv, AttentionContext{StripeConnected: false})
+		if att == nil {
+			t.Fatalf("expected attention, got nil")
+		}
+		if !strings.Contains(att.Message, "Stripe isn't connected") {
+			t.Errorf("expected 'Stripe isn't connected' copy, got: %q", att.Message)
+		}
+		if len(att.Actions) == 0 || att.Actions[0].Code != AttentionActionConnectTaxProvider {
+			t.Errorf("expected primary action = connect_tax_provider, got: %+v", att.Actions)
+		}
+	})
+
+	t.Run("connected → calculation-queued + retry-now", func(t *testing.T) {
+		att := ClassifyInvoiceAttention(inv, AttentionContext{StripeConnected: true})
+		if att == nil {
+			t.Fatalf("expected attention, got nil")
+		}
+		if strings.Contains(att.Message, "Stripe isn't connected") {
+			t.Errorf("must NOT say 'Stripe isn't connected' when Stripe IS connected, got: %q", att.Message)
+		}
+		if !strings.Contains(att.Message, "queued") && !strings.Contains(att.Message, "retry") {
+			t.Errorf("expected queued/retry-shortly copy, got: %q", att.Message)
+		}
+		if len(att.Actions) != 1 || att.Actions[0].Code != AttentionActionRetryTax {
+			t.Errorf("connected branch should expose only Retry now (no Connect Stripe), got: %+v", att.Actions)
+		}
+		if att.Severity != AttentionSeverityInfo {
+			t.Errorf("queued state should be info severity (transient, system will resolve), got: %v", att.Severity)
+		}
+	})
 }
 
 func TestClassifyInvoiceAttention_TaxPendingIsWarning(t *testing.T) {
@@ -128,8 +209,23 @@ func TestClassifyInvoiceAttention_PaymentFailed(t *testing.T) {
 	if att.Message != "card declined: insufficient funds" {
 		t.Errorf("message = %q, want headline from LastPaymentError", att.Message)
 	}
-	if len(att.Actions) == 0 || att.Actions[0].Code != AttentionActionRetryPayment {
-		t.Errorf("expected primary action retry_payment")
+	// Primary action is now update_payment_method (the card on file
+	// is broken — retrying the same card will decline again).
+	// retry_payment remains as the secondary action for transient
+	// declines where the operator wants to re-attempt without
+	// changing the card.
+	if len(att.Actions) < 2 ||
+		att.Actions[0].Code != AttentionActionUpdatePaymentMethod ||
+		att.Actions[1].Code != AttentionActionRetryPayment {
+		t.Errorf("expected actions [update_payment_method, retry_payment], got %v", att.Actions)
+	}
+	// ADR-025: LastPaymentError is Stripe's last_payment_error body,
+	// upstream payload — goes in ProviderResponse, not Detail.
+	if att.ProviderResponse != "card declined: insufficient funds" {
+		t.Errorf("expected ProviderResponse to carry LastPaymentError, got %q", att.ProviderResponse)
+	}
+	if att.Detail != "" {
+		t.Errorf("Detail should be empty (no Velox-internal context for this code yet), got %q", att.Detail)
 	}
 }
 

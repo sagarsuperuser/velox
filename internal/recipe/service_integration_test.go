@@ -57,7 +57,7 @@ func newRecipeFixture(t *testing.T) *recipeIntegrationFixture {
 // other tenants' rows are filtered by RLS anyway.
 func countRows(t *testing.T, db *postgres.DB, tenantID, table string) int {
 	t.Helper()
-	tx, err := db.BeginTx(context.Background(), postgres.TxTenant, tenantID)
+	tx, err := db.BeginTx(postgres.WithLivemode(context.Background(), false), postgres.TxTenant, tenantID)
 	if err != nil {
 		t.Fatalf("begin count tx: %v", err)
 	}
@@ -78,7 +78,7 @@ func countRows(t *testing.T, db *postgres.DB, tenantID, table string) int {
 func TestService_Instantiate_BuildsFullGraph(t *testing.T) {
 	f := newRecipeFixture(t)
 	tenantID := testutil.CreateTestTenant(t, f.db, "anthropic install")
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	inst, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{
 		CreatedBy: "operator@example.com",
@@ -143,7 +143,7 @@ func TestService_Instantiate_BuildsFullGraph(t *testing.T) {
 func TestService_Instantiate_Idempotent(t *testing.T) {
 	f := newRecipeFixture(t)
 	tenantID := testutil.CreateTestTenant(t, f.db, "idempotent install")
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	first, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
 	if err != nil {
@@ -205,7 +205,7 @@ func (f *failingPricingWriter) UpsertMeterPricingRuleTx(ctx context.Context, tx 
 func TestService_Instantiate_AtomicityRollback(t *testing.T) {
 	f := newRecipeFixture(t)
 	tenantID := testutil.CreateTestTenant(t, f.db, "atomicity rollback")
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	failing := &failingPricingWriter{inner: f.pricingSvc, failAt: 5}
 	registry, err := Load()
@@ -237,7 +237,7 @@ func TestService_Instantiate_RLSIsolation(t *testing.T) {
 	f := newRecipeFixture(t)
 	tenantA := testutil.CreateTestTenant(t, f.db, "tenant A")
 	tenantB := testutil.CreateTestTenant(t, f.db, "tenant B")
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	if _, err := f.svc.Instantiate(ctx, tenantA, "anthropic_style", nil, InstantiateOptions{}); err != nil {
 		t.Fatalf("Instantiate for A: %v", err)
@@ -264,7 +264,7 @@ func TestService_Instantiate_RLSIsolation(t *testing.T) {
 func TestService_Instantiate_PreviewParity(t *testing.T) {
 	f := newRecipeFixture(t)
 	tenantID := testutil.CreateTestTenant(t, f.db, "preview parity")
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	overrides := map[string]any{"currency": "EUR", "plan_code": "ai_eur", "plan_name": "AI EUR"}
 
@@ -306,7 +306,7 @@ func TestService_Instantiate_PreviewParity(t *testing.T) {
 func TestService_Uninstall_RemovesInstanceOnly(t *testing.T) {
 	f := newRecipeFixture(t)
 	tenantID := testutil.CreateTestTenant(t, f.db, "uninstall keeps resources")
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	inst, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
 	if err != nil {

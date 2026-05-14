@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,18 +25,23 @@ type PaymentSetupStore interface {
 
 // CheckoutHandler manages Stripe Checkout Sessions for payment method setup.
 // Mode-aware: picks the live or test client based on the caller's API key.
+//
+// Return URLs are contextual per request, not global config: the caller
+// passes `return_url` in the body and the handler appends
+// `?payment=success` or `?payment=cancel`. Matches the rest of the
+// Checkout flows in the codebase (PortalHandler, hosted-invoice Pay,
+// public update-payment) and follows Stripe's own guidance — cancel =
+// "back where you were," not a stateless global page that loses context.
 type CheckoutHandler struct {
-	clients    *StripeClients
-	successURL string
-	cancelURL  string
-	store      PaymentSetupStore
+	clients *StripeClients
+	store   PaymentSetupStore
 }
 
-func NewCheckoutHandler(clients *StripeClients, successURL, cancelURL string, store PaymentSetupStore) *CheckoutHandler {
+func NewCheckoutHandler(clients *StripeClients, store PaymentSetupStore) *CheckoutHandler {
 	if !clients.Has() {
 		return nil
 	}
-	return &CheckoutHandler{clients: clients, successURL: successURL, cancelURL: cancelURL, store: store}
+	return &CheckoutHandler{clients: clients, store: store}
 }
 
 func (h *CheckoutHandler) Routes() chi.Router {
@@ -54,6 +61,11 @@ type setupRequest struct {
 	AddressState   string `json:"address_state,omitempty"`
 	AddressZip     string `json:"address_postal_code,omitempty"`
 	AddressCountry string `json:"address_country,omitempty"`
+	// ReturnURL is the page the operator came from. The handler appends
+	// ?payment=success / ?payment=cancel as a UI hint. If unset, the
+	// handler falls back to /customers/{id}?payment=…, which is always
+	// a valid page (every setup flow has a customer_id).
+	ReturnURL string `json:"return_url,omitempty"`
 }
 
 type setupResponse struct {
@@ -144,15 +156,16 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		UpdatedAt:        now,
 	})
 
-	// Create checkout session for payment method setup
-	successURL := h.successURL
-	if successURL == "" {
-		successURL = fmt.Sprintf("http://localhost:5173/customers/%s?payment=success", req.CustomerID)
+	// Build contextual return URLs. If the caller passed return_url
+	// (the page they came from), use it; otherwise default to the
+	// customer's detail page. Either way the customer_id is in the
+	// URL so the SPA can refetch payment_setup and show the result.
+	base := req.ReturnURL
+	if base == "" {
+		base = fmt.Sprintf("http://localhost:5173/customers/%s", req.CustomerID)
 	}
-	cancelURL := h.cancelURL
-	if cancelURL == "" {
-		cancelURL = fmt.Sprintf("http://localhost:5173/customers/%s?payment=cancel", req.CustomerID)
-	}
+	successURL := appendQuery(base, "payment", "success")
+	cancelURL := appendQuery(base, "payment", "cancel")
 
 	sess, err := sc.V1CheckoutSessions.Create(r.Context(), &stripe.CheckoutSessionCreateParams{
 		Customer:           stripe.String(stripeCustomerID),
@@ -168,8 +181,13 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		},
 	})
 	if err != nil {
+		// Sanitize (ADR-026): the Stripe SDK error includes raw
+		// API request/response bodies. Log full server-side; surface
+		// generic operator-safe message.
+		slog.ErrorContext(r.Context(), "stripe checkout session create failed",
+			"customer_id", req.CustomerID, "error", err)
 		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
-			fmt.Sprintf("failed to create checkout session: %v", err))
+			"Could not start the payment setup flow. Please retry; if the problem persists, contact support.")
 		return
 	}
 
@@ -194,4 +212,15 @@ func (h *CheckoutHandler) getPaymentStatus(w http.ResponseWriter, r *http.Reques
 	}
 
 	respond.JSON(w, r, http.StatusOK, ps)
+}
+
+// appendQuery adds key=value to base, preserving any existing query
+// string. Used to stamp `?payment=success` / `?payment=cancel` onto
+// the operator's source page so the SPA knows how to render the result.
+func appendQuery(base, key, value string) string {
+	sep := "?"
+	if strings.Contains(base, "?") {
+		sep = "&"
+	}
+	return base + sep + key + "=" + value
 }

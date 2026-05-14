@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -71,7 +72,7 @@ func (s *PostgresStore) UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID
 
 func (s *PostgresStore) upsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.DunningPolicy) (domain.DunningPolicy, error) {
 	id := postgres.NewID("vlx_dpol")
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	scheduleJSON, _ := json.Marshal(p.RetrySchedule)
 
 	var scheduleOut []byte
@@ -113,7 +114,7 @@ func (s *PostgresStore) CreateRun(ctx context.Context, tenantID string, run doma
 	// time, matching the related invoice's issued_at.
 	now := run.CreatedAt
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = clock.Now(ctx)
 	}
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO invoice_dunning_runs (id, tenant_id, invoice_id, customer_id, policy_id,
@@ -259,7 +260,7 @@ func (s *PostgresStore) UpdateRun(ctx context.Context, tenantID string, run doma
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	_, err = tx.ExecContext(ctx, `
 		UPDATE invoice_dunning_runs SET state=$1, reason=$2, attempt_count=$3,
 			last_attempt_at=$4, next_action_at=$5, paused=$6, resolved_at=$7, resolution=$8, updated_at=$9
@@ -278,6 +279,10 @@ func (s *PostgresStore) UpdateRun(ctx context.Context, tenantID string, run doma
 	return run, nil
 }
 
+// ListDueRuns — CRON path. ADR-029 Phase 5: dunning runs whose owning
+// invoice's subscription is clock-pinned are excluded; the catchup
+// orchestrator drives those through ListDueRunsForClock against the
+// clock's frozen_time.
 func (s *PostgresStore) ListDueRuns(ctx context.Context, tenantID string, dueBefore time.Time, limit int) ([]domain.InvoiceDunningRun, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -290,15 +295,70 @@ func (s *PostgresStore) ListDueRuns(ctx context.Context, tenantID string, dueBef
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, invoice_id, COALESCE(customer_id,''), policy_id, state,
-			COALESCE(reason,''), attempt_count, last_attempt_at, next_action_at,
-			paused, resolved_at, COALESCE(resolution,''), created_at, updated_at
-		FROM invoice_dunning_runs
-		WHERE next_action_at <= $1 AND paused = false
-			AND state NOT IN ('resolved', 'escalated')
-		ORDER BY next_action_at ASC LIMIT $2
+		SELECT r.id, r.tenant_id, r.invoice_id, COALESCE(r.customer_id,''), r.policy_id, r.state,
+			COALESCE(r.reason,''), r.attempt_count, r.last_attempt_at, r.next_action_at,
+			r.paused, r.resolved_at, COALESCE(r.resolution,''), r.created_at, r.updated_at
+		FROM invoice_dunning_runs r
+		WHERE r.next_action_at <= $1 AND r.paused = false
+			AND r.state NOT IN ('resolved', 'escalated')
+			AND NOT EXISTS (
+			  SELECT 1 FROM invoices i
+			  JOIN subscriptions s ON s.id = i.subscription_id
+			  WHERE i.id = r.invoice_id
+			    AND s.test_clock_id IS NOT NULL
+			)
+		ORDER BY r.next_action_at ASC LIMIT $2
 		FOR UPDATE SKIP LOCKED
 	`, dueBefore, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var runs []domain.InvoiceDunningRun
+	for rows.Next() {
+		var r domain.InvoiceDunningRun
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.InvoiceID, &r.CustomerID, &r.PolicyID,
+			&r.State, &r.Reason, &r.AttemptCount, &r.LastAttemptAt, &r.NextActionAt,
+			&r.Paused, &r.ResolvedAt, &r.Resolution, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
+// ListDueRunsForClock is the catchup-path counterpart to ListDueRuns.
+// ADR-029 Phase 5 — returns dunning runs whose owning invoice's
+// subscription is pinned to the given clock and whose next_action_at
+// has elapsed against the clock's frozen_time (passed explicitly so
+// the comparison runs in simulated time, not wall-clock).
+func (s *PostgresStore) ListDueRunsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, limit int) ([]domain.InvoiceDunningRun, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT r.id, r.tenant_id, r.invoice_id, COALESCE(r.customer_id,''), r.policy_id, r.state,
+			COALESCE(r.reason,''), r.attempt_count, r.last_attempt_at, r.next_action_at,
+			r.paused, r.resolved_at, COALESCE(r.resolution,''), r.created_at, r.updated_at
+		FROM invoice_dunning_runs r
+		JOIN invoices i ON i.id = r.invoice_id
+		JOIN subscriptions s ON s.id = i.subscription_id
+		WHERE r.tenant_id = $1
+			AND s.test_clock_id = $2
+			AND r.next_action_at <= $3
+			AND r.paused = false
+			AND r.state NOT IN ('resolved', 'escalated')
+		ORDER BY r.next_action_at ASC LIMIT $4
+		FOR UPDATE SKIP LOCKED
+	`, tenantID, clockID, frozenTime, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +385,7 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, tenantID string, event 
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_devt")
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	metaJSON, _ := json.Marshal(event.Metadata)
 	if event.Metadata == nil {
 		metaJSON = []byte("{}")

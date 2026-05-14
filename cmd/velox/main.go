@@ -125,9 +125,6 @@ func serve() {
 		scheduler.SetTokenCleaner(server.TokenSvc)
 	}
 	scheduler.SetIdempotencyCleaner(mw.NewIdempotencyCleaner(db))
-	if server.TestClockSvc != nil {
-		scheduler.SetTestClockSweeper(server.TestClockSvc)
-	}
 	if server.InvoiceSvc != nil {
 		scheduler.SetTaxRetrier(server.InvoiceSvc)
 	}

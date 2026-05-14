@@ -140,6 +140,16 @@ const (
 	// invoice is awaiting payment AND the customer has no PaymentSetup
 	// ready — the only state where adding a PM unblocks collection.
 	AttentionActionAddPaymentMethod AttentionAction = "add_payment_method"
+	// AttentionActionUpdatePaymentMethod opens a Stripe-hosted setup
+	// flow (Checkout in setup mode) so the customer can replace the
+	// card that just declined. Distinct from AddPaymentMethod (which
+	// deep-links the dashboard for the no-PM case): there's already a
+	// PM on file but it's broken — the verb is "replace this card",
+	// not "set up your first card". Surfaced on payment.declined.
+	// Operator clicking it opens Stripe Checkout in a new tab via
+	// the same /payment-portal/{id}/update-payment-method endpoint
+	// the customer-facing email link uses.
+	AttentionActionUpdatePaymentMethod AttentionAction = "update_payment_method"
 	// AttentionActionConnectTaxProvider deep-links the dashboard to
 	// Settings → Payments so the operator can connect the tax
 	// provider's credentials. Distinct from RotateAPIKey: nothing
@@ -198,10 +208,29 @@ type Attention struct {
 	// the resolution isn't field-scoped.
 	Param string `json:"param,omitempty"`
 
-	// Detail is the raw provider payload (Stripe Tax JSON envelope,
-	// last payment error message). Disclosed in a collapsible section
-	// for diagnostic depth without polluting the headline.
+	// Detail is Velox's own classification context — always operator-
+	// safe and always our framing. Populated when there's something
+	// useful beyond the headline (e.g., "engine retried 3 times before
+	// giving up"). NOT a place for upstream provider payloads — those
+	// go in ProviderResponse so the UI can label them honestly.
+	// May be empty when the headline + typed code + actions cover
+	// everything an operator needs.
 	Detail string `json:"detail,omitempty"`
+
+	// ProviderResponse is the raw upstream payload from a third-party
+	// service (Stripe Tax JSON envelope, Stripe PaymentIntent
+	// last_payment_error body, etc.). Populated ONLY when we actually
+	// made an HTTP call and received a response. Pre-flight
+	// classification errors (e.g. tax.provider_not_configured —
+	// where we never called) leave this empty.
+	//
+	// The UI labels this as "Provider response" in a collapsible
+	// section, so the operator knows the bytes literally came from
+	// the upstream service, not from Velox. Stripe's own API
+	// distinguishes error.message (their classification) from
+	// error.payment_intent.last_payment_error (the upstream
+	// provider's response); this field mirrors that contract.
+	ProviderResponse string `json:"provider_response,omitempty"`
 
 	// Since is when the attention condition started — operators triage
 	// by age. tax_deferred_at for tax reasons; due_at for overdue;
@@ -239,6 +268,22 @@ type AttentionContext struct {
 	// the operator-actionable no_payment_method state from the generic
 	// awaiting_payment race window.
 	HasPaymentMethod bool
+
+	// StripeConnected reports whether the invoice's tenant has Stripe
+	// credentials connected for this invoice's mode (livemode). Used
+	// by the tax-classification path to distinguish two states that
+	// previously rendered identically:
+	//   - tax_error_code='provider_not_configured' AND Stripe not
+	//     connected → operator action required ("Connect Stripe").
+	//   - tax_error_code='provider_not_configured' AND Stripe IS now
+	//     connected → calculation will retry on the next scheduler
+	//     tick (5 min dev, 1 hr prod). The previous "Stripe isn't
+	//     connected" copy was misleading during this gap window.
+	// Resolution: the operator just connected Stripe; the invoice's
+	// stale tax_error_code hasn't been replaced yet because the
+	// scheduler hasn't ticked. Banner now reads "calculation queued"
+	// + "Retry now" so the operator gets agency without waiting.
+	StripeConnected bool
 }
 
 // docBaseURL is the doc site root for operator-facing error pages. Kept
@@ -280,11 +325,11 @@ func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
 	}
 	switch {
 	case inv.TaxStatus == InvoiceTaxFailed:
-		return classifyTaxAttention(inv, AttentionSeverityCritical)
+		return classifyTaxAttention(inv, atc, AttentionSeverityCritical)
 	case inv.PaymentStatus == PaymentFailed:
 		return classifyPaymentFailure(inv)
 	case inv.TaxStatus == InvoiceTaxPending:
-		return classifyTaxAttention(inv, AttentionSeverityWarning)
+		return classifyTaxAttention(inv, atc, AttentionSeverityWarning)
 	case inv.PaymentOverdue:
 		return classifyOverdue(inv)
 	case inv.PaymentStatus == PaymentUnknown:
@@ -312,7 +357,24 @@ func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
 // by internal/tax.Classify. Sub-cases differ in three dimensions:
 // Reason (location-vs-generic), action verbs, and `param` pointer. The
 // open `code` carries the full granularity (one per error_code value).
-func classifyTaxAttention(inv Invoice, severity AttentionSeverity) *Attention {
+//
+// Provenance routing per typed code (ADR-025):
+//   - provider_not_configured: pre-flight failure, we never called the
+//     provider. tax_pending_reason holds Velox's own string ("no client
+//     configured for livemode=…"). Both Detail and ProviderResponse
+//     stay empty — the headline + code + Connect Stripe action are the
+//     whole UI; surfacing the internal string under "Provider response"
+//     would mislead operators into thinking we got a 4xx from Stripe.
+//   - provider_auth / provider_outage / customer_data_invalid /
+//     jurisdiction_unsupported: we made the call and got a response.
+//     tax_pending_reason holds the upstream payload (Stripe Tax JSON
+//     envelope, prefixed with "stripe_tax: "). Goes into
+//     ProviderResponse.
+//   - unknown: routes to ProviderResponse — the safer slot for
+//     unclassified content. If it turns out to be Velox-internal, we'd
+//     just be mis-labelling it as a provider response, which is the
+//     same as today's behaviour for known cases.
+func classifyTaxAttention(inv Invoice, atc AttentionContext, severity AttentionSeverity) *Attention {
 	errorCode := inv.TaxErrorCode
 	if errorCode == "" {
 		errorCode = "unknown"
@@ -320,9 +382,14 @@ func classifyTaxAttention(inv Invoice, severity AttentionSeverity) *Attention {
 
 	att := &Attention{
 		Severity: severity,
-		Detail:   inv.TaxPendingReason,
 		Since:    inv.TaxDeferredAt,
 		Code:     "tax." + errorCode,
+	}
+	// provider_not_configured is the only tax code that's pre-flight
+	// (no API call). Every other code reflects something the provider
+	// actually returned. Route accordingly.
+	if errorCode != "provider_not_configured" && inv.TaxPendingReason != "" {
+		att.ProviderResponse = inv.TaxPendingReason
 	}
 
 	switch errorCode {
@@ -361,11 +428,29 @@ func classifyTaxAttention(inv Invoice, severity AttentionSeverity) *Attention {
 		}
 	case "provider_not_configured":
 		att.Reason = AttentionReasonTaxCalculationFailed
-		att.Message = "Stripe Tax is selected in Settings → Tax but Stripe isn't connected for this mode. Connect your Stripe keys for the active mode (test or live) in Settings → Payments."
 		att.DocURL = docBaseURL + "tax-provider-not-configured"
-		att.Actions = []AttentionActionItem{
-			{Code: AttentionActionConnectTaxProvider, Label: "Connect Stripe"},
-			{Code: AttentionActionRetryTax, Label: "Retry tax"},
+		// Banner copy + actions split on whether the tenant has Stripe
+		// connected NOW. The invoice's tax_error_code was stamped at
+		// the time of the failed calculation; if the operator has
+		// since connected Stripe, the only thing the invoice is
+		// waiting for is the next scheduler tick — not operator
+		// action. Telling them "Stripe isn't connected" in that
+		// window is misleading and erodes trust in the diagnostic.
+		// ADR-019 already wires a tenant-wide retry on Stripe connect,
+		// so the gap is purely about UX during the 5-min/1-hr window
+		// before the tick fires.
+		if atc.StripeConnected {
+			att.Severity = AttentionSeverityInfo
+			att.Message = "Tax calculation is queued. The engine will retry on the next scheduler tick (typically a few minutes). Click Retry now to recompute immediately."
+			att.Actions = []AttentionActionItem{
+				{Code: AttentionActionRetryTax, Label: "Retry now"},
+			}
+		} else {
+			att.Message = "Stripe Tax is selected in Settings → Tax but Stripe isn't connected for this mode. Connect your Stripe keys for the active mode (test or live) in Settings → Payments."
+			att.Actions = []AttentionActionItem{
+				{Code: AttentionActionConnectTaxProvider, Label: "Connect Stripe"},
+				{Code: AttentionActionRetryTax, Label: "Retry tax"},
+			}
 		}
 	default:
 		att.Reason = AttentionReasonTaxCalculationFailed
@@ -384,17 +469,29 @@ func classifyPaymentFailure(inv Invoice) *Attention {
 		headline = "Payment attempt failed."
 	}
 	since := inv.UpdatedAt
+	// Update Payment Method is the primary action: the card on file
+	// is broken, retrying with the same card will decline again.
+	// Retry Payment is offered as secondary for transient declines
+	// (network blip, temporary insufficient funds) where the
+	// operator wants to re-attempt without changing the card.
+	//
+	// LastPaymentError is the Stripe last_payment_error message —
+	// upstream payload from Stripe, not Velox's classification —
+	// so it goes in ProviderResponse (ADR-025). The headline already
+	// renders the truncated form; ProviderResponse holds the full
+	// string for the disclosure.
 	return &Attention{
-		Severity: AttentionSeverityCritical,
-		Reason:   AttentionReasonPaymentFailed,
-		Code:     "payment.declined",
-		Message:  headline,
-		DocURL:   docBaseURL + "payment-failed",
-		Actions: []AttentionActionItem{
+		Severity:         AttentionSeverityCritical,
+		Reason:           AttentionReasonPaymentFailed,
+		Code:             "payment.declined",
+		Message:          headline,
+		DocURL:           docBaseURL + "payment-failed",
+		Actions:          []AttentionActionItem{
+			{Code: AttentionActionUpdatePaymentMethod, Label: "Update payment method"},
 			{Code: AttentionActionRetryPayment, Label: "Retry payment"},
 		},
-		Detail: inv.LastPaymentError,
-		Since:  &since,
+		ProviderResponse: inv.LastPaymentError,
+		Since:            &since,
 	}
 }
 

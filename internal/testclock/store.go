@@ -65,10 +65,4 @@ type Store interface {
 	// the caller isn't scoped to. The recovery path then re-enqueues each
 	// onto the catchup queue and the worker resumes them.
 	ListAllAdvancing(ctx context.Context) ([]domain.TestClock, error)
-
-	// SweepDueDeletes soft-deletes test clocks whose deletes_after has
-	// elapsed, cascade-cancelling their pinned subs. Cross-tenant
-	// (RLS-bypassed). Returns the number of clocks soft-deleted in this
-	// sweep — caller logs the count for liveness telemetry.
-	SweepDueDeletes(ctx context.Context, batch int) (int, error)
 }

@@ -8,14 +8,30 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 type Service struct {
-	store Store
+	store    Store
+	resolver clock.Resolver
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
+}
+
+// SetResolver wires the unified clock.Resolver. Customer-scoped credit
+// mutations (Grant, ApplyToInvoice, etc.) bind effective-now from the
+// customer pin so the ledger entry's created_at lands in simulated
+// time on clock-pinned customers — same architectural rule as
+// subscription / invoice / dunning.
+func (s *Service) SetResolver(r clock.Resolver) {
+	s.resolver = r
+}
+
+func (s *Service) bindForCustomer(ctx context.Context, tenantID, customerID string) context.Context {
+	bound, _ := clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, CustomerID: customerID})
+	return bound
 }
 
 type GrantInput struct {
@@ -41,6 +57,7 @@ func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) 
 	if input.CustomerID == "" {
 		return domain.CreditLedgerEntry{}, errs.Required("customer_id")
 	}
+	ctx = s.bindForCustomer(ctx, tenantID, input.CustomerID)
 	if input.AmountCents <= 0 {
 		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", "must be greater than 0")
 	}
@@ -141,7 +158,25 @@ func (s *Service) ExpireCredits(ctx context.Context) (int, []error) {
 	if err != nil {
 		return 0, []error{fmt.Errorf("list expired grants: %w", err)}
 	}
+	return s.processExpiry(ctx, grants)
+}
 
+// ExpireCreditsForClock is the catchup-path counterpart. ADR-029
+// Phase 4: clock-pinned customer grants expire only on operator
+// Advance, against the clock's frozen_time, never on the wall-clock
+// cron tick.
+func (s *Service) ExpireCreditsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time) (int, []error) {
+	grants, err := s.store.ListExpiredGrantsForClock(ctx, tenantID, clockID, frozenTime)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list expired grants for clock %s: %w", clockID, err)}
+	}
+	return s.processExpiry(ctx, grants)
+}
+
+// processExpiry is the shared per-grant body of ExpireCredits and
+// ExpireCreditsForClock — the candidate list shape differs by trigger
+// path; the per-grant ledger-append is identical.
+func (s *Service) processExpiry(ctx context.Context, grants []domain.CreditLedgerEntry) (int, []error) {
 	var expired int
 	var expiryErrs []error
 	for _, g := range grants {

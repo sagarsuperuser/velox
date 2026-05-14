@@ -22,6 +22,12 @@ type Store interface {
 	UpdateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error)
 	ListDueRuns(ctx context.Context, tenantID string, dueBefore time.Time, limit int) ([]domain.InvoiceDunningRun, error)
 
+	// ListDueRunsForClock is the catchup-path counterpart to ListDueRuns.
+	// ADR-029 Phase 5: clock-pinned dunning advances fire only on
+	// operator Advance, against the clock's frozen_time, never on the
+	// wall-clock cron tick.
+	ListDueRunsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, limit int) ([]domain.InvoiceDunningRun, error)
+
 	// Events
 	CreateEvent(ctx context.Context, tenantID string, event domain.InvoiceDunningEvent) (domain.InvoiceDunningEvent, error)
 	ListEvents(ctx context.Context, tenantID, runID string) ([]domain.InvoiceDunningEvent, error)

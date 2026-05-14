@@ -30,6 +30,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/", h.list)
 	r.Get("/{id}", h.get)
 	r.Get("/{id}/subscriptions", h.listSubscriptions)
+	r.Get("/{id}/customers", h.listAttachedCustomers)
 	r.Post("/{id}/advance", h.advance)
 	r.Post("/{id}/retry-advance", h.retryAdvance)
 	r.Delete("/{id}", h.delete)
@@ -110,6 +111,25 @@ func (h *Handler) listSubscriptions(w http.ResponseWriter, r *http.Request) {
 		subs = []domain.Subscription{}
 	}
 	respond.JSON(w, r, http.StatusOK, map[string]any{"data": subs})
+}
+
+// listAttachedCustomers returns customers attached to this clock —
+// Stripe-parity surface (ADR-027 Tier 3). The clock detail page uses
+// this to render the "Attached customers" section, mirroring Stripe
+// Test Clock detail's UI.
+func (h *Handler) listAttachedCustomers(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	customers, err := h.svc.ListAttachedCustomers(r.Context(), tenantID, id)
+	if err != nil {
+		respond.FromError(w, r, err, "test_clock")
+		return
+	}
+	if customers == nil {
+		customers = []domain.Customer{}
+	}
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": customers})
 }
 
 func (h *Handler) advance(w http.ResponseWriter, r *http.Request) {

@@ -74,56 +74,6 @@ func TestPostgresStore_Delete_SoftDeletes_CascadesPinnedSubs(t *testing.T) {
 	}
 }
 
-// TestPostgresStore_SweepDueDeletes_HitsDueOnly covers the TTL
-// sweeper: clocks past deletes_after get soft-deleted; clocks not
-// yet due (or never given a TTL) stay live.
-func TestPostgresStore_SweepDueDeletes_HitsDueOnly(t *testing.T) {
-	db := testutil.SetupTestDB(t)
-	store := testclock.NewPostgresStore(db)
-	ctx := postgres.WithLivemode(context.Background(), false)
-	tenantID := testutil.CreateTestTenant(t, db, "Tenant")
-
-	past := time.Now().Add(-1 * time.Hour)
-	future := time.Now().Add(24 * time.Hour)
-
-	dueClock, err := store.Create(ctx, tenantID, domain.TestClock{
-		Name: "expired", FrozenTime: time.Now(), DeletesAfter: &past,
-	})
-	if err != nil {
-		t.Fatalf("create due: %v", err)
-	}
-	notDueClock, err := store.Create(ctx, tenantID, domain.TestClock{
-		Name: "still-active", FrozenTime: time.Now(), DeletesAfter: &future,
-	})
-	if err != nil {
-		t.Fatalf("create notdue: %v", err)
-	}
-	noTTLClock, err := store.Create(ctx, tenantID, domain.TestClock{
-		Name: "no-ttl", FrozenTime: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("create nottl: %v", err)
-	}
-
-	swept, err := store.SweepDueDeletes(ctx, 100)
-	if err != nil {
-		t.Fatalf("sweep: %v", err)
-	}
-	if swept != 1 {
-		t.Errorf("swept count: got %d, want 1 (only the past-TTL clock)", swept)
-	}
-
-	if _, err := store.Get(ctx, tenantID, dueClock.ID); err != errs.ErrNotFound {
-		t.Errorf("Get dueClock after sweep: expected ErrNotFound, got %v", err)
-	}
-	if _, err := store.Get(ctx, tenantID, notDueClock.ID); err != nil {
-		t.Errorf("Get notDueClock: %v", err)
-	}
-	if _, err := store.Get(ctx, tenantID, noTTLClock.ID); err != nil {
-		t.Errorf("Get noTTLClock: %v", err)
-	}
-}
-
 // Helpers — minimal raw inserts so the test doesn't pull the
 // subscription package's full Create surface (plans, items,
 // currency) which the soft-delete behavior doesn't care about.

@@ -3,6 +3,8 @@ package testclock
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,66 @@ import (
 )
 
 // --- Tests ---
+
+// fakeCustomerReader records calls into the testclock service's
+// CustomerReader hook. Used to assert that ListAttachedCustomers
+// routes through the customer domain (not the testclock store).
+type fakeCustomerReader struct {
+	calls   int
+	gotID   string
+	returns []domain.Customer
+}
+
+func (f *fakeCustomerReader) ListByTestClockID(_ context.Context, _, clockID string) ([]domain.Customer, error) {
+	f.calls++
+	f.gotID = clockID
+	return f.returns, nil
+}
+
+// TestListAttachedCustomers_RoutesThroughCustomerReader pins the
+// architectural contract: testclock.Service must NOT read customer
+// rows out of its own store. The customer package owns the
+// encrypt-at-rest wrapper around display_name / email; this surface
+// reads through the customer service so values arrive decrypted.
+func TestListAttachedCustomers_RoutesThroughCustomerReader(t *testing.T) {
+	store := newMockStore()
+	store.clocks["c1"] = domain.TestClock{ID: "c1", TenantID: "t1", Status: domain.TestClockStatusReady}
+
+	reader := &fakeCustomerReader{returns: []domain.Customer{
+		{ID: "cus_1", TenantID: "t1", DisplayName: "Smoke Corp"},
+	}}
+	svc := NewService(store)
+	svc.SetCustomerReader(reader)
+
+	got, err := svc.ListAttachedCustomers(context.Background(), "t1", "c1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("expected reader to be called once; got %d", reader.calls)
+	}
+	if reader.gotID != "c1" {
+		t.Errorf("reader received clockID=%q; want c1", reader.gotID)
+	}
+	if len(got) != 1 || got[0].DisplayName != "Smoke Corp" {
+		t.Errorf("unexpected return: %#v", got)
+	}
+}
+
+// TestListAttachedCustomers_FailsLoudWithoutReader ensures a
+// misconfigured wiring (CustomerReader never set) produces a clear
+// error instead of silently returning empty — which would have
+// masked the encrypted-blob bug for a different reason.
+func TestListAttachedCustomers_FailsLoudWithoutReader(t *testing.T) {
+	store := newMockStore()
+	store.clocks["c1"] = domain.TestClock{ID: "c1", TenantID: "t1", Status: domain.TestClockStatusReady}
+
+	svc := NewService(store) // no SetCustomerReader
+	_, err := svc.ListAttachedCustomers(context.Background(), "t1", "c1")
+	if err == nil {
+		t.Fatal("expected error when CustomerReader is unwired; got nil")
+	}
+}
 
 func TestCreate_RequiresFrozenTime(t *testing.T) {
 	s := NewService(newMockStore())
@@ -98,6 +160,52 @@ func TestAdvance_RejectsBackwardTime(t *testing.T) {
 	}
 }
 
+// TestAdvance_RejectsAdvanceOverOneYear asserts the Stripe-parity
+// per-call advance window cap (ADR-028 amendment). Operators chunk
+// longer simulations into successive advances; a single call may
+// not shift frozen_time by more than 1 year.
+func TestAdvance_RejectsAdvanceOverOneYear(t *testing.T) {
+	start := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name     string
+		newTime  time.Time
+		wantErr  bool
+		errField string
+	}{
+		{"exactly one year", start.AddDate(1, 0, 0), false, ""},
+		{"one second under one year", start.AddDate(1, 0, 0).Add(-time.Second), false, ""},
+		{"one second over one year", start.AddDate(1, 0, 0).Add(time.Second), true, "frozen_time"},
+		{"five years forward", start.AddDate(5, 0, 0), true, "frozen_time"},
+		{"twenty-five years forward", start.AddDate(25, 0, 0), true, "frozen_time"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockStore()
+			store.clocks["c1"] = domain.TestClock{
+				ID: "c1", TenantID: "t1", Status: domain.TestClockStatusReady, FrozenTime: start,
+			}
+			s := NewService(store)
+			_, err := s.Advance(context.Background(), "t1", "c1", AdvanceInput{FrozenTime: tc.newTime})
+
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected validation error, got nil")
+				}
+				field := errs.Field(err)
+				if field != tc.errField {
+					t.Errorf("error field: got %q, want %q", field, tc.errField)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected success, got error: %v", err)
+			}
+		})
+	}
+}
+
 func TestAdvance_RunsBillingUntilQuiet(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	newTime := start.Add(60 * 24 * time.Hour) // 60 days forward → ~2 monthly cycles
@@ -137,11 +245,16 @@ func TestAdvance_RunsBillingUntilQuiet(t *testing.T) {
 	if !clk.FrozenTime.Equal(newTime) {
 		t.Errorf("frozen_time: got %v, want %v", clk.FrozenTime, newTime)
 	}
-	// Two cycles should have been billed (day 1 + day 31); after the second
-	// cycle next_billing_at = day 61, which is after frozen_time (day 60)
-	// so the loop exits.
-	if runner.calls != 2 {
-		t.Errorf("billing runs: got %d, want 2", runner.calls)
+	// Post-ADR-028: RunCatchup invokes RunCycle exactly once. The
+	// engine (here, stubRunner) catches the sub up across all due
+	// periods internally — no outer loop in the test-clock service.
+	if runner.calls != 1 {
+		t.Errorf("billing runs: got %d, want 1 (per-sub looping moved into engine)", runner.calls)
+	}
+	// Sub itself should now be caught up past frozen_time.
+	subs := store.subsOnClock["c1"]
+	if len(subs) != 1 || subs[0].NextBillingAt == nil || !subs[0].NextBillingAt.After(newTime) {
+		t.Errorf("sub should be caught up: got next_billing_at=%v, frozen=%v", subs[0].NextBillingAt, newTime)
 	}
 }
 
@@ -351,6 +464,59 @@ func TestAdvance_BillingFailureMarksClockFailed(t *testing.T) {
 	}
 }
 
+// TestAdvance_InjectFailureEnv asserts the manual-test injection knob:
+// when VELOX_TEST_CLOCK_INJECT_FAILURE is set, runCatchupLoop fails
+// with the value as the reason, the clock flips to internal_failure,
+// and the env is cleared so a subsequent retry sees a clean state.
+// Powers the MANUAL_TEST FLOW TC2 catchup-failure UI bullet —
+// reliable reproduction without disconnecting Stripe.
+func TestAdvance_InjectFailureEnv(t *testing.T) {
+	t.Setenv("VELOX_TEST_CLOCK_INJECT_FAILURE", "manual UI test")
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := newMockStore()
+	store.clocks["c1"] = domain.TestClock{
+		ID: "c1", TenantID: "t1", Status: domain.TestClockStatusReady, FrozenTime: start,
+	}
+	sub := domain.Subscription{
+		ID: "s1", TenantID: "t1", TestClockID: "c1", Status: domain.SubscriptionActive,
+	}
+	nextBilling := start.Add(1 * time.Hour)
+	sub.NextBillingAt = &nextBilling
+	store.subsOnClock["c1"] = []domain.Subscription{sub}
+
+	// stubRunner with no error — proves the env injection runs BEFORE
+	// the billing path, so a successful runner can't hide a missed
+	// injection.
+	runner := &stubRunner{store: store, clockID: "c1", subID: "s1"}
+	s := NewService(store)
+	s.SetBillingRunner(runner)
+
+	_, err := s.Advance(context.Background(), "t1", "c1", AdvanceInput{
+		FrozenTime: start.Add(30 * 24 * time.Hour),
+	})
+	if err == nil {
+		t.Fatal("expected error from injected failure")
+	}
+	if !strings.Contains(err.Error(), "injected: manual UI test") {
+		t.Errorf("expected reason to carry the injected text, got %q", err.Error())
+	}
+	if store.clocks["c1"].Status != domain.TestClockStatusInternalFailed {
+		t.Errorf("clock status: got %q, want internal_failure",
+			store.clocks["c1"].Status)
+	}
+	// One-shot: env cleared so retry would see clean state.
+	if v := os.Getenv("VELOX_TEST_CLOCK_INJECT_FAILURE"); v != "" {
+		t.Errorf("env should be cleared after one-shot fire, got %q", v)
+	}
+}
+
+// Note: pacing-knob tests (VELOX_TEST_CLOCK_CATCHUP_DELAY_MS) moved
+// to internal/billing alongside catchupDelayFromEnvBilling per
+// ADR-028. The pacing now lives inside the engine's per-period
+// loop, not the test-clock service's outer loop (which no longer
+// exists).
+
 // --- Mocks ---
 
 type mockStore struct {
@@ -466,13 +632,11 @@ func (m *mockStore) ListAllAdvancing(_ context.Context) ([]domain.TestClock, err
 	return out, nil
 }
 
-func (m *mockStore) SweepDueDeletes(_ context.Context, _ int) (int, error) {
-	return 0, nil
-}
-
-// stubRunner simulates one invoice per billing cycle by bumping the sub's
-// next_billing_at forward. The service.runCatchup loop calls RunCycle until
-// next_billing_at overshoots frozen_time.
+// stubRunner mimics the post-ADR-028 billing engine: one RunCycle call
+// catches the sub up across all due periods. Advances next_billing_at
+// by cycleDur in a loop until it overshoots frozen_time. Returns the
+// number of "invoices" generated. Track call count for tests that
+// assert RunCycle is invoked exactly once per RunCatchup.
 type stubRunner struct {
 	store    *mockStore
 	clockID  string
@@ -482,19 +646,50 @@ type stubRunner struct {
 	err      error
 }
 
-func (r *stubRunner) RunCycle(_ context.Context, _ int) (int, []error) {
+// RunCycleForClock implements the new disjoint-flow contract
+// RetryPendingChargesForClock — ADR-029 Phase 1 stub. The narrow tests
+// in this file don't exercise auto-charge retry (no payment-method
+// fixture wired); a no-op satisfies the interface contract while
+// existing assertions on RunCycleForClock keep proving period-loop
+// semantics. Tests that exercise the orchestration sequence end-to-end
+// live in the integration-test suite where a real engine is wired.
+func (r *stubRunner) RetryPendingChargesForClock(_ context.Context, _, _ string, _ int) (int, []error) {
+	return 0, nil
+}
+
+// ScanThresholdsForClock — ADR-029 Phase 3 stub. Threshold-scan
+// behavior is exercised by the engine's own threshold_scan tests; the
+// catchup-orchestrator tests just need a no-op to satisfy the
+// interface, mirroring the Phase 1 charge stub above.
+func (r *stubRunner) ScanThresholdsForClock(_ context.Context, _, _ string, _ int) (int, []error) {
+	return 0, nil
+}
+
+// (ADR-028). The stub mimics the post-refactor engine: one call
+// catches the sub up across all due periods of the targeted clock.
+func (r *stubRunner) RunCycleForClock(_ context.Context, _, clockID string, _ int) (int, []error) {
 	r.calls++
 	if r.err != nil {
 		return 0, []error{r.err}
 	}
-	subs := r.store.subsOnClock[r.clockID]
+	clk, ok := r.store.clocks[clockID]
+	if !ok {
+		return 0, nil
+	}
+	subs := r.store.subsOnClock[clockID]
+	invoices := 0
 	for i := range subs {
 		if subs[i].ID != r.subID || subs[i].NextBillingAt == nil {
 			continue
 		}
-		next := subs[i].NextBillingAt.Add(r.cycleDur)
-		subs[i].NextBillingAt = &next
+		// Loop until caught up (post-ADR-028 engine semantics).
+		// Cap iterations at 10000 to mirror maxPeriodsPerSubPerCall.
+		for n := 0; n < 10000 && !subs[i].NextBillingAt.After(clk.FrozenTime); n++ {
+			next := subs[i].NextBillingAt.Add(r.cycleDur)
+			subs[i].NextBillingAt = &next
+			invoices++
+		}
 	}
-	r.store.subsOnClock[r.clockID] = subs
-	return 1, nil
+	r.store.subsOnClock[clockID] = subs
+	return invoices, nil
 }

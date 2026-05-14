@@ -10,6 +10,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -55,7 +56,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Co
 	defer postgres.Rollback(tx)
 
 	c.ID = postgres.NewID("cpn")
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 
 	planIDs := postgres.StringArray(c.PlanIDs)
 	if planIDs == nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/platform/scheduler"
 )
 
 // DunningProcessor processes due dunning runs.
@@ -29,14 +30,6 @@ type CreditExpirer interface {
 // InvoiceReminder queries invoices approaching their due date.
 type InvoiceReminder interface {
 	ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error)
-}
-
-// TestClockSweeper is the narrow hook the scheduler uses to drive
-// the test-clocks TTL cleanup (Stripe-parity 30-day idle delete).
-// Implemented by *testclock.Service — kept as a tiny interface so
-// the billing package doesn't depend on the testclock package.
-type TestClockSweeper interface {
-	SweepDueDeletes(ctx context.Context, batch int) (int, error)
 }
 
 // TaxRetrier is the narrow hook the scheduler uses to drive the
@@ -86,7 +79,6 @@ type Scheduler struct {
 	reminders         InvoiceReminder
 	tokenCleaner      TokenCleaner
 	idempotencyClean  IdempotencyCleaner
-	testClockSweeper  TestClockSweeper
 	taxRetrier        TaxRetrier
 	paymentReconciler PaymentReconciler
 	locker            Locker
@@ -136,15 +128,6 @@ func (s *Scheduler) SetIdempotencyCleaner(cleaner IdempotencyCleaner) {
 	s.idempotencyClean = cleaner
 }
 
-// SetTestClockSweeper wires the test-clocks TTL cleanup. Each tick
-// soft-deletes any clocks whose deletes_after has elapsed, cascade-
-// cancelling pinned subs in the same DB tx. Stripe-parity 30-day
-// idle cleanup. Optional: when nil the sweep is skipped (fine for
-// dev / test runs that don't care about retention).
-func (s *Scheduler) SetTestClockSweeper(sw TestClockSweeper) {
-	s.testClockSweeper = sw
-}
-
 // SetTaxRetrier wires the background tax-retry reconciler. Each
 // tick scans invoices stuck at tax_status pending|failed with a
 // retryable code (provider_outage, unknown) past their backoff
@@ -187,20 +170,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 		"interval", s.interval.String(),
 		"batch_size", s.batch,
 	)
-
-	// Wait for first interval before running (don't bill on startup)
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("billing scheduler stopped")
-			return
-		case <-ticker.C:
-			s.runOnce(ctx)
-		}
-	}
+	scheduler.Run(ctx, "billing", s.interval, s.runOnce)
 }
 
 func (s *Scheduler) runOnce(ctx context.Context) {
@@ -402,18 +372,6 @@ func (s *Scheduler) runCrossModeCleanup(ctx context.Context) {
 		}
 	}
 
-	// 7. Test-clock TTL sweeper. Soft-deletes any clocks whose
-	// deletes_after has elapsed and cascade-cancels their pinned
-	// subs (ADR-016). Stripe-parity 30-day idle cleanup.
-	if s.testClockSweeper != nil {
-		swept, err := s.testClockSweeper.SweepDueDeletes(ctx, s.batch)
-		if err != nil {
-			slog.Error("test-clock sweep error", "error", err)
-		} else if swept > 0 {
-			slog.Info("test clocks soft-deleted by TTL sweep", "count", swept)
-			mw.RecordScheduledCleanup("test_clocks", swept)
-		}
-	}
 }
 
 // runDunningHalf runs the leader-gated half that advances dunning state.

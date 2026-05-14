@@ -299,7 +299,7 @@ func (s *OutboxStore) ListByInvoice(ctx context.Context, tenantID, invoiceNumber
 		       next_attempt_at, COALESCE(last_error,''), created_at, dispatched_at
 		FROM email_outbox
 		WHERE email_type IN ('invoice', 'payment_receipt', 'payment_failed',
-		                     'payment_update_request', 'dunning_warning',
+		                     'payment_setup_request', 'dunning_warning',
 		                     'dunning_escalation')
 		  AND payload->>'invoice_number' = $1
 		ORDER BY created_at ASC

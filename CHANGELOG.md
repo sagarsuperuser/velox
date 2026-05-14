@@ -13,6 +13,254 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Removed
 
+- **`bulk_actions` (operator-cohort apply-coupon / schedule-cancel) trimmed.** Pre-demo wedge-alignment cut (2026-05-14). Off-wedge: generic SaaS operator-cohort feature with no UI, no DP demand, no MANUAL_TEST coverage. ~2,150 LOC removed (package `internal/bulkaction/`, 2 router adapters, TS api client + types, migration to drop the `bulk_actions` table). Re-add cost when triggered by real DP need: ~4-6 days.
+- **`plan_migrations` (operator-cohort bulk plan swap) trimmed.** Same trim, same reasoning. ~1,650 LOC removed (package `internal/planmigration/`, router wiring, TS api client + types, migration to drop the `plan_migrations` table). Re-add cost: ~5-7 days. Wedge-relevant proration code (`remainingPeriodFactor` for plan-change-on-individual-sub) is unchanged in `subscription/handler.go`.
+
+### Added
+
+- **Billing-profile save now flushes stuck tax retries.** When an
+  operator updates a customer's `country` / `postal_code` / `state` /
+  `tax_id`, every draft invoice for that customer stuck on
+  `customer_data_invalid` auto-retries — no per-invoice Retry click.
+  Surgical filter: only `customer_data_invalid` rows replay (other
+  codes like `provider_outage` or `jurisdiction_unsupported` aren't
+  resolved by a billing-profile change, so retrying them here would
+  burn the per-invoice retry budget). Same architectural shape as the
+  ADR-019 Stripe-reconnect flush, scoped per-customer.
+  `customer.Service` gains `SetTaxFlusher` (narrow `TaxFlusher` iface,
+  one method); `invoice.Service` implements via new
+  `RetryCustomerDataErrors`. Best-effort: per-invoice failures log a
+  warn but don't roll back the profile save.
+
+### Added
+
+- **`make lint-clock` guard against ADR-030 regressions.** A
+  shell-based check that flags bare `time.Now()` in
+  `internal/{subscription,invoice,credit,dunning,customer,billing}`
+  service / store / engine code — exactly the packages where
+  clock-pinned entities are written. Bypassable per-line with a
+  `// wall-clock: <reason>` justification comment for the legitimate
+  carve-outs (cron tick, signature replay tolerance, audit-log
+  recorded_at). Wired into `.github/workflows/ci.yml` as part of the
+  lint job. Caught two real defects on first run that the prior
+  ADR-030 audit had missed (`engine.nextTaxRetry` stamping wall-clock
+  for `tax_next_retry_at`, and the `tax_deferred_at` write inside
+  `ApplyTaxToLineItems`); both fixed in the same commit.
+
+### Changed
+
+- **Simulated time everywhere on clock-pinned entities (ADR-030).**
+  Adopts Stripe's test-clock model end-to-end: every timestamp written
+  for a clock-pinned customer / sub / invoice / dunning_run /
+  credit_grant — including postgres `created_at` / `updated_at`
+  audit columns, PDF "Generated on" footers, payment-success
+  `paid_at`, and every state-machine stamp — lands in the test
+  clock's `frozen_time` domain instead of wall-clock. Foundation:
+  `clock.Clock.Now()` becomes ctx-aware (`Now(ctx)`); operator entry
+  points bind effective-now once via `clock.BindEffectiveNow`;
+  postgres stores and render code read directly from ctx via a
+  package-level `clock.Now(ctx)` helper. Replaces the per-service
+  `ClockResolver` interfaces shipped during ADR-029 patches with a
+  unified `clock.Resolver` (implemented by `*billing.Engine`).
+  PaymentIntent / Charge / Stripe webhook delivery timestamps stay
+  wall-clock — matches Stripe's deliberate carve-out. The
+  idle-clock-then-advance bug class (operator creates clock, walks
+  away, advances later → wall-clock has drifted past `frozen_time` →
+  any wall-clock-stamped row strands outside the catchup window) is
+  closed at the architectural level: one ctx binding at the boundary,
+  every nested service / store / render call inherits.
+
+### Fixed
+
+- **Operator writes on clock-pinned entities now stamp simulated
+  time, not wall-clock.** Closes the cross-flow audit triggered by
+  the dunning fix: any operator action (subscription create / activate
+  / change-item / schedule-cancel / pause-collection / end-trial /
+  extend-trial; one-off invoice composer; dunning state-machine
+  steps) that writes a timestamp on a clock-pinned customer or
+  subscription now resolves through `billing.Engine`'s
+  `EffectiveNowForCustomer` / `EffectiveNowForSubscription` /
+  `EffectiveNowForInvoice` and lands in the clock's `frozen_time`
+  domain. Before, an idle test clock (created weeks ago, then
+  advanced today) plus any operator-driven create-then-advance
+  sequence stranded the affected row outside the catchup window —
+  catchup queries compare `<= frozen_time` while writes were
+  stamping `s.clock.Now()` (wall-clock 2026 vs. frozen 2024-04).
+  The forward-simulation pattern (clock created and used minutes
+  apart) hid the bug; the realistic idle-then-advance pattern
+  exhibits it on every clock-pinned create.
+
+  Stranding sites fixed:
+
+  - **Subscription create** (`subscription.Service.Create`):
+    `next_billing_at`, `current_billing_period_*`, `trial_end_at`,
+    `started_at` were wall-clock; now resolved via the customer pin.
+    The dominant impact, since `next_billing_at <= frozen_time` is
+    the Phase 0 catchup gate.
+  - **Subscription activate** (`Activate`): `activated_at`,
+    `started_at`, period bounds, `next_billing_at`.
+  - **Subscription item change** (`ChangeItem`):
+    `pending_plan_effective_at` (when no period_end fallback),
+    immediate `EffectiveAt` return.
+  - **Subscription schedule-cancel / pause-collection /
+    end-trial / extend-trial**: future-checks against simulated time
+    (so an operator-supplied cancel_at "1 month in frozen-future"
+    isn't rejected as wall-clock-past).
+  - **Invoice create** (`invoice.Service.Create`): `due_at` was
+    wall-clock; one-off invoices for clock-pinned customers and
+    manual sub-attached addenda for clock-pinned subs now stamp
+    simulated time, so `ListApproachingDueForClock`'s
+    `due_at BETWEEN frozen AND frozen + N` window picks them up.
+  - **Dunning** (`dunning.Service.StartDunning` / `processRun` /
+    `exhaustRun` / `ResolveRun` / `ResolveByInvoice`):
+    `next_action_at`, `last_attempt_at`, `resolved_at`,
+    `created_at`. Phase 5 catchup gate.
+
+  New `billing.Engine.EffectiveNowForCustomer` /
+  `EffectiveNowForSubscription` (alongside existing
+  `EffectiveNowForInvoice`) provide the resolution. Each affected
+  service gains a narrow `ClockResolver` interface and `SetClockResolver`
+  setter. Wired in `api/router.go` after engine construction.
+  Wall-clock fallback preserved on resolver error / unwired
+  resolver — never block an operator action on a dangling pin.
+
+  Stranding bug surfaces on idle-clock + advance pattern, not just
+  retro-simulation; common enough that any first design partner
+  hitting test clocks would have observed it. Audit driven by the
+  cross-flow review request after dunning fix landed.
+
+### Changed
+
+- **Test clock flows fully disjoint from wall-clock cron (ADR-029).**
+  Closes the deferred-decoupling section ADR-028 left open. Every
+  time-aware engine path that touches clock-pinned entities now has
+  a per-clock catchup variant driven by the operator's Advance click,
+  with the wall-clock cron's query filtering out clock-pinned rows
+  via `NOT EXISTS`. Six phases shipped together so simulation purity
+  is end-to-end, not partial:
+  - **Phase 1 — auto-charge retry.** Clock-pinned `auto_charge_pending`
+    invoices charge on Advance, never on the wall-clock 5-min tick.
+    `Engine.RetryPendingChargesForClock` + `ListAutoChargePendingForClock`.
+  - **Phase 2 — tax retry.** Pending tax calcs on clock-pinned invoices
+    retry during catchup; runs before charge so unblocked tax flows
+    into finalize → charge in one Advance. `Service.RetryPendingTaxForClock`
+    + `ListPendingTaxRetryForClock`.
+  - **Phase 3 — threshold scan.** Hard-cap (Stripe-parity billing-
+    thresholds) invoices fire during catchup against simulated subtotal.
+    `Engine.ScanThresholdsForClock` + `ListWithThresholdsForClock`.
+  - **Phase 4 — credit expiry.** Clock-pinned customer grants expire
+    against simulated `frozen_time`, not wall-clock. Frozen-time anchor
+    read once per Advance for stable comparison across the catchup.
+    `Service.ExpireCreditsForClock` + `ListExpiredGrantsForClock`.
+  - **Phase 5 — dunning advance.** Past-due dunning state machines step
+    forward in simulated time during catchup, after the charge phase
+    so a successful charge clears dunning instead of advancing it.
+    `Service.ProcessDueRunsForClock` + `ListDueRunsForClock`.
+  - **Phase 6 — invoice reminders.** Reminder candidate lists for
+    invoices approaching simulated `due_at` are gathered during
+    catchup; matches today's cron behavior (list-and-log) and
+    inherits future dispatch wiring symmetrically.
+    `Service.ListApproachingDueForClock`.
+
+  The `testclock.Service.RunCatchup` orchestrator now drives all six
+  phases per Advance click in documented order with failure isolation
+  (a failure in one phase appends to `runErrs` but doesn't stop
+  subsequent phases). New narrow interfaces on `testclock.Service`:
+  `TaxRetrier`, `CreditExpirer`, `DunningProcessor`, `ReminderLister`
+  — all wired at the producer (`internal/api/router.go`).
+  `Stripe Test Clocks` parity exact across all time-aware paths.
+  Lesson memorialized in `feedback_long_term_means_cross_flow_audit`:
+  when a contract changes (test clock = "operator drives time"),
+  audit every consumer in the SAME design pass — don't punt them
+  to deferred follow-up.
+
+### Fixed
+
+- **State conflicts now return `409 Conflict` with `code=invalid_state`
+  (was `422 Unprocessable Entity` with `code=validation_error`).** The
+  error router in `internal/api/respond/errors.go` collapsed
+  `errs.ErrInvalidState` and `errs.ErrValidation` onto the same
+  validation-error response, masking ~70 state-conflict guards
+  across the codebase as input-validation failures. Wrong HTTP
+  semantics: `422` means "fix your input"; `409` means "the resource
+  is in a state that doesn't permit this operation" — exactly what
+  every `errs.InvalidState(...)` site is. Caught while live-testing
+  MANUAL_TEST FLOW TC4 ("Second advance while advancing → 409"),
+  which got 422 in practice. Stripe / GitHub / AWS all use 409 for
+  the same shape. Affected guards include test-clock advance-while-
+  advancing, refund-while-not-paid, "cannot rotate a revoked key",
+  recipe instance state transitions, and dozens more — all now
+  return the right status with `code=invalid_state` (or the
+  call-site's explicit `DomainError.Code` when set, e.g. a domain
+  code like `clock_advancing`). One pinning test in
+  `internal/invoice/refund_handler_test.go` was updated to assert
+  the corrected wire shape.
+
+### Removed
+
+- **`POST /v1/subscriptions` no longer accepts `test_clock_id` (Stripe
+  parity, ADR-027 follow-through).** ADR-027 (April 2026) moved the
+  test-clock attach point from subscription to customer; subs have
+  inherited from the owning customer ever since. The sub-create
+  endpoint kept accepting `test_clock_id` as a vestigial input, with
+  three branches of validation against the customer's value
+  (livemode block, mismatch reject, customer-has-no-clock-but-input-does
+  reject) — validation for an input no client should send.
+  Stripe's `subscription.create` doesn't accept a `test_clock`
+  parameter at all; the customer determines the answer. Velox now
+  matches: `subscription.CreateInput.TestClockID` removed; the
+  service unconditionally stamps `sub.test_clock_id = customer.test_clock_id`
+  at create time. The OpenAPI spec already didn't surface the field;
+  the SPA already didn't send it (per ADR-027 inheritance comments
+  in `CustomerDetail.tsx`); only the dead server-side code goes
+  away. MANUAL_TEST FLOW TC3 updated: the two lines exercising
+  validation branches replaced with a positive assertion that the
+  response carries the inherited clock and that a stray `test_clock_id`
+  in the body is silently ignored. `subscriptions.test_clock_id`
+  DB column stays — it's a denormalized cache used for routing
+  (cron skips clock-pinned subs, ADR-028).
+
+- **`test_clocks.deletes_after` column + TTL sweeper removed
+  (consumer without a producer).** The column was added in migration
+  0020 (Aug 2025) as a Stripe-parity 30-day idle-cleanup hook;
+  ADR-016 (May 4 2026) wired the consumer side — a scheduler tick
+  that soft-deleted any clock past its TTL and cascade-cancelled
+  its pinned subs. The producer side never landed: no API field,
+  no service input, no SPA control, no background job ever wrote
+  `deletes_after` on a clock. The column was NULL on every row in
+  production for ~9 months, the sweeper matched zero rows on every
+  tick, and the only writer was a manual psql step in MANUAL_TEST
+  FLOW TC2 that existed solely to exercise the sweeper machinery.
+  Removed: `test_clocks.deletes_after` column + partial index
+  (migration 0080), `domain.TestClock.DeletesAfter`,
+  `Store.SweepDueDeletes`, `Service.SweepDueDeletes`,
+  `billing.TestClockSweeper` interface + scheduler field +
+  `SetTestClockSweeper` setter + the scheduler tick step,
+  `cmd/velox/main.go` wiring, the postgres TTL test and the
+  MANUAL_TEST psql step. ADR-016 amended to record the reversal
+  and the trigger that revisits it (operator ask for auto-cleanup
+  of idle clocks). Operator-driven `Delete` + cascade-cancel of
+  pinned subs survives unchanged.
+
+- **`usage_events.subscription_id` column dropped (Stripe / Lago / Orb
+  parity).** The column has shipped since the original `usage_events`
+  table was created but was never populated and never read. DB audit
+  before removal: 49,751 rows, zero with `subscription_id` set. The
+  HTTP ingest API never accepted it, the OpenAPI `UsageEvent` schema
+  never advertised it, and no internal caller (handler, bench tool,
+  test fixtures) wrote to it. Industry parallel: Stripe Meter Events
+  do not store a sub reference at all — neither do Lago, Orb,
+  Metronome or OpenMeter. Every comparable engine resolves the sub
+  at invoice time from the customer's period overlap, which is what
+  Velox's billing engine has always done in practice. Removed:
+  `usage_events.subscription_id` column + FK, `domain.UsageEvent.SubscriptionID`,
+  `usage.IngestInput.SubscriptionID`, the column from CSV exports
+  and the field from related INSERT/SELECT SQL. Migration 0079
+  drops the column with the FK first; downward migration restores
+  both. The seed tool in `cmd/velox-migrate-safety/seed.go` no
+  longer joins subscriptions just to populate a column nobody
+  read.
+
 - **Lean-cut: scope reduction for pre-design-partner stage (2026-04-29).**
   Velox is local-only with one user account; features built ahead of
   named customer demand were producing maintenance load and doc drift
@@ -98,6 +346,68 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   needed to stay in sync by hand.
 
 ### Changed
+
+- **Test-clock advance capped at +1 year per call (Stripe parity,
+  ADR-028 amendment).** A single Advance now moves `frozen_time`
+  forward by at most 1 year; longer simulations are chunked into
+  successive operator clicks. Stops a single mistyped target from
+  triggering a multi-decade catchup that would overrun the 10-min
+  worker timeout and leave the clock in `internal_failure`. Each
+  chunk's invoices, payments and dunning state stay reviewable
+  before the next advance, and a bug surfacing in year 14 no longer
+  poisons the earlier years' simulated billing in the same run.
+  Server: `Service.Advance` rejects `newTime > current.FrozenTime + 1y`
+  with a typed `errs.Invalid("frozen_time", …)` (leap-year-correct
+  via `time.AddDate(1, 0, 0)`). SPA: the Advance dialog gates the
+  submit button on the same window and surfaces the maximum allowed
+  target inline so the operator never round-trips a 422.
+
+- **Billing engine: per-sub period loop + disjoint cron / advance
+  flows (ADR-028).** Operator click Advance to a far-future test
+  clock (e.g., 25 years out) used to fail or stop short — the catchup
+  outer loop hit `MaxAdvanceCatchupLoops = 120` before all periods
+  were billed, then the wall-clock cron drip-billed clock-pinned
+  subs at 1 invoice per tick (5 min in dev, 1 hour in prod). The
+  cron and advance flows raced on `FOR UPDATE SKIP LOCKED`, so
+  catchup sometimes returned `n=0` and exited cleanly while the
+  sub was still due. Two architectural fixes shipped together:
+  - **`Engine.billSubscription` loops internally per sub.** Extracted
+    the existing body to `billOnePeriod`; the outer wrapper iterates
+    until the sub catches up to its `effectiveNow`. One operator
+    Advance click now generates ALL due invoices in one call, not 1
+    per outer-pass. `MaxAdvanceCatchupLoops` removed; `maxPeriodsPerSubPerCall = 10000`
+    is the inner safety counter (covers 833 years monthly).
+  - **Disjoint flows: cron skips clock-pinned subs, advance is the
+    sole path.** `GetDueBilling` now filters `WHERE test_clock_id IS NULL`;
+    new `GetDueBillingForClock(clockID)` is used by `RunCatchup` via
+    `Engine.RunCycleForClock`. SKIP-LOCKED race eliminated, drip-bill
+    artifact gone, operator's mental model of "simulation time
+    progresses only on Advance" upheld. Stripe Test Clocks
+    operate the same way.
+
+- **Test clocks now attach at the customer level (Stripe parity).**
+  Velox previously attached test clocks at the subscription level —
+  flexible but allowed a single customer to have subs on different
+  clocks, breaking simulation-time consistency for customer-level
+  state (credit balance, dunning override, payment-method setup).
+  Stripe / Recurly attach at the customer; Velox now matches.
+  Migration 0078 adds `customers.test_clock_id` (FK to test_clocks,
+  ON DELETE SET NULL), backfills from existing per-sub pinning, and
+  reconciles any sub whose clock disagrees with the customer's.
+  `subscriptions.test_clock_id` stays as a denormalized cache;
+  service layer enforces sub.clock == customer.clock at create time.
+  `POST /v1/customers` accepts `test_clock_id` (test mode only,
+  clock-existence-validated, immutable post-create — to switch
+  clocks, recreate the customer, matching Stripe). `POST /v1/subscriptions`
+  inherits the clock from the owning customer; mismatches rejected.
+  New `GET /v1/test-clocks/:id/customers` endpoint powers the test-
+  clock detail page's "Attached customers" surface (Tier 3 parity).
+  SPA: dropdown moved from sub-create dialogs to the customer-
+  create dialog; sub-create now shows a read-only inheritance hint;
+  Customer Detail header carries a test-clock badge; Test Clock
+  Detail shows attached customers above the existing subs list;
+  Subscriptions-page create dialog no longer needs the dropdown
+  (asymmetry resolved structurally). ADR-027.
 
 - **Invoice timeline coalesces redundant rows + surfaces charged
   card (ADR-020).** Pre-fix the activity timeline rendered
@@ -265,7 +575,293 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   taxonomy fit was wrong — settings-missing is data integrity,
   not a tax-calculation failure).
 
+### Added
+
+- **`VELOX_TEST_CLOCK_CATCHUP_DELAY_MS` env knob for manual
+  restart-resilience verification.** A 1-year monthly-billing
+  catchup completes in 1-3 seconds on a single-sub fixture — too
+  fast to reliably time `kill -TERM` mid-flight. Setting the env
+  to a positive integer (milliseconds) makes `runCatchupLoop`
+  sleep that long between billing passes, giving operators a
+  deterministic window. With `=2000`, a 1-year advance takes ~24s
+  — comfortable kill window. Off-by-default. Pacing sleep
+  honours ctx cancellation so an actual `kill -TERM` mid-sleep
+  wakes promptly. Mirrors `VELOX_TEST_CLOCK_INJECT_FAILURE`
+  shape. ADR-015 amendment.
+
+- **`VELOX_TEST_CLOCK_INJECT_FAILURE` env knob for manual UI
+  verification of the catchup-failure path.** The MANUAL_TEST FLOW
+  TC2 bullet ("Catchup failure → status internal_failure with
+  destructive banner") suggested triggers (disconnect Stripe, hit
+  the 10-min wall-clock cap) that don't reliably reproduce: tax
+  failures defer via ADR-017's block-and-retry pattern rather than
+  hard-fail catchup, and the wall-clock cap is machine-speed
+  dependent. Now `runCatchupLoop` reads `VELOX_TEST_CLOCK_INJECT_FAILURE`
+  at the top of the function and returns a failure with that value
+  as the reason. One-shot — the helper clears the env after firing —
+  so the operator can chain failure → Retry advance → success in
+  one session. Off-by-default; production processes don't set it.
+  Mirrors Stripe Test Clock's "force-fail" primitive. ADR-018
+  amendment.
+
+- **Smart polling on detail pages so webhook-driven state changes
+  show up without manual refresh.** Detail pages were fetch-on-mount
+  only — when the operator clicked Pay/Retry and waited for the
+  Stripe webhook to land (typically 1-3s), the activity timeline +
+  payment status sat stale until the page was reloaded. Now the
+  invoice + timeline + customer payment-setup queries refetch on a
+  state-aware cadence:
+  - 2s while a charge is in flight (`payment_status=processing|unknown`)
+    or a customer-portal update is mid-flight
+    (`setup_status=pending`).
+  - 5s on tax-retry, dunning-active, or post-decline states.
+  - 10s on awaiting-first-charge / setup states.
+  - 5s for ~30s after `paid_at` to catch trailing events (receipt
+    email landing async via outbox, dunning resolution row, ADR-020
+    card-detail stamping). Without this trailing window the operator
+    would see "Paid" but the activity log would appear to be missing
+    the "Payment receipt emailed" row that lands a few seconds later.
+    Same pattern Stripe Dashboard / Recurly use.
+  - No polling on truly terminal states (voided / draft / setup ready
+    or missing, paid+>30s) — `refetchOnWindowFocus` covers the rare
+    "tab open all day" case without burning cycles.
+  Mirrors Stripe Dashboard's pattern. Picks polling over SSE
+  (`/v1/webhook_events/stream`) at this stage — operator load is
+  trivial, no latency complaint, and SSE adds connection-lifecycle
+  complexity that pre-launch can defer.
+
+### Changed
+
+- **All paginated list pages now sort deterministically end-to-end.**
+  Audit of every operator-visible list surface found the same three
+  bugs that motivated the invoice fix repeated across 4 more pages:
+  Subscriptions, Customers, Credit Notes, Credits ledger. Same shape:
+  no id tie-break in `ORDER BY`, frontend sort UI not wired to the
+  API, client-side re-sort only sorting the current page. All four
+  fixed: store-local `<entity>OrderBy` helper with closed-allow-list
+  + matching id tie-break direction; `ListFilter` gains validated
+  Sort/SortDir; handler reads `?sort=` / `?dir=`; SPA passes them
+  through queryParams + queryKey; client-side `useSortable.sorted`
+  dropped (server is now the source of truth). Coupons already had
+  the right shape (`id DESC` tie-break) and was untouched.
+
+- **Invoice list now sorts deterministically end-to-end — bug + UX
+  gap.** Operators reported the `/invoices` table appeared in
+  random order. Three layered bugs:
+  1. Backend `ORDER BY created_at DESC` had no tie-break.
+    Test-clock catchup generates many invoices with microsecond-
+    close `created_at` values; Postgres returned ties in arbitrary
+    order.
+  2. Frontend had clickable column headers + URL state but never
+    sent `sort` / `dir` to the API — the UI affordance was decorative.
+  3. Client-side re-sort hook (`useSortable`) was sorting only the
+    current page, breaking pagination semantics ("top 50 by created_at,
+    re-sorted by amount" instead of "top 50 by amount").
+  Fixes: `ListFilter` gains validated `Sort` / `SortDir` fields with
+  closed allow-list (invoice_number, amount_due_cents,
+  billing_period_start, due_at, issued_at, status, payment_status —
+  unknown keys default to created_at, prevents SQL injection),
+  deterministic id tie-break matching primary sort direction.
+  Frontend now passes sort + dir, includes them in queryKey for
+  refetch, drops client-side re-sort. Period and Payment columns
+  gain sortable headers. Tests cover allow-list + injection guard
+  + tie-break direction.
+
+- **Card-decline operator messages use Stripe's curated phrasings.**
+  Previously the snake_case `decline_code` was mechanically
+  title-cased, which produced awkward English for some codes ("Lost
+  card.", "Do not honor."). New `internal/payment/decline_codes.go`
+  carries a curated map sourced from
+  [Stripe's official decline-code documentation](https://docs.stripe.com/declines/codes)
+  with operator-readable phrasings ("The card has been reported lost.
+  The customer should contact their bank.", "The card was declined by
+  the issuer."). Codes not in the map fall back to title-case so new
+  Stripe codes don't break the path. Tests assert the high-traffic
+  codes resolve to their curated forms and unknown codes fall back
+  cleanly. Built atop ADR-026's `SafeMessageError` boundary.
+
+- **Backend errors no longer leak raw SDK / DB / internal strings to
+  the operator UI.** Audit found 12 paths returning
+  `respond.Validation(..., err.Error())` or equivalent — leaking raw
+  Stripe SDK messages (the "Keys for idempotent requests can only be
+  used with the same parameters…" toast was one), Postgres errors,
+  and Velox-internal identifiers. Fixed with single-boundary
+  sanitization in `respond.FromError` plus a new `SafeMessageError`
+  marker interface that lets typed errors opt into curated rendering
+  (`*payment.PaymentError` now returns "Card was declined:
+  Insufficient funds." for declines instead of the raw SDK string).
+  Untyped errors fall through to a generic 500 with the full error
+  logged against the request-ID. Customer-facing public endpoints
+  (hosted-invoice payment update) get Tier 2 sanitization — neutral
+  copy, no operator framing. Auth-middleware errors no longer reveal
+  whether a key exists / is expired / is revoked / hit a DB error
+  (closes a key-enumeration leak too). Tests assert raw strings
+  don't leak through the wrapper chain. ADR-026.
+
+- **Attention banner separates Velox's classification from upstream
+  provider responses.** Pre-fix, `Attention.Detail` was a single
+  field labeled "Provider response" in the UI but populated from
+  `inv.tax_pending_reason` — which conflated two semantics.
+  For pre-flight failures (`tax.provider_not_configured` — we never
+  called Stripe), the disclosure surfaced Velox's own internal string
+  ("no client configured for livemode=false") under "Provider
+  response", making operators believe a 4xx came back from Stripe
+  when no API call was ever made. Now `Attention` has two distinct
+  fields: `Detail` (Velox's own framing) and `ProviderResponse`
+  (literal bytes from upstream). The frontend renders two
+  conditional disclosures with honest labels; pre-flight codes leave
+  both empty so no disclosure shows. Same pattern applies to
+  `payment_failed` — Stripe's `last_payment_error` body goes in
+  ProviderResponse. No data migration: API-formation routes per
+  typed code (`tax_error_code`). ADR-025.
+
+- **Cancel + Pause subscription dialogs redesigned as radio-card
+  pattern.** The previous shape — two stacked full-width buttons with
+  inconsistent click semantics (one fired the mutation immediately,
+  the other opened a typed-confirm dialog) and only a "Back" button
+  in the footer — was confusing: the destructive option's red border
+  read as "pre-selected" rather than "destructive style hint", and
+  there was no clear primary verb to commit a choice. Now each
+  dialog has visible radio cards with selection state, defaults to
+  the less-destructive option (period-end cancel / collection-only
+  pause), and a single primary action in the footer that swaps to
+  destructive variant when the irreversible option is selected.
+  Stripe / Linear / GitHub all use this shape for destructive choice
+  flows. Typed-confirm step preserved for the irreversible options
+  ("cancel immediately", "pause subscription").
+
+- **Activity timeline rows tightened to Stripe-class density (invoice
+  + subscription detail).** Row bottom-padding `pb-4` → `pb-2`. ~30%
+  shorter overall, no logic change. Bundled with ADR-024 documenting
+  the canonical timeline
+  primitives (cursor pagination, ETag, source field, raw-payload
+  disclosure, server-derived `simulated`, generalized coalescer,
+  dedicated events table) as **deferred-with-triggers** — Velox stays
+  on the multi-source-assembly pattern that Lago / Recurly /
+  QuickBooks all use; promotes individual primitives only when a
+  named trigger fires. Prevents reinventing the design later under
+  pressure.
+
+### Removed
+
+- **Paid + Voided banners on the operator invoice detail page.** Both
+  rendered information already carried by the header status pill
+  (Paid/Voided badge + date) and the activity timeline (which under
+  ADR-020 coalesces "Invoice paid · via Visa •••• 4242" into a single
+  row with the PI ID). Stripe / Lago / Recurly all follow the same
+  pattern: banners are reserved for attention-required states
+  (declined, dunning, tax pending); terminal states trust the header.
+  The hosted invoice page (customer-facing) still shows its
+  "Paid on {date}" confirmation — that audience needs the strong
+  done-state signal; operators don't.
+
 ### Fixed
+
+- **Pending plan-change applies on the cycle boundary, not on
+  wall-clock drift.** The billing engine's pending-change gate
+  compared `PendingPlanEffectiveAt` against `now` (wall-clock or
+  test-clock `frozen_time`). When the engine ran after the
+  effective date but processed an earlier unbilled cycle (scheduler
+  outage + catch-up, OR test-clock advancing across multiple
+  periods), the change was applied retroactively to that earlier
+  cycle's invoice. Most visible during test-clock simulations:
+  advancing a clock across a year would apply a mid-year scheduled
+  change to ALL prior period invoices, not just post-effective
+  ones. Stripe Billing applies scheduled phases on phase
+  boundaries, not on calendar drift; Velox now matches. Gate
+  switched to `CurrentBillingPeriodEnd` (in-memory check + the SQL
+  filter inside `ApplyDuePendingItemPlansAtomic`); falls back to
+  `now` only when period_end is unset (rare). Closes the
+  long-standing `TestRunCycle_SkipsPendingChangeNotYetDue` failure.
+
+- **Retry Payment no longer hits a Stripe idempotency-key 409 on the
+  second attempt.** Pre-fix `ChargeInvoice` used
+  `velox_inv_{INV}` as the idempotency key but stamped
+  `velox_request_id` (per-HTTP-request chi ID) into PI metadata —
+  Stripe sees same key + different params and rejects with
+  "Keys for idempotent requests can only be used with the same
+  parameters they were first used with." Now the key is
+  `velox_inv_{INV}_{UPDATED_AT_NS}`: each genuine retry advances
+  `inv.UpdatedAt` (UpdatePayment fires after every prior failure),
+  yielding a fresh key. Two concurrent callers (scheduler tick +
+  operator Retry click) reading the same UpdatedAt still dedupe
+  correctly — Stripe returns the same PI, no double-charge. Dropped
+  `velox_request_id` from metadata; log correlation goes through the
+  recorded `stripe_payment_intent_id` instead.
+
+- **Post-decline rendering: one banner per state, distinct emails per
+  lifecycle moment, interactive flow suppression.** Pre-fix every
+  card-decline produced four overlapping surfaces: a unified attention
+  banner with only `[retry_payment]`, a hardcoded "Payment failed"
+  `<Card>` block (pre-ADR-009 leftover) repeating the same headline
+  with `[Update Payment Method, Retry Payment]`, two timeline rows
+  labeled "Customer notified — payment method required" (one from
+  finalize-no-PM, one from post-decline), and an email body identical
+  for both lifecycle moments. Rolled into one cleanup:
+  - **Attention banner**: new `update_payment_method` action; emitted
+    primary on `payment.declined` (the card on file is broken,
+    retrying with the same card declines again). `retry_payment`
+    secondary, wired to the existing Collect endpoint.
+  - **Hardcoded duplicate banner deleted** (`InvoiceDetail.tsx:893-937`);
+    the unified banner is now the single surface.
+  - **Email types split**: `payment_update_request` →
+    `payment_setup_request` (finalize-no-PM only); post-decline now
+    routes to the existing `payment_failed` template (same as dunning
+    retry warnings, points at the long-lived hosted invoice URL).
+    Two distinct timeline labels: "Customer notified — set up payment
+    method" vs "Payment-failed email sent to customer".
+  - **Interactive Pay decline suppresses the email**: PI metadata
+    `velox_purpose=hosted_invoice_pay` → no email sent (customer just
+    saw the failure inline on the hosted page). Auto-charge declines
+    still email. ADR-023.
+
+- **Customer detail Payment Method panel always shows the saved card
+  during an Update flow (atomic swap, no between-cards empty state).**
+  Pre-fix the panel gated card-rendering on `setup_status==='ready'`,
+  so kicking off an Update flow (which flips the row to `pending`
+  while preserving `card_last4` server-side) replaced the existing
+  card UI with "Awaiting payment method setup" — making it look like
+  the customer had no PM at all. Now the panel renders the card
+  whenever `card_last4` is populated, with an amber "Update in
+  progress" sub-line when `setup_status='pending'`. Matches Stripe /
+  Recurly / Lago dashboards: the new card swaps in atomically when
+  `checkout.session.completed` fires; the operator never sees a gap.
+
+- **Stripe Checkout cancel no longer lands on a blank page; return
+  URLs are now contextual instead of env-driven globals.** Pre-fix
+  `STRIPE_CHECKOUT_CANCEL_URL=http://localhost:5173/checkout/cancel`
+  in `.env.example` was stamped on every operator-side
+  `/checkout/setup` session, and the SPA had no matching route — blank
+  page on cancel. The deeper issue: every other Checkout flow
+  (hosted-invoice Pay, customer-portal update PM, public update via
+  token) already used contextual return URLs (`return_url` body field,
+  defaulted to the source page); only `/checkout/setup` was the
+  outlier reading from env. Now `setupRequest` accepts `return_url`,
+  the SPA passes its current page, the handler appends
+  `?payment=success` / `?payment=cancel`, and CustomerDetail.tsx reads
+  the query param to toast + refetch `payment_setup`. Removed the env
+  vars from `.env.example`, `deploy/compose/docker-compose.yml`,
+  `deploy/compose/.env.example`, the `NewCheckoutHandler` constructor
+  signature, and the now-unused `/checkout/success` SPA route +
+  `CheckoutSuccess.tsx` page. ADR-022.
+
+- **Hosted-invoice Pay flow saves the card to the customer's Stripe
+  customer.** Pre-fix the Checkout session opened from the Pay button
+  was created in `mode=payment` with no `Customer` and no
+  `setup_future_usage` — guest checkout, PM consumed by the one-shot
+  PaymentIntent and detached. Operator-reported: end customer ticked
+  "save card," paid the invoice, but Velox kept showing "no payment
+  method" and later invoices fell into dunning instead of
+  auto-charging. `hostedInvoiceStripeAdapter` now resolves (or lazily
+  mints) the Stripe customer via `paymentmethods.StripeAdapter.EnsureStripeCustomer`
+  — the same helper the customer portal uses, so portal-created and
+  Pay-flow customers share a Stripe customer record — and passes
+  `Customer: stripeCustomerID` + `PaymentIntentData.SetupFutureUsage='off_session'`
+  on the Checkout session. Canonical Stripe pattern from
+  [Save card during payment](https://docs.stripe.com/payments/save-during-payment).
+  `handleCheckoutCompleted` (already conditional from ADR-020) now
+  finds the attached PM and upserts `customer_payment_setups` with
+  `setup_status='ready'` + card details. ADR-021.
 
 - **Payment-update email link now tokenized everywhere.** Pre-fix
   the no-PM-at-finalize email path

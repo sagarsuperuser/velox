@@ -49,7 +49,7 @@ import (
 //     the canonical row (mirrors what the login form will accept).
 func TestMagicLink_FullLoop_E2E(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 20*time.Second)
 	defer cancel()
 
 	tenantA := testutil.CreateTestTenant(t, db, "Magic Link E2E A")

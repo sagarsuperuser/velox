@@ -87,6 +87,50 @@ func (e *Engine) ScanThresholds(ctx context.Context, batchSize int) (int, []erro
 	return fired, errsOut
 }
 
+// ScanThresholdsForClock is the catchup-path counterpart to
+// ScanThresholds. ADR-029 Phase 3: the wall-clock cron's
+// ListWithThresholds excludes clock-pinned subs; this method is the
+// disjoint per-clock entry point called by the catchup orchestrator
+// after period generation but before charge retry.
+//
+// Per-sub scan logic is identical to the cron path — the only
+// difference is the candidate-fetch scope. Errors collected per-sub,
+// not aborted-on.
+func (e *Engine) ScanThresholdsForClock(ctx context.Context, tenantID, clockID string, batchSize int) (int, []error) {
+	if batchSize <= 0 {
+		batchSize = 50
+	}
+	candidates, err := e.subs.ListWithThresholdsForClock(ctx, tenantID, clockID, batchSize)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list threshold candidates for clock %s: %w", clockID, err)}
+	}
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+	fired := 0
+	var errsOut []error
+	for _, sub := range candidates {
+		didFire, err := e.scanOneThreshold(ctx, sub)
+		if err != nil {
+			slog.Error("threshold scan failed for clock-pinned subscription",
+				"subscription_id", sub.ID,
+				"tenant_id", sub.TenantID,
+				"clock_id", clockID,
+				"error", err,
+			)
+			errsOut = append(errsOut, fmt.Errorf("subscription %s: %w", sub.ID, err))
+			continue
+		}
+		if didFire {
+			fired++
+		}
+	}
+	if fired > 0 {
+		slog.Info("threshold scan fired invoices on advance", "clock_id", clockID, "count", fired)
+	}
+	return fired, errsOut
+}
+
 // scanOneThreshold evaluates a single subscription. Builds running line items
 // over the partial cycle [period_start, now), checks each configured cap,
 // and — when crossed — fires the early finalize via fireThreshold.

@@ -23,6 +23,12 @@ type Store interface {
 	ListBalances(ctx context.Context, tenantID string) ([]domain.CreditBalance, error)
 	ListEntries(ctx context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error)
 	ListExpiredGrants(ctx context.Context) ([]domain.CreditLedgerEntry, error)
+
+	// ListExpiredGrantsForClock is the catchup-path counterpart to
+	// ListExpiredGrants. ADR-029 Phase 4: clock-pinned customer grants
+	// expire only on operator Advance (against the clock's frozen_time),
+	// never on the wall-clock cron tick.
+	ListExpiredGrantsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time) ([]domain.CreditLedgerEntry, error)
 }
 
 type ListFilter struct {
@@ -32,4 +38,6 @@ type ListFilter struct {
 	InvoiceID  string
 	Limit      int
 	Offset     int
+	Sort       string // closed allow-list (validated in store); empty defaults to created_at
+	SortDir    string // "asc" or "desc"; empty defaults to desc
 }

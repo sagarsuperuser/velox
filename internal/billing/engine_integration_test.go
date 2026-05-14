@@ -12,10 +12,12 @@ import (
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/invoice"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 	"github.com/sagarsuperuser/velox/internal/usage"
 )
@@ -27,6 +29,10 @@ type subStoreAdapter struct {
 
 func (a *subStoreAdapter) GetDueBilling(ctx context.Context, before time.Time, limit int) ([]domain.Subscription, error) {
 	return a.store.GetDueBilling(ctx, before, limit)
+}
+
+func (a *subStoreAdapter) GetDueBillingForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error) {
+	return a.store.GetDueBillingForClock(ctx, tenantID, clockID, limit)
 }
 
 func (a *subStoreAdapter) Get(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
@@ -55,6 +61,10 @@ func (a *subStoreAdapter) ActivateAfterTrial(ctx context.Context, tenantID, id s
 
 func (a *subStoreAdapter) ListWithThresholds(ctx context.Context, livemode bool, limit int) ([]domain.Subscription, error) {
 	return a.store.ListWithThresholds(ctx, livemode, limit)
+}
+
+func (a *subStoreAdapter) ListWithThresholdsForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error) {
+	return a.store.ListWithThresholdsForClock(ctx, tenantID, clockID, limit)
 }
 
 // pricingStoreAdapter wraps pricing.PostgresStore to implement billing.PricingReader
@@ -151,6 +161,10 @@ func (a *invoiceStoreAdapter) ListAutoChargePending(ctx context.Context, limit i
 	return a.store.ListAutoChargePending(ctx, limit)
 }
 
+func (a *invoiceStoreAdapter) ListAutoChargePendingForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Invoice, error) {
+	return a.store.ListAutoChargePendingForClock(ctx, tenantID, clockID, limit)
+}
+
 func (a *invoiceStoreAdapter) SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error {
 	return a.store.SetTaxTransaction(ctx, tenantID, id, taxTransactionID)
 }
@@ -171,7 +185,7 @@ func (a *invoiceStoreAdapter) UpdateTaxAtomic(ctx context.Context, tenantID, inv
 // tenant → customer → meter → rating rule → plan → subscription → usage → billing engine → invoice
 func TestFullBillingCycle_E2E(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	// Stores
 	customerStore := customer.NewPostgresStore(db)
@@ -267,7 +281,7 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		ts := periodStart.Add(time.Duration(i) * 24 * time.Hour)
 		_, err := usageStore.Ingest(ctx, tenantID, domain.UsageEvent{
-			CustomerID: cust.ID, MeterID: apiMeter.ID, SubscriptionID: sub.ID,
+			CustomerID: cust.ID, MeterID: apiMeter.ID,
 			Quantity: decimal.NewFromInt(300), Timestamp: ts,
 		})
 		if err != nil {
@@ -277,7 +291,7 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 	// Total API calls: 5 * 300 = 1500
 
 	_, err = usageStore.Ingest(ctx, tenantID, domain.UsageEvent{
-		CustomerID: cust.ID, MeterID: storageMeter.ID, SubscriptionID: sub.ID,
+		CustomerID: cust.ID, MeterID: storageMeter.ID,
 		Quantity: decimal.NewFromInt(50), Timestamp: periodStart.Add(48 * time.Hour),
 	})
 	if err != nil {
@@ -288,12 +302,17 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 	// 8. Run billing engine with a real settings store (exercises the
 	// UPSERT path in NextInvoiceNumber for a tenant with no prior settings row).
 	settingsStore := tenant.NewSettingsStore(db)
+	// Pin the engine clock just past period_end so only one period
+	// is due — the post-ADR-028 per-sub period loop would otherwise
+	// catch up multiple cycles using wall-clock time and the test's
+	// 2026-03/04 fixture period.
+	fakeClk := clock.NewFake(periodEnd.Add(time.Nanosecond))
 	engine := billing.NewEngine(
 		&subStoreAdapter{subStore},
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, settingsStore, nil, nil, nil,
+		nil, settingsStore, nil, nil, fakeClk,
 	)
 	// Production engine always has a tax resolver wired; the
 	// engine fails loudly without one (ApplyTaxToLineItems → error).

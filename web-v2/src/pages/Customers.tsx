@@ -8,6 +8,11 @@ import { toast } from 'sonner'
 import { api, formatDate } from '@/lib/api'
 import type { Customer } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
+import { TestClockBadge } from '@/components/TestClockBadge'
+import { useAuth } from '@/contexts/AuthContext'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 import { downloadServerCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
@@ -62,6 +67,11 @@ const createCustomerSchema = z.object({
   external_id: z.string().min(1, 'External ID is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores allowed'),
   display_name: z.string().min(1, 'Display name is required'),
   email: z.string().email('Invalid email address').optional().or(z.literal('')),
+  // Test-clock pin: customer-level attach (ADR-027, Stripe parity).
+  // Test-mode only; the field is hidden in live mode. Once set,
+  // every Subscription / Invoice for this customer runs on the
+  // clock's simulated time and the value cannot be changed.
+  test_clock_id: z.string().optional(),
 })
 
 type CreateCustomerData = z.infer<typeof createCustomerSchema>
@@ -108,8 +118,22 @@ export default function CustomersPage() {
 
   const form = useForm<CreateCustomerData>({
     resolver: zodResolver(createCustomerSchema),
-    defaultValues: { external_id: '', display_name: '', email: '' },
+    defaultValues: { external_id: '', display_name: '', email: '', test_clock_id: '' },
   })
+
+  // Test-clock pin (ADR-027): the field is gated on test mode +
+  // clocks existing — same shape as the old sub-create gating.
+  // useAuth gives us the dashboard's current mode; useQuery for
+  // clocks reuses the same key as other surfaces so the cache is
+  // shared.
+  const { user } = useAuth()
+  const isTestMode = user?.livemode === false
+  const { data: clocksData } = useQuery({
+    queryKey: ['test-clocks'],
+    queryFn: () => api.listTestClocks(),
+    enabled: isTestMode,
+  })
+  const clocks = clocksData?.data ?? []
 
   // Server-side paginated fetch
   const queryParams = useMemo(() => {
@@ -117,11 +141,13 @@ export default function CustomersPage() {
     params.set('limit', String(PAGE_SIZE))
     params.set('offset', String((page - 1) * PAGE_SIZE))
     if (filterStatus) params.set('status', filterStatus)
+    if (sortKey) params.set('sort', sortKey)
+    if (sortDir) params.set('dir', sortDir)
     return params.toString()
-  }, [page, filterStatus])
+  }, [page, filterStatus, sortKey, sortDir])
 
   const { data: customersData, isLoading: loading, error: loadErrorObj, refetch } = useQuery({
-    queryKey: ['customers', page, filterStatus],
+    queryKey: ['customers', page, filterStatus, sortKey, sortDir],
     queryFn: () => api.listCustomers(queryParams),
   })
 
@@ -138,7 +164,7 @@ export default function CustomersPage() {
       form.reset()
     },
     onError: (err) => {
-      applyApiError(form, err, ['external_id', 'display_name', 'email'])
+      applyApiError(form, err, ['external_id', 'display_name', 'email', 'test_clock_id'])
     },
   })
 
@@ -155,12 +181,15 @@ export default function CustomersPage() {
     })
   }, [customers, search])
 
-  const { sorted, onSort } = useSortable(
+  // Server-side sort end-to-end. Client-side re-sort would only reorder
+  // the current page, breaking pagination semantics.
+  const { onSort } = useSortable(
     filtered,
     sortKey,
     sortDir,
     (key, dir) => setUrlState({ sort: key, dir }),
   )
+  const sorted = filtered
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -303,14 +332,22 @@ export default function CustomersPage() {
                       <TableCell>
                         <div className="flex items-center gap-2.5">
                           <InitialsAvatar name={c.display_name} />
-                          <div>
-                            <Link
-                              to={`/customers/${c.id}`}
-                              className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[200px]"
-                              title={c.display_name}
-                            >
-                              {c.display_name}
-                            </Link>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <Link
+                                to={`/customers/${c.id}`}
+                                className="text-sm font-medium text-foreground hover:text-primary transition-colors truncate block max-w-[200px]"
+                                title={c.display_name}
+                              >
+                                {c.display_name}
+                              </Link>
+                              {/* Customer-level test-clock badge (ADR-027).
+                                  Lets operators scan which customers are
+                                  in simulation without drilling into each
+                                  detail page. Mirrors Stripe's customer
+                                  list. */}
+                              {c.test_clock_id && <TestClockBadge testClockId={c.test_clock_id} />}
+                            </div>
                             <p className="text-xs text-muted-foreground">{c.external_id}</p>
                           </div>
                         </div>
@@ -441,6 +478,47 @@ export default function CustomersPage() {
                   </FormItem>
                 )}
               />
+              {/* Customer-level test-clock attach (ADR-027, Stripe
+                  parity). Test mode + clocks-exist gate matches the
+                  pre-ADR-027 sub-create form. Once set, every
+                  Subscription and Invoice for this customer simulates
+                  on the clock's frozen time. Cannot be changed
+                  post-creation — to switch clocks, recreate the
+                  customer. */}
+              {isTestMode && clocks.length > 0 && (
+                <FormField
+                  control={form.control}
+                  name="test_clock_id"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Pin to test clock <span className="text-muted-foreground">(optional)</span></FormLabel>
+                      <Select value={field.value ?? ''} onValueChange={(v) => field.onChange(v ?? '')}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="No test clock — use wall clock">
+                            {(value: string) => {
+                              if (!value) return 'No test clock — use wall clock'
+                              const c = clocks.find(c => c.id === value)
+                              return c ? (c.name || c.id) : value
+                            }}
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="">No test clock — use wall clock</SelectItem>
+                          {clocks.map(c => (
+                            <SelectItem key={c.id} value={c.id}>
+                              {c.name || c.id}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>
+                        Pinned customers run all subscriptions and invoices on the clock's simulated time. Cannot be changed later.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setShowCreate(false)}>

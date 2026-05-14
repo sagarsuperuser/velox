@@ -87,6 +87,8 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		ExternalID: r.URL.Query().Get("external_id"),
 		Limit:      limit,
 		Offset:     offset,
+		Sort:       r.URL.Query().Get("sort"),
+		SortDir:    r.URL.Query().Get("dir"),
 	}
 
 	customers, total, err := h.svc.List(r.Context(), filter)

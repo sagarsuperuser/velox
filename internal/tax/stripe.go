@@ -101,16 +101,25 @@ func (p *StripeTaxProvider) Calculate(ctx context.Context, req Request) (*Result
 		return &Result{Provider: "stripe_tax"}, nil
 	}
 
+	// Provider-connection check runs BEFORE customer-data validation.
+	// Reason: when a tenant has tax_provider=stripe_tax but no Stripe
+	// credentials connected for the active mode, the underlying issue
+	// is configuration, not customer data — and the operator sees the
+	// correct, actionable reason ("provider_not_configured") instead
+	// of a misleading "no_country" or other downstream failure that
+	// only fires because the client never got built. Also avoids any
+	// pretence of touching Stripe — clientForCtx returns nil from a
+	// pure local credential lookup when nothing is connected.
+	client := p.clientForCtx(ctx)
+	if client == nil {
+		return p.handleFailure(ctx, req, "no_client_for_mode",
+			fmt.Errorf("stripe tax: no Stripe credentials connected for livemode=%v — connect Stripe in Settings → Payments or change tax provider", postgres.Livemode(ctx)))
+	}
+
 	// Stripe Tax needs at minimum a country to resolve jurisdiction.
 	if req.CustomerAddress.Country == "" {
 		return p.handleFailure(ctx, req, "no_country",
 			fmt.Errorf("stripe tax: customer has no country on billing profile"))
-	}
-
-	client := p.clientForCtx(ctx)
-	if client == nil {
-		return p.handleFailure(ctx, req, "no_client_for_mode",
-			fmt.Errorf("stripe tax: no client configured for livemode=%v", postgres.Livemode(ctx)))
 	}
 
 	params := p.buildParams(req)

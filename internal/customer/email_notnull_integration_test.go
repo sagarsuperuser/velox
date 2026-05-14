@@ -19,7 +19,7 @@ import (
 func TestCustomersEmail_NotNull(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := customer.NewPostgresStore(db)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 10*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Email NotNull")

@@ -11,6 +11,12 @@ type Store interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Customer, error)
 	GetByExternalID(ctx context.Context, tenantID, externalID string) (domain.Customer, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.Customer, int, error)
+	// ListByTestClockID returns all customers pinned to the given
+	// test clock, with PII fields decrypted. Used by the testclock
+	// domain via a narrow CustomerReader interface so that domain
+	// never reads the customers table directly — keeps decryption
+	// centralised on the customer-package read path.
+	ListByTestClockID(ctx context.Context, tenantID, clockID string) ([]domain.Customer, error)
 	Update(ctx context.Context, tenantID string, c domain.Customer) (domain.Customer, error)
 
 	UpsertBillingProfile(ctx context.Context, tenantID string, bp domain.CustomerBillingProfile) (domain.CustomerBillingProfile, error)
@@ -32,4 +38,6 @@ type ListFilter struct {
 	ExternalID string
 	Limit      int
 	Offset     int
+	Sort       string // closed allow-list (validated in store); empty defaults to created_at
+	SortDir    string // "asc" or "desc"; empty defaults to desc
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -90,6 +91,77 @@ func TestFromError_UnknownError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status: got %d, want 500", rec.Code)
+	}
+	// ADR-026: raw error message MUST NOT leak to the response body.
+	// The full error is logged server-side; the wire response is
+	// generic.
+	if got := rec.Body.String(); strings.Contains(got, "database connection") {
+		t.Errorf("raw error leaked to wire body: %s", got)
+	}
+}
+
+// fakeSafeMessageError is a test double that opts into operator-safe
+// rendering via the SafeMessageError marker interface.
+type fakeSafeMessageError struct{ raw, safe string }
+
+func (e *fakeSafeMessageError) Error() string               { return e.raw }
+func (e *fakeSafeMessageError) OperatorSafeMessage() string { return e.safe }
+
+func TestFromError_SafeMessageError_SurfacedNotRaw(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", nil)
+
+	// Simulate the leak path: a Stripe SDK error wrapped in our
+	// PaymentError-shaped marker. Raw message is leaky; safe message
+	// is curated.
+	err := &fakeSafeMessageError{
+		raw:  "Keys for idempotent requests can only be used with the same parameters they were first used with. Try using a key other than 'velox_inv_xxx'",
+		safe: "Card was declined: insufficient funds.",
+	}
+	FromError(rec, req, err, "payment")
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status: got %d, want 502", rec.Code)
+	}
+	body := rec.Body.String()
+	// The curated message is what hits the wire.
+	if !strings.Contains(body, "Card was declined") {
+		t.Errorf("expected curated message in response, got %s", body)
+	}
+	// The raw Stripe SDK string MUST NOT leak.
+	if strings.Contains(body, "Keys for idempotent requests") {
+		t.Errorf("raw Stripe SDK error leaked to wire: %s", body)
+	}
+	if strings.Contains(body, "velox_inv_") {
+		t.Errorf("internal idempotency-key leaked to wire: %s", body)
+	}
+}
+
+// TestFromError_SafeMessageWrapped_DetectedViaErrorsAs asserts that
+// errors wrapped via fmt.Errorf with %w still trigger SafeMessageError
+// detection. This is what the real ChargeInvoice path does:
+// `fmt.Errorf("payment failed: %w", paymentErr)` — the wrapper
+// must not hide the marker interface from errors.As.
+func TestFromError_SafeMessageWrapped_DetectedViaErrorsAs(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", nil)
+
+	inner := &fakeSafeMessageError{
+		raw:  "internal sdk error verbatim",
+		safe: "Payment provider rejected the request. Please retry.",
+	}
+	wrapped := fmt.Errorf("payment failed: %w", inner)
+	FromError(rec, req, wrapped, "payment")
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status: got %d, want 502", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Payment provider rejected") {
+		t.Errorf("safe message lost through wrapper: %s", body)
+	}
+	if strings.Contains(body, "internal sdk error verbatim") {
+		t.Errorf("raw sdk error leaked: %s", body)
 	}
 }
 

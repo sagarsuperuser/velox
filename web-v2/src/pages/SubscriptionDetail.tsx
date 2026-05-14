@@ -6,6 +6,7 @@ import { api, formatCents, formatDate, formatDateTime, type Subscription, type S
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { TestClockBanner } from '@/components/TestClockBanner'
+import { TestClockBadge } from '@/components/TestClockBadge'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
@@ -60,8 +61,15 @@ export default function SubscriptionDetailPage() {
 
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   const [showCancelChoice, setShowCancelChoice] = useState(false)
+  // Default to the less-destructive option ("at period end") — Stripe / Linear
+  // / GitHub all default to the safer choice on destructive flows so a misclick
+  // doesn't escalate. Operator picks "immediately" deliberately.
+  const [cancelMode, setCancelMode] = useState<'period_end' | 'immediately'>('period_end')
   const [showPauseConfirm, setShowPauseConfirm] = useState(false)
   const [showPauseChoice, setShowPauseChoice] = useState(false)
+  // Same default-safer principle: collection-pause keeps cycle state intact;
+  // hard-pause halts metering entirely.
+  const [pauseMode, setPauseMode] = useState<'collection' | 'hard'>('collection')
   const [showExtendTrial, setShowExtendTrial] = useState(false)
   const [extendTrialDate, setExtendTrialDate] = useState('')
   const [itemDialog, setItemDialog] = useState<ItemDialogState>(null)
@@ -269,7 +277,16 @@ export default function SubscriptionDetailPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-semibold text-foreground">{sub.display_name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold text-foreground">{sub.display_name}</h1>
+            {/* Test-clock chip lives next to the title alongside the
+                CustomerDetail / InvoiceDetail treatment. Classification
+                chips (which scope this resource belongs to) sit on the
+                left; lifecycle state pills (active/paused/canceled) sit
+                on the right with the action buttons. Stripe / Linear /
+                Vercel all separate the two zones this way. */}
+            {sub.test_clock_id && <TestClockBadge testClockId={sub.test_clock_id} />}
+          </div>
           <div className="flex items-center gap-2 mt-1">
             <span className="text-xs text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded">{sub.id}</span>
             <CopyButton text={sub.id} />
@@ -324,13 +341,6 @@ export default function SubscriptionDetailPage() {
           <Badge variant={statusVariant(sub.status)}>{sub.status}</Badge>
           {sub.status === 'trialing' && sub.trial_end_at && (
             <ExpiryBadge expiresAt={sub.trial_end_at} label="Trial ends" warningDays={3} now={testClock?.frozen_time} />
-          )}
-          {sub.test_clock_id && (
-            <Link to={`/test-clocks/${sub.test_clock_id}`} className="inline-block">
-              <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300 hover:bg-amber-500/15">
-                Test clock
-              </Badge>
-            </Link>
           )}
         </div>
       </div>
@@ -850,7 +860,7 @@ export default function SubscriptionDetailPage() {
           <CardContent>
             <div className="relative">
               {activityTimeline.map((event, i) => (
-                <div key={i} className="flex gap-4 pb-4 last:pb-0">
+                <div key={i} className="flex gap-4 pb-2 last:pb-0">
                   <div className="flex flex-col items-center">
                     <div className={cn(
                       'w-2.5 h-2.5 rounded-full mt-1.5',
@@ -910,13 +920,18 @@ export default function SubscriptionDetailPage() {
         loading={cancelMutation.isPending}
       />
 
-      {/* Cancel Choice — Stripe-parity: pick between "at period end" (soft,
-          reversible until the boundary fires) and "immediately" (the
-          existing destructive cancel, gated by the typed-confirm above). */}
-      <AlertDialog open={showCancelChoice} onOpenChange={setShowCancelChoice}>
+      {/* Cancel Choice — radio-card pattern (Stripe / Linear / GitHub).
+          Two clear options with visible selection state, single primary
+          action in the footer that commits the chosen mode. "Immediately"
+          still routes through the typed-confirm dialog because the action
+          is irreversible — friction is intentional there. */}
+      <AlertDialog
+        open={showCancelChoice}
+        onOpenChange={(o) => { setShowCancelChoice(o); if (!o) setCancelMode('period_end') }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancel Subscription</AlertDialogTitle>
+            <AlertDialogTitle>Cancel subscription</AlertDialogTitle>
             <AlertDialogDescription>
               Choose when this subscription should stop billing.
               {sub.current_billing_period_end && (
@@ -924,73 +939,93 @@ export default function SubscriptionDetailPage() {
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="space-y-2 py-2">
-            <Button
-              variant="outline"
-              className="w-full justify-start"
-              onClick={() => scheduleCancelMutation.mutate()}
+          <div className="space-y-2 py-2" role="radiogroup" aria-label="Cancellation timing">
+            <RadioCard
+              selected={cancelMode === 'period_end'}
+              onClick={() => setCancelMode('period_end')}
               disabled={acting}
-            >
-              <div className="text-left">
-                <div className="font-medium">Cancel at period end</div>
-                <div className="text-xs text-muted-foreground">Customer keeps access until the current period ends. Reversible.</div>
-              </div>
-            </Button>
-            <Button
-              variant="outline"
-              className="w-full justify-start border-destructive text-destructive hover:bg-destructive/10"
-              onClick={() => { setShowCancelChoice(false); setShowCancelConfirm(true) }}
+              title="At period end"
+              description={
+                sub.current_billing_period_end
+                  ? `Customer keeps access until ${formatDate(sub.current_billing_period_end)}. Reversible until then.`
+                  : 'Customer keeps access until the current period ends. Reversible until then.'
+              }
+            />
+            <RadioCard
+              selected={cancelMode === 'immediately'}
+              onClick={() => setCancelMode('immediately')}
               disabled={acting}
-            >
-              <div className="text-left">
-                <div className="font-medium">Cancel immediately</div>
-                <div className="text-xs text-muted-foreground">Stops billing right now. Cannot be undone.</div>
-              </div>
-            </Button>
+              destructive
+              title="Immediately"
+              description="Stops billing right now. Cannot be undone."
+            />
           </div>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={acting}>Back</AlertDialogCancel>
+            <AlertDialogCancel disabled={acting}>Keep subscription</AlertDialogCancel>
+            <Button
+              variant={cancelMode === 'immediately' ? 'destructive' : 'default'}
+              disabled={acting}
+              onClick={() => {
+                if (cancelMode === 'immediately') {
+                  setShowCancelChoice(false)
+                  setShowCancelConfirm(true)
+                } else {
+                  scheduleCancelMutation.mutate()
+                }
+              }}
+            >
+              {cancelMode === 'immediately' ? 'Cancel immediately…' : 'Schedule cancellation'}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Pause Choice — Stripe-parity: hard pause halts the cycle entirely
-          (status=paused, no metering, no invoices), collection pause keeps
-          the cycle running but drafts invoices and skips charge/dunning. */}
-      <AlertDialog open={showPauseChoice} onOpenChange={setShowPauseChoice}>
+      {/* Pause Choice — same radio-card pattern as Cancel. Default is the
+          softer option (collection pause leaves cycle state intact). Hard
+          pause requires the typed-confirm step because resuming requires
+          re-establishing the cycle window. */}
+      <AlertDialog
+        open={showPauseChoice}
+        onOpenChange={(o) => { setShowPauseChoice(o); if (!o) setPauseMode('collection') }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Pause Subscription</AlertDialogTitle>
+            <AlertDialogTitle>Pause subscription</AlertDialogTitle>
             <AlertDialogDescription>
               Choose how this subscription should be paused.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="space-y-2 py-2">
-            <Button
-              variant="outline"
-              className="w-full justify-start h-auto py-3"
-              onClick={() => { setShowPauseChoice(false); setShowPauseConfirm(true) }}
+          <div className="space-y-2 py-2" role="radiogroup" aria-label="Pause mode">
+            <RadioCard
+              selected={pauseMode === 'collection'}
+              onClick={() => setPauseMode('collection')}
               disabled={acting}
-            >
-              <div className="text-left">
-                <div className="font-medium">Pause subscription</div>
-                <div className="text-xs text-muted-foreground whitespace-normal">Freezes the cycle. No usage metering, no invoices generated.</div>
-              </div>
-            </Button>
-            <Button
-              variant="outline"
-              className="w-full justify-start h-auto py-3"
-              onClick={() => pauseCollectionMutation.mutate()}
+              title="Pause collection only"
+              description="Cycle continues, but invoices generate as drafts and skip charge until resumed."
+            />
+            <RadioCard
+              selected={pauseMode === 'hard'}
+              onClick={() => setPauseMode('hard')}
               disabled={acting}
-            >
-              <div className="text-left">
-                <div className="font-medium">Pause collection only</div>
-                <div className="text-xs text-muted-foreground whitespace-normal">Cycle continues, but invoices generate as drafts and skip charge until resumed.</div>
-              </div>
-            </Button>
+              title="Pause subscription"
+              description="Freezes the cycle entirely. No usage metering, no invoices generated."
+            />
           </div>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={acting}>Back</AlertDialogCancel>
+            <AlertDialogCancel disabled={acting}>Keep active</AlertDialogCancel>
+            <Button
+              disabled={acting}
+              onClick={() => {
+                if (pauseMode === 'hard') {
+                  setShowPauseChoice(false)
+                  setShowPauseConfirm(true)
+                } else {
+                  pauseCollectionMutation.mutate()
+                }
+              }}
+            >
+              {pauseMode === 'hard' ? 'Pause subscription…' : 'Pause collection'}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1603,5 +1638,57 @@ function EditBillingThresholdsDialog({ subscription, items, planById, onClose, o
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// RadioCard renders a selectable option for choice-dialogs (Cancel,
+// Pause). Industry-standard shape: visible radio dot, title + sub-line,
+// clear selected/destructive states. Local to this file until a third
+// use case appears — premature to extract to /ui.
+function RadioCard({
+  selected, onClick, disabled, destructive, title, description,
+}: {
+  selected: boolean
+  onClick: () => void
+  disabled?: boolean
+  destructive?: boolean
+  title: string
+  description: string
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        'w-full text-left rounded-lg border p-3 transition-colors flex items-start gap-3',
+        selected
+          ? destructive
+            ? 'border-destructive bg-destructive/5'
+            : 'border-foreground bg-muted/40'
+          : 'border-border hover:border-foreground/40',
+        disabled && 'opacity-50 cursor-not-allowed',
+      )}
+    >
+      <span
+        className={cn(
+          'mt-0.5 h-4 w-4 rounded-full border-2 flex items-center justify-center shrink-0',
+          selected
+            ? destructive ? 'border-destructive' : 'border-foreground'
+            : 'border-muted-foreground',
+        )}
+        aria-hidden="true"
+      >
+        {selected && (
+          <span className={cn('h-2 w-2 rounded-full', destructive ? 'bg-destructive' : 'bg-foreground')} />
+        )}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className={cn('block text-sm font-medium', destructive && selected && 'text-destructive')}>{title}</span>
+        <span className="block text-xs text-muted-foreground mt-0.5 whitespace-normal">{description}</span>
+      </span>
+    </button>
   )
 }

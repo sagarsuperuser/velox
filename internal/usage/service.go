@@ -25,7 +25,6 @@ func NewService(store Store) *Service {
 type IngestInput struct {
 	CustomerID     string          `json:"customer_id"`
 	MeterID        string          `json:"meter_id"`
-	SubscriptionID string          `json:"subscription_id,omitempty"`
 	Quantity       decimal.Decimal `json:"quantity,omitempty"`
 	Dimensions     map[string]any  `json:"dimensions,omitempty"`
 	IdempotencyKey string          `json:"idempotency_key,omitempty"`
@@ -111,7 +110,6 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 	return s.store.Ingest(ctx, tenantID, domain.UsageEvent{
 		CustomerID:     input.CustomerID,
 		MeterID:        input.MeterID,
-		SubscriptionID: input.SubscriptionID,
 		Quantity:       input.Quantity,
 		Dimensions:     input.Dimensions,
 		IdempotencyKey: input.IdempotencyKey,
