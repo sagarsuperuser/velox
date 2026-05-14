@@ -192,6 +192,72 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 	return s.decryptCustomer(c)
 }
 
+// SetCostDashboardToken writes (or rotates) the cost-dashboard public
+// token on a customer row. The caller is responsible for minting a
+// fresh token via NewCostDashboardToken before invoking this. Old
+// tokens are discarded immediately — there's no grace window, since
+// the public dashboard is read-only and rotating because of a leak
+// must take effect now. Per ADR-031 / cost-dashboard rollout: this
+// is the only writer for customers.cost_dashboard_token.
+func (s *PostgresStore) SetCostDashboardToken(ctx context.Context, tenantID, customerID, token string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE customers SET cost_dashboard_token = $1, updated_at = now()
+		WHERE id = $2
+	`, token, customerID)
+	if err != nil {
+		return fmt.Errorf("set cost_dashboard_token: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return errs.ErrNotFound
+	}
+	return tx.Commit()
+}
+
+// GetByCostDashboardToken resolves a customer from the public cost-
+// dashboard token. Uses TxBypass because the public route has no
+// tenant context yet — the token IS the credential, and lookup
+// must succeed before any tenant scoping. The returned customer's
+// tenant_id is what subsequent calls scope to. Tokens are 64 random
+// hex chars (32 bytes entropy via NewCostDashboardToken) so guessing
+// is computationally infeasible; the partial UNIQUE index on
+// cost_dashboard_token IS NOT NULL prevents collisions at write.
+func (s *PostgresStore) GetByCostDashboardToken(ctx context.Context, token string) (domain.Customer, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return domain.Customer{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var c domain.Customer
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
+			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
+			COALESCE(cost_dashboard_token, ''),
+			COALESCE(test_clock_id, ''),
+			created_at, updated_at
+		FROM customers WHERE cost_dashboard_token = $1
+	`, token).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
+		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
+		&c.CostDashboardToken,
+		&c.TestClockID,
+		&c.CreatedAt, &c.UpdatedAt)
+
+	if err == sql.ErrNoRows {
+		return domain.Customer{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Customer{}, err
+	}
+	return s.decryptCustomer(c)
+}
+
 func (s *PostgresStore) GetByExternalID(ctx context.Context, tenantID, externalID string) (domain.Customer, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

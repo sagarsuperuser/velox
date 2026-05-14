@@ -229,6 +229,16 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// record cost-dashboard token rotations without leaking the
 	// plaintext token into the audit trail.
 	customerH.SetAuditLogger(auditLogger)
+	// Public cost-dashboard projection assembler. Resolves token →
+	// customer, composes the usage view, sanitizes the envelope.
+	// Wired here so customerH can serve both the operator rotate
+	// endpoint and the public GET-by-token route. See ADR-031 +
+	// MANUAL_TEST FLOW CU8.
+	costDashboardSvc := usage.NewCostDashboardAssembler(customerStore, customerUsageSvc, subStore)
+	customerH.SetCostDashboardService(costDashboardSvc)
+	if base := strings.TrimSpace(os.Getenv("VELOX_API_BASE_URL")); base != "" {
+		customerH.SetAPIBaseURL(base)
+	}
 	settingsH := tenant.NewSettingsHandler(settingsStore)
 	stripeClient := payment.NewLiveStripeClient(stripeClients)
 	dunningStore := dunning.NewPostgresStore(db)
@@ -912,6 +922,18 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Use(rateLimiter.Middleware())
 		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/", publicPortalH.Routes())
+	})
+
+	// Public cost-dashboard projection — ADR-031 / MANUAL_TEST CU8.
+	// Unauthenticated: the 256-bit cost_dashboard_token in the path
+	// IS the credential. Tighter rate limit (60/min/IP) than the
+	// general API because the embed widget may poll, and we want
+	// abuse from one site to not exhaust shared buckets — same
+	// rationale + same limit shape as the hosted invoice surface.
+	r.Route("/v1/public/cost-dashboard", func(r chi.Router) {
+		r.Use(hostedInvoiceRL.Middleware())
+		r.Use(middleware.Timeout(30 * time.Second))
+		r.Mount("/", customerH.PublicCostDashboardRoutes())
 	})
 
 	// Platform routes

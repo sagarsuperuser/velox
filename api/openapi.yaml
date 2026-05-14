@@ -710,6 +710,69 @@ paths:
         "200":
           description: Customer list
 
+  /v1/customers/{id}/rotate-cost-dashboard-token:
+    post:
+      tags: [Customers]
+      summary: Rotate the public cost-dashboard token (ADR-031)
+      description: |
+        Mints a fresh `vlx_pcd_…` token and writes it to the customer
+        row. The previous token is invalidated immediately (read-only
+        public surface; no grace window). The plaintext token is the
+        sole credential for `GET /v1/public/cost-dashboard/{token}`
+        and is shown ONCE — Velox never returns it again after this
+        response. Audit log records the rotation without the token.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, public_url]
+                properties:
+                  token:
+                    type: string
+                    example: vlx_pcd_a3f9c4...
+                  public_url:
+                    type: string
+                    example: https://api.velox.dev/v1/public/cost-dashboard/vlx_pcd_a3f9c4...
+        "404":
+          description: Customer not found
+
+  /v1/public/cost-dashboard/{token}:
+    get:
+      tags: [Public]
+      summary: Public cost-dashboard projection (ADR-031)
+      description: |
+        Unauthenticated. The `vlx_pcd_…` token in the URL is the sole
+        credential — partners embed via iframe / fetch from their own
+        app without an API key. Sanitized projection: customer_id,
+        tenant_id, billing_period, subscriptions, usage[], totals,
+        projected_total_cents. PII (email, display_name, external_id,
+        metadata, billing_profile) is NEVER on this response. Wrong
+        prefix or unknown token → 401 (anti-enumeration). No active
+        sub → 200 with `billing_period.source = "no_subscription"`
+        and empty arrays.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Projection
+        "401":
+          description: Invalid token
+        "429":
+          description: Rate limited (60/min/IP)
+
   /v1/meters:
     post:
       tags: [Pricing]

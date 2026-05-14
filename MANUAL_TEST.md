@@ -888,15 +888,18 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Save → invoice PDF: company name tinted, 2px accent bar.
 - [ ] Clear color → next PDF byte-identical to pre-migration neutral.
 
-## FLOW CU8: Cost-dashboard widget
+## FLOW CU8: Cost-dashboard public projection
 
-- [ ] `POST /v1/customers/{id}/rotate-cost-dashboard-token` → `{token, public_url}`. Token starts `vlx_pcd_` + 64 hex.
-- [ ] `GET /v1/public/cost-dashboard/{token}` (no auth) → sanitized projection: customer_id, tenant_id, billing_period, subscriptions, usage[meter+rules+totals], totals, projected_total_cents.
-- [ ] Absent fields: email, display_name, external_id, metadata, billing_profile.
-- [ ] No active sub → empty arrays, `billing_period.source='no_subscription'`, NOT 5xx.
-- [ ] Rotate → old URL 404 immediately. Audit log records rotation; plaintext token never logged.
-- [ ] Rate limit: 61+ req/min/IP → 429.
-- [ ] `<VeloxCostDashboard token baseUrl theme accent />` compiles cleanly with `tsc --noEmit`. Theme/accent params switch iframe styling.
+- [ ] Customer detail → "Public cost-dashboard URL" card → click **Generate URL**. Operator sees `vlx_pcd_<64 hex>` token and full URL. Copy button works.
+- [ ] `POST /v1/customers/{id}/rotate-cost-dashboard-token` → `{token, public_url}`. Token prefix `vlx_pcd_` + 64 hex; URL is `{VELOX_API_BASE_URL or relative}/v1/public/cost-dashboard/<token>`.
+- [ ] `GET /v1/public/cost-dashboard/{token}` (no auth) → sanitized projection:
+  - Present: `customer_id`, `tenant_id`, `billing_period {start, end, source}`, `subscriptions[]` (id + plan_name + currency + period), `usage[]` (meter_key + meter_name + unit + currency + total_quantity + total_amount_cents + rules[]), `totals[]`, `projected_total_cents`.
+  - **Absent**: email, display_name, external_id, metadata, billing_profile, plan_id, rating_rule_version_id, warnings.
+- [ ] No active sub → `billing_period.source='no_subscription'`, empty arrays, **NOT 5xx** (200 with the empty envelope).
+- [ ] Rotate → previous URL returns 401 `invalid cost-dashboard token` immediately. Audit log records the rotation (`action=rotate`, `resource_type=customer`, `metadata.surface=cost_dashboard_token`); the plaintext token is NEVER in the audit row.
+- [ ] Tampered / unknown token → 401 (same 401 as rotated — anti-enumeration). Wrong prefix (no `vlx_pcd_`) → 401 fast-path without DB lookup.
+- [ ] Rate limit: 61+ req/min/IP → 429 (shares the hosted-invoice bucket; tighter than the general 100/min).
+- [ ] Embeddable widget (not yet shipped): a `<VeloxCostDashboard token baseUrl />` React widget is the natural next step — defer until first design partner asks. The JSON projection is consumer-ready as-is; partners can render their own UI today.
 
 ---
 

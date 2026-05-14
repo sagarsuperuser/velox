@@ -3,6 +3,7 @@ package customer
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -319,6 +320,67 @@ func TestCustomerService_Update(t *testing.T) {
 	if updated.Email != "new@example.com" {
 		t.Errorf("got email %q, want %q", updated.Email, "new@example.com")
 	}
+}
+
+func TestCustomerService_RotateCostDashboardToken(t *testing.T) {
+	store := newMemoryStore()
+	svc := NewService(store)
+	ctx := context.Background()
+
+	cust, err := svc.Create(ctx, "tenant1", CreateInput{
+		ExternalID: "cus_token", DisplayName: "Token Tester",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	t.Run("mint + persist", func(t *testing.T) {
+		token, err := svc.RotateCostDashboardToken(ctx, "tenant1", cust.ID)
+		if err != nil {
+			t.Fatalf("rotate: %v", err)
+		}
+		if !strings.HasPrefix(token, "vlx_pcd_") {
+			t.Errorf("token prefix: got %q, want vlx_pcd_…", token)
+		}
+		if len(token) != len("vlx_pcd_")+64 {
+			t.Errorf("token length: got %d, want %d (prefix + 64 hex)", len(token), len("vlx_pcd_")+64)
+		}
+		// GetByCostDashboardToken resolves the same customer.
+		got, err := svc.GetByCostDashboardToken(ctx, token)
+		if err != nil {
+			t.Fatalf("get by token: %v", err)
+		}
+		if got.ID != cust.ID {
+			t.Errorf("resolved customer: got %q, want %q", got.ID, cust.ID)
+		}
+	})
+
+	t.Run("rotation invalidates previous token", func(t *testing.T) {
+		first, err := svc.RotateCostDashboardToken(ctx, "tenant1", cust.ID)
+		if err != nil {
+			t.Fatalf("rotate first: %v", err)
+		}
+		second, err := svc.RotateCostDashboardToken(ctx, "tenant1", cust.ID)
+		if err != nil {
+			t.Fatalf("rotate second: %v", err)
+		}
+		if first == second {
+			t.Fatal("two rotations produced the same token")
+		}
+		if _, err := svc.GetByCostDashboardToken(ctx, first); err == nil {
+			t.Error("first token still resolves after rotation — should be invalidated")
+		}
+		if _, err := svc.GetByCostDashboardToken(ctx, second); err != nil {
+			t.Errorf("second token doesn't resolve: %v", err)
+		}
+	})
+
+	t.Run("missing customer", func(t *testing.T) {
+		_, err := svc.RotateCostDashboardToken(ctx, "tenant1", "vlx_cus_nonexistent")
+		if err == nil {
+			t.Fatal("expected error for missing customer")
+		}
+	})
 }
 
 func TestCustomerService_BillingProfile(t *testing.T) {

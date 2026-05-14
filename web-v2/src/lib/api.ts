@@ -101,6 +101,8 @@ export const api = {
     apiRequest<Customer>('GET', `/customers/${id}`),
   createCustomer: (data: { external_id: string; display_name: string; email?: string; test_clock_id?: string }) =>
     apiRequest<Customer>('POST', '/customers', data),
+  rotateCostDashboardToken: (customerId: string) =>
+    apiRequest<{ token: string; public_url: string }>('POST', `/customers/${customerId}/rotate-cost-dashboard-token`),
 
   // Subscriptions
   listSubscriptions: (params?: string) =>
