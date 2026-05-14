@@ -1,0 +1,219 @@
+package usage
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/subscription"
+)
+
+// CostDashboardAssembler builds the sanitized projection served by
+// GET /v1/public/cost-dashboard/{token}. Two responsibilities:
+//   - resolve the public token to a customer (via the customer store)
+//   - compose the usage view (via CustomerUsageService) and sanitize
+//     it into the public envelope
+//
+// Lives in the usage package because the heavy lifting is the usage
+// math; the customer-package handler imports it via the narrow
+// CostDashboardService interface (returns `any` to keep the customer
+// package free of usage-domain types).
+type CostDashboardAssembler struct {
+	customers     CustomerTokenLookup
+	usageService  *CustomerUsageService
+	subscriptions SubscriptionLister
+}
+
+// CustomerTokenLookup is the narrow surface the assembler uses to
+// resolve the cost-dashboard token to a customer. RLS-bypass
+// implementation lives in customer.PostgresStore.GetByCostDashboardToken
+// (the token IS the credential — no tenant context yet).
+type CustomerTokenLookup interface {
+	GetByCostDashboardToken(ctx context.Context, token string) (domain.Customer, error)
+}
+
+// NewCostDashboardAssembler wires the public-projection assembler.
+// All three deps are required.
+func NewCostDashboardAssembler(customers CustomerTokenLookup, usageSvc *CustomerUsageService, subs SubscriptionLister) *CostDashboardAssembler {
+	return &CostDashboardAssembler{
+		customers:     customers,
+		usageService:  usageSvc,
+		subscriptions: subs,
+	}
+}
+
+// CostDashboardProjection is the wire shape returned from
+// GET /v1/public/cost-dashboard/{token}. Slice fields default to non-
+// nil so the wire emits "[]" not "null" — embed widgets iterate
+// without null guards.
+//
+// What's deliberately ABSENT (sanitization contract):
+//   - email, display_name, external_id, metadata (customer PII)
+//   - billing_profile (legal name, address, tax_id)
+//   - warnings (operator-facing tech messages from CustomerUsageService)
+//   - plan_id (internal identifier; plan_name is enough for display)
+//   - rating_rule_version_id (internal identifier)
+//
+// What's PRESENT:
+//   - customer_id + tenant_id (caller already has the token, so these
+//     are not secrets)
+//   - billing_period { start, end, source }
+//   - subscriptions (id + plan_name + currency + period only)
+//   - usage[] (meter + per-rule breakdown for multi-dim)
+//   - totals[] (per-currency rollup)
+//   - projected_total_cents (sum across currencies — Stripe-style
+//     single-number summary the widget surfaces as the headline)
+type CostDashboardProjection struct {
+	CustomerID          string                        `json:"customer_id"`
+	TenantID            string                        `json:"tenant_id"`
+	BillingPeriod       CostDashboardPeriod           `json:"billing_period"`
+	Subscriptions       []CostDashboardSubscription   `json:"subscriptions"`
+	Usage               []CostDashboardMeter          `json:"usage"`
+	Totals              []CostDashboardTotal          `json:"totals"`
+	ProjectedTotalCents int64                         `json:"projected_total_cents"`
+}
+
+type CostDashboardPeriod struct {
+	Start  time.Time `json:"start"`
+	End    time.Time `json:"end"`
+	Source string    `json:"source"` // "subscription" | "no_subscription"
+}
+
+type CostDashboardSubscription struct {
+	ID                 string    `json:"id"`
+	PlanName           string    `json:"plan_name"`
+	Currency           string    `json:"currency"`
+	CurrentPeriodStart time.Time `json:"current_period_start"`
+	CurrentPeriodEnd   time.Time `json:"current_period_end"`
+}
+
+type CostDashboardMeter struct {
+	MeterKey         string                `json:"meter_key"`
+	MeterName        string                `json:"meter_name"`
+	Unit             string                `json:"unit"`
+	Currency         string                `json:"currency"`
+	TotalQuantity    string                `json:"total_quantity"`
+	TotalAmountCents int64                 `json:"total_amount_cents"`
+	Rules            []CostDashboardRule   `json:"rules"`
+}
+
+type CostDashboardRule struct {
+	RuleKey        string         `json:"rule_key"`
+	DimensionMatch map[string]any `json:"dimension_match,omitempty"`
+	Quantity       string         `json:"quantity"`
+	AmountCents    int64          `json:"amount_cents"`
+}
+
+type CostDashboardTotal struct {
+	Currency    string `json:"currency"`
+	AmountCents int64  `json:"amount_cents"`
+}
+
+// GetByToken resolves the token, composes the usage view, sanitizes,
+// and returns the public projection. Returns errs.ErrNotFound when
+// the token doesn't match a customer — the handler surfaces this as
+// 401 (anti-enumeration).
+//
+// Empty-state contract: when the customer has no active subscription
+// (no_subscription branch), the response carries empty arrays + a
+// `billing_period.source = "no_subscription"` instead of a 5xx so
+// the embed widget can render a clean empty state.
+func (a *CostDashboardAssembler) GetByToken(ctx context.Context, token string) (any, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, fmt.Errorf("empty token")
+	}
+
+	cust, err := a.customers.GetByCostDashboardToken(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+
+	// Empty-state short-circuit. Without an active sub the usage path
+	// requires an explicit window; we don't have one here so we return
+	// the empty-state envelope directly.
+	subs, _, err := a.subscriptions.List(ctx, subscription.ListFilter{
+		TenantID:   cust.TenantID,
+		CustomerID: cust.ID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list subscriptions: %w", err)
+	}
+	activeCount := 0
+	for _, s := range subs {
+		if s.Status == domain.SubscriptionActive || s.Status == domain.SubscriptionTrialing {
+			activeCount++
+		}
+	}
+	if activeCount == 0 {
+		return CostDashboardProjection{
+			CustomerID:    cust.ID,
+			TenantID:      cust.TenantID,
+			BillingPeriod: CostDashboardPeriod{Source: "no_subscription"},
+			Subscriptions: []CostDashboardSubscription{},
+			Usage:         []CostDashboardMeter{},
+			Totals:        []CostDashboardTotal{},
+		}, nil
+	}
+
+	res, err := a.usageService.Get(ctx, cust.TenantID, cust.ID, CustomerUsagePeriod{})
+	if err != nil {
+		return nil, fmt.Errorf("compose usage: %w", err)
+	}
+
+	proj := CostDashboardProjection{
+		CustomerID: cust.ID,
+		TenantID:   cust.TenantID,
+		BillingPeriod: CostDashboardPeriod{
+			Start:  res.Period.From,
+			End:    res.Period.To,
+			Source: "subscription",
+		},
+		Subscriptions: make([]CostDashboardSubscription, 0, len(res.Subscriptions)),
+		Usage:         make([]CostDashboardMeter, 0, len(res.Meters)),
+		Totals:        make([]CostDashboardTotal, 0, len(res.Totals)),
+	}
+
+	for _, s := range res.Subscriptions {
+		proj.Subscriptions = append(proj.Subscriptions, CostDashboardSubscription{
+			ID:                 s.ID,
+			PlanName:           s.PlanName,
+			Currency:           s.Currency,
+			CurrentPeriodStart: s.CurrentPeriodStart,
+			CurrentPeriodEnd:   s.CurrentPeriodEnd,
+		})
+	}
+
+	for _, m := range res.Meters {
+		rules := make([]CostDashboardRule, 0, len(m.Rules))
+		for _, ru := range m.Rules {
+			rules = append(rules, CostDashboardRule{
+				RuleKey:        ru.RuleKey,
+				DimensionMatch: ru.DimensionMatch,
+				Quantity:       ru.Quantity.String(),
+				AmountCents:    ru.AmountCents,
+			})
+		}
+		proj.Usage = append(proj.Usage, CostDashboardMeter{
+			MeterKey:         m.MeterKey,
+			MeterName:        m.MeterName,
+			Unit:             m.Unit,
+			Currency:         m.Currency,
+			TotalQuantity:    m.TotalQuantity.String(),
+			TotalAmountCents: m.TotalAmountCents,
+			Rules:            rules,
+		})
+	}
+
+	for _, t := range res.Totals {
+		proj.Totals = append(proj.Totals, CostDashboardTotal{
+			Currency:    t.Currency,
+			AmountCents: t.AmountCents,
+		})
+		proj.ProjectedTotalCents += t.AmountCents
+	}
+
+	return proj, nil
+}

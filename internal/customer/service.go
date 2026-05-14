@@ -205,6 +205,36 @@ func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Customer
 	return s.store.Get(ctx, tenantID, id)
 }
 
+// RotateCostDashboardToken mints a fresh public cost-dashboard token
+// and writes it to the customer row, invalidating the old token
+// (read-only public surface; no grace window needed). Returns the
+// raw token — only chance to capture it; the database stores it
+// plaintext so the public route can compare directly (256-bit
+// entropy makes brute-force infeasible, same shape as the hosted-
+// invoice public_token).
+func (s *Service) RotateCostDashboardToken(ctx context.Context, tenantID, customerID string) (string, error) {
+	ctx = s.bindForCustomer(ctx, tenantID, customerID)
+	if _, err := s.store.Get(ctx, tenantID, customerID); err != nil {
+		return "", err
+	}
+	token, err := NewCostDashboardToken()
+	if err != nil {
+		return "", err
+	}
+	if err := s.store.SetCostDashboardToken(ctx, tenantID, customerID, token); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// GetByCostDashboardToken resolves the customer behind a public token.
+// Used by the unauthenticated public route — the lookup is RLS-bypass
+// (token IS the credential), and the returned tenant_id is the scope
+// every downstream call uses.
+func (s *Service) GetByCostDashboardToken(ctx context.Context, token string) (domain.Customer, error) {
+	return s.store.GetByCostDashboardToken(ctx, token)
+}
+
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Customer, int, error) {
 	return s.store.List(ctx, filter)
 }

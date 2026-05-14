@@ -30,6 +30,18 @@ type Store interface {
 	// same path is later reused by provider webhooks (SES/SendGrid) when
 	// wired. Idempotent — repeated calls just refresh the timestamp.
 	MarkEmailBounced(ctx context.Context, tenantID, customerID, reason string) error
+
+	// SetCostDashboardToken writes (or rotates) the public cost-dashboard
+	// token on a customer row. Old tokens are discarded immediately —
+	// the public route validates against this single column, so the
+	// previous URL stops working as soon as the UPDATE commits.
+	SetCostDashboardToken(ctx context.Context, tenantID, customerID, token string) error
+
+	// GetByCostDashboardToken resolves the customer behind a public
+	// cost-dashboard token. RLS-bypass query (the token IS the
+	// credential — no tenant context yet); the returned customer's
+	// tenant_id scopes everything that follows.
+	GetByCostDashboardToken(ctx context.Context, token string) (domain.Customer, error)
 }
 
 type ListFilter struct {

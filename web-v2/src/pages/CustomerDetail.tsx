@@ -681,11 +681,17 @@ export default function CustomerDetailPage() {
       </Card>
 
       {/* Usage This Period — multi-dim cost dashboard backed by
-          GET /v1/customers/{id}/usage. Replaces the old quantity-only summary.
-          Component is self-contained so the same surface drops into a future
-          public iframe-able route once token-based access lands. */}
+          GET /v1/customers/{id}/usage. Operator-facing surface. */}
       <div className="mt-6">
         <CostDashboard customerId={id!} />
+      </div>
+
+      {/* Public cost-dashboard token — ADR-031 / MANUAL_TEST CU8. Operator
+          rotates to mint a shareable URL the customer can embed (iframe
+          or fetch) without an API key. Rotation invalidates the previous
+          token immediately. */}
+      <div className="mt-6">
+        <PublicCostDashboardCard customerId={id!} />
       </div>
 
       {/* Payment Method.
@@ -1951,5 +1957,63 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// PublicCostDashboardCard surfaces the rotate-and-share flow for the
+// public cost-dashboard token (ADR-031). Rotation mints a fresh
+// `vlx_pcd_…` token that the operator can paste into an iframe src /
+// fetch call from the customer's app — no API key needed. Rotating
+// invalidates the previous token immediately (read-only surface; the
+// rotate intent is "stop the previous URL right now").
+function PublicCostDashboardCard({ customerId }: { customerId: string }) {
+  const [latest, setLatest] = useState<{ token: string; public_url: string } | null>(null)
+  const [rotating, setRotating] = useState(false)
+
+  const onRotate = async () => {
+    setRotating(true)
+    try {
+      const res = await api.rotateCostDashboardToken(customerId)
+      setLatest(res)
+      toast.success('Cost-dashboard URL rotated')
+    } catch (err) {
+      showApiError(err, 'Failed to rotate cost-dashboard token')
+    } finally {
+      setRotating(false)
+    }
+  }
+
+  const copy = (s: string) => {
+    void navigator.clipboard.writeText(s)
+    toast.success('Copied')
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">Public cost-dashboard URL</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-muted-foreground">
+          Generate a shareable URL the customer can embed in their own app to view their cycle cost
+          breakdown without an API key. Rotation invalidates any previous URL immediately.
+        </p>
+        {latest ? (
+          <div className="rounded-md border border-border bg-muted/50 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">URL</span>
+              <Button size="sm" variant="outline" onClick={() => copy(latest.public_url)}>Copy</Button>
+            </div>
+            <code className="block text-[11px] font-mono break-all text-foreground">{latest.public_url}</code>
+            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+              Save this URL now — Velox doesn't show it again after navigation. Re-rotate to mint a new one.
+            </p>
+          </div>
+        ) : null}
+        <Button onClick={onRotate} disabled={rotating} size="sm">
+          {rotating ? <><Loader2 size={14} className="animate-spin mr-2" />Rotating…</> : (latest ? 'Rotate again' : 'Generate URL')}
+        </Button>
+      </CardContent>
+    </Card>
   )
 }

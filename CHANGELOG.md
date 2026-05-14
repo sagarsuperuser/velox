@@ -11,6 +11,12 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Public cost-dashboard projection (ADR-032).** Closes the half-built cost-dashboard feature. Two new endpoints:
+  - `POST /v1/customers/{id}/rotate-cost-dashboard-token` (operator, auth required): mints `vlx_pcd_<64 hex>`, returns `{token, public_url}`, audit-logs the rotation. Old token invalidated immediately.
+  - `GET /v1/public/cost-dashboard/{token}` (unauthenticated, 60/min/IP rate limit): returns a sanitized projection — customer_id, tenant_id, billing_period, subscriptions (id + plan_name + currency + period), usage[] (meter + rules + totals), totals, projected_total_cents. Allowlist sanitization; PII (email, display_name, external_id, metadata, billing_profile) and internal IDs (plan_id, rating_rule_version_id) NEVER on the response. Empty state: no active sub → 200 with `billing_period.source="no_subscription"`. Wrong prefix / unknown / rotated token → 401 (anti-enumeration). New: `internal/customer/cost_dashboard_token.go` (token mint), `internal/usage/cost_dashboard.go` (assembler + projection types), `internal/customer/{handler,service,postgres,store}.go` (rotate + RLS-bypass lookup), `internal/api/router.go` (public route wiring + hostedInvoiceRL rate limit reuse), `web-v2/src/pages/CustomerDetail.tsx` ("Public cost-dashboard URL" card with Generate/Rotate button + copy). OpenAPI spec updated; MANUAL_TEST CU8 rewritten to assert the actual shape. Embeddable React widget deferred until first DP asks — the JSON is consumer-ready as-is.
+
 ### Added (in-flight: bill_timing bundle)
 
 - **Per-plan `base_bill_timing` (ADR-031) — slice 1: schema + model + API.** Plans gain a `base_bill_timing` column (`in_advance` | `in_arrears`, default `in_arrears`). Default preserves every existing tenant's behaviour — no migration of in-flight subs. Setting `in_advance` is a forward-only opt-in that the engine-path slice (next) will honour with first-invoice-on-create + cancel proration. Usage lines remain structurally arrears-only (future-period quantities are unknown). Migration 0084 is additive; `POST /v1/plans` and `PATCH /v1/plans/:id` accept `base_bill_timing`; `domain.BillTiming` type with `BillInAdvance` / `BillInArrears` constants + `IsValid()`; web-v2 `Plan` interface carries the field. Tests cover default + explicit + invalid-value rejection.
