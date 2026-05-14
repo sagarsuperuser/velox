@@ -142,3 +142,40 @@ ready ──Advance── advancing ──catchup ok── ready
   the catchup worker are the two callers, both updated.
 - Migration 0075 is additive (one nullable column); rollback is
   a clean DROP COLUMN.
+
+## Amendment 2026-05-05: manual-test injection knob
+
+Operator review of the MANUAL_TEST FLOW TC2 catchup-failure bullet
+surfaced that the documented triggers ("disconnect Stripe", "hit
+the 10-min wall-clock cap") were unreliable in practice:
+
+- Tax failures defer via the block-and-retry pattern (ADR-017);
+  they do not propagate as catchup errors. So Stripe-disconnect
+  doesn't reach `MarkFailed`.
+- The 10-min wall-clock cap requires advancing very far on a
+  fast-billing subscription so the catchup loop runs >10min
+  wall-time. Hard to reproduce reliably and machine-speed-
+  dependent.
+
+The internal_failure UI path is real and worth verifying in any
+integration smoke test — but the operator had no reproducible
+trigger to do so.
+
+Added `VELOX_TEST_CLOCK_INJECT_FAILURE` env knob:
+
+- `runCatchupLoop` checks the env at the top of the function
+  via `injectedCatchupFailureReason()`. If set, it returns an
+  error with the value as the reason ("injected: <value>").
+- One-shot: the helper unsets the env after reading, so a
+  subsequent **Retry advance** click runs cleanly. This lets
+  operators chain failure → retry-success in one session.
+- Off by default; production processes don't set it. If they
+  accidentally do, every advance fails until the env is unset
+  (loud failure, easy to spot, no silent corruption).
+- Test coverage: `TestAdvance_InjectFailureEnv` asserts the
+  env-driven failure path + the one-shot clearing.
+
+Stripe Test Clock has the same affordance ("force-fail simulation"
+under their test-clock primitives). Mirroring it removes ambiguity
+in the manual-test bullet without changing production semantics.
+
