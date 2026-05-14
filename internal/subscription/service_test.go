@@ -569,6 +569,52 @@ func TestCreate(t *testing.T) {
 		}
 	})
 
+	t.Run("ADR-031 BillOnCancel called on Cancel", func(t *testing.T) {
+		svcWithBiller := NewService(newMemStore(), nil)
+		fb := &fakeBiller{}
+		svcWithBiller.SetBiller(fb)
+		sub, err := svcWithBiller.Create(ctx, "t1", CreateInput{
+			Code: "sub-cancel-active", DisplayName: "Active to cancel",
+			CustomerID: "cus_1",
+			Items:      []CreateItemInput{{PlanID: "pln_1"}},
+			StartNow:   true,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := svcWithBiller.Cancel(ctx, "t1", sub.ID); err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+		if fb.cancelCalls != 1 {
+			t.Errorf("BillOnCancel called %d times, want 1", fb.cancelCalls)
+		}
+	})
+
+	t.Run("ADR-031 BillOnCancel error does NOT fail cancel", func(t *testing.T) {
+		svcWithBiller := NewService(newMemStore(), nil)
+		fb := &fakeBiller{cancelErr: fmt.Errorf("credit grant failed")}
+		svcWithBiller.SetBiller(fb)
+		sub, err := svcWithBiller.Create(ctx, "t1", CreateInput{
+			Code: "sub-cancel-errpath", DisplayName: "Error on cancel",
+			CustomerID: "cus_1",
+			Items:      []CreateItemInput{{PlanID: "pln_1"}},
+			StartNow:   true,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		canceled, err := svcWithBiller.Cancel(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("biller error should not fail cancel: %v", err)
+		}
+		if canceled.Status != domain.SubscriptionCanceled {
+			t.Errorf("status %q, want canceled", canceled.Status)
+		}
+		if fb.cancelCalls != 1 {
+			t.Errorf("BillOnCancel called %d times, want 1", fb.cancelCalls)
+		}
+	})
+
 	t.Run("ADR-031 biller error does NOT fail create", func(t *testing.T) {
 		svcWithBiller := NewService(newMemStore(), nil)
 		fb := &fakeBiller{err: fmt.Errorf("tax provider down")}
@@ -591,15 +637,23 @@ func TestCreate(t *testing.T) {
 	})
 }
 
-// fakeBiller captures BillOnCreate invocations for ADR-031 tests.
+// fakeBiller captures BillOnCreate / BillOnCancel invocations for
+// ADR-031 tests.
 type fakeBiller struct {
-	calls int
-	err   error
+	calls       int
+	cancelCalls int
+	err         error
+	cancelErr   error
 }
 
 func (f *fakeBiller) BillOnCreate(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
 	f.calls++
 	return domain.Invoice{}, f.err
+}
+
+func (f *fakeBiller) BillOnCancel(_ context.Context, _ domain.Subscription) error {
+	f.cancelCalls++
+	return f.cancelErr
 }
 
 // fakeSettings is a SettingsReader that returns a fixed timezone — used

@@ -32,12 +32,15 @@ type CustomerReader interface {
 	Get(ctx context.Context, tenantID, customerID string) (domain.Customer, error)
 }
 
-// Biller is the narrow shape used after Create to emit the day-1
-// invoice for an in_advance subscription (ADR-031). Optional —
+// Biller is the narrow shape used after Create + Cancel to handle
+// the in_advance bill_timing artifacts (ADR-031): day-1 invoice on
+// create, cancel proration credit on mid-period cancel. Optional —
 // nil-safe; without it, in_advance subs silently behave like
-// in_arrears until the next cycle close. Implemented by *billing.Engine.
+// in_arrears (no day-1 invoice, no cancel proration). Implemented
+// by *billing.Engine.
 type Biller interface {
 	BillOnCreate(ctx context.Context, sub domain.Subscription) (domain.Invoice, error)
+	BillOnCancel(ctx context.Context, sub domain.Subscription) error
 }
 
 type Service struct {
@@ -594,7 +597,25 @@ func (s *Service) Resume(ctx context.Context, tenantID, id string) (domain.Subsc
 }
 
 func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	return s.store.CancelAtomic(ctx, tenantID, id)
+	canceled, err := s.store.CancelAtomic(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	// ADR-031: in_advance plans get a cancel-proration credit for the
+	// unused portion of an already-billed period. Best-effort — logs
+	// on failure; operator can manually issue a credit grant from
+	// the dashboard if needed. No-op for in_arrears plans.
+	if s.biller != nil {
+		if err := s.biller.BillOnCancel(ctx, canceled); err != nil {
+			slog.Warn("cancel proration failed; manual credit may be required",
+				"subscription_id", canceled.ID,
+				"tenant_id", tenantID,
+				"error", err)
+		}
+	}
+
+	return canceled, nil
 }
 
 // ScheduleCancelInput carries the soft-cancel intent. Exactly one of
