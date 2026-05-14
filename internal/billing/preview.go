@@ -110,12 +110,27 @@ func (e *Engine) previewWithWindow(ctx context.Context, sub domain.Subscription,
 		}
 	}
 
+	// ADR-031: when ANY item is in_advance, the cycle invoice's
+	// HEADER period shifts to the upcoming period (engine.billOnePeriod
+	// does the same). Preview must mirror this so the operator's
+	// "what does the next invoice look like" answer matches what
+	// actually lands. Totals are unchanged either way — only the
+	// period label differs.
+	invoiceStart, invoiceEnd := periodStart, periodEnd
+	for _, it := range sub.Items {
+		if plans[it.PlanID].BaseBillTiming == domain.BillInAdvance {
+			invoiceStart = periodEnd
+			invoiceEnd = advanceBillingPeriod(periodEnd, plans[it.PlanID].BillingInterval)
+			break
+		}
+	}
+
 	result := PreviewResult{
 		CustomerID:         sub.CustomerID,
 		SubscriptionID:     sub.ID,
 		PlanName:           strings.Join(planNames, ", "),
-		BillingPeriodStart: periodStart,
-		BillingPeriodEnd:   periodEnd,
+		BillingPeriodStart: invoiceStart,
+		BillingPeriodEnd:   invoiceEnd,
 		Lines:              []PreviewLine{},
 		Warnings:           []string{},
 		GeneratedAt:        e.clock.Now(ctx),
@@ -124,15 +139,23 @@ func (e *Engine) previewWithWindow(ctx context.Context, sub domain.Subscription,
 	// Base-fee lines from each subscription item's plan. Quantity here is
 	// the item's seat / count (always integer); we still expose it as a
 	// decimal for shape uniformity.
+	//
+	// in_advance items bill the FULL upcoming base (no proration —
+	// preview at cycle close, partial-period creation already settled
+	// by BillOnCreate). in_arrears items bill the period being previewed.
 	for _, it := range sub.Items {
 		plan := plans[it.PlanID]
 		if plan.BaseAmountCents <= 0 {
 			continue
 		}
 		baseFee := plan.BaseAmountCents * it.Quantity
+		desc := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
+		if plan.BaseBillTiming == domain.BillInAdvance {
+			desc = fmt.Sprintf("%s - base fee (qty %d, in advance for upcoming period)", plan.Name, it.Quantity)
+		}
 		result.Lines = append(result.Lines, PreviewLine{
 			LineType:        "base_fee",
-			Description:     fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity),
+			Description:     desc,
 			Currency:        plan.Currency,
 			Quantity:        decimal.NewFromInt(it.Quantity),
 			UnitAmountCents: plan.BaseAmountCents,
