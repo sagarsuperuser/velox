@@ -1834,6 +1834,253 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	return true, nil
 }
 
+// BillOnCreate emits the day-1 invoice for an in_advance subscription
+// (ADR-031). Called by subscription.Service.Create immediately after
+// the sub is persisted. Returns a zero Invoice + nil when the sub
+// has no in_advance items — the cycle path will pick the sub up at
+// period close as usual.
+//
+// Scope of the invoice:
+//   - Period: [CurrentBillingPeriodStart, CurrentBillingPeriodEnd].
+//     Mid-period creation prorates the base by remaining days
+//     (matches the cycle path).
+//   - Line items: base fee for each in_advance item. Arrears items
+//     contribute nothing — their base waits for cycle close.
+//   - Usage: zero. No events have happened yet at t=0.
+//   - billing_reason = subscription_create (distinguishes from the
+//     subscription_cycle invoice that lands at period close with
+//     usage from this same elapsed period).
+//
+// Idempotent via the standard (subscription_id, period_start,
+// period_end) UNIQUE constraint: if BillOnCreate runs twice (e.g. a
+// retry after a transient failure), the second call gets
+// ErrAlreadyExists and returns the existing invoice's nil state — no
+// duplicate. Auto-charge is best-effort: PM ready → synchronous
+// charge with 30s timeout; no PM → queue auto_charge_pending and
+// fire the no-PM notifier email (same path as the cycle invoice).
+func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (domain.Invoice, error) {
+	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillOnCreate",
+		trace.WithAttributes(
+			attribute.String("subscription_id", sub.ID),
+			attribute.String("tenant_id", sub.TenantID),
+			attribute.String("customer_id", sub.CustomerID),
+		),
+	)
+	defer span.End()
+
+	if sub.Status != domain.SubscriptionActive {
+		return domain.Invoice{}, nil
+	}
+	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
+		return domain.Invoice{}, fmt.Errorf("subscription has no billing period set")
+	}
+
+	now := e.effectiveNow(ctx, sub)
+	periodStart := *sub.CurrentBillingPeriodStart
+	periodEnd := *sub.CurrentBillingPeriodEnd
+
+	// Resolve plans for every item — needed to filter to in_advance
+	// items and to read base fee + currency.
+	plans := make(map[string]domain.Plan, len(sub.Items))
+	for _, it := range sub.Items {
+		if _, ok := plans[it.PlanID]; ok {
+			continue
+		}
+		pl, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
+		if err != nil {
+			return domain.Invoice{}, fmt.Errorf("get plan %s: %w", it.PlanID, err)
+		}
+		plans[it.PlanID] = pl
+	}
+
+	// Filter to in_advance items only. If none, no day-1 invoice;
+	// the cycle path will handle this sub naturally at period close.
+	advanceItems := make([]domain.SubscriptionItem, 0, len(sub.Items))
+	for _, it := range sub.Items {
+		if plans[it.PlanID].BaseBillTiming == domain.BillInAdvance {
+			advanceItems = append(advanceItems, it)
+		}
+	}
+	if len(advanceItems) == 0 {
+		return domain.Invoice{}, nil
+	}
+
+	// Invoice currency: customer billing profile > tenant settings >
+	// first in_advance item's plan currency > "usd". Same precedence
+	// as the cycle path.
+	invoiceCurrency := plans[advanceItems[0].PlanID].Currency
+	if e.profiles != nil {
+		if bp, err := e.profiles.GetBillingProfile(ctx, sub.TenantID, sub.CustomerID); err == nil && bp.Currency != "" {
+			invoiceCurrency = bp.Currency
+		}
+	}
+	if invoiceCurrency == "" && e.settings != nil {
+		if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil && ts.DefaultCurrency != "" {
+			invoiceCurrency = ts.DefaultCurrency
+		}
+	}
+	if invoiceCurrency == "" {
+		invoiceCurrency = "usd"
+	}
+
+	// Build base-fee line items for in_advance items, with mid-period
+	// proration (identical math to billOnePeriod's base loop).
+	lineItems := make([]domain.InvoiceLineItem, 0, len(advanceItems))
+	subtotal := int64(0)
+	periodDays := roundDays(periodEnd.Sub(periodStart))
+	for _, it := range advanceItems {
+		plan := plans[it.PlanID]
+		if plan.BaseAmountCents <= 0 {
+			continue
+		}
+		baseFee := plan.BaseAmountCents * it.Quantity
+		description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
+
+		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart))
+		if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
+			baseFee = money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(periodDays), int64(fullCycleDays))
+			description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, it.Quantity, periodDays, fullCycleDays)
+		}
+
+		unitAmount := plan.BaseAmountCents
+		if it.Quantity > 0 {
+			unitAmount = money.RoundHalfToEven(baseFee, it.Quantity)
+		}
+
+		lineItems = append(lineItems, domain.InvoiceLineItem{
+			LineType:         domain.LineTypeBaseFee,
+			Description:      description,
+			Quantity:         it.Quantity,
+			UnitAmountCents:  unitAmount,
+			AmountCents:      baseFee,
+			TotalAmountCents: baseFee,
+			Currency:         invoiceCurrency,
+			TaxCode:          plan.TaxCode,
+		})
+		subtotal += baseFee
+	}
+
+	if subtotal <= 0 {
+		// All in_advance items had zero base fees. Nothing to bill;
+		// don't emit a $0 invoice (matches cycle-path behavior for
+		// zero-amount cycles).
+		return domain.Invoice{}, nil
+	}
+
+	// Apply tax.
+	taxApp, err := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, 0, lineItems)
+	if err != nil {
+		return domain.Invoice{}, fmt.Errorf("apply tax: %w", err)
+	}
+
+	netDays := 0
+	if e.settings != nil {
+		if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil && ts.NetPaymentTerms > 0 {
+			netDays = ts.NetPaymentTerms
+		}
+	}
+	dueAt := now.AddDate(0, 0, netDays)
+
+	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxApp.TaxAmountCents
+
+	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
+		TenantID:           sub.TenantID,
+		CustomerID:         sub.CustomerID,
+		SubscriptionID:     sub.ID,
+		Status:             domain.InvoiceFinalized,
+		Currency:           invoiceCurrency,
+		SubtotalCents:      taxApp.SubtotalCents,
+		DiscountCents:      taxApp.DiscountCents,
+		TaxRateBP:          taxApp.TaxRateBP,
+		TaxName:            taxApp.TaxName,
+		TaxCountry:         taxApp.TaxCountry,
+		TaxID:              taxApp.TaxID,
+		TaxAmountCents:     taxApp.TaxAmountCents,
+		TaxProvider:        taxApp.TaxProvider,
+		TaxCalculationID:   taxApp.TaxCalculationID,
+		TaxReverseCharge:   taxApp.TaxReverseCharge,
+		TaxExemptReason:    taxApp.TaxExemptReason,
+		TaxStatus:          taxApp.TaxStatus,
+		TaxDeferredAt:      taxApp.TaxDeferredAt,
+		TaxPendingReason:   taxApp.TaxPendingReason,
+		TaxErrorCode:       taxApp.TaxErrorCode,
+		TotalAmountCents:   totalWithTax,
+		AmountDueCents:     totalWithTax,
+		BillingPeriodStart: periodStart,
+		BillingPeriodEnd:   periodEnd,
+		IssuedAt:           &now,
+		DueAt:              &dueAt,
+		CreatedAt:          now,
+		NetPaymentTermDays: netDays,
+		BillingReason:      domain.BillingReasonSubscriptionCreate,
+	}, lineItems)
+	if err != nil {
+		if errors.Is(err, errs.ErrAlreadyExists) {
+			slog.Info("subscription_create invoice already exists (idempotent skip)",
+				"subscription_id", sub.ID,
+				"period_start", periodStart,
+				"period_end", periodEnd,
+			)
+			return domain.Invoice{}, nil
+		}
+		return domain.Invoice{}, fmt.Errorf("create invoice: %w", err)
+	}
+
+	// Commit tax if a provider produced a calculation (same pattern
+	// as the cycle path; ManualProvider / NoneProvider no-op).
+	if inv.TaxProvider != "" && inv.TaxCalculationID != "" {
+		if err := e.CommitTax(ctx, sub.TenantID, inv.ID, inv.TaxCalculationID); err != nil {
+			slog.Warn("tax: commit failed after subscription_create invoice",
+				"error", err,
+				"tenant_id", sub.TenantID,
+				"invoice_id", inv.ID,
+			)
+		}
+	}
+
+	// Auto-charge: PM ready → synchronous charge; no PM → queue +
+	// notify. Mirrors the post-finalize block in billOnePeriod.
+	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
+		ps, psErr := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID)
+		pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != ""
+
+		if pmReady {
+			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
+			if err == nil && chargeInv.AmountDueCents > 0 {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, ps.StripeCustomerID); err != nil {
+					slog.Warn("subscription_create auto-charge failed, marking for retry",
+						"invoice_id", inv.ID,
+						"error", err,
+					)
+					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+				}
+			}
+		} else {
+			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+			if e.noPMNotifier != nil {
+				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
+					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
+						slog.Warn("subscription_create no-PM notification failed",
+							"invoice_id", inv.ID,
+							"error", err,
+						)
+					}
+				}
+			}
+		}
+	}
+
+	slog.Info("subscription_create invoice generated",
+		"invoice_id", inv.ID,
+		"subscription_id", sub.ID,
+		"total_cents", totalWithTax,
+		"line_items", len(lineItems),
+	)
+	return inv, nil
+}
+
 // RetryPendingCharges picks up invoices flagged for auto-charge retry
 // and attempts to charge them. CRON path — the wall-clock scheduler
 // calls this every tick. ADR-029 Phase 1: clock-pinned invoices are
