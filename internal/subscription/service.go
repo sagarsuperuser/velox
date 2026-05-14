@@ -32,11 +32,20 @@ type CustomerReader interface {
 	Get(ctx context.Context, tenantID, customerID string) (domain.Customer, error)
 }
 
+// Biller is the narrow shape used after Create to emit the day-1
+// invoice for an in_advance subscription (ADR-031). Optional —
+// nil-safe; without it, in_advance subs silently behave like
+// in_arrears until the next cycle close. Implemented by *billing.Engine.
+type Biller interface {
+	BillOnCreate(ctx context.Context, sub domain.Subscription) (domain.Invoice, error)
+}
+
 type Service struct {
 	store     Store
 	clock     clock.Clock
 	settings  SettingsReader
 	customers CustomerReader
+	biller    Biller
 	resolver  clock.Resolver
 }
 
@@ -63,6 +72,15 @@ func (s *Service) SetSettingsReader(r SettingsReader) {
 // store via router.go.
 func (s *Service) SetCustomerReader(r CustomerReader) {
 	s.customers = r
+}
+
+// SetBiller wires the billing engine for the in_advance first-invoice
+// path (ADR-031). Optional — without it, in_advance plans silently
+// behave like in_arrears until the next cycle close. Production wires
+// *billing.Engine via router.go; unit tests can leave it unwired
+// because most don't exercise the day-1 invoice path.
+func (s *Service) SetBiller(b Biller) {
+	s.biller = b
 }
 
 // SetResolver wires the unified clock.Resolver used to bind
@@ -303,7 +321,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		overageAction = "charge"
 	}
 
-	return s.store.Create(ctx, tenantID, domain.Subscription{
+	sub, err := s.store.Create(ctx, tenantID, domain.Subscription{
 		Code:                      code,
 		DisplayName:               displayName,
 		CustomerID:                input.CustomerID,
@@ -320,6 +338,25 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		TestClockID:               inheritedClockID,
 		Items:                     items,
 	})
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	// ADR-031: in_advance plans get a day-1 invoice covering the
+	// upcoming period's base fee. Best-effort — a failure here logs
+	// but doesn't roll back the sub. Trialing subs skip this path
+	// (their first invoice fires when the trial ends, via the
+	// cycle scheduler picking up the now-active sub at trial_end_at).
+	if s.biller != nil && sub.Status == domain.SubscriptionActive {
+		if _, err := s.biller.BillOnCreate(ctx, sub); err != nil {
+			slog.Warn("first-invoice-on-create failed; in_advance base fee will be deferred to next cycle close",
+				"subscription_id", sub.ID,
+				"tenant_id", sub.TenantID,
+				"error", err)
+		}
+	}
+
+	return sub, nil
 }
 
 func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Subscription, error) {

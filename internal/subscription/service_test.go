@@ -532,6 +532,74 @@ func TestCreate(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("ADR-031 biller called for active sub", func(t *testing.T) {
+		svcWithBiller := NewService(newMemStore(), nil)
+		fb := &fakeBiller{}
+		svcWithBiller.SetBiller(fb)
+		_, err := svcWithBiller.Create(ctx, "t1", CreateInput{
+			Code: "sub-bill-active", DisplayName: "Active",
+			CustomerID: "cus_1",
+			Items:      []CreateItemInput{{PlanID: "pln_1"}},
+			StartNow:   true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if fb.calls != 1 {
+			t.Errorf("biller called %d times, want 1", fb.calls)
+		}
+	})
+
+	t.Run("ADR-031 biller NOT called for trialing sub", func(t *testing.T) {
+		svcWithBiller := NewService(newMemStore(), nil)
+		fb := &fakeBiller{}
+		svcWithBiller.SetBiller(fb)
+		_, err := svcWithBiller.Create(ctx, "t1", CreateInput{
+			Code: "sub-bill-trial", DisplayName: "Trial",
+			CustomerID: "cus_1",
+			Items:      []CreateItemInput{{PlanID: "pln_1"}},
+			TrialDays:  14,
+		})
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if fb.calls != 0 {
+			t.Errorf("biller called %d times for trialing sub, want 0", fb.calls)
+		}
+	})
+
+	t.Run("ADR-031 biller error does NOT fail create", func(t *testing.T) {
+		svcWithBiller := NewService(newMemStore(), nil)
+		fb := &fakeBiller{err: fmt.Errorf("tax provider down")}
+		svcWithBiller.SetBiller(fb)
+		sub, err := svcWithBiller.Create(ctx, "t1", CreateInput{
+			Code: "sub-bill-err", DisplayName: "Error path",
+			CustomerID: "cus_1",
+			Items:      []CreateItemInput{{PlanID: "pln_1"}},
+			StartNow:   true,
+		})
+		if err != nil {
+			t.Fatalf("biller error should not fail Create: %v", err)
+		}
+		if sub.ID == "" {
+			t.Fatal("sub should be created even when biller fails")
+		}
+		if fb.calls != 1 {
+			t.Errorf("biller called %d times, want 1", fb.calls)
+		}
+	})
+}
+
+// fakeBiller captures BillOnCreate invocations for ADR-031 tests.
+type fakeBiller struct {
+	calls int
+	err   error
+}
+
+func (f *fakeBiller) BillOnCreate(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
+	f.calls++
+	return domain.Invoice{}, f.err
 }
 
 // fakeSettings is a SettingsReader that returns a fixed timezone — used
