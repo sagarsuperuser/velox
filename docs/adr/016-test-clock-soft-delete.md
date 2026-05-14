@@ -60,15 +60,29 @@ query can still resolve them by id.
 subs — keeping the historical pointer lets future tooling answer
 "which clock did this sub belong to" without a separate audit query.
 
-### TTL sweeper
+### TTL sweeper (reverted 2026-05-06)
 
-The schema has carried `deletes_after TIMESTAMPTZ` since migration
-0020 — Stripe-parity 30-day idle cleanup hook — without a sweeper.
-This ADR completes that design. `Store.SweepDueDeletes` runs in the
-existing scheduler tick (`runCrossModeCleanup`) and soft-deletes any
-clock whose `deletes_after` has elapsed, applying the same
-cascade-cancel to its pinned subs. RLS-bypassed (cross-tenant
-sweep). Limited to the configured batch size per tick.
+The schema carried `deletes_after TIMESTAMPTZ` since migration 0020
+as a Stripe-parity 30-day idle cleanup hook. This ADR originally
+completed the consumer side (`Store.SweepDueDeletes` running in the
+scheduler tick, soft-deleting any clock whose `deletes_after` had
+elapsed and cascade-cancelling its pinned subs).
+
+The producer side never landed: nothing in Velox ever wrote
+`deletes_after` on a clock — not the create endpoint, not the SPA,
+not a background job. The sweeper matched zero rows on every tick,
+and the only thing that ever set a value was the manual psql step
+in MANUAL_TEST FLOW TC2 — testing the sweeper machinery itself, not
+a feature any operator triggered.
+
+Migration 0080 (2026-05-06) drops the `deletes_after` column, the
+partial index, the `SweepDueDeletes` store + service methods, the
+`TestClockSweeper` scheduler interface and the corresponding
+scheduler step. The MANUAL_TEST step that exercised it is removed.
+Soft-delete + cascade-cancel of pinned subs survives unchanged on
+the operator-driven `Delete` path. If a customer later asks for
+auto-cleanup of idle clocks, wiring it back is a small ADR — write
+a creation-time TTL default + restore the sweeper.
 
 ### Why timestamp + not status
 
