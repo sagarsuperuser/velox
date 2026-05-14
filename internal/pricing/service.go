@@ -228,9 +228,13 @@ type CreatePlanInput struct {
 	Currency        string                 `json:"currency"`
 	BillingInterval domain.BillingInterval `json:"billing_interval"`
 	BaseAmountCents int64                  `json:"base_amount_cents"`
-	MeterIDs        []string               `json:"meter_ids"`
-	Status          string                 `json:"status,omitempty"`
-	TaxCode         string                 `json:"tax_code,omitempty"`
+	// BaseBillTiming is optional on create. Empty defaults to in_arrears
+	// (existing tenant behaviour). Setting in_advance opts the plan into
+	// first-invoice-on-create + cancel-proration semantics per ADR-031.
+	BaseBillTiming domain.BillTiming `json:"base_bill_timing,omitempty"`
+	MeterIDs       []string          `json:"meter_ids"`
+	Status         string            `json:"status,omitempty"`
+	TaxCode        string            `json:"tax_code,omitempty"`
 }
 
 func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreatePlanInput) (domain.Plan, error) {
@@ -263,6 +267,14 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 		return domain.Plan{}, errs.Invalid("base_amount_cents", "base fee must be 0 or more")
 	}
 
+	baseBillTiming := input.BaseBillTiming
+	if baseBillTiming == "" {
+		baseBillTiming = domain.BillInArrears
+	}
+	if !baseBillTiming.IsValid() {
+		return domain.Plan{}, errs.Invalid("base_bill_timing", "must be in_advance or in_arrears")
+	}
+
 	taxCode := strings.TrimSpace(input.TaxCode)
 	if err := domain.ValidateStripeTaxCode("tax_code", taxCode); err != nil {
 		return domain.Plan{}, err
@@ -280,6 +292,7 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 		BillingInterval: input.BillingInterval,
 		Status:          domain.PlanActive,
 		BaseAmountCents: input.BaseAmountCents,
+		BaseBillTiming:  baseBillTiming,
 		MeterIDs:        input.MeterIDs,
 		TaxCode:         taxCode,
 	})
@@ -305,6 +318,12 @@ func (s *Service) UpdatePlan(ctx context.Context, tenantID, id string, input Cre
 	existing.Description = strings.TrimSpace(input.Description)
 	if input.BaseAmountCents > 0 {
 		existing.BaseAmountCents = input.BaseAmountCents
+	}
+	if input.BaseBillTiming != "" {
+		if !input.BaseBillTiming.IsValid() {
+			return domain.Plan{}, errs.Invalid("base_bill_timing", "must be in_advance or in_arrears")
+		}
+		existing.BaseBillTiming = input.BaseBillTiming
 	}
 	if input.MeterIDs != nil {
 		existing.MeterIDs = input.MeterIDs

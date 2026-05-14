@@ -871,6 +871,8 @@ export interface Meter {
   created_at: string
 }
 
+export type BillTiming = 'in_advance' | 'in_arrears'
+
 export interface Plan {
   id: string
   code: string
@@ -879,6 +881,10 @@ export interface Plan {
   billing_interval: string
   status: string
   base_amount_cents: number
+  // ADR-031: when the recurring base bills. Defaults to 'in_arrears'
+  // on existing plans. 'in_advance' opts the plan into first-invoice-
+  // on-create + cancel-proration. Usage lines are always arrears.
+  base_bill_timing: BillTiming
   meter_ids: string[]
   tax_code?: string
   created_at: string
