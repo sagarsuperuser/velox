@@ -1412,18 +1412,47 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// Base fee line item per item — quantity-multiplied and prorated for partial
 	// periods. One line per item so the invoice clearly shows what each plan
 	// contributes (mirrors Stripe's per-item invoice layout).
+	//
+	// ADR-031: the base line's *covered period* depends on the plan's
+	// base_bill_timing:
+	//   - in_arrears (default): base covers the just-elapsed period
+	//     [periodStart, periodEnd]. Mid-period sub starts prorate.
+	//   - in_advance: base covers the upcoming period [periodEnd,
+	//     nextPeriodEnd]. The just-elapsed period's base was billed
+	//     on day 1 via BillOnCreate or the previous cycle invoice.
+	//     The upcoming period is always full (no proration — partial
+	//     periods only exist on creation, and that was handled by
+	//     BillOnCreate).
+	//
+	// `BillingPeriodStart` / `BillingPeriodEnd` on the line item is
+	// stamped explicitly so an invoice mixing arrears base + arrears
+	// usage with advance base shows the right period per row in the
+	// UI / PDF.
 	for _, it := range sub.Items {
 		plan := plans[it.PlanID]
 		if plan.BaseAmountCents <= 0 {
 			continue
 		}
+
+		baseStart, baseEnd := periodStart, periodEnd
+		isAdvance := plan.BaseBillTiming == domain.BillInAdvance
+		if isAdvance {
+			baseStart = periodEnd
+			baseEnd = advanceBillingPeriod(periodEnd, plan.BillingInterval)
+		}
+
 		baseFee := plan.BaseAmountCents * it.Quantity
 		description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
 
-		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart))
-		if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
-			baseFee = money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(periodDays), int64(fullCycleDays))
-			description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, it.Quantity, periodDays, fullCycleDays)
+		// Proration only applies to in_arrears partial periods. In_advance
+		// bills full upcoming period — partial-period creation was already
+		// settled by BillOnCreate's prorated day-1 invoice.
+		if !isAdvance {
+			fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart))
+			if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
+				baseFee = money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(periodDays), int64(fullCycleDays))
+				description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, it.Quantity, periodDays, fullCycleDays)
+			}
 		}
 
 		unitAmount := plan.BaseAmountCents
@@ -1431,14 +1460,18 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			unitAmount = money.RoundHalfToEven(baseFee, it.Quantity)
 		}
 
+		baseStartCopy := baseStart
+		baseEndCopy := baseEnd
 		lineItems = append(lineItems, domain.InvoiceLineItem{
-			LineType:         domain.LineTypeBaseFee,
-			Description:      description,
-			Quantity:         it.Quantity,
-			UnitAmountCents:  unitAmount,
-			AmountCents:      baseFee,
-			TotalAmountCents: baseFee,
-			Currency:         invoiceCurrency,
+			LineType:           domain.LineTypeBaseFee,
+			Description:        description,
+			Quantity:           it.Quantity,
+			UnitAmountCents:    unitAmount,
+			AmountCents:        baseFee,
+			TotalAmountCents:   baseFee,
+			Currency:           invoiceCurrency,
+			BillingPeriodStart: &baseStartCopy,
+			BillingPeriodEnd:   &baseEndCopy,
 		})
 		subtotal += baseFee
 	}
@@ -1947,15 +1980,19 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 			unitAmount = money.RoundHalfToEven(baseFee, it.Quantity)
 		}
 
+		baseStartCopy := periodStart
+		baseEndCopy := periodEnd
 		lineItems = append(lineItems, domain.InvoiceLineItem{
-			LineType:         domain.LineTypeBaseFee,
-			Description:      description,
-			Quantity:         it.Quantity,
-			UnitAmountCents:  unitAmount,
-			AmountCents:      baseFee,
-			TotalAmountCents: baseFee,
-			Currency:         invoiceCurrency,
-			TaxCode:          plan.TaxCode,
+			LineType:           domain.LineTypeBaseFee,
+			Description:        description,
+			Quantity:           it.Quantity,
+			UnitAmountCents:    unitAmount,
+			AmountCents:        baseFee,
+			TotalAmountCents:   baseFee,
+			Currency:           invoiceCurrency,
+			TaxCode:            plan.TaxCode,
+			BillingPeriodStart: &baseStartCopy,
+			BillingPeriodEnd:   &baseEndCopy,
 		})
 		subtotal += baseFee
 	}
