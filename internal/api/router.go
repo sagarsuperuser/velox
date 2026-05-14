@@ -20,7 +20,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/billing"
-	"github.com/sagarsuperuser/velox/internal/billingalert"
 	"github.com/sagarsuperuser/velox/internal/coupon"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
@@ -95,11 +94,6 @@ type Server struct {
 	InvoiceSvc         *invoice.Service
 	TokenSvc           *payment.TokenService
 	PaymentReconciler  *payment.Reconciler
-	// BillingAlertEvaluator scans active billing alerts on a tick and
-	// fires `billing.alert.triggered` events via the webhook outbox.
-	// Started by main.go alongside the billing scheduler so leader
-	// gating is consistent across all background workers.
-	BillingAlertEvaluator *billingalert.Evaluator
 
 	// TestClockSvc lets main.go wire the async catchup queue + worker
 	// (per ADR-015 — Stripe-style async test-clock advance) and run
@@ -645,34 +639,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		billing.NewPreviewService(engine, customerStore, subStore),
 	)
 
-	// Billing alerts: operator-defined spend/usage thresholds with a
-	// background evaluator that fires `billing.alert.triggered` via the
-	// webhook outbox atomically with the alert state mutation. Mounted
-	// at /v1/billing/alerts BELOW so the route is sibling to /billing
-	// (the more-specific /billing/alerts pattern is registered before
-	// /billing/{id} to avoid the param capture). See
-	// docs/design-billing-alerts.md.
-	billingAlertStore := billingalert.NewPostgresStore(db)
-	billingAlertSvc := billingalert.NewService(billingAlertStore, customerStore, pricingSvc)
-	billingAlertH := billingalert.NewHandler(billingAlertSvc)
-	billingAlertEvaluator := billingalert.NewEvaluator(
-		billingAlertStore,
-		customerStore,
-		&billingAlertSubscriptionListerAdapter{store: subStore},
-		pricingSvc,
-		usageSvc,
-		outboxStore,
-		clk,
-	)
-	billingAlertEvaluator.SetLocker(&billingAlertLockerAdapter{db: db}, postgres.LockKeyBillingAlertEvaluator)
-	if intervalStr := strings.TrimSpace(os.Getenv("VELOX_BILLING_ALERTS_INTERVAL")); intervalStr != "" {
-		if d, err := time.ParseDuration(intervalStr); err == nil && d > 0 {
-			billingAlertEvaluator.SetInterval(d)
-		} else {
-			slog.Warn("VELOX_BILLING_ALERTS_INTERVAL invalid — using default", "value", intervalStr, "error", err)
-		}
-	}
-
 	analyticsH := analytics.NewHandler(db)
 
 	// Customer portal sessions — operators mint a session for a customer
@@ -801,7 +767,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		InvoiceSvc:            invoiceSvc,
 		TokenSvc:              tokenSvc,
 		PaymentReconciler:     paymentReconciler,
-		BillingAlertEvaluator: billingAlertEvaluator,
 		TestClockSvc:          testClockSvc,
 	}
 
@@ -1057,18 +1022,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/coupons", couponH.Routes())
 		r.With(auth.Require(auth.PermCustomerWrite)).Mount("/credits", creditH.Routes())
 		r.With(auth.RequireMethod(auth.PermDunningRead, auth.PermDunningWrite)).Mount("/dunning", dunningH.Routes())
-		// /billing/alerts must mount BEFORE /billing because chi tries
-		// patterns in registration order — once /billing is mounted with
-		// /{id}/... children, "alerts" would be claimed as a billing-job
-		// ID. See docs/design-billing-alerts.md.
-		// Per-route auth: read (list, get) → PermInvoiceRead; write
-		// (create, archive) → PermInvoiceWrite — same level as invoice-
-		// related surfaces since alerts are an invoice-adjacent operator
-		// capability.
-		r.Mount("/billing/alerts", billingAlertH.Routes(
-			auth.Require(auth.PermInvoiceRead),
-			auth.Require(auth.PermInvoiceWrite),
-		))
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/billing", billingH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/webhook-endpoints", webhookOutH.Routes())
 		// Week 6 real-time event UI — replay + deliveries-timeline live

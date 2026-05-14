@@ -505,13 +505,6 @@ Boot warnings on startup (one each when var unset; never fatal):
 - [ ] Subscription detail "Spend Thresholds" card: empty state with Set button. Edit dialog has subtotal cap, reset_billing_cycle checkbox, per-item rows. Save shows `$1,000.00` (from cents) and `≥10000.5 units`. Clear thresholds → flips to empty.
 - [ ] Canceled/archived subs → Set/Edit hidden.
 
-### Billing alerts (backend-only — no UI page after lean-cut)
-
-- [ ] `POST /v1/billing/alerts {customer_id, meter_id, threshold:1000, recurrence:"one_time"}` → 201. Cross threshold → `billing.alert.triggered` webhook + dashboard notification.
-- [ ] Cross again same period → no second fire (one_time).
-- [ ] `recurrence:"per_period"` → fires once per cycle.
-- [ ] Webhook payload: `customer_id, meter_id, threshold, current_value, period_start, period_end, recurrence`.
-
 ## FLOW B17: Meter Detail page
 
 - [ ] Breadcrumb `Pricing / <meter>`. Header: name, ID, default-aggregation badge.
@@ -530,7 +523,7 @@ Boot warnings on startup (one each when var unset; never fatal):
 
 ## FLOW R1: List + preview
 
-- [ ] `GET /v1/recipes` → 5 entries (anthropic_style, openai_style, replicate_style, b2b_saas_pro, marketplace_gmv).
+- [ ] `GET /v1/recipes` → 3 entries (anthropic_style, openai_style, replicate_style) — all AI-native after the Phase 2 wedge-alignment trim.
 - [ ] `POST /v1/recipes/{key}/preview` → projected products/prices/meters/dunning/webhooks (no DB writes).
 - [ ] Unknown key → 404.
 
