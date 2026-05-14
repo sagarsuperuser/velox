@@ -73,6 +73,22 @@ const (
 	PlanArchived PlanStatus = "archived"
 )
 
+// BillTiming controls when the recurring base fee is invoiced relative
+// to the period it covers. Usage lines are structurally arrears-only
+// (future-period quantities are unknown) so this flag only governs
+// the base. See ADR-031.
+type BillTiming string
+
+const (
+	BillInArrears BillTiming = "in_arrears"
+	BillInAdvance BillTiming = "in_advance"
+)
+
+// IsValid reports whether t is a recognised bill_timing value.
+func (t BillTiming) IsValid() bool {
+	return t == BillInArrears || t == BillInAdvance
+}
+
 type Plan struct {
 	ID              string          `json:"id"`
 	TenantID        string          `json:"tenant_id,omitempty"`
@@ -83,6 +99,11 @@ type Plan struct {
 	BillingInterval BillingInterval `json:"billing_interval"`
 	Status          PlanStatus      `json:"status"`
 	BaseAmountCents int64           `json:"base_amount_cents"`
+	// BaseBillTiming controls whether the base fee is billed at the
+	// start of the period (in_advance) or the end (in_arrears). Default
+	// is in_arrears for backward compatibility with every existing
+	// Velox tenant. See ADR-031.
+	BaseBillTiming BillTiming `json:"base_bill_timing"`
 	// TaxCode optionally overrides the tenant's default_product_tax_code for
 	// this plan. Only consulted by the stripe_tax provider. Empty falls
 	// back to tenant_settings.default_product_tax_code.

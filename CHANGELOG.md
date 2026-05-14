@@ -11,6 +11,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Added (in-flight: bill_timing bundle)
+
+- **Per-plan `base_bill_timing` (ADR-031) — slice 1: schema + model + API.** Plans gain a `base_bill_timing` column (`in_advance` | `in_arrears`, default `in_arrears`). Default preserves every existing tenant's behaviour — no migration of in-flight subs. Setting `in_advance` is a forward-only opt-in that the engine-path slice (next) will honour with first-invoice-on-create + cancel proration. Usage lines remain structurally arrears-only (future-period quantities are unknown). Migration 0084 is additive; `POST /v1/plans` and `PATCH /v1/plans/:id` accept `base_bill_timing`; `domain.BillTiming` type with `BillInAdvance` / `BillInArrears` constants + `IsValid()`; web-v2 `Plan` interface carries the field. Tests cover default + explicit + invalid-value rejection.
+
 ### Removed
 
 - **`bulk_actions` (operator-cohort apply-coupon / schedule-cancel) trimmed.** Pre-demo wedge-alignment cut (2026-05-14). Off-wedge: generic SaaS operator-cohort feature with no UI, no DP demand, no MANUAL_TEST coverage. ~2,150 LOC removed (package `internal/bulkaction/`, 2 router adapters, TS api client + types, migration to drop the `bulk_actions` table). Re-add cost when triggered by real DP need: ~4-6 days.

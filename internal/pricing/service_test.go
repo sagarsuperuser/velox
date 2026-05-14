@@ -432,6 +432,43 @@ func TestCreatePlan(t *testing.T) {
 			t.Fatal("expected error for duplicate code")
 		}
 	})
+
+	t.Run("base_bill_timing defaults to in_arrears", func(t *testing.T) {
+		p, err := svc.CreatePlan(ctx, "tenant1", CreatePlanInput{
+			Code: "tdef", Name: "Default Timing", Currency: "USD", BillingInterval: domain.BillingMonthly,
+		})
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if p.BaseBillTiming != domain.BillInArrears {
+			t.Errorf("got %q, want in_arrears", p.BaseBillTiming)
+		}
+	})
+
+	t.Run("base_bill_timing in_advance accepted", func(t *testing.T) {
+		p, err := svc.CreatePlan(ctx, "tenant1", CreatePlanInput{
+			Code: "tadv", Name: "Advance", Currency: "USD",
+			BillingInterval: domain.BillingMonthly,
+			BaseBillTiming:  domain.BillInAdvance,
+		})
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if p.BaseBillTiming != domain.BillInAdvance {
+			t.Errorf("got %q, want in_advance", p.BaseBillTiming)
+		}
+	})
+
+	t.Run("base_bill_timing invalid rejected", func(t *testing.T) {
+		_, err := svc.CreatePlan(ctx, "tenant1", CreatePlanInput{
+			Code: "tinv", Name: "Invalid", Currency: "USD",
+			BillingInterval: domain.BillingMonthly,
+			BaseBillTiming:  "nightly",
+		})
+		if err == nil {
+			t.Fatal("expected error for invalid bill_timing")
+		}
+	})
 }
 
 func TestUpdatePlan(t *testing.T) {
