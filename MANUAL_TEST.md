@@ -452,7 +452,7 @@ Default `base_bill_timing=in_arrears`: the recurring base + any usage settles at
 - [ ] Active sub on Starter → change to Enterprise "immediately" → proration invoice generated.
 - [ ] Downgrade immediately → credits to balance.
 - [ ] Plan change without immediately → no proration; applies at next period boundary.
-- [ ] **Plan change between mixed `base_bill_timing` not yet covered.** Changing from an `in_advance` plan to an `in_arrears` plan (or vice versa) mid-period is engine-deferred — the cycle path handles whichever timing the destination plan declares; no special proration shape spans the boundary today. Operator-facing implication: prefer "next-period" effective for cross-timing changes. (Tracked for a future ADR.)
+- [ ] **Plan change across `base_bill_timing`** (rare): changing a sub from an `in_advance` plan to an `in_arrears` plan (or vice versa) is supported at the next period boundary — the destination plan's timing takes effect, no special cross-boundary proration. Mid-cycle immediate flip across timings is not supported (the engine handles whichever timing the destination declares from cycle-close onward). Operator-facing rule: cross-timing changes should be scheduled `effective=next_period`, not `immediate`.
 
 ## FLOW B8: Usage caps
 
@@ -721,7 +721,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] `POST /v1/invoices/create_preview {subscription_id}` → invoice shape with `id=null`, no DB row.
 - [ ] Plan-change confirmation dialog renders preview before commit.
 - [ ] Cost-dashboard projection populated when engine returns a value.
-- [ ] **`in_advance` preview gap:** create_preview today returns the cycle-path shape (elapsed period). It does NOT yet model the day-1 `subscription_create` invoice for an `in_advance` plan. Tracked — until covered, operators previewing an `in_advance` sub create see arrears-style numbers. Real day-1 invoice fires correctly on actual Create (B15).
+- [ ] **`in_advance` preview** (ADR-031): for a sub on an `in_advance` plan, preview's `billing_period_start/end` is the **upcoming** period (matches what the cycle invoice will stamp). Base line description carries the "in advance for upcoming period" suffix. Usage line totals match the elapsed period (per the engine's stamping). Totals identical to in_arrears preview — only the period labels differ.
 
 ## FLOW I12: One-off invoice composer
 
