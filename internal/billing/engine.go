@@ -1662,6 +1662,24 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		invStatus = domain.InvoiceDraft
 	}
 
+	// ADR-031: when ANY plan on the sub is in_advance, the cycle
+	// invoice's header period shifts to the UPCOMING period. The base
+	// for the upcoming period dominates the invoice's intent — usage
+	// from the just-elapsed period rides along on dedicated line
+	// items (those keep their own elapsed-period stamps set above).
+	// This shift is what lets the day-1 (subscription_create) invoice
+	// and the cycle-close (subscription_cycle) invoice coexist under
+	// the (sub_id, period_start, period_end) UNIQUE constraint — they
+	// land on different periods.
+	invoicePeriodStart, invoicePeriodEnd := periodStart, periodEnd
+	for _, it := range sub.Items {
+		if plans[it.PlanID].BaseBillTiming == domain.BillInAdvance {
+			invoicePeriodStart = periodEnd
+			invoicePeriodEnd = advanceBillingPeriod(periodEnd, plans[it.PlanID].BillingInterval)
+			break
+		}
+	}
+
 	// ATOMIC: Create invoice + all line items in a single transaction.
 	// This prevents orphaned invoices with missing line items on partial failure.
 	// The unique index on (tenant_id, subscription_id, billing_period_start, billing_period_end)
@@ -1690,8 +1708,8 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		TaxErrorCode:       taxApp.TaxErrorCode,
 		TotalAmountCents:   totalWithTax,
 		AmountDueCents:     totalWithTax,
-		BillingPeriodStart: periodStart,
-		BillingPeriodEnd:   periodEnd,
+		BillingPeriodStart: invoicePeriodStart,
+		BillingPeriodEnd:   invoicePeriodEnd,
 		IssuedAt:           &now,
 		DueAt:              &dueAt,
 		// CreatedAt = clock.Now() so test-clock-driven invoices land
@@ -2042,6 +2060,7 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		CustomerID:         sub.CustomerID,
 		SubscriptionID:     sub.ID,
 		Status:             domain.InvoiceFinalized,
+		PaymentStatus:      domain.PaymentPending,
 		Currency:           invoiceCurrency,
 		SubtotalCents:      taxApp.SubtotalCents,
 		DiscountCents:      taxApp.DiscountCents,

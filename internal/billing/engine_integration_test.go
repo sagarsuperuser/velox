@@ -9,6 +9,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/billing"
+	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/invoice"
@@ -406,4 +407,217 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 
 	t.Logf("E2E billing cycle passed: Invoice %s, Total: $%.2f (%d line items)",
 		inv.InvoiceNumber, float64(inv.TotalAmountCents)/100, len(items))
+}
+
+// TestBillTiming_InAdvance_E2E exercises ADR-031 slices 2, 3, and 4:
+//   - slice 2: BillOnCreate emits a subscription_create invoice for an
+//     in_advance plan, covering the upcoming period's base only.
+//   - slice 4: the cycle-close invoice for an in_advance plan bills
+//     the NEXT period's base (line.billing_period = next period),
+//     not the just-elapsed one — closes the double-bill window.
+//   - slice 3: BillOnCancel issues a credit grant for the unused
+//     portion when a sub is canceled mid-period on an in_advance plan.
+//
+// Single fixture, three asserts. Existing TestFullBillingCycle_E2E
+// remains the in_arrears regression — this test is the in_advance
+// counterpart.
+func TestBillTiming_InAdvance_E2E(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+
+	customerStore := customer.NewPostgresStore(db)
+	pricingStore := pricing.NewPostgresStore(db)
+	subStore := subscription.NewPostgresStore(db)
+	invoiceStore := invoice.NewPostgresStore(db)
+	usageStore := usage.NewPostgresStore(db)
+	creditStore := credit.NewPostgresStore(db)
+	creditSvc := credit.NewService(creditStore)
+
+	tenantID := testutil.CreateTestTenant(t, db, "In-Advance Test Corp")
+
+	cust, err := customerStore.Create(ctx, tenantID, domain.Customer{
+		ExternalID: "cus_advance_test", DisplayName: "Advance Customer",
+	})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+
+	// in_advance plan, no meters — keeps the assert surface small.
+	plan, err := pricingStore.CreatePlan(ctx, tenantID, domain.Plan{
+		Code: "pro-advance", Name: "Pro Advance",
+		Currency: "USD", BillingInterval: domain.BillingMonthly,
+		Status: domain.PlanActive, BaseAmountCents: 4900,
+		BaseBillTiming: domain.BillInAdvance,
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	// Sub covering exactly one full month (no proration noise).
+	periodStart := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	sub, err := subStore.Create(ctx, tenantID, domain.Subscription{
+		Code: "sub-advance-001", DisplayName: "Pro Advance Monthly",
+		CustomerID: cust.ID,
+		Items:      []domain.SubscriptionItem{{PlanID: plan.ID, Quantity: 1}},
+		Status:     domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+		StartedAt: &periodStart,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if err := subStore.UpdateBillingCycle(ctx, tenantID, sub.ID, periodStart, periodEnd, periodEnd); err != nil {
+		t.Fatalf("set billing cycle: %v", err)
+	}
+	sub.CurrentBillingPeriodStart = &periodStart
+	sub.CurrentBillingPeriodEnd = &periodEnd
+
+	settingsStore := tenant.NewSettingsStore(db)
+	fakeClk := clock.NewFake(periodStart.Add(time.Hour))
+	engine := billing.NewEngine(
+		&subStoreAdapter{subStore},
+		&usageStoreAdapter{usageStore},
+		&pricingStoreAdapter{pricingStore},
+		&invoiceStoreAdapter{invoiceStore},
+		nil, settingsStore, nil, nil, fakeClk,
+	)
+	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetCreditGranter(creditSvc)
+
+	// --- Slice 2: BillOnCreate emits day-1 invoice ---
+	dayOneInv, err := engine.BillOnCreate(ctx, sub)
+	if err != nil {
+		t.Fatalf("BillOnCreate: %v", err)
+	}
+	if dayOneInv.ID == "" {
+		t.Fatal("BillOnCreate returned empty invoice for in_advance plan")
+	}
+	if dayOneInv.BillingReason != domain.BillingReasonSubscriptionCreate {
+		t.Errorf("day-1 billing_reason: got %q, want subscription_create", dayOneInv.BillingReason)
+	}
+	if dayOneInv.TotalAmountCents != 4900 {
+		t.Errorf("day-1 total: got %d, want 4900", dayOneInv.TotalAmountCents)
+	}
+	dayOneItems, err := invoiceStore.ListLineItems(ctx, tenantID, dayOneInv.ID)
+	if err != nil {
+		t.Fatalf("list day-1 line items: %v", err)
+	}
+	if len(dayOneItems) != 1 {
+		t.Fatalf("day-1 line items: got %d, want 1 (base only)", len(dayOneItems))
+	}
+	if dayOneItems[0].LineType != domain.LineTypeBaseFee {
+		t.Errorf("day-1 line type: got %q, want base_fee", dayOneItems[0].LineType)
+	}
+	// Day-1 line period == current period (sub create covers period 1).
+	if dayOneItems[0].BillingPeriodStart == nil || !dayOneItems[0].BillingPeriodStart.Equal(periodStart) {
+		t.Errorf("day-1 line period_start: got %v, want %v", dayOneItems[0].BillingPeriodStart, periodStart)
+	}
+
+	// Idempotency: re-calling BillOnCreate returns zero invoice (unique
+	// constraint catches the replay).
+	replay, err := engine.BillOnCreate(ctx, sub)
+	if err != nil {
+		t.Fatalf("BillOnCreate replay: %v", err)
+	}
+	if replay.ID != "" {
+		t.Errorf("BillOnCreate replay produced an invoice: %s (idempotent skip expected)", replay.ID)
+	}
+
+	// --- Slice 4: cycle-close invoice's base covers NEXT period ---
+	// Advance the engine's clock just past period_end so the cycle
+	// path picks this sub up. The base line should describe period 2.
+	fakeClk.Set(periodEnd.Add(time.Nanosecond))
+	// RunCycle scans across all tenants in the shared test DB; we
+	// can't assert on the global count. Filter by tenantID below.
+	_, runErrs := engine.RunCycle(ctx, 50)
+	if len(runErrs) > 0 {
+		t.Fatalf("RunCycle errors: %v", runErrs)
+	}
+
+	// Find the cycle invoice (not the day-1 invoice).
+	invs, _, err := invoiceStore.List(ctx, invoice.ListFilter{TenantID: tenantID})
+	if err != nil {
+		t.Fatalf("list invoices: %v", err)
+	}
+	var cycleInv domain.Invoice
+	for _, i := range invs {
+		if i.BillingReason == domain.BillingReasonSubscriptionCycle {
+			cycleInv = i
+			break
+		}
+	}
+	if cycleInv.ID == "" {
+		t.Fatal("no subscription_cycle invoice produced")
+	}
+	cycleItems, err := invoiceStore.ListLineItems(ctx, tenantID, cycleInv.ID)
+	if err != nil {
+		t.Fatalf("list cycle line items: %v", err)
+	}
+	// Find the base line; assert its period is JULY (period 2), not JUNE (period 1).
+	expectedNextStart := periodEnd                                 // 2026-07-01
+	expectedNextEnd := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC) // 2026-08-01
+	foundBase := false
+	for _, li := range cycleItems {
+		if li.LineType != domain.LineTypeBaseFee {
+			continue
+		}
+		foundBase = true
+		if li.BillingPeriodStart == nil || !li.BillingPeriodStart.Equal(expectedNextStart) {
+			t.Errorf("cycle base line period_start: got %v, want %v (next period)", li.BillingPeriodStart, expectedNextStart)
+		}
+		if li.BillingPeriodEnd == nil || !li.BillingPeriodEnd.Equal(expectedNextEnd) {
+			t.Errorf("cycle base line period_end: got %v, want %v (next period)", li.BillingPeriodEnd, expectedNextEnd)
+		}
+		if li.AmountCents != 4900 {
+			t.Errorf("cycle base amount: got %d, want 4900 (full upcoming period, no proration)", li.AmountCents)
+		}
+	}
+	if !foundBase {
+		t.Error("cycle invoice had no base_fee line")
+	}
+
+	// --- Slice 3: BillOnCancel issues a credit grant ---
+	// Reload sub (UpdateBillingCycle moved it to July), then cancel
+	// halfway through July and assert the credit grant amount.
+	subRefreshed, err := subStore.Get(ctx, tenantID, sub.ID)
+	if err != nil {
+		t.Fatalf("reload sub: %v", err)
+	}
+	cancelAt := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC) // ≈ half of July
+	subRefreshed.Status = domain.SubscriptionCanceled
+	subRefreshed.CanceledAt = &cancelAt
+
+	if err := engine.BillOnCancel(ctx, subRefreshed); err != nil {
+		t.Fatalf("BillOnCancel: %v", err)
+	}
+
+	// Read the customer's credit ledger; should have a grant entry for
+	// the unused portion. July has 31 days; unused = 15 days =
+	// 4900 * 15/31 ≈ 2370 cents.
+	entries, err := creditStore.ListEntries(ctx, credit.ListFilter{TenantID: tenantID, CustomerID: cust.ID, Limit: 50})
+	if err != nil {
+		t.Fatalf("list credit entries: %v", err)
+	}
+	var grant domain.CreditLedgerEntry
+	for _, e := range entries {
+		if e.EntryType == domain.CreditGrant {
+			grant = e
+			break
+		}
+	}
+	if grant.ID == "" {
+		t.Fatal("BillOnCancel produced no credit grant entry")
+	}
+	// July 16 cancel of a July 1 - August 1 period: 16 unused days
+	// out of 31. 4900 * 16/31 = 2529 cents (rounded). Allow ±1 for
+	// banker's-rounding edge cases.
+	expected := int64(4900 * 16 / 31) // 2529
+	if grant.AmountCents < expected-1 || grant.AmountCents > expected+1 {
+		t.Errorf("cancel proration credit: got %d cents, want ~%d", grant.AmountCents, expected)
+	}
+
+	t.Logf("in_advance E2E passed — day-1 inv: $%.2f, cycle base period: %v, cancel credit: $%.2f",
+		float64(dayOneInv.TotalAmountCents)/100,
+		expectedNextStart.Format("2006-01-02"),
+		float64(grant.AmountCents)/100)
 }
