@@ -24,6 +24,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/platform/scheduler"
 )
 
 const maxAttempts = 5
@@ -709,20 +710,10 @@ func (s *Service) retryDeliver(ctx context.Context, d domain.WebhookDelivery, ep
 // StartRetryWorker runs a background loop that retries pending deliveries on
 // the given interval. It blocks until the context is cancelled.
 func (s *Service) StartRetryWorker(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
 	slog.Info("webhook retry worker started", "interval", interval.String())
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("webhook retry worker stopped")
-			return
-		case <-ticker.C:
-			if err := s.RetryPendingDeliveries(ctx); err != nil {
-				slog.Error("webhook retry worker error", "error", err)
-			}
+	scheduler.Run(ctx, "webhook_retry", interval, func(ctx context.Context) {
+		if err := s.RetryPendingDeliveries(ctx); err != nil {
+			slog.Error("webhook retry worker error", "error", err)
 		}
-	}
+	})
 }

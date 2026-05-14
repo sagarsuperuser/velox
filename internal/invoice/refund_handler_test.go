@@ -174,8 +174,13 @@ func TestRefundHandler_ServiceErrorBubblesUp(t *testing.T) {
 	h := newRefundTestHandler(issuer)
 
 	rec := postRefund(t, h, map[string]any{"reason": "other"})
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status: got %d, want 422 — body=%s", rec.Code, rec.Body.String())
+	// State conflicts (errs.InvalidState) map to HTTP 409, not 422.
+	// 422 means "fix your input"; 409 means "the resource is in a
+	// state that doesn't permit this operation" — the latter is
+	// what "can only refund paid invoices" is. Stripe / GitHub /
+	// AWS all follow this convention.
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409 — body=%s", rec.Code, rec.Body.String())
 	}
 }
 

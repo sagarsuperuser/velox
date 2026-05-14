@@ -7,6 +7,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 	"github.com/sagarsuperuser/velox/internal/usage"
 )
@@ -34,7 +35,7 @@ func TestAggregateRespectsListFilters(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	store := usage.NewPostgresStore(db)

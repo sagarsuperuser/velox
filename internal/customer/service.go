@@ -8,6 +8,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
@@ -23,21 +24,87 @@ type PaymentSetupReader interface {
 	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
 }
 
+// TestClockChecker validates a test_clock_id at customer-create time
+// (Stripe parity, ADR-027). Narrow shape — Service doesn't need
+// the full TestClock; just "does it exist for this tenant?".
+// Implemented by *testclock.PostgresStore.
+type TestClockChecker interface {
+	Exists(ctx context.Context, tenantID, clockID string) (bool, error)
+}
+
+// TaxFlusher fans out a tax-retry across every draft invoice for one
+// customer that's stuck on `customer_data_invalid`. Fired from
+// UpsertBillingProfile after a successful save — the only operator
+// action that can resolve customer_data_invalid is editing the
+// billing profile, so the moment the save lands we replay the tax
+// calc against the (now possibly-correct) fields. Operator never has
+// to click Retry per-invoice.
+//
+// Narrow shape (single method, no return values used by the caller)
+// keeps the customer→invoice dep one-way: customer doesn't need to
+// know what tax retry means, only that it exists. Implemented by
+// *invoice.Service.
+//
+// Mirrors the ADR-019 Stripe-reconnect flush at per-customer scope.
+type TaxFlusher interface {
+	RetryCustomerDataErrors(ctx context.Context, tenantID, customerID string) (int, []error)
+}
+
 type Service struct {
 	store         Store
 	stripeSyncer  StripeSyncer
 	paymentSetups PaymentSetupReader
+	clocks        TestClockChecker
+	taxFlusher    TaxFlusher
 	events        domain.EventDispatcher
+	resolver      clock.Resolver
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
 }
 
+// SetResolver wires the unified clock.Resolver. At Update /
+// UpsertBillingProfile and other customer-scoped mutations, ctx is
+// bound to the customer's effective-now so downstream postgres
+// timestamp writes (updated_at on customer row, billing_profile
+// updates, etc.) land in simulated time on clock-pinned customers.
+//
+// Customer.Create can't bind from the customer pin (the customer
+// doesn't exist yet), but if the input carries a TestClockID at
+// creation we bind from the clock directly. Otherwise wall-clock.
+func (s *Service) SetResolver(r clock.Resolver) {
+	s.resolver = r
+}
+
+// bindForCustomer binds effective-now from a customer pin for any
+// post-create mutation (Update, UpsertBillingProfile, ArchiveCustomer).
+// Returns ctx unchanged on resolver error or no resolver.
+func (s *Service) bindForCustomer(ctx context.Context, tenantID, customerID string) context.Context {
+	bound, _ := clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, CustomerID: customerID})
+	return bound
+}
+
 // SetStripeSyncer configures Stripe sync (optional, breaks circular dep).
 func (s *Service) SetStripeSyncer(syncer StripeSyncer, setups PaymentSetupReader) {
 	s.stripeSyncer = syncer
 	s.paymentSetups = setups
+}
+
+// SetTestClockChecker wires the test-clock existence check used at
+// customer-create time. Optional — if unwired, customer-create
+// rejects any test_clock_id (defensive default; production wires
+// the real store via api/router.go).
+func (s *Service) SetTestClockChecker(checker TestClockChecker) {
+	s.clocks = checker
+}
+
+// SetTaxFlusher wires the per-customer tax-retry flush fired after a
+// successful billing-profile upsert. Optional — if unwired, the
+// flush is a no-op and operators fall back to per-invoice Retry.
+// Production wires *invoice.Service via api/router.go.
+func (s *Service) SetTaxFlusher(flusher TaxFlusher) {
+	s.taxFlusher = flusher
 }
 
 // SetEventDispatcher wires the outbound webhook dispatcher so the service
@@ -78,12 +145,19 @@ type CreateInput struct {
 	ExternalID  string `json:"external_id"`
 	DisplayName string `json:"display_name"`
 	Email       string `json:"email,omitempty"`
+	// TestClockID pins this customer to a test clock — Stripe parity,
+	// ADR-027. Test-mode only; rejected on live-mode customers via
+	// the livemode check below. Once attached at create time, every
+	// Subscription / Invoice for this customer uses the clock's
+	// frozen_time as "now". Cannot be changed post-creation.
+	TestClockID string `json:"test_clock_id,omitempty"`
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Customer, error) {
 	input.ExternalID = strings.TrimSpace(input.ExternalID)
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
 	input.Email = strings.TrimSpace(input.Email)
+	input.TestClockID = strings.TrimSpace(input.TestClockID)
 
 	if input.ExternalID == "" {
 		return domain.Customer{}, errs.Required("external_id")
@@ -102,11 +176,28 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 			return domain.Customer{}, err
 		}
 	}
+	// Test-clock attach: validate clock exists (mode gating happens at
+	// the route layer — test_clock_id only reaches us when the caller
+	// is on a test-mode key). If the checker isn't wired (defensive
+	// default) any test_clock_id is rejected.
+	if input.TestClockID != "" {
+		if s.clocks == nil {
+			return domain.Customer{}, errs.Invalid("test_clock_id", "test clocks are not available in this environment")
+		}
+		exists, err := s.clocks.Exists(ctx, tenantID, input.TestClockID)
+		if err != nil {
+			return domain.Customer{}, err
+		}
+		if !exists {
+			return domain.Customer{}, errs.Invalid("test_clock_id", "test clock not found")
+		}
+	}
 
 	return s.store.Create(ctx, tenantID, domain.Customer{
 		ExternalID:  input.ExternalID,
 		DisplayName: input.DisplayName,
 		Email:       input.Email,
+		TestClockID: input.TestClockID,
 	})
 }
 
@@ -118,6 +209,15 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Custome
 	return s.store.List(ctx, filter)
 }
 
+// ListByTestClockID returns customers pinned to the given test clock.
+// Exposed as a service method (not just a store passthrough) so the
+// testclock domain can depend on the customer service's narrow
+// CustomerReader interface — keeps the per-domain rule intact and
+// the decrypt step on the customer read path.
+func (s *Service) ListByTestClockID(ctx context.Context, tenantID, clockID string) ([]domain.Customer, error) {
+	return s.store.ListByTestClockID(ctx, tenantID, clockID)
+}
+
 type UpdateInput struct {
 	DisplayName string `json:"display_name"`
 	Email       string `json:"email,omitempty"`
@@ -125,6 +225,7 @@ type UpdateInput struct {
 }
 
 func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateInput) (domain.Customer, error) {
+	ctx = s.bindForCustomer(ctx, tenantID, id)
 	existing, err := s.store.Get(ctx, tenantID, id)
 	if err != nil {
 		return domain.Customer{}, err
@@ -150,6 +251,7 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 	if bp.CustomerID == "" {
 		return domain.CustomerBillingProfile{}, errs.Required("customer_id")
 	}
+	ctx = s.bindForCustomer(ctx, tenantID, bp.CustomerID)
 	if email := strings.TrimSpace(bp.Email); email != "" {
 		if err := validateEmail("email", email); err != nil {
 			return domain.CustomerBillingProfile{}, err
@@ -198,6 +300,30 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 					"customer_id", bp.CustomerID, "stripe_customer_id", ps.StripeCustomerID, "error", syncErr)
 				// Non-fatal: local save succeeded, Stripe sync is best-effort
 			}
+		}
+	}
+
+	// Fan out a tax retry across every draft invoice for this customer
+	// stuck on `customer_data_invalid`. The operator's edit IS the
+	// retry trigger — same shape as ADR-019's Stripe-reconnect flush
+	// scoped to one customer. Best-effort: per-invoice failures are
+	// logged but don't roll back the profile save.
+	if s.taxFlusher != nil {
+		processed, retryErrs := s.taxFlusher.RetryCustomerDataErrors(ctx, tenantID, bp.CustomerID)
+		if processed > 0 || len(retryErrs) > 0 {
+			slog.InfoContext(ctx, "billing profile flush retried tax errors",
+				"tenant_id", tenantID,
+				"customer_id", bp.CustomerID,
+				"processed", processed,
+				"errors", len(retryErrs),
+			)
+		}
+		for _, retryErr := range retryErrs {
+			slog.WarnContext(ctx, "billing profile flush tax retry failed",
+				"tenant_id", tenantID,
+				"customer_id", bp.CustomerID,
+				"error", retryErr,
+			)
 		}
 	}
 

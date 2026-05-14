@@ -42,17 +42,17 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 	}
 
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO usage_events (id, tenant_id, customer_id, meter_id, subscription_id,
+		INSERT INTO usage_events (id, tenant_id, customer_id, meter_id,
 			quantity, properties, idempotency_key, timestamp, origin)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		RETURNING id, tenant_id, customer_id, meter_id, COALESCE(subscription_id,''),
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		RETURNING id, tenant_id, customer_id, meter_id,
 			quantity, properties, COALESCE(idempotency_key,''), timestamp, origin
 	`, id, tenantID, event.CustomerID, event.MeterID,
-		postgres.NullableString(event.SubscriptionID), event.Quantity,
+		event.Quantity,
 		props, postgres.NullableString(event.IdempotencyKey),
 		event.Timestamp, origin,
 	).Scan(&event.ID, &event.TenantID, &event.CustomerID, &event.MeterID,
-		&event.SubscriptionID, &event.Quantity, propertiesScanner{&event.Dimensions},
+		&event.Quantity, propertiesScanner{&event.Dimensions},
 		&event.IdempotencyKey, &event.Timestamp, &event.Origin)
 
 	if err != nil {
@@ -87,7 +87,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 		return nil, 0, err
 	}
 
-	query := `SELECT id, tenant_id, customer_id, meter_id, COALESCE(subscription_id,''),
+	query := `SELECT id, tenant_id, customer_id, meter_id,
 		quantity, properties, COALESCE(idempotency_key,''), timestamp
 		FROM usage_events` + where + ` ORDER BY timestamp DESC LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
 	args = append(args, limit, filter.Offset)
@@ -102,7 +102,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	for rows.Next() {
 		var e domain.UsageEvent
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.MeterID,
-			&e.SubscriptionID, &e.Quantity, propertiesScanner{&e.Dimensions},
+			&e.Quantity, propertiesScanner{&e.Dimensions},
 			&e.IdempotencyKey, &e.Timestamp); err != nil {
 			return nil, 0, err
 		}
@@ -311,8 +311,13 @@ func (s *PostgresStore) AggregateForBillingPeriod(ctx context.Context, tenantID,
 // AggregateByPricingRules implements the priority+claim resolution path
 // described in docs/design-multi-dim-meters.md. Strategy:
 //
-//  1. Rank meter_pricing_rules by (priority DESC, created_at ASC) so the
-//     deterministic ROW_NUMBER becomes the rule_rank we order claims by.
+//  1. Rank meter_pricing_rules by (priority DESC, created_at ASC, id ASC)
+//     so the ROW_NUMBER is fully deterministic. The id tiebreaker covers
+//     the corner case where two rules share the same priority AND were
+//     inserted within the same created_at tick (bulk import, same-txn
+//     bootstrap, clock-resolution collisions) — without it, Postgres is
+//     free to order them differently across servers, which would make
+//     billing non-reproducible across replicas.
 //  2. LEFT JOIN LATERAL each in-period event against the ranked rules,
 //     keeping only the top-priority rule whose dimension_match is a
 //     subset of the event's properties. NULL rule means unclaimed.
@@ -345,7 +350,7 @@ func (s *PostgresStore) AggregateByPricingRules(
 	rows, err := tx.QueryContext(ctx, `
 		WITH ranked_rules AS (
 			SELECT id, dimension_match, aggregation_mode, rating_rule_version_id,
-			       ROW_NUMBER() OVER (ORDER BY priority DESC, created_at ASC) AS rule_rank
+			       ROW_NUMBER() OVER (ORDER BY priority DESC, created_at ASC, id ASC) AS rule_rank
 			FROM meter_pricing_rules
 			WHERE tenant_id = $1 AND meter_id = $2
 		),
@@ -417,7 +422,7 @@ func (s *PostgresStore) AggregateByPricingRules(
 	leverRows, err := tx.QueryContext(ctx, `
 		WITH ranked_rules AS (
 			SELECT id, dimension_match, aggregation_mode, rating_rule_version_id,
-			       ROW_NUMBER() OVER (ORDER BY priority DESC, created_at ASC) AS rule_rank
+			       ROW_NUMBER() OVER (ORDER BY priority DESC, created_at ASC, id ASC) AS rule_rank
 			FROM meter_pricing_rules
 			WHERE tenant_id = $1 AND meter_id = $2
 		),

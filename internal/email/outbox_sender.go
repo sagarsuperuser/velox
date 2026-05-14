@@ -7,16 +7,24 @@ import (
 
 // Email type tags written into email_outbox.email_type. Kept stable because
 // they live in row data; adding new types is append-only.
+//
+// payment_setup_request: customer needs to set up a payment method on a
+//   finalized invoice (no PM on file at finalize). Distinct from
+//   payment_failed which means a charge attempt actually went to Stripe
+//   and was declined.
+// payment_failed: a Stripe charge attempt failed (decline, insufficient
+//   funds, etc.). Used for both immediate post-decline notifications
+//   AND dunning retry escalations.
 const (
-	TypeInvoice              = "invoice"
-	TypePaymentReceipt       = "payment_receipt"
-	TypeDunningWarning       = "dunning_warning"
-	TypeDunningEscalation    = "dunning_escalation"
-	TypePaymentFailed        = "payment_failed"
-	TypePaymentUpdateRequest = "payment_update_request"
-	TypePortalMagicLink      = "portal_magic_link"
-	TypePasswordReset        = "password_reset"
-	TypeMemberInvite         = "member_invite"
+	TypeInvoice             = "invoice"
+	TypePaymentReceipt      = "payment_receipt"
+	TypeDunningWarning      = "dunning_warning"
+	TypeDunningEscalation   = "dunning_escalation"
+	TypePaymentFailed       = "payment_failed"
+	TypePaymentSetupRequest = "payment_setup_request"
+	TypePortalMagicLink     = "portal_magic_link"
+	TypePasswordReset       = "password_reset"
+	TypeMemberInvite        = "member_invite"
 )
 
 // outboxMessage is the union payload persisted to email_outbox.payload. Each
@@ -171,10 +179,10 @@ func (s *OutboxSender) SendPaymentFailed(ctx context.Context, tenantID, to, cust
 	})
 }
 
-// SendPaymentUpdateRequest enqueues a payment-update-request email. Satisfies
-// payment.EmailPaymentUpdate.
-func (s *OutboxSender) SendPaymentUpdateRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
-	return s.enqueue(ctx, tenantID, TypePaymentUpdateRequest, outboxMessage{
+// SendPaymentSetupRequest enqueues a payment-setup-request email
+// (customer must set up a PM on a finalized invoice).
+func (s *OutboxSender) SendPaymentSetupRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
+	return s.enqueue(ctx, tenantID, TypePaymentSetupRequest, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,

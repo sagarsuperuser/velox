@@ -188,25 +188,24 @@ func seed(dsn string, sc scale) error {
 	if totalEvents > 0 {
 		log_print("    seeding %d usage_events ...", totalEvents)
 		// Use INSERT ... SELECT generate_series for speed — beats client-side
-		// row generation at this volume.
-		// We pick a sub_id by mod (fast). DEFAULT id via column default.
+		// row generation at this volume. Events are keyed on (customer, meter)
+		// only; sub linkage is resolved at finalize, not stored on the event.
 		if _, err := conn.ExecContext(ctx, fmt.Sprintf(`
-			INSERT INTO usage_events (id, tenant_id, customer_id, meter_id, subscription_id, quantity, properties, idempotency_key, timestamp)
+			INSERT INTO usage_events (id, tenant_id, customer_id, meter_id, quantity, properties, idempotency_key, timestamp)
 			SELECT
 			    'vlx_evt_safe' || lpad(rn::text, 14, '0'),
 			    tenant_id,
 			    customer_id,
 			    (SELECT id FROM meters m WHERE m.tenant_id = x.tenant_id LIMIT 1),
-			    sub_id,
 			    1 + (rn %% 100),
 			    jsonb_build_object('model', 'gpt-4', 'op', (rn %% 4)::text),
 			    'idem-safe-' || rn,
 			    now() - ((rn %% 86400) || ' seconds')::interval
 			FROM (
 			    SELECT
-			        s.id AS sub_id, s.tenant_id, s.customer_id,
+			        s.tenant_id, s.customer_id,
 			        row_number() OVER () AS rn
-			    FROM (SELECT id, tenant_id, customer_id FROM subscriptions WHERE id LIKE 'vlx_sub_safe%%') s
+			    FROM (SELECT tenant_id, customer_id FROM subscriptions WHERE id LIKE 'vlx_sub_safe%%') s
 			    JOIN LATERAL (SELECT generate_series(1, %d)) g ON TRUE
 			) x
 		`, sc.EventsPerSub)); err != nil {

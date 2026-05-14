@@ -1,16 +1,17 @@
-import { useMemo, useState } from 'react'
-import { useNavigate, useParams, Link } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Customer, type BillingProfile, type Invoice, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride, type CustomerCouponAssignment } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForPaymentSetup, type Customer, type BillingProfile, type Invoice, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride, type CustomerCouponAssignment } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { useAuth } from '@/contexts/AuthContext'
 import { Layout } from '@/components/Layout'
 import { CostDashboard } from '@/components/CostDashboard'
 import { TestClockBadge } from '@/components/TestClockBadge'
+import { TestClockBanner } from '@/components/TestClockBanner'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
@@ -127,10 +128,15 @@ export default function CustomerDetailPage() {
     enabled: !!id,
   })
 
+  // Polls during an active update flow (setup_status='pending') so the
+  // operator returning from a Stripe Checkout tab sees the new card
+  // swap in within ~2s of the webhook landing — no manual refresh.
+  // Stops polling once setup is ready or missing (terminal states).
   const { data: paymentSetup } = useQuery({
     queryKey: ['customer-payment-status', id],
     queryFn: () => api.getPaymentStatus(id!).catch(() => ({ customer_id: '', setup_status: 'missing' } as PaymentSetup)),
     enabled: !!id,
+    refetchInterval: (query) => pollIntervalForPaymentSetup(query.state.data),
   })
 
   const { data: dunningOverride } = useQuery({
@@ -149,6 +155,27 @@ export default function CustomerDetailPage() {
 
   const isArchived = customer?.status === 'archived'
 
+  // After a Stripe Checkout return, the URL carries `?payment=success`
+  // or `?payment=cancel`. Toast appropriately, refetch the payment
+  // setup so the card details flip from pending → ready, and strip
+  // the query string so a refresh doesn't re-toast. The webhook is
+  // the authoritative path that flips the row; the toast is a UX
+  // hint that the customer's redirect landed.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    const payment = searchParams.get('payment')
+    if (!payment) return
+    if (payment === 'success') {
+      toast.success('Payment method saved')
+      queryClient.invalidateQueries({ queryKey: ['customer-payment-status', id] })
+    } else if (payment === 'cancel') {
+      toast.info('Setup canceled — no changes were made')
+    }
+    const next = new URLSearchParams(searchParams)
+    next.delete('payment')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams, queryClient, id])
+
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ['customer', id] })
     queryClient.invalidateQueries({ queryKey: ['customer-overview', id] })
@@ -166,8 +193,13 @@ export default function CustomerDetailPage() {
     if (!id || !customer) return
     setSettingUpPayment(true)
     try {
+      // Return URL is the page the operator is on now. Stripe will
+      // redirect back here with `?payment=success|cancel` so the SPA
+      // can toast + refetch payment_setup. Strip any existing query
+      // string so we don't stack `?payment=cancel&payment=success`.
+      const returnURL = window.location.origin + window.location.pathname
       if (paymentSetup?.setup_status === 'ready') {
-        const res = await api.updatePaymentMethod(id)
+        const res = await api.updatePaymentMethod(id, returnURL)
         window.open(res.url, '_blank')
         toast.success('Stripe payment update page opened in new tab')
       } else {
@@ -180,6 +212,7 @@ export default function CustomerDetailPage() {
           address_state: billingProfile?.state || '',
           address_postal_code: billingProfile?.postal_code || '',
           address_country: billingProfile?.country || 'US',
+          return_url: returnURL,
         })
         window.open(res.url, '_blank')
         toast.success('Stripe checkout opened in new tab')
@@ -253,7 +286,13 @@ export default function CustomerDetailPage() {
       {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-semibold text-foreground">{customer.display_name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold text-foreground">{customer.display_name}</h1>
+            {/* Customer-level test-clock attach (ADR-027). Badge on
+                the header so the operator immediately sees that
+                everything for this customer is on simulated time. */}
+            {customer.test_clock_id && <TestClockBadge testClockId={customer.test_clock_id} />}
+          </div>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="text-xs text-muted-foreground font-mono">{customer.id}</span>
             <CopyButton text={customer.id} />
@@ -311,6 +350,15 @@ export default function CustomerDetailPage() {
         </div>
       </div>
 
+      {/* Test-clock banner — top of the detail page when the customer
+          is pinned (ADR-027). Carries the clock's current frozen_time
+          + a "View clock" link, same shape used on SubscriptionDetail
+          and InvoiceDetail. The header badge above is the at-a-glance
+          marker; the banner is the explainer + navigation. */}
+      {customer.test_clock_id && (
+        <TestClockBanner testClockId={customer.test_clock_id} />
+      )}
+
       {/* Key Metrics */}
       <Card>
         <CardContent className="p-0">
@@ -318,7 +366,7 @@ export default function CustomerDetailPage() {
             <div className="flex-1 px-6 py-4">
               <p className="text-sm text-muted-foreground">Email</p>
               <div className="flex items-center gap-2 mt-1">
-                <p className="text-sm font-medium text-foreground">{customer.email || '\u2014'}</p>
+                <p className="text-sm font-medium text-foreground">{customer.email || '—'}</p>
                 {customer.email_status === 'bounced' && (
                   <Badge variant="destructive" className="text-xs" title={customer.email_bounce_reason || 'Permanent delivery failure'}>
                     Bounced
@@ -356,7 +404,7 @@ export default function CustomerDetailPage() {
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Email</span>
               <span className="text-sm text-foreground flex items-center gap-2">
-                {customer.email || '\u2014'}
+                {customer.email || '—'}
                 {customer.email_status === 'bounced' && customer.email_last_bounced_at && (
                   <Badge variant="destructive" className="text-xs" title={customer.email_bounce_reason || 'Permanent delivery failure'}>
                     Bounced \u00b7 {formatDate(customer.email_last_bounced_at)}
@@ -405,15 +453,15 @@ export default function CustomerDetailPage() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-x-8 gap-y-4">
                   <div>
                     <p className="text-xs text-muted-foreground">Legal Name</p>
-                    <p className="text-sm text-foreground mt-1">{billingProfile.legal_name || '\u2014'}</p>
+                    <p className="text-sm text-foreground mt-1">{billingProfile.legal_name || '—'}</p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Email</p>
-                    <p className="text-sm text-foreground mt-1">{billingProfile.email || '\u2014'}</p>
+                    <p className="text-sm text-foreground mt-1">{billingProfile.email || '—'}</p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Phone</p>
-                    <p className="text-sm text-foreground mt-1">{billingProfile.phone || '\u2014'}</p>
+                    <p className="text-sm text-foreground mt-1">{billingProfile.phone || '—'}</p>
                   </div>
                 </div>
               </section>
@@ -467,11 +515,11 @@ export default function CustomerDetailPage() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
                     <div>
                       <p className="text-xs text-muted-foreground">Tax ID Type</p>
-                      <p className="text-sm text-foreground mt-1 uppercase">{billingProfile.tax_id_type || '\u2014'}</p>
+                      <p className="text-sm text-foreground mt-1 uppercase">{billingProfile.tax_id_type || '—'}</p>
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground">Tax ID</p>
-                      <p className="text-sm text-foreground mt-1 font-mono">{billingProfile.tax_id || '\u2014'}</p>
+                      <p className="text-sm text-foreground mt-1 font-mono">{billingProfile.tax_id || '—'}</p>
                     </div>
                   </div>
                 )}
@@ -640,69 +688,100 @@ export default function CustomerDetailPage() {
         <CostDashboard customerId={id!} />
       </div>
 
-      {/* Payment Method */}
-      <Card className="mt-6">
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm">Payment Method</CardTitle>
-            {!isArchived && (
-              <Button
-                variant={paymentSetup?.setup_status === 'ready' ? 'outline' : 'default'}
-                size="sm"
-                onClick={handleSetupPayment}
-                disabled={settingUpPayment}
-              >
-                {settingUpPayment ? 'Setting up...' : paymentSetup?.setup_status === 'ready' ? 'Update Payment Method' : paymentSetup?.setup_status === 'pending' ? 'Complete Setup' : 'Set Up Payment'}
-              </Button>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              {paymentSetup?.setup_status === 'ready' && paymentSetup.card_last4 ? (
-                <>
-                  <div className="w-10 h-10 rounded-lg bg-foreground flex items-center justify-center">
-                    <CreditCard size={18} className="text-background" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-foreground">
-                      {(paymentSetup.card_brand || 'Card').charAt(0).toUpperCase() + (paymentSetup.card_brand || 'card').slice(1)} ending in {paymentSetup.card_last4}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      Expires {String(paymentSetup.card_exp_month).padStart(2, '0')}/{paymentSetup.card_exp_year}
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className={cn(
-                    'w-10 h-10 rounded-lg flex items-center justify-center',
-                    paymentSetup?.setup_status === 'ready' ? 'bg-emerald-50 dark:bg-emerald-950/20' :
-                    paymentSetup?.setup_status === 'pending' ? 'bg-amber-50 dark:bg-amber-950/20' : 'bg-muted'
-                  )}>
-                    <CreditCard size={18} className={cn(
-                      paymentSetup?.setup_status === 'ready' ? 'text-emerald-500' :
-                      paymentSetup?.setup_status === 'pending' ? 'text-amber-500' : 'text-muted-foreground'
-                    )} />
-                  </div>
-                  <div>
-                    <p className="text-sm text-foreground">
-                      {paymentSetup?.setup_status === 'ready' ? 'Payment method active' : paymentSetup?.setup_status === 'pending' ? 'Awaiting payment method setup' : 'No payment method'}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      {paymentSetup?.setup_status === 'ready' ? 'Invoices will be charged automatically' : paymentSetup?.setup_status === 'pending' ? 'Customer needs to complete Stripe Checkout' : 'Set up a payment method to enable automatic billing'}
-                    </p>
-                  </div>
-                </>
-              )}
-            </div>
-            {paymentSetup?.setup_status === 'ready' && (
-              <Badge variant="success">Active</Badge>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Payment Method.
+
+          Three render states, gated on whether a card has ever been
+          attached (card_last4 populated) — NOT on setup_status alone.
+          When an operator kicks off an Update flow, the server flips
+          the row to setup_status='pending' but PRESERVES card details
+          (internal/payment/portal.go) so the panel keeps showing the
+          current card until the new one webhook-replaces it. Stripe's
+          own dashboard does the same — atomic swap, never a between-
+          cards empty state.
+
+            1. card_last4 + ready    → card shown, Active badge,
+                                       "Update Payment Method" button.
+            2. card_last4 + pending  → card shown, amber "Update in
+                                       progress" sub-line, button still
+                                       offers Update.
+            3. no card_last4         → "Awaiting setup" (pending) or
+                                       "No payment method" (missing). */}
+      {(() => {
+        const hasCard = !!paymentSetup?.card_last4
+        const status = paymentSetup?.setup_status ?? 'missing'
+        const buttonLabel = settingUpPayment
+          ? 'Setting up...'
+          : hasCard
+            ? 'Update Payment Method'
+            : status === 'pending'
+              ? 'Complete Setup'
+              : 'Set Up Payment'
+        return (
+          <Card className="mt-6">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">Payment Method</CardTitle>
+                {!isArchived && (
+                  <Button
+                    variant={hasCard && status === 'ready' ? 'outline' : 'default'}
+                    size="sm"
+                    onClick={handleSetupPayment}
+                    disabled={settingUpPayment}
+                  >
+                    {buttonLabel}
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {hasCard ? (
+                    <>
+                      <div className="w-10 h-10 rounded-lg bg-foreground flex items-center justify-center">
+                        <CreditCard size={18} className="text-background" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-foreground">
+                          {(paymentSetup!.card_brand || 'Card').charAt(0).toUpperCase() + (paymentSetup!.card_brand || 'card').slice(1)} ending in {paymentSetup!.card_last4}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          Expires {String(paymentSetup!.card_exp_month).padStart(2, '0')}/{paymentSetup!.card_exp_year}
+                          {status === 'pending' && (
+                            <span className="ml-2 text-amber-600 dark:text-amber-400">· Update in progress</span>
+                          )}
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className={cn(
+                        'w-10 h-10 rounded-lg flex items-center justify-center',
+                        status === 'pending' ? 'bg-amber-50 dark:bg-amber-950/20' : 'bg-muted'
+                      )}>
+                        <CreditCard size={18} className={cn(
+                          status === 'pending' ? 'text-amber-500' : 'text-muted-foreground'
+                        )} />
+                      </div>
+                      <div>
+                        <p className="text-sm text-foreground">
+                          {status === 'pending' ? 'Awaiting payment method setup' : 'No payment method'}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          {status === 'pending' ? 'Customer needs to complete Stripe Checkout' : 'Set up a payment method to enable automatic billing'}
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </div>
+                {hasCard && status === 'ready' && (
+                  <Badge variant="success">Active</Badge>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )
+      })()}
 
       {/* Subscriptions & Invoices grid */}
       <div className="grid grid-cols-2 gap-6 mt-6">
@@ -793,9 +872,10 @@ export default function CustomerDetailPage() {
       )}
 
       {/* Create Subscription Dialog */}
-      {showCreateSub && id && plans && (
+      {showCreateSub && id && plans && customer && (
         <CreateSubscriptionDialog
           customerId={id}
+          customer={customer}
           plans={plans}
           onClose={() => setShowCreateSub(false)}
           onCreated={(sub) => {
@@ -994,22 +1074,22 @@ function EditCustomerDialog({ customer, onClose, onSaved }: {
 
 /* ─── Create Subscription ────────────────────────────────────── */
 
-function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
-  customerId: string; plans: Plan[]; onClose: () => void; onCreated: (sub: Subscription) => void
+function CreateSubscriptionDialog({ customerId, customer, plans, onClose, onCreated }: {
+  customerId: string; customer: Customer; plans: Plan[]; onClose: () => void; onCreated: (sub: Subscription) => void
 }) {
   const { user } = useAuth()
   const [startNow, setStartNow] = useState(true)
   const [planId, setPlanId] = useState('')
   const [planError, setPlanError] = useState('')
-  const [testClockId, setTestClockId] = useState('')
 
-  // Test clocks are test-mode-only. Fetch only when the operator is in
-  // test mode so the field is hidden in live (matches the sidebar nav).
+  // ADR-027: test-clock is customer-level. Sub inherits silently.
+  // We still fetch clocks to look up the name for the inheritance
+  // hint when the customer is pinned (operator-friendly display).
   const isTestMode = !!user && !user.livemode
   const { data: clocksData } = useQuery({
     queryKey: ['test-clocks'],
     queryFn: () => api.listTestClocks(),
-    enabled: isTestMode,
+    enabled: isTestMode && !!customer?.test_clock_id,
   })
   const clocks = clocksData?.data ?? []
 
@@ -1026,16 +1106,17 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
     if (!planId) { setPlanError('Plan is required'); return }
     setPlanError('')
     try {
+      // ADR-027: test_clock_id is no longer set per-sub. The server
+      // inherits it from the customer's customers.test_clock_id.
       const sub = await api.createSubscription({
         ...data,
         customer_id: customerId,
         items: [{ plan_id: planId }],
         start_now: startNow,
-        test_clock_id: testClockId || undefined,
       })
       onCreated(sub)
     } catch (err) {
-      applyApiError(form, err, ['display_name', 'code', 'test_clock_id'], { toastTitle: 'Failed to create subscription' })
+      applyApiError(form, err, ['display_name', 'code'], { toastTitle: 'Failed to create subscription' })
     }
   })
 
@@ -1080,31 +1161,17 @@ function CreateSubscriptionDialog({ customerId, plans, onClose, onCreated }: {
             Start immediately (activate + set billing period)
           </label>
 
-          {isTestMode && clocks.length > 0 && (
-            <div className="space-y-2">
-              <Label>Pin to test clock <span className="text-muted-foreground">(optional)</span></Label>
-              <Select value={testClockId} onValueChange={(v) => setTestClockId(v ?? '')}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="No test clock — use wall clock">
-                    {(value: string) => {
-                      if (!value) return 'No test clock — use wall clock'
-                      const c = clocks.find(c => c.id === value)
-                      return c ? (c.name || c.id) : value
-                    }}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">No test clock — use wall clock</SelectItem>
-                  {clocks.map(c => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name || c.id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Subscription's billing time follows the clock instead of wall-clock. Advance the clock from Test Clocks to fast-forward billing.
-              </p>
+          {/* Test-clock attach is customer-level (ADR-027). Sub
+              inherits silently from the customer; the hint below
+              makes that explicit so an operator clicking Create
+              isn't surprised that the new sub bills on simulated
+              time instead of wall-clock. */}
+          {isTestMode && customer?.test_clock_id && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              This subscription will inherit the customer's test clock
+              {clocks.find(c => c.id === customer.test_clock_id)?.name && (
+                <> — <span className="font-medium">{clocks.find(c => c.id === customer.test_clock_id)?.name}</span></>
+              )}.
             </div>
           )}
 
@@ -1355,7 +1422,7 @@ function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSa
                       keywords: [t.value, t.country].filter(Boolean),
                       prefix: (
                         <span className="text-muted-foreground font-mono text-[11px] w-7 inline-block text-center">
-                          {t.country || '\u2014'}
+                          {t.country || '—'}
                         </span>
                       ),
                     }))}
@@ -1707,7 +1774,7 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
               <SelectContent>
                 {GEO_CURRENCIES.map(c => (
                   <SelectItem key={c.code} value={c.code}>
-                    {c.symbol} {c.code} \u2014 {c.label}
+                    {c.symbol} {c.code} — {c.label}
                   </SelectItem>
                 ))}
               </SelectContent>

@@ -197,7 +197,7 @@ Returns the per-rule aggregated quantity + projected charges, grouped by request
 
 When billing finalizes for `(customer, meter, period_start, period_end)`:
 
-1. Load all `meter_pricing_rules` for the meter, ordered by `priority DESC`, then `created_at ASC` for deterministic tie-breaking.
+1. Load all `meter_pricing_rules` for the meter, ordered by `priority DESC`, then `created_at ASC`, then `id ASC` for deterministic tie-breaking. The `id` final tiebreaker covers the corner case where two same-priority rules share a `created_at` tick (bulk import, same-txn bootstrap, clock-resolution collisions) — without it, Postgres is free to pick an order, which would make billing non-reproducible across replicas.
 2. Iterate rules. For each rule:
    - Find events in the period whose `properties` is a **superset** of `dimension_match` AND that haven't been claimed by a higher-priority rule.
    - Apply the rule's `aggregation_mode`:
@@ -228,7 +228,7 @@ Implementation: walk rules in order; for each rule, query events not already in 
 ```sql
 WITH ranked_rules AS (
     SELECT id, dimension_match, aggregation_mode, rating_rule_version_id,
-           ROW_NUMBER() OVER (ORDER BY priority DESC, created_at ASC) AS rule_rank
+           ROW_NUMBER() OVER (ORDER BY priority DESC, created_at ASC, id ASC) AS rule_rank
     FROM meter_pricing_rules
     WHERE tenant_id = $1 AND meter_id = $2
 ),

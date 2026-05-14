@@ -51,9 +51,14 @@ func (m *memStore) UpsertPolicyTx(ctx context.Context, _ *sql.Tx, tenantID strin
 func (m *memStore) CreateRun(_ context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error) {
 	run.ID = fmt.Sprintf("drun_%d", len(m.runs)+1)
 	run.TenantID = tenantID
-	now := time.Now().UTC()
-	run.CreatedAt = now
-	run.UpdatedAt = now
+	// Honor caller-provided CreatedAt to match PostgresStore.CreateRun
+	// (postgres.go:114). Dunning Service stamps CreatedAt in the
+	// effective-now domain so engine-triggered runs on a clock-pinned
+	// invoice carry simulated time, not wall-clock.
+	if run.CreatedAt.IsZero() {
+		run.CreatedAt = time.Now().UTC()
+	}
+	run.UpdatedAt = run.CreatedAt
 	m.runs[run.ID] = run
 	return run, nil
 }
@@ -89,6 +94,13 @@ func (m *memStore) ListRuns(_ context.Context, filter RunListFilter) ([]domain.I
 func (m *memStore) UpdateRun(_ context.Context, _ string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error) {
 	m.runs[run.ID] = run
 	return run, nil
+}
+
+// ListDueRunsForClock — ADR-029 Phase 5 stub. Narrow service tests
+// don't exercise per-clock dunning advance; postgres integration
+// tests cover the SQL.
+func (m *memStore) ListDueRunsForClock(_ context.Context, _, _ string, _ time.Time, _ int) ([]domain.InvoiceDunningRun, error) {
+	return nil, nil
 }
 
 func (m *memStore) ListDueRuns(_ context.Context, _ string, before time.Time, limit int) ([]domain.InvoiceDunningRun, error) {
@@ -316,5 +328,159 @@ func TestUpsertPolicy(t *testing.T) {
 	// automatically instead of stacking finalized invoices each cycle.
 	if policy.FinalAction != domain.DunningActionPause {
 		t.Errorf("default final_action: got %q, want pause", policy.FinalAction)
+	}
+}
+
+// stubClockResolver returns a fixed time per invoice ID — lets tests
+// pin the simulated "now" deterministically. Implements clock.Resolver
+// (the customer / subscription methods are unused by dunning tests but
+// required by the interface).
+type stubClockResolver struct {
+	byInvoice map[string]time.Time
+	err       error
+}
+
+func (s *stubClockResolver) EffectiveNowForInvoice(_ context.Context, _, invoiceID string) (time.Time, error) {
+	if s.err != nil {
+		return time.Time{}, s.err
+	}
+	if t, ok := s.byInvoice[invoiceID]; ok {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("no stub for invoice %s", invoiceID)
+}
+
+func (s *stubClockResolver) EffectiveNowForCustomer(_ context.Context, _, _ string) (time.Time, error) {
+	return time.Time{}, fmt.Errorf("not used by dunning tests")
+}
+
+func (s *stubClockResolver) EffectiveNowForSubscription(_ context.Context, _, _ string) (time.Time, error) {
+	return time.Time{}, fmt.Errorf("not used by dunning tests")
+}
+
+// TestClockResolver_StampsFrozenDomain locks in the ADR-029 follow-up:
+// when the clock resolver is wired, every per-invoice timestamp dunning
+// writes (next_action_at, last_attempt_at, resolved_at, created_at)
+// lands in the resolver's domain — not s.clock.Now(). Without this,
+// clock-pinned runs whose stamps land in wall-clock get stranded
+// against a catchup window that compares to frozen_time.
+func TestClockResolver_StampsFrozenDomain(t *testing.T) {
+	frozen := time.Date(2024, 2, 1, 12, 0, 0, 0, time.UTC)
+	resolver := &stubClockResolver{byInvoice: map[string]time.Time{"inv_1": frozen}}
+
+	t.Run("StartDunning stamps frozen", func(t *testing.T) {
+		store := newMemStore()
+		svc := NewService(store, &noopRetrier{}, nil)
+		svc.SetResolver(resolver)
+
+		run, err := svc.StartDunning(context.Background(), "t1", "inv_1", "cus_1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !run.CreatedAt.Equal(frozen) {
+			t.Errorf("created_at: got %v, want %v (frozen)", run.CreatedAt, frozen)
+		}
+		// next_action_at = frozen + grace (3 days default).
+		if run.NextActionAt == nil {
+			t.Fatal("next_action_at should be set")
+		}
+		wantNext := frozen.Add(72 * time.Hour)
+		if !run.NextActionAt.Equal(wantNext) {
+			t.Errorf("next_action_at: got %v, want %v (frozen + 3d grace)", *run.NextActionAt, wantNext)
+		}
+	})
+
+	t.Run("processRun stamps frozen", func(t *testing.T) {
+		store := newMemStore()
+		svc := NewService(store, &failingRetrier{}, nil)
+		svc.SetResolver(resolver)
+		ctx := context.Background()
+
+		run, _ := svc.StartDunning(ctx, "t1", "inv_1", "cus_1")
+		// Mark run as due so processRun picks it up.
+		past := frozen.Add(-1 * time.Hour)
+		run.NextActionAt = &past
+		store.runs[run.ID] = run
+
+		// Catchup-shaped call would pass frozenTime; ProcessDueRuns
+		// uses the cron's `now` filter but processRun itself reads
+		// the resolver. Either entry point exercises the same body.
+		_, _ = svc.ProcessDueRuns(ctx, "t1", 20)
+
+		updated := store.runs[run.ID]
+		if updated.LastAttemptAt == nil {
+			t.Fatal("last_attempt_at should be stamped")
+		}
+		if !updated.LastAttemptAt.Equal(frozen) {
+			t.Errorf("last_attempt_at: got %v, want %v (frozen)", *updated.LastAttemptAt, frozen)
+		}
+		// next_action_at = frozen + retry_schedule[0] (3 days default).
+		if updated.NextActionAt == nil {
+			t.Fatal("next_action_at should be re-stamped")
+		}
+		wantNext := frozen.Add(72 * time.Hour)
+		if !updated.NextActionAt.Equal(wantNext) {
+			t.Errorf("next_action_at: got %v, want %v (frozen + 3d retry interval)", *updated.NextActionAt, wantNext)
+		}
+	})
+
+	t.Run("ResolveRun stamps frozen", func(t *testing.T) {
+		store := newMemStore()
+		svc := NewService(store, &noopRetrier{}, nil)
+		svc.SetResolver(resolver)
+		ctx := context.Background()
+
+		run, _ := svc.StartDunning(ctx, "t1", "inv_1", "cus_1")
+		resolved, err := svc.ResolveRun(ctx, "t1", run.ID, domain.ResolutionPaymentRecovered)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resolved.ResolvedAt == nil {
+			t.Fatal("resolved_at should be set")
+		}
+		if !resolved.ResolvedAt.Equal(frozen) {
+			t.Errorf("resolved_at: got %v, want %v (frozen)", *resolved.ResolvedAt, frozen)
+		}
+	})
+}
+
+// TestClockResolver_NotWired confirms the fallback shape — without a
+// resolver, every site reads s.clock.Now() (wall-clock). The previous
+// behaviour, kept so tests and narrow wirings that don't need clock
+// awareness keep working.
+func TestClockResolver_NotWired(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &noopRetrier{}, nil)
+	// No SetClockResolver — must fall back to s.clock.Now().
+
+	before := time.Now().UTC()
+	run, err := svc.StartDunning(context.Background(), "t1", "inv_1", "cus_1")
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if run.CreatedAt.Before(before) || run.CreatedAt.After(after) {
+		t.Errorf("created_at: got %v, want between %v and %v (wall-clock fallback)", run.CreatedAt, before, after)
+	}
+}
+
+// TestClockResolver_ErrorFallback confirms a resolver error doesn't
+// fail the operation — falls back to wall-clock with a warn. Failing
+// the operator's retry / resolve is worse than a stamp in the wrong
+// domain on a dangling-pointer row.
+func TestClockResolver_ErrorFallback(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &noopRetrier{}, nil)
+	svc.SetResolver(&stubClockResolver{err: fmt.Errorf("invoice gone")})
+
+	before := time.Now().UTC()
+	run, err := svc.StartDunning(context.Background(), "t1", "inv_1", "cus_1")
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("StartDunning should not fail on resolver error: %v", err)
+	}
+	if run.CreatedAt.Before(before) || run.CreatedAt.After(after) {
+		t.Errorf("created_at on resolver error: got %v, want wall-clock fallback between %v and %v",
+			run.CreatedAt, before, after)
 	}
 }

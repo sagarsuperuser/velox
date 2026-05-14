@@ -220,7 +220,7 @@ func TestEvaluator_FiresOnceForOneTime(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newAlertFixture(t, "Alerts FiresOnceForOneTime")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-72 * time.Hour)
@@ -292,7 +292,7 @@ func TestEvaluator_FiresPerPeriodAndRearms(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newAlertFixture(t, "Alerts FiresPerPeriodAndRearms")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-72 * time.Hour)
@@ -389,7 +389,7 @@ func TestEvaluator_DoubleFireIdempotent(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newAlertFixture(t, "Alerts DoubleFireIdempotent")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-72 * time.Hour)
@@ -458,7 +458,7 @@ func TestEvaluator_ArchivedSkipped(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newAlertFixture(t, "Alerts ArchivedSkipped")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-72 * time.Hour)
@@ -513,7 +513,7 @@ func TestEvaluator_BelowThresholdNoFire(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newAlertFixture(t, "Alerts BelowThresholdNoFire")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-72 * time.Hour)
@@ -566,7 +566,7 @@ func TestEvaluator_NoSubscription(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newAlertFixture(t, "Alerts NoSubscription")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	// Create a customer (no sub) — required because the alert references
@@ -617,7 +617,7 @@ func TestEvaluator_MultiTenantIsolation(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newAlertFixture(t, "Alerts MultiTenantIsolation")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	tenantB := testutil.CreateTestTenant(t, f.db, "Alerts MultiTenantIsolation B")
@@ -745,7 +745,7 @@ func TestEvaluator_AtomicityOnRollback(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newAlertFixture(t, "Alerts AtomicityOnRollback")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-72 * time.Hour)
@@ -821,7 +821,7 @@ func TestCreateAlert_RLS(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newAlertFixture(t, "Alerts CreateRLS")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	tenantB := testutil.CreateTestTenant(t, f.db, "Alerts CreateRLS B")

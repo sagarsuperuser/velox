@@ -3,13 +3,13 @@ package subscription
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
 
-	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -25,10 +25,19 @@ type SettingsReader interface {
 	Get(ctx context.Context, tenantID string) (domain.TenantSettings, error)
 }
 
+// CustomerReader fetches a customer by id — narrow shape used by
+// Create to read customer.test_clock_id for inheritance (ADR-027).
+// Implemented by *customer.PostgresStore.
+type CustomerReader interface {
+	Get(ctx context.Context, tenantID, customerID string) (domain.Customer, error)
+}
+
 type Service struct {
-	store    Store
-	clock    clock.Clock
-	settings SettingsReader
+	store     Store
+	clock     clock.Clock
+	settings  SettingsReader
+	customers CustomerReader
+	resolver  clock.Resolver
 }
 
 func NewService(store Store, clk clock.Clock) *Service {
@@ -45,6 +54,56 @@ func NewService(store Store, clk clock.Clock) *Service {
 // period snapping (tested via the nil branch of tenantLocation).
 func (s *Service) SetSettingsReader(r SettingsReader) {
 	s.settings = r
+}
+
+// SetCustomerReader wires the customer fetcher used at sub-create time
+// to inherit test_clock_id from the owning customer (ADR-027). When
+// unwired (narrow unit tests), the new sub has no clock unless the
+// caller stamps one directly. Production wires the real customer
+// store via router.go.
+func (s *Service) SetCustomerReader(r CustomerReader) {
+	s.customers = r
+}
+
+// SetResolver wires the unified clock.Resolver used to bind
+// effective-now at operator entry points on clock-pinned entities.
+// Once bound on ctx via clock.BindEffectiveNow, every downstream
+// s.clock.Now(ctx) (including in the postgres store) returns
+// frozen_time. Optional: nil leaves binding off and every callsite
+// reads wall-clock — the test-friendly default.
+//
+// Replaces the per-service ClockResolver pattern shipped during the
+// post-ADR-029 patches; now matches Stripe's model — entity pin is
+// resolved once at the boundary, simulated time inherits down.
+func (s *Service) SetResolver(r clock.Resolver) {
+	s.resolver = r
+}
+
+// bindForCustomer binds effective-now from a customer pin. Used by
+// Create, where the sub doesn't exist yet but the customer does.
+// Failing on a dangling pin is worse than stamping wall-clock; on
+// resolver error, returns ctx unchanged (downstream reads wall-clock).
+func (s *Service) bindForCustomer(ctx context.Context, tenantID, customerID string) context.Context {
+	bound, ok := clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, CustomerID: customerID})
+	if !ok && s.resolver != nil && customerID != "" {
+		// Resolver wired but binding skipped — likely an error during
+		// resolution. Log; don't fail the operator's action.
+		slog.Warn("subscription: customer pin binding skipped, downstream uses wall-clock",
+			"tenant_id", tenantID, "customer_id", customerID)
+	}
+	return bound
+}
+
+// bindForSub binds effective-now from a sub pin. Used by every
+// per-sub mutation entry point (Activate, ChangeItem, ScheduleCancel,
+// PauseCollection, EndTrial, ExtendTrial, Cancel).
+func (s *Service) bindForSub(ctx context.Context, tenantID, subscriptionID string) context.Context {
+	bound, ok := clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, SubscriptionID: subscriptionID})
+	if !ok && s.resolver != nil && subscriptionID != "" {
+		slog.Warn("subscription: sub pin binding skipped, downstream uses wall-clock",
+			"tenant_id", tenantID, "subscription_id", subscriptionID)
+	}
+	return bound
 }
 
 // tenantLocation resolves the tenant's preferred timezone (ADR-010).
@@ -102,7 +161,6 @@ type CreateInput struct {
 	StartNow      bool                           `json:"start_now,omitempty"`
 	UsageCapUnits *int64                         `json:"usage_cap_units,omitempty"`
 	OverageAction string                         `json:"overage_action,omitempty"`
-	TestClockID   string                         `json:"test_clock_id,omitempty"`
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Subscription, error) {
@@ -156,15 +214,32 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		return domain.Subscription{}, errs.Invalid("billing_time", "must be calendar or anniversary")
 	}
 
-	// test_clock_id is a test-mode-only affordance; the DB CHECK constraint
-	// would reject it, but we surface a 400 up-front rather than leaking a
-	// cryptic integrity error to the API caller.
-	if input.TestClockID != "" && auth.Livemode(ctx) {
-		return domain.Subscription{}, errs.Invalid("test_clock_id", "test_clock_id is only permitted on test-mode subscriptions")
+	// Customer-level test-clock attach (ADR-027, Stripe parity): a
+	// sub's clock is unconditionally inherited from its owning customer.
+	// The API does not accept a per-sub test_clock_id — Stripe doesn't
+	// either, and accepting one only created a redundant validation
+	// path against the canonical customer-level value.
+	//
+	// Skipped when the customer reader isn't wired (narrow unit-test
+	// path); the sub then has no clock unless the test sets one
+	// directly on the domain.Subscription it constructs.
+	var inheritedClockID string
+	if s.customers != nil {
+		if cust, err := s.customers.Get(ctx, tenantID, input.CustomerID); err == nil {
+			inheritedClockID = cust.TestClockID
+		}
+		// If err != nil here, fall through — the downstream FK check
+		// on customer_id will fail with a clean 400.
 	}
 
 	status := domain.SubscriptionDraft
-	now := s.clock.Now()
+	// Bind effective-now from the customer's test_clock pin (if any).
+	// Every downstream s.clock.Now(ctx) — including in the postgres
+	// store's created_at / updated_at writes — inherits the simulated
+	// time. Mirrors Stripe's "no semantic change" guarantee at
+	// resource-create.
+	ctx = s.bindForCustomer(ctx, tenantID, input.CustomerID)
+	now := s.clock.Now(ctx)
 
 	var trialStart, trialEnd *time.Time
 	var startedAt *time.Time
@@ -242,7 +317,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		NextBillingAt:             nextBilling,
 		UsageCapUnits:             input.UsageCapUnits,
 		OverageAction:             overageAction,
-		TestClockID:               input.TestClockID,
+		TestClockID:               inheritedClockID,
 		Items:                     items,
 	})
 }
@@ -264,7 +339,12 @@ func (s *Service) Activate(ctx context.Context, tenantID, id string) (domain.Sub
 		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("can only activate draft subscriptions, current status: %s", sub.Status))
 	}
 
-	now := s.clock.Now()
+	// Bind effective-now via the sub's TestClockID; downstream stamps
+	// inherit. Activate's writes (activated_at, started_at, period
+	// bounds, next_billing_at, updated_at on the sub row) all land in
+	// simulated time on clock-pinned subs.
+	ctx = s.bindForSub(ctx, tenantID, id)
+	now := s.clock.Now(ctx)
 	sub.Status = domain.SubscriptionActive
 	sub.ActivatedAt = &now
 	sub.StartedAt = &now
@@ -382,7 +462,12 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, subscriptionID, item
 		return ItemChangeResult{}, errs.InvalidState(fmt.Sprintf("can only modify items on active subscriptions, current status: %s", sub.Status))
 	}
 
-	now := s.clock.Now()
+	// Bind via sub pin: pending_plan_effective_at (and the immediate-
+	// effectiveAt return) need to be in simulated time so the engine's
+	// catchup picks up the rollover at the operator's next Advance,
+	// not at wall-clock-2026.
+	ctx = s.bindForSub(ctx, tenantID, subscriptionID)
+	now := s.clock.Now(ctx)
 
 	if input.Quantity != nil {
 		if *input.Quantity < 1 {
@@ -510,7 +595,12 @@ func (s *Service) ScheduleCancel(ctx context.Context, tenantID, id string, input
 		return domain.Subscription{}, err
 	}
 
-	now := s.clock.Now()
+	// Future-check the operator-supplied cancel_at against simulated
+	// time on clock-pinned subs. Without this, an operator who set
+	// cancel_at = "1 month from frozen_now" would be rejected as past
+	// because wall-clock has drifted ahead of frozen_time.
+	ctx = s.bindForSub(ctx, tenantID, id)
+	now := s.clock.Now(ctx)
 	var cancelAt *time.Time
 	if input.CancelAt != nil {
 		ts := input.CancelAt.UTC()
@@ -565,7 +655,8 @@ func (s *Service) PauseCollection(ctx context.Context, tenantID, id string, inpu
 	pc := domain.PauseCollection{Behavior: input.Behavior}
 	if input.ResumesAt != nil {
 		ts := input.ResumesAt.UTC()
-		if !ts.After(s.clock.Now()) {
+		ctx = s.bindForSub(ctx, tenantID, id)
+		if !ts.After(s.clock.Now(ctx)) {
 			return domain.Subscription{}, errs.Invalid("resumes_at", "must be in the future")
 		}
 		pc.ResumesAt = &ts
@@ -588,7 +679,8 @@ func (s *Service) ResumeCollection(ctx context.Context, tenantID, id string) (do
 // after a sales call. Idempotent at the SQL level (the store atomic
 // returns errs.InvalidState if the row is already active or terminal).
 func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	now := s.clock.Now()
+	ctx = s.bindForSub(ctx, tenantID, id)
+	now := s.clock.Now(ctx)
 	return s.store.ActivateAfterTrial(ctx, tenantID, id, now)
 }
 
@@ -602,7 +694,8 @@ func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Sub
 // The store atomic enforces status='trialing' so this can't race the
 // cycle-scan auto-flip.
 func (s *Service) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd time.Time) (domain.Subscription, error) {
-	now := s.clock.Now()
+	ctx = s.bindForSub(ctx, tenantID, id)
+	now := s.clock.Now(ctx)
 	if !newTrialEnd.After(now) {
 		return domain.Subscription{}, errs.Invalid("trial_end", "must be in the future")
 	}

@@ -9,6 +9,16 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
+// SafeMessageError is an alias for errs.SafeMessageError — the
+// opt-in marker for error types that own their own operator-safe
+// rendering. The interface lives in internal/errs so non-HTTP
+// contexts (catchup orchestrator, scheduler error rollups) can use
+// the same dispatch shape; this alias preserves existing call sites
+// like `respond.FromError(... &MyErr{})` without forcing a churn.
+//
+// ADR-026.
+type SafeMessageError = errs.SafeMessageError
+
 // FromError translates a service/store error into the appropriate HTTP response.
 // This is the single place where domain errors become API responses.
 //
@@ -54,7 +64,23 @@ func FromError(w http.ResponseWriter, r *http.Request, err error, resource strin
 			PreconditionFailed(w, r, err.Error())
 		}
 
-	case errors.Is(err, errs.ErrInvalidState), errors.Is(err, errs.ErrValidation):
+	case errors.Is(err, errs.ErrInvalidState):
+		// State conflicts get HTTP 409, not 422. The request body is
+		// fine in isolation; the conflict is the resource's current
+		// state (e.g. "clock is advancing, must be ready to advance",
+		// "cannot rotate a revoked key"). Stripe / GitHub / AWS all
+		// follow this — 422 means "fix your input", 409 means "wait
+		// for the in-flight operation or change the resource state."
+		// Default code is "invalid_state"; an explicit DomainError
+		// code (e.g. "clock_advancing") overrides it for clients that
+		// want to switch on a specific reason.
+		c := code
+		if c == "" {
+			c = "invalid_state"
+		}
+		errorField(w, r, http.StatusConflict, "invalid_request_error", c, field, err.Error())
+
+	case errors.Is(err, errs.ErrValidation):
 		ValidationCoded(w, r, field, code, err.Error())
 
 	default:
@@ -62,6 +88,20 @@ func FromError(w http.ResponseWriter, r *http.Request, err error, resource strin
 		// business-rule rejections like billing_setup_incomplete).
 		if code != "" {
 			ValidationCoded(w, r, field, code, err.Error())
+			return
+		}
+
+		// Errors that opt into their own operator-safe rendering
+		// (PaymentError with DeclineCode etc.). These have curated
+		// messages — surface them. Status is 502 because the request
+		// reached an upstream provider and the provider rejected it.
+		var sme SafeMessageError
+		if errors.As(err, &sme) {
+			slog.ErrorContext(r.Context(), "safe-message error returned",
+				"error", err,
+				"resource", resource,
+			)
+			Error(w, r, http.StatusBadGateway, "api_error", "provider_error", sme.OperatorSafeMessage())
 			return
 		}
 
@@ -79,6 +119,10 @@ func FromError(w http.ResponseWriter, r *http.Request, err error, resource strin
 			return
 		}
 
+		// Default: log full error server-side, return generic body.
+		// Boundary sanitization — never leak raw DB / Stripe / Go
+		// internals to operators. Request-ID in the response header
+		// is the bridge for support to find the full trace in logs.
 		slog.ErrorContext(r.Context(), "unhandled error",
 			"error", err,
 			"resource", resource,

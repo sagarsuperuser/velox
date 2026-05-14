@@ -18,7 +18,7 @@ func TestPostgresStore_CreateAndGet(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	tenantID := testutil.CreateTestTenant(t, db, "recipe test")
 	store := NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestPostgresStore_GetByKeyNotFound(t *testing.T) {
 	tenantID := testutil.CreateTestTenant(t, db, "recipe miss")
 	store := NewPostgresStore(db)
 
-	_, err := store.GetByKey(context.Background(), tenantID, "openai_style")
+	_, err := store.GetByKey(postgres.WithLivemode(context.Background(), false), tenantID, "openai_style")
 	if !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -92,7 +92,7 @@ func TestPostgresStore_DeleteByKeyTx(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	tenantID := testutil.CreateTestTenant(t, db, "recipe delete")
 	store := NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	// Unknown key — should not error.
 	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -134,7 +134,7 @@ func TestPostgresStore_UniqueByTenantKey(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	tenantID := testutil.CreateTestTenant(t, db, "recipe unique")
 	store := NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	tx1, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

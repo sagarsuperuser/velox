@@ -12,7 +12,6 @@ interface TokenData {
   invoice_number: string
   amount_due_cents: number
   currency: string
-  checkout_url: string
 }
 
 export default function UpdatePaymentPage() {
@@ -23,6 +22,12 @@ export default function UpdatePaymentPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [redirecting, setRedirecting] = useState(false)
+  // submitError surfaces failures from the POST /checkout call inline
+  // on the page (Stripe not connected, payment setup missing, etc.) —
+  // distinct from `error` which is the "link is invalid" terminal
+  // state. We keep the rest of the UI rendered so the customer can see
+  // the invoice context that the error refers to and retry.
+  const [submitError, setSubmitError] = useState('')
 
   useEffect(() => {
     if (!token) {
@@ -44,10 +49,36 @@ export default function UpdatePaymentPage() {
       .catch(err => { setError(err.message || 'This link has expired or is invalid'); setLoading(false) })
   }, [token])
 
-  const handleUpdate = () => {
-    if (!data?.checkout_url) return
+  // Update Payment Method click. The validate endpoint above only
+  // resolves invoice context — it does not mint a Stripe Checkout
+  // Session (those are billable + single-use, so the server defers
+  // creation until the customer actually clicks). On click we POST
+  // to /checkout, the server creates the session via the tenant's
+  // connected Stripe account, and we redirect the browser to the
+  // returned URL. Errors (Stripe not connected for this mode,
+  // missing payment setup, etc.) surface inline so the customer
+  // sees a specific reason instead of a dead button.
+  const handleUpdate = async () => {
+    if (!token || redirecting) return
+    setSubmitError('')
     setRedirecting(true)
-    window.location.href = data.checkout_url
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || ''
+      const res = await fetch(
+        `${apiBase}/v1/public/payment-updates/${encodeURIComponent(token)}/checkout`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body?.error?.message || 'We could not start the payment update. Please try again or contact your billing administrator.')
+      }
+      const { url } = await res.json() as { url?: string }
+      if (!url) throw new Error('Payment update could not be started — no checkout URL returned.')
+      window.location.href = url
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Unexpected error starting the payment update.')
+      setRedirecting(false)
+    }
   }
 
   return (
@@ -124,6 +155,12 @@ export default function UpdatePaymentPage() {
                       </>
                     )}
                   </Button>
+
+                  {submitError && (
+                    <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                      {submitError}
+                    </div>
+                  )}
 
                   <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
                     <ShieldCheck size={12} />

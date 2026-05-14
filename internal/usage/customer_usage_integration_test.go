@@ -133,7 +133,7 @@ func TestCustomerUsage_SingleMeterFlatParity(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newCustomerUsageFixture(t, "Customer Usage Single Meter")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-72 * time.Hour)
@@ -205,7 +205,7 @@ func TestCustomerUsage_MultiDimDimensionMatchEcho(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newCustomerUsageFixture(t, "Customer Usage Multi Dim")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-24 * time.Hour)
@@ -305,7 +305,7 @@ func TestCustomerUsage_CrossTenantIsolation(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newCustomerUsageFixture(t, "Customer Usage Cross Tenant A")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	rrv, _ := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
@@ -332,7 +332,7 @@ func TestCustomerUsage_NoSubscriptionRequiresExplicitWindow(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newCustomerUsageFixture(t, "Customer Usage No Sub")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	cust, err := f.customerSvc.Create(ctx, f.tenantID, customer.CreateInput{

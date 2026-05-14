@@ -33,7 +33,7 @@ import (
 // this test fires before the regression ships.
 func TestGDPR_ExportCustomerData_MultiDimUsageEvents(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "GDPR Multi-Dim")
@@ -147,7 +147,7 @@ func TestGDPR_ExportCustomerData_MultiDimUsageEvents(t *testing.T) {
 func insertGDPRTestMeter(t *testing.T, db *postgres.DB, tenantID, name, key string) string {
 	t.Helper()
 	id := postgres.NewID("vlx_mtr")
-	tx, err := db.BeginTx(context.Background(), postgres.TxTenant, tenantID)
+	tx, err := db.BeginTx(postgres.WithLivemode(context.Background(), false), postgres.TxTenant, tenantID)
 	if err != nil {
 		t.Fatalf("begin meter: %v", err)
 	}

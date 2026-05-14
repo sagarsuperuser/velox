@@ -141,7 +141,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 			query += c
 		}
 	}
-	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", idx, idx+1)
+	query += fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", creditNoteOrderBy(filter.Sort, filter.SortDir), idx, idx+1)
 	args = append(args, limit, filter.Offset)
 
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -291,4 +291,31 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, creditNoteI
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// creditNoteOrderBy validates sort + dir against a closed allow-list
+// and adds a deterministic id tie-break matching the primary
+// direction. See invoiceOrderBy for the design rationale.
+func creditNoteOrderBy(sort, dir string) string {
+	col := creditNoteSortColumn(sort)
+	d := "DESC"
+	if dir == "asc" {
+		d = "ASC"
+	}
+	return col + " " + d + ", id " + d
+}
+
+func creditNoteSortColumn(key string) string {
+	switch key {
+	case "credit_note_number":
+		return "credit_note_number"
+	case "total_cents", "amount":
+		return "total_cents"
+	case "status":
+		return "status"
+	case "issued_at":
+		return "issued_at"
+	default:
+		return "created_at"
+	}
 }

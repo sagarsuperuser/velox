@@ -1,4 +1,4 @@
-.PHONY: build run test lint migrate dev clean cli gen gen-go gen-ts
+.PHONY: build run test lint lint-clock migrate dev clean cli gen gen-go gen-ts
 
 # Build the velox binary
 build:
@@ -20,21 +20,44 @@ export
 dev:
 	go run ./cmd/velox
 
-# Run all tests
+# Run all tests.
+#
+# `-p 1` runs packages sequentially. Integration tests share a single
+# test database; running packages in parallel races each package's
+# SetupTestDB truncate against another package's in-flight queries
+# and produces flaky e2e failures (visible specifically on
+# internal/api e2e tests). test-unit also uses -p 1 for env-var
+# isolation; same reasoning applies broader.
+#
+# VELOX_LIVEMODE_STRICT=true escalates "TxTenant opened without ctx
+# livemode" warnings to panics — every test that opens a tenant-
+# scoped tx without setting postgres.WithLivemode(ctx, ...) on its
+# entry point fails immediately. The escalation lives in tests
+# because production logs the warning (loud-once-per-site, not
+# fatal); tests catch the bug at PR time, not in customer logs.
 test:
-	go test ./... -count=1
+	VELOX_LIVEMODE_STRICT=true go test -p 1 ./... -count=1
 
 # Run tests with short flag (unit only, sequential to avoid env var leaks)
 test-unit:
-	go test -p 1 ./... -short -count=1
+	VELOX_LIVEMODE_STRICT=true go test -p 1 ./... -short -count=1
 
 # Run tests verbose (for debugging)
 test-verbose:
-	go test ./... -v -short -count=1
+	VELOX_LIVEMODE_STRICT=true go test ./... -v -short -count=1
 
 # Run linter
 lint:
 	golangci-lint run ./...
+
+# ADR-030 guard: forbid bare time.Now() in service / store / engine
+# code under domains where clock-pinned entities live. Forces every
+# new timestamp write to go through the ctx-aware clock abstraction.
+# Bypassable per-line with `// wall-clock: <reason>` for the
+# legitimate carve-outs (cron tick, signature replay tolerance,
+# audit-log recorded_at).
+lint-clock:
+	@./scripts/lint-clock.sh
 
 # Run benchmarks
 bench:

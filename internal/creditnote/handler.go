@@ -119,6 +119,8 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		Status:    r.URL.Query().Get("status"),
 		Limit:     page.Limit,
 		Offset:    page.Offset,
+		Sort:      r.URL.Query().Get("sort"),
+		SortDir:   r.URL.Query().Get("dir"),
 	})
 	if err != nil {
 		respond.InternalError(w, r)
@@ -262,7 +264,7 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pdfBytes, err := RenderPDF(cn, items, orig, bt, ci)
+	pdfBytes, err := RenderPDF(r.Context(), cn, items, orig, bt, ci)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "render credit note pdf", "credit_note_id", id, "error", err)
 		respond.InternalError(w, r)

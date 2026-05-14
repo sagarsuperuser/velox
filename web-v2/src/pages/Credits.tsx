@@ -166,11 +166,18 @@ export default function CreditsPage() {
       loadLedger(urlState.customer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [urlState.customer, urlState.sort, urlState.dir])
 
   const loadLedger = (customerId: string) => {
     setLedgerLoading(true)
-    api.listLedger(customerId).then(res => {
+    // Server-side sort: pass sort/dir per current URL state. Backend
+    // validates against a closed allow-list and tie-breaks on id, so
+    // ledger entries with rapid-fire created_at (catchup-driven
+    // grants) render in a deterministic order.
+    api.listLedger(customerId, {
+      sort: urlState.sort,
+      dir: urlState.dir,
+    }).then(res => {
       setLedger(res.data || [])
       setLedgerLoading(false)
     }).catch(() => {
@@ -200,12 +207,16 @@ export default function CreditsPage() {
 
   const ledgerSortKey = urlState.sort
   const ledgerSortDir = urlState.dir as SortDir
-  const { sorted: sortedLedger, onSort: onLedgerSort } = useSortable(
+  // Server-side sort: useSortable only owns the click-handler /
+  // direction-flip / URL-state semantics. The data is rendered as
+  // returned by the server (filtered for entry-type client-side).
+  const { onSort: onLedgerSort } = useSortable(
     filteredLedger,
     ledgerSortKey,
     ledgerSortDir,
     (key, dir) => setUrlState({ sort: key, dir }),
   )
+  const sortedLedger = filteredLedger
 
   const ledgerTotalPages = Math.ceil(sortedLedger.length / ledgerPageSize)
   const ledgerCurrentPage = Math.min(ledgerPage, ledgerTotalPages || 1)
@@ -303,18 +314,18 @@ export default function CreditsPage() {
                       <TableRow key={entry.id}>
                         <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(entry.created_at)}</TableCell>
                         <TableCell><Badge variant={entryTypeVariant(entry.entry_type)}>{entry.entry_type}</Badge></TableCell>
-                        <TableCell className="text-sm text-foreground">{entry.description || '\u2014'}</TableCell>
+                        <TableCell className="text-sm text-foreground">{entry.description || '—'}</TableCell>
                         <TableCell className="text-sm">
                           {entry.invoice_id ? (
                             <Link to={`/invoices/${entry.invoice_id}`} className="text-primary hover:underline">
                               View invoice
                             </Link>
                           ) : (
-                            <span className="text-muted-foreground">\u2014</span>
+                            <span className="text-muted-foreground">—</span>
                           )}
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                          {entry.expires_at ? formatDate(entry.expires_at) : '\u2014'}
+                          {entry.expires_at ? formatDate(entry.expires_at) : '—'}
                         </TableCell>
                         <TableCell className={cn('text-right tabular-nums font-mono text-sm', entry.amount_cents >= 0 ? 'text-emerald-600' : 'text-destructive')}>
                           {entry.amount_cents >= 0 ? '+' : ''}{formatCents(entry.amount_cents)}

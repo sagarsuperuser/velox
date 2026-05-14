@@ -88,11 +88,18 @@ export default function InvoicesPage() {
     params.set('offset', String((page - 1) * PAGE_SIZE))
     if (statusFilter) params.set('status', statusFilter)
     if (paymentStatusFilter) params.set('payment_status', paymentStatusFilter)
+    // Sort wiring: SPA had clickable column headers + URL state but the
+    // params were never sent to the API — list rendered in arbitrary
+    // order on ties. Backend validates against a closed allow-list and
+    // tie-breaks by id, so unknown values silently fall back to a
+    // deterministic default.
+    if (sortKey) params.set('sort', sortKey)
+    if (sortDir) params.set('dir', sortDir)
     return params.toString()
-  }, [page, statusFilter, paymentStatusFilter])
+  }, [page, statusFilter, paymentStatusFilter, sortKey, sortDir])
 
   const { data: invoicesData, isLoading: loading, error: loadErrorObj, refetch } = useQuery({
-    queryKey: ['invoices', page, statusFilter, paymentStatusFilter],
+    queryKey: ['invoices', page, statusFilter, paymentStatusFilter, sortKey, sortDir],
     queryFn: () => api.listInvoices(queryParams),
   })
 
@@ -161,12 +168,20 @@ export default function InvoicesPage() {
     return true
   }), [invoices, search, dateFrom, dateTo])
 
-  const { sorted, onSort } = useSortable(
+  // useSortable provides the click handler (flip-on-same-key, reset
+  // direction on new key) + URL-state binding. We deliberately
+  // discard `sorted` because sort is now server-side end-to-end —
+  // the server returns rows in the requested order with a
+  // deterministic id tie-break. Client-side re-sort would only sort
+  // the current page (e.g. "top 50 by created_at re-sorted by
+  // amount") which breaks pagination semantics.
+  const { onSort } = useSortable(
     filtered,
     sortKey,
     sortDir,
     (key, dir) => setUrlState({ sort: key, dir }),
   )
+  const sorted = filtered
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -324,8 +339,8 @@ export default function InvoicesPage() {
                     <SortableHead label="Invoice" sortKey="invoice_number" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                     <TableHead className="text-xs font-medium">Customer</TableHead>
                     <SortableHead label="Status" sortKey="status" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} />
-                    <TableHead className="text-xs font-medium">Payment</TableHead>
-                    <TableHead className="text-xs font-medium">Period</TableHead>
+                    <SortableHead label="Payment" sortKey="payment_status" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                    <SortableHead label="Period" sortKey="billing_period_start" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                     <SortableHead label="Amount Due" sortKey="amount_due_cents" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} className="text-right" />
                     <TableHead className="text-xs font-medium text-right">PDF</TableHead>
                   </TableRow>

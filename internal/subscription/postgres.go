@@ -11,6 +11,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -56,7 +57,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_sub")
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		INSERT INTO subscriptions (id, tenant_id, code, display_name, customer_id, status,
@@ -161,7 +162,8 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.S
 	}
 
 	query := `SELECT DISTINCT ` + qualifiedSubCols("s") + ` FROM subscriptions s` + where +
-		` ORDER BY s.created_at DESC LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
+		` ORDER BY ` + subscriptionOrderBy(filter.Sort, filter.SortDir) +
+		` LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
 	args = append(args, limit, filter.Offset)
 
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -200,7 +202,7 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions SET status = $1, activated_at = $2, canceled_at = $3,
 			trial_start_at = $4, trial_end_at = $5,
@@ -273,7 +275,7 @@ func (s *PostgresStore) ScheduleCancellation(ctx context.Context, tenantID, id s
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var sub domain.Subscription
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
@@ -319,7 +321,7 @@ func (s *PostgresStore) ClearScheduledCancellation(ctx context.Context, tenantID
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var sub domain.Subscription
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
@@ -410,7 +412,7 @@ func (s *PostgresStore) SetPauseCollection(ctx context.Context, tenantID, id str
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var sub domain.Subscription
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
@@ -458,7 +460,7 @@ func (s *PostgresStore) ClearPauseCollection(ctx context.Context, tenantID, id s
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var sub domain.Subscription
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
@@ -549,7 +551,7 @@ func (s *PostgresStore) ExtendTrial(ctx context.Context, tenantID, id string, ne
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var sub domain.Subscription
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
@@ -597,7 +599,7 @@ func (s *PostgresStore) transitionAtomic(ctx context.Context, tenantID, id strin
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 
 	// Build the WHERE status IN (...) clause with positional args starting at $3
 	// ($1 = updated_at, $2 = id). canceled_at slots in at $3 when needed.
@@ -667,10 +669,16 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 		limit = 50
 	}
 
-	// Subscriptions attached to a test clock are "due" when their
-	// next_billing_at is on-or-before the clock's frozen time, not wall clock.
-	// LEFT JOIN keeps live subs (test_clock_id NULL) comparing against $1.
-	// Columns must be qualified because test_clocks shares id/tenant_id/etc.
+	// ADR-028 disjoint flows: GetDueBilling is the wall-clock cron's
+	// query — it processes ONLY subs without a test clock. Clock-
+	// pinned subs are operator-controlled (Advance click triggers
+	// GetDueBillingForClock). Without this filter, the cron would
+	// silently drip-bill stuck clock-pinned subs in the background,
+	// breaking the operator's mental model of simulation time AND
+	// racing with the test-clock catchup worker via SKIP LOCKED.
+	//
+	// Stripe Test Clocks operate the same way: no cron touches
+	// clock-pinned customers; advance is the sole path.
 	//
 	// TxBypass is used to cross tenants (scheduler-wide sweep), but the
 	// caller's ctx livemode must still scope us to a single partition —
@@ -680,10 +688,10 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 	// with an explicit WHERE clause since TxBypass doesn't set app.livemode.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
-		LEFT JOIN test_clocks tc ON tc.id = s.test_clock_id
 		WHERE s.status IN ('active', 'trialing')
 		  AND s.livemode = $1
-		  AND s.next_billing_at <= COALESCE(tc.frozen_time, $2)
+		  AND s.test_clock_id IS NULL
+		  AND s.next_billing_at <= $2
 		ORDER BY s.next_billing_at ASC LIMIT $3
 		FOR UPDATE OF s SKIP LOCKED
 	`, postgres.Livemode(ctx), before, limit)
@@ -712,6 +720,61 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 	return subs, nil
 }
 
+// GetDueBillingForClock returns subs attached to a specific test
+// clock whose next_billing_at is on-or-before the clock's frozen
+// time. Operator-driven catchup path (ADR-028 disjoint flows) —
+// fired by the test-clock catchup worker after MarkAdvancing,
+// never by the wall-clock cron. The complement of GetDueBilling.
+//
+// The query joins test_clocks (not LEFT JOIN — clock-pinned subs
+// always have a row) and uses the clock's frozen_time as the
+// "now" cutoff. Tenant scope comes from RLS via the BeginTx
+// caller, but because the catchup worker is a per-clock unit of
+// work, we also filter by test_clock_id explicitly.
+func (s *PostgresStore) GetDueBillingForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
+		JOIN test_clocks tc ON tc.id = s.test_clock_id AND tc.deleted_at IS NULL
+		WHERE s.status IN ('active', 'trialing')
+		  AND s.test_clock_id = $1
+		  AND s.next_billing_at <= tc.frozen_time
+		ORDER BY s.next_billing_at ASC LIMIT $2
+		FOR UPDATE OF s SKIP LOCKED
+	`, clockID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var subs []domain.Subscription
+	for rows.Next() {
+		var sub domain.Subscription
+		if err := scanSubRow(rows, &sub); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range subs {
+		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
+			return nil, err
+		}
+	}
+	return subs, nil
+}
+
 func (s *PostgresStore) UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -723,7 +786,7 @@ func (s *PostgresStore) UpdateBillingCycle(ctx context.Context, tenantID, id str
 		UPDATE subscriptions SET current_billing_period_start = $1, current_billing_period_end = $2,
 			next_billing_at = $3, updated_at = $4
 		WHERE id = $5
-	`, periodStart, periodEnd, nextBillingAt, time.Now().UTC(), id)
+	`, periodStart, periodEnd, nextBillingAt, clock.Now(ctx), id)
 	if err != nil {
 		return err
 	}
@@ -775,7 +838,7 @@ func (s *PostgresStore) AddItem(ctx context.Context, tenantID string, item domai
 	if qty <= 0 {
 		qty = 1
 	}
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var stored domain.SubscriptionItem
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO subscription_items (tenant_id, subscription_id, plan_id, quantity, metadata, created_at, updated_at)
@@ -803,7 +866,7 @@ func (s *PostgresStore) UpdateItemQuantity(ctx context.Context, tenantID, itemID
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var stored domain.SubscriptionItem
 	err = tx.QueryRowContext(ctx, `
 		UPDATE subscription_items
@@ -867,7 +930,7 @@ func (s *PostgresStore) SetItemPendingPlan(ctx context.Context, tenantID, itemID
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var stored domain.SubscriptionItem
 	err = tx.QueryRowContext(ctx, `
 		UPDATE subscription_items
@@ -897,7 +960,7 @@ func (s *PostgresStore) ClearItemPendingPlan(ctx context.Context, tenantID, item
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var stored domain.SubscriptionItem
 	err = tx.QueryRowContext(ctx, `
 		UPDATE subscription_items
@@ -1006,7 +1069,7 @@ func (s *PostgresStore) SetBillingThresholds(ctx context.Context, tenantID, id s
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 
 	// Update the parent subscription columns in the same tx as the per-item
 	// upserts so a partial commit can't leave amount_gte set without the
@@ -1096,7 +1159,7 @@ func (s *PostgresStore) ClearBillingThresholds(ctx context.Context, tenantID, id
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var sub domain.Subscription
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
@@ -1148,6 +1211,13 @@ func (s *PostgresStore) ClearBillingThresholds(ctx context.Context, tenantID, id
 // GetDueBilling: the scheduler is cross-tenant and the per-tenant
 // downstream calls (usage aggregation, plan reads) carry their own
 // tenant context.
+// ListWithThresholds — CRON path. ADR-029 Phase 3: clock-pinned subs
+// are excluded; ListWithThresholdsForClock is the catchup-side
+// counterpart driven by Engine.ScanThresholdsForClock during Advance.
+// Without this filter the wall-clock cron would fire threshold-based
+// invoices on clock-pinned subs even though their running cycle
+// subtotals are accumulated against simulated time — same drip-bill
+// shape ADR-028 closed for period generation.
 func (s *PostgresStore) ListWithThresholds(ctx context.Context, livemode bool, limit int) ([]domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -1163,6 +1233,7 @@ func (s *PostgresStore) ListWithThresholds(ctx context.Context, livemode bool, l
 		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
 		WHERE s.status IN ('active', 'trialing')
 		  AND s.livemode = $1
+		  AND s.test_clock_id IS NULL
 		  AND (s.billing_threshold_amount_gte IS NOT NULL
 		       OR EXISTS (SELECT 1 FROM subscription_item_thresholds sit WHERE sit.subscription_id = s.id))
 		ORDER BY s.id ASC
@@ -1185,6 +1256,56 @@ func (s *PostgresStore) ListWithThresholds(ctx context.Context, livemode bool, l
 		return nil, err
 	}
 
+	for i := range subs {
+		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
+			return nil, err
+		}
+	}
+	return subs, nil
+}
+
+// ListWithThresholdsForClock is the catchup-path counterpart to
+// ListWithThresholds. ADR-029 Phase 3 — returns active+trialing
+// subscriptions with billing thresholds configured that are pinned to
+// the given clock. Caller (Engine.ScanThresholdsForClock) evaluates
+// running-cycle subtotals against the clock's frozen_time.
+func (s *PostgresStore) ListWithThresholdsForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
+		WHERE s.status IN ('active', 'trialing')
+		  AND s.tenant_id = $1
+		  AND s.test_clock_id = $2
+		  AND (s.billing_threshold_amount_gte IS NOT NULL
+		       OR EXISTS (SELECT 1 FROM subscription_item_thresholds sit WHERE sit.subscription_id = s.id))
+		ORDER BY s.id ASC
+		LIMIT $3
+	`, tenantID, clockID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var subs []domain.Subscription
+	for rows.Next() {
+		var sub domain.Subscription
+		if err := scanSubRow(rows, &sub); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	for i := range subs {
 		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
 			return nil, err
@@ -1415,6 +1536,39 @@ func scanItemDest(it *domain.SubscriptionItem) []any {
 		&it.ID, &it.TenantID, &it.SubscriptionID, &it.PlanID, &it.Quantity, &it.Metadata,
 		&it.PendingPlanID, &it.PendingPlanEffectiveAt, &it.PlanChangedAt,
 		&it.CreatedAt, &it.UpdatedAt,
+	}
+}
+
+// subscriptionOrderBy validates sort + dir against a closed allow-list
+// (no SQL injection) and adds a deterministic id tie-break matching
+// the primary direction. Same pattern as invoiceOrderBy. Unknown sort
+// keys default to created_at.
+func subscriptionOrderBy(sort, dir string) string {
+	col := subscriptionSortColumn(sort)
+	d := "DESC"
+	if dir == "asc" {
+		d = "ASC"
+	}
+	return col + " " + d + ", s.id " + d
+}
+
+func subscriptionSortColumn(key string) string {
+	switch key {
+	case "next_billing_at":
+		return "s.next_billing_at"
+	case "status":
+		return "s.status"
+	case "display_name", "name":
+		// Display-name sort relies on a JOIN with customers — for now
+		// fall back to created_at since the existing query path only
+		// joins items, not customers. SPA shows display_name on the
+		// row but the sort itself uses created_at as a sensible
+		// proxy until the JOIN is added.
+		return "s.created_at"
+	case "trial_end_at":
+		return "s.trial_end_at"
+	default:
+		return "s.created_at"
 	}
 }
 

@@ -3,6 +3,7 @@ package testclock
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -20,7 +21,7 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 }
 
 const clockCols = `id, tenant_id, name, frozen_time, status,
-	created_at, updated_at, deletes_after, deleted_at,
+	created_at, updated_at, deleted_at,
 	COALESCE(last_failure_reason,'')`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, clk domain.TestClock) (domain.TestClock, error) {
@@ -31,10 +32,10 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, clk domain.
 	defer postgres.Rollback(tx)
 
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO test_clocks (tenant_id, name, frozen_time, status, deletes_after)
-		VALUES ($1, $2, $3, 'ready', $4)
+		INSERT INTO test_clocks (tenant_id, name, frozen_time, status)
+		VALUES ($1, $2, $3, 'ready')
 		RETURNING `+clockCols,
-		tenantID, clk.Name, clk.FrozenTime, postgres.NullableTime(clk.DeletesAfter),
+		tenantID, clk.Name, clk.FrozenTime,
 	).Scan(scanDest(&clk)...)
 	if err != nil {
 		// 23514 = check_violation; the livemode CHECK rejects any attempt to
@@ -49,6 +50,20 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, clk domain.
 		return domain.TestClock{}, err
 	}
 	return clk, nil
+}
+
+// Exists is a narrow existence check used by callers that only need
+// "is this clock attached-able?" (e.g., the customer service at
+// customer-create time). Uses Get under the hood; ErrNotFound → false,
+// other errors propagate. Soft-deleted clocks count as not-existing.
+func (s *PostgresStore) Exists(ctx context.Context, tenantID, id string) (bool, error) {
+	if _, err := s.Get(ctx, tenantID, id); err != nil {
+		if errors.Is(err, errs.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.TestClock, error) {
@@ -142,82 +157,6 @@ func (s *PostgresStore) Delete(ctx context.Context, tenantID, id string) error {
 	}
 
 	return tx.Commit()
-}
-
-// SweepDueDeletes soft-deletes any test_clocks whose deletes_after
-// is past, batching cascade cancellations for their pinned subs in
-// the same tx per clock. Returns the count of clocks soft-deleted.
-//
-// Stripe-parity 30-day idle cleanup. The deletes_after column has
-// existed since migration 0020 with no sweeper wired; this method
-// completes that design.
-//
-// RLS-bypassed (TxBypass) because the sweeper runs cross-tenant
-// from a background scheduler tick. The per-clock cascade still
-// targets only that clock's subs via test_clock_id, so the
-// blast radius is correctly scoped.
-func (s *PostgresStore) SweepDueDeletes(ctx context.Context, batch int) (int, error) {
-	if batch <= 0 {
-		batch = 100
-	}
-	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
-	if err != nil {
-		return 0, err
-	}
-	defer postgres.Rollback(tx)
-
-	// Pull the IDs of clocks due for cleanup so the cascade UPDATE
-	// can target each tenant's subs in one statement. Only ready /
-	// internal_failure clocks are eligible — a clock in 'advancing'
-	// is mid-flight; the worker will wrap up and an idle TTL is
-	// short enough that next sweep picks it up cleanly.
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id FROM test_clocks
-		WHERE deletes_after < now()
-		  AND deleted_at IS NULL
-		  AND status IN ('ready', 'internal_failure')
-		ORDER BY deletes_after ASC
-		LIMIT $1
-	`, batch)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return 0, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	if len(ids) == 0 {
-		return 0, tx.Commit()
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE test_clocks SET deleted_at = now(), updated_at = now()
-		WHERE id = ANY($1)
-	`, postgres.StringArray(ids)); err != nil {
-		return 0, fmt.Errorf("sweep soft-delete: %w", err)
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE subscriptions SET status = 'canceled', updated_at = now()
-		WHERE test_clock_id = ANY($1)
-		  AND status NOT IN ('canceled', 'archived')
-	`, postgres.StringArray(ids)); err != nil {
-		return 0, fmt.Errorf("sweep cascade-cancel: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return len(ids), nil
 }
 
 func (s *PostgresStore) MarkAdvancing(ctx context.Context, tenantID, id string, newFrozenTime time.Time) (domain.TestClock, error) {
@@ -444,7 +383,7 @@ func (s *PostgresStore) ListAllAdvancing(ctx context.Context) ([]domain.TestCloc
 func scanDest(c *domain.TestClock) []any {
 	return []any{
 		&c.ID, &c.TenantID, &c.Name, &c.FrozenTime, &c.Status,
-		&c.CreatedAt, &c.UpdatedAt, &c.DeletesAfter, &c.DeletedAt,
+		&c.CreatedAt, &c.UpdatedAt, &c.DeletedAt,
 		&c.LastFailureReason,
 	}
 }

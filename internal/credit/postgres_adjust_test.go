@@ -9,6 +9,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
 
@@ -20,7 +21,7 @@ import (
 // deductions on the same customer, so at most one succeeds per grant.
 func TestAdjustAtomic_NoOversellUnderContention(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	creditStore := credit.NewPostgresStore(db)
 	svc := credit.NewService(creditStore)
@@ -101,7 +102,7 @@ func TestAdjustAtomic_NoOversellUnderContention(t *testing.T) {
 // not silently applied.
 func TestAdjustAtomic_DeductionExceedsBalance(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	creditStore := credit.NewPostgresStore(db)
 	svc := credit.NewService(creditStore)

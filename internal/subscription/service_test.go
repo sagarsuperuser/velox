@@ -394,6 +394,14 @@ func (m *memStore) ClearBillingThresholds(_ context.Context, tenantID, id string
 	return s, nil
 }
 
+// ListWithThresholdsForClock — ADR-029 Phase 3 stub. Narrow service
+// tests don't exercise per-clock threshold scans; the per-clock SQL
+// is verified in postgres integration tests. No-op satisfies the
+// interface contract.
+func (m *memStore) ListWithThresholdsForClock(_ context.Context, _, _ string, _ int) ([]domain.Subscription, error) {
+	return nil, nil
+}
+
 func (m *memStore) ListWithThresholds(_ context.Context, _ bool, _ int) ([]domain.Subscription, error) {
 	var out []domain.Subscription
 	for _, s := range m.subs {
@@ -1519,4 +1527,115 @@ func TestClearBillingThresholds(t *testing.T) {
 			t.Errorf("BillingThresholds should be nil after clear, got %+v", updated.BillingThresholds)
 		}
 	})
+}
+
+// stubClockResolver returns a fixed time per entity id — lets tests
+// pin the simulated "now" deterministically. Implements
+// clock.Resolver so it can drop into Service.SetResolver directly.
+type stubClockResolver struct {
+	byCustomer map[string]time.Time
+	bySub      map[string]time.Time
+	byInvoice  map[string]time.Time
+}
+
+func (s *stubClockResolver) EffectiveNowForCustomer(_ context.Context, _, customerID string) (time.Time, error) {
+	if t, ok := s.byCustomer[customerID]; ok {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("no stub for customer %s", customerID)
+}
+
+func (s *stubClockResolver) EffectiveNowForSubscription(_ context.Context, _, subID string) (time.Time, error) {
+	if t, ok := s.bySub[subID]; ok {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("no stub for subscription %s", subID)
+}
+
+func (s *stubClockResolver) EffectiveNowForInvoice(_ context.Context, _, invoiceID string) (time.Time, error) {
+	if t, ok := s.byInvoice[invoiceID]; ok {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("no stub for invoice %s", invoiceID)
+}
+
+// TestClockResolver_StampsFrozenDomain locks in the ADR-029 follow-up
+// at the subscription-service layer: when the resolver is wired,
+// per-sub timestamp writes (next_billing_at / period_start /
+// period_end / activated_at / started_at) land in the simulated
+// time domain, not wall-clock. Without this, a clock-pinned customer
+// whose owning clock has drifted gets next_billing_at stranded
+// outside the catchup window.
+func TestClockResolver_StampsFrozenDomain(t *testing.T) {
+	frozen := time.Date(2024, 4, 15, 12, 0, 0, 0, time.UTC)
+	resolver := &stubClockResolver{
+		byCustomer: map[string]time.Time{"cus_pinned": frozen},
+	}
+
+	t.Run("Create stamps frozen for clock-pinned customer", func(t *testing.T) {
+		store := newMemStore()
+		svc := NewService(store, nil)
+		svc.SetResolver(resolver)
+
+		sub, err := svc.Create(context.Background(), "t1", CreateInput{
+			Code:        "sub-pinned",
+			DisplayName: "Pinned",
+			CustomerID:  "cus_pinned",
+			Items:       []CreateItemInput{{PlanID: "pln_1"}},
+			StartNow:    true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// StartedAt + period bounds must come from the resolver, not wall-clock.
+		if sub.StartedAt == nil {
+			t.Fatal("started_at should be set")
+		}
+		// StartedAt is stamped raw from `now`, before any tenant-tz snap.
+		if !sub.StartedAt.Equal(frozen) {
+			t.Errorf("started_at: got %v, want %v (frozen)", *sub.StartedAt, frozen)
+		}
+		// Calendar + StartNow: ps = beginningOfDayIn(now, UTC); pe =
+		// beginningOfMonthIn(now+1mo, UTC). Plus 1 month from 2024-04-15
+		// = 2024-05-15 → first of May 2024.
+		wantPeriodStart := time.Date(2024, 4, 15, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+		if sub.CurrentBillingPeriodStart == nil || !sub.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v (frozen-derived)", sub.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if sub.CurrentBillingPeriodEnd == nil || !sub.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v (frozen-derived)", sub.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+		if sub.NextBillingAt == nil || !sub.NextBillingAt.Equal(wantPeriodEnd) {
+			t.Errorf("next_billing_at: got %v, want %v (frozen-derived)", sub.NextBillingAt, wantPeriodEnd)
+		}
+	})
+}
+
+// TestClockResolver_NotWired confirms the wall-clock fallback shape —
+// without a resolver, Create still works and stamps wall-clock.
+// The previous behaviour, kept for narrow unit tests.
+func TestClockResolver_NotWired(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, nil) // no SetClockResolver
+
+	before := time.Now().UTC()
+	sub, err := svc.Create(context.Background(), "t1", CreateInput{
+		Code:        "sub-fallback",
+		DisplayName: "Fallback",
+		CustomerID:  "cus_fallback",
+		Items:       []CreateItemInput{{PlanID: "pln_1"}},
+		StartNow:    true,
+	})
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sub.StartedAt == nil {
+		t.Fatal("started_at should be set")
+	}
+	if sub.StartedAt.Before(before.Add(-1*time.Second)) || sub.StartedAt.After(after.Add(1*time.Second)) {
+		t.Errorf("started_at: got %v, want between %v and %v (wall-clock fallback)",
+			*sub.StartedAt, before, after)
+	}
 }

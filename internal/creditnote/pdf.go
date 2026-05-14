@@ -2,6 +2,7 @@ package creditnote
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/pdffonts"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // CompanyInfo holds the seller's registered-business details printed at
@@ -96,6 +98,7 @@ var cnCurrencySymbols = map[string]string{
 // block in place of the period, a "Reason" block above the line items,
 // and a refund-destination footer instead of an "amount due" row.
 func RenderPDF(
+	ctx context.Context,
 	cn domain.CreditNote,
 	lineItems []domain.CreditNoteLineItem,
 	orig OriginalInvoiceInfo,
@@ -465,7 +468,7 @@ func RenderPDF(
 	y += 24
 	setFont(false, 7)
 	setColor(170, 170, 170)
-	footer := fmt.Sprintf("Generated on %s  |  %s", time.Now().UTC().Format("Jan 2, 2006 15:04 UTC"), cn.ID)
+	footer := fmt.Sprintf("Generated on %s  |  %s", clock.Now(ctx).Format("Jan 2, 2006 15:04 UTC"), cn.ID)
 	fw, _ := pdf.MeasureTextWidth(footer)
 	textAt((pageW-fw)/2, y, footer)
 

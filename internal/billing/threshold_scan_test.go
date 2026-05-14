@@ -22,6 +22,14 @@ func (m *thresholdMockSubs) ListWithThresholds(_ context.Context, _ bool, _ int)
 	return m.candidates, nil
 }
 
+// ListWithThresholdsForClock — ADR-029 Phase 3 stub. The threshold-
+// scan unit tests in this file exercise the cron path; the per-clock
+// path's behaviour is identical (same scan logic, different fetch
+// scope), so a no-op satisfies the interface for the cron-side tests.
+func (m *thresholdMockSubs) ListWithThresholdsForClock(_ context.Context, _, _ string, _ int) ([]domain.Subscription, error) {
+	return nil, nil
+}
+
 // setupThresholdEngine builds a minimal engine wired with mocks that mirror the
 // natural-cycle setupEngine but with a single-meter, single-rule plan so the
 // running subtotal under test is unambiguous. Returns the engine, the wrapping

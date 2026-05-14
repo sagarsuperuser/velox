@@ -75,7 +75,7 @@ func newThresholdFixture(t *testing.T, name string) *thresholdFixture {
 	// minimal wiring for tests that don't exercise tax behavior.
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
 
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	cust, err := customerSvc.Create(ctx, tenantID, customer.CreateInput{
 		ExternalID:  "cus_thresh",
@@ -204,7 +204,7 @@ func TestThresholdScan_AmountCrossFiresEarly(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newThresholdFixture(t, "Threshold Amount Cross")
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
 	defer cancel()
 
 	// 100 events × qty 10 × 1c = 1000c subtotal.
@@ -267,7 +267,7 @@ func TestThresholdScan_Idempotent(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newThresholdFixture(t, "Threshold Idempotent")
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
 	defer cancel()
 
 	f.ingestUsage(t, ctx, 100, 10)
@@ -317,7 +317,7 @@ func TestThresholdScan_ItemUsageCross(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newThresholdFixture(t, "Threshold Item Cross")
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
 	defer cancel()
 
 	// 100 events × qty 10 = 1000 total quantity on the meter.
@@ -357,7 +357,7 @@ func TestThresholdScan_BelowThresholdNoFire(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newThresholdFixture(t, "Threshold Below Cap")
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
 	defer cancel()
 
 	// 100 events × qty 10 × 1c = 1000c subtotal.
@@ -391,7 +391,7 @@ func TestThresholdScan_NoConfigSkipped(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newThresholdFixture(t, "Threshold No Config")
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
 	defer cancel()
 
 	// Lots of usage but no threshold configured — the candidate query
@@ -416,7 +416,7 @@ func TestThresholdScan_ResetCycleFalse(t *testing.T) {
 		t.Skip("integration: skipped in -short mode")
 	}
 	f := newThresholdFixture(t, "Threshold Reset False")
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
 	defer cancel()
 
 	f.ingestUsage(t, ctx, 100, 10)

@@ -41,7 +41,7 @@ func newGDPRServiceForTest(db *postgres.DB) *customer.GDPRService {
 // exhaustive field-level assertions below.
 func TestGDPR_ExportCustomerData(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "GDPR Export")
@@ -162,7 +162,7 @@ func TestGDPR_ExportCustomerData(t *testing.T) {
 // leaves identifying data behind in plaintext.
 func TestGDPR_DeleteCustomerData_Anonymizes(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "GDPR Delete")
@@ -275,7 +275,7 @@ func TestGDPR_DeleteCustomerData_Anonymizes(t *testing.T) {
 // recurring charge against them — a payments-and-compliance double-fault.
 func TestGDPR_DeleteCustomerData_RejectsActiveSubscription(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "GDPR ActiveSub")
@@ -346,7 +346,7 @@ func TestGDPR_DeleteCustomerData_RejectsActiveSubscription(t *testing.T) {
 // cross-tenant bleed.
 func TestGDPR_DeleteCustomerData_MultiTenantIsolation(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantA := testutil.CreateTestTenant(t, db, "GDPR Iso A")

@@ -89,6 +89,14 @@ jobs:
 
       - uses: golangci/golangci-lint-action@v7
 
+      # ADR-030 guard: bare `time.Now()` in service / store / engine
+      # code on clock-pinned-entity domains leaks wall-clock into
+      # rows that catchup queries read against frozen_time. Run as
+      # part of the lint job (no extra runner cost) — the script
+      # exits non-zero with a helpful message on any violation.
+      - name: lint-clock (ADR-030)
+        run: make lint-clock
+
   # codegen-drift fails the build when api/openapi.yaml has been edited
   # without regenerating the Go and TS artifacts that derive from it
   # (or vice versa — when a generated file was hand-edited). The check

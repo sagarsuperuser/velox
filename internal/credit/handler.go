@@ -138,6 +138,8 @@ func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request) {
 		TenantID:   tenantID,
 		CustomerID: customerID,
 		EntryType:  r.URL.Query().Get("entry_type"),
+		Sort:       r.URL.Query().Get("sort"),
+		SortDir:    r.URL.Query().Get("dir"),
 	})
 	if err != nil {
 		respond.InternalError(w, r)

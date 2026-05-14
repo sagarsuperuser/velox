@@ -67,7 +67,26 @@ type Service struct {
 	events        domain.EventDispatcher
 	emailNotifier EmailNotifier
 	customerEmail CustomerEmailFetcher
+	resolver      clock.Resolver
 	clock         clock.Clock
+}
+
+// SetResolver wires the unified clock.Resolver. Once bound on ctx via
+// clock.BindEffectiveNow at the entry point of any per-invoice
+// dunning operation, every downstream s.clock.Now(ctx) reads
+// frozen_time on clock-pinned invoices. Optional: nil leaves binding
+// off and every callsite reads wall-clock.
+func (s *Service) SetResolver(r clock.Resolver) {
+	s.resolver = r
+}
+
+// bindForInvoice binds effective-now from an invoice id at every
+// dunning state-machine entry point (StartDunning, processRun,
+// exhaustRun, ResolveRun, ResolveByInvoice). Returns ctx unchanged on
+// resolver error or no resolver — wall-clock fallback.
+func (s *Service) bindForInvoice(ctx context.Context, tenantID, invoiceID string) context.Context {
+	bound, _ := clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, InvoiceID: invoiceID})
+	return bound
 }
 
 func NewService(store Store, retrier PaymentRetrier, clk clock.Clock) *Service {
@@ -154,7 +173,8 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 		firstRetryDelay = 24 * time.Hour // minimum 1 day before first retry
 	}
 
-	now := s.clock.Now()
+	ctx = s.bindForInvoice(ctx, tenantID, invoiceID)
+	now := s.clock.Now(ctx)
 	t := now.Add(firstRetryDelay)
 	nextActionAt := &t
 
@@ -195,20 +215,43 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 	return run, nil
 }
 
-// ProcessDueRuns finds runs due for action and executes retries.
+// ProcessDueRuns finds runs due for action and executes retries —
+// CRON path. ADR-029 Phase 5: the cron's ListDueRuns excludes
+// dunning runs whose owning invoice's sub is clock-pinned; those go
+// through ProcessDueRunsForClock during catchup.
 func (s *Service) ProcessDueRuns(ctx context.Context, tenantID string, limit int) (int, []error) {
 	if limit <= 0 {
 		limit = 20
 	}
-
-	dueRuns, err := s.store.ListDueRuns(ctx, tenantID, s.clock.Now(), limit)
+	dueRuns, err := s.store.ListDueRuns(ctx, tenantID, s.clock.Now(ctx), limit)
 	if err != nil {
 		return 0, []error{fmt.Errorf("list due runs: %w", err)}
 	}
+	return s.processRunsBatch(ctx, tenantID, dueRuns)
+}
 
+// ProcessDueRunsForClock is the catchup-path counterpart. ADR-029
+// Phase 5: clock-pinned dunning runs advance only on operator Advance,
+// against the clock's frozen_time. The dunning state machine itself
+// (processRun) is identical between paths — only the candidate-fetch
+// scope differs.
+func (s *Service) ProcessDueRunsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, limit int) (int, []error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	dueRuns, err := s.store.ListDueRunsForClock(ctx, tenantID, clockID, frozenTime, limit)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list due runs for clock %s: %w", clockID, err)}
+	}
+	return s.processRunsBatch(ctx, tenantID, dueRuns)
+}
+
+// processRunsBatch is the shared per-run body of ProcessDueRuns and
+// ProcessDueRunsForClock. The candidate list shape differs by trigger;
+// the per-run state-machine step is identical.
+func (s *Service) processRunsBatch(ctx context.Context, tenantID string, dueRuns []domain.InvoiceDunningRun) (int, []error) {
 	processed := 0
 	var runErrs []error
-
 	for _, run := range dueRuns {
 		if err := s.processRun(ctx, tenantID, run); err != nil {
 			runErrs = append(runErrs, fmt.Errorf("run %s: %w", run.ID, err))
@@ -216,7 +259,6 @@ func (s *Service) ProcessDueRuns(ctx context.Context, tenantID string, limit int
 		}
 		processed++
 	}
-
 	return processed, runErrs
 }
 
@@ -252,7 +294,8 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 
 	// Attempt retry
 	run.AttemptCount++
-	now := s.clock.Now()
+	ctx = s.bindForInvoice(ctx, tenantID, run.InvoiceID)
+	now := s.clock.Now(ctx)
 	run.LastAttemptAt = &now
 
 	// Actually retry the payment
@@ -393,7 +436,8 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 }
 
 func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, policy domain.DunningPolicy) error {
-	now := s.clock.Now()
+	ctx = s.bindForInvoice(ctx, tenantID, run.InvoiceID)
+	now := s.clock.Now(ctx)
 	run.State = domain.DunningEscalated
 	run.Resolution = domain.ResolutionRetriesExhausted
 	run.ResolvedAt = &now
@@ -481,7 +525,8 @@ func (s *Service) ResolveRun(ctx context.Context, tenantID, runID string, resolu
 		return domain.InvoiceDunningRun{}, err
 	}
 
-	now := s.clock.Now()
+	ctx = s.bindForInvoice(ctx, tenantID, run.InvoiceID)
+	now := s.clock.Now(ctx)
 	run.State = domain.DunningResolved
 	run.Resolution = resolution
 	run.ResolvedAt = &now
@@ -506,7 +551,8 @@ func (s *Service) ResolveByInvoice(ctx context.Context, tenantID, invoiceID stri
 		return nil // No active run — nothing to resolve
 	}
 
-	now := s.clock.Now()
+	ctx = s.bindForInvoice(ctx, tenantID, invoiceID)
+	now := s.clock.Now(ctx)
 	run.State = domain.DunningResolved
 	run.Resolution = resolution
 	run.ResolvedAt = &now

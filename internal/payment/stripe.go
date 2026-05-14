@@ -15,6 +15,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -65,9 +66,13 @@ type CustomerEmailResolver interface {
 	GetCustomerEmail(ctx context.Context, tenantID, customerID string) (email, displayName string, err error)
 }
 
-// EmailPaymentUpdate sends payment update request emails.
-type EmailPaymentUpdate interface {
-	SendPaymentUpdateRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
+// EmailPaymentFailed sends "your charge was declined" emails. Hits
+// after a Stripe charge attempt actually went through and was
+// declined — distinct from EmailPaymentSetup which fires when there's
+// no PM on file at finalize (no charge was ever attempted). Same
+// signature as dunning.EmailNotifier so OutboxSender satisfies both.
+type EmailPaymentFailed interface {
+	SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
 }
 
 type Stripe struct {
@@ -80,11 +85,30 @@ type Stripe struct {
 	events             domain.EventDispatcher
 	emailReceipt       EmailReceipt
 	customerEmail      CustomerEmailResolver
-	emailPaymentUpdate EmailPaymentUpdate
-	paymentUpdateURL   string
-	tokenSvc           *TokenService
+	emailPaymentFailed EmailPaymentFailed
 	breaker            *breaker.Breaker // optional; nil = no breaker
 	pmAttacher         PaymentMethodAttacher
+	resolver           clock.Resolver // optional; binds effective-now from invoice
+}
+
+// SetResolver wires the unified clock.Resolver. Webhook handlers fire
+// in their own goroutine with no inherited ctx binding — they bind
+// effective-now from the invoice they're processing so MarkPaid /
+// UpdatePayment / StartDunning all stamp simulated time on
+// clock-pinned invoices. Without this, webhook-driven writes leak
+// wall-clock back into the simulation. Optional: nil leaves binding
+// off (test default).
+func (s *Stripe) SetResolver(r clock.Resolver) {
+	s.resolver = r
+}
+
+// bindForInvoice resolves effective-now from the invoice and binds
+// ctx for downstream stamps. Returns ctx unchanged on resolver error
+// or no resolver — webhook handlers must never fail their inbound
+// event on a transient resolution issue.
+func (s *Stripe) bindForInvoice(ctx context.Context, tenantID, invoiceID string) context.Context {
+	bound, _ := clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, InvoiceID: invoiceID})
+	return bound
 }
 
 // StripeClient is the interface for Stripe API calls.
@@ -149,18 +173,15 @@ func (s *Stripe) SetEmailReceipt(receipt EmailReceipt, customerEmail CustomerEma
 	s.customerEmail = customerEmail
 }
 
-// SetEmailPaymentUpdate configures payment update request email sending.
-func (s *Stripe) SetEmailPaymentUpdate(sender EmailPaymentUpdate, customerEmail CustomerEmailResolver, paymentUpdateURL string) {
-	s.emailPaymentUpdate = sender
+// SetEmailPaymentFailed configures the post-decline email sender.
+// Mirrors the dunning email path — points the customer at the hosted
+// invoice URL where they can update PM and retry. The customer-email
+// resolver is shared with the receipt path.
+func (s *Stripe) SetEmailPaymentFailed(sender EmailPaymentFailed, customerEmail CustomerEmailResolver) {
+	s.emailPaymentFailed = sender
 	if s.customerEmail == nil {
 		s.customerEmail = customerEmail
 	}
-	s.paymentUpdateURL = paymentUpdateURL
-}
-
-// SetTokenService configures the payment update token service for tokenized update links.
-func (s *Stripe) SetTokenService(svc *TokenService) {
-	s.tokenSvc = svc
 }
 
 // SetEventDispatcher configures outbound webhook event firing.
@@ -254,25 +275,34 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 	// background workers it defaults to live (postgres.Livemode default).
 	ctx = veloxauth.WithTenantID(ctx, tenantID)
 
-	// Idempotency: use invoice ID as the key so retries don't create duplicate PIs
+	// Stable business metadata only — nothing per-HTTP-request. The
+	// idempotency key + metadata together form Stripe's dedup contract:
+	// same key + same params → cached response; different params → 409
+	// conflict. Putting velox_request_id (per-call chi ID) in metadata
+	// would make every retry attempt see "same key, different params"
+	// and 409. Log correlation goes through stripe_payment_intent_id
+	// (recorded back on the invoice) instead.
 	metadata := map[string]string{
 		"velox_invoice_id":     inv.ID,
 		"velox_invoice_number": inv.InvoiceNumber,
 		"velox_tenant_id":      tenantID,
 		"velox_customer_id":    inv.CustomerID,
 	}
-	// Propagate the Velox request ID so operators can correlate Velox logs to
-	// Stripe dashboard events via metadata search. Absent from scheduler-driven
-	// charges (no HTTP request → empty ID), which is fine.
-	if reqID := chimw.GetReqID(ctx); reqID != "" {
-		metadata["velox_request_id"] = reqID
-	}
+	// Per-attempt idempotency key. inv.UpdatedAt advances every time
+	// UpdatePayment runs (which happens on every prior failed attempt
+	// recording last_payment_error), so each genuine retry gets a
+	// fresh key — Stripe creates a new PI rather than returning the
+	// cached failed one. Within a single attempt, two concurrent
+	// callers (scheduler + operator click) read the same UpdatedAt
+	// and dedupe correctly: Stripe returns the same PI to both, no
+	// double-charge.
+	idempotencyKey := fmt.Sprintf("velox_inv_%s_%d", inv.ID, inv.UpdatedAt.UnixNano())
 	params := PaymentIntentParams{
 		AmountCents:    inv.AmountDueCents,
 		Currency:       inv.Currency,
 		CustomerID:     stripeCustomerID,
 		Description:    fmt.Sprintf("Invoice %s", inv.InvoiceNumber),
-		IdempotencyKey: fmt.Sprintf("velox_inv_%s", inv.ID),
+		IdempotencyKey: idempotencyKey,
 		Metadata:       metadata,
 	}
 
@@ -328,7 +358,12 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		// Stripe outage genuinely impairs customer charging and should page,
 		// even though the reconciler will later resolve the per-invoice state.
 		mw.RecordPaymentCharge("failed")
-		return domain.Invoice{}, fmt.Errorf("%s: %s", verb, pe.Message)
+		// Wrap with %w so respond.FromError can detect *PaymentError
+		// via errors.As and surface OperatorSafeMessage() instead of
+		// leaking pe.Message (which is the raw Stripe SDK string —
+		// includes idempotency-key conflicts, validation errors, etc.).
+		// ADR-026.
+		return domain.Invoice{}, fmt.Errorf("%s: %w", verb, pe)
 	}
 
 	slog.Info("payment intent created",
@@ -447,7 +482,14 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 		return fmt.Errorf("find invoice for PI %s: %w", event.PaymentIntentID, err)
 	}
 
-	now := time.Now().UTC()
+	// Bind effective-now from the invoice so paid_at lands in
+	// simulated time on clock-pinned invoices. Stripe's webhook fires
+	// in wall-clock 2026 even when the invoice belongs to a clock
+	// frozen at 2024-04 — without binding, paid_at would leak
+	// wall-clock and the dashboard would show "Paid on 2026-05-08"
+	// for a simulation-2024 invoice.
+	ctx = s.bindForInvoice(ctx, tenantID, inv.ID)
+	now := clock.Now(ctx)
 
 	// Single atomic operation: mark paid, zero amount_due, record PI + paid_at
 	if _, err := s.invoices.MarkPaid(ctx, tenantID, inv.ID, event.PaymentIntentID, now); err != nil {
@@ -533,6 +575,11 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		return fmt.Errorf("find invoice for PI %s: %w", event.PaymentIntentID, err)
 	}
 
+	// Bind effective-now so dunning's StartDunning (called below) and
+	// any UpdatePayment-side stamps land in simulated time on
+	// clock-pinned invoices.
+	ctx = s.bindForInvoice(ctx, tenantID, inv.ID)
+
 	failureMsg := event.FailureMessage
 	if failureMsg == "" {
 		failureMsg = "payment failed"
@@ -571,15 +618,27 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		}
 	}
 
-	// Send payment update request email asynchronously with tokenized URL.
-	// Single path: always attempt if the sender is wired. Missing config
-	// (URL or customer-email resolver) surfaces as a logged error per
-	// attempt rather than a silent skip, so operators see the failure.
-	if s.emailPaymentUpdate != nil {
-		// Same detached-ctx pattern as the receipt email above:
-		// goroutine outlives the webhook request, so the request
-		// ctx would cancel mid-call. Build a fresh ctx with
-		// tenant + livemode pinned + a 30s timeout.
+	// Suppress the customer-facing email when the decline came from an
+	// interactive Pay flow (customer is on the hosted invoice page and
+	// already saw "Your card was declined" inline). Sending an email
+	// telling them what they just saw is noise. Auto-charge declines
+	// (no velox_purpose, or velox_purpose != hosted_invoice_pay)
+	// still send — the customer wasn't watching.
+	purpose := piPurposeFromPayload(event.Payload)
+	if purpose == "hosted_invoice_pay" {
+		slog.Info("skip post-decline email — interactive Pay flow",
+			"invoice_id", inv.ID, "payment_intent_id", event.PaymentIntentID)
+		return nil
+	}
+
+	// Send the payment-failed email. Points the customer at the hosted
+	// invoice page (long-lived public_token), where they can update PM
+	// and retry. Same template as dunning retries — this is the
+	// "first attempt failed" notification, dunning sends subsequent
+	// retry warnings on its own schedule.
+	if s.emailPaymentFailed != nil {
+		// Detached ctx — the webhook request returns before this
+		// goroutine completes, so request ctx would cancel mid-call.
 		livemode := postgres.Livemode(ctx)
 		go func() {
 			workerCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -587,55 +646,52 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 			workerCtx = veloxauth.WithTenantID(workerCtx, tenantID)
 			workerCtx = postgres.WithLivemode(workerCtx, livemode)
 
-			if s.paymentUpdateURL == "" {
-				slog.Error("payment update email failed — PAYMENT_UPDATE_URL not configured",
-					"invoice_id", inv.ID)
-				return
-			}
 			if s.customerEmail == nil {
-				slog.Error("payment update email failed — customer email resolver not wired",
+				slog.Error("payment failed email — customer email resolver not wired",
 					"invoice_id", inv.ID)
 				return
 			}
 			email, name, err := s.customerEmail.GetCustomerEmail(workerCtx, tenantID, inv.CustomerID)
 			if err != nil || email == "" {
-				slog.Warn("skip payment update email — cannot resolve customer email",
+				slog.Warn("skip payment failed email — cannot resolve customer email",
 					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
 				return
 			}
-
-			// Generate a secure token for the payment update link.
-			// No fallback when tokenSvc is unwired: the SPA enforces
-			// ?token= and rejects URLs without it. Sending a
-			// tokenless URL would put the customer on a broken page —
-			// strictly worse than logging the misconfiguration and
-			// not sending. Operators see the slog error and wire
-			// SetTokenService.
-			if s.tokenSvc == nil {
-				slog.Error("payment update email failed — TokenService not wired (SetTokenService never called)",
-					"invoice_id", inv.ID)
-				return
-			}
-			rawToken, err := s.tokenSvc.Create(workerCtx, tenantID, inv.CustomerID, inv.ID)
-			if err != nil {
-				slog.Error("failed to create payment update token",
-					"invoice_id", inv.ID, "error", err)
-				return
-			}
-			// Query-style ?token=… matches the SPA route
-			// /update-payment which reads searchParams.get('token').
-			// Path-style /update-payment/{token} would 404 the
-			// React Router catch-all.
-			updateURL := fmt.Sprintf("%s?token=%s", s.paymentUpdateURL, rawToken)
-
-			if err := s.emailPaymentUpdate.SendPaymentUpdateRequest(workerCtx, tenantID, email, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
-				slog.Error("failed to send payment update email",
+			if err := s.emailPaymentFailed.SendPaymentFailed(workerCtx, tenantID, email, name, inv.InvoiceNumber, failureMsg, inv.PublicToken); err != nil {
+				slog.Error("failed to send payment failed email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
 		}()
 	}
 
 	return nil
+}
+
+// piPurposeFromPayload extracts data.object.metadata.velox_purpose from
+// a Stripe webhook event payload. Returns "" if not present. The
+// payload["raw"] field is the JSON body of the Stripe event; we keep
+// the parse narrow to just the field we need so unrelated schema
+// drift doesn't break extraction.
+func piPurposeFromPayload(payload map[string]any) string {
+	raw, ok := payload["raw"]
+	if !ok {
+		return ""
+	}
+	rawStr, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	var parsed struct {
+		Data struct {
+			Object struct {
+				Metadata map[string]string `json:"metadata"`
+			} `json:"object"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(rawStr), &parsed); err != nil {
+		return ""
+	}
+	return parsed.Data.Object.Metadata["velox_purpose"]
 }
 
 func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {

@@ -145,11 +145,13 @@ export default function SubscriptionsPage() {
     params.set('limit', String(PAGE_SIZE))
     params.set('offset', String((page - 1) * PAGE_SIZE))
     if (filterStatus) params.set('status', filterStatus)
+    if (sortKey) params.set('sort', sortKey)
+    if (sortDir) params.set('dir', sortDir)
     return params.toString()
-  }, [page, filterStatus])
+  }, [page, filterStatus, sortKey, sortDir])
 
   const { data: subsData, isLoading: loading, error: loadErrorObj, refetch } = useQuery({
-    queryKey: ['subscriptions', page, filterStatus],
+    queryKey: ['subscriptions', page, filterStatus, sortKey, sortDir],
     queryFn: () => api.listSubscriptions(queryParams),
   })
 
@@ -172,6 +174,15 @@ export default function SubscriptionsPage() {
   const clockFrozenMap = useMemo(() => {
     const m: Record<string, string> = {}
     ;(testClocksData?.data ?? []).forEach(c => { m[c.id] = c.frozen_time })
+    return m
+  }, [testClocksData])
+  // Clock id → name lookup for the customer-inherits-clock hint
+  // (ADR-027). When the operator selects a pinned customer in the
+  // Create dialog, we surface "inherits — <clock name>" so they
+  // know the new sub will run on simulated time.
+  const clockNameMap = useMemo(() => {
+    const m: Record<string, string> = {}
+    ;(testClocksData?.data ?? []).forEach(c => { m[c.id] = c.name || c.id })
     return m
   }, [testClocksData])
 
@@ -221,12 +232,16 @@ export default function SubscriptionsPage() {
     })
   }, [subs, search])
 
-  const { sorted, onSort } = useSortable(
+  // Server-side sort end-to-end (closed allow-list + id tie-break).
+  // Client-side re-sort would only sort the current page, breaking
+  // pagination semantics.
+  const { onSort } = useSortable(
     filtered,
     sortKey,
     sortDir,
     (key, dir) => setUrlState({ sort: key, dir }),
   )
+  const sorted = filtered
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -534,24 +549,40 @@ export default function SubscriptionsPage() {
               <FormField
                 control={form.control}
                 name="customer_id"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Customer</FormLabel>
-                    <FormControl>
-                      <select
-                        value={field.value}
-                        onChange={field.onChange}
-                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      >
-                        <option value="">Select customer...</option>
-                        {customers.map(c => (
-                          <option key={c.id} value={c.id}>{c.display_name}</option>
-                        ))}
-                      </select>
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
+                render={({ field }) => {
+                  // ADR-027: when the chosen customer is pinned to a
+                  // test clock, the new sub auto-inherits. Surface the
+                  // hint inline so the operator isn't surprised that
+                  // the sub bills on simulated time. Stripe's create-
+                  // sub flow renders the equivalent indicator.
+                  const selected = field.value ? customerMap[field.value] : null
+                  const inheritedClockName = selected?.test_clock_id
+                    ? (clockNameMap[selected.test_clock_id] || selected.test_clock_id)
+                    : ''
+                  return (
+                    <FormItem>
+                      <FormLabel>Customer</FormLabel>
+                      <FormControl>
+                        <select
+                          value={field.value}
+                          onChange={field.onChange}
+                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        >
+                          <option value="">Select customer...</option>
+                          {customers.map(c => (
+                            <option key={c.id} value={c.id}>{c.display_name}</option>
+                          ))}
+                        </select>
+                      </FormControl>
+                      {inheritedClockName && (
+                        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 mt-2">
+                          This subscription will inherit the customer's test clock — <span className="font-medium">{inheritedClockName}</span>.
+                        </div>
+                      )}
+                      <FormMessage />
+                    </FormItem>
+                  )
+                }}
               />
 
               {/* Items — dynamic array. Each row is a plan+qty pair. Backend

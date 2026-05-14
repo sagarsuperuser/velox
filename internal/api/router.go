@@ -21,7 +21,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/billingalert"
-	"github.com/sagarsuperuser/velox/internal/bulkaction"
 	"github.com/sagarsuperuser/velox/internal/coupon"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
@@ -36,7 +35,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
 	"github.com/sagarsuperuser/velox/internal/paymentmethods"
-	"github.com/sagarsuperuser/velox/internal/planmigration"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -182,6 +180,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// to start-of-day in the tenant's timezone (day-grade calendar
 	// billing — Chargebee / Lago default).
 	subSvc.SetSettingsReader(settingsStore)
+	// Customer-level test-clock attach (ADR-027): subscription create
+	// reads the owning customer's test_clock_id and stamps it on the
+	// new sub. The API does not accept a per-sub test_clock_id —
+	// Stripe doesn't either, and accepting one created a redundant
+	// validation path against the canonical customer-level value.
+	subSvc.SetCustomerReader(customerStore)
 	creditStore := credit.NewPostgresStore(db)
 	creditSvc := credit.NewService(creditStore)
 	creditH := credit.NewHandler(creditSvc)
@@ -306,23 +310,38 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		Events:          eventDispatcher,
 		RefundIssuer:    &refundIssuerAdapter{svc: creditNoteSvc},
 	})
-	checkoutH := payment.NewCheckoutHandler(stripeClients,
-		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")),
-		strings.TrimSpace(os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")),
-		customerStore)
+	// Return URLs are passed per-request now (return_url body field)
+	// instead of read from env — every Checkout flow in the codebase
+	// is contextual, not global. STRIPE_CHECKOUT_{SUCCESS,CANCEL}_URL
+	// were a pre-portal anti-pattern.
+	checkoutH := payment.NewCheckoutHandler(stripeClients, customerStore)
 	portalH := payment.NewPortalHandler(stripeClients, customerStore)
 
-	// Token service for public payment update links
+	// Token service for public payment update links. Used by the
+	// no-PM-at-finalize email (noPaymentMethodNotifierAdapter) and
+	// the public token-authenticated payment-update SPA flow. The
+	// post-decline path (Stripe.handlePaymentFailed) does NOT mint a
+	// single-use token — it points the customer at the long-lived
+	// hosted invoice URL where they can update PM and retry, matching
+	// the dunning email path. ADR-023.
 	tokenSvc := payment.NewTokenService(db)
-	stripeAdapter.SetTokenService(tokenSvc)
 
 	// Reconciler for PaymentUnknown invoices (ambiguous Stripe outcomes).
 	// 60s cool-off lets webhooks resolve the state naturally before we
 	// spend an extra API call.
 	paymentReconciler := payment.NewReconciler(stripeClient, invoiceStore, 60*time.Second)
 	paymentReconciler.SetBreaker(stripeBreaker)
-	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeClients,
+	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeClients, customerSvc,
 		strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_RETURN_URL")))
+
+	// paymentmethods.StripeAdapter constructed early so the hosted-invoice
+	// Pay flow can use it to ensure a Stripe customer exists for the Velox
+	// customer before creating the Checkout session — required for
+	// `customer` + `setup_future_usage=off_session` to actually save the
+	// PM to the customer's Stripe record (otherwise it's a guest checkout
+	// and "save card" is a no-op). The store + service are constructed
+	// later (line ~657) where the rest of the customer-portal stack lives.
+	paymentMethodsStripe := paymentmethods.NewStripeAdapter(stripeClients, customerStore)
 
 	// Hosted invoice page — Stripe-equivalent hosted_invoice_url surface.
 	// Public tokenized routes that the partner's end customer visits from
@@ -336,7 +355,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		Customers:   customerStore,
 		Settings:    settingsStore,
 		CreditNotes: &creditNoteListerAdapter{svc: creditNoteSvc},
-		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients},
+		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients, ensurer: paymentMethodsStripe},
 		BaseURL:     strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
 	})
 
@@ -395,7 +414,8 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		invoiceEmail       invoice.EmailSender
 		dunningEmail       dunning.EmailNotifier
 		receiptEmail       payment.EmailReceipt
-		paymentUpdate      payment.EmailPaymentUpdate
+		paymentSetupEmail  paymentSetupEmailSender // finalize-no-PM trigger
+		paymentFailedEmail payment.EmailPaymentFailed // post-decline trigger (same shape as dunning)
 		magicLinkEmail     customerportal.MagicLinkEmailSender
 		passwordResetEmail interface {
 			SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
@@ -403,11 +423,15 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	)
 	if emailOutboxEnabled {
 		outboxSender := email.NewOutboxSender(emailOutboxStore)
-		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail = outboxSender, outboxSender, outboxSender, outboxSender, outboxSender
+		invoiceEmail, dunningEmail, receiptEmail, magicLinkEmail = outboxSender, outboxSender, outboxSender, outboxSender
+		paymentSetupEmail = outboxSender
+		paymentFailedEmail = outboxSender
 		passwordResetEmail = outboxSender
 		slog.Info("email outbox enabled — producers will enqueue emails via email_outbox")
 	} else {
-		invoiceEmail, dunningEmail, receiptEmail, paymentUpdate, magicLinkEmail = emailSender, emailSender, emailSender, emailSender, emailSender
+		invoiceEmail, dunningEmail, receiptEmail, magicLinkEmail = emailSender, emailSender, emailSender, emailSender
+		paymentSetupEmail = emailSender
+		paymentFailedEmail = emailSender
 		passwordResetEmail = emailSender
 		slog.Warn("email outbox DISABLED — using direct-SMTP path (set VELOX_EMAIL_OUTBOX_ENABLED=true to re-enable)")
 	}
@@ -418,9 +442,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	stripeAdapter.SetEmailReceipt(receiptEmail, customerEmailAdapter)
 	paymentUpdateURL := strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_URL"))
 	if paymentUpdateURL == "" {
-		slog.Warn("PAYMENT_UPDATE_URL NOT SET — payment-update-request emails (no-PM-at-finalize, charge-failure) will fail at send time. Set this to your customer-portal payment-update page URL.")
+		slog.Warn("PAYMENT_UPDATE_URL NOT SET — payment-setup-request emails (no-PM-at-finalize) will fail at send time. Set this to your customer-portal payment-update page URL.")
 	}
-	stripeAdapter.SetEmailPaymentUpdate(paymentUpdate, customerEmailAdapter, paymentUpdateURL)
+	stripeAdapter.SetEmailPaymentFailed(paymentFailedEmail, customerEmailAdapter)
 
 	// Audit logging for financial operations
 	creditH.SetAuditLogger(auditLogger)
@@ -441,13 +465,96 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	testClockStore := testclock.NewPostgresStore(db)
 	testClockSvc := testclock.NewService(testClockStore)
 	testClockH := testclock.NewHandler(testClockSvc)
+	// Customer-level test-clock attach (ADR-027): customer service
+	// validates test_clock_id at create time. Wired after the store
+	// exists; before this point customer creation always rejects
+	// test_clock_id (defensive default).
+	customerSvc.SetTestClockChecker(testClockStore)
+	// Wire the per-customer tax-retry flush so a billing-profile save
+	// (operator edits country / postal_code / state / tax_id) replays
+	// every draft invoice for that customer stuck on
+	// customer_data_invalid. Sibling of the ADR-019 Stripe-reconnect
+	// flush, scoped per-customer. Without this, the operator must
+	// click Retry per-invoice after fixing the address.
+	customerSvc.SetTaxFlusher(invoiceSvc)
+	// Attached-customers panel reads through the customer service so
+	// display_name / email arrive decrypted (the customer package owns
+	// the encrypt-at-rest wrapper). Without this, the testclock domain
+	// would have to SELECT the customers table directly and skip
+	// decryption — which is exactly the bug this wiring prevents.
+	testClockSvc.SetCustomerReader(customerSvc)
 
 	// Billing engine + manual trigger (with credit auto-application)
 	engine := billing.NewEngine(subStore, usageStore, pricingSvc,
 		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, customerStore, stripeAdapter, clk, customerStore)
 	engine.SetTestClockReader(testClockStore)
 	engine.SetEventDispatcher(eventDispatcher)
+	// Customer reader powers EffectiveNowForCustomer (subscription
+	// create / one-off invoice composer / clock-pinned customer
+	// path). Without this, the engine's customer-side clock resolution
+	// falls back to wall-clock, leaking simulated-time invariants on
+	// operator-driven creates against clock-pinned customers.
+	engine.SetCustomerReader(customerStore)
+	// Plumb effective-now resolution into dunning so every per-invoice
+	// timestamp dunning writes (next_action_at / last_attempt_at /
+	// resolved_at / created_at) lands in the same time domain the
+	// catchup query reads against — frozen_time for clock-pinned runs,
+	// wall-clock otherwise. Without this wire, clock-pinned dunning
+	// runs whose stamps land in wall-clock 2026 are stranded against a
+	// catchup window that compares to the frozen_time the operator is
+	// advancing through. ADR-029 follow-up.
+	dunningSvc.SetResolver(engine)
+	// Stripe webhook handler (handlePaymentSucceeded / handlePaymentFailed)
+	// fires async with no inherited ctx binding. Wire the resolver so
+	// every webhook-driven write (paid_at, payment-failure stamp,
+	// dunning-run create) lands in simulated time on clock-pinned
+	// invoices instead of leaking wall-clock.
+	stripeAdapter.SetResolver(engine)
+	// Customer-service mutations (Update, UpsertBillingProfile, etc.)
+	// bind effective-now from the customer pin so postgres updated_at
+	// stamps on a clock-pinned customer's row are simulated time.
+	customerSvc.SetResolver(engine)
+	// Credit grants for clock-pinned customers must stamp the ledger
+	// entry's created_at in simulated time so the dashboard "credit
+	// granted on …" line matches the rest of the simulated timeline.
+	creditSvc.SetResolver(engine)
+	// subscription.Service uses the resolver at Create / Activate /
+	// ChangeItem / ScheduleCancel / PauseCollection / EndTrial /
+	// ExtendTrial so every per-sub timestamp the operator writes
+	// lands in the right time domain. Without this, clock-pinned
+	// subs created today against a 1-month-old idle clock get
+	// next_billing_at stamped in 2026 wall-clock against a 2026-04
+	// frozen_time — same stranding shape as dunning had at the
+	// per-run level.
+	subSvc.SetResolver(engine)
+	// invoice.Service uses the resolver at Create so one-off
+	// composer invoices and manual sub-attached addenda for
+	// clock-pinned customers / subs stamp due_at in simulated time.
+	// The reminder catchup compares due_at against frozen_time;
+	// without the resolver wire, the row never lands in the catchup
+	// window.
+	invoiceSvc.SetResolver(engine)
 	testClockSvc.SetBillingRunner(engine)
+	// ADR-029 Phase 2: catchup orchestrator drives tax retry on
+	// clock-pinned invoices. Without this, the cron-side filter
+	// (NOT EXISTS clock-pinning) would correctly skip them but no
+	// other path would retry — clock-pinned tax-pending invoices
+	// would be stranded until an operator manually clicked Retry tax
+	// per invoice.
+	testClockSvc.SetTaxRetrier(invoiceSvc)
+	// ADR-029 Phase 4: credit expiry for clock-pinned customers' grants
+	// runs in the catchup orchestrator against the clock's frozen_time.
+	testClockSvc.SetCreditExpirer(creditSvc)
+	// ADR-029 Phase 5: dunning advances for clock-pinned invoices fire
+	// in the catchup orchestrator against the clock's frozen_time, not
+	// on the wall-clock 5-min tick.
+	testClockSvc.SetDunning(dunningSvc)
+	// ADR-029 Phase 6: clock-pinned reminder candidate listing in the
+	// catchup orchestrator. Today the cron just logs the count; the
+	// catchup mirror is symmetric. Wires the invoice service which
+	// implements ListApproachingDueForClock against the clock's
+	// frozen_time.
+	testClockSvc.SetReminders(invoiceSvc)
 	// No-payment-method finalize notifier: at finalize-time when a
 	// customer has no PaymentSetup ready, the engine queues for retry
 	// (so attaching a PM later auto-collects) AND emails the customer
@@ -462,7 +569,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// the misconfiguration at send time per the boot WARN above —
 	// single send path, no silent skip.
 	engine.SetNoPaymentMethodNotifier(&noPaymentMethodNotifierAdapter{
-		email:            paymentUpdate,
+		email:            paymentSetupEmail,
 		customerEmail:    customerEmailAdapter,
 		paymentUpdateURL: paymentUpdateURL,
 		tokenSvc:         tokenSvc,
@@ -498,6 +605,14 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// the generic awaiting_payment race window. customerStore satisfies
 	// the PaymentMethodReader interface (GetPaymentSetup).
 	invoiceSvc.SetPaymentMethodReader(customerStore)
+	// Stripe-connected probe lets the attention classifier swap copy
+	// from "Stripe isn't connected" → "calculation queued, retry now"
+	// for tax_status='pending' invoices when the operator has just
+	// connected Stripe but the scheduler hasn't ticked yet. ADR-019's
+	// reconnect-flush already retries those invoices automatically;
+	// this just makes the banner stop misleading the operator during
+	// the gap window.
+	invoiceSvc.SetStripeChecker(stripeClients)
 
 	// Credit note issue reverses the invoice's tax_transaction so the
 	// tenant's upstream tax liability is reduced alongside the refund.
@@ -529,41 +644,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	createPreviewH := billing.NewCreatePreviewHandler(
 		billing.NewPreviewService(engine, customerStore, subStore),
 	)
-
-	// Plan migration tool: operator-initiated bulk swaps of plan_id across
-	// many subscriptions. Reuses billing.PreviewService for the per-customer
-	// before/after preview, subStore for the cohort + per-item mutations,
-	// pricingSvc for plan currency/name lookups, and auditLogger for both
-	// the cohort summary entry and per-customer plan_changed entries.
-	// Mounted at /v1/admin/plan_migrations below.
-	planMigrationStore := planmigration.NewPostgresStore(db)
-	planMigrationSvc := planmigration.NewService(
-		planMigrationStore,
-		billing.NewPreviewService(engine, customerStore, subStore),
-		subStore,
-		subStore,
-		pricingSvc,
-		auditLogger,
-	)
-	planMigrationH := planmigration.NewHandler(planMigrationSvc)
-
-	// Bulk operations (Week 7) — operator-initiated cohort actions
-	// (apply coupon, schedule cancel) over many customers. Reuses
-	// customer.Store for the cohort, subscription.Store for active-sub
-	// resolution, subSvc.ScheduleCancel for the per-sub cancel mutation,
-	// couponSvc.AssignToCustomer for the per-customer attach, and
-	// auditLogger for the cohort summary + per-target entries. Mounted at
-	// /v1/admin/bulk_actions below.
-	bulkActionStore := bulkaction.NewPostgresStore(db)
-	bulkActionSvc := bulkaction.NewService(
-		bulkActionStore,
-		customerStore,
-		subStore,
-		&bulkActionSubCancellerAdapter{svc: subSvc},
-		&bulkActionCouponAssignerAdapter{svc: couponSvc},
-		auditLogger,
-	)
-	bulkActionH := bulkaction.NewHandler(bulkActionSvc)
 
 	// Billing alerts: operator-defined spend/usage thresholds with a
 	// background evaluator that fires `billing.alert.triggered` via the
@@ -655,7 +735,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// the portal. Writes to payment_methods (multi-row) and keeps the
 	// 1:1 customer_payment_setups summary in sync via Service.syncSummary.
 	paymentMethodsStore := paymentmethods.NewPostgresStore(db)
-	paymentMethodsStripe := paymentmethods.NewStripeAdapter(stripeClients, customerStore)
+	// paymentMethodsStripe was constructed earlier (next to the
+	// hosted-invoice adapter wiring) so it could double as the
+	// Stripe-customer ensurer there.
 	paymentMethodsSvc := paymentmethods.NewService(paymentMethodsStore, paymentMethodsStripe, customerStore)
 	paymentMethodsH := paymentmethods.NewHandler(paymentMethodsSvc)
 
@@ -970,16 +1052,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// invoice ID. See docs/design-create-preview.md.
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/invoices/create_preview", createPreviewH.Routes())
 		r.With(auth.RequireMethod(auth.PermInvoiceRead, auth.PermInvoiceWrite)).Mount("/invoices", invoiceH.Routes())
-		// Plan migration tool — operator-only bulk plan swap. Both preview
-		// and commit are write-grade (cohort can be sensitive even when no
-		// DB mutation occurs), so PermSubscriptionWrite gates the whole
-		// subtree. See internal/planmigration.
-		r.With(auth.Require(auth.PermSubscriptionWrite)).Mount("/admin/plan_migrations", planMigrationH.Routes())
-		// Bulk operations (Week 7) — operator-initiated cohort actions
-		// (apply coupon, schedule cancel). Same write-grade auth posture
-		// as plan migrations: cohort selection is sensitive even when no
-		// DB mutation lands. See internal/bulkaction.
-		r.With(auth.Require(auth.PermSubscriptionWrite)).Mount("/admin/bulk_actions", bulkActionH.Routes())
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/credit-notes", creditNoteH.Routes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/price-overrides", pricingH.OverrideRoutes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/coupons", couponH.Routes())
@@ -1154,30 +1226,3 @@ func requestLogger(next http.Handler) http.Handler {
 	})
 }
 
-// bulkActionSubCancellerAdapter narrows subscription.Service to the single
-// ScheduleCancel call bulkaction.Service consumes. Keeps the bulkaction
-// package free of subscription-handler imports.
-type bulkActionSubCancellerAdapter struct {
-	svc *subscription.Service
-}
-
-func (a *bulkActionSubCancellerAdapter) ScheduleCancel(ctx context.Context, tenantID, id string, input subscription.ScheduleCancelInput) (domain.Subscription, error) {
-	return a.svc.ScheduleCancel(ctx, tenantID, id, input)
-}
-
-// bulkActionCouponAssignerAdapter narrows coupon.Service to the single
-// AssignToCustomer call bulkaction.Service consumes. Translates the
-// bulkaction-local CouponAssignInput shape into coupon.AssignInput so
-// the bulkaction package doesn't import its sibling.
-type bulkActionCouponAssignerAdapter struct {
-	svc *coupon.Service
-}
-
-func (a *bulkActionCouponAssignerAdapter) AssignToCustomer(ctx context.Context, tenantID string, input bulkaction.CouponAssignInput) error {
-	_, err := a.svc.AssignToCustomer(ctx, tenantID, coupon.AssignInput{
-		Code:           input.Code,
-		CustomerID:     input.CustomerID,
-		IdempotencyKey: input.IdempotencyKey,
-	})
-	return err
-}

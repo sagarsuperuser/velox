@@ -234,7 +234,7 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (do
 		return domain.User{}, nil, err
 	}
 
-	now := s.clock.Now()
+	now := s.clock.Now(ctx)
 	if u.LockedUntil != nil && u.LockedUntil.After(now) {
 		return domain.User{}, nil, ErrAccountLocked
 	}
@@ -296,7 +296,7 @@ func (s *Service) RecordFailedAttempt(ctx context.Context, email string) {
 	// there's nothing to flip. Reset the counter either way so the
 	// next 15-minute window starts fresh after the lockout expires.
 	if u, err := s.store.GetByEmail(ctx, email); err == nil {
-		until := s.clock.Now().Add(LockoutDuration)
+		until := s.clock.Now(ctx).Add(LockoutDuration)
 		_ = s.store.Lock(ctx, u.ID, until)
 	}
 	_ = s.failures.Reset(ctx, email)
@@ -335,7 +335,7 @@ func (s *Service) IssueResetToken(ctx context.Context, email string) (plaintext,
 	if err != nil {
 		return "", "", err
 	}
-	expiresAt := s.clock.Now().Add(PasswordResetTokenTTL)
+	expiresAt := s.clock.Now(ctx).Add(PasswordResetTokenTTL)
 	if _, err := s.store.CreateResetToken(ctx, u.ID, hash, expiresAt); err != nil {
 		return "", "", err
 	}

@@ -68,6 +68,17 @@ func (m *memoryStore) List(_ context.Context, filter ListFilter) ([]domain.Custo
 	return result, len(result), nil
 }
 
+func (m *memoryStore) ListByTestClockID(_ context.Context, tenantID, clockID string) ([]domain.Customer, error) {
+	var result []domain.Customer
+	for _, c := range m.customers {
+		if c.TenantID != tenantID || c.TestClockID != clockID {
+			continue
+		}
+		result = append(result, c)
+	}
+	return result, nil
+}
+
 func (m *memoryStore) Update(_ context.Context, tenantID string, c domain.Customer) (domain.Customer, error) {
 	existing, ok := m.customers[c.ID]
 	if !ok || existing.TenantID != tenantID {
@@ -199,6 +210,62 @@ func TestCustomerService_Create(t *testing.T) {
 			t.Fatal("expected error for duplicate external_id")
 		}
 	})
+
+	t.Run("test_clock_id rejected when checker not wired (ADR-027)", func(t *testing.T) {
+		// New service — no checker. Defensive default: any
+		// test_clock_id gets rejected with a clear validation
+		// error. Production wires the real checker via router.
+		svc := NewService(newMemoryStore())
+		_, err := svc.Create(ctx, "tenant1", CreateInput{
+			ExternalID:  "cus_safety",
+			DisplayName: "Safety",
+			TestClockID: "vlx_tclk_anything",
+		})
+		if err == nil {
+			t.Fatal("expected error when test_clock_id is set but checker is unwired")
+		}
+	})
+
+	t.Run("test_clock_id rejected when clock not found (ADR-027)", func(t *testing.T) {
+		svc := NewService(newMemoryStore())
+		svc.SetTestClockChecker(stubClockChecker{exists: false})
+		_, err := svc.Create(ctx, "tenant1", CreateInput{
+			ExternalID:  "cus_404",
+			DisplayName: "Not found",
+			TestClockID: "vlx_tclk_nonexistent",
+		})
+		if err == nil {
+			t.Fatal("expected error when clock doesn't exist")
+		}
+	})
+
+	t.Run("test_clock_id accepted when clock exists (ADR-027)", func(t *testing.T) {
+		svc := NewService(newMemoryStore())
+		svc.SetTestClockChecker(stubClockChecker{exists: true})
+		c, err := svc.Create(ctx, "tenant1", CreateInput{
+			ExternalID:  "cus_pinned",
+			DisplayName: "Pinned",
+			TestClockID: "vlx_tclk_real",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.TestClockID != "vlx_tclk_real" {
+			t.Errorf("got test_clock_id %q, want %q", c.TestClockID, "vlx_tclk_real")
+		}
+	})
+}
+
+// stubClockChecker is a fixed-result implementation of TestClockChecker
+// for service-level unit tests. The real implementation lives in
+// internal/testclock/postgres.go.
+type stubClockChecker struct {
+	exists bool
+	err    error
+}
+
+func (s stubClockChecker) Exists(_ context.Context, _, _ string) (bool, error) {
+	return s.exists, s.err
 }
 
 func TestCustomerService_Get(t *testing.T) {

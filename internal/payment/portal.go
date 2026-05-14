@@ -91,8 +91,13 @@ func (h *PortalHandler) createUpdateSession(w http.ResponseWriter, r *http.Reque
 		},
 	})
 	if err != nil {
+		// Sanitize at the boundary (ADR-026): Stripe SDK errors include
+		// raw API request/response bodies; never leak to operator UI.
+		// The full error is logged with the request-ID for support.
+		slog.ErrorContext(r.Context(), "stripe checkout session create failed",
+			"customer_id", customerID, "error", err)
 		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
-			fmt.Sprintf("failed to create checkout session: %v", err))
+			"Could not start the payment update flow. Please retry; if the problem persists, contact support.")
 		return
 	}
 

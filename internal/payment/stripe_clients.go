@@ -84,3 +84,30 @@ func (c *StripeClients) For(ctx context.Context, tenantID string, livemode bool)
 func (c *StripeClients) Has() bool {
 	return c != nil && c.fetcher != nil
 }
+
+// HasFor reports whether THIS tenant has Stripe credentials stored for
+// the given mode. Used by callers that gate features on the
+// per-tenant connection state — e.g. tenant settings refusing to
+// accept tax_provider=stripe_tax until Stripe is actually connected.
+//
+// Distinct from Has(): Has() reflects "the system can look up keys";
+// HasFor reflects "this specific tenant has connected." A nil
+// receiver, missing fetcher, or ErrNotFound from the fetcher all
+// resolve to false. Other fetcher errors log and return false too —
+// gating features safely is more important than surfacing transient
+// fetch errors here, since the validation will simply re-run on the
+// operator's next save.
+func (c *StripeClients) HasFor(ctx context.Context, tenantID string, livemode bool) bool {
+	if c == nil || c.fetcher == nil || tenantID == "" {
+		return false
+	}
+	creds, err := c.fetcher.GetPlaintext(ctx, tenantID, livemode)
+	if err != nil {
+		if !errors.Is(err, errs.ErrNotFound) {
+			slog.ErrorContext(ctx, "stripe credential lookup failed",
+				"tenant_id", tenantID, "livemode", livemode, "error", err)
+		}
+		return false
+	}
+	return creds.SecretKey != ""
+}

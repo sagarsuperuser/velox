@@ -61,9 +61,16 @@ type Customer struct {
 	// Rotation is the only mutation and invalidates the previous URL.
 	// See internal/customer/cost_dashboard_token.go for the format
 	// (vlx_pcd_<64 hex> = 256 bits of entropy).
-	CostDashboardToken string    `json:"cost_dashboard_token,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	CostDashboardToken string `json:"cost_dashboard_token,omitempty"`
+	// TestClockID pins this customer to a test clock (Stripe parity,
+	// ADR-027). Once set at create time, every Subscription / Invoice
+	// for this customer runs on that clock's simulated time. Empty
+	// for live-mode customers and for test-mode customers explicitly
+	// not pinned. Cannot be changed after creation — to switch
+	// clocks, delete + recreate the customer (matches Stripe).
+	TestClockID string    `json:"test_clock_id,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type BillingProfileStatus string

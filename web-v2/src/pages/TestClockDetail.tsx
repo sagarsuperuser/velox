@@ -20,7 +20,8 @@ import {
 } from '@/components/ui/alert-dialog'
 import { useAuth } from '@/contexts/AuthContext'
 import { ApiError } from '@/lib/api'
-import { ChevronLeft, FastForward, Loader2, Trash2, AlertTriangle, Clock as ClockIcon } from 'lucide-react'
+import { ChevronLeft, FastForward, Loader2, Trash2, AlertTriangle, Clock as ClockIcon, Users } from 'lucide-react'
+import { EmptyState } from '@/components/EmptyState'
 
 function StatusBadge({ status }: { status: TestClock['status'] }) {
   switch (status) {
@@ -67,8 +68,19 @@ export default function TestClockDetailPage() {
     enabled: !!id && !!user && !user.livemode,
   })
 
+  // ADR-027: customer-level attach. Detail page mirrors Stripe's
+  // "attached customers" surface — operators primarily think in
+  // customers (a simulation is a customer's simulated timeline),
+  // not subs. Subs remain visible below for drill-down.
+  const customersQ = useQuery({
+    queryKey: ['test-clocks', id, 'customers'],
+    queryFn: () => api.listAttachedCustomers(id!),
+    enabled: !!id && !!user && !user.livemode,
+  })
+
   const clock = clockQ.data
   const subs = subsQ.data?.data ?? []
+  const attachedCustomers = customersQ.data?.data ?? []
 
   const handleRetryAdvance = async () => {
     if (!id) return
@@ -220,7 +232,48 @@ export default function TestClockDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Subscriptions on this clock */}
+      {/* Attached customers — Stripe-parity primary surface for a
+          test clock detail page (ADR-027 Tier 3). Subs are listed
+          below for drill-down. */}
+      <div className="mt-8">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-foreground">Attached customers</h2>
+          <p className="text-xs text-muted-foreground">{attachedCustomers.length} pinned</p>
+        </div>
+        {customersQ.isLoading ? (
+          <Card><CardContent className="p-8 text-center text-sm text-muted-foreground">Loading…</CardContent></Card>
+        ) : attachedCustomers.length === 0 ? (
+          <EmptyState
+            icon={Users}
+            title="No customers attached"
+            description="Customers attached to this clock have all their billing — invoices, dunning, trial expirations — run on the clock's simulated time. Attach one from the Customers page when creating a new customer."
+            action={{
+              label: 'Go to Customers',
+              to: '/customers',
+            }}
+          />
+        ) : (
+          <div className="space-y-2">
+            {attachedCustomers.map(c => (
+              <Link key={c.id} to={`/customers/${c.id}`}>
+                <Card className="hover:bg-accent/30 transition-colors">
+                  <CardContent className="px-6 py-3 flex items-center gap-4">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-foreground truncate">{c.display_name}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5 font-mono">{c.id}</p>
+                    </div>
+                    <Badge variant="outline">{c.status}</Badge>
+                  </CardContent>
+                </Card>
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Subscriptions on this clock — drill-down view; same data
+          as the customers list but at sub granularity for operators
+          tracking specific billing cycles. */}
       <div className="mt-8">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold text-foreground">Subscriptions on this clock</h2>
@@ -231,12 +284,7 @@ export default function TestClockDetailPage() {
         ) : subs.length === 0 ? (
           <Card>
             <CardContent className="p-8 text-center">
-              <p className="text-sm text-muted-foreground mb-1">No subscriptions pinned yet.</p>
-              <p className="text-xs text-muted-foreground">
-                Create one via API:&nbsp;
-                <code className="font-mono text-foreground">POST /v1/subscriptions</code>&nbsp;
-                with <code className="font-mono text-foreground">test_clock_id="{clock.id}"</code>.
-              </p>
+              <p className="text-sm text-muted-foreground">No subscriptions yet — create one for an attached customer above.</p>
             </CardContent>
           </Card>
         ) : (
@@ -276,14 +324,18 @@ export default function TestClockDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete test clock?</AlertDialogTitle>
             <AlertDialogDescription>
-              {subs.length > 0 ? (
+              {attachedCustomers.length > 0 || subs.length > 0 ? (
                 <>
-                  This removes the clock and cancels {subs.length === 1 ? 'its 1 pinned subscription' : `its ${subs.length} pinned subscriptions`}.
+                  This removes the clock and cancels every active subscription it drives
+                  ({subs.length === 1 ? '1 subscription' : `${subs.length} subscriptions`}
+                  {attachedCustomers.length > 0 && (
+                    <> across {attachedCustomers.length === 1 ? '1 customer' : `${attachedCustomers.length} customers`}</>
+                  )}).
                   Generated invoices and other downstream data stay in place.
                 </>
               ) : (
                 <>
-                  This removes the clock. No subscriptions are pinned to it; nothing else changes.
+                  This removes the clock. No customers or subscriptions are pinned to it; nothing else changes.
                 </>
               )}
             </AlertDialogDescription>
@@ -354,9 +406,21 @@ function AdvanceClockDialog({
     return fromZonedTime(`${datePart}T${timePart}:00`, tz).toISOString()
   }, [datePart, timePart, tz])
 
-  // Soft warning when the jump exceeds typical sub interval — Stripe caps
-  // this hard, we just nudge.
-  const overlongWarning = subs.length > 0 && targetIso !== null && (() => {
+  // Stripe-parity hard cap: a single advance call moves the clock by at
+  // most 1 year (ADR-028 amendment). Server enforces this too — UI
+  // surfaces it early so the operator gets immediate feedback rather
+  // than a 422 after submit. Year-arithmetic, not 365 days, so leap
+  // years cross cleanly.
+  const maxAllowed = useMemo(() => {
+    const d = new Date(clock.frozen_time)
+    d.setFullYear(d.getFullYear() + 1)
+    return d
+  }, [clock.frozen_time])
+  const exceedsMaxWindow = targetIso !== null && new Date(targetIso) > maxAllowed
+
+  // Soft hint — surfaced when the jump is large but still inside the
+  // +1y cap. Reminds the operator catchup will close many cycles.
+  const overlongWarning = subs.length > 0 && targetIso !== null && !exceedsMaxWindow && (() => {
     const jumpMs = new Date(targetIso).getTime() - new Date(clock.frozen_time).getTime()
     return jumpMs > 31 * 24 * 60 * 60 * 1000
   })()
@@ -368,6 +432,10 @@ function AdvanceClockDialog({
     }
     if (new Date(targetIso) <= new Date(clock.frozen_time)) {
       toast.error('Target time must be after the current clock time')
+      return
+    }
+    if (exceedsMaxWindow) {
+      toast.error('Advance cannot exceed 1 year per call — chunk longer ranges into successive advances')
       return
     }
     setSubmitting(true)
@@ -424,9 +492,12 @@ function AdvanceClockDialog({
                 minDate={new Date(clock.frozen_time)}
               />
             </div>
-            <p className="text-xs text-muted-foreground mt-1.5">Times in tenant timezone ({tz}). Must be after the current clock time — clocks cannot be rewound.</p>
+            <p className="text-xs text-muted-foreground mt-1.5">Times in tenant timezone ({tz}). Each advance moves the clock forward by up to 1 year — chunk longer simulations into successive advances.</p>
             {targetIso !== null && new Date(targetIso) <= new Date(clock.frozen_time) && (
               <p className="text-xs text-destructive mt-1">Target time must be after the current clock time.</p>
+            )}
+            {exceedsMaxWindow && (
+              <p className="text-xs text-destructive mt-1">Target exceeds the 1-year per-advance limit. Pick a date on or before <span className="font-mono">{formatDateTime(maxAllowed.toISOString())}</span>, then advance again.</p>
             )}
           </div>
 
@@ -442,7 +513,7 @@ function AdvanceClockDialog({
           <Button variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>
           <Button
             onClick={handleSubmit}
-            disabled={submitting || targetIso === null || new Date(targetIso) <= new Date(clock.frozen_time)}
+            disabled={submitting || targetIso === null || new Date(targetIso) <= new Date(clock.frozen_time) || exceedsMaxWindow}
           >
             {submitting ? <><Loader2 size={14} className="animate-spin mr-2" />Advancing…</> : 'Advance clock'}
           </Button>

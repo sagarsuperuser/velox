@@ -27,7 +27,7 @@ import (
 // fail with a stale-status error.
 func TestCancelAtomic_OneWinnerUnderContention(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	store := subscription.NewPostgresStore(db)
 	svc := subscription.NewService(store, nil)
@@ -79,7 +79,7 @@ func TestCancelAtomic_OneWinnerUnderContention(t *testing.T) {
 // (now "paused") status in a conflict error rather than silently succeeding.
 func TestPauseAtomic_OneWinnerUnderContention(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	store := subscription.NewPostgresStore(db)
 	svc := subscription.NewService(store, nil)
@@ -127,7 +127,7 @@ func TestPauseAtomic_OneWinnerUnderContention(t *testing.T) {
 // current status so operators can debug without re-fetching.
 func TestTransitionAtomic_NotFoundVsWrongState(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	store := subscription.NewPostgresStore(db)
 	svc := subscription.NewService(store, nil)
@@ -172,7 +172,7 @@ func TestTransitionAtomic_NotFoundVsWrongState(t *testing.T) {
 // phantom failure even though the change landed.
 func TestApplyItemPlanImmediately_RaceConverges(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	store := subscription.NewPostgresStore(db)
 	tenantID := testutil.CreateTestTenant(t, db, "Plan Change Race")
@@ -265,7 +265,7 @@ func TestApplyItemPlanImmediately_RaceConverges(t *testing.T) {
 // change.
 func TestApplyItemPlanImmediately_SupersedesPendingUnderRace(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	store := subscription.NewPostgresStore(db)
 	tenantID := testutil.CreateTestTenant(t, db, "Plan Change Supersede")
@@ -373,7 +373,7 @@ func TestApplyItemPlanImmediately_SupersedesPendingUnderRace(t *testing.T) {
 // and returns an active subscription's ID ready for state-transition testing.
 func seedActiveSubscription(t *testing.T, db *postgres.DB, tenantID, custExt, planCode, subCode string) string {
 	t.Helper()
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	cust, err := customer.NewPostgresStore(db).Create(ctx, tenantID, domain.Customer{
 		ExternalID: custExt, DisplayName: "Transition Tester",
@@ -416,7 +416,7 @@ func seedActiveSubscription(t *testing.T, db *postgres.DB, tenantID, custExt, pl
 // to detect concurrent immediate-cancel races and treat them as no-ops.
 func TestScheduleAndFireCancellation_Roundtrip(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	store := subscription.NewPostgresStore(db)
 	tenantID := testutil.CreateTestTenant(t, db, "Sub Schedule Cancel")
@@ -492,7 +492,7 @@ func TestScheduleAndFireCancellation_Roundtrip(t *testing.T) {
 // idempotent, and (5) Set on a canceled sub is rejected.
 func TestPauseCollection_Roundtrip(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	store := subscription.NewPostgresStore(db)
 	tenantID := testutil.CreateTestTenant(t, db, "Sub Pause Collection")

@@ -19,7 +19,7 @@ import (
 // exists in email_outbox. No dispatcher involvement.
 func TestEmailOutbox_EnqueueStandalone_Persists(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Email Outbox Enqueue")
@@ -56,7 +56,7 @@ func TestEmailOutbox_EnqueueStandalone_Persists(t *testing.T) {
 // producers enqueue in the same tx as their business-op state change.
 func TestEmailOutbox_Enqueue_TxAtomicity(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Email Outbox Tx")
@@ -101,7 +101,7 @@ func TestEmailOutbox_Enqueue_TxAtomicity(t *testing.T) {
 // nil, row transitions to 'dispatched', attempts=1, dispatched_at populated.
 func TestEmailOutbox_ProcessBatch_Success(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Email Outbox Success")
@@ -143,7 +143,7 @@ func TestEmailOutbox_ProcessBatch_Success(t *testing.T) {
 // subsequent immediate ProcessBatch MUST NOT re-claim the row.
 func TestEmailOutbox_ProcessBatch_RetryBackoff(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Email Outbox Retry")
@@ -197,7 +197,7 @@ func TestEmailOutbox_ProcessBatch_RetryBackoff(t *testing.T) {
 // batches — the dead-letter-queue contract.
 func TestEmailOutbox_ProcessBatch_DLQ(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Email Outbox DLQ")
@@ -256,7 +256,7 @@ func TestEmailOutbox_ProcessBatch_DLQ(t *testing.T) {
 // relies on when VELOX_EMAIL_OUTBOX_ENABLED is true.
 func TestEmailOutbox_OutboxSender_RoundTrip(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Email Outbox RoundTrip")
@@ -304,7 +304,7 @@ func TestEmailOutbox_OutboxSender_RoundTrip(t *testing.T) {
 // TestEmailOutbox_Counts verifies PendingCount and FailedCount.
 func TestEmailOutbox_Counts(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Email Outbox Counts")
@@ -393,9 +393,9 @@ func (f *fakeDeliverer) SendPaymentFailed(_ context.Context, tenantID, to, name,
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendPaymentUpdateRequest(_ context.Context, tenantID, to, name, inv string, amount int64, cur, url string) error {
+func (f *fakeDeliverer) SendPaymentSetupRequest(_ context.Context, tenantID, to, name, inv string, amount int64, cur, url string) error {
 	f.calls++
-	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypePaymentUpdateRequest, tenantID, to, name, inv
+	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypePaymentSetupRequest, tenantID, to, name, inv
 	f.lastAmount, f.lastCurrency, f.lastUpdateURL = amount, cur, url
 	return nil
 }
@@ -458,8 +458,8 @@ func callDeliverer(ctx context.Context, d email.EmailDeliverer, row email.Outbox
 		return d.SendDunningEscalation(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Action, m.PublicToken)
 	case email.TypePaymentFailed:
 		return d.SendPaymentFailed(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Reason, m.PublicToken)
-	case email.TypePaymentUpdateRequest:
-		return d.SendPaymentUpdateRequest(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.UpdateURL)
+	case email.TypePaymentSetupRequest:
+		return d.SendPaymentSetupRequest(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.UpdateURL)
 	case email.TypePortalMagicLink:
 		return d.SendPortalMagicLink(ctx, row.TenantID, m.To, m.CustomerName, m.MagicLinkURL)
 	default:
@@ -469,7 +469,7 @@ func callDeliverer(ctx context.Context, d email.EmailDeliverer, row email.Outbox
 
 func readEmailOutbox(t *testing.T, db *postgres.DB, id string) (status string, attempts int, payload map[string]any) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 5*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -493,7 +493,7 @@ func readEmailOutbox(t *testing.T, db *postgres.DB, id string) (status string, a
 
 func readEmailOutboxRetry(t *testing.T, db *postgres.DB, id string) (lastErr string, nextAt time.Time) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 5*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -514,7 +514,7 @@ func readEmailOutboxRetry(t *testing.T, db *postgres.DB, id string) (lastErr str
 
 func emailOutboxExists(t *testing.T, db *postgres.DB, id string) bool {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 5*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -534,7 +534,7 @@ func emailOutboxExists(t *testing.T, db *postgres.DB, id string) bool {
 // tick claims the row immediately — used by DLQ/retry tests to exercise many
 // attempts within a single run without waiting out real backoff.
 func resetEmailDue(db *postgres.DB, id string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 5*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {

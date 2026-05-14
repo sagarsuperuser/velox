@@ -63,6 +63,10 @@ func (a *invoiceWriterAdapter) ListAutoChargePending(ctx context.Context, limit 
 	return a.store.ListAutoChargePending(ctx, limit)
 }
 
+func (a *invoiceWriterAdapter) ListAutoChargePendingForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Invoice, error) {
+	return a.store.ListAutoChargePendingForClock(ctx, tenantID, clockID, limit)
+}
+
 func (a *invoiceWriterAdapter) SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error {
 	return a.store.SetTaxTransaction(ctx, tenantID, id, taxTransactionID)
 }
@@ -334,15 +338,23 @@ func (a *invoiceEmailEventsAdapter) ListByInvoice(ctx context.Context, tenantID,
 	return out, nil
 }
 
-// noPaymentMethodNotifierAdapter bridges payment.EmailPaymentUpdate
-// (the existing payment-update-request email surface used on charge
-// failures) into billing.NoPaymentMethodNotifier so the engine can
-// dispatch the same email at finalize when the customer has no PM
-// ready. Mirrors the path payment.Stripe takes on charge failure
-// (stripe.go:522): resolve customer email, build a payment-update
-// URL, enqueue via the outbox sender. ADR-013.
+// paymentSetupEmailSender is the narrow interface noPaymentMethodNotifierAdapter
+// needs from email/. Defined here (consumer-side) so the email package
+// doesn't bleed an interface name into the api/payment dep graph.
+// Satisfied by both *email.Sender and *email.OutboxSender.
+type paymentSetupEmailSender interface {
+	SendPaymentSetupRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
+}
+
+// noPaymentMethodNotifierAdapter bridges email.SendPaymentSetupRequest
+// into billing.NoPaymentMethodNotifier so the engine can dispatch a
+// "set up your payment method" email at finalize when the customer
+// has no PM ready. Distinct from the post-decline path
+// (Stripe.handlePaymentFailed) which points the customer at the
+// hosted invoice URL — this email mints a single-use token for the
+// /update-payment SPA route. ADR-013, ADR-023.
 type noPaymentMethodNotifierAdapter struct {
-	email            payment.EmailPaymentUpdate
+	email            paymentSetupEmailSender
 	customerEmail    *customerEmailFetcherAdapter
 	paymentUpdateURL string
 	tokenSvc         *payment.TokenService
@@ -370,7 +382,7 @@ func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Conte
 		return fmt.Errorf("create payment update token: %w", err)
 	}
 	updateURL := fmt.Sprintf("%s?token=%s", a.paymentUpdateURL, rawToken)
-	return a.email.SendPaymentUpdateRequest(ctx, tenantID, to, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL)
+	return a.email.SendPaymentSetupRequest(ctx, tenantID, to, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL)
 }
 
 // prorationCreditGranterAdapter bridges credit.Service → subscription.ProrationCreditGranter.
@@ -500,6 +512,14 @@ func (a *bounceReporterAdapter) ReportBounce(ctx context.Context, tenantID, emai
 	}
 }
 
+// stripeCustomerEnsurer resolves-or-creates the Stripe customer for a
+// Velox customer + persists the mapping. Satisfied by
+// *paymentmethods.StripeAdapter — kept as a one-method interface here
+// so api/adapters.go doesn't need to import paymentmethods directly.
+type stripeCustomerEnsurer interface {
+	EnsureStripeCustomer(ctx context.Context, tenantID, customerID string) (string, error)
+}
+
 // hostedInvoiceStripeAdapter bridges *payment.StripeClients →
 // hostedinvoice.CheckoutSessionCreator. The caller is a public
 // unauthenticated request: livemode is read from the request ctx
@@ -514,8 +534,15 @@ func (a *bounceReporterAdapter) ReportBounce(ctx context.Context, tenantID, emai
 // payment-intent webhook path can route successful charges to
 // Invoice.RecordPayment via invoice_id lookup, instead of mis-identifying
 // these as subscription-billing charges.
+//
+// `ensurer` resolves or mints the Stripe customer so the Checkout
+// session can attach the saved card to it; without `customer` +
+// `setup_future_usage=off_session` Stripe takes the card but never
+// links it to the Velox customer's Stripe customer record, so the
+// "save card" tick on the hosted page would be a no-op.
 type hostedInvoiceStripeAdapter struct {
 	clients *payment.StripeClients
+	ensurer stripeCustomerEnsurer
 }
 
 func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
@@ -534,6 +561,13 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 	if sc == nil {
 		return "", fmt.Errorf("stripe not configured for mode livemode=%v", livemode)
 	}
+	if a.ensurer == nil {
+		return "", fmt.Errorf("hosted invoice: Stripe customer ensurer not wired")
+	}
+	stripeCustomerID, err := a.ensurer.EnsureStripeCustomer(ctx, tenantID, inv.CustomerID)
+	if err != nil {
+		return "", fmt.Errorf("ensure stripe customer: %w", err)
+	}
 	currency := strings.ToLower(inv.Currency)
 	productName := "Invoice " + inv.InvoiceNumber
 	// Duplicate the metadata on BOTH the session and the PaymentIntent.
@@ -550,8 +584,16 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 		"velox_customer_id": inv.CustomerID,
 		"velox_purpose":     "hosted_invoice_pay",
 	}
+	// `customer` + `setup_future_usage=off_session` is the canonical
+	// Stripe pattern for "charge now, save the card for auto-charge of
+	// future invoices" (https://docs.stripe.com/payments/save-during-payment).
+	// Without `customer`, Stripe creates a guest checkout and the
+	// PaymentMethod is never attached to anything. Without
+	// `setup_future_usage`, the card is consumed by the one-shot PI and
+	// detached. Both are required for dunning auto-retry to work.
 	sess, err := sc.V1CheckoutSessions.Create(ctx, &stripe.CheckoutSessionCreateParams{
-		Mode: stripe.String(string(stripe.CheckoutSessionModePayment)),
+		Customer: stripe.String(stripeCustomerID),
+		Mode:     stripe.String(string(stripe.CheckoutSessionModePayment)),
 		LineItems: []*stripe.CheckoutSessionCreateLineItemParams{
 			{
 				Quantity: stripe.Int64(1),
@@ -568,8 +610,9 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 		SuccessURL:         stripe.String(successURL),
 		CancelURL:          stripe.String(cancelURL),
 		PaymentIntentData: &stripe.CheckoutSessionCreatePaymentIntentDataParams{
-			Metadata:    meta,
-			Description: stripe.String(productName),
+			Metadata:         meta,
+			Description:      stripe.String(productName),
+			SetupFutureUsage: stripe.String("off_session"),
 		},
 		Params: stripe.Params{
 			Metadata: meta,

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -59,7 +60,11 @@ func MiddlewareOrAPIKey(sessSvc *Service, keySvc *auth.Service) func(http.Handle
 			}
 			key, err := keySvc.ValidateKey(r.Context(), rawKey)
 			if err != nil {
-				respond.Unauthorized(w, r, err.Error())
+				// Generic — never reveal whether key exists/expired/
+				// revoked or whether a DB lookup failed. ADR-026.
+				slog.WarnContext(r.Context(), "api key validation failed",
+					"error", err)
+				respond.Unauthorized(w, r, "invalid or expired API key")
 				return
 			}
 			ctx := r.Context()

@@ -7,13 +7,14 @@ import (
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
 
 func TestPostgresStore_CreateAndGet(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := customer.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 	tenantID := testutil.CreateTestTenant(t, db, "Test Tenant")
 
 	created, err := store.Create(ctx, tenantID, domain.Customer{
@@ -46,7 +47,7 @@ func TestPostgresStore_CreateAndGet(t *testing.T) {
 func TestPostgresStore_UniqueExternalID(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := customer.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 	tenantID := testutil.CreateTestTenant(t, db, "Test")
 
 	_, _ = store.Create(ctx, tenantID, domain.Customer{ExternalID: "dup", DisplayName: "First"})
@@ -60,7 +61,7 @@ func TestPostgresStore_UniqueExternalID(t *testing.T) {
 func TestPostgresStore_RLSIsolation(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := customer.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	tenant1 := testutil.CreateTestTenant(t, db, "Tenant 1")
 	tenant2 := testutil.CreateTestTenant(t, db, "Tenant 2")
@@ -93,7 +94,7 @@ func TestPostgresStore_RLSIsolation(t *testing.T) {
 func TestPostgresStore_ListWithFilters(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := customer.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 	tenantID := testutil.CreateTestTenant(t, db, "Test")
 
 	_, _ = store.Create(ctx, tenantID, domain.Customer{ExternalID: "a", DisplayName: "Alpha"})
@@ -134,7 +135,7 @@ func TestPostgresStore_ListWithFilters(t *testing.T) {
 func TestPostgresStore_BillingProfile(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := customer.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 	tenantID := testutil.CreateTestTenant(t, db, "Test")
 
 	cust, _ := store.Create(ctx, tenantID, domain.Customer{ExternalID: "bp_test", DisplayName: "BP"})
@@ -185,7 +186,7 @@ func TestPostgresStore_BillingProfile(t *testing.T) {
 func TestPostgresStore_Update(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := customer.NewPostgresStore(db)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 	tenantID := testutil.CreateTestTenant(t, db, "Test")
 
 	cust, _ := store.Create(ctx, tenantID, domain.Customer{ExternalID: "upd", DisplayName: "Original"})

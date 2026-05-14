@@ -17,7 +17,7 @@ import (
 // isNew=false for the duplicates — with no errors on any caller.
 func TestWebhookStore_ConcurrentIngestDedup(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	tenantID := testutil.CreateTestTenant(t, db, "Webhook Dedup Corp")
 	store := NewPostgresWebhookStore(db)

@@ -20,7 +20,7 @@ func TestPostgresStore_Record(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	tenantID := testutil.CreateTestTenant(t, db, "Tax Store Record")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 10*time.Second)
 	defer cancel()
 
 	store := tax.NewPostgresStore(db)
@@ -107,7 +107,7 @@ func TestPostgresStore_Record_TenantIsolation(t *testing.T) {
 	tenantA := testutil.CreateTestTenant(t, db, "Tenant A")
 	tenantB := testutil.CreateTestTenant(t, db, "Tenant B")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 10*time.Second)
 	defer cancel()
 
 	store := tax.NewPostgresStore(db)

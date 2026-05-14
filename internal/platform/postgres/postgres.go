@@ -142,12 +142,27 @@ func (db *DB) BeginTx(ctx context.Context, mode TxMode, tenantID string) (*sql.T
 
 	switch mode {
 	case TxTenant:
-		// Diagnostic: every TxTenant must carry an explicit livemode. The
-		// runtime still falls back to live, but under VELOX_LIVEMODE_STRICT
-		// a missing propagation panics so tests surface the bug immediately.
+		// Every TxTenant MUST carry an explicit livemode. Silent default-
+		// to-live is exactly the no-silent-fallbacks rule's failure mode —
+		// a forgotten propagation in test-mode code would route the
+		// operation against live data and corrupt accounting.
+		//
+		// Test-mode escalation: under VELOX_LIVEMODE_STRICT (set by
+		// `make test*`) a missing propagation panics, so any new code
+		// without a WithLivemode wrap fails the suite at PR time.
+		//
+		// Production: refuse to open the transaction. The handler bubbles
+		// the error up as a 500 — loud and immediately visible to the
+		// operator, never silently corrupting data. The Makefile-strict
+		// test gate is what keeps this safe; the audit on 2026-05-07
+		// fixed every known site, so a regression here means a NEW
+		// missed propagation that bypassed tests.
+		//
 		// skip=3: runtime.Caller → reportUnsetLivemode → BeginTx → caller.
 		if !livemodeSet(ctx) {
 			reportUnsetLivemode(3)
+			_ = tx.Rollback()
+			return nil, fmt.Errorf("postgres: TxTenant opened without ctx livemode (set postgres.WithLivemode at the entry point)")
 		}
 		if _, err := tx.ExecContext(ctx, `SELECT set_config('app.bypass_rls', 'off', true)`); err != nil {
 			_ = tx.Rollback()

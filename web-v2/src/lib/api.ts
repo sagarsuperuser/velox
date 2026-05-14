@@ -99,7 +99,7 @@ export const api = {
     apiRequest<{ data: Customer[]; total: number }>('GET', `/customers${params ? '?' + params : ''}`),
   getCustomer: (id: string) =>
     apiRequest<Customer>('GET', `/customers/${id}`),
-  createCustomer: (data: { external_id: string; display_name: string; email?: string }) =>
+  createCustomer: (data: { external_id: string; display_name: string; email?: string; test_clock_id?: string }) =>
     apiRequest<Customer>('POST', '/customers', data),
 
   // Subscriptions
@@ -194,7 +194,7 @@ export const api = {
     apiRequest<{ events: TimelineEvent[] }>('GET', `/subscriptions/${subscriptionId}/timeline`),
 
   // Payment setup
-  setupPayment: (data: { customer_id: string; customer_name: string; email: string; address_line1?: string; address_city?: string; address_state?: string; address_postal_code?: string; address_country?: string }) =>
+  setupPayment: (data: { customer_id: string; customer_name: string; email: string; address_line1?: string; address_city?: string; address_state?: string; address_postal_code?: string; address_country?: string; return_url?: string }) =>
     apiRequest<{ session_id: string; url: string; stripe_customer_id: string }>('POST', '/checkout/setup', data),
   getPaymentStatus: (customerId: string) =>
     apiRequest<PaymentSetup>('GET', `/checkout/status/${customerId}`),
@@ -208,11 +208,13 @@ export const api = {
     apiRequest<CreditLedgerEntry>('POST', '/credits/grant', data),
   adjustCredits: (data: { customer_id: string; amount_cents: number; description: string }) =>
     apiRequest<CreditLedgerEntry>('POST', '/credits/adjust', data),
-  listLedger: (customerId: string, params?: { entry_type?: string; limit?: number; offset?: number }) => {
+  listLedger: (customerId: string, params?: { entry_type?: string; limit?: number; offset?: number; sort?: string; dir?: string }) => {
     const qs = new URLSearchParams()
     if (params?.entry_type) qs.set('entry_type', params.entry_type)
     if (params?.limit) qs.set('limit', String(params.limit))
     if (params?.offset) qs.set('offset', String(params.offset))
+    if (params?.sort) qs.set('sort', params.sort)
+    if (params?.dir) qs.set('dir', params.dir)
     const q = qs.toString()
     return apiRequest<{ data: CreditLedgerEntry[] }>('GET', `/credits/ledger/${customerId}${q ? '?' + q : ''}`)
   },
@@ -435,6 +437,8 @@ export const api = {
     apiRequest<TestClock>('POST', `/test-clocks/${id}/retry-advance`),
   deleteTestClock: (id: string) =>
     apiRequest<{ status: string }>('DELETE', `/test-clocks/${id}`),
+  listAttachedCustomers: (id: string) =>
+    apiRequest<{ data: Customer[] }>('GET', `/test-clocks/${id}/customers`),
   listSubscriptionsOnClock: (id: string) =>
     apiRequest<{ data: Subscription[] }>('GET', `/test-clocks/${id}/subscriptions`),
 
@@ -483,63 +487,6 @@ export const api = {
   archiveBillingAlert: (id: string) =>
     apiRequest<BillingAlert>('POST', `/billing/alerts/${id}/archive`),
 
-  // Plan migrations — operator-initiated bulk plan swaps. preview is a
-  // read-only dry-run; commit applies the swap and emits one cohort audit
-  // entry plus per-customer subscription.plan_changed entries.
-  previewPlanMigration: (data: PlanMigrationPreviewRequest) =>
-    apiRequest<PlanMigrationPreviewResponse>('POST', '/admin/plan_migrations/preview', data),
-  commitPlanMigration: (data: PlanMigrationCommitRequest) =>
-    apiRequest<PlanMigrationCommitResponse>('POST', '/admin/plan_migrations/commit', data),
-  listPlanMigrations: (params?: { limit?: number; cursor?: string }) => {
-    const qs = new URLSearchParams()
-    if (params?.limit) qs.set('limit', String(params.limit))
-    if (params?.cursor) qs.set('cursor', params.cursor)
-    const q = qs.toString()
-    return apiRequest<PlanMigrationListResponse>('GET', `/admin/plan_migrations${q ? '?' + q : ''}`)
-  },
-  // Detail lookup: the server doesn't expose GET /admin/plan_migrations/{id}
-  // (the list endpoint is the only read surface), so we walk pages of the
-  // list until we find the row. Migrations are infrequent operator events,
-  // so the typical hit is page 1; the cap (5 pages × 100 rows) is a defence
-  // against an attempt to fetch a deleted/unknown id rather than a real
-  // performance constraint. Returns null when not found.
-  getPlanMigration: async (id: string): Promise<PlanMigrationListItem | null> => {
-    let cursor: string | undefined = undefined
-    for (let i = 0; i < 5; i++) {
-      const res: PlanMigrationListResponse = await apiRequest<PlanMigrationListResponse>(
-        'GET',
-        `/admin/plan_migrations?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
-      )
-      const hit = (res.migrations ?? []).find((m) => m.migration_id === id)
-      if (hit) return hit
-      if (!res.next_cursor) return null
-      cursor = res.next_cursor
-    }
-    return null
-  },
-
-  // Bulk operations (Week 7) — operator-initiated cohort actions across
-  // many customers. Both apply_coupon and schedule_cancel commit
-  // synchronously and return per-target success/failure counts. v1
-  // surfaces apply_coupon + schedule_cancel only; the wire shape is
-  // open-ended so future action types extend without breaking clients.
-  bulkActions: {
-    applyCoupon: (data: BulkActionApplyCouponRequest) =>
-      apiRequest<BulkActionCommitResponse>('POST', '/admin/bulk_actions/apply_coupon', data),
-    scheduleCancel: (data: BulkActionScheduleCancelRequest) =>
-      apiRequest<BulkActionCommitResponse>('POST', '/admin/bulk_actions/schedule_cancel', data),
-    list: (params?: { limit?: number; cursor?: string; status?: string; action_type?: string }) => {
-      const qs = new URLSearchParams()
-      if (params?.limit) qs.set('limit', String(params.limit))
-      if (params?.cursor) qs.set('cursor', params.cursor)
-      if (params?.status) qs.set('status', params.status)
-      if (params?.action_type) qs.set('action_type', params.action_type)
-      const q = qs.toString()
-      return apiRequest<BulkActionListResponse>('GET', `/admin/bulk_actions${q ? '?' + q : ''}`)
-    },
-    get: (id: string) =>
-      apiRequest<BulkActionDetail>('GET', `/admin/bulk_actions/${id}`),
-  },
 }
 
 // Types
@@ -555,6 +502,11 @@ export interface Customer {
   email_status?: 'unknown' | 'ok' | 'bounced' | 'complained'
   email_last_bounced_at?: string
   email_bounce_reason?: string
+  // Customer-level test-clock attach (ADR-027, Stripe parity). Set at
+  // create time only; once attached, every Subscription / Invoice for
+  // this customer runs on the clock's simulated time. Empty for
+  // live-mode customers and test-mode customers not pinned.
+  test_clock_id?: string
 }
 
 export interface SubscriptionItem {
@@ -682,6 +634,7 @@ export type AttentionAction =
   | 'charge_now'
   | 'send_reminder'
   | 'add_payment_method'
+  | 'update_payment_method'
   | 'connect_tax_provider'
 
 export interface AttentionActionItem {
@@ -701,8 +654,17 @@ export interface InvoiceAttention {
   // Dotted-path pointer at the field needing edit (Stripe parity).
   // E.g. "customer.address.postal_code" for tax_location_required.
   param?: string
-  // Raw provider payload — disclosed in collapsible detail.
+  // Velox's own classification context — operator-safe, our framing.
+  // Disclosed under "Detail" when present. Empty when the headline +
+  // typed code + actions cover everything an operator needs.
   detail?: string
+  // Raw upstream payload from a third-party provider (Stripe Tax JSON
+  // envelope, Stripe last_payment_error body). Disclosed under
+  // "Provider response". Populated ONLY when we actually called the
+  // provider and received a response — pre-flight classification
+  // errors (e.g. tax.provider_not_configured) leave this empty.
+  // ADR-025.
+  provider_response?: string
   // ISO timestamp marking when the condition started; operators triage
   // by age.
   since?: string
@@ -771,6 +733,65 @@ export interface Invoice {
   // finalized invoices (migrated-in but never rotated) carry empty.
   public_token?: string
   created_at: string
+}
+
+// pollIntervalForInvoice picks a refetch cadence based on the invoice's
+// transient state. Detail pages plug this into useQuery({ refetchInterval })
+// so the operator sees webhook-driven updates (Stripe payment.succeeded,
+// tax retry resolution, dunning resolution) without manually refreshing.
+//
+// Cadences are tuned to the speed of the underlying signal:
+//   - 2s  for in-flight charges (processing/unknown) — Stripe webhook
+//          typically lands within 1-3s
+//   - 5s  for tax-retry / payment-failed / dunning-active — backend
+//          retries operate on second-to-minute scales
+//   - 10s for awaiting-first-charge / setup-pending — slower changes,
+//          gentler load
+//   - false for terminal states (paid/voided/draft) — refetchOnWindowFocus
+//          handles the rare "tab was open all day" case without polling
+//
+// Pre-launch / pre-SSE: polling is the right primitive here. Stripe
+// Dashboard does the same. Upgrade to `/v1/webhook_events/stream` SSE
+// when an operator complains about latency, not before.
+export function pollIntervalForInvoice(invoice?: Invoice): number | false {
+  if (!invoice) return false
+  // Drafts + voided are terminal-no-trailing-events.
+  if (invoice.status === 'draft' || invoice.status === 'voided') return false
+  // Just-paid invoices keep polling slowly for ~30s to catch trailing
+  // events: receipt email lands 1-5s after MarkPaid (outbox dispatcher
+  // drains async), dunning resolution fires after MarkPaid for
+  // recovered-via-retry invoices, card-detail stamping (ADR-020) is a
+  // second write after MarkPaid. Cutting polling the instant
+  // payment_status flips to 'paid' makes the activity log appear
+  // missing those rows. Same trailing-poll pattern Stripe Dashboard
+  // and Recurly use after a status transition.
+  if (invoice.payment_status === 'succeeded' || invoice.payment_status === 'paid') {
+    if (invoice.paid_at) {
+      const paidAtMs = Date.parse(invoice.paid_at)
+      if (!isNaN(paidAtMs) && Date.now() - paidAtMs < 30_000) return 5000
+    }
+    return false
+  }
+  // In-flight charge — webhook resolution imminent.
+  if (invoice.payment_status === 'processing' || invoice.payment_status === 'unknown') return 2000
+  // Tax retry, dunning active, or post-decline waiting for retry.
+  if (invoice.tax_status === 'pending' || invoice.tax_status === 'failed') return 5000
+  if (invoice.payment_status === 'failed') return 5000
+  // Awaiting first charge / customer setup.
+  if (invoice.status === 'finalized' && invoice.payment_status === 'pending') return 10000
+  return false
+}
+
+// pollIntervalForPaymentSetup picks a refetch cadence for the customer's
+// payment-setup row. Only polls during an active update flow — when the
+// operator opens Stripe Checkout in a new tab, they return to the
+// customer page expecting to see the new card swap in once the webhook
+// lands. setup_status='pending' is the only state where that's
+// imminent; ready/missing are terminal until the next operator action.
+export function pollIntervalForPaymentSetup(setup?: PaymentSetup): number | false {
+  if (!setup) return false
+  if (setup.setup_status === 'pending') return 2000
+  return false
 }
 
 export interface LineItem {
@@ -1525,162 +1546,6 @@ export interface CreateBillingAlertRequest {
     usage_gte?: string
   }
   recurrence: BillingAlertRecurrence
-}
-
-// Plan migration tool types — wire shapes for /v1/admin/plan_migrations.
-
-export interface PlanMigrationCustomerFilter {
-  // "all"  → every active subscription on from_plan_id for the tenant
-  // "ids"  → only subscriptions whose customer_id is in `ids`
-  // "tag"  → reserved (server rejects with code "filter_type_unsupported")
-  type: 'all' | 'ids' | 'tag'
-  ids?: string[]
-  value?: string
-}
-
-export interface PlanMigrationPreviewRequest {
-  from_plan_id: string
-  to_plan_id: string
-  customer_filter: PlanMigrationCustomerFilter
-}
-
-export interface PlanMigrationCustomerPreview {
-  customer_id: string
-  current_plan_id: string
-  target_plan_id: string
-  // before / after are billing PreviewResult shapes — we only render totals
-  // and a single delta in the dashboard table, so the embedded structure is
-  // typed loosely here to avoid coupling the table to the engine schema.
-  before: { totals: Array<{ currency: string; amount_cents: number }>; lines?: unknown[] }
-  after: { totals: Array<{ currency: string; amount_cents: number }>; lines?: unknown[] }
-  delta_amount_cents: number
-  currency: string
-}
-
-export interface PlanMigrationTotal {
-  currency: string
-  before_amount_cents: number
-  after_amount_cents: number
-  delta_amount_cents: number
-}
-
-export interface PlanMigrationPreviewResponse {
-  previews: PlanMigrationCustomerPreview[]
-  totals: PlanMigrationTotal[]
-  warnings: string[]
-}
-
-export interface PlanMigrationCommitRequest {
-  from_plan_id: string
-  to_plan_id: string
-  customer_filter: PlanMigrationCustomerFilter
-  idempotency_key: string
-  effective: 'immediate' | 'next_period'
-}
-
-export interface PlanMigrationCommitResponse {
-  migration_id: string
-  applied_count: number
-  audit_log_id: string
-  idempotent_replay?: boolean
-}
-
-export interface PlanMigrationListItem {
-  migration_id: string
-  from_plan_id: string
-  to_plan_id: string
-  effective: 'immediate' | 'next_period'
-  applied_at: string
-  applied_by: string
-  applied_by_type: string
-  applied_count: number
-  customer_filter: PlanMigrationCustomerFilter
-  totals: PlanMigrationTotal[]
-  idempotency_key: string
-  audit_log_id?: string
-}
-
-export interface PlanMigrationListResponse {
-  migrations: PlanMigrationListItem[]
-  next_cursor: string
-}
-
-// Bulk operations (Week 7) — wire shapes for /v1/admin/bulk_actions.
-// Same idempotency-key + customer-filter pattern as plan migrations,
-// generalised to any action type (apply_coupon, schedule_cancel today;
-// release_payment_hold etc. follow). Always-snake_case + always-array
-// errors[] are non-negotiable; see internal/bulkaction/wire_shape_test.go.
-
-export type BulkActionType = 'apply_coupon' | 'schedule_cancel'
-
-export type BulkActionStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'partial'
-  | 'failed'
-
-export interface BulkActionCustomerFilter {
-  // "all"  → every customer for the tenant
-  // "ids"  → only customers whose id is in `ids`
-  // "tag"  → reserved (server rejects with code "filter_type_unsupported")
-  type: 'all' | 'ids' | 'tag'
-  ids?: string[]
-  value?: string
-}
-
-export interface BulkActionApplyCouponRequest {
-  idempotency_key: string
-  customer_filter: BulkActionCustomerFilter
-  coupon_code: string
-}
-
-export interface BulkActionScheduleCancelRequest {
-  idempotency_key: string
-  customer_filter: BulkActionCustomerFilter
-  // Exactly one of at_period_end / cancel_at must be set; the server
-  // rejects both-set or both-unset with a 422.
-  at_period_end?: boolean
-  cancel_at?: string
-}
-
-export interface BulkActionTargetError {
-  customer_id: string
-  error: string
-}
-
-export interface BulkActionCommitResponse {
-  bulk_action_id: string
-  status: BulkActionStatus
-  target_count: number
-  succeeded_count: number
-  failed_count: number
-  errors: BulkActionTargetError[]
-  idempotent_replay?: boolean
-}
-
-export interface BulkActionListItem {
-  bulk_action_id: string
-  action_type: BulkActionType
-  status: BulkActionStatus
-  target_count: number
-  succeeded_count: number
-  failed_count: number
-  customer_filter: BulkActionCustomerFilter
-  params: Record<string, unknown>
-  idempotency_key: string
-  created_by: string
-  created_at: string
-  completed_at?: string
-}
-
-export interface BulkActionDetail extends BulkActionListItem {
-  errors: BulkActionTargetError[]
-}
-
-export interface BulkActionListResponse {
-  bulk_actions: BulkActionListItem[]
-  next_cursor: string
 }
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {

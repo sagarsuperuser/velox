@@ -26,7 +26,15 @@ type PaymentUpdateToken struct {
 	TenantID   string
 	CustomerID string
 	InvoiceID  string
-	ExpiresAt  time.Time
+	// Livemode is the mode of the referenced invoice, resolved at
+	// validate-time via JOIN. Carrying it on the validated token lets
+	// the public handler open a properly-scoped TxTenant for the
+	// follow-on invoice / customer reads — RLS stays as defense-in-
+	// depth. Without this, the handler would have to either bypass
+	// RLS (loose) or do a separate livemode lookup (extra round-trip
+	// + chicken-and-egg with RLS).
+	Livemode  bool
+	ExpiresAt time.Time
 }
 
 // Create generates a new payment update token. Returns the raw token (shown once in email).
@@ -81,12 +89,20 @@ func (s *TokenService) Validate(ctx context.Context, rawToken string) (*PaymentU
 	}
 	defer postgres.Rollback(tx)
 
+	// JOIN invoices to grab the referenced invoice's livemode in the
+	// same query. Two wins: (a) the validated token carries everything
+	// the public handler needs to open a properly-scoped TxTenant —
+	// no second bypass-required livemode lookup; (b) the JOIN
+	// naturally fails when the invoice has been deleted, so a stale
+	// token returns "invalid or expired" instead of an internal-error
+	// downstream when the handler tries to fetch a vanished invoice.
 	var t PaymentUpdateToken
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, customer_id, invoice_id, expires_at
-		FROM payment_update_tokens
-		WHERE token_hash = $1 AND expires_at > NOW() AND used_at IS NULL
-	`, tokenHash).Scan(&t.ID, &t.TenantID, &t.CustomerID, &t.InvoiceID, &t.ExpiresAt)
+		SELECT t.id, t.tenant_id, t.customer_id, t.invoice_id, i.livemode, t.expires_at
+		FROM payment_update_tokens t
+		JOIN invoices i ON i.id = t.invoice_id
+		WHERE t.token_hash = $1 AND t.expires_at > NOW() AND t.used_at IS NULL
+	`, tokenHash).Scan(&t.ID, &t.TenantID, &t.CustomerID, &t.InvoiceID, &t.Livemode, &t.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("invalid or expired token")

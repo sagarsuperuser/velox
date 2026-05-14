@@ -361,10 +361,13 @@ func (s *Sender) SendPaymentFailed(ctx context.Context, tenantID, to, customerNa
 	})
 }
 
-// SendPaymentUpdateRequest emails the tokenized payment-method-update
-// link. CTA points at updateURL (NOT the hosted invoice URL — this flow
-// changes the saved payment method, a separate concern).
-func (s *Sender) SendPaymentUpdateRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
+// SendPaymentSetupRequest emails the tokenized payment-method-setup
+// link. CTA points at updateURL (NOT the hosted invoice URL — this
+// flow sets up the saved payment method, a separate concern from
+// charging an invoice). Sent at finalize when the customer has no PM
+// on file. Distinct from SendPaymentFailed which fires after a charge
+// has already been attempted and declined.
+func (s *Sender) SendPaymentSetupRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
 	brand := s.brandingFor(ctx, tenantID)
 	amount := formatAmount(amountDueCents, currency)
 

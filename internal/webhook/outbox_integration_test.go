@@ -19,7 +19,7 @@ import (
 // exists in webhook_outbox. No dispatcher involvement.
 func TestOutbox_EnqueueStandalone_Persists(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Outbox Enqueue")
@@ -54,7 +54,7 @@ func TestOutbox_EnqueueStandalone_Persists(t *testing.T) {
 // state change with zero risk of an orphan event.
 func TestOutbox_Enqueue_TxAtomicity(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Outbox Tx")
@@ -99,7 +99,7 @@ func TestOutbox_Enqueue_TxAtomicity(t *testing.T) {
 // row transitions to 'dispatched', attempts=1, dispatched_at populated.
 func TestOutbox_ProcessBatch_Success(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Outbox Success")
@@ -140,7 +140,7 @@ func TestOutbox_ProcessBatch_Success(t *testing.T) {
 // MUST NOT re-claim the row.
 func TestOutbox_ProcessBatch_RetryBackoff(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Outbox Retry")
@@ -194,7 +194,7 @@ func TestOutbox_ProcessBatch_RetryBackoff(t *testing.T) {
 // exactly what the dead-letter-queue contract promises.
 func TestOutbox_ProcessBatch_DLQ(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Outbox DLQ")
@@ -251,7 +251,7 @@ func TestOutbox_ProcessBatch_DLQ(t *testing.T) {
 // these feed operator dashboards, so accuracy is non-negotiable.
 func TestOutbox_Counts(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
 	defer cancel()
 
 	tenantID := testutil.CreateTestTenant(t, db, "Outbox Counts")
@@ -284,7 +284,7 @@ func TestOutbox_Counts(t *testing.T) {
 
 func readOutbox(t *testing.T, db *postgres.DB, id string) (status string, attempts int, payload map[string]any) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 5*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -308,7 +308,7 @@ func readOutbox(t *testing.T, db *postgres.DB, id string) (status string, attemp
 
 func readOutboxRetry(t *testing.T, db *postgres.DB, id string) (lastErr string, nextAt time.Time) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 5*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -329,7 +329,7 @@ func readOutboxRetry(t *testing.T, db *postgres.DB, id string) (lastErr string, 
 
 func outboxExists(t *testing.T, db *postgres.DB, id string) bool {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 5*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -350,7 +350,7 @@ func outboxExists(t *testing.T, db *postgres.DB, id string) bool {
 // exercise many attempts within a single test run without waiting out
 // real backoff durations.
 func resetDue(db *postgres.DB, id string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 5*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {

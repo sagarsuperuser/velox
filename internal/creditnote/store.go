@@ -26,4 +26,6 @@ type ListFilter struct {
 	Status     string
 	Limit      int
 	Offset     int
+	Sort       string // closed allow-list (validated in store); empty defaults to created_at
+	SortDir    string // "asc" or "desc"; empty defaults to desc
 }

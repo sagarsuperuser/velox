@@ -232,6 +232,13 @@ func (m *memStore) AddLineItemAtomic(_ context.Context, tenantID, invoiceID stri
 	return item, inv, nil
 }
 
+// ListApproachingDueForClock — ADR-029 Phase 6 stub. Narrow tests
+// don't exercise per-clock reminder dispatch; postgres integration
+// covers the SQL.
+func (m *memStore) ListApproachingDueForClock(_ context.Context, _, _ string, _ time.Time, _ int) ([]domain.Invoice, error) {
+	return nil, nil
+}
+
 func (m *memStore) ListApproachingDue(_ context.Context, _ int) ([]domain.Invoice, error) {
 	return nil, nil
 }
@@ -407,6 +414,29 @@ func (s *stubTaxRetrier) RetryTaxForInvoice(_ context.Context, tenantID, invoice
 	return inv, nil
 }
 
+// ListCustomerDataInvalidErrors — per-customer flush stub mirroring
+// ListProviderConfigErrors. Filters on customer_id + status=draft +
+// tax_status pending|failed + tax_error_code=customer_data_invalid.
+func (m *memStore) ListCustomerDataInvalidErrors(_ context.Context, tenantID, customerID string) ([]domain.Invoice, error) {
+	var out []domain.Invoice
+	for _, inv := range m.invoices {
+		if inv.TenantID != tenantID || inv.CustomerID != customerID {
+			continue
+		}
+		if inv.Status != domain.InvoiceDraft {
+			continue
+		}
+		if inv.TaxStatus != domain.InvoiceTaxPending && inv.TaxStatus != domain.InvoiceTaxFailed {
+			continue
+		}
+		if inv.TaxErrorCode != "customer_data_invalid" {
+			continue
+		}
+		out = append(out, inv)
+	}
+	return out, nil
+}
+
 func (m *memStore) ListProviderConfigErrors(_ context.Context, tenantID string, _ bool) ([]domain.Invoice, error) {
 	// memStore doesn't track livemode (mock fixtures are single-mode);
 	// the real PostgresStore impl filters by livemode in the WHERE.
@@ -427,6 +457,14 @@ func (m *memStore) ListProviderConfigErrors(_ context.Context, tenantID string, 
 		out = append(out, inv)
 	}
 	return out, nil
+}
+
+// ListPendingTaxRetryForClock — ADR-029 Phase 2 stub for the in-memory
+// test store. The narrow service tests in this file don't exercise the
+// catchup path; integration tests cover it. Returning nothing here
+// satisfies the interface without faking sub→clock joins in memory.
+func (m *memStore) ListPendingTaxRetryForClock(_ context.Context, _, _ string, _ []string, _, _ int) ([]domain.Invoice, error) {
+	return nil, nil
 }
 
 func (m *memStore) ListPendingTaxRetry(_ context.Context, batch int, retryableCodes []string, maxAttempts int, _ bool) ([]domain.Invoice, error) {

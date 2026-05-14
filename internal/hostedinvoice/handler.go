@@ -438,7 +438,7 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pdfBytes, err := invoice.RenderPDF(inv, items, bt, cnInfos, ci)
+	pdfBytes, err := invoice.RenderPDF(r.Context(), inv, items, bt, cnInfos, ci)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "hostedinvoice: pdf render",
 			"invoice_id", inv.ID, "error", err)

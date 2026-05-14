@@ -90,6 +90,12 @@ type Store interface {
 	// hydrated with items + thresholds.
 	ListWithThresholds(ctx context.Context, livemode bool, limit int) ([]domain.Subscription, error)
 
+	// ListWithThresholdsForClock is the catchup-path counterpart to
+	// ListWithThresholds. ADR-029 Phase 3: clock-pinned threshold
+	// scans fire only on operator Advance, never on the wall-clock
+	// tick.
+	ListWithThresholdsForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error)
+
 	// ActivateAfterTrial atomically transitions a subscription from
 	// 'trialing' to 'active'. Sets activated_at = `at` if the column is
 	// still NULL (preserves the original activation timestamp on
@@ -162,4 +168,9 @@ type ListFilter struct {
 	Status     string
 	Limit      int
 	Offset     int
+	// Sort: column from a closed allow-list (validated in store).
+	// Empty defaults to created_at.
+	Sort string
+	// SortDir: "asc" or "desc". Empty defaults to desc.
+	SortDir string
 }

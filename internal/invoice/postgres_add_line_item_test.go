@@ -24,7 +24,7 @@ import (
 // caller blocks until the first commits and sees the updated subtotal.
 func TestAddLineItemAtomic_ConcurrentAdds(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	store := invoice.NewPostgresStore(db)
 	tenantID := testutil.CreateTestTenant(t, db, "AddLineItem Concurrency")
@@ -99,7 +99,7 @@ func TestAddLineItemAtomic_ConcurrentAdds(t *testing.T) {
 // chain is tested separately in the engine; this test pins the SQL itself.
 func TestPostgresLineItem_TaxabilityReasonRoundTrip(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	store := invoice.NewPostgresStore(db)
 	tenantID := testutil.CreateTestTenant(t, db, "TaxReason RoundTrip")
@@ -152,7 +152,7 @@ func TestPostgresLineItem_TaxabilityReasonRoundTrip(t *testing.T) {
 // or voided invoice, even if they race a concurrent Finalize call.
 func TestAddLineItemAtomic_RejectsNonDraft(t *testing.T) {
 	db := testutil.SetupTestDB(t)
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	store := invoice.NewPostgresStore(db)
 	tenantID := testutil.CreateTestTenant(t, db, "AddLineItem NonDraft")
@@ -179,7 +179,7 @@ func TestAddLineItemAtomic_RejectsNonDraft(t *testing.T) {
 // subscription → invoice) and returns the draft invoice ID.
 func seedDraftInvoice(t *testing.T, db *postgres.DB, tenantID string) string {
 	t.Helper()
-	ctx := context.Background()
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	cust, err := customer.NewPostgresStore(db).Create(ctx, tenantID, domain.Customer{
 		ExternalID: "cus_add_line_item_test", DisplayName: "Line Item Tester",

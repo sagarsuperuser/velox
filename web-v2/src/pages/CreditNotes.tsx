@@ -118,10 +118,17 @@ export default function CreditNotesPage() {
   const page = Math.max(1, parseInt(urlState.page) || 1)
   const queryClient = useQueryClient()
 
-  // Load all data
+  // Server-side sort: pass sort/dir; backend tie-breaks on id.
+  const notesQueryParams = useMemo(() => {
+    const params = new URLSearchParams()
+    if (filterStatus) params.set('status', filterStatus)
+    if (sortKey) params.set('sort', sortKey)
+    if (sortDir) params.set('dir', sortDir)
+    return params.toString()
+  }, [filterStatus, sortKey, sortDir])
   const { data: notesData, isLoading: notesLoading, error: notesErrorObj, refetch: refetchNotes } = useQuery({
-    queryKey: ['credit-notes'],
-    queryFn: () => api.listCreditNotes(),
+    queryKey: ['credit-notes', filterStatus, sortKey, sortDir],
+    queryFn: () => api.listCreditNotes(notesQueryParams),
   })
 
   const { data: invoicesData } = useQuery({
@@ -191,12 +198,15 @@ export default function CreditNotesPage() {
     return true
   }), [notes, filterStatus, search, customerMap, invoiceMap])
 
-  const { sorted, onSort } = useSortable(
+  // Server-side sort end-to-end. Client-side re-sort would only sort
+  // the current page, breaking pagination semantics.
+  const { onSort } = useSortable(
     filtered,
     sortKey,
     sortDir,
     (key, dir) => setUrlState({ sort: key, dir }),
   )
+  const sorted = filtered
 
   const totalPages = Math.ceil(sorted.length / PAGE_SIZE)
   const currentPage = Math.min(page, totalPages || 1)
