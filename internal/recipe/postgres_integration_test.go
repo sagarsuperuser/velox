@@ -141,7 +141,7 @@ func TestPostgresStore_UniqueByTenantKey(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	if _, err := store.CreateTx(ctx, tx1, domain.RecipeInstance{
-		TenantID: tenantID, RecipeKey: "b2b_saas_pro", RecipeVersion: "1.0.0",
+		TenantID: tenantID, RecipeKey: "anthropic_style", RecipeVersion: "1.0.0",
 	}); err != nil {
 		t.Fatalf("first CreateTx: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestPostgresStore_UniqueByTenantKey(t *testing.T) {
 	}
 	defer postgres.Rollback(tx2)
 	if _, err := store.CreateTx(ctx, tx2, domain.RecipeInstance{
-		TenantID: tenantID, RecipeKey: "b2b_saas_pro", RecipeVersion: "1.0.0",
+		TenantID: tenantID, RecipeKey: "anthropic_style", RecipeVersion: "1.0.0",
 	}); err == nil {
 		t.Fatal("expected UNIQUE-violation error on duplicate (tenant, key) insert")
 	}

@@ -1,10 +1,12 @@
 # Pricing Recipes — Technical Design
 
 > **Status:** Shipped — see [`CHANGELOG.md`](../CHANGELOG.md) for the merged commits and the operator-facing surface in `web-v2/src/pages/Recipes.tsx`.
-> **Last revised:** 2026-04-25
+> **Last revised:** 2026-04-25 (original); amended 2026-05-14 (Phase 2 wedge-alignment trim)
 > **Related:** `docs/design-multi-dim-meters.md` (multi-dim meter dependency), ADR-002 (per-domain), ADR-003 (RLS)
 >
 > The text below is preserved as the design-time RFC. The implementation is live in `main`; refer to the package-level docs in `internal/recipe/` for the current behaviour.
+>
+> **2026-05-14 amendment:** the original "five built-ins" plan was trimmed to three AI-native built-ins (`anthropic_style`, `openai_style`, `replicate_style`). `b2b_saas_pro` and `marketplace_gmv` were dropped — generic SaaS / marketplace shapes diluted the AI-native wedge pitch when prospects browsed the Recipes page. The technical mechanism (one-call instantiate, preview, atomic rollback, per-tenant idempotency) is unchanged.
 
 ## Motivation
 
