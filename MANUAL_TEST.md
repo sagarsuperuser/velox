@@ -317,11 +317,9 @@ Single tenant-wide timezone used for date input and timestamp display
 
 The headline test-clock use case — verifies the full Stripe-parity dunning state machine fires correctly under simulated time, including the (a) initial-run binding to frozen-time and (b) catchup-driven advance through retry → escalation → final action.
 
-- [ ] Setup: clock at `frozen_time=2024-02-01`; pinned customer with Stripe test decline card `4000 0000 0000 0341` attached; active monthly sub.
-- [ ] Advance clock to bill first cycle → invoice finalizes → auto-charges → Stripe declines → webhook → dunning run created.
-- [ ] `invoice_dunning_runs.created_at` and `.next_action_at` both in 2024-02 frozen-time domain (not 2026 wall-clock) — ADR-030 binding via `dunning.Service.bindForInvoice`.
-- [ ] Advance clock past first `next_action_at` (grace_period_days from frozen failure instant) → catchup Phase 5 fires → `attempt_count=1`, `next_action_at` advances by `retry_schedule[0]` in frozen-time.
-- [ ] Continue advancing through full retry schedule → after `max_retry_attempts` → `state=escalated`, `resolution=retries_exhausted`, `resolved_at` in frozen-time.
+- [ ] Setup: clock at `frozen_time=2024-02-01`; pinned customer with Stripe test decline card `4000 0000 0000 0341` attached; active monthly sub. Policy: `grace=3d, retry_schedule=[3d, 5d], max=3, final_action=pause`.
+- [ ] Advance clock past the first cycle close → invoice finalizes → auto-charges → Stripe declines → webhook → dunning run created with `created_at` and `next_action_at` anchored on the invoice's cycle-close instant (NOT advance-end frozen_time).
+- [ ] **Single-click full walk (Stripe Test Clocks parity)**: from a state where dunning has just started at cycle-close T, advance the clock to T + grace + sum(retry_schedule) + 1d in ONE Advance click. After the advance: run is `state=escalated`, `attempt_count=max`, `resolution=retries_exhausted`, all three retry events present in dunning timeline with simulated-time timestamps (T+grace, T+grace+retry[0], etc.). NO need to click Advance multiple times — Phase 5 loops until all due retries fire.
 - [ ] If `final_action=pause` → owning sub `status=paused`, `pause_collection_behavior=keep_as_draft` (Stripe parity).
 - [ ] Dunning emails fire at each retry — Mailpit shows expected count with simulated-time formatting in the "next retry" date.
 - [ ] Per-customer override (max_retries=5, grace=7d) re-applied → re-trigger → schedule reflects override, not policy defaults.
@@ -670,8 +668,9 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] Finalized unpaid → POST /v1/invoices/{id}/collect → PI created.
 - [ ] GET /v1/invoices/{id}/payment-timeline → all attempts in order with ts/amount/status/PI id.
 - [ ] **Coalesced rows (ADR-020)**: a paid invoice shows ONE "Invoice paid · $29.00" row, NOT a separate "Payment succeeded" row beneath it. A voided invoice with a previously-pending PI shows ONE "Invoice voided" row, NOT a duplicate "Payment canceled" row. A dunning-recovered invoice shows "Invoice paid · after 3 retry attempts" — no separate "Dunning resolved" row.
+- [ ] **Failure rows fold inside-out**: each failed charge collapses to ONE row carrying the dunning attempt label ("Automatic retry scheduled" or "Payment retry #N attempted"), the PI id, the amount, the decline reason, and a `Customer notified by email` sub-line. No separate Stripe `payment_intent.payment_failed` row at the same instant; no separate "Payment-failed email sent" row beneath. The Stripe ↔ dunning pairing is by chronological **index** (k-th Stripe failure ↔ k-th dunning attempt), which is the only correlation that works for test-clock-pinned invoices — the dunning row is in simulated time, the Stripe webhook is in wall-clock time, and the two can differ by months.
 - [ ] **Charged-card sub-line (ADR-020)**: paid invoice's "Invoice paid" row carries `via Visa •••• 4242` beneath the amount. Holds even when the customer paid via the hosted-invoice URL **without saving the PM** (lookup goes directly to Stripe, not the local payment_methods table). Non-card PMs (bank, wallet) or Stripe lookup failures render no sub-line — graceful, not broken.
-- [ ] `payment_intent.payment_failed` webhook still surfaces as its own "Payment failed" row — no lifecycle counterpart suppresses it.
+- [ ] **Unpaired rows survive**: a Stripe `payment_intent.payment_failed` with no dunning twin (dunning disabled, or webhook arrived ahead of the dunning event) stays as its own "Payment failed" row. A payment-failed email row whose dispatch is still pending or failed stays visible — delivery problems must not silently disappear.
 
 ## FLOW I5b: Invoice attention banner
 

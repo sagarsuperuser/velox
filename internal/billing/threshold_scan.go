@@ -462,7 +462,7 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 
 	// Apply customer credits before charging. Same shape as the cycle scan.
 	if e.credits != nil && totalWithTax > 0 {
-		if _, err := e.credits.ApplyToInvoice(ctx, sub.TenantID, sub.CustomerID, inv.ID, totalWithTax, inv.InvoiceNumber); err != nil {
+		if _, err := e.credits.ApplyToInvoiceAt(ctx, sub.TenantID, sub.CustomerID, inv.ID, totalWithTax, now, inv.InvoiceNumber); err != nil {
 			slog.Warn("threshold scan: failed to apply credits", "invoice_id", inv.ID, "error", err)
 		}
 	}

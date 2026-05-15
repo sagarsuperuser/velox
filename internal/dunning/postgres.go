@@ -426,7 +426,17 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, tenantID string, event 
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_devt")
-	now := clock.Now(ctx)
+	// Honor caller-supplied CreatedAt so each event row carries the
+	// simulated instant the fact actually occurred — started at cycle
+	// close, retry #N at its scheduled fire time, escalated at the
+	// final retry's instant. Without this, every event in a single
+	// catchup pass shares clock.Now(ctx) (= frozen_time) and the
+	// invoice timeline shows four facts at one timestamp. Falls back
+	// to clock.Now() when zero so wall-clock callers stay correct.
+	createdAt := event.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = clock.Now(ctx)
+	}
 	metaJSON, _ := json.Marshal(event.Metadata)
 	if event.Metadata == nil {
 		metaJSON = []byte("{}")
@@ -437,13 +447,13 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, tenantID string, event 
 			event_type, state, reason, attempt_count, metadata, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 	`, id, event.RunID, tenantID, event.InvoiceID, event.EventType, event.State,
-		postgres.NullableString(event.Reason), event.AttemptCount, metaJSON, now)
+		postgres.NullableString(event.Reason), event.AttemptCount, metaJSON, createdAt)
 	if err != nil {
 		return domain.InvoiceDunningEvent{}, err
 	}
 	event.ID = id
 	event.TenantID = tenantID
-	event.CreatedAt = now
+	event.CreatedAt = createdAt
 	if err := tx.Commit(); err != nil {
 		return domain.InvoiceDunningEvent{}, err
 	}

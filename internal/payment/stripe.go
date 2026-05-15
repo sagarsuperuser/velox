@@ -26,7 +26,7 @@ import (
 // If we ever support another provider, we'll refactor — not speculate now.
 // DunningStarter starts dunning for failed payments.
 type DunningStarter interface {
-	StartDunning(ctx context.Context, tenantID string, invoiceID, customerID string) (domain.InvoiceDunningRun, error)
+	StartDunning(ctx context.Context, tenantID string, invoiceID, customerID string, failureAt time.Time) (domain.InvoiceDunningRun, error)
 }
 
 // CardDetails holds card info fetched from Stripe for display.
@@ -605,9 +605,39 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		"currency":          inv.Currency,
 	})
 
-	// Auto-start dunning for failed payments
+	// Auto-start dunning for failed payments.
+	//
+	// failureAt is the simulated cycle-close instant — the moment in the
+	// invoice's own time domain when this charge "should" have happened.
+	// For clock-pinned invoices under catchup, frozen_time (= advance-end)
+	// is days or months after the actual cycle close; anchoring dunning's
+	// next_action_at there pushes the first retry past advance-end and
+	// the operator's Advance click fires zero retries.
+	//
+	// Derive failureAt as the latest invoice period boundary at or before
+	// IssuedAt. For in_arrears the cycle fires at BillingPeriodEnd (e.g.
+	// May 1 for an Apr 1–May 1 elapsed period). For in_advance it fires
+	// at BillingPeriodStart (e.g. May 1 for a May 1–May 31 upcoming
+	// period). Picking the latest boundary ≤ IssuedAt gives the right
+	// answer in both directions. For manual invoices with no period
+	// fields, falls back to IssuedAt or the current clock — both
+	// wall-clock-equivalent in production.
 	if s.dunning != nil {
-		if _, err := s.dunning.StartDunning(ctx, tenantID, inv.ID, inv.CustomerID); err != nil {
+		failureAt := time.Now()
+		if inv.IssuedAt != nil {
+			failureAt = *inv.IssuedAt
+		}
+		var candidate time.Time
+		if !inv.BillingPeriodStart.IsZero() && !inv.BillingPeriodStart.After(failureAt) && inv.BillingPeriodStart.After(candidate) {
+			candidate = inv.BillingPeriodStart
+		}
+		if !inv.BillingPeriodEnd.IsZero() && !inv.BillingPeriodEnd.After(failureAt) && inv.BillingPeriodEnd.After(candidate) {
+			candidate = inv.BillingPeriodEnd
+		}
+		if !candidate.IsZero() {
+			failureAt = candidate
+		}
+		if _, err := s.dunning.StartDunning(ctx, tenantID, inv.ID, inv.CustomerID, failureAt); err != nil {
 			slog.Warn("failed to start dunning",
 				"invoice_id", inv.ID,
 				"error", err,

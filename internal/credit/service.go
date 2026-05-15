@@ -51,6 +51,16 @@ type GrantInput struct {
 	SourceSubscriptionItemID string                `json:"source_subscription_item_id,omitempty"`
 	SourcePlanChangedAt      *time.Time            `json:"source_plan_changed_at,omitempty"`
 	SourceChangeType         domain.ItemChangeType `json:"source_change_type,omitempty"`
+
+	// At is the simulated instant the grant was earned (cancel time
+	// for cancel-proration credits, plan-change time for plan-change
+	// credits, operator action time for manual grants). Empty falls
+	// back to clock.Now(ctx) at the postgres layer — fine for
+	// operator-action paths in wall-clock. Set by engine callers
+	// during catchup to keep ledger entries on simulated-time so
+	// the customer's Credits tab shows per-fact chronology instead
+	// of every entry stacked at advance-end frozen_time.
+	At time.Time `json:"-"`
 }
 
 func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) (domain.CreditLedgerEntry, error) {
@@ -83,6 +93,7 @@ func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) 
 		SourceSubscriptionItemID: input.SourceSubscriptionItemID,
 		SourcePlanChangedAt:      input.SourcePlanChangedAt,
 		SourceChangeType:         input.SourceChangeType,
+		CreatedAt:                input.At,
 	})
 }
 
@@ -102,11 +113,21 @@ func (s *Service) GetByProrationSource(ctx context.Context, tenantID, subscripti
 // Returns the amount deducted. If balance is 0 or invoice amount is 0,
 // returns 0 without any writes.
 func (s *Service) ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, invoiceAmountCents int64, invoiceNumber ...string) (int64, error) {
+	return s.ApplyToInvoiceAt(ctx, tenantID, customerID, invoiceID, invoiceAmountCents, time.Time{}, invoiceNumber...)
+}
+
+// ApplyToInvoiceAt is the simulated-time-aware variant: `at` stamps the
+// ledger usage entry and the invoice's updated_at, anchoring on the
+// invoice's cycle-close instant during catchup so credits applied across
+// multiple periods don't all stack at advance-end frozen_time on the
+// customer's Credits tab. Pass zero from operator paths to fall back to
+// clock.Now(ctx) at the postgres layer.
+func (s *Service) ApplyToInvoiceAt(ctx context.Context, tenantID, customerID, invoiceID string, invoiceAmountCents int64, at time.Time, invoiceNumber ...string) (int64, error) {
 	desc := fmt.Sprintf("Applied to invoice %s", invoiceID)
 	if len(invoiceNumber) > 0 && invoiceNumber[0] != "" {
 		desc = fmt.Sprintf("Applied to invoice %s", invoiceNumber[0])
 	}
-	return s.store.ApplyToInvoiceAtomic(ctx, tenantID, customerID, invoiceID, desc, invoiceAmountCents)
+	return s.store.ApplyToInvoiceAtomic(ctx, tenantID, customerID, invoiceID, desc, invoiceAmountCents, at)
 }
 
 func (s *Service) ReverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error) {
@@ -180,11 +201,22 @@ func (s *Service) processExpiry(ctx context.Context, grants []domain.CreditLedge
 	var expired int
 	var expiryErrs []error
 	for _, g := range grants {
+		// Stamp the expiry entry at the grant's own expires_at — the
+		// simulated instant the grant actually expired — instead of
+		// the store's clock.Now() fallback (= advance-end frozen_time
+		// during catchup). Without this, every grant expired in one
+		// Advance click stacks at one timestamp on the customer's
+		// Credits tab.
+		var expiredAt time.Time
+		if g.ExpiresAt != nil {
+			expiredAt = *g.ExpiresAt
+		}
 		_, err := s.store.AppendEntry(ctx, g.TenantID, domain.CreditLedgerEntry{
 			CustomerID:  g.CustomerID,
 			EntryType:   domain.CreditExpiry,
 			AmountCents: -g.AmountCents,
 			Description: fmt.Sprintf("Expired grant %s", g.ID),
+			CreatedAt:   expiredAt,
 		})
 		if err != nil {
 			expiryErrs = append(expiryErrs, fmt.Errorf("expire grant %s: %w", g.ID, err))
