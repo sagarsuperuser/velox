@@ -103,9 +103,20 @@ export default function InvoicesPage() {
     queryFn: () => api.listInvoices(queryParams),
   })
 
+  // Fetch only the customers referenced by the visible invoices.
+  // Prior shape (listCustomers() with no filter) paginated at 50 rows
+  // and rendered "Unknown" on any invoice whose customer fell off
+  // page 1. With the ids= filter the backend returns exactly the
+  // customers we need; map lookup is now exhaustive for the page.
+  const customerIds = useMemo(() => {
+    const set = new Set<string>()
+    ;(invoicesData?.data ?? []).forEach(inv => { if (inv.customer_id) set.add(inv.customer_id) })
+    return Array.from(set)
+  }, [invoicesData])
   const { data: customersData } = useQuery({
-    queryKey: ['customers-map'],
-    queryFn: () => api.listCustomers(),
+    queryKey: ['customers-by-ids', customerIds],
+    queryFn: () => api.listCustomers(customerIds.length > 0 ? `ids=${customerIds.join(',')}&limit=${customerIds.length}` : ''),
+    enabled: customerIds.length > 0,
   })
 
   // subscriptionsForChip → test_clock_id lookup so each row can carry

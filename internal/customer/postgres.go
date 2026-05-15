@@ -732,6 +732,21 @@ func buildCustomerWhere(f ListFilter) (string, []any) {
 	if f.ExternalID != "" {
 		clauses = append(clauses, fmt.Sprintf("external_id = $%d", idx))
 		args = append(args, f.ExternalID)
+		idx++
+	}
+	if len(f.IDs) > 0 {
+		// ids=... filter used by other list pages to fetch exactly the
+		// customers their primary rows reference (avoids the
+		// "list-then-client-side-join" pagination bug). Bounded by
+		// the upstream limit cap — 100 rows max keeps the IN clause
+		// short and the query plan predictable.
+		placeholders := make([]string, len(f.IDs))
+		for i, id := range f.IDs {
+			placeholders[i] = fmt.Sprintf("$%d", idx)
+			args = append(args, id)
+			idx++
+		}
+		clauses = append(clauses, "id IN ("+join(placeholders, ",")+")")
 	}
 
 	if len(clauses) == 0 {

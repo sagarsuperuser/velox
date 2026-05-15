@@ -1718,6 +1718,20 @@ func buildInvWhere(f ListFilter) (string, []any) {
 	if f.PaymentStatus != "" {
 		clauses = append(clauses, fmt.Sprintf("payment_status = $%d", idx))
 		args = append(args, f.PaymentStatus)
+		idx++
+	}
+	if len(f.IDs) > 0 {
+		// ids=... filter — same shape as customer.ListFilter.IDs.
+		// Lets CreditNotes-and-similar pages fetch the exact invoices
+		// their primary rows reference without depending on the
+		// default-pagination of an unrelated invoice list.
+		placeholders := make([]string, len(f.IDs))
+		for i, id := range f.IDs {
+			placeholders[i] = fmt.Sprintf("$%d", idx)
+			args = append(args, id)
+			idx++
+		}
+		clauses = append(clauses, "id IN ("+strings.Join(placeholders, ",")+")")
 	}
 
 	if len(clauses) == 0 {

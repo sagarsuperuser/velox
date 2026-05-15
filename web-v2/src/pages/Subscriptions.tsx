@@ -155,9 +155,17 @@ export default function SubscriptionsPage() {
     queryFn: () => api.listSubscriptions(queryParams),
   })
 
+  // Fetch only the customers referenced by the visible subs (avoids
+  // the "Unknown" pagination bug — see Invoices.tsx for full rationale).
+  const customerIdsForRef = useMemo(() => {
+    const set = new Set<string>()
+    ;(subsData?.data ?? []).forEach(s => { if (s.customer_id) set.add(s.customer_id) })
+    return Array.from(set)
+  }, [subsData])
   const { data: customersData } = useQuery({
-    queryKey: ['customers-ref'],
-    queryFn: () => api.listCustomers(),
+    queryKey: ['customers-by-ids-for-subs', customerIdsForRef],
+    queryFn: () => api.listCustomers(customerIdsForRef.length > 0 ? `ids=${customerIdsForRef.join(',')}&limit=${customerIdsForRef.length}` : ''),
+    enabled: customerIdsForRef.length > 0,
   })
 
   const { data: plansData } = useQuery({

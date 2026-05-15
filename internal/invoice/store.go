@@ -143,8 +143,13 @@ type ListFilter struct {
 	SubscriptionID string
 	Status         string
 	PaymentStatus  string
-	Limit          int
-	Offset         int
+	// IDs scopes the result to a specific set of invoice IDs. Used by
+	// other list pages (CreditNotes) to fetch exactly the invoices
+	// referenced by their primary rows — avoids the
+	// "list-then-client-side-join" pagination bug. Empty = no filter.
+	IDs    []string
+	Limit  int
+	Offset int
 	// Sort: column name from a closed set (validated by the store).
 	// Empty string means default (created_at).
 	Sort string

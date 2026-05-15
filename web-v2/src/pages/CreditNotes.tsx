@@ -131,14 +131,29 @@ export default function CreditNotesPage() {
     queryFn: () => api.listCreditNotes(notesQueryParams),
   })
 
+  // Fetch only the customers + invoices referenced by visible credit
+  // notes (avoids the "Unknown" / truncated-ID pagination bug — see
+  // Invoices.tsx for full rationale). Both lookups re-fetch when the
+  // visible credit-note page changes.
+  const refIds = useMemo(() => {
+    const cSet = new Set<string>()
+    const iSet = new Set<string>()
+    ;(notesData?.data ?? []).forEach(n => {
+      if (n.customer_id) cSet.add(n.customer_id)
+      if (n.invoice_id) iSet.add(n.invoice_id)
+    })
+    return { customers: Array.from(cSet), invoices: Array.from(iSet) }
+  }, [notesData])
   const { data: invoicesData } = useQuery({
-    queryKey: ['invoices-ref'],
-    queryFn: () => api.listInvoices(),
+    queryKey: ['invoices-by-ids-for-cn', refIds.invoices],
+    queryFn: () => api.listInvoices(refIds.invoices.length > 0 ? `ids=${refIds.invoices.join(',')}&limit=${refIds.invoices.length}` : ''),
+    enabled: refIds.invoices.length > 0,
   })
 
   const { data: customersData } = useQuery({
-    queryKey: ['customers-ref'],
-    queryFn: () => api.listCustomers(),
+    queryKey: ['customers-by-ids-for-cn', refIds.customers],
+    queryFn: () => api.listCustomers(refIds.customers.length > 0 ? `ids=${refIds.customers.join(',')}&limit=${refIds.customers.length}` : ''),
+    enabled: refIds.customers.length > 0,
   })
 
   const notes = notesData?.data ?? []

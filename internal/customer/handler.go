@@ -99,10 +99,26 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
+	// `ids` filter (comma-separated) lets other list pages
+	// (Invoices, Subscriptions, etc.) fetch exactly the customers
+	// referenced by their primary rows. Avoids the "list-then-
+	// client-side-join" pagination bug that surfaces "Unknown" on
+	// rows whose customer fell off the default 50-row page. Bounded
+	// by the same 100-row limit cap as any other list.
+	var ids []string
+	if raw := strings.TrimSpace(r.URL.Query().Get("ids")); raw != "" {
+		for _, id := range strings.Split(raw, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+
 	filter := ListFilter{
 		TenantID:   tenantID,
 		Status:     r.URL.Query().Get("status"),
 		ExternalID: r.URL.Query().Get("external_id"),
+		IDs:        ids,
 		Limit:      limit,
 		Offset:     offset,
 		Sort:       r.URL.Query().Get("sort"),

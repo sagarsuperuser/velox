@@ -323,12 +323,25 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
+	// `ids` filter (comma-separated) lets CreditNotes-and-similar
+	// pages fetch the exact invoices their primary rows reference,
+	// avoiding the "list-then-client-side-join" pagination bug.
+	var ids []string
+	if raw := strings.TrimSpace(r.URL.Query().Get("ids")); raw != "" {
+		for _, id := range strings.Split(raw, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+
 	invoices, total, err := h.svc.List(r.Context(), ListFilter{
 		TenantID:       tenantID,
 		CustomerID:     r.URL.Query().Get("customer_id"),
 		SubscriptionID: r.URL.Query().Get("subscription_id"),
 		Status:         r.URL.Query().Get("status"),
 		PaymentStatus:  r.URL.Query().Get("payment_status"),
+		IDs:            ids,
 		Limit:          limit,
 		Offset:         offset,
 		// Sort + direction are validated against a closed set in

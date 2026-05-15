@@ -48,6 +48,13 @@ type ListFilter struct {
 	TenantID   string
 	Status     string
 	ExternalID string
+	// IDs scopes the result to a specific set of customer IDs. Used by
+	// other list pages (Invoices, Subscriptions, etc.) to fetch
+	// exactly the customers referenced by their primary rows, avoiding
+	// the "list-then-client-side-join" anti-pattern that surfaces
+	// "Unknown" rows when a referenced customer falls off the default
+	// 50-row page of an unrelated list. Empty = no ID filter applied.
+	IDs        []string
 	Limit      int
 	Offset     int
 	Sort       string // closed allow-list (validated in store); empty defaults to created_at
