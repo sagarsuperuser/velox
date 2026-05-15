@@ -994,8 +994,6 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 |------|----------|
 | Zero usage | Base fee only |
 | Meter without rating rule | Usage silently skipped |
-| Duplicate idempotency key, same body | Cached response, 1 row |
-| Duplicate idempotency key, different body | 409 |
 | Invalid `external_customer_id` on ingest | "customer not found" |
 | Invalid `event_name` on ingest | "meter not found" |
 | Void already voided invoice | Error |
@@ -1004,6 +1002,8 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 | Cancel canceled subscription | Error |
 | Esc from modal with form data | "Unsaved changes" prompt |
 | Typed destructive confirm | `VOID` / `CANCEL` / `DELETE` required to enable submit; wrong word keeps button disabled |
+
+(Duplicate Idempotency-Key behaviour — same-body cached, different-body 409 — covered by FLOW B5.)
 
 ## FLOW U8: Request-ID in error toasts
 
@@ -1054,11 +1054,6 @@ Major releases, infra changes, post-mortems.
 - [ ] `SELECT display_name, email FROM customers …` → values prefixed `enc:`. API returns plaintext.
 - [ ] `SELECT legal_name, email, phone, tax_id FROM customer_billing_profiles …` → all 4 prefixed `enc:`.
 - [ ] Pre-encryption rows still read correctly (no `enc:` prefix → returned as-is).
-
-## FLOW X6: Webhook replay
-
-- [ ] Capture real Stripe payload + signature → replay 5+ min later → rejected (timestamp tolerance >300s).
-- [ ] Modified payload + original signature → rejected.
 
 ## FLOW X7: Stripe Tax
 
@@ -1178,5 +1173,5 @@ The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingP
 
 ## Webhook signature fails
 - Wrong `whsec_…` after `stripe listen` restart (CLI rotates per run).
-- Clock skew >5 min → rejected (FLOW X6).
+- Clock skew >5 min → rejected (FLOW W1).
 - Wrong webhook URL — must be `/v1/webhooks/stripe/<vlx_spc_…>`.
