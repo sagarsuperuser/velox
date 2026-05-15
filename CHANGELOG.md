@@ -13,6 +13,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Changed
 
+- **MANUAL_TEST second-pass trim.** Cut U0 (Quickstart wizard / TTFI) — pre-launch speculative onboarding polish with zero DP demand. Trimmed B18 (Meter Detail page) from 9 UI checkpoints to 4 essentials. Trimmed R5 (Recipes dashboard UI) — collapsed two sub-sections into 2 lines, fixed stale "5 cards" to "3 cards" post-Phase 2 trim. Added a **priority signal** at the top of Tier 2: explicit Demo-blocking / Compliance / Operator-UX-polish buckets so operators know which flows to run before a DP demo vs which are routine UX-rework checks. Net delta: −18 lines.
 - **MANUAL_TEST audited + trimmed for wedge alignment.** Cut U5 (dark mode), U6 (responsive), U11 (report-an-issue) — pure polish, not demo-blocking, easy regressions to spot manually. Cut X12 (velox-cli flow) — niche utility with no DP demand. Merged U9 (typed destructive confirms) into U7 (Edge cases) as a single row. Trimmed K3 (API keys page UX) from 8 polish checkpoints to 3 core observables (create dialog, raw-key-shown-once, revoke). Added FLOW S2 (AI-native end-to-end smoke) — strings the wedge pieces together: recipe instantiate → in_advance plan → LiteLLM ingest (5 calls) → hybrid cycle invoice → public cost dashboard. Run before every DP demo (~15 min). Net delta: +7 lines, but focus shifted from operator-polish surface area to wedge demo-path verification.
 
 ### Added

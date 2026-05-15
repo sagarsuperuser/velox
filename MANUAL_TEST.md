@@ -167,6 +167,13 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 
 One flow per shipping feature. Run only what your change touched.
 
+**Priority signal:**
+- **Demo-blocking** (run before every DP demo): S1, S2, A1-A3, K1-K2, TC1-TC4, B1, B6, B13-B17, CU8, X15, all relevant I-series. Catches wedge regressions and the money path.
+- **Compliance / correctness** (run on quarterly review or any tax/dunning change): B2, B10, B11, D1-D4, C1-C3, X1, X5, X7.
+- **Operator UX polish** (run only when reworking that surface): K3, R5, B12, B18, CU6, U1, U3, U7-U10. Skip on routine pre-merge if you didn't touch the UI.
+
+The matrix isn't enforced — operators decide based on the change. Default to "run everything your change touched + run S1/S2 always."
+
 ## Tenant timezone
 
 Single tenant-wide timezone used for date input and timestamp display
@@ -599,15 +606,10 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 
 ## FLOW B18: Meter Detail page
 
-- [ ] Breadcrumb `Pricing / <meter>`. Header: name, ID, default-aggregation badge.
-- [ ] Default rule card renders latest version of linked rating rule (verify by editing rule → version badge bumps).
-- [ ] Mode rendering: flat = price + per-unit; graduated = tiers table; package = inline.
-- [ ] Dimension-matched rules table: Priority, Dimension chips, Aggregation, Rating rule, Created, trash.
-- [ ] Add rule dialog: dimension k=v rows, aggregation select with helper text, priority input, rating-rule select.
-- [ ] Dimension values coerce: `true/false` → bool, numeric strings → number, else string.
-- [ ] Submit success → toast + table refetches in priority order.
-- [ ] Per-row trash → typed `delete` confirm. Already-finalized invoices unaffected after delete.
-- [ ] "Used by N plans" section lists plans with this meter.
+- [ ] Default rule card renders the latest version of the linked rating rule (edit rule → version badge bumps).
+- [ ] Add dimension-matched rule: k=v rows, priority, rating-rule select → save → table refetches in priority order.
+- [ ] Dimension value coercion: `true/false` → bool, numeric strings → number, else string.
+- [ ] Per-row delete: typed `delete` confirm; already-finalized invoices unaffected.
 
 ---
 
@@ -639,16 +641,8 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 
 ## FLOW R5: Dashboard UI
 
-- [ ] `/recipes` → 5 cards, Preview opens side panel with projected resources.
-- [ ] Instantiate dialog names side-effects ("creates 4 products + 12 prices + …"). Confirm → redirect to `/products`.
-- [ ] Recipe card flips to "Installed" with date.
-
-### Uninstall
-
-- [ ] Installed card → configure dialog has Uninstall button.
-- [ ] Confirm uninstall → `recipe_instances` row drops; plans/meters/etc. stay (no cascade).
-- [ ] Re-install without renaming originals → 422 name collision.
-- [ ] Re-install after archiving originals → succeeds.
+- [ ] `/recipes` → 3 cards (anthropic_style, openai_style, replicate_style). Preview opens side panel; Instantiate dialog names side-effects and redirects to `/products` on confirm.
+- [ ] Uninstall from the Installed card → `recipe_instances` row drops; plans/meters/etc. stay (no cascade). Re-install without renaming originals → 422 name collision; re-install after archiving originals → succeeds.
 
 ---
 
@@ -979,18 +973,6 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 ---
 
 ## UI / UX
-
-## FLOW U0: Quickstart wizard (TTFI)
-
-- [ ] Fresh tenant lands on `/onboarding`.
-- [ ] Step 1 Template: 5 recipe cards. Pick → preview → "Use this template" instantiates.
-- [ ] Step 2 Stripe: connect tenant key inline.
-- [ ] Step 3 Tax: pick `stripe_tax`/`manual`; tax-id field with FLOW B11 validation.
-- [ ] Step 4 Branding: brand color + logo URL.
-- [ ] Step 5 First test invoice: spawns demo customer + sub + ingests event + runs billing → opens hosted invoice. Total elapsed shown (target <30s).
-- [ ] On finish: TTFI recorded; `/v1/billing/dashboard` shows `time_to_first_invoice_seconds`.
-- [ ] Refresh mid-wizard → resumes on last incomplete step.
-- [ ] "Skip" → marks `onboarding_skipped_at`, lands on dashboard. Re-run `/onboarding?force=true` is idempotent on tenant_id.
 
 ## FLOW U1: Dashboard
 
