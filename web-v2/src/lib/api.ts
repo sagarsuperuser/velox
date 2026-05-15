@@ -831,6 +831,12 @@ export interface TimelineEvent {
   actor_type?: string
   actor_name?: string
   actor_id?: string
+  // Backend-set authoritative flag: true when this event's timestamp
+  // is in simulated time (engine-driven on a clock-pinned sub).
+  // Wall-clock-sourced events (stripe webhooks, email dispatcher,
+  // operator audit actions) ship false. SPA renders the "simulated"
+  // chip purely off this flag — no client-side timestamp heuristic.
+  is_simulated?: boolean
 }
 
 export interface CreditBalance {

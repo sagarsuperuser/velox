@@ -956,23 +956,14 @@ export default function InvoiceDetailPage() {
           <CardContent>
             <div className="relative">
               {timeline.map((event, i) => {
-                // Simulated chip: when the invoice's subscription is
-                // pinned to a test clock, an event timestamp is
-                // "simulated" when it diverges from wall-clock by
-                // more than a day — either direction. Earlier logic
-                // only checked FUTURE timestamps and missed past-
-                // frozen clocks entirely (e.g. frozen at 2024-02-01
-                // while wall-clock is 2026-05-15 silently rendered
-                // every event as real time).
-                //
-                // Webhook arrivals and operator actions stay near
-                // wall-clock and don't trip the threshold, so they
-                // don't get the chip — correct, those ARE real time.
-                const simulatedThresholdMs = 24 * 60 * 60 * 1000
-                const eventMs = new Date(event.timestamp).getTime()
-                const isSimulated = !!subscription?.test_clock_id &&
-                  !Number.isNaN(eventMs) &&
-                  Math.abs(eventMs - Date.now()) > simulatedThresholdMs
+                // Simulated chip: backend stamps `is_simulated=true`
+                // on events produced in frozen-time (engine-driven
+                // on a clock-pinned sub). Wall-clock events (stripe
+                // webhooks, operator audit actions, email dispatcher)
+                // ship false. Authoritative flag — no client-side
+                // heuristic. See internal/invoice/handler.go +
+                // ADR-030 + feedback_no_heuristic_proxies memory.
+                const isSimulated = !!event.is_simulated
                 return (
                 <div key={i} className="flex gap-4 pb-2 last:pb-0">
                   <div className="flex flex-col items-center">
