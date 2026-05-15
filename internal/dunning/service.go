@@ -138,11 +138,24 @@ func (s *Service) fireEvent(ctx context.Context, tenantID, eventType string, pay
 }
 
 // StartDunning initiates a dunning run for a failed invoice payment.
+//
+// One run per invoice, lifetime — Stripe-parity. The previous behaviour
+// (idempotent only on ACTIVE runs, allowing a new run after an escalated
+// or resolved one) produced duplicates on /dunning?tab=runs whenever
+// a re-triggered payment failure landed on an already-terminal invoice.
+// Escalated runs are terminal in our state machine; subsequent payment
+// failures on the same invoice should NOT start a fresh campaign —
+// the operator interprets the existing escalated run as the canonical
+// record and resolves it manually if the customer pays.
+//
+// Returns the existing run regardless of state. The DB UNIQUE index
+// (migration 0085) is the belt to this code's suspenders: even if a
+// race somehow gets past this check, the INSERT in CreateRun fails
+// with a constraint violation.
 func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, customerID string) (domain.InvoiceDunningRun, error) {
-	// Check if there's already an active run for this invoice
-	existing, err := s.store.GetActiveRunByInvoice(ctx, tenantID, invoiceID)
+	existing, err := s.store.GetRunByInvoice(ctx, tenantID, invoiceID)
 	if err == nil && existing.ID != "" {
-		return existing, nil // Idempotent — return existing run
+		return existing, nil // Idempotent — return existing run regardless of state.
 	}
 
 	policy, err := s.store.GetPolicy(ctx, tenantID)

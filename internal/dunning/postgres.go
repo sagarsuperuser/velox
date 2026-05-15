@@ -160,6 +160,35 @@ func (s *PostgresStore) GetRun(ctx context.Context, tenantID, id string) (domain
 	return run, err
 }
 
+// GetRunByInvoice returns the dunning run for the given invoice
+// regardless of state. With the migration-0085 UNIQUE index there
+// is at most one run per (tenant_id, invoice_id) — this method
+// returns it (or ErrNotFound). Used by StartDunning's lifetime
+// idempotency check.
+func (s *PostgresStore) GetRunByInvoice(ctx context.Context, tenantID, invoiceID string) (domain.InvoiceDunningRun, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.InvoiceDunningRun{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var run domain.InvoiceDunningRun
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, invoice_id, COALESCE(customer_id,''), policy_id, state,
+			COALESCE(reason,''), attempt_count, last_attempt_at, next_action_at,
+			paused, resolved_at, COALESCE(resolution,''), created_at, updated_at
+		FROM invoice_dunning_runs
+		WHERE invoice_id = $1
+		LIMIT 1
+	`, invoiceID).Scan(&run.ID, &run.TenantID, &run.InvoiceID, &run.CustomerID, &run.PolicyID,
+		&run.State, &run.Reason, &run.AttemptCount, &run.LastAttemptAt, &run.NextActionAt,
+		&run.Paused, &run.ResolvedAt, &run.Resolution, &run.CreatedAt, &run.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return domain.InvoiceDunningRun{}, errs.ErrNotFound
+	}
+	return run, err
+}
+
 func (s *PostgresStore) GetActiveRunByInvoice(ctx context.Context, tenantID, invoiceID string) (domain.InvoiceDunningRun, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

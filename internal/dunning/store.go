@@ -18,6 +18,11 @@ type Store interface {
 	CreateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error)
 	GetRun(ctx context.Context, tenantID, id string) (domain.InvoiceDunningRun, error)
 	GetActiveRunByInvoice(ctx context.Context, tenantID, invoiceID string) (domain.InvoiceDunningRun, error)
+	// GetRunByInvoice returns the (single) dunning run for an invoice
+	// regardless of state. One-run-per-invoice is enforced at the DB
+	// level by migration 0085's UNIQUE index. Used by StartDunning's
+	// lifetime idempotency check.
+	GetRunByInvoice(ctx context.Context, tenantID, invoiceID string) (domain.InvoiceDunningRun, error)
 	ListRuns(ctx context.Context, filter RunListFilter) ([]domain.InvoiceDunningRun, int, error)
 	UpdateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error)
 	ListDueRuns(ctx context.Context, tenantID string, dueBefore time.Time, limit int) ([]domain.InvoiceDunningRun, error)
