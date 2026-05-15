@@ -1614,6 +1614,36 @@ func buildSubWhere(f ListFilter) (string, []any) {
 	return where, args
 }
 
+// CountLiveSubsByPlan returns the number of subscriptions referencing
+// the given plan whose status is not canceled or archived. Used by
+// pricing.Service.UpdatePlan (ADR-034) to gate billing-affecting
+// field mutations — once any live sub attaches, the plan's base
+// price / timing / meter set is frozen.
+//
+// "Live" excludes canceled + archived. Draft / active / trialing /
+// paused all qualify because they can still produce future invoices
+// and need deterministic terms.
+func (s *PostgresStore) CountLiveSubsByPlan(ctx context.Context, tenantID, planID string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	defer postgres.Rollback(tx)
+
+	var count int
+	err = tx.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT s.id)
+		FROM subscriptions s
+		JOIN subscription_items si ON si.subscription_id = s.id
+		WHERE si.plan_id = $1
+		  AND s.status NOT IN ('canceled', 'archived')
+	`, planID).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // Subscription scan now includes PlanChangedAt on items, but the bytes
 // exchange via JSON. pgx returns bytea for JSONB by default; store/consume
 // raw bytes on the Metadata field so the caller owns the encoding policy.

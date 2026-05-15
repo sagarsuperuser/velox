@@ -494,6 +494,136 @@ func TestUpdatePlan(t *testing.T) {
 	}
 }
 
+// fakePlanUsage is a stub SubscriptionPlanUsageReader that returns a
+// fixed live-sub count for any plan. Used by the immutability guard
+// tests (ADR-034).
+type fakePlanUsage struct {
+	count int
+	err   error
+}
+
+func (f *fakePlanUsage) CountLiveSubsByPlan(_ context.Context, _, _ string) (int, error) {
+	return f.count, f.err
+}
+
+func TestUpdatePlan_ImmutabilityGuard_ADR034(t *testing.T) {
+	ctx := context.Background()
+
+	setup := func(liveCount int) (*Service, domain.Plan) {
+		svc := NewService(newMemStore())
+		svc.SetSubscriptionPlanUsageReader(&fakePlanUsage{count: liveCount})
+		p, err := svc.CreatePlan(ctx, "tenant1", CreatePlanInput{
+			Code: "guard", Name: "Guard", Currency: "USD",
+			BillingInterval: domain.BillingMonthly, BaseAmountCents: 4900,
+			BaseBillTiming: domain.BillInArrears,
+			MeterIDs:       []string{"meter_a"},
+		})
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		return svc, p
+	}
+
+	t.Run("no live subs: billing-affecting fields ARE mutable", func(t *testing.T) {
+		svc, p := setup(0)
+		updated, err := svc.UpdatePlan(ctx, "tenant1", p.ID, CreatePlanInput{
+			BaseAmountCents: 9900,
+			BaseBillTiming:  domain.BillInAdvance,
+			MeterIDs:        []string{"meter_a", "meter_b"},
+		})
+		if err != nil {
+			t.Fatalf("expected allowed (no subs): %v", err)
+		}
+		if updated.BaseAmountCents != 9900 {
+			t.Errorf("base_amount not applied: %d", updated.BaseAmountCents)
+		}
+		if updated.BaseBillTiming != domain.BillInAdvance {
+			t.Errorf("base_bill_timing not applied: %q", updated.BaseBillTiming)
+		}
+	})
+
+	t.Run("live subs: base_amount_cents change rejected", func(t *testing.T) {
+		svc, p := setup(1)
+		_, err := svc.UpdatePlan(ctx, "tenant1", p.ID, CreatePlanInput{
+			BaseAmountCents: 9900,
+		})
+		if err == nil {
+			t.Fatal("expected error blocking base_amount_cents mutation")
+		}
+	})
+
+	t.Run("live subs: base_bill_timing flip rejected", func(t *testing.T) {
+		svc, p := setup(2)
+		_, err := svc.UpdatePlan(ctx, "tenant1", p.ID, CreatePlanInput{
+			BaseBillTiming: domain.BillInAdvance,
+		})
+		if err == nil {
+			t.Fatal("expected error blocking base_bill_timing flip")
+		}
+	})
+
+	t.Run("live subs: meter_ids change rejected", func(t *testing.T) {
+		svc, p := setup(1)
+		_, err := svc.UpdatePlan(ctx, "tenant1", p.ID, CreatePlanInput{
+			MeterIDs: []string{"meter_a", "meter_b"},
+		})
+		if err == nil {
+			t.Fatal("expected error blocking meter_ids mutation")
+		}
+	})
+
+	t.Run("live subs: meter_ids same set (different order) NOT a change", func(t *testing.T) {
+		svc, p := setup(5)
+		// Plan was created with [meter_a]; pass [meter_a] again.
+		_, err := svc.UpdatePlan(ctx, "tenant1", p.ID, CreatePlanInput{
+			MeterIDs: []string{"meter_a"},
+		})
+		if err != nil {
+			t.Errorf("identical meter set should not trigger guard: %v", err)
+		}
+	})
+
+	t.Run("live subs: display-only fields STILL mutable", func(t *testing.T) {
+		svc, p := setup(3)
+		updated, err := svc.UpdatePlan(ctx, "tenant1", p.ID, CreatePlanInput{
+			Name:        "Renamed",
+			Description: "New description",
+			TaxCode:     "txcd_10000000",
+		})
+		if err != nil {
+			t.Fatalf("display-only mutation should be allowed: %v", err)
+		}
+		if updated.Name != "Renamed" {
+			t.Errorf("name not applied: %q", updated.Name)
+		}
+	})
+
+	t.Run("live subs: no-op same value passes", func(t *testing.T) {
+		svc, p := setup(1)
+		_, err := svc.UpdatePlan(ctx, "tenant1", p.ID, CreatePlanInput{
+			BaseAmountCents: 4900, // same as seed
+		})
+		if err != nil {
+			t.Errorf("no-op base_amount should pass: %v", err)
+		}
+	})
+
+	t.Run("unwired reader: guard is silent (test-only fallback)", func(t *testing.T) {
+		svc := NewService(newMemStore())
+		// NOT wiring SetSubscriptionPlanUsageReader.
+		p, _ := svc.CreatePlan(ctx, "tenant1", CreatePlanInput{
+			Code: "unwired", Name: "Unwired", Currency: "USD",
+			BillingInterval: domain.BillingMonthly, BaseAmountCents: 4900,
+		})
+		_, err := svc.UpdatePlan(ctx, "tenant1", p.ID, CreatePlanInput{
+			BaseAmountCents: 9900,
+		})
+		if err != nil {
+			t.Errorf("unwired reader should fail-open in narrow tests: %v", err)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Meter Pricing Rules
 // ---------------------------------------------------------------------------

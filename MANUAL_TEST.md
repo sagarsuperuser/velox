@@ -496,6 +496,7 @@ Default `base_bill_timing=in_arrears`: the recurring base + any usage settles at
 - [ ] Downgrade immediately → credits to balance.
 - [ ] Plan change without immediately → no proration; applies at next period boundary.
 - [ ] **Plan change across `base_bill_timing`** (rare): changing a sub from an `in_advance` plan to an `in_arrears` plan (or vice versa) is supported at the next period boundary — the destination plan's timing takes effect, no special cross-boundary proration. Mid-cycle immediate flip across timings is not supported (the engine handles whichever timing the destination declares from cycle-close onward). Operator-facing rule: cross-timing changes should be scheduled `effective=next_period`, not `immediate`.
+- [ ] **Plan billing-fields immutability (ADR-034)**: with at least one live sub on a plan, `PATCH /v1/plans/{id}` with a different `base_amount_cents`, `base_bill_timing`, or `meter_ids` → **422** with message naming the blocked field(s) + live-sub count + "Create a new plan instead." Display-only fields (`name`, `description`, `tax_code`, `status`) STILL mutate cleanly on the same call. On a plan with zero live subs, all fields are mutable (covers typo correction at plan creation). Canceled / archived subs do NOT count as live for the guard.
 
 ## FLOW B8: Usage caps
 
