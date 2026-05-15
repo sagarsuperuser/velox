@@ -119,6 +119,48 @@ Brings the stack up, runs the full money path, signs out. Pre-merge canary.
 
 **S1 passing = core engine healthy.**
 
+## FLOW S2: AI-native end-to-end smoke
+
+Walks the wedge demo path: instantiate an AI-native recipe → set up a customer on an in_advance plan → ingest LiteLLM-shaped events → observe hybrid invoice → fetch the public cost dashboard. ~15 min. Run this BEFORE every DP demo.
+
+Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
+
+### S2.1 Recipe + plan
+- [ ] `POST /v1/recipes/anthropic_style/instantiate {"livemode":false}` → 201. Creates `tokens_input` + `tokens_output` meters + a `pro-anthropic` plan with multi-dim rules.
+- [ ] Pricing → edit the plan → set **Base fee billed = At start of period**, base price $99/mo, save. Plan now in_advance with metered usage.
+
+### S2.2 Customer + day-1 invoice
+- [ ] Create customer `external_id=cus_demo_ai` with PM `4242 4242 4242 4242`.
+- [ ] Create active subscription on `pro-anthropic` → day-1 invoice generated: `billing_reason=subscription_create`, $99 base only, auto-charged.
+
+### S2.3 LiteLLM ingest
+- [ ] POST a LiteLLM payload directly (simulates the proxy callback):
+  ```bash
+  curl -sS -X POST "$API/v1/integrations/litellm/spend" \
+    -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+    -d '{
+      "id":"smoke_call_1","call_type":"completion",
+      "model":"claude-3-5-sonnet-20241022","custom_llm_provider":"anthropic",
+      "user":"cus_demo_ai",
+      "usage":{"prompt_tokens":1200,"completion_tokens":350,"total_tokens":1550},
+      "response_cost":0.018,"endTime":'$(date +%s)'
+    }' | jq .
+  ```
+  → `{"accepted":2,"skipped":0,"errors":[]}`.
+- [ ] Repeat the curl 4 more times with `smoke_call_2` … `smoke_call_5` → 10 events total (5 input + 5 output).
+- [ ] `GET /v1/usage-events?external_customer_id=cus_demo_ai&limit=20` → 10 events, all with `dimensions.model=claude-3-5-sonnet-20241022` + `dimensions.provider=anthropic`.
+
+### S2.4 Hybrid invoice at cycle close
+- [ ] Mint a test clock + advance ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape).
+- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: TWO line types — `tokens_input` + `tokens_output` for the elapsed period AND the $99 base line covering the UPCOMING period. The base line shows "Covers <upcoming range> (in advance)" sub-line.
+
+### S2.5 Public cost dashboard
+- [ ] Customer detail → **Public cost-dashboard URL** → Generate URL. Copy the `https://…/v1/public/cost-dashboard/vlx_pcd_…`.
+- [ ] `curl <that URL>` (no auth header) → JSON with `customer_id`, `tenant_id`, `billing_period`, `subscriptions[]`, `usage[]` (per-meter + rules), `totals`, `projected_total_cents`. **No PII** (email/display_name/billing_profile absent).
+- [ ] Click Rotate in the dashboard → old URL goes 401 immediately; the new URL works.
+
+**S2 passing = wedge demo path is healthy. The AI-native pitch (LiteLLM → multi-dim meters → hybrid invoice → embeddable cost view) works end-to-end.**
+
 ---
 
 # Tier 2 — Full Suite
@@ -202,14 +244,9 @@ Single tenant-wide timezone used for date input and timestamp display
 
 ## FLOW K3: API Keys page UX
 
-- [ ] Empty tenant: EmptyState with "Create API Key" button.
-- [ ] Active card shows: name, masked prefix, key-type badge, Created/Last-used/Expires.
-- [ ] "Expired keys" + "Revoked keys" sections collapsed by default.
-- [ ] Create dialog: name (≤100 chars), key type (Secret/Publishable), expiration preset. Custom requires date.
-- [ ] Submit success → "API Key Created" dialog with raw key + Copy button (toast "Copied"). Closing removes key from memory.
-- [ ] Per-row Revoke → typed AlertDialog → revoke. Always enabled (sessions are user-bound, not key-bound).
-- [ ] Per-row Rotate → modal with grace presets (Now / 1h / 24h / 7d). Old key works through window.
-- [ ] Server validation surfaces inline (e.g. blank name → 422 with `field=name`).
+- [ ] Create dialog: name (≤100 chars), key type (Secret/Publishable), expiration preset (Custom requires date).
+- [ ] Submit success → raw key shown ONCE with Copy button. Closing the dialog removes the raw value from memory; it never re-appears in the active-keys list.
+- [ ] Per-row Revoke → typed confirm; revoked key 401s on next request.
 
 ## FLOW K4: Rotate
 
@@ -970,16 +1007,6 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Decimal precision: `0.5 + 0.5 + 0.0001` → `1.0001` (no rounding).
 - [ ] Export CSV.
 
-## FLOW U5: Dark mode
-
-- [ ] Toggle in sidebar footer → sidebar/cards/tables/modals/forms/charts switch.
-- [ ] Refresh → persists (`localStorage:velox-theme`). Delete key → follows system preference.
-
-## FLOW U6: Responsive
-
-- [ ] 768px tablet: tables scroll horizontally with fade. Sidebar → hamburger.
-- [ ] Stat cards stack 2-col. Modals don't overflow.
-
 ## FLOW U7: Edge cases
 
 | Case | Expected |
@@ -995,6 +1022,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 | Duplicate subscription code | Humanized error |
 | Cancel canceled subscription | Error |
 | Esc from modal with form data | "Unsaved changes" prompt |
+| Typed destructive confirm | `VOID` / `CANCEL` / `DELETE` required to enable submit; wrong word keeps button disabled |
 
 ## FLOW U8: Request-ID in error toasts
 
@@ -1002,22 +1030,9 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Even when response envelope fails to parse → Request-Id from `Velox-Request-Id` header still appears.
 - [ ] `grep req_… server.log` matches the toast.
 
-## FLOW U9: Typed destructive confirms
-
-- [ ] Type `VOID` to confirm: void invoice, void credit note.
-- [ ] Type `CANCEL`: cancel subscription (operator + customer portal).
-- [ ] Type `DELETE`: delete webhook endpoint.
-- [ ] Wrong word → confirm button disabled. Cancel always closes.
-
 ## FLOW U10: Public pages
 
 - [ ] `/invoice/:token` (FLOW I10), `/update-payment` (FLOW D4), `/checkout/success`, `/login` all load without auth.
-
-## FLOW U11: Report-an-issue
-
-- [ ] Signed-in: account menu → "Report an issue" → mailto with `tenant_id`, current URL, user agent, latest `Velox-Request-Id`.
-- [ ] Trigger failing request, click report → Request-Id in mailto matches the toast.
-- [ ] Signed out `/login` "Trouble signing in?" → mailto with URL + UA (no Request-Id pre-auth).
 
 ---
 
@@ -1102,14 +1117,6 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 - [ ] POST /v1/usage-events/batch with 1000 events → `{accepted:1000, rejected:0}`.
 - [ ] Include duplicate idempotency keys → duplicates rejected.
 - [ ] Run billing → aggregated correctly.
-
-## FLOW X12: Operator CLI (`velox-cli`)
-
-- [ ] `--help` lists `sub`, `invoice`, `--api-url`, `--api-key`.
-- [ ] `velox-cli sub list` → table; `--status`, `--limit`, `--customer`, `--plan` filters work.
-- [ ] `--output=json` → `{data:[…], total:N}`. Multi-item subs: PLAN col joins with `,`; JSON preserves array.
-- [ ] Missing/wrong key → exit 1 with stderr message.
-- [ ] `invoice send <inv>` → 202; outbox row appears. Unknown id → 404.
 
 ## FLOW X14: Self-host (Compose)
 
