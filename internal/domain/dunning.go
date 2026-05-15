@@ -70,6 +70,24 @@ type InvoiceDunningRun struct {
 	Resolution    DunningResolution `json:"resolution,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
+
+	// Denormalized for list rendering (saves N round-trips for the
+	// /dunning page rendering invoice number / amount due / currency
+	// per row). Populated by the LEFT JOIN in ListRuns; empty/zero
+	// when the joined invoice can't be resolved (deleted, RLS gap).
+	InvoiceNumber       string `json:"invoice_number,omitempty"`
+	InvoiceAmountDue    int64  `json:"invoice_amount_due_cents,omitempty"`
+	InvoiceCurrency     string `json:"invoice_currency,omitempty"`
+
+	// EffectiveNow is the owning sub's test-clock frozen_time when
+	// the run is on a clock-pinned sub. Frontend uses this as the
+	// "now" baseline for relative-time rendering — wall-clock would
+	// surface "overdue" on every row whose next_action_at sits in
+	// frozen-time domain (e.g. 2024-02 while wall-clock is 2026).
+	// Nil for wall-clock runs (the relative-time renderer falls back
+	// to Date.now()). Authoritative; replaces the prior client-side
+	// 24h-divergence heuristic.
+	EffectiveNow *time.Time `json:"effective_now,omitempty"`
 }
 
 type CustomerDunningOverride struct {

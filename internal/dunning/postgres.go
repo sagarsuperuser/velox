@@ -196,12 +196,12 @@ func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]d
 	idx := 1
 
 	if filter.InvoiceID != "" {
-		clauses = append(clauses, fmt.Sprintf("invoice_id = $%d", idx))
+		clauses = append(clauses, fmt.Sprintf("r.invoice_id = $%d", idx))
 		args = append(args, filter.InvoiceID)
 		idx++
 	}
 	if filter.State != "" {
-		clauses = append(clauses, fmt.Sprintf("state = $%d", idx))
+		clauses = append(clauses, fmt.Sprintf("r.state = $%d", idx))
 		args = append(args, filter.State)
 		idx++
 	}
@@ -218,15 +218,26 @@ func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]d
 	}
 
 	var total int
-	countQuery := `SELECT COUNT(*) FROM invoice_dunning_runs` + whereClause
+	countQuery := `SELECT COUNT(*) FROM invoice_dunning_runs r` + whereClause
 	if err := tx.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	query := `SELECT id, tenant_id, invoice_id, COALESCE(customer_id,''), policy_id, state,
-		COALESCE(reason,''), attempt_count, last_attempt_at, next_action_at,
-		paused, resolved_at, COALESCE(resolution,''), created_at, updated_at
-		FROM invoice_dunning_runs` + whereClause + ` ORDER BY created_at DESC`
+	// LEFT JOIN denormalizes invoice fields + the owning sub's test-
+	// clock frozen_time onto each row. Eliminates N round-trips for
+	// the /dunning page (was: 1 list + N invoice fetches + N sub
+	// fetches + N clock fetches; now: 1 query). LEFT JOINs because
+	// invoice / sub / clock references can be NULL or unresolvable
+	// (RLS gap, deleted) without dropping the dunning row itself.
+	query := `SELECT r.id, r.tenant_id, r.invoice_id, COALESCE(r.customer_id,''), r.policy_id, r.state,
+		COALESCE(r.reason,''), r.attempt_count, r.last_attempt_at, r.next_action_at,
+		r.paused, r.resolved_at, COALESCE(r.resolution,''), r.created_at, r.updated_at,
+		COALESCE(i.invoice_number, ''), COALESCE(i.amount_due_cents, 0), COALESCE(i.currency, ''),
+		tc.frozen_time
+		FROM invoice_dunning_runs r
+		LEFT JOIN invoices i ON i.id = r.invoice_id
+		LEFT JOIN subscriptions s ON s.id = i.subscription_id
+		LEFT JOIN test_clocks tc ON tc.id = s.test_clock_id` + whereClause + ` ORDER BY r.created_at DESC`
 	limit := filter.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 50
@@ -245,7 +256,8 @@ func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]d
 		var r domain.InvoiceDunningRun
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.InvoiceID, &r.CustomerID, &r.PolicyID,
 			&r.State, &r.Reason, &r.AttemptCount, &r.LastAttemptAt, &r.NextActionAt,
-			&r.Paused, &r.ResolvedAt, &r.Resolution, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			&r.Paused, &r.ResolvedAt, &r.Resolution, &r.CreatedAt, &r.UpdatedAt,
+			&r.InvoiceNumber, &r.InvoiceAmountDue, &r.InvoiceCurrency, &r.EffectiveNow); err != nil {
 			return nil, 0, err
 		}
 		runs = append(runs, r)

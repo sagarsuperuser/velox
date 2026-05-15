@@ -60,8 +60,21 @@ import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
 import { AlertTriangle, Loader2, X, XCircle } from 'lucide-react'
 
-function relativeTime(dateStr: string): string {
-  const now = Date.now()
+// effectiveNowMs resolves the "now" baseline for relative-time
+// formatting on dunning rows. When effectiveNowISO is provided (the
+// run's owning sub is clock-pinned and the backend embedded the
+// clock's frozen_time on the row), use that; otherwise fall back to
+// wall-clock. Replaces the prior 24h-divergence heuristic.
+function effectiveNowMs(effectiveNowISO?: string): number {
+  if (effectiveNowISO) {
+    const ts = new Date(effectiveNowISO).getTime()
+    if (!Number.isNaN(ts)) return ts
+  }
+  return Date.now()
+}
+
+function relativeTime(dateStr: string, effectiveNowISO?: string): string {
+  const now = effectiveNowMs(effectiveNowISO)
   const then = new Date(dateStr).getTime()
   const diffMs = now - then
   const diffMins = Math.floor(diffMs / 60000)
@@ -75,8 +88,8 @@ function relativeTime(dateStr: string): string {
   return formatDateTime(dateStr)
 }
 
-function futureRelativeTime(dateStr: string): string {
-  const now = Date.now()
+function futureRelativeTime(dateStr: string, effectiveNowISO?: string): string {
+  const now = effectiveNowMs(effectiveNowISO)
   const then = new Date(dateStr).getTime()
   const diffMs = then - now
   if (diffMs < 0) return 'overdue'
@@ -642,7 +655,7 @@ function RunsTab() {
                             <div className="flex items-center gap-1.5">
                               <Link to={`/invoices/${run.invoice_id}`} onClick={e => e.stopPropagation()}
                                 className="text-sm font-mono text-primary hover:underline">
-                                {inv?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
+                                {run.invoice_number || inv?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
                               </Link>
                               {inv?.subscription_id && subTestClockMap[inv.subscription_id] && (
                                 <TestClockBadge testClockId={subTestClockMap[inv.subscription_id]} />
@@ -650,7 +663,13 @@ function RunsTab() {
                             </div>
                           </TableCell>
                           <TableCell className="text-right tabular-nums font-mono text-sm">
-                            {inv ? formatCents(inv.amount_due_cents) : '\u2014'}
+                            {/* Prefer the backend-embedded denormalised
+                                amount (server-side JOIN). Falls back to
+                                the invoiceMap lookup for rows where the
+                                join failed (rare RLS gap). */}
+                            {run.invoice_amount_due_cents !== undefined && run.invoice_amount_due_cents !== 0
+                              ? formatCents(run.invoice_amount_due_cents)
+                              : inv ? formatCents(inv.amount_due_cents) : '\u2014'}
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-2">
@@ -673,12 +692,12 @@ function RunsTab() {
                           </TableCell>
                           <TableCell>
                             {run.next_action_at
-                              ? <span className="text-xs text-muted-foreground" title={formatDateTime(run.next_action_at)}>{futureRelativeTime(run.next_action_at)}</span>
+                              ? <span className="text-xs text-muted-foreground" title={formatDateTime(run.next_action_at)}>{futureRelativeTime(run.next_action_at, run.effective_now)}</span>
                               : <span className="text-xs text-muted-foreground">{'\u2014'}</span>
                             }
                           </TableCell>
                           <TableCell>
-                            <span className="text-xs text-muted-foreground" title={formatDateTime(run.created_at)}>{relativeTime(run.created_at)}</span>
+                            <span className="text-xs text-muted-foreground" title={formatDateTime(run.created_at)}>{relativeTime(run.created_at, run.effective_now)}</span>
                           </TableCell>
                         </TableRow>
 

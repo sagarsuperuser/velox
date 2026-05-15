@@ -1240,6 +1240,16 @@ export interface DunningRun {
   resolved_at?: string
   resolution: string
   created_at: string
+  // Denormalized invoice fields (backend LEFT JOIN). Empty/zero when
+  // the joined invoice can't be resolved (rare: deleted, RLS gap).
+  invoice_number?: string
+  invoice_amount_due_cents?: number
+  invoice_currency?: string
+  // Owning sub's test-clock frozen_time when applicable. Used as the
+  // "now" baseline for relative-time rendering on this row (Next
+  // Retry / Started). Missing for wall-clock runs — renderer falls
+  // back to Date.now(). Authoritative; replaces prior heuristic.
+  effective_now?: string
 }
 
 export interface DunningEvent {
