@@ -80,6 +80,15 @@ func (m *memStore) GetActiveRunByInvoice(_ context.Context, _, invoiceID string)
 	return domain.InvoiceDunningRun{}, errs.ErrNotFound
 }
 
+func (m *memStore) GetRunByInvoice(_ context.Context, _, invoiceID string) (domain.InvoiceDunningRun, error) {
+	for _, r := range m.runs {
+		if r.InvoiceID == invoiceID {
+			return r, nil
+		}
+	}
+	return domain.InvoiceDunningRun{}, errs.ErrNotFound
+}
+
 func (m *memStore) ListRuns(_ context.Context, filter RunListFilter) ([]domain.InvoiceDunningRun, int, error) {
 	var result []domain.InvoiceDunningRun
 	for _, r := range m.runs {
