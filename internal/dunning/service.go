@@ -336,8 +336,18 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 			Reason:       retryErr.Error(),
 		})
 
-		// Send dunning warning email asynchronously
-		if s.emailNotifier != nil && s.customerEmail != nil {
+		// Send dunning warning email asynchronously.
+		//
+		// Skip when THIS attempt has just used the last retry —
+		// `exhaustRun` (called below at the post-attempt check, line
+		// ~432) will fire the terminal escalation email instead. A
+		// "we'll retry on [no more retries scheduled]" warning is
+		// confusing and stacks two back-to-back emails on the customer.
+		// Customer experience after fix: N-1 warnings during retries
+		// 1..N-1, then ONE escalation on retry N. Catchup-mode
+		// experience is the same, just compressed in real time.
+		willExhaustThisAttempt := run.AttemptCount >= policy.MaxRetryAttempts
+		if !willExhaustThisAttempt && s.emailNotifier != nil && s.customerEmail != nil {
 			go func() {
 				email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, run.CustomerID)
 				if err != nil || email == "" {
