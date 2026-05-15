@@ -9,7 +9,12 @@ import (
 
 type Store interface {
 	AppendEntry(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error)
-	ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerID, invoiceID, invoiceDesc string, invoiceAmountCents int64) (int64, error)
+	// ApplyToInvoiceAtomic debits credits and reduces invoice.amount_due
+	// atomically. `at` stamps both the new ledger usage entry and the
+	// invoice's updated_at, keeping the application on simulated time
+	// during catchup (cycle-close instant). Pass zero in operator paths
+	// to fall back to clock.Now() at the postgres layer.
+	ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerID, invoiceID, invoiceDesc string, invoiceAmountCents int64, at time.Time) (int64, error)
 
 	// AdjustAtomic appends a manual adjustment entry with the balance check
 	// performed inside the same locked tx. Closes the TOCTOU race where two

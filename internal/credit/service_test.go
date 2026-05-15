@@ -132,7 +132,7 @@ func (m *memStore) AdjustAtomic(ctx context.Context, tenantID, customerID, descr
 	})
 }
 
-func (m *memStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerID, invoiceID, invoiceDesc string, invoiceAmountCents int64) (int64, error) {
+func (m *memStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerID, invoiceID, invoiceDesc string, invoiceAmountCents int64, _ time.Time) (int64, error) {
 	if invoiceAmountCents <= 0 {
 		return 0, nil
 	}

@@ -123,8 +123,12 @@ type TestClockReader interface {
 }
 
 // CreditApplier applies customer credits to an invoice before charging.
+// ApplyToInvoiceAt is the simulated-time-aware variant — engine callers
+// pass their `now` (cycle close instant) so the ledger usage entry +
+// invoice updated_at land on simulated time rather than advance-end
+// frozen_time during catchup.
 type CreditApplier interface {
-	ApplyToInvoice(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64, invoiceNumber ...string) (int64, error)
+	ApplyToInvoiceAt(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64, at time.Time, invoiceNumber ...string) (int64, error)
 }
 
 // CreditGranter issues a new credit grant. Used by BillOnCancel
@@ -1152,11 +1156,38 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		return false, fmt.Errorf("subscription has no billing period set")
 	}
 
-	// Resolve "now" once per sub: a test-clock-attached sub runs on its
-	// frozen_time, wall-clock otherwise. All subsequent time comparisons in
-	// this function must use this value so trial/pending-plan/mark-paid
-	// decisions stay consistent with the clock the sub lives on.
+	// Resolve "now" as this cycle's own close instant — sub.NextBillingAt
+	// at entry, falling back to the clock's frozen_time / wall-clock only
+	// when NextBillingAt is unset (unreachable from billSubscription's
+	// caught-up check, but kept defensive).
+	//
+	// Anchoring on the cycle boundary keeps every per-cycle decision in
+	// the time domain the cycle belongs to:
+	//   - IssuedAt / CreatedAt / DueAt stamped at the cycle close,
+	//     not at advance-end frozen_time. Multi-period catchup now
+	//     produces one invoice per cycle with its own period-correct
+	//     timestamp instead of all invoices sharing advance-end.
+	//   - Pause auto-resume gate evaluates at cycle close: a pause
+	//     scheduled to resume mid-cycle is honored — the May 1 cycle
+	//     does NOT bill if pause resumes May 5, even when the advance
+	//     lands at May 20. Industry parity (Stripe, Lago, Orb).
+	//   - Trial-end activation stamps `activated_at` at the cycle's
+	//     own boundary instead of advance-end.
+	//   - Cancel-at-period-end / scheduled-change applications stamp
+	//     their `canceled_at` / `applied_at` at the cycle boundary.
+	//   - Tax calculation date matches the cycle, so the tax rate
+	//     applicable at the cycle close (not at advance-end) is used.
+	//   - MarkPaid for zero-amount auto-paid invoices stamps PaidAt at
+	//     the cycle close, aligning with IssuedAt.
+	//
+	// In the cron (wall-clock) path NextBillingAt ≈ time.Now() within
+	// one scheduler tick, so the change is neutral — invoice timestamps
+	// land exactly on the period boundary instead of "few minutes after,"
+	// which is the more defensible cosmetic anyway.
 	now := e.effectiveNow(ctx, sub)
+	if sub.NextBillingAt != nil {
+		now = *sub.NextBillingAt
+	}
 
 	// Auto-resume pause_collection if resumes_at has passed. Stripe parity:
 	// the cycle scan checks resumes_at at cycle time (not via a separate
@@ -1793,7 +1824,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// draft invoice that may never be finalized; the credit will apply when
 	// collection resumes and the invoice transitions out of draft.
 	if e.credits != nil && totalWithTax > 0 && !collectionPaused {
-		credited, err := e.credits.ApplyToInvoice(ctx, sub.TenantID, sub.CustomerID, inv.ID, totalWithTax, inv.InvoiceNumber)
+		credited, err := e.credits.ApplyToInvoiceAt(ctx, sub.TenantID, sub.CustomerID, inv.ID, totalWithTax, now, inv.InvoiceNumber)
 		if err != nil {
 			slog.Warn("failed to apply credits", "invoice_id", inv.ID, "error", err)
 		} else if credited > 0 {
@@ -2258,6 +2289,7 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) erro
 			periodStart.UTC().Format("2006-01-02"),
 			periodEnd.UTC().Format("2006-01-02"),
 			cancelAt.UTC().Format("2006-01-02")),
+		At: cancelAt,
 	})
 	if err != nil {
 		return fmt.Errorf("cancel proration credit grant: %w", err)

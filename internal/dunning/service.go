@@ -152,7 +152,17 @@ func (s *Service) fireEvent(ctx context.Context, tenantID, eventType string, pay
 // (migration 0085) is the belt to this code's suspenders: even if a
 // race somehow gets past this check, the INSERT in CreateRun fails
 // with a constraint violation.
-func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, customerID string) (domain.InvoiceDunningRun, error) {
+//
+// failureAt is the simulated moment the charge failed — typically the
+// invoice's cycle-close instant, NOT wall-clock-or-frozen "now." For
+// clock-pinned invoices under catchup, frozen_time is advance-end
+// (e.g. May 20) while the charge "actually" failed at the May 1 cycle
+// close; anchoring next_action_at on frozen_time would push the first
+// retry past advance-end and leave it stranded. The caller is
+// responsible for resolving failureAt from invoice period boundaries.
+// Pass time.Now() (or s.clock.Now(ctx)) when no period anchor is
+// available — that's the wall-clock / manual-invoice case.
+func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, customerID string, failureAt time.Time) (domain.InvoiceDunningRun, error) {
 	existing, err := s.store.GetRunByInvoice(ctx, tenantID, invoiceID)
 	if err == nil && existing.ID != "" {
 		return existing, nil // Idempotent — return existing run regardless of state.
@@ -187,8 +197,15 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 	}
 
 	ctx = s.bindForInvoice(ctx, tenantID, invoiceID)
-	now := s.clock.Now(ctx)
-	t := now.Add(firstRetryDelay)
+	if failureAt.IsZero() {
+		// Defensive fallback — callers should always supply, but a missing
+		// timestamp should not blow up dunning. Use the clock's "now",
+		// which under catchup is advance-end frozen_time (the same
+		// degenerate case we're trying to avoid, but at least the run
+		// gets created so the operator can see it).
+		failureAt = s.clock.Now(ctx)
+	}
+	t := failureAt.Add(firstRetryDelay)
 	nextActionAt := &t
 
 	run, err := s.store.CreateRun(ctx, tenantID, domain.InvoiceDunningRun{
@@ -199,22 +216,26 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 		Reason:       "payment_failed",
 		AttemptCount: 0,
 		NextActionAt: nextActionAt,
-		// CreatedAt on test-clock time so engine-triggered runs
-		// match their related invoice's issued_at when a clock-advance
-		// finalize-and-charge cycle creates the run.
-		CreatedAt: now,
+		// CreatedAt = failureAt so the dunning run lives on simulated
+		// cycle-close time, not orchestrator frozen_time. Aligns the
+		// 'Automatic retry scheduled' row in the invoice timeline with
+		// the cycle's period_end.
+		CreatedAt: failureAt,
 	})
 	if err != nil {
 		return domain.InvoiceDunningRun{}, fmt.Errorf("create dunning run: %w", err)
 	}
 
-	// Record start event
+	// Record start event at the simulated cycle-close instant so
+	// the invoice timeline's 'Automatic retry scheduled' row aligns
+	// with the cycle's period_end, not the orchestrator's frozen_time.
 	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 		RunID:     run.ID,
 		InvoiceID: invoiceID,
 		EventType: domain.DunningEventStarted,
 		State:     domain.DunningActive,
 		Reason:    "payment_failed",
+		CreatedAt: failureAt,
 	})
 
 	slog.Info("dunning started", "run_id", run.ID, "invoice_id", invoiceID)
@@ -248,15 +269,69 @@ func (s *Service) ProcessDueRuns(ctx context.Context, tenantID string, limit int
 // against the clock's frozen_time. The dunning state machine itself
 // (processRun) is identical between paths — only the candidate-fetch
 // scope differs.
+//
+// Loops until ListDueRunsForClock returns zero rows or the safety cap
+// hits — required because one run can advance through multiple retries
+// in a single Advance click. Pre-fix, a single batch only fired the
+// retry that was due at query time; the new next_action_at written
+// by processRun was never re-queried, so the operator saw at most
+// one retry per click even when several were due in the simulated
+// window. Stripe Test Clocks parity: one Advance walks every
+// time-driven action to completion.
+//
+// The re-query is bounded by:
+//   - maxDunningCatchupIters: prevents pathological infinite loops if
+//     processRun leaves a run in a non-progressing state (e.g.
+//     persistent transient skip that rewinds attempt_count without
+//     advancing next_action_at — would otherwise yield the same row
+//     every iteration).
+//   - Per-iteration progress check: if a run reappears with the same
+//     attempt_count it had on the previous iteration, it didn't
+//     advance — bail to avoid spinning.
+const maxDunningCatchupIters = 50
+
 func (s *Service) ProcessDueRunsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, limit int) (int, []error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	dueRuns, err := s.store.ListDueRunsForClock(ctx, tenantID, clockID, frozenTime, limit)
-	if err != nil {
-		return 0, []error{fmt.Errorf("list due runs for clock %s: %w", clockID, err)}
+	total := 0
+	var allErrs []error
+	seen := make(map[string]int) // run_id → last-iteration attempt_count
+	for iter := range maxDunningCatchupIters {
+		if err := ctx.Err(); err != nil {
+			return total, append(allErrs, fmt.Errorf("dunning catchup ctx done: %w", err))
+		}
+		dueRuns, err := s.store.ListDueRunsForClock(ctx, tenantID, clockID, frozenTime, limit)
+		if err != nil {
+			return total, append(allErrs, fmt.Errorf("list due runs for clock %s: %w", clockID, err))
+		}
+		if len(dueRuns) == 0 {
+			return total, allErrs
+		}
+		if iter > 0 {
+			anyProgress := false
+			for _, r := range dueRuns {
+				if r.AttemptCount > seen[r.ID] {
+					anyProgress = true
+					break
+				}
+			}
+			if !anyProgress {
+				slog.Warn("dunning catchup loop made no progress — exiting",
+					"clock_id", clockID, "iter", iter, "remaining_due", len(dueRuns))
+				return total, allErrs
+			}
+		}
+		for _, r := range dueRuns {
+			seen[r.ID] = r.AttemptCount
+		}
+		n, errs := s.processRunsBatch(ctx, tenantID, dueRuns)
+		total += n
+		allErrs = append(allErrs, errs...)
 	}
-	return s.processRunsBatch(ctx, tenantID, dueRuns)
+	slog.Warn("dunning catchup loop hit safety cap — remaining runs deferred to next Advance",
+		"clock_id", clockID, "cap", maxDunningCatchupIters, "processed", total)
+	return total, allErrs
 }
 
 // processRunsBatch is the shared per-run body of ProcessDueRuns and
@@ -302,13 +377,27 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 
 	// Check if max retries exhausted
 	if run.AttemptCount >= policy.MaxRetryAttempts {
-		return s.exhaustRun(ctx, tenantID, run, policy)
+		return s.exhaustRun(ctx, tenantID, run, policy, s.clock.Now(ctx))
 	}
 
 	// Attempt retry
 	run.AttemptCount++
 	ctx = s.bindForInvoice(ctx, tenantID, run.InvoiceID)
+	// Anchor this attempt on the simulated moment it was scheduled
+	// for (run.NextActionAt) rather than the orchestrator's
+	// frozen_time. Without this, every retry under catchup gets
+	// last_attempt_at = advance-end frozen_time, and the next retry
+	// is scheduled at frozen_time + interval (always past advance-end,
+	// so it never fires in the same Advance click). Anchoring on
+	// NextActionAt walks the state machine through simulated time:
+	// retry 1 at NextActionAt (May 4), schedules retry 2 at May 7,
+	// etc. Falls back to clock.Now() for runs missing NextActionAt
+	// (defensive — shouldn't happen for runs that just passed
+	// `next_action_at <= frozen_time`).
 	now := s.clock.Now(ctx)
+	if run.NextActionAt != nil {
+		now = *run.NextActionAt
+	}
 	run.LastAttemptAt = &now
 
 	// Actually retry the payment
@@ -339,7 +428,10 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 			"error", retryErr,
 		)
 
-		// Record failed retry event
+		// Record failed retry event at this retry's simulated instant
+		// (= run.NextActionAt at fire time, captured into `now` above)
+		// so each retry row on the invoice timeline carries its own
+		// scheduled timestamp instead of all sharing frozen_time.
 		_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 			RunID:        run.ID,
 			InvoiceID:    run.InvoiceID,
@@ -347,6 +439,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 			State:        domain.DunningActive,
 			AttemptCount: run.AttemptCount,
 			Reason:       retryErr.Error(),
+			CreatedAt:    now,
 		})
 
 		// Send dunning warning email asynchronously.
@@ -399,6 +492,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 			State:        domain.DunningResolved,
 			AttemptCount: run.AttemptCount,
 			Reason:       "payment_recovered",
+			CreatedAt:    now,
 		})
 
 		slog.Info("dunning resolved — payment succeeded",
@@ -450,17 +544,30 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 		return err
 	}
 
-	// Check if exhausted after this attempt
+	// Check if exhausted after this attempt. Pass the simulated instant
+	// of this final retry (= run.NextActionAt at fire time, captured
+	// into `now` above) so the escalated event row aligns with the
+	// retry that actually triggered the exhaustion, not orchestrator
+	// frozen_time.
 	if run.AttemptCount >= policy.MaxRetryAttempts {
-		return s.exhaustRun(ctx, tenantID, run, policy)
+		return s.exhaustRun(ctx, tenantID, run, policy, now)
 	}
 
 	return nil
 }
 
-func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, policy domain.DunningPolicy) error {
+// exhaustRun finalizes a dunning run after its last retry failed (or
+// it was found already at-or-beyond max attempts on entry). firedAt
+// is the simulated instant of the triggering retry — used as the
+// run's resolved_at and the escalated event's CreatedAt so the
+// invoice timeline shows the escalation aligned with the retry that
+// actually caused it, not at orchestrator frozen_time.
+func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, policy domain.DunningPolicy, firedAt time.Time) error {
 	ctx = s.bindForInvoice(ctx, tenantID, run.InvoiceID)
-	now := s.clock.Now(ctx)
+	now := firedAt
+	if now.IsZero() {
+		now = s.clock.Now(ctx)
+	}
 	run.State = domain.DunningEscalated
 	run.Resolution = domain.ResolutionRetriesExhausted
 	run.ResolvedAt = &now
@@ -493,6 +600,7 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		State:        run.State,
 		AttemptCount: run.AttemptCount,
 		Reason:       string(policy.FinalAction),
+		CreatedAt:    now,
 	})
 
 	if _, err := s.store.UpdateRun(ctx, tenantID, run); err != nil {
@@ -561,6 +669,7 @@ func (s *Service) ResolveRun(ctx context.Context, tenantID, runID string, resolu
 		EventType: domain.DunningEventResolved,
 		State:     domain.DunningResolved,
 		Reason:    string(resolution),
+		CreatedAt: now,
 	})
 
 	return s.store.UpdateRun(ctx, tenantID, run)
@@ -587,6 +696,7 @@ func (s *Service) ResolveByInvoice(ctx context.Context, tenantID, invoiceID stri
 		EventType: domain.DunningEventResolved,
 		State:     domain.DunningResolved,
 		Reason:    fmt.Sprintf("invoice %s", string(resolution)),
+		CreatedAt: now,
 	})
 
 	_, err = s.store.UpdateRun(ctx, tenantID, run)

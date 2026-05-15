@@ -945,6 +945,146 @@ func withinWindow(a, b time.Time, window time.Duration) bool {
 	return d <= window
 }
 
+// foldEmailIntoStripeFailed collapses a successfully dispatched
+// "Payment-failed email sent to customer" row into its co-occurring
+// Stripe payment_intent.payment_failed row as a Detail sub-line.
+// Both rows are wall-clock-stamped (email dispatcher and Stripe
+// webhook both run in real time), so a tight window matches
+// reliably even for test-clock-pinned invoices. Only succeeded
+// sends fold — pending or failed deliveries stay as standalone
+// rows so operators see delivery problems. One-to-one matching;
+// excess rows in either direction survive.
+func foldEmailIntoStripeFailed(events []timelineEvent, window time.Duration) []timelineEvent {
+	type pair struct{ stripeIdx, emailIdx int }
+	var pairs []pair
+	claimedStripe := make(map[int]bool)
+	for j := range events {
+		e := events[j]
+		if e.Source != "email" || e.EventType != "email.payment_failed" {
+			continue
+		}
+		if e.Status != "succeeded" {
+			continue
+		}
+		eTS, err := time.Parse(time.RFC3339, e.Timestamp)
+		if err != nil {
+			continue
+		}
+		for i := range events {
+			if claimedStripe[i] {
+				continue
+			}
+			s := events[i]
+			if s.Source != "stripe" || s.EventType != "payment_intent.payment_failed" {
+				continue
+			}
+			sTS, err := time.Parse(time.RFC3339, s.Timestamp)
+			if err != nil {
+				continue
+			}
+			if !withinWindow(sTS, eTS, window) {
+				continue
+			}
+			pairs = append(pairs, pair{stripeIdx: i, emailIdx: j})
+			claimedStripe[i] = true
+			break
+		}
+	}
+	if len(pairs) == 0 {
+		return events
+	}
+	for _, p := range pairs {
+		s := &events[p.stripeIdx]
+		if s.Detail == "" {
+			s.Detail = "Customer notified by email"
+		}
+	}
+	dropIdx := make(map[int]bool, len(pairs))
+	for _, p := range pairs {
+		dropIdx[p.emailIdx] = true
+	}
+	out := make([]timelineEvent, 0, len(events)-len(pairs))
+	for i, evt := range events {
+		if dropIdx[i] {
+			continue
+		}
+		out = append(out, evt)
+	}
+	return out
+}
+
+// mergeFailedPaymentTwins folds Stripe payment_intent.payment_failed
+// rows into corresponding dunning [dunning_started, retry_attempted]
+// rows by chronological index — the k-th Stripe failure on an
+// invoice pairs with the k-th dunning attempt event. Pairing by
+// index (not time window) is required because test-clock-pinned
+// invoices emit dunning events in frozen time while Stripe webhooks
+// land in wall-clock time; the two timestamps can differ by months,
+// far outside any reasonable window. Within an invoice the
+// dunning state machine produces attempt events in strict order
+// (started → retry #1 → retry #2 → …) and each corresponds to
+// exactly one Stripe charge attempt, so index pairing is canonical.
+//
+// The Stripe row's PaymentIntent id + amount + currency + error +
+// Detail lift onto the dunning row (which carries operator-meaningful
+// attempt # + scheduled-next context), then the Stripe row drops.
+// One-to-one pairing; excess Stripe rows survive (rare — dunning
+// disabled or lagging), excess dunning rows survive (rare — Stripe
+// webhook hasn't arrived yet).
+func mergeFailedPaymentTwins(events []timelineEvent) []timelineEvent {
+	var stripeIdxs, dunningIdxs []int
+	for i, e := range events {
+		if e.Source == "stripe" && e.EventType == "payment_intent.payment_failed" {
+			stripeIdxs = append(stripeIdxs, i)
+			continue
+		}
+		if e.Source == "dunning" && (e.EventType == "dunning_started" || e.EventType == "retry_attempted") {
+			dunningIdxs = append(dunningIdxs, i)
+		}
+	}
+	sort.SliceStable(stripeIdxs, func(a, b int) bool {
+		return events[stripeIdxs[a]].Timestamp < events[stripeIdxs[b]].Timestamp
+	})
+	sort.SliceStable(dunningIdxs, func(a, b int) bool {
+		return events[dunningIdxs[a]].Timestamp < events[dunningIdxs[b]].Timestamp
+	})
+	pairs := min(len(stripeIdxs), len(dunningIdxs))
+	if pairs == 0 {
+		return events
+	}
+	dropIdx := make(map[int]bool, pairs)
+	for k := range pairs {
+		sIdx := stripeIdxs[k]
+		dIdx := dunningIdxs[k]
+		s := events[sIdx]
+		d := &events[dIdx]
+		if d.PaymentIntentID == "" {
+			d.PaymentIntentID = s.PaymentIntentID
+		}
+		if d.AmountCents == nil {
+			d.AmountCents = s.AmountCents
+		}
+		if d.Currency == "" {
+			d.Currency = s.Currency
+		}
+		if d.Error == "" {
+			d.Error = s.Error
+		}
+		if d.Detail == "" {
+			d.Detail = s.Detail
+		}
+		dropIdx[sIdx] = true
+	}
+	out := make([]timelineEvent, 0, len(events)-len(dropIdx))
+	for i, evt := range events {
+		if dropIdx[i] {
+			continue
+		}
+		out = append(out, evt)
+	}
+	return out
+}
+
 // formatPaymentCardDetail produces the sub-line shown under the
 // "Invoice paid" row, e.g. "via Visa •••• 4242". Returns empty
 // when card details aren't on the invoice — graceful: no
@@ -1359,6 +1499,15 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// Industry-grade timeline consolidation (Stripe / Lago shape):
+	// fold downstream-consequence rows into their cause row. Order
+	// matters — the email is a consequence of the Stripe failure;
+	// the Stripe failure is a consequence of the dunning-scheduled
+	// attempt. Fold inside-out so the surviving dunning row inherits
+	// the merged Detail ("Customer notified by email") in one pass.
+	events = foldEmailIntoStripeFailed(events, 2*time.Minute)
+	events = mergeFailedPaymentTwins(events)
 
 	// Sort by timestamp ascending
 	sort.Slice(events, func(i, j int) bool {

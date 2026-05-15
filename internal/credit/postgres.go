@@ -57,6 +57,18 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 		metaJSON = []byte("{}")
 	}
 
+	// Honor caller-supplied CreatedAt so ledger entries land at the
+	// simulated instant the fact occurred — grant at cycle close,
+	// expiry at grant.expires_at, usage at the invoice's issue moment.
+	// Without this, every entry stamps clock.Now() (= advance-end
+	// frozen_time during catchup) and the customer's Credits tab
+	// shows a stack of entries all at one timestamp instead of the
+	// per-fact chronology. Falls back to clock.Now() when zero so
+	// wall-clock callers stay correct.
+	createdAt := entry.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = clock.Now(ctx)
+	}
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO customer_credit_ledger (id, tenant_id, customer_id, entry_type,
 			amount_cents, balance_after, description, invoice_id, expires_at, metadata, created_at,
@@ -69,7 +81,7 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 	`, entry.ID, tenantID, entry.CustomerID, entry.EntryType,
 		entry.AmountCents, entry.BalanceAfter, entry.Description,
 		postgres.NullableString(entry.InvoiceID), postgres.NullableTime(entry.ExpiresAt),
-		metaJSON, clock.Now(ctx),
+		metaJSON, createdAt,
 		postgres.NullableString(entry.SourceSubscriptionID),
 		postgres.NullableString(entry.SourceSubscriptionItemID),
 		postgres.NullableTime(entry.SourcePlanChangedAt),
@@ -176,7 +188,7 @@ func (s *PostgresStore) AdjustAtomic(
 // Writes across two tables (customer_credit_ledger + invoices) inside one
 // tenant-scoped tx — intentional: the invoice's credit fields are a cache of
 // the ledger's source of truth, and they must stay in lockstep.
-func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerID, invoiceID, invoiceDesc string, invoiceAmountCents int64) (int64, error) {
+func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerID, invoiceID, invoiceDesc string, invoiceAmountCents int64, at time.Time) (int64, error) {
 	if invoiceAmountCents <= 0 {
 		return 0, nil
 	}
@@ -215,7 +227,10 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 
 	entryID := postgres.NewID("vlx_ccl")
 	balanceAfter := currentBalance - deduct
-	now := clock.Now(ctx)
+	now := at
+	if now.IsZero() {
+		now = clock.Now(ctx)
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO customer_credit_ledger (id, tenant_id, customer_id, entry_type,
