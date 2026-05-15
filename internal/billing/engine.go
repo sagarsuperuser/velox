@@ -2055,10 +2055,20 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 
 	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxApp.TaxAmountCents
 
+	// Mint an invoice number — same path the cycle invoice takes
+	// (NextInvoiceNumber via tenant settings). Without this, the
+	// day-1 invoice persists with an empty invoice_number and the
+	// dashboard H1 renders blank.
+	invoiceNumber, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID)
+	if err != nil {
+		return domain.Invoice{}, fmt.Errorf("mint invoice number: %w", err)
+	}
+
 	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
 		TenantID:           sub.TenantID,
 		CustomerID:         sub.CustomerID,
 		SubscriptionID:     sub.ID,
+		InvoiceNumber:      invoiceNumber,
 		Status:             domain.InvoiceFinalized,
 		PaymentStatus:      domain.PaymentPending,
 		Currency:           invoiceCurrency,

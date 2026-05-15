@@ -35,6 +35,7 @@ export function InvoiceAttention({
   retrying,
   charging,
   sending,
+  effectiveNowISO,
 }: {
   invoice: Invoice
   onRetryTax?: () => void
@@ -43,6 +44,15 @@ export function InvoiceAttention({
   retrying?: boolean
   charging?: boolean
   sending?: boolean
+  // ADR-030 / simulated-time discipline: when the owning subscription
+  // is pinned to a test clock, relative-time renders ("since X ago")
+  // must be computed against the clock's frozen_time, NOT wall-clock.
+  // Wall-clock would surface absurd deltas like "833d ago" on a
+  // newly-finalized invoice whose sub is frozen at 2024-02-01 while
+  // wall-clock sits in 2026. Pass the clock's frozen_time ISO here;
+  // omit when the entity isn't clock-pinned and relative-time
+  // defaults to wall-clock (the existing behaviour).
+  effectiveNowISO?: string
 }) {
   const att = invoice.attention
   if (!att) return null
@@ -66,9 +76,9 @@ export function InvoiceAttention({
                   misleading "since 5m ago" copy on a just-finalized
                   invoice; surface only when the state has actually
                   persisted long enough to matter. */}
-              {att.since && isOlderThan(att.since, 24 * 60 * 60 * 1000) && (
+              {att.since && isOlderThan(att.since, 24 * 60 * 60 * 1000, effectiveNowISO) && (
                 <span className="text-[10px] text-muted-foreground">
-                  · since {formatRelative(att.since)}
+                  · since {formatRelative(att.since, effectiveNowISO)}
                 </span>
               )}
             </div>
@@ -407,21 +417,33 @@ function defaultLabel(action: AttentionAction): string {
   return map[action] ?? action
 }
 
+// effectiveNowMs resolves the "now" baseline for relative-time
+// formatting. When effectiveNowISO is provided (the owning entity
+// is clock-pinned), use the clock's frozen_time; otherwise fall
+// back to wall-clock. ADR-030 discipline at the rendering layer.
+function effectiveNowMs(effectiveNowISO?: string): number {
+  if (effectiveNowISO) {
+    const ts = new Date(effectiveNowISO).getTime()
+    if (!Number.isNaN(ts)) return ts
+  }
+  return Date.now()
+}
+
 // isOlderThan returns true when the ISO timestamp is older than
 // `thresholdMs`. Used to gate the "since X ago" badge so we don't
 // surface "since 5m ago" on a just-finalized invoice — `since` is
 // sourced from inv.UpdatedAt which reflects the most recent state
 // change, not necessarily when the *problem* started.
-function isOlderThan(iso: string, thresholdMs: number): boolean {
+function isOlderThan(iso: string, thresholdMs: number, effectiveNowISO?: string): boolean {
   const ts = new Date(iso).getTime()
   if (Number.isNaN(ts)) return false
-  return Date.now() - ts > thresholdMs
+  return effectiveNowMs(effectiveNowISO) - ts > thresholdMs
 }
 
-function formatRelative(iso: string): string {
+function formatRelative(iso: string, effectiveNowISO?: string): string {
   const ts = new Date(iso).getTime()
   if (Number.isNaN(ts)) return ''
-  const deltaMs = Date.now() - ts
+  const deltaMs = effectiveNowMs(effectiveNowISO) - ts
   const sec = Math.max(0, Math.floor(deltaMs / 1000))
   if (sec < 60) return 'just now'
   const min = Math.floor(sec / 60)
