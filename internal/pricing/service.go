@@ -15,12 +15,36 @@ import (
 
 var slugPattern = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
+// SubscriptionPlanUsageReader counts subscriptions referencing a plan.
+// Used by UpdatePlan to enforce immutability of billing-affecting
+// fields when the plan has live subs — Stripe-parity (Prices are
+// immutable for billing-relevant fields). Narrow shape; concrete
+// query lives in *subscription.PostgresStore.
+//
+// "Live" = any sub that may still bill: status NOT IN ('canceled',
+// 'archived'). Draft / active / trialing / paused all qualify
+// because they could still produce future invoices and need
+// deterministic terms.
+type SubscriptionPlanUsageReader interface {
+	CountLiveSubsByPlan(ctx context.Context, tenantID, planID string) (int, error)
+}
+
 type Service struct {
-	store Store
+	store        Store
+	subPlanUsage SubscriptionPlanUsageReader
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
+}
+
+// SetSubscriptionPlanUsageReader wires the live-sub counter used by
+// UpdatePlan to gate billing-affecting field mutations. Optional —
+// when unwired (narrow unit tests), the immutability guard is
+// silent and all fields are mutable. Production wires
+// *subscription.PostgresStore via router.go.
+func (s *Service) SetSubscriptionPlanUsageReader(r SubscriptionPlanUsageReader) {
+	s.subPlanUsage = r
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +336,44 @@ func (s *Service) UpdatePlan(ctx context.Context, tenantID, id string, input Cre
 		return domain.Plan{}, err
 	}
 
+	// Plan-immutability guard. Billing-affecting fields can't change
+	// once any live sub references this plan — Stripe-parity (Prices
+	// are immutable for billing-relevant fields). Mutating in place
+	// would silently change what existing subs bill at their next
+	// cycle close, producing revenue gaps or surprise charges.
+	//
+	// Display-only fields (name, description, tax_code, status) stay
+	// mutable: changing them doesn't move money for existing subs.
+	//
+	// Operator escape hatch: create a new plan with the desired
+	// terms and (optionally) schedule existing subs to migrate at
+	// their next cycle close via the pending-plan-change machinery.
+	billingFieldChanged := false
+	changedFields := []string{}
+	if input.BaseAmountCents > 0 && input.BaseAmountCents != existing.BaseAmountCents {
+		billingFieldChanged = true
+		changedFields = append(changedFields, "base_amount_cents")
+	}
+	if input.BaseBillTiming != "" && input.BaseBillTiming != existing.BaseBillTiming {
+		billingFieldChanged = true
+		changedFields = append(changedFields, "base_bill_timing")
+	}
+	if input.MeterIDs != nil && !sameStringSet(input.MeterIDs, existing.MeterIDs) {
+		billingFieldChanged = true
+		changedFields = append(changedFields, "meter_ids")
+	}
+	if billingFieldChanged && s.subPlanUsage != nil {
+		count, err := s.subPlanUsage.CountLiveSubsByPlan(ctx, tenantID, existing.ID)
+		if err != nil {
+			return domain.Plan{}, fmt.Errorf("check sub usage: %w", err)
+		}
+		if count > 0 {
+			return domain.Plan{}, errs.Invalid("plan",
+				fmt.Sprintf("cannot change billing-affecting field(s) %v: %d live subscription(s) reference this plan. Create a new plan instead and (optionally) migrate subs at their next cycle close.",
+					changedFields, count))
+		}
+	}
+
 	if name := strings.TrimSpace(input.Name); name != "" {
 		existing.Name = name
 	}
@@ -338,6 +400,26 @@ func (s *Service) UpdatePlan(ctx context.Context, tenantID, id string, input Cre
 	existing.TaxCode = taxCode
 
 	return s.store.UpdatePlan(ctx, tenantID, existing)
+}
+
+// sameStringSet returns true when two string slices contain the same
+// elements regardless of order. Used by the plan-immutability guard
+// to detect meter_ids mutations — list order isn't semantically
+// meaningful, set membership is.
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, v := range a {
+		seen[v] = struct{}{}
+	}
+	for _, v := range b {
+		if _, ok := seen[v]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------

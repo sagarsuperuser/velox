@@ -159,6 +159,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	stripeClients := payment.NewStripeClients(tenantStripeSvc)
 
 	pricingSvc := pricing.NewService(pricingStore)
+	// ADR-034: plan billing-fields freeze once any live sub references
+	// the plan. UpdatePlan needs to count live subs; subStore implements
+	// the narrow CountLiveSubsByPlan query.
+	pricingSvc.SetSubscriptionPlanUsageReader(subStore)
 	customerSvc := customer.NewService(customerStore)
 	customerSvc.SetStripeSyncer(payment.NewStripeBillingSync(stripeClients), customerStore)
 	customerH := customer.NewHandler(customerSvc)
