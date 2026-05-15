@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -18,12 +18,21 @@ export default function PortalMagic() {
   const navigate = useNavigate()
   const [error, setError] = useState('')
 
+  // consumeMagicLink is single-use server-side: a second POST with the
+  // same token returns 401 "invalid or expired". React StrictMode (dev)
+  // double-invokes useEffect on mount, so without the ref-guard the
+  // second invocation would consume → fail → setError, surfacing the
+  // "link not valid" UI even on a successful sign-in. Mark the token
+  // as in-flight on first run so the second invoke short-circuits.
+  const consumedRef = useRef(false)
   useEffect(() => {
+    if (consumedRef.current) return
     const token = params.get('token') || ''
     if (!token) {
       setError('Sign-in link is missing the token. Request a new one from the login page.')
       return
     }
+    consumedRef.current = true
     consumeMagicLink(token)
       .then(() => {
         navigate('/portal', { replace: true })
