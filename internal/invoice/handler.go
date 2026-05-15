@@ -1305,7 +1305,18 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	// when this run resolved into payment success — the operator
 	// then sees "Invoice paid · after 3 retry attempts" in one row
 	// instead of separate paid + dunning-resolved entries.
+	//
+	// Also collect retry-attempted timestamps so we can dedup against
+	// Stripe `payment_intent.payment_failed` events below: each
+	// failed dunning retry produces BOTH a Stripe webhook (raw
+	// "Payment failed") and a dunning event (operator-meaningful
+	// "Retry attempted N of M"). The Stripe row is the redundant one
+	// (dunning row carries attempt context); drop it when a dunning
+	// retry-attempted sits within a 5-minute window of the Stripe
+	// event. Initial payment failures — before any retries — have no
+	// retry-attempted counterpart and stay un-deduped.
 	maxAttemptCount := 0
+	var retryAttemptedTimes []time.Time
 	if h.dunningTimeline != nil {
 		runs, err := h.dunningTimeline.ListRunsByInvoice(r.Context(), tenantID, id)
 		if err == nil {
@@ -1320,6 +1331,9 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 					}
 					if evt.AttemptCount > maxAttemptCount {
 						maxAttemptCount = evt.AttemptCount
+					}
+					if string(evt.EventType) == "retry_attempted" {
+						retryAttemptedTimes = append(retryAttemptedTimes, evt.CreatedAt)
 					}
 					// Suppress dunning 'resolved' when the lifecycle
 					// invoice.paid row will already say it. Distinct
@@ -1345,6 +1359,35 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// Dedup Stripe payment_intent.payment_failed against the dunning
+	// retry_attempted rows collected above. Walk `events` and drop
+	// any Stripe payment_failed whose timestamp falls within 5 min of
+	// a retry_attempted event. 5 min covers clock skew between the
+	// Stripe webhook arrival and the dunning event write without
+	// bleeding into unrelated failures (retries are spaced days apart).
+	if len(retryAttemptedTimes) > 0 {
+		filtered := events[:0]
+		for _, evt := range events {
+			if evt.Source == "stripe" && evt.EventType == "payment_intent.payment_failed" {
+				ts, parseErr := time.Parse(time.RFC3339, evt.Timestamp)
+				if parseErr == nil {
+					coincident := false
+					for _, ra := range retryAttemptedTimes {
+						if withinWindow(ts, ra, 5*time.Minute) {
+							coincident = true
+							break
+						}
+					}
+					if coincident {
+						continue
+					}
+				}
+			}
+			filtered = append(filtered, evt)
+		}
+		events = filtered
 	}
 
 	// Attach attempt count to the lifecycle invoice.paid row when
