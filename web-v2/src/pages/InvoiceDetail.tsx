@@ -558,6 +558,12 @@ export default function InvoiceDetailPage() {
         onSendReminder={() => setShowEmailModal(true)}
         retrying={retryTaxMutation.isPending}
         charging={collectMutation.isPending}
+        // ADR-030 / simulated-time discipline: pass the owning sub's
+        // test-clock frozen_time so "since X ago" reads against
+        // simulated time, not wall-clock. Without this, a sub frozen
+        // at 2024-02-01 on a wall-clock 2026-05-15 dashboard shows
+        // "since 833d ago" on a fresh attention state.
+        effectiveNowISO={testClock?.frozen_time}
       />
 
       {/* Operator context — diagnostic detail (dunning, payment intent
@@ -950,17 +956,23 @@ export default function InvoiceDetailPage() {
           <CardContent>
             <div className="relative">
               {timeline.map((event, i) => {
-                // Simulated chip: when this invoice's subscription is
-                // pinned to a test clock and the event's timestamp is
-                // in the future relative to wall-clock, the event was
-                // produced by a clock-advanced engine run (finalize,
-                // dunning attempt scheduling, etc.). Webhook arrivals
-                // and operator actions stay on real time, so they
-                // never trip the future-vs-now check. The chip
-                // anchors the operator's expectation that this
-                // timestamp is simulated.
+                // Simulated chip: when the invoice's subscription is
+                // pinned to a test clock, an event timestamp is
+                // "simulated" when it diverges from wall-clock by
+                // more than a day — either direction. Earlier logic
+                // only checked FUTURE timestamps and missed past-
+                // frozen clocks entirely (e.g. frozen at 2024-02-01
+                // while wall-clock is 2026-05-15 silently rendered
+                // every event as real time).
+                //
+                // Webhook arrivals and operator actions stay near
+                // wall-clock and don't trip the threshold, so they
+                // don't get the chip — correct, those ARE real time.
+                const simulatedThresholdMs = 24 * 60 * 60 * 1000
+                const eventMs = new Date(event.timestamp).getTime()
                 const isSimulated = !!subscription?.test_clock_id &&
-                  new Date(event.timestamp).getTime() > Date.now()
+                  !Number.isNaN(eventMs) &&
+                  Math.abs(eventMs - Date.now()) > simulatedThresholdMs
                 return (
                 <div key={i} className="flex gap-4 pb-2 last:pb-0">
                   <div className="flex flex-col items-center">
