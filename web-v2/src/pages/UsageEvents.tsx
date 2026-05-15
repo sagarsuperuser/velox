@@ -49,9 +49,18 @@ export default function UsageEventsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Fetch only the customers referenced by visible events (avoids the
+  // "Unknown" pagination bug — see Invoices.tsx for full rationale).
+  // Re-fetches when the visible event page changes.
+  const customerIdsForEvents = useMemo(() => {
+    const set = new Set<string>()
+    events.forEach(ev => { if (ev.customer_id) set.add(ev.customer_id) })
+    return Array.from(set)
+  }, [events])
   const { data: customersData } = useQuery({
-    queryKey: ['customers-ref'],
-    queryFn: () => api.listCustomers(),
+    queryKey: ['customers-by-ids-for-usage', customerIdsForEvents],
+    queryFn: () => api.listCustomers(customerIdsForEvents.length > 0 ? `ids=${customerIdsForEvents.join(',')}&limit=${customerIdsForEvents.length}` : ''),
+    enabled: customerIdsForEvents.length > 0,
   })
 
   const { data: metersData } = useQuery({
