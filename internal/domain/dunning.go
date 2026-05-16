@@ -2,12 +2,36 @@ package domain
 
 import "time"
 
+// DunningFinalAction is the terminal-state action when a dunning run
+// exhausts its retries. Aligned with the cross-platform set verified
+// 2026-05-16 (ADR-036 amendment): Stripe / Lago / Orb / Recurly all
+// converge on some subset of {manual_review, pause, mark_uncollectible,
+// cancel_subscription}. Velox supports all four.
+//
+// Semantics:
+//   - ManualReview       — run lands at state=escalated, no sub/invoice
+//                          mutation; operator handles. Maps to Stripe
+//                          "Keep active" and Lago default.
+//   - Pause              — calls subscription.SetPauseCollection
+//                          (behavior=keep_as_draft). Cycle keeps drafting
+//                          invoices; no charging / dunning until resumed.
+//                          Matches Stripe's pause_collection (NOT the
+//                          hard PauseAtomic — that was the pre-amendment
+//                          implementation, replaced for Stripe-parity).
+//   - MarkUncollectible  — marks the unpaid invoice as uncollectible
+//                          (industry-standard term for "we won't try
+//                          again; close out the receivable"). Replaces
+//                          the pre-amendment "write_off_later" naming.
+//   - CancelSubscription — cancels the subscription. Stripe-default
+//                          terminal action; supported by 3 of 4
+//                          reference platforms.
 type DunningFinalAction string
 
 const (
-	DunningActionManualReview DunningFinalAction = "manual_review"
-	DunningActionPause        DunningFinalAction = "pause"
-	DunningActionWriteOff     DunningFinalAction = "write_off_later"
+	DunningActionManualReview       DunningFinalAction = "manual_review"
+	DunningActionPause              DunningFinalAction = "pause"
+	DunningActionMarkUncollectible  DunningFinalAction = "mark_uncollectible"
+	DunningActionCancelSubscription DunningFinalAction = "cancel_subscription"
 )
 
 type DunningRunState string

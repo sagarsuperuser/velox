@@ -5,10 +5,16 @@ import "time"
 type InvoiceStatus string
 
 const (
-	InvoiceDraft     InvoiceStatus = "draft"
-	InvoiceFinalized InvoiceStatus = "finalized"
-	InvoicePaid      InvoiceStatus = "paid"
-	InvoiceVoided    InvoiceStatus = "voided"
+	InvoiceDraft         InvoiceStatus = "draft"
+	InvoiceFinalized     InvoiceStatus = "finalized"
+	InvoicePaid          InvoiceStatus = "paid"
+	InvoiceVoided        InvoiceStatus = "voided"
+	// InvoiceUncollectible marks an invoice as no-further-collection-
+	// attempted while preserving it in financial reporting (Stripe-
+	// standard semantics; distinct from Voided which annuls the
+	// invoice). Set by dunning's mark_uncollectible final_action and
+	// by operator action. ADR-036 amendment.
+	InvoiceUncollectible InvoiceStatus = "uncollectible"
 )
 
 // InvoiceBillingReason classifies the trigger that produced an invoice.

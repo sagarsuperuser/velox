@@ -362,6 +362,33 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceVoided)
 }
 
+// MarkUncollectible flips a finalized-but-unpaid invoice to
+// status='uncollectible'. Stripe-standard semantics (ADR-036
+// amendment): operator (or dunning's mark_uncollectible final action)
+// acknowledges the receivable won't be collected; the invoice stays
+// in financial reporting but no further collection is attempted.
+// Distinct from Void, which annuls the invoice.
+//
+// Refuses paid (collected — credit note instead) and already
+// uncollectible (idempotent) states. Voided is allowed to transition
+// only one direction (voided is terminal), so this errors on it too.
+func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, id)
+	inv, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	switch inv.Status {
+	case domain.InvoicePaid:
+		return domain.Invoice{}, errs.InvalidState("cannot mark paid invoice uncollectible — issue a credit note instead")
+	case domain.InvoiceVoided:
+		return domain.Invoice{}, errs.InvalidState("cannot mark voided invoice uncollectible — void is terminal")
+	case domain.InvoiceUncollectible:
+		return domain.Invoice{}, errs.InvalidState("invoice is already uncollectible")
+	}
+	return s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceUncollectible)
+}
+
 func (s *Service) RecordPayment(ctx context.Context, tenantID, id string, stripePaymentIntentID string) (domain.Invoice, error) {
 	ctx = s.bindForInvoice(ctx, tenantID, id)
 	now := s.clock.Now(ctx)

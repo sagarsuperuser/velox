@@ -184,11 +184,90 @@ Dropped: `GET/PUT /v1/dunning/policy` (singleton),
   cleanly at lookup time. Acceptable for an operator-controlled
   surface.
 
+## Amendment 2026-05-16 — terminal-action set + pause-semantics fix
+
+Follow-up after operator question "is dunning's pause subscription
+option correct industry standard?" — triggered a second multi-platform
+research pass on dunning **terminal actions** (the action that fires
+after retries exhaust).
+
+### Verified cross-platform terminal actions (2026-05-16)
+
+| Action | Stripe | Lago | Orb | Recurly |
+|---|---|---|---|---|
+| Cancel subscription | ✓ (default) | ✓ (terminate) | ✗ docs list only retry_payment + email | ✓ (expire) |
+| Pause subscription | ✓ (via `pause_collection.behavior`) | ✗ | ✗ | ✗ |
+| Mark uncollectible | ✓ ("Mark Invoice as Uncollectible") | — | — | ✓ (analog: "mark invoice failed") |
+| Leave open / manual review | ✓ ("Keep active") | ✓ (default) | — | ✓ ("leave overdue") |
+
+Sources:
+- [Stripe — Manage failed payments](https://docs.stripe.com/billing/revenue-recovery/smart-retries) — *"Cancel the Subscription (default setting), Mark Invoice as Uncollectible …, or Pause the Subscription until payment is resolved."*
+- [Lago — automatic-termination feature](https://getlago.canny.io/feature-requests/p/trigger-automatic-subscription-termination-based-on-dunning-campaigns)
+- [Orb — advanced dunning](https://docs.withorb.com/invoicing/advanced-dunning) (no state-change actions documented)
+- [Recurly — dunning management](https://docs.recurly.com/recurly-subscriptions/docs/dunning-management)
+
+### Decision
+
+Velox supports all four actions; semantics aligned with Stripe.
+
+| Velox enum (post-amendment) | Behavior |
+|---|---|
+| `manual_review` | Run lands state=escalated. No sub/invoice mutation. Operator handles via dashboard. Maps to Stripe "Keep active." |
+| `pause` | **Calls `subscription.Service.PauseCollection(behavior=keep_as_draft)`** — not the pre-amendment hard `PauseAtomic`. Cycle keeps drafting invoices; charging + dunning paused until operator resumes. Matches Stripe's `pause_collection.behavior=keep_as_draft`. The hard-pause path silently skipped invoice generation for the affected periods (per ADR-035 analysis) — non-Stripe and destructive. |
+| `mark_uncollectible` | Calls `invoice.Service.MarkUncollectible` — flips the unpaid invoice to status='uncollectible' (new status, migration 0089). Stripe-standard semantics: receivable closed but invoice stays in financial reporting. Distinct from voided. |
+| `cancel_subscription` | Calls `subscription.Service.Cancel`. Stripe-default terminal action; supported by 3 of 4 reference platforms. Previously missing — operator workflow required a manual cancel step after escalation. |
+
+Old `write_off_later` enum value mapped to `mark_uncollectible` during
+the migration (semantics-identical, industry-standard spelling).
+
+### Implementation slices
+
+1. **Migration 0088** — drop CHECK on `dunning_policies.final_action`,
+   re-add accepting the four new values, backfill `write_off_later → mark_uncollectible`.
+2. **Migration 0089** — add `uncollectible` to the `invoices_status_check` CHECK constraint.
+3. Domain — rename `DunningActionWriteOff → DunningActionMarkUncollectible`,
+   add `DunningActionCancelSubscription`. Add `InvoiceUncollectible` to invoice status enum.
+4. Service interfaces — `SubscriptionPauser.Pause → PauseCollection`,
+   new `SubscriptionCanceler.Cancel`, new `InvoiceUncollectibleMarker.MarkUncollectible`.
+5. `dunning.Service.exhaustRun` switch covers all four cases.
+6. `invoice.Service.MarkUncollectible` — flips status with the same
+   transition guards as `Void` (paid/voided/already-uncollectible refused).
+7. Router adapters wire `SetSubscriptionPauser`, `SetSubscriptionCanceler`,
+   `SetInvoiceUncollectibleMarker`.
+8. SPA `DunningPolicies.tsx` dropdown shows the four options with
+   Stripe-aligned labels (pause label explicitly says "keep drafting").
+9. Invoice activity timeline's `describeDunningEvent` recognizes the
+   three state-change reasons.
+
+### Why each call
+
+- **`pause` → PauseCollection**: matches Stripe semantics. The hard-pause
+  path silently skipped cycle billing for the affected periods, leaving
+  no record of customer activity during the paused window — destructive.
+  PauseCollection(keep_as_draft) keeps the cycle running so the operator
+  has an audit trail.
+
+- **Add `cancel_subscription`**: 3 of 4 platforms support it; Stripe
+  defaults to it. Velox required a manual operator step post-escalation
+  before this amendment — non-standard.
+
+- **Rename `write_off_later → mark_uncollectible`**: same intent, but
+  `mark_uncollectible` is the Stripe-standard term. `write_off_later`
+  is a Velox-only spelling with no industry analog.
+
+- **Add `InvoiceStatusUncollectible`**: enables true Stripe-parity for
+  the mark-uncollectible action. Pre-amendment the status didn't exist
+  and the option couldn't be wired correctly (would have had to use Void
+  as an approximation, which is destructive in different ways).
+
 ## References
 
 - ADR-029: fully disjoint test-clock flows
 - ADR-030: simulated time everywhere on clock-pinned entities
 - ADR-035: per-fact simulated-time anchoring
-- Migration 0086: `dunning_policies_campaigns_model`
+- Migration 0086: `dunning_policies_campaigns_model` (initial decision)
+- Migration 0088: `dunning_policies_final_action_enum` (amendment — 4-action set)
+- Migration 0089: `invoices_status_uncollectible` (amendment — new invoice status)
 - Memory: `feedback_stripe_parity_framing`, `feedback_verify_stripe_parity_claims`,
-  `feedback_no_silent_fallbacks`, `feedback_reference_platforms`
+  `feedback_no_silent_fallbacks`, `feedback_reference_platforms`,
+  `feedback_enum_check_constraint_audit`
