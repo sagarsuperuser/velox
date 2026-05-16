@@ -126,7 +126,12 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		{"open_invoices", &resp.OpenInvoices,
 			`SELECT COUNT(*) FROM invoices WHERE status = 'finalized' AND payment_status != 'succeeded'`, nil},
 		{"dunning_active", &resp.DunningActive,
-			`SELECT COUNT(*) FROM invoice_dunning_runs WHERE state NOT IN ('resolved', 'exhausted')`, nil},
+			// Terminal states are 'resolved' and 'escalated' — see
+			// domain.DunningRunState. Pre-fix this read 'exhausted',
+			// which is not a real state, so 'escalated' runs slipped
+			// through and the dashboard reported every terminal-escalated
+			// invoice as still actively retrying.
+			`SELECT COUNT(*) FROM invoice_dunning_runs WHERE state NOT IN ('resolved', 'escalated')`, nil},
 		{"usage_events", &resp.UsageEvents,
 			`SELECT COUNT(*) FROM usage_events WHERE timestamp >= $1 AND timestamp < $2`,
 			[]any{period.Start, period.End}},
