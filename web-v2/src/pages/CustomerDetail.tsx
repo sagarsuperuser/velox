@@ -109,6 +109,12 @@ export default function CustomerDetailPage() {
   const [showAssignCoupon, setShowAssignCoupon] = useState(false)
   const [showNewInvoice, setShowNewInvoice] = useState(false)
   const [settingUpPayment, setSettingUpPayment] = useState(false)
+  // Collapse-by-default for the "Sent emails" card — show 5 latest
+  // rows inline; "Show all" expands into a scroll-constrained list.
+  // Operator-dashboard convention (Stripe / Linear / Vercel all
+  // chunk long activity logs this way) so the customer page stays
+  // skimmable when a customer has 20+ emails in the 30-day window.
+  const [sentEmailsExpanded, setSentEmailsExpanded] = useState(false)
   const { data: customer, isLoading, error: loadError, refetch } = useQuery({
     queryKey: ['customer', id],
     queryFn: () => api.getCustomer(id!),
@@ -922,43 +928,67 @@ export default function CustomerDetailPage() {
           </CardContent>
         </Card>
 
-        {/* Sent emails — Stripe shape (customer page email log, 30-day
-            window). Mirrors docs.stripe.com/invoicing/send-email which
-            puts the email log on the customer page (not per-invoice). */}
+        {/* Sent emails — anchored on Stripe's customer-page email log
+            (docs.stripe.com/invoicing/send-email; verified
+            customer-page placement specifically, 30-day window). Other
+            platforms vary — Recurly explicitly lacks this surface, so
+            this isn't an industry-converging pattern. Kept for the
+            operator-audit gap it fills ("did the customer get the
+            dunning warning?"). */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Sent emails</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">
+                Sent emails {sentEmails.length > 0 && <span className="text-muted-foreground font-normal">({sentEmails.length})</span>}
+              </CardTitle>
+              <span className="text-xs text-muted-foreground">Last 30 days</span>
+            </div>
           </CardHeader>
           <CardContent className="p-0">
-            <div className="divide-y divide-border">
-              {sentEmails.map(em => (
-                <div key={em.id} className="px-6 py-3 flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-sm font-medium text-foreground">{sentEmailLabel(em.email_type)}</p>
-                      {em.invoice_number && (
-                        <Link to={`/invoices?q=${em.invoice_number}`} className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
-                          {em.invoice_number}
-                        </Link>
+            <div className={sentEmailsExpanded && sentEmails.length > 5 ? 'max-h-96 overflow-y-auto' : ''}>
+              <div className="divide-y divide-border">
+                {(sentEmailsExpanded ? sentEmails : sentEmails.slice(0, 5)).map(em => (
+                  <div key={em.id} className="px-6 py-3 flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-medium text-foreground">{sentEmailLabel(em.email_type)}</p>
+                        {em.invoice_number && (
+                          <Link to={`/invoices?q=${em.invoice_number}`} className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
+                            {em.invoice_number}
+                          </Link>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground truncate">to {em.recipient}</p>
+                      {em.status === 'failed' && em.last_error && (
+                        <p className="mt-1 text-xs text-destructive truncate">{em.last_error}</p>
                       )}
                     </div>
-                    <p className="text-xs text-muted-foreground truncate">to {em.recipient}</p>
-                    {em.status === 'failed' && em.last_error && (
-                      <p className="mt-1 text-xs text-destructive truncate">{em.last_error}</p>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Badge variant={sentEmailStatusVariant(em.status)}>{em.status}</Badge>
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">
+                        {formatDateTime(em.dispatched_at ?? em.created_at)}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Badge variant={sentEmailStatusVariant(em.status)}>{em.status}</Badge>
-                    <span className="text-xs text-muted-foreground whitespace-nowrap">
-                      {formatDateTime(em.dispatched_at ?? em.created_at)}
-                    </span>
-                  </div>
-                </div>
-              ))}
-              {sentEmails.length === 0 && (
-                <p className="px-6 py-4 text-sm text-muted-foreground">No emails sent in the last 30 days</p>
-              )}
+                ))}
+                {sentEmails.length === 0 && (
+                  <p className="px-6 py-4 text-sm text-muted-foreground">No emails sent in the last 30 days</p>
+                )}
+              </div>
             </div>
+            {sentEmails.length > 5 && (
+              <div className="border-t border-border px-6 py-2 flex justify-center">
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setSentEmailsExpanded(v => !v)}
+                >
+                  {sentEmailsExpanded
+                    ? 'Show recent only'
+                    : `Show all (${sentEmails.length})`}
+                </button>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
