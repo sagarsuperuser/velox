@@ -288,6 +288,9 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		"velox_tenant_id":      tenantID,
 		"velox_customer_id":    inv.CustomerID,
 	}
+	if purpose := piPurposeFromContext(ctx); purpose != "" {
+		metadata["velox_purpose"] = purpose
+	}
 	// Per-attempt idempotency key. inv.UpdatedAt advances every time
 	// UpdatePayment runs (which happens on every prior failed attempt
 	// recording last_payment_error), so each genuine retry gets a
@@ -404,6 +407,28 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 	// Update invoice with PI reference and set to processing
 	return s.invoices.UpdatePayment(ctx, tenantID, inv.ID,
 		domain.PaymentProcessing, result.ID, "", nil)
+}
+
+// piPurposeKey carries velox_purpose for a Stripe PI through ctx.
+// Set by callers that need to tag the PI before ChargeInvoice runs
+// (currently only the dunning retrier — to suppress the duplicate
+// payment-failed email when the webhook lands). Unkeyed → no extra
+// metadata.
+type piPurposeKey struct{}
+
+// WithPIPurpose tags ctx with a velox_purpose value that ChargeInvoice
+// will stamp on the Stripe PaymentIntent metadata. Used to identify
+// PIs created for non-default reasons (dunning retry, customer-driven
+// hosted-pay) so the webhook can route them differently.
+func WithPIPurpose(ctx context.Context, purpose string) context.Context {
+	return context.WithValue(ctx, piPurposeKey{}, purpose)
+}
+
+func piPurposeFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(piPurposeKey{}).(string); ok {
+		return v
+	}
+	return ""
 }
 
 // simulatedFailureAt derives the cycle-close instant for a failed
@@ -704,12 +729,29 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 			"invoice_id", inv.ID, "payment_intent_id", event.PaymentIntentID)
 		return nil
 	}
+	if purpose == "dunning_retry" {
+		// This webhook is for a PI created by the dunning retrier.
+		// Dunning has already sent its own dunning_warning (per retry)
+		// or dunning_escalation (on the final retry that triggered
+		// exhaustRun) email inline. Firing payment_failed here too
+		// would double-notify the customer for the same charge
+		// attempt — they'd see "Payment failed for invoice X" right
+		// next to "Action required — payment retry for invoice X
+		// (Attempt N of M)" describing the same fact. Industry shape
+		// (Stripe Smart Retries, Lago): one email per failed attempt
+		// carrying the retry-of-N context, not a generic payment-
+		// failed plus a separate retry-warning pair.
+		slog.Info("skip post-decline email — dunning retry (warning/escalation already sent)",
+			"invoice_id", inv.ID, "payment_intent_id", event.PaymentIntentID)
+		return nil
+	}
 
 	// Send the payment-failed email. Points the customer at the hosted
 	// invoice page (long-lived public_token), where they can update PM
-	// and retry. Same template as dunning retries — this is the
-	// "first attempt failed" notification, dunning sends subsequent
-	// retry warnings on its own schedule.
+	// and retry. Fires for INITIAL charge failures only — subsequent
+	// dunning retries are caught by the `dunning_retry` purpose check
+	// above and rely on the dunning warning/escalation emails fired
+	// inline from processRun / exhaustRun.
 	if s.emailPaymentFailed != nil {
 		// Detached ctx — the webhook request returns before this
 		// goroutine completes, so request ctx would cancel mid-call.
