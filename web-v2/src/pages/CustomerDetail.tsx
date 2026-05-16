@@ -639,7 +639,7 @@ export default function CustomerDetailPage() {
               <div className="flex items-center justify-between px-6 py-3">
                 <span className="text-sm text-muted-foreground">Policy</span>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm text-foreground">{effectiveDunningPolicy.name}</span>
+                  <span className="text-sm text-foreground">{effectiveDunningPolicy.name || 'Default'}</span>
                   {!assignedDunningPolicy && (
                     <Badge variant="outline">tenant default</Badge>
                   )}
@@ -1662,10 +1662,10 @@ function AssignDunningPolicyDialog({ customerId, currentPolicyID, policies, onCl
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__default__">
-                  Tenant default {defaultPolicy ? `(${defaultPolicy.name})` : ''}
+                  Tenant default {defaultPolicy ? `(${defaultPolicy.name || 'Default'})` : ''}
                 </SelectItem>
                 {policies.filter(p => !p.is_default).map(p => (
-                  <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                  <SelectItem key={p.id} value={p.id}>{p.name || '(unnamed policy)'}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
