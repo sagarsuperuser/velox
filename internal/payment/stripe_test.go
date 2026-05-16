@@ -249,6 +249,110 @@ func TestChargeInvoice_StripeFailure(t *testing.T) {
 	}
 }
 
+// recordingDunningStarter captures StartDunning calls for assertion.
+// Returns a stub run — the test asserts on what was passed, not on
+// the dunning state machine's downstream behaviour (that's covered
+// by internal/dunning tests).
+type recordingDunningStarter struct {
+	calls []recordedStartDunning
+}
+
+type recordedStartDunning struct {
+	tenantID   string
+	invoiceID  string
+	customerID string
+	failureAt  time.Time
+}
+
+func (r *recordingDunningStarter) StartDunning(_ context.Context, tenantID, invoiceID, customerID string, failureAt time.Time) (domain.InvoiceDunningRun, error) {
+	r.calls = append(r.calls, recordedStartDunning{tenantID, invoiceID, customerID, failureAt})
+	return domain.InvoiceDunningRun{ID: "drun_test", InvoiceID: invoiceID}, nil
+}
+
+// TestChargeInvoice_DefiniteFailure_InlineStartsDunning locks in the
+// Phase 3 → Phase 5 invariant from ADR-035: when ChargeInvoice gets a
+// definitively failed PaymentIntent error (card declined, not the
+// ambiguous unknown/timeout case), it MUST inline-call StartDunning so
+// the run exists by the time the catchup orchestrator's Phase 5
+// queries due runs in the same Advance. Without this, a future
+// refactor that reverts to webhook-only StartDunning silently brings
+// back the race where Phase 5 fires zero retries because the run
+// hasn't been created yet.
+func TestChargeInvoice_DefiniteFailure_InlineStartsDunning(t *testing.T) {
+	client := &mockStripeClient{
+		shouldFail: true,
+		failErr: &PaymentError{
+			Message:         "card_declined",
+			PaymentIntentID: "pi_decline",
+			Unknown:         false, // DEFINITIVE failure
+		},
+	}
+	invoices := newMockInvoiceUpdater()
+	cycleClose := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	cycleEnd := cycleClose
+	cycleStart := cycleEnd.Add(-30 * 24 * time.Hour)
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1",
+		Status:             domain.InvoiceFinalized,
+		AmountDueCents:     5000,
+		Currency:           "USD",
+		IssuedAt:           &cycleEnd,
+		BillingPeriodStart: cycleStart,
+		BillingPeriodEnd:   cycleEnd,
+	}
+
+	dunning := &recordingDunningStarter{}
+	stripe := NewStripe(client, invoices, newMockWebhookStore(), nil, dunning)
+
+	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe_abc")
+	if err == nil {
+		t.Fatal("expected definitive failure error")
+	}
+
+	if len(dunning.calls) != 1 {
+		t.Fatalf("StartDunning calls: got %d, want 1 (inline trigger on definitive failure — closes Phase 3 → Phase 5 webhook race)", len(dunning.calls))
+	}
+	call := dunning.calls[0]
+	if call.tenantID != "t1" || call.invoiceID != "inv_1" || call.customerID != "cus_1" {
+		t.Errorf("StartDunning args: got %+v, want {t1, inv_1, cus_1, ...}", call)
+	}
+	if !call.failureAt.Equal(cycleEnd) {
+		t.Errorf("failureAt: got %v, want %v (= invoice cycle close — anchors dunning chain on simulated time, not advance-end frozen_time)", call.failureAt, cycleEnd)
+	}
+}
+
+// TestChargeInvoice_UnknownOutcome_NoInlineDunning locks in the
+// counterpart invariant: ambiguous failures (5xx/timeout/network) must
+// NOT trigger inline StartDunning — the reconciler resolves them after
+// the cool-off window, and starting dunning on an unknown outcome
+// could fire retries against a charge that actually succeeded.
+func TestChargeInvoice_UnknownOutcome_NoInlineDunning(t *testing.T) {
+	client := &mockStripeClient{
+		shouldFail: true,
+		failErr: &PaymentError{
+			Message:         "upstream timeout",
+			PaymentIntentID: "pi_ambig",
+			Unknown:         true,
+		},
+	}
+	invoices := newMockInvoiceUpdater()
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1",
+		Status:         domain.InvoiceFinalized,
+		AmountDueCents: 5000,
+		Currency:       "USD",
+	}
+
+	dunning := &recordingDunningStarter{}
+	stripe := NewStripe(client, invoices, newMockWebhookStore(), nil, dunning)
+
+	_, _ = stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe_abc")
+
+	if len(dunning.calls) != 0 {
+		t.Errorf("StartDunning calls on ambiguous outcome: got %d, want 0 (reconciler resolves Unknown later)", len(dunning.calls))
+	}
+}
+
 func TestChargeInvoice_UnknownOutcome(t *testing.T) {
 	// Simulates a 5xx / timeout / network drop: the charge may or may not
 	// have been processed by Stripe. Marking the invoice failed and retrying

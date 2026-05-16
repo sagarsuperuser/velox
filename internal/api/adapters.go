@@ -154,14 +154,14 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 	chargeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	// Tag the PI as a dunning retry so the payment_intent.payment_failed
-	// webhook handler suppresses its generic payment-failed email —
-	// dunning fires its own warning / escalation email inline. Without
-	// the tag the customer receives two emails per failed retry: the
-	// webhook's "Payment failed for invoice X" and dunning's
+	// Dedicated retry-charge method tags the PI as velox_purpose=
+	// dunning_retry so the payment_intent.payment_failed webhook
+	// handler suppresses its generic payment-failed email — dunning
+	// fires its own warning / escalation email inline. Without the
+	// tag the customer receives two emails per failed retry: the
+	// webhook's "Payment failed for invoice X" plus dunning's
 	// "Action required — payment retry for invoice X (Attempt N of M)".
-	chargeCtx = payment.WithPIPurpose(chargeCtx, "dunning_retry")
-	_, err = a.charger.ChargeInvoice(chargeCtx, tenantID, inv, ps.StripeCustomerID)
+	_, err = a.charger.ChargeInvoiceForDunningRetry(chargeCtx, tenantID, inv, ps.StripeCustomerID)
 	// Map payment's internal "call never happened" sentinel to dunning's
 	// equivalent. Keeps peer domains from importing each other and gives
 	// dunning a stable signal to skip attempt_count bookkeeping.
