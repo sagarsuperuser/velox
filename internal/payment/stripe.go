@@ -358,6 +358,33 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		// Stripe outage genuinely impairs customer charging and should page,
 		// even though the reconciler will later resolve the per-invoice state.
 		mw.RecordPaymentCharge("failed")
+
+		// Inline StartDunning for known-failed charges so the dunning run
+		// exists by the time the orchestrator's Phase 5 queries due runs
+		// in the same Advance. Pre-fix this was deferred to the
+		// payment_intent.payment_failed webhook — fine on wall-clock, but
+		// under test-clock catchup the webhook arrives AFTER Phase 5 has
+		// already exited (Phase 3 fires PI, Phase 5 runs immediately,
+		// webhook lands later), so the new dunning run sat at
+		// attempt_count=0 with no retries fired until the next Advance.
+		// Industry parity: Stripe Test Clocks processes the failure
+		// synchronously inside the advance.
+		//
+		// Safe to call alongside the webhook path: StartDunning is
+		// idempotent by invoice (migration 0085 UNIQUE), so the
+		// subsequent webhook-driven call returns the existing run.
+		//
+		// Only fires on definitively-failed charges. Unknown outcomes
+		// (Stripe outage, ambiguous timeout) defer to the webhook so
+		// the reconciler can resolve them without burning a retry on
+		// an ambiguous result.
+		if !pe.Unknown && s.dunning != nil {
+			failureAt := simulatedFailureAt(inv)
+			if _, derr := s.dunning.StartDunning(ctx, tenantID, inv.ID, inv.CustomerID, failureAt); derr != nil {
+				slog.Warn("inline StartDunning after known-failed charge", "invoice_id", inv.ID, "error", derr)
+			}
+		}
+
 		// Wrap with %w so respond.FromError can detect *PaymentError
 		// via errors.As and surface OperatorSafeMessage() instead of
 		// leaking pe.Message (which is the raw Stripe SDK string —
@@ -377,6 +404,36 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 	// Update invoice with PI reference and set to processing
 	return s.invoices.UpdatePayment(ctx, tenantID, inv.ID,
 		domain.PaymentProcessing, result.ID, "", nil)
+}
+
+// simulatedFailureAt derives the cycle-close instant for a failed
+// charge on the given invoice. Used by both the inline charge-failure
+// path and the async webhook handler so dunning anchors next_action_at
+// on simulated time even when running under test-clock catchup.
+//
+// Returns the latest invoice period boundary at or before IssuedAt:
+// - in_arrears: BillingPeriodEnd (= elapsed period close = cycle fire)
+// - in_advance: BillingPeriodStart (= upcoming period start = cycle fire)
+// Both directions converge on "the cycle close instant in simulated
+// time." Manual invoices with no period fields fall back to IssuedAt,
+// and ultimately to time.Now() — both wall-clock-equivalent in
+// production.
+func simulatedFailureAt(inv domain.Invoice) time.Time {
+	failureAt := time.Now()
+	if inv.IssuedAt != nil {
+		failureAt = *inv.IssuedAt
+	}
+	var candidate time.Time
+	if !inv.BillingPeriodStart.IsZero() && !inv.BillingPeriodStart.After(failureAt) && inv.BillingPeriodStart.After(candidate) {
+		candidate = inv.BillingPeriodStart
+	}
+	if !inv.BillingPeriodEnd.IsZero() && !inv.BillingPeriodEnd.After(failureAt) && inv.BillingPeriodEnd.After(candidate) {
+		candidate = inv.BillingPeriodEnd
+	}
+	if !candidate.IsZero() {
+		failureAt = candidate
+	}
+	return failureAt
 }
 
 // HandleWebhook processes a Stripe webhook event and updates the corresponding invoice.
@@ -623,20 +680,7 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 	// fields, falls back to IssuedAt or the current clock — both
 	// wall-clock-equivalent in production.
 	if s.dunning != nil {
-		failureAt := time.Now()
-		if inv.IssuedAt != nil {
-			failureAt = *inv.IssuedAt
-		}
-		var candidate time.Time
-		if !inv.BillingPeriodStart.IsZero() && !inv.BillingPeriodStart.After(failureAt) && inv.BillingPeriodStart.After(candidate) {
-			candidate = inv.BillingPeriodStart
-		}
-		if !inv.BillingPeriodEnd.IsZero() && !inv.BillingPeriodEnd.After(failureAt) && inv.BillingPeriodEnd.After(candidate) {
-			candidate = inv.BillingPeriodEnd
-		}
-		if !candidate.IsZero() {
-			failureAt = candidate
-		}
+		failureAt := simulatedFailureAt(inv)
 		if _, err := s.dunning.StartDunning(ctx, tenantID, inv.ID, inv.CustomerID, failureAt); err != nil {
 			slog.Warn("failed to start dunning",
 				"invoice_id", inv.ID,
