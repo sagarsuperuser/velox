@@ -190,6 +190,12 @@ type PaymentSetupReader interface {
 }
 
 // InvoiceCharger creates a Stripe PaymentIntent for a finalized invoice.
+// Narrow interface — default-mode charge only. Callers that need to
+// tag the PI for special routing (the dunning retrier marks PIs with
+// velox_purpose=dunning_retry so the webhook suppresses the duplicate
+// payment-failed email) access *payment.Stripe directly and use the
+// dedicated typed method (ChargeInvoiceForDunningRetry). Keeps engine
+// package free of payment-options surface.
 type InvoiceCharger interface {
 	ChargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID string) (domain.Invoice, error)
 }

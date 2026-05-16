@@ -258,6 +258,26 @@ func (s *Stripe) fireEvent(ctx context.Context, tenantID, eventType string, payl
 // ChargeInvoice creates a Stripe PaymentIntent for a finalized invoice.
 // The invoice must have a customer with a Stripe customer ID already set up.
 func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID string) (domain.Invoice, error) {
+	return s.chargeInvoice(ctx, tenantID, inv, stripeCustomerID, "")
+}
+
+// ChargeInvoiceForDunningRetry charges an invoice as part of a dunning
+// retry attempt. Identical to ChargeInvoice except the resulting
+// PaymentIntent carries velox_purpose=dunning_retry metadata, which
+// the payment_intent.payment_failed webhook handler reads to suppress
+// the duplicate generic payment-failed email (dunning sends its own
+// per-attempt warning / escalation inline from processRun / exhaustRun).
+//
+// Exposed as a separate method rather than a variadic option so the
+// engine's InvoiceCharger interface stays narrow (default-mode only)
+// and the cross-domain import that a shared options type would force
+// (billing → payment) is avoided per the per-domain-isolation rule
+// in CLAUDE.md.
+func (s *Stripe) ChargeInvoiceForDunningRetry(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID string) (domain.Invoice, error) {
+	return s.chargeInvoice(ctx, tenantID, inv, stripeCustomerID, piPurposeDunningRetry)
+}
+
+func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID, purpose string) (domain.Invoice, error) {
 	if inv.Status != domain.InvoiceFinalized {
 		return domain.Invoice{}, fmt.Errorf("can only charge finalized invoices, current status: %s", inv.Status)
 	}
@@ -288,7 +308,7 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		"velox_tenant_id":      tenantID,
 		"velox_customer_id":    inv.CustomerID,
 	}
-	if purpose := piPurposeFromContext(ctx); purpose != "" {
+	if purpose != "" {
 		metadata["velox_purpose"] = purpose
 	}
 	// Per-attempt idempotency key. inv.UpdatedAt advances every time
@@ -409,27 +429,13 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 		domain.PaymentProcessing, result.ID, "", nil)
 }
 
-// piPurposeKey carries velox_purpose for a Stripe PI through ctx.
-// Set by callers that need to tag the PI before ChargeInvoice runs
-// (currently only the dunning retrier — to suppress the duplicate
-// payment-failed email when the webhook lands). Unkeyed → no extra
-// metadata.
-type piPurposeKey struct{}
-
-// WithPIPurpose tags ctx with a velox_purpose value that ChargeInvoice
-// will stamp on the Stripe PaymentIntent metadata. Used to identify
-// PIs created for non-default reasons (dunning retry, customer-driven
-// hosted-pay) so the webhook can route them differently.
-func WithPIPurpose(ctx context.Context, purpose string) context.Context {
-	return context.WithValue(ctx, piPurposeKey{}, purpose)
-}
-
-func piPurposeFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(piPurposeKey{}).(string); ok {
-		return v
-	}
-	return ""
-}
+// piPurposeDunningRetry tags a PaymentIntent created by the dunning
+// retrier so the payment_intent.payment_failed webhook can suppress
+// its generic payment-failed email — dunning's warning/escalation is
+// the canonical notification for retry attempts. Stripe-parity (Smart
+// Retries sends one email per attempt, not one webhook-email plus one
+// engine-email).
+const piPurposeDunningRetry = "dunning_retry"
 
 // simulatedFailureAt derives the cycle-close instant for a failed
 // charge on the given invoice. Used by both the inline charge-failure
