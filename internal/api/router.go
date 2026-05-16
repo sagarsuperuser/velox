@@ -412,6 +412,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// have no signal that the customer was actually notified about
 	// no_payment_method / payment_failed / dunning events.
 	invoiceH.SetEmailEvents(&invoiceEmailEventsAdapter{store: emailOutboxStore})
+	// Sent-emails lister for the "Sent emails" section on the customer
+	// detail page (Stripe shape — docs.stripe.com/invoicing/send-email
+	// lists email log on the customer page, 30-day window).
+	customerH.SetSentEmailsLister(&customerSentEmailsAdapter{store: emailOutboxStore})
 	// Wire the narrow sub reader so the payment timeline can stamp
 	// is_simulated=true on lifecycle + dunning events when the
 	// invoice's owning sub is pinned to a test clock. Authoritative

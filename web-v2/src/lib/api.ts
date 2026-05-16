@@ -103,6 +103,8 @@ export const api = {
     apiRequest<Customer>('POST', '/customers', data),
   rotateCostDashboardToken: (customerId: string) =>
     apiRequest<{ token: string; public_url: string }>('POST', `/customers/${customerId}/rotate-cost-dashboard-token`),
+  listCustomerSentEmails: (customerId: string) =>
+    apiRequest<{ sent_emails: SentEmail[] }>('GET', `/customers/${customerId}/sent-emails`),
 
   // Subscriptions
   listSubscriptions: (params?: string) =>
@@ -473,6 +475,22 @@ export const api = {
 }
 
 // Types
+// SentEmail mirrors a single email_outbox row surfaced on the customer
+// detail page's "Sent emails" section (Stripe shape). 30-day window,
+// newest first, invoice-scoped customer-facing email types only
+// (invoice / payment_receipt / payment_failed / payment_setup_request
+// / dunning_warning / dunning_escalation).
+export interface SentEmail {
+  id: string
+  email_type: string
+  recipient: string
+  status: 'pending' | 'dispatched' | 'failed' | string
+  invoice_number?: string
+  last_error?: string
+  created_at: string
+  dispatched_at?: string
+}
+
 export interface Customer {
   id: string
   external_id: string

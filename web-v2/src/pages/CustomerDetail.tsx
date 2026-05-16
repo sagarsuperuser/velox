@@ -72,6 +72,31 @@ const billingProfileSchema = z.object({
 )
 type BillingProfileData = z.infer<typeof billingProfileSchema>
 
+// sentEmailLabel maps the email_outbox.email_type to the operator-
+// facing label rendered in the "Sent emails" section. Keep the strings
+// short and unambiguous for ops/finance/support — no engineering
+// jargon, no `email.X` namespacing.
+function sentEmailLabel(emailType: string): string {
+  switch (emailType) {
+    case 'invoice': return 'Invoice'
+    case 'payment_receipt': return 'Payment receipt'
+    case 'payment_failed': return 'Payment failed'
+    case 'payment_setup_request': return 'Payment method requested'
+    case 'dunning_warning': return 'Payment retry — action required'
+    case 'dunning_escalation': return 'Retries exhausted'
+    default: return emailType
+  }
+}
+
+function sentEmailStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+  switch (status) {
+    case 'dispatched': return 'default'
+    case 'failed': return 'destructive'
+    case 'pending': return 'secondary'
+    default: return 'outline'
+  }
+}
+
 export default function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
@@ -138,6 +163,17 @@ export default function CustomerDetailPage() {
     enabled: !!id,
     refetchInterval: (query) => pollIntervalForPaymentSetup(query.state.data),
   })
+
+  // Sent emails — last 30 days, Stripe shape (customer page email log).
+  // Empty list is the common case for a fresh customer; failing the
+  // query (e.g. backend not deployed yet) falls back to empty so the
+  // page still renders.
+  const { data: sentEmailsData } = useQuery({
+    queryKey: ['customer-sent-emails', id],
+    queryFn: () => api.listCustomerSentEmails(id!).catch(() => ({ sent_emails: [] })),
+    enabled: !!id,
+  })
+  const sentEmails = sentEmailsData?.sent_emails ?? []
 
   const { data: dunningOverride } = useQuery({
     queryKey: ['customer-dunning-override', id],
@@ -863,6 +899,46 @@ export default function CustomerDetailPage() {
               })}
               {(!overview?.recent_invoices.length) && (
                 <p className="px-6 py-4 text-sm text-muted-foreground">No invoices</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Sent emails — Stripe shape (customer page email log, 30-day
+            window). Mirrors docs.stripe.com/invoicing/send-email which
+            puts the email log on the customer page (not per-invoice). */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Sent emails</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y divide-border">
+              {sentEmails.map(em => (
+                <div key={em.id} className="px-6 py-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium text-foreground">{sentEmailLabel(em.email_type)}</p>
+                      {em.invoice_number && (
+                        <Link to={`/invoices?q=${em.invoice_number}`} className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
+                          {em.invoice_number}
+                        </Link>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate">to {em.recipient}</p>
+                    {em.status === 'failed' && em.last_error && (
+                      <p className="mt-1 text-xs text-destructive truncate">{em.last_error}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Badge variant={sentEmailStatusVariant(em.status)}>{em.status}</Badge>
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">
+                      {formatDateTime(em.dispatched_at ?? em.created_at)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+              {sentEmails.length === 0 && (
+                <p className="px-6 py-4 text-sm text-muted-foreground">No emails sent in the last 30 days</p>
               )}
             </div>
           </CardContent>

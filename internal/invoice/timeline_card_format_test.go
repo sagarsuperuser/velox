@@ -376,3 +376,4 @@ func TestFoldEmailIntoStripeFailed(t *testing.T) {
 		}
 	})
 }
+

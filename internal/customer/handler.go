@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -24,11 +25,52 @@ type Handler struct {
 	gdpr        *GDPRHandler
 	auditLogger *audit.Logger
 	costSvc     CostDashboardService
+	sentEmails  SentEmailsLister
 	// apiBaseURL is the public-facing origin used to compose the
 	// `public_url` field on the rotate-cost-dashboard-token response.
 	// Empty → the operator gets back just the relative path; production
 	// wires the real origin via SetAPIBaseURL.
 	apiBaseURL string
+}
+
+// SentEmailRow is the wire-shape of a single email_outbox row returned
+// from GET /v1/customers/{id}/sent-emails. Mirrors Stripe's customer-
+// page "Sent emails" section. Fields stay flat (no nested payload) so
+// the SPA can render directly.
+type SentEmailRow struct {
+	ID            string  `json:"id"`
+	EmailType     string  `json:"email_type"`
+	Recipient     string  `json:"recipient"`
+	Status        string  `json:"status"`
+	InvoiceNumber string  `json:"invoice_number,omitempty"`
+	LastError     string  `json:"last_error,omitempty"`
+	CreatedAt     string  `json:"created_at"`
+	DispatchedAt  *string `json:"dispatched_at,omitempty"`
+}
+
+// SentEmailsLister returns email_outbox rows for a customer (30-day
+// window, newest first). Implemented at the router layer via an
+// adapter over *email.OutboxStore so the customer package doesn't
+// import email (peer-domain rule per CLAUDE.md).
+type SentEmailsLister interface {
+	ListByCustomer(ctx context.Context, tenantID, customerID string) ([]SentEmailOutboxRow, error)
+}
+
+// SentEmailOutboxRow is the cross-package shape this handler reads.
+// Mirrors the customer-relevant fields of email.OutboxRow; the router
+// adapter translates one to the other.
+type SentEmailOutboxRow struct {
+	ID           string
+	EmailType    string
+	Recipient    string // resolved from payload->>'to'
+	Status       string
+	LastError    string
+	CreatedAt    time.Time
+	DispatchedAt *time.Time
+	// InvoiceNumber is resolved from payload — non-empty for all
+	// invoice-scoped email types (which is everything the lister
+	// returns today, since ListByCustomer joins on invoice_number).
+	InvoiceNumber string
 }
 
 func NewHandler(svc *Service) *Handler {
@@ -56,6 +98,14 @@ func (h *Handler) SetAPIBaseURL(u string) {
 	h.apiBaseURL = u
 }
 
+// SetSentEmailsLister wires the email-outbox lister used by
+// GET /v1/customers/{id}/sent-emails. Nil-safe — when unwired, the
+// endpoint returns 503 to make the misconfiguration loud rather than
+// silently returning an empty list.
+func (h *Handler) SetSentEmailsLister(l SentEmailsLister) {
+	h.sentEmails = l
+}
+
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.create)
@@ -67,6 +117,7 @@ func (h *Handler) Routes() chi.Router {
 		r.Get("/", h.getBillingProfile)
 	})
 	r.Post("/{id}/rotate-cost-dashboard-token", h.rotateCostDashboardToken)
+	r.Get("/{id}/sent-emails", h.listSentEmails)
 	// GDPR endpoints (data export + right to erasure)
 	if h.gdpr != nil {
 		r.Get("/{id}/export", h.gdpr.exportData)
@@ -250,6 +301,58 @@ func (h *Handler) rotateCostDashboardToken(w http.ResponseWriter, r *http.Reques
 		"token":      token,
 		"public_url": publicURL,
 	})
+}
+
+// listSentEmails returns the email_outbox rows for the customer, last
+// 30 days, newest first. Powers the "Sent emails" section on the
+// customer detail page (Stripe shape — docs.stripe.com/invoicing/
+// send-email lists the email log on the customer page).
+//
+// Returns 503 when the lister isn't wired (production wires via
+// router; narrow tests can leave it nil — make the misconfig loud
+// rather than silently returning an empty list and hiding a wiring
+// bug from the operator).
+func (h *Handler) listSentEmails(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	if id == "" {
+		respond.BadRequest(w, r, "missing customer id")
+		return
+	}
+	if h.sentEmails == nil {
+		// Same shape as other "expected-wired-in-production" backstops
+		// (cost-dashboard token mint, GDPR routes). 500 keeps the
+		// wiring bug loud — silent empty list would mask a misconfig.
+		slog.ErrorContext(r.Context(), "list sent emails: lister not wired")
+		respond.InternalError(w, r)
+		return
+	}
+
+	rows, err := h.sentEmails.ListByCustomer(r.Context(), tenantID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "list sent emails", "customer_id", id, "error", err)
+		respond.InternalError(w, r)
+		return
+	}
+
+	out := make([]SentEmailRow, 0, len(rows))
+	for _, row := range rows {
+		view := SentEmailRow{
+			ID:            row.ID,
+			EmailType:     row.EmailType,
+			Recipient:     row.Recipient,
+			Status:        row.Status,
+			InvoiceNumber: row.InvoiceNumber,
+			LastError:     row.LastError,
+			CreatedAt:     row.CreatedAt.Format(time.RFC3339),
+		}
+		if row.DispatchedAt != nil {
+			d := row.DispatchedAt.Format(time.RFC3339)
+			view.DispatchedAt = &d
+		}
+		out = append(out, view)
+	}
+	respond.JSON(w, r, http.StatusOK, map[string]any{"sent_emails": out})
 }
 
 // publicCostDashboard composes a sanitized cost-dashboard projection
