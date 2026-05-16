@@ -88,7 +88,7 @@ func cleanDB(t *testing.T, pool *sql.DB) {
 				customer_payment_setups, customer_billing_profiles, customers,
 				stripe_webhook_events, api_keys, billing_provider_connections,
 				credit_note_line_items, credit_notes, customer_credit_ledger,
-				coupon_redemptions, coupons, customer_dunning_overrides,
+				coupon_redemptions, coupons,
 				customer_price_overrides, webhook_deliveries, webhook_events,
 				webhook_endpoints, idempotency_keys, audit_log, tenant_settings,
 				billing_alert_triggers, billing_alerts,

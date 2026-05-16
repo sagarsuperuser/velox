@@ -294,6 +294,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	})
 	dunningSvc.SetSubscriptionPauser(&subscriptionPauserAdapter{svc: subSvc}, invoiceStore)
 	dunningSvc.SetEventDispatcher(eventDispatcher)
+	// Customer→dunning_policy_id resolver so dunning service can pick
+	// the effective policy at StartDunning time (ADR-036).
+	dunningSvc.SetCustomerPolicyReader(customerSvc)
 	// customer service emits customer.email_bounced when T0-20 bounce
 	// reporting fires; needs the same webhook dispatcher as the other
 	// domain services.

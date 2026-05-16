@@ -59,6 +59,14 @@ type EmailNotifier interface {
 	SendDunningEscalation(ctx context.Context, tenantID, to, customerName, invoiceNumber, action, publicToken string) error
 }
 
+// CustomerPolicyReader returns a customer's assigned dunning_policy_id
+// (empty string = no explicit assignment, fall back to tenant default).
+// Implemented by *customer.Service so the dunning service can resolve
+// the effective policy without importing the customer package.
+type CustomerPolicyReader interface {
+	GetDunningPolicyID(ctx context.Context, tenantID, customerID string) (string, error)
+}
+
 type Service struct {
 	store         Store
 	retrier       PaymentRetrier
@@ -67,6 +75,7 @@ type Service struct {
 	events        domain.EventDispatcher
 	emailNotifier EmailNotifier
 	customerEmail CustomerEmailFetcher
+	custPolicy    CustomerPolicyReader
 	resolver      clock.Resolver
 	clock         clock.Clock
 }
@@ -98,6 +107,38 @@ func NewService(store Store, retrier PaymentRetrier, clk clock.Clock) *Service {
 
 func (s *Service) SetRetrier(retrier PaymentRetrier) {
 	s.retrier = retrier
+}
+
+// SetCustomerPolicyReader wires the customer→policy_id lookup used by
+// GetEffectivePolicyForCustomer. Without it, every dunning operation
+// falls back to the tenant default policy (per-customer assignment
+// silently ignored). Production must wire this; narrow unit tests
+// can leave it nil.
+func (s *Service) SetCustomerPolicyReader(r CustomerPolicyReader) {
+	s.custPolicy = r
+}
+
+// GetEffectivePolicyForCustomer returns the policy that governs this
+// customer's next dunning run. Resolution order (ADR-036):
+//   1. If the customer has an explicit dunning_policy_id, load that
+//      policy by id.
+//   2. Otherwise, the tenant's is_default=true policy.
+//
+// Lookup failures on step 1 (e.g. the assigned policy was deleted
+// underneath the customer's pointer; the FK ON DELETE SET NULL safety
+// net should prevent this but defensive coding) fall through to the
+// default — a missing-policy customer continues to dun rather than
+// erroring out at run time.
+func (s *Service) GetEffectivePolicyForCustomer(ctx context.Context, tenantID, customerID string) (domain.DunningPolicy, error) {
+	if s.custPolicy != nil && customerID != "" {
+		if pid, err := s.custPolicy.GetDunningPolicyID(ctx, tenantID, customerID); err == nil && pid != "" {
+			if p, err := s.store.GetPolicyByID(ctx, tenantID, pid); err == nil {
+				return p, nil
+			}
+			// Assigned policy not found — fall through to default.
+		}
+	}
+	return s.store.GetDefaultPolicy(ctx, tenantID)
 }
 
 // SetSubscriptionPauser configures subscription pausing for dunning final actions.
@@ -168,25 +209,12 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 		return existing, nil // Idempotent — return existing run regardless of state.
 	}
 
-	policy, err := s.store.GetPolicy(ctx, tenantID)
+	policy, err := s.GetEffectivePolicyForCustomer(ctx, tenantID, customerID)
 	if err != nil {
-		return domain.InvoiceDunningRun{}, fmt.Errorf("get dunning policy: %w", err)
+		return domain.InvoiceDunningRun{}, fmt.Errorf("get effective dunning policy: %w", err)
 	}
 	if !policy.Enabled {
-		return domain.InvoiceDunningRun{}, errs.InvalidState("dunning is disabled for this tenant")
-	}
-
-	// Check for customer-specific dunning override
-	if override, err := s.store.GetCustomerOverride(ctx, tenantID, customerID); err == nil {
-		if override.MaxRetryAttempts != nil {
-			policy.MaxRetryAttempts = *override.MaxRetryAttempts
-		}
-		if override.GracePeriodDays != nil {
-			policy.GracePeriodDays = *override.GracePeriodDays
-		}
-		if override.FinalAction != "" {
-			policy.FinalAction = domain.DunningFinalAction(override.FinalAction)
-		}
+		return domain.InvoiceDunningRun{}, errs.InvalidState("dunning is disabled (assigned policy or tenant default is not enabled)")
 	}
 
 	// Grace period determines when the first retry happens.
@@ -351,24 +379,17 @@ func (s *Service) processRunsBatch(ctx context.Context, tenantID string, dueRuns
 }
 
 func (s *Service) processRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) error {
-	policy, err := s.store.GetPolicy(ctx, tenantID)
+	// Resolve the policy bound to this run at StartDunning time.
+	// Runs stay on their original policy for their lifetime — if the
+	// customer's dunning_policy_id assignment changed mid-flight (or
+	// the assigned policy was edited), in-flight runs continue with
+	// the original config and only the NEXT run for this customer
+	// picks up the new policy. Stripe-Lago shape (verified during
+	// ADR-036 research — no platform switches a mid-flight retry
+	// schedule under the operator's feet).
+	policy, err := s.store.GetPolicyByID(ctx, tenantID, run.PolicyID)
 	if err != nil {
-		return err
-	}
-
-	// Check for customer-specific dunning override
-	if run.CustomerID != "" {
-		if override, err := s.store.GetCustomerOverride(ctx, tenantID, run.CustomerID); err == nil {
-			if override.MaxRetryAttempts != nil {
-				policy.MaxRetryAttempts = *override.MaxRetryAttempts
-			}
-			if override.GracePeriodDays != nil {
-				policy.GracePeriodDays = *override.GracePeriodDays
-			}
-			if override.FinalAction != "" {
-				policy.FinalAction = domain.DunningFinalAction(override.FinalAction)
-			}
-		}
+		return fmt.Errorf("get bound policy %s for run %s: %w", run.PolicyID, run.ID, err)
 	}
 
 	if run.Paused {
@@ -499,30 +520,25 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 	//   retry_schedule[0] = gap between retry 1 and retry 2
 	//   retry_schedule[1] = gap between retry 2 and retry 3
 	// Grace period (used in StartDunning) determines when retry 1 happens.
+	//
+	// Save-time validation (Service.UpsertPolicy) guarantees the schedule
+	// has at least (MaxRetryAttempts - 1) entries. The pre-ADR-036
+	// "reuse last interval when idx out of bounds" runtime fallback was
+	// removed — that was a silent fallback (feedback_no_silent_fallbacks);
+	// out-of-bounds here now indicates a schema invariant violation, so
+	// fail loudly rather than substitute a default.
 	if run.AttemptCount < policy.MaxRetryAttempts {
-		// Default intervals between retries: 3 days, 5 days, 7 days
-		defaultIntervals := []time.Duration{72 * time.Hour, 120 * time.Hour, 168 * time.Hour}
-		retryIntervals := defaultIntervals
-		if len(policy.RetrySchedule) > 0 {
-			retryIntervals = nil
-			for _, s := range policy.RetrySchedule {
-				if d, err := time.ParseDuration(s); err == nil {
-					retryIntervals = append(retryIntervals, d)
-				}
-			}
-			if len(retryIntervals) == 0 {
-				retryIntervals = defaultIntervals
-			}
+		idx := run.AttemptCount - 1 // 1-based; schedule[0] = after retry 1
+		if idx < 0 || idx >= len(policy.RetrySchedule) {
+			return fmt.Errorf("retry_schedule index %d out of bounds for policy %s (schedule has %d entries, max_retry_attempts %d) — save-time validation must enforce schedule length",
+				idx, policy.ID, len(policy.RetrySchedule), policy.MaxRetryAttempts)
 		}
-		// AttemptCount is 1-based; schedule[0] is the gap after retry 1
-		idx := run.AttemptCount - 1
-		if idx >= len(retryIntervals) {
-			idx = len(retryIntervals) - 1 // reuse last interval
+		d, err := time.ParseDuration(policy.RetrySchedule[idx])
+		if err != nil {
+			return fmt.Errorf("parse retry_schedule[%d]=%q for policy %s: %w", idx, policy.RetrySchedule[idx], policy.ID, err)
 		}
-		if idx >= 0 {
-			t := now.Add(retryIntervals[idx])
-			run.NextActionAt = &t
-		}
+		t := now.Add(d)
+		run.NextActionAt = &t
 	} else {
 		run.NextActionAt = nil
 	}
@@ -671,12 +687,54 @@ func (s *Service) ResolveByInvoice(ctx context.Context, tenantID, invoiceID stri
 	return err
 }
 
-// GetPolicy returns the dunning policy for a tenant.
-func (s *Service) GetPolicy(ctx context.Context, tenantID string) (domain.DunningPolicy, error) {
-	return s.store.GetPolicy(ctx, tenantID)
+// GetDefaultPolicy returns the tenant's default dunning policy.
+// Operators / handlers needing "the current policy" use this; runtime
+// dunning state machine instead resolves per-customer via
+// GetEffectivePolicyForCustomer or per-run via GetPolicyByID(run.PolicyID).
+func (s *Service) GetDefaultPolicy(ctx context.Context, tenantID string) (domain.DunningPolicy, error) {
+	return s.store.GetDefaultPolicy(ctx, tenantID)
 }
 
-// UpsertPolicy creates or updates the dunning policy for a tenant.
+// GetPolicyByID looks up a policy by id.
+func (s *Service) GetPolicyByID(ctx context.Context, tenantID, id string) (domain.DunningPolicy, error) {
+	return s.store.GetPolicyByID(ctx, tenantID, id)
+}
+
+// ListPolicies returns all policies for the tenant (default first, then
+// created_at). Drives the campaigns admin page.
+func (s *Service) ListPolicies(ctx context.Context, tenantID string) ([]domain.DunningPolicy, error) {
+	return s.store.ListPolicies(ctx, tenantID)
+}
+
+// DeletePolicy removes a policy by id. Refuses to delete the default
+// policy or any policy with customers explicitly assigned to it (the
+// store-level checks are authoritative; service-level pre-check just
+// produces a clearer error before hitting the DB).
+func (s *Service) DeletePolicy(ctx context.Context, tenantID, id string) error {
+	return s.store.DeletePolicy(ctx, tenantID, id)
+}
+
+// SetDefaultPolicy promotes a policy to is_default and demotes the
+// previous default atomically.
+func (s *Service) SetDefaultPolicy(ctx context.Context, tenantID, id string) error {
+	return s.store.SetDefaultPolicy(ctx, tenantID, id)
+}
+
+// CountCustomersOnPolicy returns the explicit-assignment count for a
+// policy, used by the admin UI ("N customers assigned" badge) and by
+// the delete guard.
+func (s *Service) CountCustomersOnPolicy(ctx context.Context, tenantID, policyID string) (int, error) {
+	return s.store.CountCustomersOnPolicy(ctx, tenantID, policyID)
+}
+
+// UpsertPolicy creates a new policy (when input.ID is empty) or updates
+// an existing one (when input.ID is set). Save-time validation enforces
+// the per-platform invariant that retry_schedule has enough entries to
+// cover the max-attempts count — without this guard a misconfig (max=5
+// with 2-entry schedule) would silently reuse the last interval at
+// runtime, producing back-to-back retries the operator never asked for
+// (a feedback_no_silent_fallbacks violation; the pre-ADR-036 runtime
+// fallback `idx >= len(retryIntervals)` was removed alongside this).
 func (s *Service) UpsertPolicy(ctx context.Context, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error) {
 	if policy.MaxRetryAttempts <= 0 {
 		policy.MaxRetryAttempts = 3
@@ -707,6 +765,15 @@ func (s *Service) UpsertPolicy(ctx context.Context, tenantID string, policy doma
 	if err := domain.MaxLen("name", policy.Name, 255); err != nil {
 		return domain.DunningPolicy{}, err
 	}
+	// retry_schedule length must support max_retry_attempts. Retry 1
+	// uses grace_period_days; retries 2..N use retry_schedule[0..N-2].
+	// So schedule must have at least MaxRetryAttempts - 1 entries.
+	needed := policy.MaxRetryAttempts - 1
+	if needed > 0 && len(policy.RetrySchedule) < needed {
+		return domain.DunningPolicy{}, errs.Invalid("retry_schedule",
+			fmt.Sprintf("max_retry_attempts (%d) requires at least %d retry_schedule entries — got %d",
+				policy.MaxRetryAttempts, needed, len(policy.RetrySchedule)))
+	}
 	return s.store.UpsertPolicy(ctx, tenantID, policy)
 }
 
@@ -715,38 +782,6 @@ func (s *Service) UpsertPolicy(ctx context.Context, tenantID string, policy doma
 // the recipe schema. See pricing.Service tx variants for the same rationale.
 func (s *Service) UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error) {
 	return s.store.UpsertPolicyTx(ctx, tx, tenantID, policy)
-}
-
-// GetCustomerOverride returns the dunning override for a specific customer.
-func (s *Service) GetCustomerOverride(ctx context.Context, tenantID, customerID string) (domain.CustomerDunningOverride, error) {
-	return s.store.GetCustomerOverride(ctx, tenantID, customerID)
-}
-
-// UpsertCustomerOverride creates or updates a customer-level dunning override.
-func (s *Service) UpsertCustomerOverride(ctx context.Context, tenantID string, override domain.CustomerDunningOverride) (domain.CustomerDunningOverride, error) {
-	if override.CustomerID == "" {
-		return domain.CustomerDunningOverride{}, errs.Required("customer_id")
-	}
-	if override.MaxRetryAttempts != nil && *override.MaxRetryAttempts > 15 {
-		return domain.CustomerDunningOverride{}, errs.Invalid("max_retry_attempts", "cannot exceed 15")
-	}
-	if override.GracePeriodDays != nil && *override.GracePeriodDays > 30 {
-		return domain.CustomerDunningOverride{}, errs.Invalid("grace_period_days", "cannot exceed 30")
-	}
-	if override.FinalAction != "" {
-		switch domain.DunningFinalAction(override.FinalAction) {
-		case domain.DunningActionManualReview, domain.DunningActionPause, domain.DunningActionWriteOff:
-			// valid
-		default:
-			return domain.CustomerDunningOverride{}, errs.Invalid("final_action", "must be one of: manual_review, pause, write_off_later")
-		}
-	}
-	return s.store.UpsertCustomerOverride(ctx, tenantID, override)
-}
-
-// DeleteCustomerOverride removes a customer-level dunning override.
-func (s *Service) DeleteCustomerOverride(ctx context.Context, tenantID, customerID string) error {
-	return s.store.DeleteCustomerOverride(ctx, tenantID, customerID)
 }
 
 // ListRuns returns dunning runs matching the filter.

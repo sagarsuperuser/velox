@@ -61,9 +61,18 @@ func NewHandler(svc *Service, deps ...HandlerDeps) *Handler {
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 
-	r.Route("/policy", func(r chi.Router) {
-		r.Get("/", h.getPolicy)
-		r.Put("/", h.upsertPolicy)
+	// Dunning policies (ADR-036 campaigns model — multi-policy-per-
+	// tenant). Replaces the prior singleton /policy + per-customer
+	// /customers/{id}/override surface. Customers are reassigned via
+	// PATCH /v1/customers/{id} { "dunning_policy_id": ... } on the
+	// customer handler.
+	r.Route("/policies", func(r chi.Router) {
+		r.Get("/", h.listPolicies)
+		r.Post("/", h.createPolicy)
+		r.Get("/{id}", h.getPolicy)
+		r.Patch("/{id}", h.updatePolicy)
+		r.Delete("/{id}", h.deletePolicy)
+		r.Post("/{id}/set-default", h.setDefaultPolicy)
 	})
 
 	r.Route("/runs", func(r chi.Router) {
@@ -72,48 +81,110 @@ func (h *Handler) Routes() chi.Router {
 		r.Post("/{id}/resolve", h.resolveRun)
 	})
 
-	r.Route("/customers/{customer_id}/override", func(r chi.Router) {
-		r.Get("/", h.getCustomerOverride)
-		r.Put("/", h.upsertCustomerOverride)
-		r.Delete("/", h.deleteCustomerOverride)
-	})
-
 	return r
+}
+
+func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	policies, err := h.svc.ListPolicies(r.Context(), tenantID)
+	if err != nil {
+		respond.InternalError(w, r)
+		slog.ErrorContext(r.Context(), "list dunning policies", "error", err)
+		return
+	}
+	if policies == nil {
+		policies = []domain.DunningPolicy{}
+	}
+	// Attach customer-assignment counts so the admin page can render
+	// the "N customers assigned" badge without a round-trip per row.
+	type policyWithCount struct {
+		domain.DunningPolicy
+		AssignedCustomers int `json:"assigned_customers"`
+	}
+	out := make([]policyWithCount, 0, len(policies))
+	for _, p := range policies {
+		count, _ := h.svc.CountCustomersOnPolicy(r.Context(), tenantID, p.ID)
+		out = append(out, policyWithCount{DunningPolicy: p, AssignedCustomers: count})
+	}
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": out})
 }
 
 func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
-
-	policy, err := h.svc.GetPolicy(r.Context(), tenantID)
+	id := chi.URLParam(r, "id")
+	policy, err := h.svc.GetPolicyByID(r.Context(), tenantID, id)
 	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "dunning policy")
+		respond.NotFound(w, r, "dunning_policy")
 		return
 	}
 	if err != nil {
 		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(), "get dunning policy", "error", err)
+		slog.ErrorContext(r.Context(), "get dunning policy", "id", id, "error", err)
 		return
 	}
-
 	respond.JSON(w, r, http.StatusOK, policy)
 }
 
-func (h *Handler) upsertPolicy(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) createPolicy(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
-
 	var policy domain.DunningPolicy
 	if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
 		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
-
+	policy.ID = "" // server-assigned
 	result, err := h.svc.UpsertPolicy(r.Context(), tenantID, policy)
 	if err != nil {
 		respond.FromError(w, r, err, "dunning_policy")
 		return
 	}
+	respond.JSON(w, r, http.StatusCreated, result)
+}
 
+func (h *Handler) updatePolicy(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+	var policy domain.DunningPolicy
+	if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+	policy.ID = id
+	result, err := h.svc.UpsertPolicy(r.Context(), tenantID, policy)
+	if err != nil {
+		respond.FromError(w, r, err, "dunning_policy")
+		return
+	}
 	respond.JSON(w, r, http.StatusOK, result)
+}
+
+func (h *Handler) deletePolicy(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+	err := h.svc.DeletePolicy(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "dunning_policy")
+		return
+	}
+	if err != nil {
+		respond.FromError(w, r, err, "dunning_policy")
+		return
+	}
+	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *Handler) setDefaultPolicy(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+	if err := h.svc.SetDefaultPolicy(r.Context(), tenantID, id); err != nil {
+		if errors.Is(err, errs.ErrNotFound) {
+			respond.NotFound(w, r, "dunning_policy")
+			return
+		}
+		respond.FromError(w, r, err, "dunning_policy")
+		return
+	}
+	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "default_updated"})
 }
 
 func (h *Handler) listRuns(w http.ResponseWriter, r *http.Request) {
@@ -167,61 +238,11 @@ func (h *Handler) getRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) getCustomerOverride(w http.ResponseWriter, r *http.Request) {
-	tenantID := auth.TenantID(r.Context())
-	customerID := chi.URLParam(r, "customer_id")
-
-	override, err := h.svc.GetCustomerOverride(r.Context(), tenantID, customerID)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "customer dunning override")
-		return
-	}
-	if err != nil {
-		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(), "get customer dunning override", "error", err)
-		return
-	}
-
-	respond.JSON(w, r, http.StatusOK, override)
-}
-
-func (h *Handler) upsertCustomerOverride(w http.ResponseWriter, r *http.Request) {
-	tenantID := auth.TenantID(r.Context())
-	customerID := chi.URLParam(r, "customer_id")
-
-	var override domain.CustomerDunningOverride
-	if err := json.NewDecoder(r.Body).Decode(&override); err != nil {
-		respond.BadRequest(w, r, "invalid JSON body")
-		return
-	}
-	override.CustomerID = customerID
-
-	result, err := h.svc.UpsertCustomerOverride(r.Context(), tenantID, override)
-	if err != nil {
-		respond.FromError(w, r, err, "customer_dunning_override")
-		return
-	}
-
-	respond.JSON(w, r, http.StatusOK, result)
-}
-
-func (h *Handler) deleteCustomerOverride(w http.ResponseWriter, r *http.Request) {
-	tenantID := auth.TenantID(r.Context())
-	customerID := chi.URLParam(r, "customer_id")
-
-	err := h.svc.DeleteCustomerOverride(r.Context(), tenantID, customerID)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "customer dunning override")
-		return
-	}
-	if err != nil {
-		respond.InternalError(w, r)
-		slog.ErrorContext(r.Context(), "delete customer dunning override", "error", err)
-		return
-	}
-
-	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "deleted"})
-}
+// Customer override handlers (GetCustomerOverride / UpsertCustomerOverride
+// / DeleteCustomerOverride) were removed in ADR-036. Per-customer
+// differentiation is now expressed as `customers.dunning_policy_id`
+// assignment; mutation goes through PATCH /v1/customers/{id} on the
+// customer handler.
 
 type resolveInput struct {
 	Resolution string `json:"resolution"`

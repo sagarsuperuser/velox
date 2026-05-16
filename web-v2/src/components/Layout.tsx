@@ -42,6 +42,7 @@ const configNav = [
   { to: '/credits', icon: Wallet, label: 'Credits' },
   { to: '/credit-notes', icon: Receipt, label: 'Credit Notes' },
   { to: '/dunning', icon: AlertTriangle, label: 'Dunning' },
+  { to: '/dunning-policies', icon: AlertTriangle, label: 'Dunning policies' },
 ]
 
 type NavItem = { to: string; icon: LucideIcon; label: string }

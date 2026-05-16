@@ -68,9 +68,15 @@ type Customer struct {
 	// for live-mode customers and for test-mode customers explicitly
 	// not pinned. Cannot be changed after creation — to switch
 	// clocks, delete + recreate the customer (matches Stripe).
-	TestClockID string    `json:"test_clock_id,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	TestClockID string `json:"test_clock_id,omitempty"`
+	// DunningPolicyID assigns this customer to a specific dunning
+	// policy / campaign (ADR-036). Empty/nil = use the tenant's
+	// default policy. Updatable any time via PATCH; affects only the
+	// NEXT dunning run started for this customer's invoices — runs
+	// already in flight stay on their original policy.
+	DunningPolicyID string    `json:"dunning_policy_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type BillingProfileStatus string

@@ -5,7 +5,7 @@ import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForPaymentSetup, type Customer, type BillingProfile, type Invoice, type Plan, type Subscription, type PaymentSetup, type CustomerDunningOverride, type CustomerCouponAssignment } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForPaymentSetup, type Customer, type BillingProfile, type Invoice, type Plan, type Subscription, type PaymentSetup, type DunningPolicyWithCount, type CustomerCouponAssignment } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { useAuth } from '@/contexts/AuthContext'
 import { Layout } from '@/components/Layout'
@@ -175,11 +175,20 @@ export default function CustomerDetailPage() {
   })
   const sentEmails = sentEmailsData?.sent_emails ?? []
 
-  const { data: dunningOverride } = useQuery({
-    queryKey: ['customer-dunning-override', id],
-    queryFn: () => api.getCustomerDunningOverride(id!).catch(() => null),
-    enabled: !!id,
+  // Dunning policies for this tenant (ADR-036 campaigns model). The
+  // list drives the assignment dropdown on the customer detail page;
+  // the row marked is_default=true is what the customer falls back
+  // to when dunning_policy_id is empty.
+  const { data: dunningPoliciesData } = useQuery({
+    queryKey: ['dunning-policies'],
+    queryFn: () => api.listDunningPolicies().catch(() => ({ data: [] })),
   })
+  const dunningPolicies = dunningPoliciesData?.data ?? []
+  const defaultDunningPolicy = dunningPolicies.find(p => p.is_default)
+  const assignedDunningPolicy = customer?.dunning_policy_id
+    ? dunningPolicies.find(p => p.id === customer.dunning_policy_id)
+    : undefined
+  const effectiveDunningPolicy = assignedDunningPolicy ?? defaultDunningPolicy
 
   // 404 on the GET = "no active assignment", so swallow it into null and
   // let the card render the empty state.
@@ -604,42 +613,51 @@ export default function CustomerDetailPage() {
         )}
       </Card>
 
-      {/* Dunning Override */}
+      {/* Dunning policy — Stripe / Lago / Recurly campaigns shape
+          (ADR-036). Operator either assigns a named policy or leaves
+          the customer on the tenant default. */}
       <Card className="mt-6">
         <CardHeader>
           <div className="flex items-center justify-between">
-            <CardTitle className="text-sm">Dunning Override</CardTitle>
+            <CardTitle className="text-sm">Dunning policy</CardTitle>
             {!isArchived && (
               <Button variant="outline" size="sm" onClick={() => setShowDunningOverride(true)}>
-                {dunningOverride ? 'Edit' : 'Configure'}
+                Change
               </Button>
             )}
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          {dunningOverride ? (
+          {effectiveDunningPolicy ? (
             <div className="divide-y divide-border">
-              {dunningOverride.max_retry_attempts != null && (
-                <div className="flex items-center justify-between px-6 py-3">
-                  <span className="text-sm text-muted-foreground">Max Retry Attempts</span>
-                  <span className="text-sm text-foreground">{dunningOverride.max_retry_attempts}</span>
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground">Policy</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-foreground">{effectiveDunningPolicy.name}</span>
+                  {!assignedDunningPolicy && (
+                    <Badge variant="outline">tenant default</Badge>
+                  )}
                 </div>
-              )}
-              {dunningOverride.grace_period_days != null && (
-                <div className="flex items-center justify-between px-6 py-3">
-                  <span className="text-sm text-muted-foreground">Grace Period</span>
-                  <span className="text-sm text-foreground">{dunningOverride.grace_period_days} days</span>
-                </div>
-              )}
-              {dunningOverride.final_action && (
-                <div className="flex items-center justify-between px-6 py-3">
-                  <span className="text-sm text-muted-foreground">Final Action</span>
-                  <Badge variant="warning">{dunningOverride.final_action}</Badge>
-                </div>
-              )}
+              </div>
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground">Max retry attempts</span>
+                <span className="text-sm text-foreground">{effectiveDunningPolicy.max_retry_attempts}</span>
+              </div>
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground">Grace period</span>
+                <span className="text-sm text-foreground">{effectiveDunningPolicy.grace_period_days} days</span>
+              </div>
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground">Retry schedule</span>
+                <span className="text-sm text-foreground">{effectiveDunningPolicy.retry_schedule.join(' · ') || '—'}</span>
+              </div>
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground">Final action</span>
+                <Badge variant="outline">{effectiveDunningPolicy.final_action}</Badge>
+              </div>
             </div>
           ) : (
-            <p className="px-6 py-6 text-sm text-muted-foreground text-center">Using tenant default policy</p>
+            <p className="px-6 py-6 text-sm text-muted-foreground text-center">No dunning policies configured</p>
           )}
         </CardContent>
       </Card>
@@ -992,21 +1010,17 @@ export default function CustomerDetailPage() {
         />
       )}
 
-      {/* Dunning Override Dialog */}
-      {showDunningOverride && id && (
-        <DunningOverrideDialog
+      {/* Assign dunning policy (ADR-036 campaigns model) */}
+      {showDunningOverride && id && customer && (
+        <AssignDunningPolicyDialog
           customerId={id}
-          override={dunningOverride ?? null}
+          currentPolicyID={customer.dunning_policy_id ?? ''}
+          policies={dunningPolicies}
           onClose={() => setShowDunningOverride(false)}
           onSaved={() => {
             setShowDunningOverride(false)
-            queryClient.invalidateQueries({ queryKey: ['customer-dunning-override', id] })
-            toast.success('Dunning override saved')
-          }}
-          onDeleted={() => {
-            setShowDunningOverride(false)
-            queryClient.invalidateQueries({ queryKey: ['customer-dunning-override', id] })
-            toast.success('Dunning override removed')
+            queryClient.invalidateQueries({ queryKey: ['customer', id] })
+            toast.success('Dunning policy assignment saved')
           }}
         />
       )}
@@ -1564,28 +1578,32 @@ function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSa
   )
 }
 
-/* ─── Dunning Override ───────────────────────────────────────── */
+/* ─── Dunning Policy Assignment (ADR-036) ─────────────────────────
+   Replaces the partial-field-override dialog. Customers either
+   inherit the tenant default policy or are explicitly assigned to a
+   named policy (Stripe / Lago / Recurly campaigns shape). To create
+   or edit policies, operators use the /dunning-policies admin page.
+─────────────────────────────────────────────────────────────────── */
 
-function DunningOverrideDialog({ customerId, override, onClose, onSaved, onDeleted }: {
-  customerId: string; override: CustomerDunningOverride | null; onClose: () => void; onSaved: () => void; onDeleted: () => void
+function AssignDunningPolicyDialog({ customerId, currentPolicyID, policies, onClose, onSaved }: {
+  customerId: string
+  currentPolicyID: string
+  policies: DunningPolicyWithCount[]
+  onClose: () => void
+  onSaved: () => void
 }) {
-  const [form, setForm] = useState({
-    max_retry_attempts: override?.max_retry_attempts != null ? String(override.max_retry_attempts) : '',
-    grace_period_days: override?.grace_period_days != null ? String(override.grace_period_days) : '',
-    final_action: override?.final_action || '',
-  })
+  const [selected, setSelected] = useState(currentPolicyID || '__default__')
   const [saving, setSaving] = useState(false)
-  const [deleting, setDeleting] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
     try {
-      const payload: Partial<CustomerDunningOverride> = {}
-      if (form.max_retry_attempts !== '') payload.max_retry_attempts = parseInt(form.max_retry_attempts, 10)
-      if (form.grace_period_days !== '') payload.grace_period_days = parseInt(form.grace_period_days, 10)
-      if (form.final_action) payload.final_action = form.final_action
-      await api.upsertCustomerDunningOverride(customerId, payload)
+      // '__default__' sentinel maps to empty string on the wire,
+      // which the customer service interprets as "clear assignment,
+      // fall back to tenant default" (ADR-036).
+      const policyId = selected === '__default__' ? '' : selected
+      await api.updateCustomer(customerId, { dunning_policy_id: policyId })
       onSaved()
     } catch (err) {
       showApiError(err, 'Failed to save')
@@ -1594,63 +1612,50 @@ function DunningOverrideDialog({ customerId, override, onClose, onSaved, onDelet
     }
   }
 
-  const handleDelete = async () => {
-    setDeleting(true)
-    try {
-      await api.deleteCustomerDunningOverride(customerId)
-      onDeleted()
-    } catch (err) {
-      showApiError(err, 'Failed to delete')
-    } finally {
-      setDeleting(false)
-    }
-  }
+  const defaultPolicy = policies.find(p => p.is_default)
+  const selectedPolicy = selected === '__default__'
+    ? defaultPolicy
+    : policies.find(p => p.id === selected)
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Dunning Override</DialogTitle>
+          <DialogTitle>Dunning policy</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} noValidate className="space-y-4">
           <div className="space-y-2">
-            <Label>Max Retry Attempts</Label>
-            <Input type="number" value={form.max_retry_attempts} placeholder="Leave empty for tenant default"
-              onChange={e => setForm(f => ({ ...f, max_retry_attempts: e.target.value }))} />
-            <p className="text-xs text-muted-foreground">How many times to retry the failed payment before escalating</p>
-          </div>
-          <div className="space-y-2">
-            <Label>Grace Period (days)</Label>
-            <Input type="number" value={form.grace_period_days} placeholder="Leave empty for tenant default"
-              onChange={e => setForm(f => ({ ...f, grace_period_days: e.target.value }))} />
-            <p className="text-xs text-muted-foreground">Days to wait after initial failure before first retry</p>
-          </div>
-          <div className="space-y-2">
-            <Label>Final Action</Label>
-            <Select value={form.final_action} onValueChange={(val) => setForm(f => ({ ...f, final_action: val ?? '' }))}>
+            <Label>Policy</Label>
+            <Select value={selected} onValueChange={(val) => setSelected(val ?? '__default__')}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Tenant default" />
+                <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">Tenant default</SelectItem>
-                <SelectItem value="manual_review">Escalate for review</SelectItem>
-                <SelectItem value="pause">Pause subscription</SelectItem>
-                <SelectItem value="write_off_later">Mark uncollectible</SelectItem>
+                <SelectItem value="__default__">
+                  Tenant default {defaultPolicy ? `(${defaultPolicy.name})` : ''}
+                </SelectItem>
+                {policies.filter(p => !p.is_default).map(p => (
+                  <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
+            <p className="text-xs text-muted-foreground">
+              Manage policies on the <Link to="/dunning-policies" className="underline">Dunning policies</Link> page.
+            </p>
           </div>
-          <div className="flex justify-between pt-2">
-            {override ? (
-              <Button type="button" variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={handleDelete} disabled={deleting}>
-                {deleting ? 'Removing...' : 'Reset to Default'}
-              </Button>
-            ) : <div />}
-            <div className="flex gap-2">
-              <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-              <Button type="submit" disabled={saving}>
-                {saving ? <><Loader2 size={14} className="animate-spin mr-2" />Saving...</> : 'Save'}
-              </Button>
+          {selectedPolicy && (
+            <div className="rounded-md border border-border bg-muted/30 p-3 text-xs space-y-1">
+              <div className="flex justify-between"><span className="text-muted-foreground">Max retries</span><span>{selectedPolicy.max_retry_attempts}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Grace period</span><span>{selectedPolicy.grace_period_days} days</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Retry schedule</span><span>{selectedPolicy.retry_schedule.join(' · ') || '—'}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Final action</span><span>{selectedPolicy.final_action}</span></div>
             </div>
+          )}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={saving}>
+              {saving ? <><Loader2 size={14} className="animate-spin mr-2" />Saving...</> : 'Save'}
+            </Button>
           </div>
         </form>
       </DialogContent>

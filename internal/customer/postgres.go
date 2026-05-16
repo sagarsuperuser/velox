@@ -175,12 +175,14 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
 			COALESCE(cost_dashboard_token, ''),
 			COALESCE(test_clock_id, ''),
+			COALESCE(dunning_policy_id, ''),
 			created_at, updated_at
 		FROM customers WHERE id = $1
 	`, id).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
 		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
 		&c.CostDashboardToken,
 		&c.TestClockID,
+		&c.DunningPolicyID,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -241,12 +243,14 @@ func (s *PostgresStore) GetByCostDashboardToken(ctx context.Context, token strin
 			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
 			COALESCE(cost_dashboard_token, ''),
 			COALESCE(test_clock_id, ''),
+			COALESCE(dunning_policy_id, ''),
 			created_at, updated_at
 		FROM customers WHERE cost_dashboard_token = $1
 	`, token).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
 		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
 		&c.CostDashboardToken,
 		&c.TestClockID,
+		&c.DunningPolicyID,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -271,12 +275,14 @@ func (s *PostgresStore) GetByExternalID(ctx context.Context, tenantID, externalI
 			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
 			COALESCE(cost_dashboard_token, ''),
 			COALESCE(test_clock_id, ''),
+			COALESCE(dunning_policy_id, ''),
 			created_at, updated_at
 		FROM customers WHERE external_id = $1
 	`, externalID).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
 		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
 		&c.CostDashboardToken,
 		&c.TestClockID,
+		&c.DunningPolicyID,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -411,6 +417,7 @@ func (s *PostgresStore) ListByTestClockID(ctx context.Context, tenantID, clockID
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
 			COALESCE(test_clock_id, ''),
+			COALESCE(dunning_policy_id, ''),
 			created_at, updated_at
 		FROM customers
 		WHERE test_clock_id = $1
@@ -426,7 +433,7 @@ func (s *PostgresStore) ListByTestClockID(ctx context.Context, tenantID, clockID
 	for rows.Next() {
 		var c domain.Customer
 		if err := rows.Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
-			&c.TestClockID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.TestClockID, &c.DunningPolicyID, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		c, err = s.decryptCustomer(c)
@@ -456,11 +463,12 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Cu
 	// pinned for life. To switch clocks, delete + recreate. The column
 	// is read back into the result so callers see the unchanged value.
 	err = tx.QueryRowContext(ctx, `
-		UPDATE customers SET display_name = $1, email = $2, email_bidx = NULLIF($3,''), status = $4, updated_at = $5
-		WHERE id = $6
-		RETURNING id, tenant_id, external_id, display_name, email, status, COALESCE(test_clock_id,''), created_at, updated_at
-	`, enc.DisplayName, enc.Email, s.emailBlindIndex(c.Email), c.Status, now, c.ID,
-	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.TestClockID, &c.CreatedAt, &c.UpdatedAt)
+		UPDATE customers SET display_name = $1, email = $2, email_bidx = NULLIF($3,''),
+			status = $4, dunning_policy_id = NULLIF($5,''), updated_at = $6
+		WHERE id = $7
+		RETURNING id, tenant_id, external_id, display_name, email, status, COALESCE(test_clock_id,''), COALESCE(dunning_policy_id,''), created_at, updated_at
+	`, enc.DisplayName, enc.Email, s.emailBlindIndex(c.Email), c.Status, c.DunningPolicyID, now, c.ID,
+	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.TestClockID, &c.DunningPolicyID, &c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return domain.Customer{}, errs.ErrNotFound

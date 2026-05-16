@@ -94,6 +94,7 @@ const DashboardPage = lazy(() => import('@/pages/Dashboard'))
 const CustomersPage = lazy(() => import('@/pages/Customers'))
 const PricingPage = lazy(() => import('@/pages/Pricing'))
 const DunningPage = lazy(() => import('@/pages/Dunning'))
+const DunningPoliciesPage = lazy(() => import('@/pages/DunningPolicies'))
 const WebhooksPage = lazy(() => import('@/pages/Webhooks'))
 const WebhookEventsPage = lazy(() => import('@/pages/WebhookEvents'))
 const ApiKeysPage = lazy(() => import('@/pages/ApiKeys'))
@@ -145,6 +146,7 @@ const App = () => (
               <Route path="/customers" element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
               <Route path="/pricing" element={<ProtectedRoute><PricingPage /></ProtectedRoute>} />
               <Route path="/dunning" element={<ProtectedRoute><DunningPage /></ProtectedRoute>} />
+              <Route path="/dunning-policies" element={<ProtectedRoute><DunningPoliciesPage /></ProtectedRoute>} />
               <Route path="/webhooks" element={<ProtectedRoute><WebhooksPage /></ProtectedRoute>} />
               <Route path="/webhooks/events" element={<ProtectedRoute><WebhookEventsPage /></ProtectedRoute>} />
               <Route path="/api-keys" element={<ProtectedRoute><ApiKeysPage /></ProtectedRoute>} />

@@ -41,11 +41,18 @@ const (
 	ResolutionRetriesExhausted DunningResolution = "retries_exhausted"
 )
 
+// DunningPolicy is a named template that drives the retry state
+// machine for one or more customers (ADR-036, campaigns model). One
+// is_default=true policy per (tenant, livemode); customers without an
+// explicit `dunning_policy_id` assignment inherit the default. Mirrors
+// the Lago / Recurly named-campaigns shape verified during the 2026-
+// 05-16 industry research.
 type DunningPolicy struct {
 	ID               string             `json:"id"`
 	TenantID         string             `json:"tenant_id,omitempty"`
 	Name             string             `json:"name"`
 	Enabled          bool               `json:"enabled"`
+	IsDefault        bool               `json:"is_default"`
 	RetrySchedule    []string           `json:"retry_schedule"`
 	MaxRetryAttempts int                `json:"max_retry_attempts"`
 	FinalAction      DunningFinalAction `json:"final_action"`
@@ -90,13 +97,12 @@ type InvoiceDunningRun struct {
 	EffectiveNow *time.Time `json:"effective_now,omitempty"`
 }
 
-type CustomerDunningOverride struct {
-	CustomerID       string `json:"customer_id"`
-	TenantID         string `json:"tenant_id,omitempty"`
-	MaxRetryAttempts *int   `json:"max_retry_attempts,omitempty"` // nil = use tenant default
-	GracePeriodDays  *int   `json:"grace_period_days,omitempty"`
-	FinalAction      string `json:"final_action,omitempty"` // empty = use tenant default
-}
+// CustomerDunningOverride was removed in ADR-036. The partial-field
+// override (override max + grace + final_action but inherit
+// retry_schedule) had no industry precedent (Stripe / Lago / Orb /
+// Recurly all use named templates with full assignment, verified
+// 2026-05-16). Per-customer differentiation now flows through
+// `customers.dunning_policy_id` referencing a DunningPolicy row.
 
 type InvoiceDunningEvent struct {
 	ID           string           `json:"id"`

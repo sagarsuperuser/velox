@@ -252,6 +252,12 @@ type UpdateInput struct {
 	DisplayName string `json:"display_name"`
 	Email       string `json:"email,omitempty"`
 	Status      string `json:"status,omitempty"`
+	// DunningPolicyID assigns this customer to a specific dunning
+	// policy (ADR-036). Pointer so the handler can distinguish
+	// "unset" (omitted) from "clear" (explicit empty string). nil =
+	// leave as-is; *"" = clear assignment (fall back to default);
+	// *"vlx_dpol_..." = assign to that policy.
+	DunningPolicyID *string `json:"dunning_policy_id,omitempty"`
 }
 
 func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateInput) (domain.Customer, error) {
@@ -273,8 +279,24 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateI
 	if status := domain.CustomerStatus(input.Status); status != "" {
 		existing.Status = status
 	}
+	if input.DunningPolicyID != nil {
+		existing.DunningPolicyID = strings.TrimSpace(*input.DunningPolicyID)
+	}
 
 	return s.store.Update(ctx, tenantID, existing)
+}
+
+// GetDunningPolicyID returns the customer's assigned dunning_policy_id
+// (empty string = no explicit assignment, dunning service falls back
+// to the tenant default). Satisfies dunning.CustomerPolicyReader so
+// the dunning service can resolve effective policy without importing
+// the customer package.
+func (s *Service) GetDunningPolicyID(ctx context.Context, tenantID, customerID string) (string, error) {
+	c, err := s.store.Get(ctx, tenantID, customerID)
+	if err != nil {
+		return "", err
+	}
+	return c.DunningPolicyID, nil
 }
 
 func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp domain.CustomerBillingProfile) (domain.CustomerBillingProfile, error) {
