@@ -292,7 +292,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		invoiceStore:  invoiceStore,
 		paymentSetups: customerStore,
 	})
+	// Pre-invoiceSvc dunning wires (pauser + canceler only depend on
+	// subscription.Service + invoice store, both defined above).
 	dunningSvc.SetSubscriptionPauser(&subscriptionPauserAdapter{svc: subSvc}, invoiceStore)
+	dunningSvc.SetSubscriptionCanceler(&subscriptionCancelerAdapter{svc: subSvc})
 	dunningSvc.SetEventDispatcher(eventDispatcher)
 	// Customer→dunning_policy_id resolver so dunning service can pick
 	// the effective policy at StartDunning time (ADR-036).
@@ -305,6 +308,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 
 	invoiceSvc := invoice.NewService(invoiceStore, clk, settingsStore)
 	couponSvc.SetCustomerHistoryLookup(invoiceSvc)
+	// Mark-uncollectible adapter (ADR-036 amendment) — Stripe-standard
+	// dunning terminal action. Wires here because it depends on the
+	// invoice service which is defined just above; other dunning
+	// adapters (pauser, canceler) wire earlier next to dunningSvc.
+	dunningSvc.SetInvoiceUncollectibleMarker(&invoiceUncollectibleAdapter{svc: invoiceSvc})
 	// Wire the post-connect tax-retry hook (ADR-019). When an
 	// operator (re)connects Stripe in Settings → Payments, the
 	// tenantstripe service fans out a goroutine that flushes any

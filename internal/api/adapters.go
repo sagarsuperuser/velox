@@ -171,13 +171,44 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 	return err
 }
 
-// subscriptionPauserAdapter bridges subscription.Service → dunning.SubscriptionPauser.
+// subscriptionPauserAdapter bridges subscription.Service →
+// dunning.SubscriptionPauser. ADR-036 amendment: this now calls
+// PauseCollection(keep_as_draft), not the pre-amendment hard
+// PauseAtomic — matching Stripe's pause_collection.behavior=
+// keep_as_draft so the cycle keeps drafting (no silent skip of
+// invoice generation).
 type subscriptionPauserAdapter struct {
 	svc *subscription.Service
 }
 
-func (a *subscriptionPauserAdapter) Pause(ctx context.Context, tenantID, id string) error {
-	_, err := a.svc.Pause(ctx, tenantID, id)
+func (a *subscriptionPauserAdapter) PauseCollection(ctx context.Context, tenantID, id string) error {
+	_, err := a.svc.PauseCollection(ctx, tenantID, id, subscription.PauseCollectionInput{
+		Behavior: domain.PauseCollectionKeepAsDraft,
+	})
+	return err
+}
+
+// subscriptionCancelerAdapter bridges subscription.Service →
+// dunning.SubscriptionCanceler. Stripe-default dunning terminal
+// action (ADR-036 amendment).
+type subscriptionCancelerAdapter struct {
+	svc *subscription.Service
+}
+
+func (a *subscriptionCancelerAdapter) Cancel(ctx context.Context, tenantID, id string) error {
+	_, err := a.svc.Cancel(ctx, tenantID, id)
+	return err
+}
+
+// invoiceUncollectibleAdapter bridges invoice.Service →
+// dunning.InvoiceUncollectibleMarker. Stripe-standard dunning
+// terminal action (ADR-036 amendment).
+type invoiceUncollectibleAdapter struct {
+	svc *invoice.Service
+}
+
+func (a *invoiceUncollectibleAdapter) MarkUncollectible(ctx context.Context, tenantID, id string) error {
+	_, err := a.svc.MarkUncollectible(ctx, tenantID, id)
 	return err
 }
 

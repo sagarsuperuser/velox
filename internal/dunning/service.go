@@ -27,9 +27,33 @@ type PaymentRetrier interface {
 	RetryPayment(ctx context.Context, tenantID, invoiceID, stripeCustomerID string) error
 }
 
-// SubscriptionPauser pauses a subscription when dunning exhausts retries.
+// SubscriptionPauser pauses collection on a subscription when dunning
+// exhausts retries with final_action='pause' (ADR-036 amendment —
+// semantics changed to match Stripe's `pause_collection.behavior=
+// keep_as_draft`: cycle continues, drafts pile up, no charging /
+// dunning until resumed). Pre-amendment this called PauseAtomic
+// (hard pause, no further cycles); that was non-Stripe and silently
+// skipped invoice generation for the affected periods.
 type SubscriptionPauser interface {
-	Pause(ctx context.Context, tenantID, id string) error
+	PauseCollection(ctx context.Context, tenantID, id string) error
+}
+
+// SubscriptionCanceler cancels a subscription when dunning exhausts
+// retries with final_action='cancel_subscription' — Stripe's default
+// terminal action; supported by 3 of 4 reference platforms (Stripe,
+// Lago, Recurly) per the ADR-036 amendment research.
+type SubscriptionCanceler interface {
+	Cancel(ctx context.Context, tenantID, id string) error
+}
+
+// InvoiceUncollectibleMarker marks an invoice uncollectible when
+// dunning exhausts retries with final_action='mark_uncollectible'.
+// Stripe-standard terminal: "we won't try again; close out the
+// receivable." Replaces the pre-amendment write_off_later semantics
+// (the implementation was identical — invoice mutation, no sub
+// state-change — but the name was non-standard).
+type InvoiceUncollectibleMarker interface {
+	MarkUncollectible(ctx context.Context, tenantID, invoiceID string) error
 }
 
 // InvoiceGetter gets invoice details for finding the subscription.
@@ -68,16 +92,18 @@ type CustomerPolicyReader interface {
 }
 
 type Service struct {
-	store         Store
-	retrier       PaymentRetrier
-	subPauser     SubscriptionPauser
-	invoiceGet    InvoiceGetter
-	events        domain.EventDispatcher
-	emailNotifier EmailNotifier
-	customerEmail CustomerEmailFetcher
-	custPolicy    CustomerPolicyReader
-	resolver      clock.Resolver
-	clock         clock.Clock
+	store              Store
+	retrier            PaymentRetrier
+	subPauser          SubscriptionPauser
+	subCanceler        SubscriptionCanceler
+	invoiceUncollect   InvoiceUncollectibleMarker
+	invoiceGet         InvoiceGetter
+	events             domain.EventDispatcher
+	emailNotifier      EmailNotifier
+	customerEmail      CustomerEmailFetcher
+	custPolicy         CustomerPolicyReader
+	resolver           clock.Resolver
+	clock              clock.Clock
 }
 
 // SetResolver wires the unified clock.Resolver. Once bound on ctx via
@@ -141,10 +167,24 @@ func (s *Service) GetEffectivePolicyForCustomer(ctx context.Context, tenantID, c
 	return s.store.GetDefaultPolicy(ctx, tenantID)
 }
 
-// SetSubscriptionPauser configures subscription pausing for dunning final actions.
+// SetSubscriptionPauser configures the pause-collection terminal action
+// (ADR-036 amendment — semantics now Stripe-aligned: keep_as_draft,
+// not hard pause).
 func (s *Service) SetSubscriptionPauser(pauser SubscriptionPauser, invoices InvoiceGetter) {
 	s.subPauser = pauser
 	s.invoiceGet = invoices
+}
+
+// SetSubscriptionCanceler configures the cancel-subscription terminal
+// action (ADR-036 amendment).
+func (s *Service) SetSubscriptionCanceler(c SubscriptionCanceler) {
+	s.subCanceler = c
+}
+
+// SetInvoiceUncollectibleMarker configures the mark-uncollectible
+// terminal action (ADR-036 amendment).
+func (s *Service) SetInvoiceUncollectibleMarker(m InvoiceUncollectibleMarker) {
+	s.invoiceUncollect = m
 }
 
 // SetEmailNotifier configures email notifications for dunning events.
@@ -578,22 +618,63 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 
 	switch policy.FinalAction {
 	case domain.DunningActionManualReview:
-		// resolution already set
+		// State stays at escalated; resolution stays retries_exhausted.
+		// Operator handles via the dashboard. Stripe "Keep active"
+		// equivalent.
+
 	case domain.DunningActionPause:
-		// Actually pause the subscription
+		// Pause COLLECTION (keep_as_draft) — cycle keeps drafting,
+		// no charging / dunning until the operator resumes. Matches
+		// Stripe's pause_collection.behavior=keep_as_draft. The pre-
+		// ADR-036-amendment implementation called hard PauseAtomic,
+		// which silently skipped invoice generation for the affected
+		// periods — non-Stripe and destructive.
 		if s.subPauser != nil && s.invoiceGet != nil {
 			if inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID); err == nil && inv.SubscriptionID != "" {
-				if err := s.subPauser.Pause(ctx, tenantID, inv.SubscriptionID); err != nil {
-					slog.Warn("failed to pause subscription after dunning exhausted",
+				if err := s.subPauser.PauseCollection(ctx, tenantID, inv.SubscriptionID); err != nil {
+					slog.Warn("failed to pause collection after dunning exhausted",
 						"invoice_id", run.InvoiceID, "subscription_id", inv.SubscriptionID, "error", err)
 				} else {
-					slog.Info("subscription paused by dunning",
+					slog.Info("collection paused by dunning",
 						"invoice_id", run.InvoiceID, "subscription_id", inv.SubscriptionID)
 				}
 			}
 		}
+
+	case domain.DunningActionCancelSubscription:
+		// Cancel the subscription. Stripe-default terminal action;
+		// supported by 3 of 4 reference platforms (Stripe, Lago,
+		// Recurly) per the ADR-036 amendment research.
+		if s.subCanceler != nil && s.invoiceGet != nil {
+			if inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID); err == nil && inv.SubscriptionID != "" {
+				if err := s.subCanceler.Cancel(ctx, tenantID, inv.SubscriptionID); err != nil {
+					slog.Warn("failed to cancel subscription after dunning exhausted",
+						"invoice_id", run.InvoiceID, "subscription_id", inv.SubscriptionID, "error", err)
+				} else {
+					slog.Info("subscription canceled by dunning",
+						"invoice_id", run.InvoiceID, "subscription_id", inv.SubscriptionID)
+				}
+			}
+		}
+
+	case domain.DunningActionMarkUncollectible:
+		// Mark the unpaid invoice as uncollectible. Stripe-standard
+		// for "we won't try again; close out the receivable." The
+		// subscription itself stays active — operator may
+		// independently cancel via the dashboard.
+		if s.invoiceUncollect != nil {
+			if err := s.invoiceUncollect.MarkUncollectible(ctx, tenantID, run.InvoiceID); err != nil {
+				slog.Warn("failed to mark invoice uncollectible after dunning exhausted",
+					"invoice_id", run.InvoiceID, "error", err)
+			} else {
+				slog.Info("invoice marked uncollectible by dunning",
+					"invoice_id", run.InvoiceID)
+			}
+		}
+
 	default:
-		// write_off_later or unknown — resolution stays retries_exhausted
+		slog.Warn("unknown dunning final_action — leaving run escalated without state-change action",
+			"final_action", policy.FinalAction, "run_id", run.ID)
 	}
 
 	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
@@ -749,18 +830,21 @@ func (s *Service) UpsertPolicy(ctx context.Context, tenantID string, policy doma
 		return domain.DunningPolicy{}, errs.Invalid("grace_period_days", "cannot exceed 30")
 	}
 	switch policy.FinalAction {
-	case domain.DunningActionManualReview, domain.DunningActionPause, domain.DunningActionWriteOff:
+	case domain.DunningActionManualReview, domain.DunningActionPause,
+		domain.DunningActionMarkUncollectible, domain.DunningActionCancelSubscription:
 		// valid
 	case "":
-		// Default = pause (matches DB column default in migration
-		// 0071). Without this, the engine would keep generating
-		// finalized invoices for delinquent customers every cycle —
-		// stacking failures + dunning emails. pause + keep_as_draft
-		// is the operator-protective choice. Operators who want a
-		// different terminal action set it explicitly.
+		// Default = pause (Stripe-aligned pause_collection.behavior=
+		// keep_as_draft semantics after ADR-036 amendment). Without
+		// this, the engine would keep generating finalized invoices
+		// for delinquent customers every cycle — stacking failures +
+		// dunning emails. pause + keep_as_draft is the operator-
+		// protective choice. Operators who want a different terminal
+		// action set it explicitly.
 		policy.FinalAction = domain.DunningActionPause
 	default:
-		return domain.DunningPolicy{}, errs.Invalid("final_action", "must be one of: manual_review, pause, write_off_later")
+		return domain.DunningPolicy{}, errs.Invalid("final_action",
+			"must be one of: manual_review, pause, mark_uncollectible, cancel_subscription")
 	}
 	if err := domain.MaxLen("name", policy.Name, 255); err != nil {
 		return domain.DunningPolicy{}, err

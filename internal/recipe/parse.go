@@ -256,11 +256,11 @@ func parseRecipe(data []byte) (domain.Recipe, error) {
 	if raw.Dunning != nil {
 		dp := raw.Dunning.Policy
 		switch domain.DunningFinalAction(dp.FinalAction) {
-		case domain.DunningActionManualReview, domain.DunningActionPause, domain.DunningActionWriteOff:
+		case domain.DunningActionManualReview, domain.DunningActionPause, domain.DunningActionMarkUncollectible, domain.DunningActionCancelSubscription:
 		case "":
 			return domain.Recipe{}, fmt.Errorf("recipe %q: dunning.policy.final_action is required", raw.Key)
 		default:
-			return domain.Recipe{}, fmt.Errorf("recipe %q: dunning.policy.final_action %q must be one of manual_review, pause, write_off_later", raw.Key, dp.FinalAction)
+			return domain.Recipe{}, fmt.Errorf("recipe %q: dunning.policy.final_action %q must be one of manual_review, pause, mark_uncollectible, cancel_subscription", raw.Key, dp.FinalAction)
 		}
 		out.DunningPolicy = &domain.RecipeDunningPolicy{
 			Name: dp.Name, MaxRetries: dp.MaxRetries,

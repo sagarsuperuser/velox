@@ -1244,11 +1244,17 @@ func describeDunningEvent(eventType, reason string, attemptCount int) (string, s
 			return "Dunning resolved", "resolved"
 		}
 	case "escalated":
+		// reason carries the policy.final_action that fired. ADR-036
+		// amendment aligned the enum with Stripe/Lago/Recurly: pause
+		// now means pause-collection (keep_as_draft), not hard pause;
+		// write_off_later → mark_uncollectible; new cancel_subscription.
 		switch reason {
 		case "pause":
-			return "Subscription paused — retries exhausted", "escalated"
-		case "write_off_later":
-			return "Marked for write-off — retries exhausted", "escalated"
+			return "Collection paused — retries exhausted", "escalated"
+		case "mark_uncollectible":
+			return "Marked uncollectible — retries exhausted", "escalated"
+		case "cancel_subscription":
+			return "Subscription canceled — retries exhausted", "escalated"
 		default:
 			return "Escalated for manual review", "escalated"
 		}

@@ -260,9 +260,13 @@ function PolicyDialog({ mode, initial, onClose, onSaved }: {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="pause">Pause subscription</SelectItem>
-                <SelectItem value="manual_review">Escalate for manual review</SelectItem>
-                <SelectItem value="write_off_later">Mark uncollectible</SelectItem>
+                {/* ADR-036 amendment — four Stripe-aligned terminal
+                    actions. Labels reflect the actual semantics
+                    (pause = collection-only, not hard pause). */}
+                <SelectItem value="pause">Pause collection (keep drafting invoices)</SelectItem>
+                <SelectItem value="cancel_subscription">Cancel subscription</SelectItem>
+                <SelectItem value="mark_uncollectible">Mark invoice uncollectible</SelectItem>
+                <SelectItem value="manual_review">Leave open — manual review</SelectItem>
               </SelectContent>
             </Select>
           </div>
