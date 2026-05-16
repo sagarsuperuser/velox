@@ -352,6 +352,37 @@ type paymentSetupEmailSender interface {
 	SendPaymentSetupRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
 }
 
+// customerSentEmailsAdapter bridges email.OutboxStore.ListByCustomer →
+// customer.SentEmailsLister. Pure shape conversion plus payload field
+// extraction (recipient, invoice_number) so the customer package
+// doesn't import the email package.
+type customerSentEmailsAdapter struct {
+	store *email.OutboxStore
+}
+
+func (a *customerSentEmailsAdapter) ListByCustomer(ctx context.Context, tenantID, customerID string) ([]customer.SentEmailOutboxRow, error) {
+	rows, err := a.store.ListByCustomer(ctx, tenantID, customerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]customer.SentEmailOutboxRow, 0, len(rows))
+	for _, r := range rows {
+		to, _ := r.Payload["to"].(string)
+		invNum, _ := r.Payload["invoice_number"].(string)
+		out = append(out, customer.SentEmailOutboxRow{
+			ID:            r.ID,
+			EmailType:     r.EmailType,
+			Recipient:     to,
+			Status:        r.Status,
+			LastError:     r.LastError,
+			CreatedAt:     r.CreatedAt,
+			DispatchedAt:  r.DispatchedAt,
+			InvoiceNumber: invNum,
+		})
+	}
+	return out, nil
+}
+
 // noPaymentMethodNotifierAdapter bridges email.SendPaymentSetupRequest
 // into billing.NoPaymentMethodNotifier so the engine can dispatch a
 // "set up your payment method" email at finalize when the customer

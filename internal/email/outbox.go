@@ -330,6 +330,65 @@ func (s *OutboxStore) ListByInvoice(ctx context.Context, tenantID, invoiceNumber
 	return out, rows.Err()
 }
 
+// ListByCustomer returns email_outbox rows associated with the given
+// customer, last 30 days, newest first. Rows are matched by joining
+// payload->>'invoice_number' to invoices.invoice_number and filtering
+// on invoices.customer_id — same email_type allowlist as ListByInvoice
+// (excludes platform-internal mail like password_reset that isn't
+// customer-scoped). Powers the "Sent emails" section on the customer
+// detail page (Stripe shape — docs.stripe.com/invoicing/send-email).
+//
+// 30-day window is a deliberate operator-UX choice matching Stripe's
+// retention. Older audit history stays in the email_outbox table for
+// log inspection but doesn't bloat the customer page.
+func (s *OutboxStore) ListByCustomer(ctx context.Context, tenantID, customerID string) ([]OutboxRow, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT eo.id, eo.tenant_id, eo.livemode, eo.email_type, eo.payload, eo.status,
+		       eo.attempts, eo.next_attempt_at, COALESCE(eo.last_error,''),
+		       eo.created_at, eo.dispatched_at
+		FROM email_outbox eo
+		JOIN invoices i
+		  ON i.tenant_id = eo.tenant_id
+		 AND i.invoice_number = eo.payload->>'invoice_number'
+		WHERE eo.email_type IN ('invoice', 'payment_receipt', 'payment_failed',
+		                        'payment_setup_request', 'dunning_warning',
+		                        'dunning_escalation')
+		  AND i.customer_id = $1
+		  AND eo.created_at >= now() - interval '30 days'
+		ORDER BY eo.created_at DESC
+	`, customerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []OutboxRow
+	for rows.Next() {
+		var r OutboxRow
+		var payload []byte
+		var dispatchedAt sql.NullTime
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.Livemode, &r.EmailType, &payload, &r.Status,
+			&r.Attempts, &r.NextAttemptAt, &r.LastError, &r.CreatedAt, &dispatchedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(payload, &r.Payload); err != nil {
+			return nil, fmt.Errorf("decode payload for %s: %w", r.ID, err)
+		}
+		if dispatchedAt.Valid {
+			t := dispatchedAt.Time
+			r.DispatchedAt = &t
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // FailedCount returns rows currently in the DLQ — used for alerting. If this
 // grows, SMTP is persistently broken or a producer is emitting malformed
 // payloads.

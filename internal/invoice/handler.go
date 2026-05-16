@@ -1358,6 +1358,24 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 		emailEvts, err := h.emailEvents.ListByInvoice(r.Context(), tenantID, inv.InvoiceNumber)
 		if err == nil {
 			for _, evt := range emailEvts {
+				// Dunning warning + escalation emails are surfaced in the
+				// per-customer "Sent emails" section on CustomerDetail
+				// (Stripe shape — `docs.stripe.com/invoicing/send-email`
+				// lists the email log on the customer page, not the
+				// invoice page). Suppressing the rows here avoids the
+				// wall-clock-vs-simulated-time visual mismatch in the
+				// invoice activity timeline — those rows would show
+				// "May 16, 2026" send times next to dunning state rows
+				// at simulated cycle dates like "Mar 4, 2025."
+				//
+				// payment_failed (initial charge) still flows through:
+				// foldEmailIntoStripeFailed → mergeFailedPaymentTwins
+				// merges it as a "Customer notified by email" sub-line
+				// on the dunning_started row (same time domain = both
+				// wall-clock from the Stripe webhook side).
+				if evt.EmailType == "dunning_warning" || evt.EmailType == "dunning_escalation" {
+					continue
+				}
 				desc, status := describeEmailEvent(evt.EmailType, evt.Status, evt.LastError)
 				if desc == "" {
 					continue
