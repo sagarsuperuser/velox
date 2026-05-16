@@ -12,35 +12,103 @@ import (
 )
 
 type memStore struct {
-	policy            *domain.DunningPolicy
-	runs              map[string]domain.InvoiceDunningRun
-	events            []domain.InvoiceDunningEvent
-	customerOverrides map[string]domain.CustomerDunningOverride
+	// Multi-policy-per-tenant memStore. Tests can mutate policies map
+	// directly or via the upsert/set-default methods. defaultID points
+	// at the is_default=true row (exactly one per fixture).
+	policies  map[string]domain.DunningPolicy
+	defaultID string
+	runs      map[string]domain.InvoiceDunningRun
+	events    []domain.InvoiceDunningEvent
 }
 
 func newMemStore() *memStore {
+	policy := domain.DunningPolicy{
+		ID: "dpol_1", TenantID: "t1", Name: "Default",
+		Enabled: true, IsDefault: true,
+		MaxRetryAttempts: 3, GracePeriodDays: 3,
+		RetrySchedule: []string{"72h", "120h"},
+		FinalAction:   domain.DunningActionManualReview,
+	}
 	return &memStore{
-		policy: &domain.DunningPolicy{
-			ID: "dpol_1", TenantID: "t1", Name: "Default",
-			Enabled: true, MaxRetryAttempts: 3, GracePeriodDays: 3,
-			RetrySchedule: []string{"72h", "120h"},
-			FinalAction:   domain.DunningActionManualReview,
-		},
-		runs:              make(map[string]domain.InvoiceDunningRun),
-		customerOverrides: make(map[string]domain.CustomerDunningOverride),
+		policies:  map[string]domain.DunningPolicy{"dpol_1": policy},
+		defaultID: "dpol_1",
+		runs:      make(map[string]domain.InvoiceDunningRun),
 	}
 }
 
-func (m *memStore) GetPolicy(_ context.Context, _ string) (domain.DunningPolicy, error) {
-	if m.policy == nil {
+func (m *memStore) GetPolicyByID(_ context.Context, _ string, id string) (domain.DunningPolicy, error) {
+	p, ok := m.policies[id]
+	if !ok {
 		return domain.DunningPolicy{}, errs.ErrNotFound
 	}
-	return *m.policy, nil
+	return p, nil
 }
 
-func (m *memStore) UpsertPolicy(_ context.Context, _ string, p domain.DunningPolicy) (domain.DunningPolicy, error) {
-	p.ID = "dpol_1"
-	m.policy = &p
+func (m *memStore) GetDefaultPolicy(_ context.Context, _ string) (domain.DunningPolicy, error) {
+	if m.defaultID == "" {
+		return domain.DunningPolicy{}, errs.ErrNotFound
+	}
+	return m.policies[m.defaultID], nil
+}
+
+func (m *memStore) ListPolicies(_ context.Context, _ string) ([]domain.DunningPolicy, error) {
+	out := make([]domain.DunningPolicy, 0, len(m.policies))
+	// Default first, then insertion order (map iteration nondeterministic
+	// for the non-default rows — tests that need ordering set IDs).
+	if m.defaultID != "" {
+		out = append(out, m.policies[m.defaultID])
+	}
+	for id, p := range m.policies {
+		if id == m.defaultID {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (m *memStore) DeletePolicy(_ context.Context, _, id string) error {
+	if _, ok := m.policies[id]; !ok {
+		return errs.ErrNotFound
+	}
+	if id == m.defaultID {
+		return errs.InvalidState("cannot delete default policy")
+	}
+	delete(m.policies, id)
+	return nil
+}
+
+func (m *memStore) SetDefaultPolicy(_ context.Context, _, id string) error {
+	p, ok := m.policies[id]
+	if !ok {
+		return errs.ErrNotFound
+	}
+	if cur, ok := m.policies[m.defaultID]; ok {
+		cur.IsDefault = false
+		m.policies[m.defaultID] = cur
+	}
+	p.IsDefault = true
+	m.policies[id] = p
+	m.defaultID = id
+	return nil
+}
+
+func (m *memStore) CountCustomersOnPolicy(_ context.Context, _, _ string) (int, error) {
+	// memStore has no customer table; tests that want a specific
+	// count override this via a wrapper if needed.
+	return 0, nil
+}
+
+func (m *memStore) UpsertPolicy(_ context.Context, tenantID string, p domain.DunningPolicy) (domain.DunningPolicy, error) {
+	if p.ID == "" {
+		p.ID = fmt.Sprintf("dpol_%d", len(m.policies)+1)
+	}
+	p.TenantID = tenantID
+	if p.IsDefault {
+		// Caller can't set default via Upsert (matches postgres behaviour).
+		p.IsDefault = m.policies[p.ID].IsDefault
+	}
+	m.policies[p.ID] = p
 	return p, nil
 }
 
@@ -144,28 +212,6 @@ func (m *memStore) ListEvents(_ context.Context, _, runID string) ([]domain.Invo
 	return result, nil
 }
 
-func (m *memStore) GetCustomerOverride(_ context.Context, _, customerID string) (domain.CustomerDunningOverride, error) {
-	o, ok := m.customerOverrides[customerID]
-	if !ok {
-		return domain.CustomerDunningOverride{}, errs.ErrNotFound
-	}
-	return o, nil
-}
-
-func (m *memStore) UpsertCustomerOverride(_ context.Context, tenantID string, o domain.CustomerDunningOverride) (domain.CustomerDunningOverride, error) {
-	o.TenantID = tenantID
-	m.customerOverrides[o.CustomerID] = o
-	return o, nil
-}
-
-func (m *memStore) DeleteCustomerOverride(_ context.Context, _, customerID string) error {
-	if _, ok := m.customerOverrides[customerID]; !ok {
-		return errs.ErrNotFound
-	}
-	delete(m.customerOverrides, customerID)
-	return nil
-}
-
 type noopRetrier struct{}
 
 func (n *noopRetrier) RetryPayment(_ context.Context, _, _, _ string) error { return nil }
@@ -229,7 +275,9 @@ func TestStartDunning(t *testing.T) {
 
 func TestStartDunning_DisabledPolicy(t *testing.T) {
 	store := newMemStore()
-	store.policy.Enabled = false
+	p := store.policies[store.defaultID]
+	p.Enabled = false
+	store.policies[store.defaultID] = p
 	svc := NewService(store, &noopRetrier{}, nil)
 
 	_, err := svc.StartDunning(context.Background(), "t1", "inv_2", "cus_1", time.Now())
@@ -525,9 +573,12 @@ func TestUpsertPolicy(t *testing.T) {
 	svc := NewService(store, &noopRetrier{}, nil)
 	ctx := context.Background()
 
+	// Save-time validation (ADR-036) requires the retry_schedule to have
+	// at least MaxRetryAttempts-1 entries. Defaults: max=3 → need 2.
 	policy, err := svc.UpsertPolicy(ctx, "t1", domain.DunningPolicy{
-		Name:    "Custom",
-		Enabled: true,
+		Name:          "Custom",
+		Enabled:       true,
+		RetrySchedule: []string{"72h", "120h"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -543,6 +594,18 @@ func TestUpsertPolicy(t *testing.T) {
 	// automatically instead of stacking finalized invoices each cycle.
 	if policy.FinalAction != domain.DunningActionPause {
 		t.Errorf("default final_action: got %q, want pause", policy.FinalAction)
+	}
+
+	// Save-time validation rejects under-spec'd schedules — drops the
+	// pre-ADR-036 "reuse last interval" silent fallback.
+	_, err = svc.UpsertPolicy(ctx, "t1", domain.DunningPolicy{
+		Name:             "Bad",
+		Enabled:          true,
+		MaxRetryAttempts: 5,
+		RetrySchedule:    []string{"72h", "120h"}, // need 4, got 2
+	})
+	if err == nil {
+		t.Error("expected error for max_retry_attempts > schedule length + 1")
 	}
 }
 

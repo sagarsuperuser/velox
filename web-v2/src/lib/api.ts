@@ -253,7 +253,7 @@ export const api = {
     ),
 
   // Customer updates
-  updateCustomer: (id: string, data: { display_name?: string; email?: string }) =>
+  updateCustomer: (id: string, data: { display_name?: string; email?: string; dunning_policy_id?: string }) =>
     apiRequest<Customer>('PATCH', `/customers/${id}`, data),
 
   // Subscription detail
@@ -327,14 +327,19 @@ export const api = {
     apiRequest<TenantSettings>('PUT', '/settings', data),
 
   // Dunning
-  getDunningPolicy: () => apiRequest<DunningPolicy>('GET', '/dunning/policy'),
-  upsertDunningPolicy: (data: Partial<DunningPolicy>) => apiRequest<DunningPolicy>('PUT', '/dunning/policy', data),
+  // Dunning policies (campaigns model, ADR-036). Multi-policy-per-
+  // tenant with exactly one is_default. Customer assignment flows
+  // through the customer Update endpoint (PATCH /customers/{id} body
+  // carries dunning_policy_id).
+  listDunningPolicies: () => apiRequest<{ data: DunningPolicyWithCount[] }>('GET', '/dunning/policies'),
+  getDunningPolicy: (id: string) => apiRequest<DunningPolicy>('GET', `/dunning/policies/${id}`),
+  createDunningPolicy: (data: Partial<DunningPolicy>) => apiRequest<DunningPolicy>('POST', '/dunning/policies', data),
+  updateDunningPolicy: (id: string, data: Partial<DunningPolicy>) => apiRequest<DunningPolicy>('PATCH', `/dunning/policies/${id}`, data),
+  deleteDunningPolicy: (id: string) => apiRequest<{ status: string }>('DELETE', `/dunning/policies/${id}`),
+  setDefaultDunningPolicy: (id: string) => apiRequest<{ status: string }>('POST', `/dunning/policies/${id}/set-default`),
   listDunningRuns: (params?: string) => apiRequest<{ data: DunningRun[]; total: number }>('GET', `/dunning/runs${params ? '?' + params : ''}`),
   getDunningRun: (id: string) => apiRequest<{ run: DunningRun; events: DunningEvent[] }>('GET', `/dunning/runs/${id}`),
   resolveDunningRun: (id: string, resolution: string) => apiRequest<DunningRun>('POST', `/dunning/runs/${id}/resolve`, { resolution }),
-  getCustomerDunningOverride: (customerId: string) => apiRequest<CustomerDunningOverride>('GET', `/dunning/customers/${customerId}/override`),
-  upsertCustomerDunningOverride: (customerId: string, data: Partial<CustomerDunningOverride>) => apiRequest<CustomerDunningOverride>('PUT', `/dunning/customers/${customerId}/override`, data),
-  deleteCustomerDunningOverride: (customerId: string) => apiRequest<{ status: string }>('DELETE', `/dunning/customers/${customerId}/override`),
 
   // Credit Notes
   listCreditNotes: (params?: string) => apiRequest<{ data: CreditNote[] }>('GET', `/credit-notes${params ? '?' + params : ''}`),
@@ -508,6 +513,10 @@ export interface Customer {
   // this customer runs on the clock's simulated time. Empty for
   // live-mode customers and test-mode customers not pinned.
   test_clock_id?: string
+  // DunningPolicyID assigns this customer to a specific dunning
+  // policy (ADR-036 campaigns model). Empty/undefined = use the
+  // tenant default. Updatable via PATCH /customers/{id}.
+  dunning_policy_id?: string
 }
 
 export interface SubscriptionItem {
@@ -1227,21 +1236,27 @@ export interface InvoicePreviewTotal {
   amount_cents: number
 }
 
-export interface CustomerDunningOverride {
-  customer_id: string
-  max_retry_attempts?: number | null
-  grace_period_days?: number | null
-  final_action?: string
-}
-
+// DunningPolicy = a named campaign (ADR-036). Multi-policy-per-tenant;
+// one row per (tenant, livemode) carries is_default=true and is used
+// when a customer has no explicit dunning_policy_id assignment.
 export interface DunningPolicy {
   id: string
   name: string
   enabled: boolean
+  is_default: boolean
   retry_schedule: string[]
   max_retry_attempts: number
   final_action: string
   grace_period_days: number
+  created_at?: string
+  updated_at?: string
+}
+
+// DunningPolicyWithCount augments the policy list rows with the
+// explicit-assignment count for the admin page's "N customers
+// assigned" badge.
+export interface DunningPolicyWithCount extends DunningPolicy {
+  assigned_customers: number
 }
 
 export interface DunningRun {

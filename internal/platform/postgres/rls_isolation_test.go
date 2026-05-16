@@ -217,7 +217,7 @@ func TestRLSIsolation_AllModeAwareTablesHaveLivemodePredicate(t *testing.T) {
 	modeAwareTables := []string{
 		"api_keys", "audit_log", "billed_entries", "billing_provider_connections",
 		"coupon_redemptions", "coupons", "credit_note_line_items", "credit_notes",
-		"customer_billing_profiles", "customer_credit_ledger", "customer_dunning_overrides",
+		"customer_billing_profiles", "customer_credit_ledger",
 		"customer_payment_setups", "customer_price_overrides", "customers",
 		"dunning_policies", "email_outbox", "idempotency_keys", "invoice_dunning_events",
 		"invoice_dunning_runs", "invoice_line_items", "invoices", "meters",

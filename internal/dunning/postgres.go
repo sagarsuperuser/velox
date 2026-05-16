@@ -21,29 +21,158 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
-func (s *PostgresStore) GetPolicy(ctx context.Context, tenantID string) (domain.DunningPolicy, error) {
+// scanPolicy is the shared row decoder for the policy SELECTs below.
+// Returned columns are fixed: id, tenant_id, name, enabled, is_default,
+// retry_schedule (jsonb), max_retry_attempts, final_action,
+// grace_period_days, created_at, updated_at — in that order.
+func scanPolicy(row interface {
+	Scan(dest ...any) error
+}) (domain.DunningPolicy, error) {
+	var p domain.DunningPolicy
+	var scheduleJSON []byte
+	if err := row.Scan(&p.ID, &p.TenantID, &p.Name, &p.Enabled, &p.IsDefault, &scheduleJSON,
+		&p.MaxRetryAttempts, &p.FinalAction, &p.GracePeriodDays, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		return domain.DunningPolicy{}, err
+	}
+	_ = json.Unmarshal(scheduleJSON, &p.RetrySchedule)
+	return p, nil
+}
+
+const policyColumns = `id, tenant_id, name, enabled, is_default, retry_schedule, max_retry_attempts, final_action, grace_period_days, created_at, updated_at`
+
+// GetPolicyByID looks up a single policy by its id within the tenant.
+func (s *PostgresStore) GetPolicyByID(ctx context.Context, tenantID, id string) (domain.DunningPolicy, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.DunningPolicy{}, err
 	}
 	defer postgres.Rollback(tx)
 
-	var p domain.DunningPolicy
-	var scheduleJSON []byte
-	err = tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, name, enabled, retry_schedule, max_retry_attempts,
-			final_action, grace_period_days, created_at, updated_at
-		FROM dunning_policies LIMIT 1
-	`).Scan(&p.ID, &p.TenantID, &p.Name, &p.Enabled, &scheduleJSON,
-		&p.MaxRetryAttempts, &p.FinalAction, &p.GracePeriodDays, &p.CreatedAt, &p.UpdatedAt)
+	p, err := scanPolicy(tx.QueryRowContext(ctx, `SELECT `+policyColumns+` FROM dunning_policies WHERE id = $1`, id))
 	if err == sql.ErrNoRows {
 		return domain.DunningPolicy{}, errs.ErrNotFound
 	}
+	return p, err
+}
+
+// GetDefaultPolicy returns the tenant's default policy (is_default=true).
+// Exactly one such row exists per (tenant, livemode) — enforced by the
+// partial UNIQUE index from migration 0086.
+func (s *PostgresStore) GetDefaultPolicy(ctx context.Context, tenantID string) (domain.DunningPolicy, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.DunningPolicy{}, err
 	}
-	_ = json.Unmarshal(scheduleJSON, &p.RetrySchedule)
-	return p, nil
+	defer postgres.Rollback(tx)
+
+	p, err := scanPolicy(tx.QueryRowContext(ctx, `SELECT `+policyColumns+` FROM dunning_policies WHERE is_default LIMIT 1`))
+	if err == sql.ErrNoRows {
+		return domain.DunningPolicy{}, errs.ErrNotFound
+	}
+	return p, err
+}
+
+// ListPolicies returns all policies for the tenant, defaults first
+// then by created_at. Caller renders the campaigns admin page off this.
+func (s *PostgresStore) ListPolicies(ctx context.Context, tenantID string) ([]domain.DunningPolicy, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `SELECT `+policyColumns+` FROM dunning_policies ORDER BY is_default DESC, created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.DunningPolicy
+	for rows.Next() {
+		p, err := scanPolicy(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// DeletePolicy removes a policy. Refuses to delete the default policy
+// (operator must promote another policy first); also refuses when any
+// customer has an explicit dunning_policy_id pointing at it (operator
+// reassigns those customers first). The application-layer guards are
+// the primary defense; the FK on customers.dunning_policy_id ON DELETE
+// SET NULL is belt-and-suspenders only.
+func (s *PostgresStore) DeletePolicy(ctx context.Context, tenantID, id string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	var isDefault bool
+	if err := tx.QueryRowContext(ctx, `SELECT is_default FROM dunning_policies WHERE id = $1`, id).Scan(&isDefault); err != nil {
+		if err == sql.ErrNoRows {
+			return errs.ErrNotFound
+		}
+		return err
+	}
+	if isDefault {
+		return errs.InvalidState("cannot delete the default dunning policy — promote another policy first")
+	}
+	var assigned int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM customers WHERE dunning_policy_id = $1`, id).Scan(&assigned); err != nil {
+		return err
+	}
+	if assigned > 0 {
+		return errs.InvalidState(fmt.Sprintf("cannot delete policy — %d customer(s) still assigned; reassign them first", assigned))
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM dunning_policies WHERE id = $1`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SetDefaultPolicy promotes the given policy to default and demotes the
+// previous default in a single tx. The partial UNIQUE index would
+// otherwise reject "set new default first" (two is_default=true rows
+// simultaneously), so we flip both atomically.
+func (s *PostgresStore) SetDefaultPolicy(ctx context.Context, tenantID, id string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	// Demote first; the partial UNIQUE index permits zero defaults
+	// transiently, then we promote the target.
+	if _, err := tx.ExecContext(ctx, `UPDATE dunning_policies SET is_default = false WHERE is_default`); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE dunning_policies SET is_default = true, updated_at = NOW() WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errs.ErrNotFound
+	}
+	return tx.Commit()
+}
+
+// CountCustomersOnPolicy returns the number of customers explicitly
+// assigned to the given policy. Used by the handler / UI to surface
+// "N customers assigned" and to gate destructive operations.
+func (s *PostgresStore) CountCustomersOnPolicy(ctx context.Context, tenantID, policyID string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	defer postgres.Rollback(tx)
+
+	var n int
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM customers WHERE dunning_policy_id = $1`, policyID).Scan(&n)
+	return n, err
 }
 
 func (s *PostgresStore) UpsertPolicy(ctx context.Context, tenantID string, p domain.DunningPolicy) (domain.DunningPolicy, error) {
@@ -70,34 +199,47 @@ func (s *PostgresStore) UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID
 	return s.upsertPolicyTx(ctx, tx, tenantID, p)
 }
 
+// upsertPolicyTx inserts a new policy when p.ID is empty, updates the
+// existing row when p.ID is set. The migration to the campaigns model
+// (ADR-036) made tenant↔policy a 1:N relation, so the prior ON CONFLICT
+// (tenant_id, livemode) singleton-merge no longer applies — that
+// constraint was dropped in migration 0086.
+//
+// IsDefault is honored: setting a new policy to is_default=true here
+// would race against the partial UNIQUE index. SetDefaultPolicy is the
+// dedicated atomic-flip path; UpsertPolicy enforces that is_default
+// cannot be set via this call (preserves the invariant).
 func (s *PostgresStore) upsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.DunningPolicy) (domain.DunningPolicy, error) {
-	id := postgres.NewID("vlx_dpol")
 	now := clock.Now(ctx)
 	scheduleJSON, _ := json.Marshal(p.RetrySchedule)
-
-	var scheduleOut []byte
-	err := tx.QueryRowContext(ctx, `
-		INSERT INTO dunning_policies (id, tenant_id, name, enabled, retry_schedule,
-			max_retry_attempts, final_action, grace_period_days, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
-		ON CONFLICT (tenant_id, livemode) DO UPDATE SET
-			name = EXCLUDED.name, enabled = EXCLUDED.enabled,
-			retry_schedule = EXCLUDED.retry_schedule,
-			max_retry_attempts = EXCLUDED.max_retry_attempts,
-			final_action = EXCLUDED.final_action,
-			grace_period_days = EXCLUDED.grace_period_days,
-			updated_at = EXCLUDED.updated_at
-		RETURNING id, tenant_id, name, enabled, retry_schedule, max_retry_attempts,
-			final_action, grace_period_days, created_at, updated_at
-	`, id, tenantID, p.Name, p.Enabled, scheduleJSON, p.MaxRetryAttempts,
-		p.FinalAction, p.GracePeriodDays, now,
-	).Scan(&p.ID, &p.TenantID, &p.Name, &p.Enabled, &scheduleOut,
-		&p.MaxRetryAttempts, &p.FinalAction, &p.GracePeriodDays, &p.CreatedAt, &p.UpdatedAt)
-	if err != nil {
-		return domain.DunningPolicy{}, err
+	if p.ID == "" {
+		// INSERT new policy. is_default stays false; promote later via
+		// SetDefaultPolicy if needed.
+		newID := postgres.NewID("vlx_dpol")
+		row := tx.QueryRowContext(ctx, `
+			INSERT INTO dunning_policies (id, tenant_id, name, enabled, is_default,
+				retry_schedule, max_retry_attempts, final_action, grace_period_days,
+				created_at, updated_at)
+			VALUES ($1,$2,$3,$4,false,$5,$6,$7,$8,$9,$9)
+			RETURNING `+policyColumns,
+			newID, tenantID, p.Name, p.Enabled, scheduleJSON, p.MaxRetryAttempts,
+			p.FinalAction, p.GracePeriodDays, now,
+		)
+		return scanPolicy(row)
 	}
-	_ = json.Unmarshal(scheduleOut, &p.RetrySchedule)
-	return p, nil
+	// UPDATE existing policy. is_default is preserved (callers use
+	// SetDefaultPolicy to flip).
+	row := tx.QueryRowContext(ctx, `
+		UPDATE dunning_policies
+		SET name = $2, enabled = $3, retry_schedule = $4,
+			max_retry_attempts = $5, final_action = $6, grace_period_days = $7,
+			updated_at = $8
+		WHERE id = $1
+		RETURNING `+policyColumns,
+		p.ID, p.Name, p.Enabled, scheduleJSON, p.MaxRetryAttempts,
+		p.FinalAction, p.GracePeriodDays, now,
+	)
+	return scanPolicy(row)
 }
 
 func (s *PostgresStore) CreateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error) {
@@ -492,66 +634,8 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID, runID string) 
 	return events, rows.Err()
 }
 
-func (s *PostgresStore) GetCustomerOverride(ctx context.Context, tenantID, customerID string) (domain.CustomerDunningOverride, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.CustomerDunningOverride{}, err
-	}
-	defer postgres.Rollback(tx)
-
-	var o domain.CustomerDunningOverride
-	err = tx.QueryRowContext(ctx, `
-		SELECT customer_id, tenant_id, max_retry_attempts, grace_period_days, COALESCE(final_action,'')
-		FROM customer_dunning_overrides WHERE customer_id = $1
-	`, customerID).Scan(&o.CustomerID, &o.TenantID, &o.MaxRetryAttempts, &o.GracePeriodDays, &o.FinalAction)
-	if err == sql.ErrNoRows {
-		return domain.CustomerDunningOverride{}, errs.ErrNotFound
-	}
-	return o, err
-}
-
-func (s *PostgresStore) UpsertCustomerOverride(ctx context.Context, tenantID string, o domain.CustomerDunningOverride) (domain.CustomerDunningOverride, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.CustomerDunningOverride{}, err
-	}
-	defer postgres.Rollback(tx)
-
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO customer_dunning_overrides (customer_id, tenant_id, max_retry_attempts, grace_period_days, final_action, updated_at)
-		VALUES ($1,$2,$3,$4,$5,NOW())
-		ON CONFLICT (tenant_id, customer_id) DO UPDATE SET
-			max_retry_attempts = EXCLUDED.max_retry_attempts,
-			grace_period_days = EXCLUDED.grace_period_days,
-			final_action = EXCLUDED.final_action,
-			updated_at = NOW()
-		RETURNING customer_id, tenant_id, max_retry_attempts, grace_period_days, COALESCE(final_action,'')
-	`, o.CustomerID, tenantID, o.MaxRetryAttempts, o.GracePeriodDays,
-		postgres.NullableString(o.FinalAction),
-	).Scan(&o.CustomerID, &o.TenantID, &o.MaxRetryAttempts, &o.GracePeriodDays, &o.FinalAction)
-	if err != nil {
-		return domain.CustomerDunningOverride{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.CustomerDunningOverride{}, err
-	}
-	return o, nil
-}
-
-func (s *PostgresStore) DeleteCustomerOverride(ctx context.Context, tenantID, customerID string) error {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return err
-	}
-	defer postgres.Rollback(tx)
-
-	result, err := tx.ExecContext(ctx, `DELETE FROM customer_dunning_overrides WHERE customer_id = $1`, customerID)
-	if err != nil {
-		return err
-	}
-	n, _ := result.RowsAffected()
-	if n == 0 {
-		return errs.ErrNotFound
-	}
-	return tx.Commit()
-}
+// Customer dunning overrides (GetCustomerOverride / UpsertCustomerOverride
+// / DeleteCustomerOverride) were removed in ADR-036. Per-customer
+// differentiation now flows through customers.dunning_policy_id
+// referencing a DunningPolicy row, matching the Stripe / Lago / Orb /
+// Recurly campaigns-model shape.

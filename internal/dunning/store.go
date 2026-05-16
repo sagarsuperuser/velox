@@ -9,8 +9,8 @@ import (
 )
 
 type Store interface {
-	// Policy
-	GetPolicy(ctx context.Context, tenantID string) (domain.DunningPolicy, error)
+	// Policy (ADR-036 campaigns model — see methods at bottom of
+	// interface for the multi-policy-per-tenant resolution path).
 	UpsertPolicy(ctx context.Context, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error)
 	UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error)
 
@@ -37,10 +37,18 @@ type Store interface {
 	CreateEvent(ctx context.Context, tenantID string, event domain.InvoiceDunningEvent) (domain.InvoiceDunningEvent, error)
 	ListEvents(ctx context.Context, tenantID, runID string) ([]domain.InvoiceDunningEvent, error)
 
-	// Customer dunning overrides
-	GetCustomerOverride(ctx context.Context, tenantID, customerID string) (domain.CustomerDunningOverride, error)
-	UpsertCustomerOverride(ctx context.Context, tenantID string, override domain.CustomerDunningOverride) (domain.CustomerDunningOverride, error)
-	DeleteCustomerOverride(ctx context.Context, tenantID, customerID string) error
+	// Multi-policy-per-tenant (ADR-036, campaigns model).
+	//
+	// GetPolicy returns the singleton tenant policy was REMOVED — every
+	// caller must now resolve by id (GetPolicyByID for a known id) or
+	// by tenant-default (GetDefaultPolicy for "no explicit assignment").
+	// The Service's GetEffectivePolicyForCustomer wraps both.
+	GetPolicyByID(ctx context.Context, tenantID, id string) (domain.DunningPolicy, error)
+	GetDefaultPolicy(ctx context.Context, tenantID string) (domain.DunningPolicy, error)
+	ListPolicies(ctx context.Context, tenantID string) ([]domain.DunningPolicy, error)
+	DeletePolicy(ctx context.Context, tenantID, id string) error
+	SetDefaultPolicy(ctx context.Context, tenantID, id string) error
+	CountCustomersOnPolicy(ctx context.Context, tenantID, policyID string) (int, error)
 }
 
 type RunListFilter struct {

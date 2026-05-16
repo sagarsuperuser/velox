@@ -1,0 +1,279 @@
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { Pencil, Trash2, Plus, Star } from 'lucide-react'
+
+import { api, type DunningPolicy, type DunningPolicyWithCount } from '@/lib/api'
+import { Layout } from '@/components/Layout'
+import { showApiError } from '@/lib/formErrors'
+
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Label } from '@/components/ui/label'
+import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+
+// DunningPoliciesPage — admin surface for the campaigns model
+// (ADR-036). Operators create named policies ("Enterprise — Net 30",
+// "SMB — fast-fail"), edit them, mark one as the tenant default,
+// delete unused ones. Customer assignment happens on the customer
+// detail page (one dropdown picks from this list).
+//
+// Industry shape verified against Stripe (account-level retry policy),
+// Lago (campaigns + per-customer assignment), Orb (rules + schedules),
+// Recurly (campaigns + per-account assignment). Velox follows the
+// converging named-templates pattern.
+export default function DunningPoliciesPage() {
+  const queryClient = useQueryClient()
+  const [editingPolicy, setEditingPolicy] = useState<DunningPolicyWithCount | null>(null)
+  const [showCreate, setShowCreate] = useState(false)
+
+  const { data: policiesData, isLoading } = useQuery({
+    queryKey: ['dunning-policies'],
+    queryFn: () => api.listDunningPolicies(),
+  })
+  const policies = policiesData?.data ?? []
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['dunning-policies'] })
+
+  async function handleSetDefault(id: string) {
+    try {
+      await api.setDefaultDunningPolicy(id)
+      invalidate()
+      toast.success('Default policy updated')
+    } catch (err) {
+      showApiError(err, 'Failed to set default')
+    }
+  }
+
+  async function handleDelete(p: DunningPolicyWithCount) {
+    if (p.is_default) {
+      toast.error('Promote another policy to default first')
+      return
+    }
+    if (p.assigned_customers > 0) {
+      toast.error(`${p.assigned_customers} customer(s) assigned — reassign them first`)
+      return
+    }
+    if (!confirm(`Delete policy "${p.name}"?`)) return
+    try {
+      await api.deleteDunningPolicy(p.id)
+      invalidate()
+      toast.success('Policy deleted')
+    } catch (err) {
+      showApiError(err, 'Failed to delete')
+    }
+  }
+
+  return (
+    <Layout>
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-foreground">Dunning policies</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Named retry policies (campaigns). One is the tenant default; customers can be assigned to other policies on the customer detail page.
+            </p>
+          </div>
+          <Button onClick={() => setShowCreate(true)}>
+            <Plus size={16} className="mr-2" /> New policy
+          </Button>
+        </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Policies ({policies.length})</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            {isLoading && (
+              <p className="px-6 py-6 text-sm text-muted-foreground text-center">Loading…</p>
+            )}
+            {!isLoading && policies.length === 0 && (
+              <p className="px-6 py-6 text-sm text-muted-foreground text-center">No policies yet</p>
+            )}
+            <div className="divide-y divide-border">
+              {policies.map(p => (
+                <div key={p.id} className="px-6 py-4 flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium text-foreground">{p.name || '(unnamed)'}</p>
+                      {p.is_default && <Badge variant="default"><Star size={10} className="mr-1" /> default</Badge>}
+                      {!p.enabled && <Badge variant="outline">disabled</Badge>}
+                      <Badge variant="outline">{p.assigned_customers} assigned</Badge>
+                    </div>
+                    <div className="mt-1 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      <span>Max retries: <span className="text-foreground">{p.max_retry_attempts}</span></span>
+                      <span>Grace: <span className="text-foreground">{p.grace_period_days}d</span></span>
+                      <span>Schedule: <span className="text-foreground">{p.retry_schedule.join(' · ') || '—'}</span></span>
+                      <span>Final: <span className="text-foreground">{p.final_action}</span></span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {!p.is_default && (
+                      <Button variant="ghost" size="sm" onClick={() => handleSetDefault(p.id)}>
+                        <Star size={14} className="mr-1" /> Make default
+                      </Button>
+                    )}
+                    <Button variant="ghost" size="sm" onClick={() => setEditingPolicy(p)}>
+                      <Pencil size={14} />
+                    </Button>
+                    {!p.is_default && (
+                      <Button variant="ghost" size="sm" onClick={() => handleDelete(p)}>
+                        <Trash2 size={14} className="text-destructive" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {showCreate && (
+        <PolicyDialog
+          mode="create"
+          onClose={() => setShowCreate(false)}
+          onSaved={() => { setShowCreate(false); invalidate(); toast.success('Policy created') }}
+        />
+      )}
+      {editingPolicy && (
+        <PolicyDialog
+          mode="edit"
+          initial={editingPolicy}
+          onClose={() => setEditingPolicy(null)}
+          onSaved={() => { setEditingPolicy(null); invalidate(); toast.success('Policy saved') }}
+        />
+      )}
+    </Layout>
+  )
+}
+
+function PolicyDialog({ mode, initial, onClose, onSaved }: {
+  mode: 'create' | 'edit'
+  initial?: DunningPolicy
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [form, setForm] = useState({
+    name: initial?.name ?? '',
+    enabled: initial?.enabled ?? true,
+    max_retry_attempts: String(initial?.max_retry_attempts ?? 3),
+    grace_period_days: String(initial?.grace_period_days ?? 3),
+    retry_schedule: (initial?.retry_schedule ?? ['72h', '120h']).join(', '),
+    final_action: initial?.final_action || 'pause',
+  })
+  const [saving, setSaving] = useState(false)
+
+  // Parse "72h, 120h" → ["72h", "120h"]. Empty entries dropped so
+  // trailing commas don't confuse the backend validator.
+  const parseSchedule = (raw: string): string[] =>
+    raw.split(',').map(s => s.trim()).filter(Boolean)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      const payload: Partial<DunningPolicy> = {
+        name: form.name.trim(),
+        enabled: form.enabled,
+        max_retry_attempts: parseInt(form.max_retry_attempts, 10) || 0,
+        grace_period_days: parseInt(form.grace_period_days, 10) || 0,
+        retry_schedule: parseSchedule(form.retry_schedule),
+        final_action: form.final_action,
+      }
+      if (mode === 'create') {
+        await api.createDunningPolicy(payload)
+      } else if (initial) {
+        await api.updateDunningPolicy(initial.id, payload)
+      }
+      onSaved()
+    } catch (err) {
+      showApiError(err, mode === 'create' ? 'Failed to create' : 'Failed to save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const scheduleEntries = parseSchedule(form.retry_schedule)
+  const max = parseInt(form.max_retry_attempts, 10) || 0
+  const scheduleShortage = max - 1 - scheduleEntries.length
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{mode === 'create' ? 'New dunning policy' : 'Edit policy'}</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} noValidate className="space-y-4">
+          <div className="space-y-2">
+            <Label>Name</Label>
+            <Input value={form.name} placeholder="Enterprise — Net 30 grace"
+              onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+          </div>
+          <div className="flex items-center justify-between">
+            <Label>Enabled</Label>
+            <Switch checked={form.enabled} onCheckedChange={(val) => setForm(f => ({ ...f, enabled: val }))} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label>Max retry attempts</Label>
+              <Input type="number" min={1} max={15} value={form.max_retry_attempts}
+                onChange={e => setForm(f => ({ ...f, max_retry_attempts: e.target.value }))} />
+            </div>
+            <div className="space-y-2">
+              <Label>Grace (days)</Label>
+              <Input type="number" min={1} max={30} value={form.grace_period_days}
+                onChange={e => setForm(f => ({ ...f, grace_period_days: e.target.value }))} />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Retry schedule</Label>
+            <Input value={form.retry_schedule} placeholder="72h, 120h, 168h"
+              onChange={e => setForm(f => ({ ...f, retry_schedule: e.target.value }))} />
+            <p className="text-xs text-muted-foreground">
+              Comma-separated Go durations (h / m / s). Need {Math.max(0, max - 1)} entries for {max} retries.
+              {scheduleShortage > 0 && (
+                <span className="text-destructive"> Missing {scheduleShortage} entries.</span>
+              )}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>Final action</Label>
+            <Select value={form.final_action} onValueChange={(val) => setForm(f => ({ ...f, final_action: val ?? 'pause' }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="pause">Pause subscription</SelectItem>
+                <SelectItem value="manual_review">Escalate for manual review</SelectItem>
+                <SelectItem value="write_off_later">Mark uncollectible</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={saving}>
+              {saving ? 'Saving…' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
