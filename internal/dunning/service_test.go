@@ -423,6 +423,81 @@ func TestProcessDueRunsForClock_StopsWhenAllAdvancePastFrozen(t *testing.T) {
 	}
 }
 
+// recordingEmailNotifier captures the per-type email enqueues so
+// catchup-walk tests can assert "warnings + escalation actually
+// enqueued" instead of just "DB state is escalated."
+type recordingEmailNotifier struct {
+	warnings     int
+	escalations  int
+	paymentFails int
+}
+
+func (r *recordingEmailNotifier) SendPaymentFailed(context.Context, string, string, string, string, string, string) error {
+	r.paymentFails++
+	return nil
+}
+func (r *recordingEmailNotifier) SendDunningWarning(context.Context, string, string, string, string, int, int, string, string, string) error {
+	r.warnings++
+	return nil
+}
+func (r *recordingEmailNotifier) SendDunningEscalation(context.Context, string, string, string, string, string, string) error {
+	r.escalations++
+	return nil
+}
+
+type stubCustomerEmail struct{}
+
+func (stubCustomerEmail) GetCustomerEmail(context.Context, string, string) (string, string, error) {
+	return "test@velox.dev", "Test Co", nil
+}
+
+// TestProcessDueRunsForClock_EnqueuesEscalationEmailOnExhaust locks in
+// the ADR-035 follow-up: the dunning_escalation email MUST be enqueued
+// when the final retry exhausts max attempts in a catchup pass, even
+// though that's the LAST goroutine the dunning service would spawn.
+//
+// Pre-fix the warning + escalation enqueues ran in goroutines bound to
+// the catchup ctx, which testclock/catchup.go cancels via `defer
+// cancel()` the instant RunCatchup returns. The escalation, spawned
+// during the final retry, lost the race and the email never landed in
+// the outbox — even though the run's DB state correctly read
+// state=escalated. Symptom: 5/6 of an exhausted run's emails appeared
+// in Mailpit, the escalation missing.
+//
+// Fix: synchronous enqueue. The store-level email outbox is a fast
+// INSERT and the SMTP dispatch already happens on its own long-lived
+// ctx via the outbox dispatcher worker — no need for an in-service
+// goroutine. This test fails if a future refactor reintroduces the
+// goroutine.
+func TestProcessDueRunsForClock_EnqueuesEscalationEmailOnExhaust(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &failingRetrier{}, nil)
+	emails := &recordingEmailNotifier{}
+	svc.SetEmailNotifier(emails)
+	svc.SetCustomerEmailFetcher(stubCustomerEmail{})
+	ctx := context.Background()
+
+	cycleClose := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	frozen := time.Date(2024, 5, 20, 0, 0, 0, 0, time.UTC)
+	if _, err := svc.StartDunning(ctx, "t1", "inv_1", "cus_1", cycleClose); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	if _, errs := svc.ProcessDueRunsForClock(ctx, "t1", "clock_1", frozen, 20); len(errs) > 0 {
+		t.Fatalf("processing errors: %v", errs)
+	}
+
+	// Policy fixture: max=3, retry_schedule=["72h","120h"]. Of 3 retries,
+	// retries #1 and #2 fire warnings; retry #3 skips warning and triggers
+	// exhaustRun → 1 escalation.
+	if emails.warnings != 2 {
+		t.Errorf("dunning_warning enqueues: got %d, want 2 (retries 1 + 2)", emails.warnings)
+	}
+	if emails.escalations != 1 {
+		t.Errorf("dunning_escalation enqueues: got %d, want 1 (= the retry that exhausted)", emails.escalations)
+	}
+}
+
 func TestResolveRun(t *testing.T) {
 	store := newMemStore()
 	svc := NewService(store, &noopRetrier{}, nil)
