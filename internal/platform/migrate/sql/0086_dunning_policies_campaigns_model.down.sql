@@ -20,7 +20,13 @@ ALTER TABLE dunning_policies
   ADD CONSTRAINT dunning_policies_tenant_id_livemode_key
   UNIQUE (tenant_id, livemode);
 
--- 3. Re-create customer_dunning_overrides (shape from pre-ADR-036).
+-- 3. Re-create customer_dunning_overrides with the FKs that existed
+--    post-migration-0015. The roundtrip test rolls back to 0; when it
+--    reaches 0015.down it expects customer_dunning_overrides_customer_id_fkey
+--    and customer_dunning_overrides_tenant_id_fkey to exist (so the
+--    down can DROP + re-ADD with NO ACTION). Without these FKs here,
+--    0015.down fails with "constraint does not exist" and the
+--    rollback chain halts.
 CREATE TABLE IF NOT EXISTS customer_dunning_overrides (
   customer_id        TEXT NOT NULL,
   tenant_id          TEXT NOT NULL,
@@ -30,5 +36,9 @@ CREATE TABLE IF NOT EXISTS customer_dunning_overrides (
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   livemode           BOOLEAN NOT NULL DEFAULT true,
-  PRIMARY KEY (customer_id, tenant_id)
+  PRIMARY KEY (customer_id, tenant_id),
+  CONSTRAINT customer_dunning_overrides_customer_id_fkey
+    FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE RESTRICT,
+  CONSTRAINT customer_dunning_overrides_tenant_id_fkey
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE RESTRICT
 );
