@@ -1,5 +1,8 @@
 # ADR-007: Revert Dashboard to API-Key Auth
 
+**Date:** 2026-04-29
+**Status:** Superseded by ADR-011 (email/password dashboard auth shipped 2026-05-01)
+
 ## Status
 Superseded by [ADR-011](./011-email-password-auth-and-clean-api-keys.md) — the API-key-as-dashboard-credential model was reversed back to email+password on 2026-04-30 once it became clear the cleanup costs (orphan-tenant safeguard, self-revoke 422, cookie fan-out, "current session" UI logic) were higher than the cost of a small homegrown auth surface.
 

@@ -1,7 +1,7 @@
 # ADR-022: Stripe Checkout return URLs are contextual, not global
 
-**Status**: Accepted
-**Date**: 2026-05-04
+**Status:** Accepted
+**Date:** 2026-05-04
 
 ## Context
 

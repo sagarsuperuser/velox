@@ -1,5 +1,8 @@
 # ADR-011: Email/Password Dashboard Auth, Pure-CRUD API Keys
 
+**Date:** 2026-05-01
+**Status:** Accepted
+
 ## Status
 Accepted
 

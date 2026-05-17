@@ -1,5 +1,8 @@
 # ADR-001: PaymentIntent-Only Stripe Integration
 
+**Date:** 2026-04-15
+**Status:** Accepted
+
 ## Status
 Accepted
 

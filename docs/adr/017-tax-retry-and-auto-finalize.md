@@ -1,7 +1,7 @@
 # ADR-017: Background tax-retry reconciler + auto-finalize on success
 
-**Status**: Accepted
-**Date**: 2026-05-04
+**Status:** Accepted
+**Date:** 2026-05-04
 
 ## Context
 

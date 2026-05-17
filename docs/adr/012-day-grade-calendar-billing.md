@@ -1,5 +1,8 @@
 # ADR-012: Day-Grade Calendar Billing & Period Boundary Snapping
 
+**Date:** 2026-05-01
+**Status:** Accepted
+
 ## Status
 Accepted
 

@@ -1,7 +1,7 @@
 # ADR-016: Test clocks are soft-deleted with cascade-cancel of pinned subs
 
-**Status**: Accepted
-**Date**: 2026-05-04
+**Status:** Accepted
+**Date:** 2026-05-04
 
 ## Context
 

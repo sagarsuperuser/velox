@@ -1,5 +1,8 @@
 # ADR-005: Integer Cents for Money
 
+**Date:** 2026-04-15
+**Status:** Accepted
+
 ## Status
 Accepted
 

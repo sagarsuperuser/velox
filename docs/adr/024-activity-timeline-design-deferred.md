@@ -1,7 +1,7 @@
 # ADR-024: Activity timeline — keep multi-source assembly; promote canonical primitives only on trigger
 
-**Status**: Accepted
-**Date**: 2026-05-05
+**Status:** Accepted
+**Date:** 2026-05-05
 
 ## Context
 

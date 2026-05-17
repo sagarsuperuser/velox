@@ -1,7 +1,7 @@
 # ADR-025: Attention banner separates Velox's classification from upstream provider responses
 
-**Status**: Accepted
-**Date**: 2026-05-05
+**Status:** Accepted
+**Date:** 2026-05-05
 
 ## Context
 

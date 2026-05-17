@@ -1,5 +1,8 @@
 # ADR-010: Tenant Timezone Model
 
+**Date:** 2026-05-01
+**Status:** Accepted
+
 ## Status
 Accepted
 

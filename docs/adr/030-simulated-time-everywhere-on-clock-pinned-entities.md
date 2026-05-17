@@ -1,7 +1,7 @@
 # ADR-030: Simulated time everywhere on clock-pinned entities
 
-**Status**: Accepted
-**Date**: 2026-05-08
+**Status:** Accepted
+**Date:** 2026-05-08
 **Implemented**: 2026-05-08
 **Supersedes**: closes the deferred-decoupling section ADR-029 left open for non-load-bearing timestamps
 

@@ -1,5 +1,8 @@
 # ADR-004: Event-Sourced Credit Ledger
 
+**Date:** 2026-04-15
+**Status:** Accepted
+
 ## Status
 Accepted
 

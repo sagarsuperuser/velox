@@ -1,7 +1,7 @@
 # ADR-028: Billing engine — per-sub period loop + disjoint flows for catchup vs cron
 
-**Status**: Accepted
-**Date**: 2026-05-05
+**Status:** Accepted
+**Date:** 2026-05-05
 
 ## Context
 

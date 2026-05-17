@@ -1,7 +1,7 @@
 # ADR-026: HTTP error responses are sanitized at a single boundary
 
-**Status**: Accepted
-**Date**: 2026-05-05
+**Status:** Accepted
+**Date:** 2026-05-05
 
 ## Context
 

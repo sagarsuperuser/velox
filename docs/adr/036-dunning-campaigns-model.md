@@ -1,7 +1,7 @@
 # ADR-036: Dunning campaigns model (multi-policy-per-tenant)
 
 **Date:** 2026-05-16
-**Status:** Accepted
+**Status:** Accepted (amended 2026-05-16 — terminal-action set + pause-semantics fix; see Amendment section below)
 
 ## Context
 

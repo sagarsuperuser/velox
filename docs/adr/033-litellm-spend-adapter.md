@@ -1,7 +1,7 @@
 # ADR-033: LiteLLM spend adapter — wedge integration
 
-**Status**: Accepted
-**Date**: 2026-05-14
+**Status:** Accepted
+**Date:** 2026-05-14
 **Related**: ADR-031 (per-plan bill_timing), `project_positioning_wedge.md`
 
 ## Context

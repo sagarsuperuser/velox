@@ -1,7 +1,7 @@
 # ADR-021: Hosted-invoice Pay flow saves the card to the customer's Stripe customer
 
-**Status**: Accepted
-**Date**: 2026-05-03
+**Status:** Accepted
+**Date:** 2026-05-03
 
 ## Context
 
