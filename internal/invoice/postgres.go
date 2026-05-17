@@ -76,7 +76,7 @@ func qualifiedInvCols(alias string) string {
 }
 
 // splitTopLevelCommas splits a column list on commas that are NOT
-// inside parentheses (so COALESCE(a, '') stays as one column).
+// inside parentheses (so COALESCE(a, ”) stays as one column).
 func splitTopLevelCommas(s string) []string {
 	var out []string
 	depth := 0

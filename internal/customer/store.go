@@ -54,9 +54,9 @@ type ListFilter struct {
 	// the "list-then-client-side-join" anti-pattern that surfaces
 	// "Unknown" rows when a referenced customer falls off the default
 	// 50-row page of an unrelated list. Empty = no ID filter applied.
-	IDs        []string
-	Limit      int
-	Offset     int
-	Sort       string // closed allow-list (validated in store); empty defaults to created_at
-	SortDir    string // "asc" or "desc"; empty defaults to desc
+	IDs     []string
+	Limit   int
+	Offset  int
+	Sort    string // closed allow-list (validated in store); empty defaults to created_at
+	SortDir string // "asc" or "desc"; empty defaults to desc
 }

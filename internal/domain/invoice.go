@@ -5,10 +5,10 @@ import "time"
 type InvoiceStatus string
 
 const (
-	InvoiceDraft         InvoiceStatus = "draft"
-	InvoiceFinalized     InvoiceStatus = "finalized"
-	InvoicePaid          InvoiceStatus = "paid"
-	InvoiceVoided        InvoiceStatus = "voided"
+	InvoiceDraft     InvoiceStatus = "draft"
+	InvoiceFinalized InvoiceStatus = "finalized"
+	InvoicePaid      InvoiceStatus = "paid"
+	InvoiceVoided    InvoiceStatus = "voided"
 	// InvoiceUncollectible marks an invoice as no-further-collection-
 	// attempted while preserving it in financial reporting (Stripe-
 	// standard semantics; distinct from Voided which annuls the
@@ -101,10 +101,10 @@ type Invoice struct {
 	// TaxStatus gates finalize: only invoices with TaxStatus=ok are
 	// finalizable. Pending/failed invoices carry no committed tax yet and
 	// are either awaiting retry or awaiting operator intervention.
-	TaxStatus             InvoiceTaxStatus `json:"tax_status,omitempty"`
-	TaxDeferredAt         *time.Time       `json:"tax_deferred_at,omitempty"`
-	TaxRetryCount         int              `json:"tax_retry_count,omitempty"`
-	TaxPendingReason      string           `json:"tax_pending_reason,omitempty"`
+	TaxStatus        InvoiceTaxStatus `json:"tax_status,omitempty"`
+	TaxDeferredAt    *time.Time       `json:"tax_deferred_at,omitempty"`
+	TaxRetryCount    int              `json:"tax_retry_count,omitempty"`
+	TaxPendingReason string           `json:"tax_pending_reason,omitempty"`
 	// TaxErrorCode is the typed classification of TaxPendingReason —
 	// one of customer_data_invalid / jurisdiction_unsupported /
 	// provider_outage / provider_auth / unknown. Lets the operator
@@ -136,22 +136,22 @@ type Invoice struct {
 	// payment_overdue) plus due_at. Nil when the invoice is healthy
 	// (terminal-state or no failure mode active). See
 	// docs/adr/009-invoice-attention.md for the wire-shape contract.
-	Attention             *Attention       `json:"attention,omitempty"`
-	TotalAmountCents      int64            `json:"total_amount_cents"`
-	AmountDueCents        int64            `json:"amount_due_cents"`
-	AmountPaidCents       int64            `json:"amount_paid_cents"`
-	CreditsAppliedCents   int64            `json:"credits_applied_cents"`
-	BillingPeriodStart    time.Time        `json:"billing_period_start"`
-	BillingPeriodEnd      time.Time        `json:"billing_period_end"`
-	IssuedAt              *time.Time       `json:"issued_at,omitempty"`
-	DueAt                 *time.Time       `json:"due_at,omitempty"`
-	PaidAt                *time.Time       `json:"paid_at,omitempty"`
-	VoidedAt              *time.Time       `json:"voided_at,omitempty"`
-	StripePaymentIntentID string           `json:"stripe_payment_intent_id,omitempty"`
-	LastPaymentError      string           `json:"last_payment_error,omitempty"`
-	PaymentOverdue        bool             `json:"payment_overdue"`
-	AutoChargePending     bool             `json:"auto_charge_pending,omitempty"`
-	PDFObjectKey          string           `json:"-"`
+	Attention             *Attention `json:"attention,omitempty"`
+	TotalAmountCents      int64      `json:"total_amount_cents"`
+	AmountDueCents        int64      `json:"amount_due_cents"`
+	AmountPaidCents       int64      `json:"amount_paid_cents"`
+	CreditsAppliedCents   int64      `json:"credits_applied_cents"`
+	BillingPeriodStart    time.Time  `json:"billing_period_start"`
+	BillingPeriodEnd      time.Time  `json:"billing_period_end"`
+	IssuedAt              *time.Time `json:"issued_at,omitempty"`
+	DueAt                 *time.Time `json:"due_at,omitempty"`
+	PaidAt                *time.Time `json:"paid_at,omitempty"`
+	VoidedAt              *time.Time `json:"voided_at,omitempty"`
+	StripePaymentIntentID string     `json:"stripe_payment_intent_id,omitempty"`
+	LastPaymentError      string     `json:"last_payment_error,omitempty"`
+	PaymentOverdue        bool       `json:"payment_overdue"`
+	AutoChargePending     bool       `json:"auto_charge_pending,omitempty"`
+	PDFObjectKey          string     `json:"-"`
 	// PublicToken is the hosted-invoice-URL credential (Stripe-parity
 	// hosted_invoice_url). Generated at finalize; drafts have an empty
 	// token. Rotatable via the rotate-public-token endpoint if the URL

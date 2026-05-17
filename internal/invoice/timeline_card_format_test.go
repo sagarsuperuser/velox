@@ -38,10 +38,10 @@ func TestWithinWindow(t *testing.T) {
 // cleanly.
 func TestFormatPaymentCardDetail(t *testing.T) {
 	cases := []struct {
-		name   string
-		brand  string
-		last4  string
-		want   string
+		name  string
+		brand string
+		last4 string
+		want  string
 	}{
 		{"both present, brand title-cased", "visa", "4242", "via Visa •••• 4242"},
 		{"mastercard", "mastercard", "1234", "via Mastercard •••• 1234"},
@@ -376,4 +376,3 @@ func TestFoldEmailIntoStripeFailed(t *testing.T) {
 		}
 	})
 }
-

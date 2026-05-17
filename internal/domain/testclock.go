@@ -26,13 +26,13 @@ const (
 //
 // Livemode is always false and is enforced by a CHECK constraint in the DB.
 type TestClock struct {
-	ID           string          `json:"id"`
-	TenantID     string          `json:"tenant_id,omitempty"`
-	Name         string          `json:"name"`
-	FrozenTime   time.Time       `json:"frozen_time"`
-	Status       TestClockStatus `json:"status"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	ID         string          `json:"id"`
+	TenantID   string          `json:"tenant_id,omitempty"`
+	Name       string          `json:"name"`
+	FrozenTime time.Time       `json:"frozen_time"`
+	Status     TestClockStatus `json:"status"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
 	// DeletedAt marks a soft-deleted clock (ADR-016). API responses
 	// omit deleted clocks entirely — read paths filter
 	// deleted_at IS NULL — but the field is exposed on the JSON so

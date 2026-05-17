@@ -46,24 +46,24 @@ type SettingsReader interface {
 }
 
 type Engine struct {
-	subs           SubscriptionReader
-	usage          UsageAggregator
-	pricing        PricingReader
-	invoices       InvoiceWriter
-	credits        CreditApplier
-	creditGranter  CreditGranter
-	settings       SettingsReader
-	paymentSetups  PaymentSetupReader
-	charger        InvoiceCharger
-	profiles       BillingProfileReader
-	customers      CustomerReader
-	taxProviders   TaxProviderResolver
-	taxCalcStore   TaxCalculationWriter
-	coupons        CouponApplier
-	clock          clock.Clock
-	testClocks     TestClockReader
-	events         domain.EventDispatcher
-	noPMNotifier   NoPaymentMethodNotifier
+	subs          SubscriptionReader
+	usage         UsageAggregator
+	pricing       PricingReader
+	invoices      InvoiceWriter
+	credits       CreditApplier
+	creditGranter CreditGranter
+	settings      SettingsReader
+	paymentSetups PaymentSetupReader
+	charger       InvoiceCharger
+	profiles      BillingProfileReader
+	customers     CustomerReader
+	taxProviders  TaxProviderResolver
+	taxCalcStore  TaxCalculationWriter
+	coupons       CouponApplier
+	clock         clock.Clock
+	testClocks    TestClockReader
+	events        domain.EventDispatcher
+	noPMNotifier  NoPaymentMethodNotifier
 }
 
 // SetCreditGranter wires the credit-grant issuer used by BillOnCancel

@@ -99,11 +99,11 @@ type EmailEventLister interface {
 // Trimmed to the fields the timeline renderer needs.
 type EmailEventRow struct {
 	EmailType    string
-	Status       string  // pending / dispatched / failed
+	Status       string // pending / dispatched / failed
 	CreatedAt    time.Time
 	DispatchedAt *time.Time
 	LastError    string
-	To           string  // resolved from payload
+	To           string // resolved from payload
 }
 
 // RefundIssuer issues a direct refund on a paid invoice. Concretely this
@@ -890,13 +890,13 @@ func (h *Handler) retryTax(w http.ResponseWriter, r *http.Request) {
 			afterReason = string(inv.Attention.Reason)
 		}
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRetryTax, "invoice", inv.ID, map[string]any{
-			"invoice_number":    inv.InvoiceNumber,
-			"customer_id":       inv.CustomerID,
-			"tax_status":        inv.TaxStatus,
-			"tax_retry_count":   inv.TaxRetryCount,
-			"before_attention":  beforeReason,
-			"after_attention":   afterReason,
-			"tax_error_code":    inv.TaxErrorCode,
+			"invoice_number":   inv.InvoiceNumber,
+			"customer_id":      inv.CustomerID,
+			"tax_status":       inv.TaxStatus,
+			"tax_retry_count":  inv.TaxRetryCount,
+			"before_attention": beforeReason,
+			"after_attention":  afterReason,
+			"tax_error_code":   inv.TaxErrorCode,
 		})
 	}
 

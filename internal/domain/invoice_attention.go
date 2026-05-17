@@ -481,12 +481,12 @@ func classifyPaymentFailure(inv Invoice) *Attention {
 	// renders the truncated form; ProviderResponse holds the full
 	// string for the disclosure.
 	return &Attention{
-		Severity:         AttentionSeverityCritical,
-		Reason:           AttentionReasonPaymentFailed,
-		Code:             "payment.declined",
-		Message:          headline,
-		DocURL:           docBaseURL + "payment-failed",
-		Actions:          []AttentionActionItem{
+		Severity: AttentionSeverityCritical,
+		Reason:   AttentionReasonPaymentFailed,
+		Code:     "payment.declined",
+		Message:  headline,
+		DocURL:   docBaseURL + "payment-failed",
+		Actions: []AttentionActionItem{
 			{Code: AttentionActionUpdatePaymentMethod, Label: "Update payment method"},
 			{Code: AttentionActionRetryPayment, Label: "Retry payment"},
 		},

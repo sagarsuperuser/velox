@@ -724,7 +724,6 @@ func setupEngine() (*Engine, *mockSubs, *mockUsage, *mockPricing, *mockInvoices)
 	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	nextBilling := periodEnd
 
-
 	subs := &mockSubs{
 		subs: map[string]domain.Subscription{
 			"sub_1": {

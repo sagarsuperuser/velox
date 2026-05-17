@@ -62,12 +62,12 @@ func TestInvoiceOrderBy_UnknownKeyFallsBackToCreatedAt(t *testing.T) {
 // fixed two-element set. Anything other than "asc" defaults to DESC.
 func TestInvoiceOrderBy_DirNormalization(t *testing.T) {
 	cases := map[string]string{
-		"asc":      "created_at ASC, id ASC",
-		"desc":     "created_at DESC, id DESC",
-		"":         "created_at DESC, id DESC",
-		"random":   "created_at DESC, id DESC",
-		"ASC":      "created_at DESC, id DESC", // case-sensitive — must be lowercase
-		"DROP --":  "created_at DESC, id DESC",
+		"asc":     "created_at ASC, id ASC",
+		"desc":    "created_at DESC, id DESC",
+		"":        "created_at DESC, id DESC",
+		"random":  "created_at DESC, id DESC",
+		"ASC":     "created_at DESC, id DESC", // case-sensitive — must be lowercase
+		"DROP --": "created_at DESC, id DESC",
 	}
 	for dir, want := range cases {
 		t.Run(dir, func(t *testing.T) {

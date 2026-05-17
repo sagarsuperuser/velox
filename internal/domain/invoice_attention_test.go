@@ -41,9 +41,9 @@ func TestClassifyInvoiceAttention_TerminalStatesReturnNil(t *testing.T) {
 
 func TestClassifyInvoiceAttention_TaxFailedSubcodes(t *testing.T) {
 	cases := []struct {
-		errorCode  string
-		wantReason AttentionReason
-		wantParam  string
+		errorCode   string
+		wantReason  AttentionReason
+		wantParam   string
 		wantPrimAct AttentionAction
 	}{
 		{"customer_data_invalid", AttentionReasonTaxLocationRequired, "customer.address.postal_code", AttentionActionEditBillingProfile},

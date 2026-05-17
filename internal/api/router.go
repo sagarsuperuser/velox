@@ -42,13 +42,13 @@ import (
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/recipe"
 	"github.com/sagarsuperuser/velox/internal/session"
-	"github.com/sagarsuperuser/velox/internal/user"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 	"github.com/sagarsuperuser/velox/internal/tax"
 	"github.com/sagarsuperuser/velox/internal/tenant"
 	"github.com/sagarsuperuser/velox/internal/tenantstripe"
 	"github.com/sagarsuperuser/velox/internal/testclock"
 	"github.com/sagarsuperuser/velox/internal/usage"
+	"github.com/sagarsuperuser/velox/internal/user"
 	"github.com/sagarsuperuser/velox/internal/webhook"
 
 	"github.com/stripe/stripe-go/v82"
@@ -444,7 +444,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		invoiceEmail       invoice.EmailSender
 		dunningEmail       dunning.EmailNotifier
 		receiptEmail       payment.EmailReceipt
-		paymentSetupEmail  paymentSetupEmailSender // finalize-no-PM trigger
+		paymentSetupEmail  paymentSetupEmailSender    // finalize-no-PM trigger
 		paymentFailedEmail payment.EmailPaymentFailed // post-decline trigger (same shape as dunning)
 		magicLinkEmail     customerportal.MagicLinkEmailSender
 		passwordResetEmail interface {
@@ -799,20 +799,20 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	)
 
 	s := &Server{
-		BillingEngine:         engine,
-		DunningSvc:            dunningSvc,
-		SettingsStore:         settingsStore,
-		WebhookOutSvc:         webhookOutSvc,
-		OutboxStore:           outboxStore,
-		OutboxEnabled:         outboxEnabled,
-		EmailOutboxStore:      emailOutboxStore,
-		EmailOutboxEnabled:    emailOutboxEnabled,
-		EmailSender:           emailSender,
-		CreditSvc:             creditSvc,
-		InvoiceSvc:            invoiceSvc,
-		TokenSvc:              tokenSvc,
-		PaymentReconciler:     paymentReconciler,
-		TestClockSvc:          testClockSvc,
+		BillingEngine:      engine,
+		DunningSvc:         dunningSvc,
+		SettingsStore:      settingsStore,
+		WebhookOutSvc:      webhookOutSvc,
+		OutboxStore:        outboxStore,
+		OutboxEnabled:      outboxEnabled,
+		EmailOutboxStore:   emailOutboxStore,
+		EmailOutboxEnabled: emailOutboxEnabled,
+		EmailSender:        emailSender,
+		CreditSvc:          creditSvc,
+		InvoiceSvc:         invoiceSvc,
+		TokenSvc:           tokenSvc,
+		PaymentReconciler:  paymentReconciler,
+		TestClockSvc:       testClockSvc,
 	}
 
 	// Redis for distributed rate limiting (fail-open if not configured)
@@ -1243,4 +1243,3 @@ func requestLogger(next http.Handler) http.Handler {
 		)
 	})
 }
-

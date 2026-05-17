@@ -64,6 +64,7 @@ type PaymentMethodReader interface {
 //   - Stripe NOT connected → operator action required.
 //   - Stripe IS now connected (just connected, scheduler hasn't
 //     ticked yet) → calculation will retry shortly; offer Retry now.
+//
 // Implemented by *payment.StripeClients via HasFor.
 type StripeChecker interface {
 	HasFor(ctx context.Context, tenantID string, livemode bool) bool
