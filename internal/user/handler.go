@@ -17,16 +17,17 @@ import (
 // Handler wires the dashboard auth endpoints. ADR-011.
 //
 // Routes (mounted under /v1/auth):
-//   POST /login                     — email + password → mint cookie
-//   POST /logout                    — clear cookie + revoke session
-//   POST /password-reset/request    — email → send reset link
-//   POST /password-reset/confirm    — token + new password → set
+//
+//	POST /login                     — email + password → mint cookie
+//	POST /logout                    — clear cookie + revoke session
+//	POST /password-reset/request    — email → send reset link
+//	POST /password-reset/confirm    — token + new password → set
 type Handler struct {
-	users           *Service
-	sessions        *session.Service
-	cookie          session.CookieConfig
-	email           EmailSender // required — production always wires the adapter
-	dashboardBaseURL string     // optional; overrides r.Host for reset links (split-origin dev)
+	users            *Service
+	sessions         *session.Service
+	cookie           session.CookieConfig
+	email            EmailSender // required — production always wires the adapter
+	dashboardBaseURL string      // optional; overrides r.Host for reset links (split-origin dev)
 }
 
 // EmailSender is the narrow surface this handler uses to dispatch
@@ -46,10 +47,10 @@ type EmailSender interface {
 // on :8080) set DASHBOARD_BASE_URL so the link points at the SPA.
 func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender, dashboardBaseURL string) *Handler {
 	return &Handler{
-		users:           users,
-		sessions:        sessions,
-		cookie:          cookie,
-		email:           emailSender,
+		users:            users,
+		sessions:         sessions,
+		cookie:           cookie,
+		email:            emailSender,
 		dashboardBaseURL: strings.TrimRight(strings.TrimSpace(dashboardBaseURL), "/"),
 	}
 }

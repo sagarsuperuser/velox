@@ -691,4 +691,3 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 	}
 	return sess.URL, nil
 }
-

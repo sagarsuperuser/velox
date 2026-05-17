@@ -66,13 +66,13 @@ func NewCostDashboardAssembler(customers CustomerTokenLookup, usageSvc *Customer
 //   - projected_total_cents (sum across currencies — Stripe-style
 //     single-number summary the widget surfaces as the headline)
 type CostDashboardProjection struct {
-	CustomerID          string                        `json:"customer_id"`
-	TenantID            string                        `json:"tenant_id"`
-	BillingPeriod       CostDashboardPeriod           `json:"billing_period"`
-	Subscriptions       []CostDashboardSubscription   `json:"subscriptions"`
-	Usage               []CostDashboardMeter          `json:"usage"`
-	Totals              []CostDashboardTotal          `json:"totals"`
-	ProjectedTotalCents int64                         `json:"projected_total_cents"`
+	CustomerID          string                      `json:"customer_id"`
+	TenantID            string                      `json:"tenant_id"`
+	BillingPeriod       CostDashboardPeriod         `json:"billing_period"`
+	Subscriptions       []CostDashboardSubscription `json:"subscriptions"`
+	Usage               []CostDashboardMeter        `json:"usage"`
+	Totals              []CostDashboardTotal        `json:"totals"`
+	ProjectedTotalCents int64                       `json:"projected_total_cents"`
 }
 
 type CostDashboardPeriod struct {
@@ -90,13 +90,13 @@ type CostDashboardSubscription struct {
 }
 
 type CostDashboardMeter struct {
-	MeterKey         string                `json:"meter_key"`
-	MeterName        string                `json:"meter_name"`
-	Unit             string                `json:"unit"`
-	Currency         string                `json:"currency"`
-	TotalQuantity    string                `json:"total_quantity"`
-	TotalAmountCents int64                 `json:"total_amount_cents"`
-	Rules            []CostDashboardRule   `json:"rules"`
+	MeterKey         string              `json:"meter_key"`
+	MeterName        string              `json:"meter_name"`
+	Unit             string              `json:"unit"`
+	Currency         string              `json:"currency"`
+	TotalQuantity    string              `json:"total_quantity"`
+	TotalAmountCents int64               `json:"total_amount_cents"`
+	Rules            []CostDashboardRule `json:"rules"`
 }
 
 type CostDashboardRule struct {
@@ -208,10 +208,7 @@ func (a *CostDashboardAssembler) GetByToken(ctx context.Context, token string) (
 	}
 
 	for _, t := range res.Totals {
-		proj.Totals = append(proj.Totals, CostDashboardTotal{
-			Currency:    t.Currency,
-			AmountCents: t.AmountCents,
-		})
+		proj.Totals = append(proj.Totals, CostDashboardTotal(t))
 		proj.ProjectedTotalCents += t.AmountCents
 	}
 
