@@ -46,6 +46,7 @@ import type {
   PostV1BillingRun200,
   PostV1CreditsGrantBody,
   PostV1CustomersBody,
+  PostV1CustomersIdRotateCostDashboardToken200,
   PostV1InvoicesCreatePreviewBody,
   PostV1MetersBody,
   PostV1PlansBody,
@@ -334,6 +335,194 @@ export function useGetV1Customers<TData = Awaited<ReturnType<typeof getV1Custome
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getGetV1CustomersQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * Mints a fresh `vlx_pcd_…` token and writes it to the customer
+row. The previous token is invalidated immediately (read-only
+public surface; no grace window). The plaintext token is the
+sole credential for `GET /v1/public/cost-dashboard/{token}`
+and is shown ONCE — Velox never returns it again after this
+response. Audit log records the rotation without the token.
+
+ * @summary Rotate the public cost-dashboard token (ADR-031)
+ */
+export const getPostV1CustomersIdRotateCostDashboardTokenUrl = (id: string,) => {
+
+
+
+
+  return `/v1/customers/${id}/rotate-cost-dashboard-token`
+}
+
+export const postV1CustomersIdRotateCostDashboardToken = async (id: string, options?: RequestInit): Promise<PostV1CustomersIdRotateCostDashboardToken200> => {
+
+  return orvalClient<PostV1CustomersIdRotateCostDashboardToken200>(getPostV1CustomersIdRotateCostDashboardTokenUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getPostV1CustomersIdRotateCostDashboardTokenMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1CustomersIdRotateCostDashboardToken>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1CustomersIdRotateCostDashboardToken>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['postV1CustomersIdRotateCostDashboardToken'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1CustomersIdRotateCostDashboardToken>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  postV1CustomersIdRotateCostDashboardToken(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1CustomersIdRotateCostDashboardTokenMutationResult = NonNullable<Awaited<ReturnType<typeof postV1CustomersIdRotateCostDashboardToken>>>
+
+    export type PostV1CustomersIdRotateCostDashboardTokenMutationError = void
+
+    /**
+ * @summary Rotate the public cost-dashboard token (ADR-031)
+ */
+export const usePostV1CustomersIdRotateCostDashboardToken = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1CustomersIdRotateCostDashboardToken>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1CustomersIdRotateCostDashboardToken>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+      return useMutation(getPostV1CustomersIdRotateCostDashboardTokenMutationOptions(options), queryClient);
+    }
+
+/**
+ * Unauthenticated. The `vlx_pcd_…` token in the URL is the sole
+credential — partners embed via iframe / fetch from their own
+app without an API key. Sanitized projection: customer_id,
+tenant_id, billing_period, subscriptions, usage[], totals,
+projected_total_cents. PII (email, display_name, external_id,
+metadata, billing_profile) is NEVER on this response. Wrong
+prefix or unknown token → 401 (anti-enumeration). No active
+sub → 200 with `billing_period.source = "no_subscription"`
+and empty arrays.
+
+ * @summary Public cost-dashboard projection (ADR-031)
+ */
+export const getGetV1PublicCostDashboardTokenUrl = (token: string,) => {
+
+
+
+
+  return `/v1/public/cost-dashboard/${token}`
+}
+
+export const getV1PublicCostDashboardToken = async (token: string, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getGetV1PublicCostDashboardTokenUrl(token),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1PublicCostDashboardTokenQueryKey = (token: string,) => {
+    return [
+    `/v1/public/cost-dashboard/${token}`
+    ] as const;
+    }
+
+
+export const getGetV1PublicCostDashboardTokenQueryOptions = <TData = Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError = void>(token: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1PublicCostDashboardTokenQueryKey(token);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>> = () => getV1PublicCostDashboardToken(token, requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(token), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1PublicCostDashboardTokenQueryResult = NonNullable<Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>>
+export type GetV1PublicCostDashboardTokenQueryError = void
+
+
+export function useGetV1PublicCostDashboardToken<TData = Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError = void>(
+ token: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>,
+          TError,
+          Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1PublicCostDashboardToken<TData = Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError = void>(
+ token: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>,
+          TError,
+          Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1PublicCostDashboardToken<TData = Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError = void>(
+ token: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Public cost-dashboard projection (ADR-031)
+ */
+
+export function useGetV1PublicCostDashboardToken<TData = Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError = void>(
+ token: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1PublicCostDashboardTokenQueryOptions(token,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
