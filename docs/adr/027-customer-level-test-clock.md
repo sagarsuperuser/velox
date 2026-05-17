@@ -1,7 +1,7 @@
 # ADR-027: Test clocks attach at the customer level (Stripe parity)
 
-**Status**: Accepted
-**Date**: 2026-05-05
+**Status:** Accepted
+**Date:** 2026-05-05
 
 ## Context
 

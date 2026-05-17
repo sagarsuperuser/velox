@@ -1,7 +1,7 @@
 # ADR-029: Fully disjoint test-clock flows across every time-aware engine path
 
-**Status**: Accepted
-**Date**: 2026-05-08
+**Status:** Accepted
+**Date:** 2026-05-08
 **Implemented**: 2026-05-08 (single session, six phases)
 **Supersedes**: amends ADR-028 (deferred-decoupling section — now resolved)
 

@@ -1,5 +1,8 @@
 # ADR-003: PostgreSQL Row-Level Security for Multi-Tenancy
 
+**Date:** 2026-04-15
+**Status:** Accepted
+
 ## Status
 Accepted
 

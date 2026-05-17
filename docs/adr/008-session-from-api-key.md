@@ -1,5 +1,8 @@
 # ADR-008: Dashboard Session Cookies Minted From API Keys
 
+**Date:** 2026-04-29
+**Status:** Superseded by ADR-011 (session-from-API-key mechanism replaced by email/password sessions)
+
 ## Status
 Superseded by [ADR-011](./011-email-password-auth-and-clean-api-keys.md) — the httpOnly cookie shape and `internal/session` package are kept, but sessions now bind to `users.id` (not `api_keys.id`) and are minted by `POST /v1/auth/login` after email + password verification. The XSS-mitigation rationale below still holds; only the credential at the front of the funnel changed.
 

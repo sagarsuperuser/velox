@@ -1,7 +1,7 @@
 # ADR-032: Public cost-dashboard projection — token shape + sanitization contract
 
-**Status**: Accepted
-**Date**: 2026-05-14
+**Status:** Accepted
+**Date:** 2026-05-14
 **Related**: ADR-021 (hosted-invoice public token shape), ADR-031 (per-plan bill_timing)
 
 ## Context

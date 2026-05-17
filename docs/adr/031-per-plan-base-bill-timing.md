@@ -1,7 +1,7 @@
 # ADR-031: Per-plan base bill_timing (in_advance vs in_arrears)
 
-**Status**: Accepted
-**Date**: 2026-05-14
+**Status:** Accepted
+**Date:** 2026-05-14
 **Related**: ADR-028 (period loop), `project_billing_timing_model.md`, `feedback_stripe_parity_framing.md`
 
 ## Context

@@ -1,5 +1,8 @@
 # ADR-002: Per-Domain Package Architecture
 
+**Date:** 2026-04-15
+**Status:** Accepted
+
 ## Status
 Accepted
 

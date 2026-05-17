@@ -1,5 +1,8 @@
 # ADR-006: Background Scheduler vs. Message Queue
 
+**Date:** 2026-04-15
+**Status:** Accepted
+
 ## Status
 Accepted
 

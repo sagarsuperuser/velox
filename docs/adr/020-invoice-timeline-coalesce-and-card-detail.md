@@ -1,7 +1,7 @@
 # ADR-020: Invoice timeline coalesces redundant rows and surfaces the charged card
 
-**Status**: Accepted
-**Date**: 2026-05-04
+**Status:** Accepted
+**Date:** 2026-05-04
 
 ## Context
 

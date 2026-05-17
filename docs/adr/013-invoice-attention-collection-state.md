@@ -1,5 +1,8 @@
 # ADR-013: Invoice Attention — Honest Collection-State Surface
 
+**Date:** 2026-05-01
+**Status:** Accepted
+
 ## Status
 Accepted
 

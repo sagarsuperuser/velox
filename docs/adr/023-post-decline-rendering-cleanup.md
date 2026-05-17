@@ -1,7 +1,7 @@
 # ADR-023: Post-decline rendering — one banner, distinct emails, interactive suppression
 
-**Status**: Accepted
-**Date**: 2026-05-05
+**Status:** Accepted
+**Date:** 2026-05-05
 
 ## Context
 

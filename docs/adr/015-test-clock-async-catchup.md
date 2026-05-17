@@ -1,7 +1,7 @@
 # ADR-015: Test-clock advance runs catchup asynchronously
 
-**Status**: Accepted
-**Date**: 2026-05-04
+**Status:** Accepted
+**Date:** 2026-05-04
 
 ## Context
 

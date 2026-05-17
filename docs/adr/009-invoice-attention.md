@@ -1,5 +1,8 @@
 # ADR-009: Unified Invoice Attention Surface
 
+**Date:** 2026-04-30
+**Status:** Accepted
+
 ## Status
 Accepted
 

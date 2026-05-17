@@ -1,5 +1,8 @@
 # ADR-014: SSO Direction — Embedded OIDC/SAML, No SaaS Auth Vendor
 
+**Date:** 2026-05-02
+**Status:** Accepted
+
 ## Status
 Accepted
 

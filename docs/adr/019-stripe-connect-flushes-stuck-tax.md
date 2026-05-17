@@ -1,7 +1,7 @@
 # ADR-019: Stripe re-connect flushes stuck tax invoices
 
-**Status**: Accepted
-**Date**: 2026-05-04
+**Status:** Accepted
+**Date:** 2026-05-04
 
 ## Context
 
