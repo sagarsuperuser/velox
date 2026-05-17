@@ -9,12 +9,15 @@ import (
 // they live in row data; adding new types is append-only.
 //
 // payment_setup_request: customer needs to set up a payment method on a
-//   finalized invoice (no PM on file at finalize). Distinct from
-//   payment_failed which means a charge attempt actually went to Stripe
-//   and was declined.
+//
+//	finalized invoice (no PM on file at finalize). Distinct from
+//	payment_failed which means a charge attempt actually went to Stripe
+//	and was declined.
+//
 // payment_failed: a Stripe charge attempt failed (decline, insufficient
-//   funds, etc.). Used for both immediate post-decline notifications
-//   AND dunning retry escalations.
+//
+//	funds, etc.). Used for both immediate post-decline notifications
+//	AND dunning retry escalations.
 const (
 	TypeInvoice             = "invoice"
 	TypePaymentReceipt      = "payment_receipt"
@@ -33,16 +36,16 @@ const (
 // serialisation ceremony — the dispatcher reads the type tag and knows which
 // fields are meaningful.
 type outboxMessage struct {
-	To               string `json:"to"`
-	CustomerName     string `json:"customer_name,omitempty"`
-	InvoiceNumber    string `json:"invoice_number,omitempty"`
-	AmountCents      int64  `json:"amount_cents,omitempty"`
-	Currency         string `json:"currency,omitempty"`
-	AttemptNumber    int    `json:"attempt_number,omitempty"`
-	MaxAttempts      int    `json:"max_attempts,omitempty"`
-	NextRetryDate    string `json:"next_retry_date,omitempty"`
-	Action           string `json:"action,omitempty"`
-	Reason           string `json:"reason,omitempty"`
+	To            string `json:"to"`
+	CustomerName  string `json:"customer_name,omitempty"`
+	InvoiceNumber string `json:"invoice_number,omitempty"`
+	AmountCents   int64  `json:"amount_cents,omitempty"`
+	Currency      string `json:"currency,omitempty"`
+	AttemptNumber int    `json:"attempt_number,omitempty"`
+	MaxAttempts   int    `json:"max_attempts,omitempty"`
+	NextRetryDate string `json:"next_retry_date,omitempty"`
+	Action        string `json:"action,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 	// FailureReason carries the latest decline-or-error message for
 	// dunning_warning + payment_failed templates. Surfaced inline so
 	// the customer can act (insufficient_funds → top up; lost_card →

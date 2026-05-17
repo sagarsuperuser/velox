@@ -40,29 +40,29 @@ var stripeDeclineHumanMessage = map[string]string{
 	"withdrawal_count_limit_exceeded": "The card's withdrawal limit was reached.",
 
 	// Card status.
-	"lost_card":        "The card has been reported lost. The customer should contact their bank.",
-	"stolen_card":      "The card has been reported stolen. The customer should contact their bank.",
-	"pickup_card":      "The card cannot be used. The customer should contact their bank.",
-	"restricted_card":  "The card has restrictions and cannot be used for this purchase.",
-	"fraudulent":       "The card was declined as fraudulent.",
+	"lost_card":       "The card has been reported lost. The customer should contact their bank.",
+	"stolen_card":     "The card has been reported stolen. The customer should contact their bank.",
+	"pickup_card":     "The card cannot be used. The customer should contact their bank.",
+	"restricted_card": "The card has restrictions and cannot be used for this purchase.",
+	"fraudulent":      "The card was declined as fraudulent.",
 
 	// Service / processing.
-	"processing_error":      "An error occurred processing the card. Please retry.",
-	"try_again_later":       "The issuer asked us to try again later. Please retry shortly.",
-	"reenter_transaction":   "The transaction needs to be re-attempted. Please retry.",
-	"issuer_not_available":  "The card issuer couldn't be reached. Please retry shortly.",
+	"processing_error":        "An error occurred processing the card. Please retry.",
+	"try_again_later":         "The issuer asked us to try again later. Please retry shortly.",
+	"reenter_transaction":     "The transaction needs to be re-attempted. Please retry.",
+	"issuer_not_available":    "The card issuer couldn't be reached. Please retry shortly.",
 	"transaction_not_allowed": "The card cannot be used for this transaction.",
-	"service_not_allowed":   "The card cannot be used for this service.",
-	"not_permitted":         "The card cannot be used for this transaction.",
-	"currency_not_supported": "The card doesn't support this currency.",
-	"card_not_supported":    "The card type isn't supported for this transaction.",
+	"service_not_allowed":     "The card cannot be used for this service.",
+	"not_permitted":           "The card cannot be used for this transaction.",
+	"currency_not_supported":  "The card doesn't support this currency.",
+	"card_not_supported":      "The card type isn't supported for this transaction.",
 
 	// Authentication / PIN.
-	"incorrect_pin":                "The PIN is incorrect.",
-	"invalid_pin":                  "The PIN is invalid.",
-	"pin_try_exceeded":             "The card's PIN-attempt limit was reached.",
+	"incorrect_pin":                  "The PIN is incorrect.",
+	"invalid_pin":                    "The PIN is invalid.",
+	"pin_try_exceeded":               "The card's PIN-attempt limit was reached.",
 	"online_or_offline_pin_required": "The card requires PIN entry.",
-	"offline_pin_required":         "The card requires PIN entry.",
+	"offline_pin_required":           "The card requires PIN entry.",
 
 	// Test mode.
 	"testmode_decline": "Test card declined as expected.",

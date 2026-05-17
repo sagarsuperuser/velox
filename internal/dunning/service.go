@@ -92,18 +92,18 @@ type CustomerPolicyReader interface {
 }
 
 type Service struct {
-	store              Store
-	retrier            PaymentRetrier
-	subPauser          SubscriptionPauser
-	subCanceler        SubscriptionCanceler
-	invoiceUncollect   InvoiceUncollectibleMarker
-	invoiceGet         InvoiceGetter
-	events             domain.EventDispatcher
-	emailNotifier      EmailNotifier
-	customerEmail      CustomerEmailFetcher
-	custPolicy         CustomerPolicyReader
-	resolver           clock.Resolver
-	clock              clock.Clock
+	store            Store
+	retrier          PaymentRetrier
+	subPauser        SubscriptionPauser
+	subCanceler      SubscriptionCanceler
+	invoiceUncollect InvoiceUncollectibleMarker
+	invoiceGet       InvoiceGetter
+	events           domain.EventDispatcher
+	emailNotifier    EmailNotifier
+	customerEmail    CustomerEmailFetcher
+	custPolicy       CustomerPolicyReader
+	resolver         clock.Resolver
+	clock            clock.Clock
 }
 
 // SetResolver wires the unified clock.Resolver. Once bound on ctx via
@@ -146,9 +146,9 @@ func (s *Service) SetCustomerPolicyReader(r CustomerPolicyReader) {
 
 // GetEffectivePolicyForCustomer returns the policy that governs this
 // customer's next dunning run. Resolution order (ADR-036):
-//   1. If the customer has an explicit dunning_policy_id, load that
-//      policy by id.
-//   2. Otherwise, the tenant's is_default=true policy.
+//  1. If the customer has an explicit dunning_policy_id, load that
+//     policy by id.
+//  2. Otherwise, the tenant's is_default=true policy.
 //
 // Lookup failures on step 1 (e.g. the assigned policy was deleted
 // underneath the customer's pointer; the FK ON DELETE SET NULL safety

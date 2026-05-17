@@ -399,13 +399,13 @@ func TestProcessDueRunsForClock_LoopsUntilExhausted(t *testing.T) {
 	// (5d); escalated co-instant with retry #3 (the retry that
 	// triggered the exhaustion).
 	wantTimestamps := map[domain.DunningEventType]time.Time{
-		domain.DunningEventStarted:        cycleClose,                                            // May 1
-		domain.DunningEventEscalated:      cycleClose.Add(72*time.Hour + 72*time.Hour + 120*time.Hour), // May 12
+		domain.DunningEventStarted:   cycleClose,                                                  // May 1
+		domain.DunningEventEscalated: cycleClose.Add(72*time.Hour + 72*time.Hour + 120*time.Hour), // May 12
 	}
 	wantRetryTimestamps := []time.Time{
-		cycleClose.Add(72 * time.Hour),                                  // retry #1: May 4
-		cycleClose.Add(72*time.Hour + 72*time.Hour),                     // retry #2: May 7
-		cycleClose.Add(72*time.Hour + 72*time.Hour + 120*time.Hour),     // retry #3: May 12
+		cycleClose.Add(72 * time.Hour),                              // retry #1: May 4
+		cycleClose.Add(72*time.Hour + 72*time.Hour),                 // retry #2: May 7
+		cycleClose.Add(72*time.Hour + 72*time.Hour + 120*time.Hour), // retry #3: May 12
 	}
 	retryIdx := 0
 	for _, e := range store.events {

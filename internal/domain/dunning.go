@@ -10,21 +10,21 @@ import "time"
 //
 // Semantics:
 //   - ManualReview       — run lands at state=escalated, no sub/invoice
-//                          mutation; operator handles. Maps to Stripe
-//                          "Keep active" and Lago default.
+//     mutation; operator handles. Maps to Stripe
+//     "Keep active" and Lago default.
 //   - Pause              — calls subscription.SetPauseCollection
-//                          (behavior=keep_as_draft). Cycle keeps drafting
-//                          invoices; no charging / dunning until resumed.
-//                          Matches Stripe's pause_collection (NOT the
-//                          hard PauseAtomic — that was the pre-amendment
-//                          implementation, replaced for Stripe-parity).
+//     (behavior=keep_as_draft). Cycle keeps drafting
+//     invoices; no charging / dunning until resumed.
+//     Matches Stripe's pause_collection (NOT the
+//     hard PauseAtomic — that was the pre-amendment
+//     implementation, replaced for Stripe-parity).
 //   - MarkUncollectible  — marks the unpaid invoice as uncollectible
-//                          (industry-standard term for "we won't try
-//                          again; close out the receivable"). Replaces
-//                          the pre-amendment "write_off_later" naming.
+//     (industry-standard term for "we won't try
+//     again; close out the receivable"). Replaces
+//     the pre-amendment "write_off_later" naming.
 //   - CancelSubscription — cancels the subscription. Stripe-default
-//                          terminal action; supported by 3 of 4
-//                          reference platforms.
+//     terminal action; supported by 3 of 4
+//     reference platforms.
 type DunningFinalAction string
 
 const (
@@ -106,9 +106,9 @@ type InvoiceDunningRun struct {
 	// /dunning page rendering invoice number / amount due / currency
 	// per row). Populated by the LEFT JOIN in ListRuns; empty/zero
 	// when the joined invoice can't be resolved (deleted, RLS gap).
-	InvoiceNumber       string `json:"invoice_number,omitempty"`
-	InvoiceAmountDue    int64  `json:"invoice_amount_due_cents,omitempty"`
-	InvoiceCurrency     string `json:"invoice_currency,omitempty"`
+	InvoiceNumber    string `json:"invoice_number,omitempty"`
+	InvoiceAmountDue int64  `json:"invoice_amount_due_cents,omitempty"`
+	InvoiceCurrency  string `json:"invoice_currency,omitempty"`
 
 	// EffectiveNow is the owning sub's test-clock frozen_time when
 	// the run is on a clock-pinned sub. Frontend uses this as the

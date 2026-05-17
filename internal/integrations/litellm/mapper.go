@@ -136,10 +136,10 @@ type ExternalIngest struct {
 // by metadata in the audit dashboard.
 func buildEventMetadata(p StandardLoggingPayload, half string) map[string]any {
 	out := map[string]any{
-		"velox.source":         "litellm",
-		"velox.litellm_id":     p.ID,
-		"velox.call_type":      p.CallType,
-		"velox.token_half":     half, // "input" | "output"
+		"velox.source":     "litellm",
+		"velox.litellm_id": p.ID,
+		"velox.call_type":  p.CallType,
+		"velox.token_half": half, // "input" | "output"
 	}
 	if p.ResponseCost > 0 {
 		out["velox.litellm_response_cost_usd"] = p.ResponseCost

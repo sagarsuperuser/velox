@@ -130,9 +130,9 @@ type ReminderLister interface {
 // the queue is nil (narrow unit tests), Advance runs catchup
 // inline so tests can assert end-state synchronously.
 type Service struct {
-	store     Store
-	billing   BillingRunner
-	queue     CatchupQueue
+	store         Store
+	billing       BillingRunner
+	queue         CatchupQueue
 	customers     CustomerReader
 	taxRetry      TaxRetrier
 	creditExpirer CreditExpirer

@@ -9,14 +9,14 @@ import "testing"
 // and shouldn't drift accidentally.
 func TestDeclineCodeToOperatorMessage_CuratedCodes(t *testing.T) {
 	cases := map[string]string{
-		"insufficient_funds":   "Insufficient funds.",
-		"expired_card":         "The card has expired.",
-		"do_not_honor":         "The card was declined by the issuer.",
-		"lost_card":            "The card has been reported lost. The customer should contact their bank.",
-		"stolen_card":          "The card has been reported stolen. The customer should contact their bank.",
-		"incorrect_cvc":        "The security code is incorrect.",
-		"card_declined":        "The card was declined by the issuer.",
-		"testmode_decline":     "Test card declined as expected.",
+		"insufficient_funds": "Insufficient funds.",
+		"expired_card":       "The card has expired.",
+		"do_not_honor":       "The card was declined by the issuer.",
+		"lost_card":          "The card has been reported lost. The customer should contact their bank.",
+		"stolen_card":        "The card has been reported stolen. The customer should contact their bank.",
+		"incorrect_cvc":      "The security code is incorrect.",
+		"card_declined":      "The card was declined by the issuer.",
+		"testmode_decline":   "Test card declined as expected.",
 	}
 	for code, want := range cases {
 		t.Run(code, func(t *testing.T) {

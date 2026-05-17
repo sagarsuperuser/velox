@@ -881,4 +881,3 @@ func (s *Service) SetBillingThresholds(ctx context.Context, tenantID, id string,
 func (s *Service) ClearBillingThresholds(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
 	return s.store.ClearBillingThresholds(ctx, tenantID, id)
 }
-

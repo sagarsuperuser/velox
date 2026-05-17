@@ -338,23 +338,23 @@ func TestEmailOutbox_Counts(t *testing.T) {
 // fakeDeliverer satisfies email.EmailDeliverer — captures the last call so
 // tests can assert which Send* method was invoked with which arguments.
 type fakeDeliverer struct {
-	calls           int
-	lastType        string
-	lastTenant      string
-	lastTo          string
-	lastName        string
-	lastInvoice     string
-	lastAmount      int64
-	lastCurrency    string
-	lastAttemptN    int
-	lastMaxN        int
+	calls             int
+	lastType          string
+	lastTenant        string
+	lastTo            string
+	lastName          string
+	lastInvoice       string
+	lastAmount        int64
+	lastCurrency      string
+	lastAttemptN      int
+	lastMaxN          int
 	lastNextDate      string
 	lastFailureReason string
-	lastAction      string
-	lastReason      string
-	lastUpdateURL   string
-	lastPDF         []byte
-	lastPublicToken string
+	lastAction        string
+	lastReason        string
+	lastUpdateURL     string
+	lastPDF           []byte
+	lastPublicToken   string
 }
 
 func (f *fakeDeliverer) SendInvoice(_ context.Context, tenantID, to, name, inv string, total int64, cur string, pdf []byte, publicToken string) error {
