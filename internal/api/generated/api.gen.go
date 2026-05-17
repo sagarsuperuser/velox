@@ -327,6 +327,24 @@ func (e MeterAggregation) Valid() bool {
 	}
 }
 
+// Defines values for PlanBaseBillTiming.
+const (
+	PlanBaseBillTimingInAdvance PlanBaseBillTiming = "in_advance"
+	PlanBaseBillTimingInArrears PlanBaseBillTiming = "in_arrears"
+)
+
+// Valid indicates whether the value is a known member of the PlanBaseBillTiming enum.
+func (e PlanBaseBillTiming) Valid() bool {
+	switch e {
+	case PlanBaseBillTimingInAdvance:
+		return true
+	case PlanBaseBillTimingInArrears:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PlanBillingInterval.
 const (
 	PlanBillingIntervalMonthly PlanBillingInterval = "monthly"
@@ -471,6 +489,24 @@ func (e PostV1MetersJSONBodyAggregation) Valid() bool {
 	case PostV1MetersJSONBodyAggregationMax:
 		return true
 	case PostV1MetersJSONBodyAggregationSum:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PostV1PlansJSONBodyBaseBillTiming.
+const (
+	PostV1PlansJSONBodyBaseBillTimingInAdvance PostV1PlansJSONBodyBaseBillTiming = "in_advance"
+	PostV1PlansJSONBodyBaseBillTimingInArrears PostV1PlansJSONBodyBaseBillTiming = "in_arrears"
+)
+
+// Valid indicates whether the value is a known member of the PostV1PlansJSONBodyBaseBillTiming enum.
+func (e PostV1PlansJSONBodyBaseBillTiming) Valid() bool {
+	switch e {
+	case PostV1PlansJSONBodyBaseBillTimingInAdvance:
+		return true
+	case PostV1PlansJSONBodyBaseBillTimingInArrears:
 		return true
 	default:
 		return false
@@ -862,7 +898,14 @@ type MeterAggregation string
 
 // Plan defines model for Plan.
 type Plan struct {
-	BaseAmountCents int64               `json:"base_amount_cents,omitempty"`
+	BaseAmountCents int64 `json:"base_amount_cents,omitempty"`
+
+	// BaseBillTiming When the recurring base fee is invoiced relative to the period it covers.
+	// in_arrears (default): base + usage billed at period end.
+	// in_advance: base billed at period start (day 1 on create; cycle-close invoice
+	// carries upcoming period's base + elapsed period's usage). Usage lines are
+	// always arrears regardless of this flag. See ADR-031.
+	BaseBillTiming  PlanBaseBillTiming  `json:"base_bill_timing,omitempty"`
 	BillingInterval PlanBillingInterval `json:"billing_interval,omitempty"`
 	Code            string              `json:"code,omitempty"`
 	Currency        string              `json:"currency,omitempty"`
@@ -871,6 +914,13 @@ type Plan struct {
 	Name            string              `json:"name,omitempty"`
 	Status          PlanStatus          `json:"status,omitempty"`
 }
+
+// PlanBaseBillTiming When the recurring base fee is invoiced relative to the period it covers.
+// in_arrears (default): base + usage billed at period end.
+// in_advance: base billed at period start (day 1 on create; cycle-close invoice
+// carries upcoming period's base + elapsed period's usage). Usage lines are
+// always arrears regardless of this flag. See ADR-031.
+type PlanBaseBillTiming string
 
 // PlanBillingInterval defines model for Plan.BillingInterval.
 type PlanBillingInterval string
@@ -1014,13 +1064,20 @@ type PostV1MetersJSONBodyAggregation string
 
 // PostV1PlansJSONBody defines parameters for PostV1Plans.
 type PostV1PlansJSONBody struct {
-	BaseAmountCents int                                `json:"base_amount_cents,omitempty"`
+	BaseAmountCents int `json:"base_amount_cents,omitempty"`
+
+	// BaseBillTiming Optional. Defaults to in_arrears. See Plan.base_bill_timing
+	// for semantics (ADR-031).
+	BaseBillTiming  PostV1PlansJSONBodyBaseBillTiming  `json:"base_bill_timing,omitempty"`
 	BillingInterval PostV1PlansJSONBodyBillingInterval `json:"billing_interval"`
 	Code            string                             `json:"code"`
 	Currency        string                             `json:"currency"`
 	MeterIds        []string                           `json:"meter_ids,omitempty"`
 	Name            string                             `json:"name"`
 }
+
+// PostV1PlansJSONBodyBaseBillTiming defines parameters for PostV1Plans.
+type PostV1PlansJSONBodyBaseBillTiming string
 
 // PostV1PlansJSONBodyBillingInterval defines parameters for PostV1Plans.
 type PostV1PlansJSONBodyBillingInterval string
@@ -1181,6 +1238,9 @@ type ServerInterface interface {
 	// Create customer
 	// (POST /v1/customers)
 	PostV1Customers(w http.ResponseWriter, r *http.Request)
+	// Rotate the public cost-dashboard token (ADR-031)
+	// (POST /v1/customers/{id}/rotate-cost-dashboard-token)
+	PostV1CustomersIdRotateCostDashboardToken(w http.ResponseWriter, r *http.Request, id string)
 	// Get dunning policy
 	// (GET /v1/dunning/policy)
 	GetV1DunningPolicy(w http.ResponseWriter, r *http.Request)
@@ -1220,6 +1280,9 @@ type ServerInterface interface {
 	// Create plan
 	// (POST /v1/plans)
 	PostV1Plans(w http.ResponseWriter, r *http.Request)
+	// Public cost-dashboard projection (ADR-031)
+	// (GET /v1/public/cost-dashboard/{token})
+	GetV1PublicCostDashboardToken(w http.ResponseWriter, r *http.Request, token string)
 	// List rating rules
 	// (GET /v1/rating-rules)
 	GetV1RatingRules(w http.ResponseWriter, r *http.Request)
@@ -1349,6 +1412,12 @@ func (_ Unimplemented) PostV1Customers(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Rotate the public cost-dashboard token (ADR-031)
+// (POST /v1/customers/{id}/rotate-cost-dashboard-token)
+func (_ Unimplemented) PostV1CustomersIdRotateCostDashboardToken(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Get dunning policy
 // (GET /v1/dunning/policy)
 func (_ Unimplemented) GetV1DunningPolicy(w http.ResponseWriter, r *http.Request) {
@@ -1424,6 +1493,12 @@ func (_ Unimplemented) GetV1Plans(w http.ResponseWriter, r *http.Request) {
 // Create plan
 // (POST /v1/plans)
 func (_ Unimplemented) PostV1Plans(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Public cost-dashboard projection (ADR-031)
+// (GET /v1/public/cost-dashboard/{token})
+func (_ Unimplemented) GetV1PublicCostDashboardToken(w http.ResponseWriter, r *http.Request, token string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1823,6 +1898,37 @@ func (siw *ServerInterfaceWrapper) PostV1Customers(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// PostV1CustomersIdRotateCostDashboardToken operation middleware
+func (siw *ServerInterfaceWrapper) PostV1CustomersIdRotateCostDashboardToken(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1CustomersIdRotateCostDashboardToken(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetV1DunningPolicy operation middleware
 func (siw *ServerInterfaceWrapper) GetV1DunningPolicy(w http.ResponseWriter, r *http.Request) {
 
@@ -2112,6 +2218,37 @@ func (siw *ServerInterfaceWrapper) PostV1Plans(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostV1Plans(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetV1PublicCostDashboardToken operation middleware
+func (siw *ServerInterfaceWrapper) GetV1PublicCostDashboardToken(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "token" -------------
+	var token string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "token", chi.URLParam(r, "token"), &token, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "token", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1PublicCostDashboardToken(w, r, token)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2671,6 +2808,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/customers", wrapper.PostV1Customers)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/customers/{id}/rotate-cost-dashboard-token", wrapper.PostV1CustomersIdRotateCostDashboardToken)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/dunning/policy", wrapper.GetV1DunningPolicy)
 	})
 	r.Group(func(r chi.Router) {
@@ -2708,6 +2848,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/plans", wrapper.PostV1Plans)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/public/cost-dashboard/{token}", wrapper.GetV1PublicCostDashboardToken)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/rating-rules", wrapper.GetV1RatingRules)

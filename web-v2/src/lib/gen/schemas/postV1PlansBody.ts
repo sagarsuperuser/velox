@@ -7,6 +7,7 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
 
  * OpenAPI spec version: 2026-04-07
  */
+import type { PostV1PlansBodyBaseBillTiming } from './postV1PlansBodyBaseBillTiming';
 import type { PostV1PlansBodyBillingInterval } from './postV1PlansBodyBillingInterval';
 
 export type PostV1PlansBody = {
@@ -15,5 +16,9 @@ export type PostV1PlansBody = {
   currency: string;
   billing_interval: PostV1PlansBodyBillingInterval;
   base_amount_cents?: number;
+  /** Optional. Defaults to in_arrears. See Plan.base_bill_timing
+  for semantics (ADR-031).
+   */
+  base_bill_timing?: PostV1PlansBodyBaseBillTiming;
   meter_ids?: string[];
 };

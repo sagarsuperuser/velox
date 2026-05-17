@@ -111,6 +111,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/customers/{id}/rotate-cost-dashboard-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate the public cost-dashboard token (ADR-031)
+         * @description Mints a fresh `vlx_pcd_…` token and writes it to the customer
+         *     row. The previous token is invalidated immediately (read-only
+         *     public surface; no grace window). The plaintext token is the
+         *     sole credential for `GET /v1/public/cost-dashboard/{token}`
+         *     and is shown ONCE — Velox never returns it again after this
+         *     response. Audit log records the rotation without the token.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Rotated */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @example vlx_pcd_a3f9c4... */
+                            token: string;
+                            /** @example https://api.velox.dev/v1/public/cost-dashboard/vlx_pcd_a3f9c4... */
+                            public_url: string;
+                        };
+                    };
+                };
+                /** @description Customer not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/public/cost-dashboard/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Public cost-dashboard projection (ADR-031)
+         * @description Unauthenticated. The `vlx_pcd_…` token in the URL is the sole
+         *     credential — partners embed via iframe / fetch from their own
+         *     app without an API key. Sanitized projection: customer_id,
+         *     tenant_id, billing_period, subscriptions, usage[], totals,
+         *     projected_total_cents. PII (email, display_name, external_id,
+         *     metadata, billing_profile) is NEVER on this response. Wrong
+         *     prefix or unknown token → 401 (anti-enumeration). No active
+         *     sub → 200 with `billing_period.source = "no_subscription"`
+         *     and empty arrays.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    token: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Projection */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Invalid token */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Rate limited (60/min/IP) */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/meters": {
         parameters: {
             query?: never;
@@ -222,6 +341,12 @@ export interface paths {
                         /** @enum {string} */
                         billing_interval: "monthly" | "yearly";
                         base_amount_cents?: number;
+                        /**
+                         * @description Optional. Defaults to in_arrears. See Plan.base_bill_timing
+                         *     for semantics (ADR-031).
+                         * @enum {string}
+                         */
+                        base_bill_timing?: "in_advance" | "in_arrears";
                         meter_ids?: string[];
                     };
                 };
@@ -1800,6 +1925,15 @@ export interface components {
             status?: "draft" | "active" | "archived";
             /** Format: int64 */
             base_amount_cents?: number;
+            /**
+             * @description When the recurring base fee is invoiced relative to the period it covers.
+             *     in_arrears (default): base + usage billed at period end.
+             *     in_advance: base billed at period start (day 1 on create; cycle-close invoice
+             *     carries upcoming period's base + elapsed period's usage). Usage lines are
+             *     always arrears regardless of this flag. See ADR-031.
+             * @enum {string}
+             */
+            base_bill_timing?: "in_advance" | "in_arrears";
             meter_ids?: string[];
         };
         RatingRule: {
