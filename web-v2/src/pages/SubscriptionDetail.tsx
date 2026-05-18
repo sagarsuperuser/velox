@@ -66,10 +66,6 @@ export default function SubscriptionDetailPage() {
   // doesn't escalate. Operator picks "immediately" deliberately.
   const [cancelMode, setCancelMode] = useState<'period_end' | 'immediately'>('period_end')
   const [showPauseConfirm, setShowPauseConfirm] = useState(false)
-  const [showPauseChoice, setShowPauseChoice] = useState(false)
-  // Same default-safer principle: collection-pause keeps cycle state intact;
-  // hard-pause halts metering entirely.
-  const [pauseMode, setPauseMode] = useState<'collection' | 'hard'>('collection')
   const [showExtendTrial, setShowExtendTrial] = useState(false)
   const [extendTrialDate, setExtendTrialDate] = useState('')
   const [itemDialog, setItemDialog] = useState<ItemDialogState>(null)
@@ -154,12 +150,6 @@ export default function SubscriptionDetailPage() {
     onError: (err) => showApiError(err, 'Failed to activate'),
   })
 
-  const pauseMutation = useMutation({
-    mutationFn: () => api.pauseSubscription(id!),
-    onSuccess: () => { invalidateAll(); toast.success('Subscription paused'); setShowPauseConfirm(false) },
-    onError: (err) => showApiError(err, 'Failed to pause'),
-  })
-
   const resumeMutation = useMutation({
     mutationFn: () => api.resumeSubscription(id!),
     onSuccess: () => { invalidateAll(); toast.success('Subscription resumed') },
@@ -186,7 +176,7 @@ export default function SubscriptionDetailPage() {
 
   const pauseCollectionMutation = useMutation({
     mutationFn: () => api.pauseSubscriptionCollection(id!, { behavior: 'keep_as_draft' }),
-    onSuccess: () => { invalidateAll(); toast.success('Collection paused — invoices will draft only'); setShowPauseChoice(false) },
+    onSuccess: () => { invalidateAll(); toast.success('Collection paused — invoices will draft only'); setShowPauseConfirm(false) },
     onError: (err) => showApiError(err, 'Failed to pause collection'),
   })
 
@@ -221,7 +211,6 @@ export default function SubscriptionDetailPage() {
 
   const acting =
     activateMutation.isPending ||
-    pauseMutation.isPending ||
     resumeMutation.isPending ||
     cancelMutation.isPending ||
     scheduleCancelMutation.isPending ||
@@ -301,7 +290,7 @@ export default function SubscriptionDetailPage() {
           )}
           {sub.status === 'active' && (
             <>
-              <Button variant="outline" className="border-amber-300 text-amber-600 hover:bg-amber-50" onClick={() => setShowPauseChoice(true)} disabled={acting}>
+              <Button variant="outline" className="border-amber-300 text-amber-600 hover:bg-amber-50" onClick={() => setShowPauseConfirm(true)} disabled={acting}>
                 Pause
               </Button>
               <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelChoice(true)} disabled={acting}>
@@ -948,19 +937,23 @@ export default function SubscriptionDetailPage() {
         </Card>
       )}
 
-      {/* Pause Confirm */}
+      {/* Pause collection confirm (Stripe-style soft pause). Cycle keeps
+          drafting invoices on schedule; new invoices land at status=draft
+          with payment_status=collection_paused and skip auto-charge until
+          collection is resumed. Operators can still see what billing
+          would have happened. */}
       <AlertDialog open={showPauseConfirm} onOpenChange={setShowPauseConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Pause Subscription</AlertDialogTitle>
+            <AlertDialogTitle>Pause collection</AlertDialogTitle>
             <AlertDialogDescription>
-              Pausing will stop billing for this subscription. Usage will not be metered while paused. You can resume at any time.
+              Future invoices on this subscription will be created as drafts and skip auto-charge until collection is resumed. The billing cycle keeps running so you can still see what was owed across the pause.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => pauseMutation.mutate()} disabled={pauseMutation.isPending}>
-              Pause Subscription
+            <AlertDialogCancel>Keep active</AlertDialogCancel>
+            <AlertDialogAction onClick={() => pauseCollectionMutation.mutate()} disabled={pauseCollectionMutation.isPending}>
+              Pause collection
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1033,56 +1026,6 @@ export default function SubscriptionDetailPage() {
               }}
             >
               {cancelMode === 'immediately' ? 'Cancel immediately…' : 'Schedule cancellation'}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Pause Choice — same radio-card pattern as Cancel. Default is the
-          softer option (collection pause leaves cycle state intact). Hard
-          pause requires the typed-confirm step because resuming requires
-          re-establishing the cycle window. */}
-      <AlertDialog
-        open={showPauseChoice}
-        onOpenChange={(o) => { setShowPauseChoice(o); if (!o) setPauseMode('collection') }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Pause subscription</AlertDialogTitle>
-            <AlertDialogDescription>
-              Choose how this subscription should be paused.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="space-y-2 py-2" role="radiogroup" aria-label="Pause mode">
-            <RadioCard
-              selected={pauseMode === 'collection'}
-              onClick={() => setPauseMode('collection')}
-              disabled={acting}
-              title="Pause collection only"
-              description="Cycle continues, but invoices generate as drafts and skip charge until resumed."
-            />
-            <RadioCard
-              selected={pauseMode === 'hard'}
-              onClick={() => setPauseMode('hard')}
-              disabled={acting}
-              title="Pause subscription"
-              description="Freezes the cycle entirely. No usage metering, no invoices generated."
-            />
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={acting}>Keep active</AlertDialogCancel>
-            <Button
-              disabled={acting}
-              onClick={() => {
-                if (pauseMode === 'hard') {
-                  setShowPauseChoice(false)
-                  setShowPauseConfirm(true)
-                } else {
-                  pauseCollectionMutation.mutate()
-                }
-              }}
-            >
-              {pauseMode === 'hard' ? 'Pause subscription…' : 'Pause collection'}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
