@@ -96,6 +96,20 @@ type Store interface {
 	// tick.
 	ListWithThresholdsForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error)
 
+	// ListExpiredTrialsForClock returns subs whose trial_end_at has
+	// elapsed in simulated time but whose status is still 'trialing' —
+	// the trial-expiry catchup scan picks these up at Phase 0.5 and
+	// flips them to active at trial_end_at (not at the later cycle
+	// close). Without this scan, status stays 'trialing' until the
+	// engine wakes at next_billing_at, which for a calendar+trial sub
+	// can be ~30 days after the actual trial-end (sub created Nov 29
+	// + 14d trial → trial_end Dec 13, next_billing_at Jan 1 →
+	// status='trialing' from Dec 13 to Jan 1).
+	//
+	// Hydrated with items so the caller can fire BillOnCreate for
+	// in_advance items without a round-trip.
+	ListExpiredTrialsForClock(ctx context.Context, tenantID, clockID string, frozen time.Time, limit int) ([]domain.Subscription, error)
+
 	// ActivateAfterTrial atomically transitions a subscription from
 	// 'trialing' to 'active'. Sets activated_at = `at` if the column is
 	// still NULL (preserves the original activation timestamp on

@@ -1384,6 +1384,63 @@ func (s *PostgresStore) ListWithThresholdsForClock(ctx context.Context, tenantID
 	return subs, nil
 }
 
+// ListExpiredTrialsForClock returns subs pinned to this clock whose
+// trial has elapsed in simulated time (trial_end_at <= frozen) but
+// whose status is still 'trialing'. Catchup Phase 0.5 picks these
+// up and flips status to active at trial_end_at so the dashboard
+// doesn't lie about lifecycle state for the (potentially 30-day)
+// gap between trial_end_at and the next cycle close.
+//
+// FOR UPDATE SKIP LOCKED guards against a concurrent operator
+// EndTrial racing the catchup pass — whichever path takes the row
+// first wins; the loser sees a no-row UPDATE and continues to the
+// next sub. Items are hydrated for the in_advance BillOnCreate
+// downstream.
+func (s *PostgresStore) ListExpiredTrialsForClock(ctx context.Context, tenantID, clockID string, frozen time.Time, limit int) ([]domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
+		WHERE s.status = 'trialing'
+		  AND s.test_clock_id = $1
+		  AND s.trial_end_at IS NOT NULL
+		  AND s.trial_end_at <= $2
+		ORDER BY s.trial_end_at ASC
+		LIMIT $3
+		FOR UPDATE OF s SKIP LOCKED
+	`, clockID, frozen, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var subs []domain.Subscription
+	for rows.Next() {
+		var sub domain.Subscription
+		if err := scanSubRow(rows, &sub); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range subs {
+		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
+			return nil, err
+		}
+	}
+	return subs, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

@@ -266,6 +266,33 @@ func (m *memStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, p
 	return s, nil
 }
 
+func (m *memStore) ListExpiredTrialsForClock(_ context.Context, tenantID, clockID string, frozen time.Time, limit int) ([]domain.Subscription, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []domain.Subscription
+	for _, s := range m.subs {
+		if s.TenantID != tenantID {
+			continue
+		}
+		if s.TestClockID != clockID {
+			continue
+		}
+		if s.Status != domain.SubscriptionTrialing {
+			continue
+		}
+		if s.TrialEndAt == nil || s.TrialEndAt.After(frozen) {
+			continue
+		}
+		s.Items = m.hydrateItems(s.ID)
+		out = append(out, s)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
@@ -1597,6 +1624,145 @@ func TestExtendTrial(t *testing.T) {
 		future := now.AddDate(0, 0, 30)
 		if _, err := svc.ExtendTrial(context.Background(), "t1", sub.ID, future); err == nil {
 			t.Error("expected error when extending trial on non-trialing sub")
+		}
+	})
+}
+
+// TestProcessExpiredTrialsForClock covers Phase 0.5 of the catchup
+// orchestrator: trialing subs whose `trial_end_at` has elapsed in
+// simulated time must flip to active at trial_end_at (not at the
+// later cycle close). Locks Bug #8 — pre-fix, status='trialing'
+// hung on for the gap between trial_end_at and next_billing_at (up
+// to ~30 days for calendar billing).
+func TestProcessExpiredTrialsForClock(t *testing.T) {
+	createdAt := time.Date(2025, 11, 29, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	t.Run("flips trialing → active at trial_end_at when frozen has elapsed", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(createdAt))
+		fb := &fakeBiller{}
+		svc.SetBiller(fb)
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-trial", DisplayName: "Trial", CustomerID: "c",
+			Items:       []CreateItemInput{{PlanID: "p"}},
+			TrialDays:   14,
+			BillingTime: domain.BillingTimeCalendar,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		// Pin the sub to a clock so the scan picks it up.
+		mem := svc.store.(*memStore)
+		seeded := mem.subs[sub.ID]
+		seeded.TestClockID = "tclk_1"
+		mem.subs[sub.ID] = seeded
+
+		// Advance simulated clock to 5 days past trial_end (Dec 13).
+		frozen := sub.TrialEndAt.Add(5 * 24 * time.Hour)
+		processed, errs := svc.ProcessExpiredTrialsForClock(ctx, "t1", "tclk_1", frozen)
+		if len(errs) != 0 {
+			t.Fatalf("unexpected errors: %v", errs)
+		}
+		if processed != 1 {
+			t.Errorf("processed: got %d, want 1", processed)
+		}
+
+		out := mem.subs[sub.ID]
+		if out.Status != domain.SubscriptionActive {
+			t.Errorf("status: got %q, want active", out.Status)
+		}
+		// ActivatedAt should be stamped at trial_end_at, not at frozen
+		// (the "as if the sub activated exactly when trial ended" semantic).
+		if out.ActivatedAt == nil || !out.ActivatedAt.Equal(*sub.TrialEndAt) {
+			t.Errorf("activated_at: got %v, want %v (= trial_end_at)", out.ActivatedAt, sub.TrialEndAt)
+		}
+
+		// BillOnCreate fires for in_advance coverage (no-op for in_arrears
+		// in the mem store stub but verified via fb.calls).
+		if fb.calls != 1 {
+			t.Errorf("BillOnCreate calls: got %d, want 1 (covers in_advance first paid period)", fb.calls)
+		}
+	})
+
+	t.Run("skips subs whose trial has not yet elapsed", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(createdAt))
+		svc.SetBiller(&fakeBiller{})
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-still-trialing", DisplayName: "Still Trialing",
+			CustomerID: "c",
+			Items:      []CreateItemInput{{PlanID: "p"}},
+			TrialDays:  14,
+		})
+		mem := svc.store.(*memStore)
+		seeded := mem.subs[sub.ID]
+		seeded.TestClockID = "tclk_1"
+		mem.subs[sub.ID] = seeded
+
+		// Frozen time is BEFORE trial_end → no expiry.
+		frozen := sub.TrialEndAt.Add(-24 * time.Hour)
+		processed, _ := svc.ProcessExpiredTrialsForClock(ctx, "t1", "tclk_1", frozen)
+		if processed != 0 {
+			t.Errorf("processed: got %d, want 0 (trial not yet elapsed)", processed)
+		}
+		if mem.subs[sub.ID].Status != domain.SubscriptionTrialing {
+			t.Errorf("status: should remain trialing, got %q", mem.subs[sub.ID].Status)
+		}
+	})
+
+	t.Run("skips subs pinned to a different clock", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(createdAt))
+		svc.SetBiller(&fakeBiller{})
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-other-clock", DisplayName: "Other clock",
+			CustomerID: "c",
+			Items:      []CreateItemInput{{PlanID: "p"}},
+			TrialDays:  14,
+		})
+		mem := svc.store.(*memStore)
+		seeded := mem.subs[sub.ID]
+		seeded.TestClockID = "tclk_other"
+		mem.subs[sub.ID] = seeded
+
+		frozen := sub.TrialEndAt.Add(24 * time.Hour)
+		processed, _ := svc.ProcessExpiredTrialsForClock(ctx, "t1", "tclk_1", frozen)
+		if processed != 0 {
+			t.Errorf("processed: got %d, want 0 (different clock)", processed)
+		}
+	})
+
+	t.Run("operator-EndTrial race: row already active is silently skipped", func(t *testing.T) {
+		// The scan's SELECT and the per-sub UPDATE aren't in the same
+		// tx; an operator EndTrial between them moves the row out of
+		// 'trialing' and ActivateAfterTrial returns InvalidState. The
+		// phase treats this as a no-op (the desired state is already
+		// reached) so a concurrent operator action doesn't trip the
+		// catchup pass with a spurious error.
+		svc := NewService(newMemStore(), clock.NewFake(createdAt))
+		svc.SetBiller(&fakeBiller{})
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-race", DisplayName: "Race", CustomerID: "c",
+			Items:     []CreateItemInput{{PlanID: "p"}},
+			TrialDays: 14,
+		})
+		mem := svc.store.(*memStore)
+		seeded := mem.subs[sub.ID]
+		seeded.TestClockID = "tclk_1"
+		// Pre-activate to simulate the race.
+		seeded.Status = domain.SubscriptionActive
+		mem.subs[sub.ID] = seeded
+
+		frozen := sub.TrialEndAt.Add(24 * time.Hour)
+		// ListExpiredTrialsForClock filters by status='trialing' so
+		// the pre-activated row won't even be returned — verifies
+		// the filter, not the InvalidState path. (The race-detection
+		// in the production postgres path uses SKIP LOCKED + the
+		// per-sub UPDATE WHERE status='trialing' clause.)
+		processed, errs := svc.ProcessExpiredTrialsForClock(ctx, "t1", "tclk_1", frozen)
+		if len(errs) != 0 {
+			t.Errorf("unexpected errors: %v", errs)
+		}
+		if processed != 0 {
+			t.Errorf("processed: got %d, want 0 (row already active)", processed)
 		}
 	})
 }

@@ -574,6 +574,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// window.
 	invoiceSvc.SetResolver(engine)
 	testClockSvc.SetBillingRunner(engine)
+	// Phase 0.5 (Bug #8): trial expiry — flip status='trialing' subs
+	// to active at trial_end_at when sim time elapses past it, BEFORE
+	// Phase 1 cycle billing. Without this, status stays 'trialing'
+	// for up to ~30 days (calendar billing's stub close) past the
+	// actual trial-end instant.
+	testClockSvc.SetTrialExpirer(subSvc)
 	// ADR-029 Phase 2: catchup orchestrator drives tax retry on
 	// clock-pinned invoices. Without this, the cron-side filter
 	// (NOT EXISTS clock-pinning) would correctly skip them but no
