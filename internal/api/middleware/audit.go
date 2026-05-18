@@ -14,6 +14,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -380,13 +381,21 @@ func writeAudit(parentCtx context.Context, db *postgres.DB, tenantID, actorID, a
 	ipAddress := audit.ClientIP(parentCtx)
 	requestID := chimw.GetReqID(parentCtx)
 
+	// created_at honors ctx-bound effective-now (ADR-030) so the audit
+	// row stamps simulated time when the request is for a clock-pinned
+	// resource AND the handler bound effective-now before returning.
+	// Falls back to wall-clock for unbound ctx — every request that
+	// isn't on a clock-pinned entity. Handlers that want sim-time
+	// middleware audit must call `r = r.WithContext(clock.WithEffectiveNow(r.Context(), at))`
+	// before returning; without it, middleware behaves identically to
+	// the prior `time.Now().UTC()` (defensive, no regression).
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO audit_log (id, tenant_id, actor_type, actor_id, action,
 			resource_type, resource_id, resource_label, metadata, ip_address,
 			request_id, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, resourceLabel, metaJSON,
-		nullIfEmpty(ipAddress), nullIfEmpty(requestID), time.Now().UTC()); err != nil {
+		nullIfEmpty(ipAddress), nullIfEmpty(requestID), clock.Now(parentCtx)); err != nil {
 		return err
 	}
 

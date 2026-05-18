@@ -100,6 +100,13 @@ type Handler struct {
 	tax         ProrationTaxApplier
 	events      domain.EventDispatcher
 	auditLogger *audit.Logger
+	// Resolver binds effective-now from the sub pin at handler entry
+	// for proration math + changeAt stamping (PR-12, ADR-030 follow-
+	// through). Without it, mid-cycle plan changes on clock-pinned
+	// subs computed proration against wall-clock now — wrong factor
+	// for the simulated state. Optional: nil-safe; without it the
+	// proration paths fall back to wall-clock (pre-PR-12 behavior).
+	resolver clock.Resolver
 }
 
 func NewHandler(svc *Service) *Handler {
@@ -108,6 +115,25 @@ func NewHandler(svc *Service) *Handler {
 
 // SetAuditLogger configures audit logging for financial operations.
 func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
+
+// SetResolver wires the clock.Resolver used to bind effective-now at
+// proration entry points so wall-clock-time computations on
+// clock-pinned subs use simulated time. Implemented by *billing.Engine
+// (same resolver the Service uses internally).
+func (h *Handler) SetResolver(r clock.Resolver) { h.resolver = r }
+
+// bindForSub returns ctx with effective-now bound from the sub pin
+// when the resolver is wired. Used at proration handler entries so
+// remainingPeriodFactor / changeAt stamps land in simulated time on
+// clock-pinned subs. Falls through unchanged when resolver isn't set
+// or the sub isn't clock-pinned (resolver returns wall-clock).
+func (h *Handler) bindForSub(ctx context.Context, tenantID, subID string) context.Context {
+	if h.resolver == nil {
+		return ctx
+	}
+	bound, _ := clock.BindEffectiveNow(ctx, h.resolver, clock.Pin{TenantID: tenantID, SubscriptionID: subID})
+	return bound
+}
 
 // auditCtxForSub returns ctx with effective-now bound to the entity's
 // UpdatedAt timestamp when the sub is clock-pinned, so audit.Logger.Log
@@ -681,22 +707,30 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bind effective-now from the sub pin so proration math runs in
+	// simulated time on clock-pinned subs (ADR-030). Without binding,
+	// `remainingPeriodFactor(sub, time.Now())` would compute the
+	// wrong factor for a clock-pinned sub whose current_period is in
+	// the simulated future. PR-12.
+	ctx := h.bindForSub(r.Context(), tenantID, id)
+	r = r.WithContext(ctx)
+
 	// Snapshot the pre-add subscription for proration. Factor is computed
 	// from the period boundaries which don't change when an item is added
 	// mid-cycle, so a pre-add read is equivalent to a post-add read here.
 	var subBefore domain.Subscription
 	var prorationFactor float64
 	if h.plans != nil && h.invoices != nil {
-		sub, serr := h.svc.Get(r.Context(), tenantID, id)
+		sub, serr := h.svc.Get(ctx, tenantID, id)
 		if serr == nil {
 			subBefore = sub
 			if sub.Status == domain.SubscriptionActive {
-				prorationFactor = remainingPeriodFactor(sub, time.Now().UTC())
+				prorationFactor = remainingPeriodFactor(sub, clock.Now(ctx))
 			}
 		}
 	}
 
-	item, err := h.svc.AddItem(r.Context(), tenantID, id, input)
+	item, err := h.svc.AddItem(ctx, tenantID, id, input)
 	if err != nil {
 		respond.FromError(w, r, err, "subscription")
 		return
@@ -731,7 +765,7 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 	if prorationFactor > 0 && h.invoices != nil {
 		changeAt := item.CreatedAt
 		if changeAt.IsZero() {
-			changeAt = time.Now().UTC()
+			changeAt = clock.Now(ctx)
 		}
 		spec := itemProrationSpec{
 			changeType:      domain.ItemChangeTypeAdd,
@@ -795,6 +829,11 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bind effective-now from the sub pin so proration math + changeAt
+	// stamps run in simulated time on clock-pinned subs (PR-12).
+	ctx := h.bindForSub(r.Context(), tenantID, subID)
+	r = r.WithContext(ctx)
+
 	// Capture the pre-change item/plan only when we're about to drive proration
 	// — the old plan id, old quantity, and the subscription's remaining period
 	// all come from a snapshot taken before UpdateItem mutates the row.
@@ -806,19 +845,19 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 	isQuantityChange := input.Quantity != nil
 	prorationEligible := (isImmediatePlanChange || isQuantityChange) && h.plans != nil
 	if prorationEligible {
-		item, gerr := h.svc.store.GetItem(r.Context(), tenantID, itemID)
+		item, gerr := h.svc.store.GetItem(ctx, tenantID, itemID)
 		if gerr == nil && item.SubscriptionID == subID {
 			oldPlanID = item.PlanID
 			oldQuantity = item.Quantity
 		}
-		sub, serr := h.svc.Get(r.Context(), tenantID, subID)
+		sub, serr := h.svc.Get(ctx, tenantID, subID)
 		if serr == nil {
 			subBefore = sub
-			prorationFactor = remainingPeriodFactor(sub, time.Now().UTC())
+			prorationFactor = remainingPeriodFactor(sub, clock.Now(ctx))
 		}
 	}
 
-	result, err := h.svc.UpdateItem(r.Context(), tenantID, subID, itemID, input)
+	result, err := h.svc.UpdateItem(ctx, tenantID, subID, itemID, input)
 	if err != nil {
 		respond.FromError(w, r, err, "subscription item")
 		return
@@ -837,7 +876,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 			payload["old_plan_id"] = oldPlanID
 			payload["new_plan_id"] = input.NewPlanID
 		}
-		_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.item_updated", "subscription", subID, payload)
+		_ = h.auditLogger.Log(ctx, tenantID, "subscription.item_updated", "subscription", subID, payload)
 	}
 
 	if prorationEligible && prorationFactor > 0 && h.invoices != nil {
@@ -845,7 +884,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		// the swapped plan/quantity — handleProration walks it to resolve
 		// coupon plan eligibility. Fall back to subBefore on error so the
 		// handler still responds, but use the fresh Items when available.
-		subAfter, getErr := h.svc.Get(r.Context(), tenantID, subID)
+		subAfter, getErr := h.svc.Get(ctx, tenantID, subID)
 		if getErr != nil {
 			subAfter = subBefore
 		}
@@ -855,7 +894,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 			if result.Item.PlanChangedAt != nil {
 				changeAt = *result.Item.PlanChangedAt
 			} else {
-				changeAt = time.Now().UTC()
+				changeAt = clock.Now(ctx)
 			}
 			spec = itemProrationSpec{
 				changeType:      domain.ItemChangeTypePlan,
@@ -874,7 +913,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 			// UpdateItemQuantity call.
 			changeAt := result.Item.UpdatedAt
 			if changeAt.IsZero() {
-				changeAt = time.Now().UTC()
+				changeAt = clock.Now(ctx)
 			}
 			spec = itemProrationSpec{
 				changeType:      domain.ItemChangeTypeQuantity,
@@ -983,6 +1022,10 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 	subID := chi.URLParam(r, "id")
 	itemID := chi.URLParam(r, "itemID")
 
+	// Bind effective-now from the sub pin (PR-12).
+	ctx := h.bindForSub(r.Context(), tenantID, subID)
+	r = r.WithContext(ctx)
+
 	// Capture the pre-delete item + sub for proration. Removing mid-period
 	// should credit back the unused portion of what the customer already paid
 	// for this item. RemoveItem is a hard delete so the snapshot must be
@@ -992,27 +1035,27 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 	var subBefore domain.Subscription
 	var prorationFactor float64
 	if h.plans != nil && h.credits != nil {
-		item, gerr := h.svc.store.GetItem(r.Context(), tenantID, itemID)
+		item, gerr := h.svc.store.GetItem(ctx, tenantID, itemID)
 		if gerr == nil && item.SubscriptionID == subID {
 			removedPlanID = item.PlanID
 			removedQuantity = item.Quantity
 		}
-		sub, serr := h.svc.Get(r.Context(), tenantID, subID)
+		sub, serr := h.svc.Get(ctx, tenantID, subID)
 		if serr == nil {
 			subBefore = sub
 			if sub.Status == domain.SubscriptionActive {
-				prorationFactor = remainingPeriodFactor(sub, time.Now().UTC())
+				prorationFactor = remainingPeriodFactor(sub, clock.Now(ctx))
 			}
 		}
 	}
 
-	if err := h.svc.RemoveItem(r.Context(), tenantID, subID, itemID); err != nil {
+	if err := h.svc.RemoveItem(ctx, tenantID, subID, itemID); err != nil {
 		respond.FromError(w, r, err, "subscription item")
 		return
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", subID, map[string]any{
+		_ = h.auditLogger.Log(ctx, tenantID, domain.AuditActionUpdate, "subscription", subID, map[string]any{
 			"action":  "item_removed",
 			"item_id": itemID,
 		})
@@ -1020,13 +1063,13 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 
 	if prorationFactor > 0 && removedPlanID != "" {
 		// Re-fetch for coupon plan eligibility over the remaining items.
-		subAfter, getErr := h.svc.Get(r.Context(), tenantID, subID)
+		subAfter, getErr := h.svc.Get(ctx, tenantID, subID)
 		if getErr != nil {
 			subAfter = subBefore
 		}
 		spec := itemProrationSpec{
 			changeType:      domain.ItemChangeTypeRemove,
-			changeAt:        time.Now().UTC(),
+			changeAt:        clock.Now(ctx),
 			prorationFactor: prorationFactor,
 			itemID:          itemID,
 			oldPlanID:       removedPlanID,
@@ -1034,7 +1077,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 			newPlanID:       "",
 			newQuantity:     0,
 		}
-		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec)
+		prorationResult, prorationErr := h.handleItemProration(ctx, tenantID, subAfter, spec)
 		if prorationErr != nil {
 			slog.ErrorContext(r.Context(), "item proration failed after item remove committed",
 				"subscription_id", subID,
@@ -1153,7 +1196,9 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 	memo := prorationMemo(spec, oldPlan, newPlan)
 
 	if proratedCents > 0 {
-		now := time.Now().UTC()
+		// Honors ctx-bound effective-now (PR-12) so proration invoice
+		// IssuedAt/DueAt land in sim-time on clock-pinned subs.
+		now := clock.Now(ctx)
 		dueAt := now.AddDate(0, 0, 30)
 
 		periodStart := spec.changeAt
