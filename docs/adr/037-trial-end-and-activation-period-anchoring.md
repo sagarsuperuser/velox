@@ -1,7 +1,7 @@
 # ADR-037: Trial-end and activation period anchoring
 
 **Date:** 2026-05-18
-**Status:** Accepted
+**Status:** Accepted (amended 2026-05-18 — invoice-shape verification for `in_advance` + metered usage)
 
 ## Context
 
@@ -179,6 +179,48 @@ all reject this).
   scheduler's tick interval (typically 5 minutes), so wall-clock
   status flips lag the actual `trial_end_at` by up to one tick.
   The catchup-orchestrator path is exact (fires on operator Advance).
+
+## Amendment 2026-05-18: `in_advance` + metered usage invoice shape
+
+Verified industry behavior for the case where a plan's base fee is
+`in_advance` AND the sub has metered/usage charges — that mix is
+what `engine.billOnePeriod` emits as a single hybrid invoice at every
+cycle close (next-period base prepayment + just-elapsed-period usage
+in arrears). Recorded here because the post-fix `Billing Period` UI
+copy on `SubscriptionDetail.tsx` surfaced operator confusion ("the
+period's invoice is already generated — why is it labeled Billing
+Period?"), which led to digging into how reference platforms
+structure the same invoice. Three platforms checked:
+
+- **[Stripe — Advanced usage-based billing](https://docs.stripe.com/billing/subscriptions/usage-based/advanced/about)** — *"When a billing interval ends, all accrued charges since the last billing interval are compiled into an invoice and sent to the customer."* / *"License fees are billed one service interval in advance regardless of the billing interval."* / *"Customers are only billed for completed service intervals."* (usage rule). Result: one invoice per cycle close, combining in-advance base for the upcoming period + arrears usage for the just-completed period.
+- **[Lago — Plan model](https://doc.getlago.com/guide/plans/plan-model)** / **[Lago — Usage-based charge](https://getlago.com/docs/guide/plans/charges/usage-based-charges)** — *"Additional charges for per-usage Billable metrics **are always paid in arrears because they are linked to a past consumption of your customers.**"* Combined with their pay-in-advance subscription-fee rule: same hybrid invoice shape.
+- **[Chargebee — Metered Billing](https://www.chargebee.com/docs/billing/2.0/usage-based-billing/metered_billing)** — diverges. *"Processing the final invoice amount for subscriptions with metered items requires the finalized usage data, which is not available in advance. As a result, **scheduling advanced invoices for subscriptions with metered items is not possible.**"* Chargebee disallows the combination — metered subs cannot bill the base in advance.
+
+**Velox follows the Stripe + Lago pattern** — the dominant convention
+across the two platforms operators most often compare us against.
+Base line items stamp `billing_period_start/end = [periodEnd,
+nextPeriodEnd]` (`internal/billing/engine.go:1494-1495`); usage line
+items stamp `billing_period_start/end = [periodStart, periodEnd]`
+(engine.go:1601-1602). Both pre-trial first-invoice (`BillOnCreate`)
+and steady-state cycle invoices follow this shape.
+
+**Not adopted from Chargebee**: a Plan-create validation that rejects
+`base_bill_timing=in_advance` when the plan has `meter_ids`. Defensible
+to add later if an operator surveys produce a named need; per
+`feedback_pre_launch_scoping` it's not justified pre-launch since
+Velox's reference platforms allow the combination.
+
+**Operator-facing implication**: a customer on an in_advance metered
+plan sees their period-N invoice combining period-(N+1) base lines
+with period-N usage lines. The dashboard's invoice-detail view should
+surface the per-line `billing_period_start/end` so this isn't
+ambiguous when an operator inspects a mixed-period invoice. Currently
+the data flows through; a follow-up check that the rendering is clear
+is on the open-items list. The `SubscriptionDetail.tsx` Current period
+stat card (renamed 2026-05-18 from "Billing Period" — same data,
+clearer label) refers to `current_period_start/end` which is the
+consumption window, agnostic of when each line on the corresponding
+invoice fires.
 
 ## References
 
