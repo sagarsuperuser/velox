@@ -571,6 +571,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// frozen_time — same stranding shape as dunning had at the
 	// per-run level.
 	subSvc.SetResolver(engine)
+	// Handler-side resolver for proration math + changeAt stamps on
+	// clock-pinned subs (PR-12). Without this, remainingPeriodFactor
+	// + handleItemProration would use wall-clock now even when the
+	// underlying sub is in simulated time.
+	subH.SetResolver(engine)
 	// ADR-031: wire the engine so subscription.Service.Create emits
 	// the day-1 invoice for in_advance plans. No-op for in_arrears
 	// (default) — best-effort path that logs but doesn't fail Create
