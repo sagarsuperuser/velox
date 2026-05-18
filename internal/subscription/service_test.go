@@ -602,6 +602,61 @@ func TestCreate(t *testing.T) {
 		}
 	})
 
+	t.Run("ADR-031 biller called on EndTrial (covers in_advance first paid period)", func(t *testing.T) {
+		// Pre-fix: operator EndTrial flipped status to active but
+		// never triggered BillOnCreate — in_advance items missed their
+		// first paid period entirely (revenue leak specific to in_advance
+		// + trial). Fix fires BillOnCreate from Service.EndTrial after
+		// EndTrialEarly returns the activated sub.
+		svcWithBiller := NewService(newMemStore(), nil)
+		fb := &fakeBiller{}
+		svcWithBiller.SetBiller(fb)
+		sub, err := svcWithBiller.Create(ctx, "t1", CreateInput{
+			Code: "sub-end-trial", DisplayName: "Ends trial early",
+			CustomerID: "cus_1",
+			Items:      []CreateItemInput{{PlanID: "pln_1"}},
+			TrialDays:  14,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if fb.calls != 0 {
+			t.Fatalf("biller calls after create-trialing: got %d, want 0", fb.calls)
+		}
+		if _, err := svcWithBiller.EndTrial(ctx, "t1", sub.ID); err != nil {
+			t.Fatalf("EndTrial: %v", err)
+		}
+		if fb.calls != 1 {
+			t.Errorf("biller calls after EndTrial: got %d, want 1 (covers in_advance first paid period)", fb.calls)
+		}
+	})
+
+	t.Run("EndTrial BillOnCreate failure does NOT roll back activation", func(t *testing.T) {
+		// Activation already happened atomically in EndTrialEarly;
+		// BillOnCreate is best-effort. A failure logs but the sub
+		// stays active — operator can manually issue the invoice. Same
+		// shape as the Cancel + BillOnCancel error path.
+		svcWithBiller := NewService(newMemStore(), nil)
+		fb := &fakeBiller{err: fmt.Errorf("billing engine unavailable")}
+		svcWithBiller.SetBiller(fb)
+		sub, err := svcWithBiller.Create(ctx, "t1", CreateInput{
+			Code: "sub-end-trial-billfail", DisplayName: "Bill-fail path",
+			CustomerID: "cus_1",
+			Items:      []CreateItemInput{{PlanID: "pln_1"}},
+			TrialDays:  14,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		out, err := svcWithBiller.EndTrial(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Errorf("EndTrial should not fail when BillOnCreate errors (best-effort): %v", err)
+		}
+		if out.Status != domain.SubscriptionActive {
+			t.Errorf("status: got %q, want active (activation must succeed even if billing fails)", out.Status)
+		}
+	})
+
 	t.Run("ADR-031 BillOnCancel called on Cancel", func(t *testing.T) {
 		svcWithBiller := NewService(newMemStore(), nil)
 		fb := &fakeBiller{}
