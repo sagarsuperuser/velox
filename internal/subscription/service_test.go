@@ -799,6 +799,20 @@ func (f *fakeBiller) BillOnCancel(_ context.Context, _ domain.Subscription) erro
 	return f.cancelErr
 }
 
+// fakePlanReader returns plans by id — lets tests stub plan intervals
+// for the yearly-vs-monthly period-anchoring branches without standing
+// up the full pricing package.
+type fakePlanReader struct {
+	plans map[string]domain.Plan
+}
+
+func (f *fakePlanReader) GetPlan(_ context.Context, _, planID string) (domain.Plan, error) {
+	if p, ok := f.plans[planID]; ok {
+		return p, nil
+	}
+	return domain.Plan{}, fmt.Errorf("no stub for plan %s", planID)
+}
+
 // fakeSettings is a SettingsReader that returns a fixed timezone — used
 // to assert the day-grade snap honours the tenant's configured TZ.
 type fakeSettings struct{ tz string }
@@ -2085,6 +2099,57 @@ func TestPeriodAnchoring(t *testing.T) {
 		}
 		if !out.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
 			t.Errorf("period_end: got %v, want %v", out.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+	})
+
+	t.Run("Create + trial + yearly plan → first period is 1 YEAR, not 1 month (Bug #10)", func(t *testing.T) {
+		// Pre-fix: yearly plan with trial got period = trial_end → trial_end+1mo
+		// because the period helpers hardcoded monthly math. Customer paid
+		// 1/12 of yearly fee for the first cycle (an off-cycle prorated
+		// invoice), then full year invoices thereafter — 13 months of
+		// service for 13/12 of yearly fee.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p": {ID: "p", BillingInterval: domain.BillingYearly},
+		}})
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, TrialDays: 14,
+			BillingTime: domain.BillingTimeAnniversary,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		wantPeriodStart := time.Date(2025, 12, 13, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC) // +1 YEAR
+		if !sub.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v", sub.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if !sub.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v (full year, NOT 1 month)", sub.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+	})
+
+	t.Run("Create + start_now + yearly plan → first period is 1 year from now (no calendar stub)", func(t *testing.T) {
+		// Yearly billing ignores billing_time — Stripe doesn't ship
+		// calendar yearly either. Even with billing_time=calendar, a
+		// yearly plan anchors anniversary-style.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p": {ID: "p", BillingInterval: domain.BillingYearly},
+		}})
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, StartNow: true,
+			BillingTime: domain.BillingTimeCalendar, // intentionally calendar
+		})
+		wantPeriodStart := time.Date(2025, 11, 29, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2026, 11, 29, 0, 0, 0, 0, time.UTC) // +1 YEAR (billing_time ignored)
+		if !sub.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v", sub.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if !sub.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v (yearly forces anniversary, ignores calendar)", sub.CurrentBillingPeriodEnd, wantPeriodEnd)
 		}
 	})
 
