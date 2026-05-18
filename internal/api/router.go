@@ -186,6 +186,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// Stripe doesn't either, and accepting one created a redundant
 	// validation path against the canonical customer-level value.
 	subSvc.SetCustomerReader(customerStore)
+	// Yearly-aware period anchoring (Bug #10) — subscription Service
+	// reads the first item's plan to determine BillingInterval at sub
+	// lifecycle entry points (Create / Activate / EndTrial /
+	// ExtendTrial). Without this, the period helpers hardcode
+	// monthly math and a yearly + trial sub gets a 1-month first
+	// cycle instead of a full year.
+	subSvc.SetPlanReader(pricingStore)
 	creditStore := credit.NewPostgresStore(db)
 	creditSvc := credit.NewService(creditStore)
 	creditH := credit.NewHandler(creditSvc)
