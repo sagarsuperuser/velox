@@ -14,6 +14,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
@@ -887,6 +888,64 @@ func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, cl
 				slog.Warn("trial-expiry first-invoice failed; in_advance base fee will be deferred",
 					"subscription_id", activated.ID,
 					"tenant_id", tenantID,
+					"error", err)
+			}
+		}
+		processed++
+	}
+	return processed, batchErrs
+}
+
+// ProcessExpiredTrials is the wall-clock cron counterpart to
+// ProcessExpiredTrialsForClock — scans non-clock-pinned trialing
+// subs whose `trial_end_at` has elapsed in wall-clock time and
+// flips each to active at trial_end_at. Same shape as the catchup
+// Phase 0.5: ActivateAfterTrial (atomic flip + activated_at) +
+// BillOnCreate (in_advance first-paid-period coverage).
+//
+// Livemode partition comes from ctx (the scheduler fans out per
+// mode). Per-row errors are collected but don't abort the batch
+// — same shape as every other scheduler-tick processor.
+//
+// ADR-028 disjoint flows: the store query EXPLICITLY EXCLUDES
+// clock-pinned rows (`test_clock_id IS NULL` filter). Those
+// flow through the catchup orchestrator's Phase 0.5 instead.
+func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []error) {
+	if batch <= 0 {
+		batch = 100
+	}
+	livemode := postgres.Livemode(ctx)
+	now := s.clock.Now(ctx)
+	expired, err := s.store.ListExpiredTrials(ctx, now, livemode, batch)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list expired trials: %w", err)}
+	}
+
+	var (
+		processed int
+		batchErrs []error
+	)
+	for _, sub := range expired {
+		if sub.TrialEndAt == nil {
+			continue
+		}
+		trialEndAt := *sub.TrialEndAt
+		activated, err := s.store.ActivateAfterTrial(ctx, sub.TenantID, sub.ID, trialEndAt)
+		if err != nil {
+			if errors.Is(err, errs.ErrInvalidState) {
+				// Operator-EndTrial race (or already-active by some
+				// other path) — desired state reached, skip.
+				continue
+			}
+			batchErrs = append(batchErrs, fmt.Errorf("activate sub %s: %w", sub.ID, err))
+			continue
+		}
+
+		if s.biller != nil {
+			if _, err := s.biller.BillOnCreate(ctx, activated); err != nil {
+				slog.Warn("trial-expiry first-invoice failed (wall-clock); in_advance base fee will be deferred",
+					"subscription_id", activated.ID,
+					"tenant_id", activated.TenantID,
 					"error", err)
 			}
 		}

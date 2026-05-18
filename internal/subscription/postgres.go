@@ -1441,6 +1441,67 @@ func (s *PostgresStore) ListExpiredTrialsForClock(ctx context.Context, tenantID,
 	return subs, nil
 }
 
+// ListExpiredTrials is the wall-clock counterpart for the cron tick —
+// returns non-clock-pinned trialing subs whose trial_end_at has
+// elapsed. Mirrors ListExpiredTrialsForClock but scoped per livemode
+// rather than per clock; uses TxBypass to cross tenants (scheduler-
+// wide sweep) with an explicit livemode filter (TxBypass doesn't set
+// app.livemode for RLS).
+//
+// ADR-028 disjoint flows: clock-pinned subs are EXPLICITLY EXCLUDED
+// (`test_clock_id IS NULL`). Those flow through the catchup
+// orchestrator's Phase 0.5 — running them here too would race the
+// orchestrator and could drift status / generate duplicate
+// trial-end invoices.
+//
+// FOR UPDATE SKIP LOCKED so concurrent scheduler ticks (multi-
+// replica) don't double-process the same trialing sub.
+func (s *PostgresStore) ListExpiredTrials(ctx context.Context, before time.Time, livemode bool, limit int) ([]domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
+		WHERE s.status = 'trialing'
+		  AND s.livemode = $1
+		  AND s.test_clock_id IS NULL
+		  AND s.trial_end_at IS NOT NULL
+		  AND s.trial_end_at <= $2
+		ORDER BY s.trial_end_at ASC
+		LIMIT $3
+		FOR UPDATE OF s SKIP LOCKED
+	`, livemode, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var subs []domain.Subscription
+	for rows.Next() {
+		var sub domain.Subscription
+		if err := scanSubRow(rows, &sub); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range subs {
+		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
+			return nil, err
+		}
+	}
+	return subs, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

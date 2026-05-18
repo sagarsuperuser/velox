@@ -266,6 +266,34 @@ func (m *memStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, p
 	return s, nil
 }
 
+func (m *memStore) ListExpiredTrials(_ context.Context, before time.Time, _ bool, limit int) ([]domain.Subscription, error) {
+	// The mem store has no livemode field on its rows; the livemode
+	// partition is enforced on the postgres path via the WHERE
+	// livemode = $1 clause. Mem store tests don't typically cross
+	// modes, so the filter is a no-op here.
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []domain.Subscription
+	for _, s := range m.subs {
+		if s.TestClockID != "" {
+			continue
+		}
+		if s.Status != domain.SubscriptionTrialing {
+			continue
+		}
+		if s.TrialEndAt == nil || s.TrialEndAt.After(before) {
+			continue
+		}
+		s.Items = m.hydrateItems(s.ID)
+		out = append(out, s)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) ListExpiredTrialsForClock(_ context.Context, tenantID, clockID string, frozen time.Time, limit int) ([]domain.Subscription, error) {
 	if limit <= 0 {
 		limit = 100
@@ -1763,6 +1791,88 @@ func TestProcessExpiredTrialsForClock(t *testing.T) {
 		}
 		if processed != 0 {
 			t.Errorf("processed: got %d, want 0 (row already active)", processed)
+		}
+	})
+}
+
+// TestProcessExpiredTrials covers the wall-clock counterpart to the
+// catchup orchestrator's Phase 0.5 — the scheduler-tick scan that
+// flips non-clock-pinned trialing subs at trial_end_at. Mirrors
+// TestProcessExpiredTrialsForClock but exercises the production
+// (no test_clock_id) path.
+func TestProcessExpiredTrials(t *testing.T) {
+	createdAt := time.Date(2025, 11, 29, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	t.Run("wall-clock: flips trialing → active at trial_end_at past now", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(createdAt))
+		fb := &fakeBiller{}
+		svc.SetBiller(fb)
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-trial-wall", DisplayName: "Wall Trial", CustomerID: "c",
+			Items:     []CreateItemInput{{PlanID: "p"}},
+			TrialDays: 14,
+		})
+
+		// Advance the service clock to 5 days past trial_end. Since
+		// NewService doesn't expose SetClock, build a fresh service
+		// over the same mem store with an advanced fake clock.
+		mem := svc.store.(*memStore)
+		laterClock := clock.NewFake(sub.TrialEndAt.Add(5 * 24 * time.Hour))
+		svc2 := NewService(mem, laterClock)
+		svc2.SetBiller(fb)
+
+		processed, errs := svc2.ProcessExpiredTrials(ctx, 100)
+		if len(errs) != 0 {
+			t.Fatalf("unexpected errors: %v", errs)
+		}
+		if processed != 1 {
+			t.Errorf("processed: got %d, want 1", processed)
+		}
+
+		out := mem.subs[sub.ID]
+		if out.Status != domain.SubscriptionActive {
+			t.Errorf("status: got %q, want active", out.Status)
+		}
+		if out.ActivatedAt == nil || !out.ActivatedAt.Equal(*sub.TrialEndAt) {
+			t.Errorf("activated_at: got %v, want %v (= trial_end_at)", out.ActivatedAt, sub.TrialEndAt)
+		}
+		if fb.calls != 1 {
+			t.Errorf("BillOnCreate: got %d calls, want 1", fb.calls)
+		}
+	})
+
+	t.Run("wall-clock: excludes clock-pinned subs (ADR-028 disjoint flows)", func(t *testing.T) {
+		// Clock-pinned subs must NOT be processed by the wall-clock
+		// path — they flow through the catchup orchestrator's Phase
+		// 0.5 instead. Running them in both paths would race the
+		// orchestrator and could double-fire BillOnCreate (idempotent
+		// on the UNIQUE constraint but still wrong semantically).
+		svc := NewService(newMemStore(), clock.NewFake(createdAt))
+		svc.SetBiller(&fakeBiller{})
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-clock-pinned", DisplayName: "Clock-pinned",
+			CustomerID: "c",
+			Items:      []CreateItemInput{{PlanID: "p"}},
+			TrialDays:  14,
+		})
+		mem := svc.store.(*memStore)
+		seeded := mem.subs[sub.ID]
+		seeded.TestClockID = "tclk_1"
+		mem.subs[sub.ID] = seeded
+
+		laterClock := clock.NewFake(sub.TrialEndAt.Add(5 * 24 * time.Hour))
+		svc2 := NewService(mem, laterClock)
+		svc2.SetBiller(&fakeBiller{})
+
+		processed, _ := svc2.ProcessExpiredTrials(ctx, 100)
+		if processed != 0 {
+			t.Errorf("processed: got %d, want 0 (clock-pinned subs flow through catchup)", processed)
+		}
+		// Status stays trialing — only the catchup orchestrator can
+		// transition this sub.
+		if mem.subs[sub.ID].Status != domain.SubscriptionTrialing {
+			t.Errorf("status: got %q, want trialing (clock-pinned not touched by wall-clock scan)", mem.subs[sub.ID].Status)
 		}
 	})
 }

@@ -110,6 +110,15 @@ type Store interface {
 	// in_advance items without a round-trip.
 	ListExpiredTrialsForClock(ctx context.Context, tenantID, clockID string, frozen time.Time, limit int) ([]domain.Subscription, error)
 
+	// ListExpiredTrials is the wall-clock counterpart for the cron
+	// tick — returns non-clock-pinned subs whose `trial_end_at` has
+	// elapsed in wall-clock time but whose status is still 'trialing'.
+	// ADR-028 disjoint flows: this query explicitly excludes
+	// `test_clock_id IS NOT NULL` rows (those run through the
+	// catchup orchestrator's Phase 0.5 instead). Scoped per livemode
+	// partition by the caller's ctx (the scheduler fans out per mode).
+	ListExpiredTrials(ctx context.Context, before time.Time, livemode bool, limit int) ([]domain.Subscription, error)
+
 	// ActivateAfterTrial atomically transitions a subscription from
 	// 'trialing' to 'active'. Sets activated_at = `at` if the column is
 	// still NULL (preserves the original activation timestamp on

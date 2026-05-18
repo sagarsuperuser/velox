@@ -41,6 +41,19 @@ type TaxRetrier interface {
 	RetryPendingTax(ctx context.Context, batch int) (int, []error)
 }
 
+// TrialExpirer is the narrow hook the scheduler uses to flip
+// non-clock-pinned trialing subs to active at trial_end_at on the
+// wall-clock cron tick. Implemented by *subscription.Service via
+// ProcessExpiredTrials. Bug #8 — without this, status stays
+// 'trialing' until the engine wakes at next_billing_at (~30 days
+// past trial_end_at for calendar billing).
+//
+// ADR-028 disjoint flows: implementation EXCLUDES clock-pinned
+// rows — those flow through the catchup orchestrator's Phase 0.5.
+type TrialExpirer interface {
+	ProcessExpiredTrials(ctx context.Context, batch int) (int, []error)
+}
+
 // TokenCleaner cleans up expired payment update tokens.
 type TokenCleaner interface {
 	Cleanup(ctx context.Context) (int, error)
@@ -80,6 +93,7 @@ type Scheduler struct {
 	tokenCleaner      TokenCleaner
 	idempotencyClean  IdempotencyCleaner
 	taxRetrier        TaxRetrier
+	trialExpirer      TrialExpirer
 	paymentReconciler PaymentReconciler
 	locker            Locker
 	billingLockKey    int64
@@ -136,6 +150,15 @@ func (s *Scheduler) SetIdempotencyCleaner(cleaner IdempotencyCleaner) {
 // invoices wait on an operator click forever. ADR-017.
 func (s *Scheduler) SetTaxRetrier(r TaxRetrier) {
 	s.taxRetrier = r
+}
+
+// SetTrialExpirer wires the wall-clock trial-expiry phase (Bug #8).
+// Each tick scans non-clock-pinned trialing subs past their
+// trial_end_at and flips status to active at the trial-end instant.
+// Without this, the engine flips status only at cycle close — for
+// calendar billing that's the next month boundary, ~30 days late.
+func (s *Scheduler) SetTrialExpirer(t TrialExpirer) {
+	s.trialExpirer = t
 }
 
 // SetPaymentReconciler wires a resolver for PaymentUnknown invoices. Runs
@@ -296,6 +319,24 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		slog.Info("threshold scan", "mode", mode, "fired", fired, "errors", len(tErrs))
 		for _, err := range tErrs {
 			slog.Error("threshold scan error", "mode", mode, "error", err)
+		}
+	}
+
+	// 0.9 Trial expiry — flip non-clock-pinned trialing subs to
+	// active at trial_end_at BEFORE the cycle scan reads the sub
+	// list. Without this, calendar-billed trial subs sit at
+	// status='trialing' for up to ~30 days past actual trial-end
+	// (the gap from trial_end_at to next calendar-month boundary).
+	// Clock-pinned subs are EXCLUDED here — they flow through the
+	// catchup orchestrator's Phase 0.5 instead (ADR-028 disjoint
+	// flows).
+	if s.trialExpirer != nil {
+		flipped, tErrs := s.trialExpirer.ProcessExpiredTrials(ctx, s.batch)
+		if flipped > 0 || len(tErrs) > 0 {
+			slog.Info("trial expiry", "mode", mode, "flipped", flipped, "errors", len(tErrs))
+		}
+		for _, err := range tErrs {
+			slog.Error("trial expiry error", "mode", mode, "error", err)
 		}
 	}
 
