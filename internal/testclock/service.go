@@ -85,6 +85,19 @@ type CustomerReader interface {
 	ListByTestClockID(ctx context.Context, tenantID, clockID string) ([]domain.Customer, error)
 }
 
+// TrialExpirer is the narrow hook the catchup orchestrator uses to
+// flip trialing subs whose `trial_end_at` has elapsed in sim time to
+// active — at `trial_end_at`, not at the later cycle close.
+// Implemented by *subscription.Service via ProcessExpiredTrialsForClock.
+// Runs as Phase 0.5 (before cycle billing) so by the time Phase 1
+// reads the sub list, the status field reflects the actual lifecycle
+// state. Without this phase, status stays 'trialing' for the gap
+// between trial_end_at and the first chargeable cycle close (up to
+// ~30 days for calendar billing).
+type TrialExpirer interface {
+	ProcessExpiredTrialsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time) (int, []error)
+}
+
 // TaxRetrier is the narrow hook the catchup orchestrator uses to drive
 // the per-clock tax-retry phase. Implemented by *invoice.Service via
 // RetryPendingTaxForClock. ADR-029 Phase 2.
@@ -134,6 +147,7 @@ type Service struct {
 	billing       BillingRunner
 	queue         CatchupQueue
 	customers     CustomerReader
+	trialExpirer  TrialExpirer
 	taxRetry      TaxRetrier
 	creditExpirer CreditExpirer
 	dunning       DunningProcessor
@@ -207,6 +221,15 @@ func (s *Service) SetCreditExpirer(c CreditExpirer) {
 // always wires this with the real invoice service. ADR-029 Phase 2.
 func (s *Service) SetTaxRetrier(t TaxRetrier) {
 	s.taxRetry = t
+}
+
+// SetTrialExpirer wires the per-clock trial-expiry phase (Phase 0.5).
+// Optional — narrow unit tests skip it; production wires the
+// subscription Service. Without this, a clock advance past
+// trial_end_at leaves the sub's status='trialing' until the next
+// cycle close (Bug #8 regression).
+func (s *Service) SetTrialExpirer(t TrialExpirer) {
+	s.trialExpirer = t
 }
 
 type CreateInput struct {
@@ -456,6 +479,35 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
 		// is collected but doesn't stop subsequent phases (failure
 		// isolation; retry-advance picks up wherever this left off).
 		var runErrs []error
+
+		// Phase 0.5 (Bug #8): flip trialing subs to active at
+		// trial_end_at when sim time has elapsed past it, BEFORE
+		// Phase 1 reads the sub list for cycle billing. Without
+		// this, a sub whose trial ended weeks ago in sim time but
+		// whose next_billing_at (cycle close) is still future keeps
+		// reading as 'trialing' on the dashboard — confusing for
+		// operators, semantically wrong vs Stripe / Lago where
+		// status flips at trial_end_at.
+		//
+		// Also fires BillOnCreate per activated sub so in_advance
+		// items' first paid period is covered at the activation
+		// instant (Bug #6 carry-through).
+		//
+		// Need frozen_time — read the clock now (the dunning /
+		// credit phases below also read it, but we need it earlier).
+		// Concurrent advance can't race because status='advancing'
+		// is the gate the operator's request hit before enqueueing.
+		var trialExpiryFrozen time.Time
+		if s.trialExpirer != nil {
+			clk, clkErr := s.store.Get(ctx, job.TenantID, job.ClockID)
+			if clkErr != nil {
+				runErrs = append(runErrs, fmt.Errorf("read clock for trial-expiry phase: %w", clkErr))
+			} else {
+				trialExpiryFrozen = clk.FrozenTime
+				_, trialErrs := s.trialExpirer.ProcessExpiredTrialsForClock(ctx, job.TenantID, job.ClockID, trialExpiryFrozen)
+				runErrs = append(runErrs, trialErrs...)
+			}
+		}
 
 		// Phase 1 (ADR-028): generate any newly-due periods. Multi-period
 		// catchup happens inside billSubscription's per-sub loop.

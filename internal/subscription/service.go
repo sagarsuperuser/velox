@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -829,6 +830,69 @@ func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Sub
 	}
 
 	return activated, nil
+}
+
+// ProcessExpiredTrialsForClock is the catchup Phase 0.5 entry point —
+// scans subs pinned to this clock whose trial has elapsed in sim time
+// and flips each from 'trialing' to 'active' at trial_end_at (not at
+// the later cycle close). Bug #8: without this, status stays
+// 'trialing' for the gap between trial_end_at and the first
+// chargeable cycle close (up to ~30 days for calendar billing).
+//
+// Per sub: ActivateAfterTrial(at=trial_end_at) for the atomic status
+// flip + activated_at stamp, then BillOnCreate to cover in_advance
+// items' first paid period at trial_end_at (Bug #6 coverage carries
+// through). Failures collected but don't abort the batch — one bad
+// sub doesn't stall the others. Returns (processed_count, errors).
+//
+// Subscriptions matched by the scan but already-EndTrial'd by an
+// operator race will land in ActivateAfterTrial's InvalidState
+// branch — treated as a no-op (already correct state).
+func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, clockID string, frozen time.Time) (int, []error) {
+	expired, err := s.store.ListExpiredTrialsForClock(ctx, tenantID, clockID, frozen, 100)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list expired trials: %w", err)}
+	}
+
+	var (
+		processed int
+		batchErrs []error
+	)
+	for _, sub := range expired {
+		if sub.TrialEndAt == nil {
+			continue
+		}
+		trialEndAt := *sub.TrialEndAt
+		bound := s.bindForSub(ctx, tenantID, sub.ID)
+		activated, err := s.store.ActivateAfterTrial(bound, tenantID, sub.ID, trialEndAt)
+		if err != nil {
+			// Operator-EndTrial race: the row already left 'trialing'
+			// between the scan SELECT and the UPDATE. Not an error —
+			// just a no-op for this pass.
+			if errors.Is(err, errs.ErrInvalidState) {
+				continue
+			}
+			batchErrs = append(batchErrs, fmt.Errorf("activate sub %s: %w", sub.ID, err))
+			continue
+		}
+
+		// Cover the first paid period for in_advance items at the
+		// activation instant (Bug #6 carry-through). No-op when no
+		// item is in_advance. Idempotent via the invoice UNIQUE
+		// constraint — a re-run on the same sub doesn't double-bill.
+		// Failure logs but doesn't roll back the activation — same
+		// shape as Service.EndTrial.
+		if s.biller != nil {
+			if _, err := s.biller.BillOnCreate(bound, activated); err != nil {
+				slog.Warn("trial-expiry first-invoice failed; in_advance base fee will be deferred",
+					"subscription_id", activated.ID,
+					"tenant_id", tenantID,
+					"error", err)
+			}
+		}
+		processed++
+	}
+	return processed, batchErrs
 }
 
 // ExtendTrial pushes a trialing subscription's trial_end_at later. Used
