@@ -701,6 +701,26 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, subscriptionID, item
 		return ItemChangeResult{}, errs.Invalid("new_plan_id", "new plan is the same as current plan")
 	}
 
+	// Mixed-interval guard on plan-change. Composes the post-change
+	// item set (other items unchanged + the new plan on this item)
+	// and asserts every interval matches. Same rationale as Create /
+	// AddItem — the period anchor is per-sub and would drift if a
+	// single item swapped to a different interval. Skipped when
+	// PlanReader is unwired (narrow unit tests).
+	if s.plans != nil {
+		hypothetical := make([]domain.SubscriptionItem, 0, len(sub.Items))
+		for _, existing := range sub.Items {
+			if existing.ID == itemID {
+				hypothetical = append(hypothetical, domain.SubscriptionItem{PlanID: input.NewPlanID})
+			} else {
+				hypothetical = append(hypothetical, existing)
+			}
+		}
+		if err := s.rejectMixedItemIntervals(ctx, tenantID, hypothetical); err != nil {
+			return ItemChangeResult{}, err
+		}
+	}
+
 	if !input.Immediate {
 		var effectiveAt time.Time
 		if sub.CurrentBillingPeriodEnd != nil {
