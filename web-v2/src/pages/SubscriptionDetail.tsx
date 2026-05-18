@@ -425,11 +425,21 @@ export default function SubscriptionDetailPage() {
               isPast: trialEnd <= now,
             })
           }
-          if (sub.next_billing_at) {
-            const firstCharge = new Date(sub.next_billing_at)
+          // First charge fires at trial_end_at for in_advance plans (Phase 0.5's
+          // BillOnCreate covers the just-opened paid period at activation) and at
+          // the post-trial cycle close (next_billing_at) for in_arrears. Reading
+          // base_bill_timing from the first item's plan because the sub itself
+          // doesn't expose it directly; mixed-interval-or-timing items on one sub
+          // are rejected at Create / AddItem / UpdateItem so first-item-wins is
+          // the durable answer.
+          const firstItemPlan = items.length > 0 ? planById(items[0].plan_id) : undefined
+          const inAdvance = firstItemPlan?.base_bill_timing === 'in_advance'
+          const firstChargeAt = inAdvance ? sub.trial_end_at : sub.next_billing_at
+          if (firstChargeAt) {
+            const firstCharge = new Date(firstChargeAt)
             timelinePoints.push({
               label: 'First charge',
-              date: formatDate(sub.next_billing_at),
+              date: formatDate(firstChargeAt),
               isPast: firstCharge <= now,
             })
           }
