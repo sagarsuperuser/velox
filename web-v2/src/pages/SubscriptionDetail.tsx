@@ -957,7 +957,7 @@ export default function SubscriptionDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Pause collection</AlertDialogTitle>
             <AlertDialogDescription>
-              Future invoices on this subscription will be created as drafts and skip auto-charge until collection is resumed. The billing cycle keeps running so you can still see what was owed across the pause.
+              Future invoices on this subscription will be created as drafts and skip auto-charge until collection is resumed. The billing cycle keeps running so you can still see what was owed across the pause. <strong>On resume, the full current period bills — paused days are not pro-rated. Issue a credit grant after resuming if you want to offset them.</strong>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
