@@ -11,6 +11,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -79,13 +80,21 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	ipAddress := ClientIP(ctx)
 	requestID := chimw.GetReqID(ctx)
 
+	// created_at honors ctx-bound effective-now per ADR-030 so audit
+	// entries on clock-pinned entities stamp simulated time, matching
+	// the rest of the entity's timestamps (sub.created_at,
+	// invoice.issued_at, etc). Falls back to wall-clock when ctx has
+	// no binding — which is the cron path + every operator action on
+	// non-clock-pinned (production) resources. Caller's responsibility
+	// to bind ctx via clock.WithEffectiveNow before invoking Log on a
+	// clock-pinned resource.
 	_, err = tx.ExecContext(writeCtx, `
 		INSERT INTO audit_log (id, tenant_id, actor_type, actor_id, action,
 			resource_type, resource_id, resource_label, metadata, ip_address,
 			request_id, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, label, metaJSON,
-		nullIfEmpty(ipAddress), nullIfEmpty(requestID), time.Now().UTC())
+		nullIfEmpty(ipAddress), nullIfEmpty(requestID), clock.Now(writeCtx))
 	if err != nil {
 		auditWriteErrors.WithLabelValues(tenantID).Inc()
 		slog.Error("audit: failed to insert entry",
