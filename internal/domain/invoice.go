@@ -31,6 +31,12 @@ type InvoiceBillingReason string
 const (
 	BillingReasonSubscriptionCycle  InvoiceBillingReason = "subscription_cycle"
 	BillingReasonSubscriptionCreate InvoiceBillingReason = "subscription_create"
+	// BillingReasonSubscriptionCancel is the final partial-period invoice
+	// emitted at mid-period immediate cancel — covers in_arrears prorated
+	// base + usage from current_period_start to canceled_at. Distinct
+	// from subscription_cycle so reporting / dashboard can label this as
+	// a cancel-time true-up, not a normal cycle close.
+	BillingReasonSubscriptionCancel InvoiceBillingReason = "subscription_cancel"
 	BillingReasonManual             InvoiceBillingReason = "manual"
 	BillingReasonThreshold          InvoiceBillingReason = "threshold"
 )

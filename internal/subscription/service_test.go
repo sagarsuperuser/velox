@@ -684,6 +684,63 @@ func TestCreate(t *testing.T) {
 		}
 	})
 
+	t.Run("PR-10: BillFinalOnImmediateCancel called on Cancel (covers partial-period usage gap)", func(t *testing.T) {
+		// Pre-fix: mid-period immediate cancel generated NO final
+		// invoice. Customer's partial-period usage went uncaptured
+		// (revenue leak). Fix: Service.Cancel now also calls
+		// BillFinalOnImmediateCancel, which emits a usage + prorated
+		// in_arrears base invoice for [period_start, canceled_at].
+		svcWithBiller := NewService(newMemStore(), nil)
+		fb := &fakeBiller{}
+		svcWithBiller.SetBiller(fb)
+		sub, err := svcWithBiller.Create(ctx, "t1", CreateInput{
+			Code: "sub-cancel-mid", DisplayName: "Mid-period cancel",
+			CustomerID: "cus_1",
+			Items:      []CreateItemInput{{PlanID: "pln_1"}},
+			StartNow:   true,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := svcWithBiller.Cancel(ctx, "t1", sub.ID); err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+		if fb.finalCalls != 1 {
+			t.Errorf("BillFinalOnImmediateCancel called %d times, want 1", fb.finalCalls)
+		}
+		// BillOnCancel (credit grant for in_advance) also still fires
+		// — the two are independent operations (invoice vs credit).
+		if fb.cancelCalls != 1 {
+			t.Errorf("BillOnCancel called %d times, want 1 (independent of BillFinalOnImmediateCancel)", fb.cancelCalls)
+		}
+	})
+
+	t.Run("PR-10: BillFinalOnImmediateCancel error does NOT fail cancel", func(t *testing.T) {
+		// Best-effort, matching the BillOnCancel error-tolerance
+		// pattern (cancel-proration credit). If the final invoice can't
+		// be generated, the operator can manually invoice from the
+		// dashboard. The cancel itself must succeed regardless.
+		svcWithBiller := NewService(newMemStore(), nil)
+		fb := &fakeBiller{finalCancelErr: fmt.Errorf("tax provider down")}
+		svcWithBiller.SetBiller(fb)
+		sub, err := svcWithBiller.Create(ctx, "t1", CreateInput{
+			Code: "sub-cancel-final-err", DisplayName: "Final errpath",
+			CustomerID: "cus_1",
+			Items:      []CreateItemInput{{PlanID: "pln_1"}},
+			StartNow:   true,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		canceled, err := svcWithBiller.Cancel(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Errorf("Cancel should not fail when BillFinalOnImmediateCancel errors: %v", err)
+		}
+		if canceled.Status != domain.SubscriptionCanceled {
+			t.Errorf("status: got %q, want canceled", canceled.Status)
+		}
+	})
+
 	t.Run("ADR-031 BillOnCancel called on Cancel", func(t *testing.T) {
 		svcWithBiller := NewService(newMemStore(), nil)
 		fb := &fakeBiller{}
@@ -755,15 +812,22 @@ func TestCreate(t *testing.T) {
 // fakeBiller captures BillOnCreate / BillOnCancel invocations for
 // ADR-031 tests.
 type fakeBiller struct {
-	calls       int
-	cancelCalls int
-	err         error
-	cancelErr   error
+	calls           int
+	finalCalls      int
+	cancelCalls     int
+	err             error
+	finalCancelErr  error
+	cancelErr       error
 }
 
 func (f *fakeBiller) BillOnCreate(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
 	f.calls++
 	return domain.Invoice{}, f.err
+}
+
+func (f *fakeBiller) BillFinalOnImmediateCancel(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
+	f.finalCalls++
+	return domain.Invoice{}, f.finalCancelErr
 }
 
 func (f *fakeBiller) BillOnCancel(_ context.Context, _ domain.Subscription) error {

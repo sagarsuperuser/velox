@@ -42,6 +42,11 @@ type CustomerReader interface {
 // by *billing.Engine.
 type Biller interface {
 	BillOnCreate(ctx context.Context, sub domain.Subscription) (domain.Invoice, error)
+	// BillFinalOnImmediateCancel emits the final partial-period invoice
+	// for a mid-period immediate cancel (in_arrears prorated base +
+	// usage). No-op when canceled_at is at/after current_period_end
+	// (clean cancel, cycle close handles it).
+	BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subscription) (domain.Invoice, error)
 	BillOnCancel(ctx context.Context, sub domain.Subscription) error
 }
 
@@ -787,6 +792,25 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 	canceled, err := s.store.CancelAtomic(ctx, tenantID, id)
 	if err != nil {
 		return domain.Subscription{}, err
+	}
+
+	// PR-10: emit the final partial-period invoice for any mid-period
+	// cancel. Covers in_arrears prorated base + usage from
+	// current_period_start → canceled_at. No-op when canceled_at lands
+	// at/after current_period_end (clean cancel — cycle close handles
+	// it normally) or before current_period_start (defensive).
+	// Best-effort; operator can manually invoice from the dashboard
+	// if this fails. Runs BEFORE BillOnCancel so the credit grant
+	// (in_advance unused-base refund) doesn't pre-apply against this
+	// invoice — credit application is a separate balance operation,
+	// independent of the final-on-cancel invoice line items.
+	if s.biller != nil {
+		if _, err := s.biller.BillFinalOnImmediateCancel(ctx, canceled); err != nil {
+			slog.Warn("final-on-cancel invoice failed; partial-period usage may be uninvoiced — operator can issue manually",
+				"subscription_id", canceled.ID,
+				"tenant_id", tenantID,
+				"error", err)
+		}
 	}
 
 	// ADR-031: in_advance plans get a cancel-proration credit for the
