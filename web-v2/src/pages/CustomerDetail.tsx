@@ -5,13 +5,13 @@ import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForPaymentSetup, type Customer, type BillingProfile, type Invoice, type Plan, type Subscription, type PaymentSetup, type DunningPolicyWithCount, type CustomerCouponAssignment } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForPaymentSetup, type Customer, type BillingProfile, type Invoice, type PaymentSetup, type DunningPolicyWithCount, type CustomerCouponAssignment } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
-import { useAuth } from '@/contexts/AuthContext'
 import { Layout } from '@/components/Layout'
 import { CostDashboard } from '@/components/CostDashboard'
 import { TestClockBadge } from '@/components/TestClockBadge'
 import { TestClockBanner } from '@/components/TestClockBanner'
+import { CreateSubscriptionDialog } from '@/components/CreateSubscriptionDialog'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
@@ -27,7 +27,6 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
@@ -120,6 +119,19 @@ export default function CustomerDetailPage() {
     queryFn: () => api.getCustomer(id!),
     enabled: !!id,
   })
+
+  // Fetch test clocks only when the customer is pinned — used by
+  // CreateSubscriptionDialog to surface the ADR-027 inherit hint.
+  const { data: clocksData } = useQuery({
+    queryKey: ['test-clocks-for-customer-create-sub'],
+    queryFn: () => api.listTestClocks(),
+    enabled: !!customer?.test_clock_id,
+  })
+  const clockNameMap = useMemo(() => {
+    const m: Record<string, string> = {}
+    ;(clocksData?.data ?? []).forEach(c => { m[c.id] = c.name || c.id })
+    return m
+  }, [clocksData])
 
   const { data: overview } = useQuery({
     queryKey: ['customer-overview', id],
@@ -1010,13 +1022,16 @@ export default function CustomerDetailPage() {
         />
       )}
 
-      {/* Create Subscription Dialog */}
-      {showCreateSub && id && plans && customer && (
+      {/* Create Subscription Dialog — shared with the Subscriptions
+          page; locked to this customer so the picker is hidden and
+          the customer_id is pre-filled. */}
+      {plans && customer && (
         <CreateSubscriptionDialog
-          customerId={id}
-          customer={customer}
+          open={showCreateSub}
+          onOpenChange={setShowCreateSub}
+          lockedCustomer={customer}
           plans={plans}
-          onClose={() => setShowCreateSub(false)}
+          clockNameMap={clockNameMap}
           onCreated={(sub) => {
             setShowCreateSub(false)
             toast.success(`Subscription "${sub.display_name}" created`)
@@ -1207,120 +1222,6 @@ function EditCustomerDialog({ customer, onClose, onSaved }: {
   )
 }
 
-/* ─── Create Subscription ────────────────────────────────────── */
-
-function CreateSubscriptionDialog({ customerId, customer, plans, onClose, onCreated }: {
-  customerId: string; customer: Customer; plans: Plan[]; onClose: () => void; onCreated: (sub: Subscription) => void
-}) {
-  const { user } = useAuth()
-  const [startNow, setStartNow] = useState(true)
-  const [planId, setPlanId] = useState('')
-  const [planError, setPlanError] = useState('')
-
-  // ADR-027: test-clock is customer-level. Sub inherits silently.
-  // We still fetch clocks to look up the name for the inheritance
-  // hint when the customer is pinned (operator-friendly display).
-  const isTestMode = !!user && !user.livemode
-  const { data: clocksData } = useQuery({
-    queryKey: ['test-clocks'],
-    queryFn: () => api.listTestClocks(),
-    enabled: isTestMode && !!customer?.test_clock_id,
-  })
-  const clocks = clocksData?.data ?? []
-
-  const form = useForm<{ display_name: string; code: string }>({
-    resolver: zodResolver(z.object({
-      display_name: z.string().min(1, 'Display name is required'),
-      code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
-    })),
-    defaultValues: { code: '', display_name: '' },
-  })
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = form
-
-  const onSubmit = handleSubmit(async (data) => {
-    if (!planId) { setPlanError('Plan is required'); return }
-    setPlanError('')
-    try {
-      // ADR-027: test_clock_id is no longer set per-sub. The server
-      // inherits it from the customer's customers.test_clock_id.
-      const sub = await api.createSubscription({
-        ...data,
-        customer_id: customerId,
-        items: [{ plan_id: planId }],
-        start_now: startNow,
-      })
-      onCreated(sub)
-    } catch (err) {
-      applyApiError(form, err, ['display_name', 'code'], { toastTitle: 'Failed to create subscription' })
-    }
-  })
-
-  return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Create Subscription</DialogTitle>
-        </DialogHeader>
-        <form onSubmit={onSubmit} noValidate className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="sub_name">Display Name</Label>
-            <Input id="sub_name" placeholder="Pro Monthly" maxLength={255} {...register('display_name')} />
-            {errors.display_name && <p className="text-xs text-destructive">{errors.display_name.message}</p>}
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="sub_code">Code</Label>
-            <Input id="sub_code" placeholder="pro-monthly" maxLength={100} className="font-mono" {...register('code')} />
-            {errors.code && <p className="text-xs text-destructive">{errors.code.message}</p>}
-          </div>
-          <div className="space-y-2">
-            <Label>Plan</Label>
-            <Select value={planId} onValueChange={(v) => { setPlanId(v ?? ''); setPlanError('') }}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select plan...">
-                  {(value: string) => {
-                    const plan = plans.find(p => p.id === value)
-                    return plan ? `${plan.name} (${plan.code})` : value
-                  }}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {plans.map(p => (
-                  <SelectItem key={p.id} value={p.id}>{p.name} ({p.code})</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {planError && <p className="text-xs text-destructive">{planError}</p>}
-          </div>
-          <label className="flex items-center gap-2 text-sm cursor-pointer">
-            <Checkbox checked={startNow} onCheckedChange={(checked) => setStartNow(checked === true)} />
-            Start immediately (activate + set billing period)
-          </label>
-
-          {/* Test-clock attach is customer-level (ADR-027). Sub
-              inherits silently from the customer; the hint below
-              makes that explicit so an operator clicking Create
-              isn't surprised that the new sub bills on simulated
-              time instead of wall-clock. */}
-          {isTestMode && customer?.test_clock_id && (
-            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              This subscription will inherit the customer's test clock
-              {clocks.find(c => c.id === customer.test_clock_id)?.name && (
-                <> — <span className="font-medium">{clocks.find(c => c.id === customer.test_clock_id)?.name}</span></>
-              )}.
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={isSubmitting}>
-              {isSubmitting ? <><Loader2 size={14} className="animate-spin mr-2" />Creating...</> : 'Create Subscription'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
 
 /* ─── Edit Billing Profile ───────────────────────────────────── */
 
