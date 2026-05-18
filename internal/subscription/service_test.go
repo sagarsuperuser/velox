@@ -130,8 +130,8 @@ func (m *memStore) CancelAtomic(ctx context.Context, tenantID, id string) (domai
 	if !ok || s.TenantID != tenantID {
 		return domain.Subscription{}, errs.ErrNotFound
 	}
-	if s.Status != domain.SubscriptionActive && s.Status != domain.SubscriptionPaused {
-		return domain.Subscription{}, fmt.Errorf("can only cancel active or paused subscriptions, current status: %s", s.Status)
+	if s.Status == domain.SubscriptionCanceled || s.Status == domain.SubscriptionArchived {
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot cancel %s subscription (already terminated)", s.Status))
 	}
 	now := clock.Now(ctx)
 	s.Status = domain.SubscriptionCanceled
@@ -787,6 +787,92 @@ func TestActivateAndCancel(t *testing.T) {
 		_, err := svc.Cancel(ctx, "t1", sub.ID)
 		if err == nil {
 			t.Fatal("expected error canceling already canceled")
+		}
+	})
+}
+
+// TestCancel_NonTerminalStatuses locks in the industry-aligned cancel
+// state machine (Stripe / Lago / Recurly / Chargebee parity): cancel
+// works from every non-terminal status. Pre-fix, Velox rejected cancel
+// from draft and trialing — the trialing case is the dominant cancel
+// path (customer abandons during trial), so the rejection silently
+// trapped operators in the dashboard.
+func TestCancel_NonTerminalStatuses(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("cancel from draft", func(t *testing.T) {
+		svc := NewService(newMemStore(), nil)
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-draft", DisplayName: "Draft", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}},
+			// No StartNow, no TrialDays → status defaults to draft.
+		})
+		if sub.Status != domain.SubscriptionDraft {
+			t.Fatalf("setup: expected draft, got %q", sub.Status)
+		}
+		canceled, err := svc.Cancel(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("cancel from draft: %v", err)
+		}
+		if canceled.Status != domain.SubscriptionCanceled {
+			t.Errorf("status: got %q, want canceled", canceled.Status)
+		}
+		if canceled.CanceledAt == nil {
+			t.Error("canceled_at must be set")
+		}
+	})
+
+	t.Run("cancel from trialing", func(t *testing.T) {
+		svc := NewService(newMemStore(), nil)
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-trial", DisplayName: "Trial", CustomerID: "c",
+			Items:     []CreateItemInput{{PlanID: "p"}},
+			TrialDays: 14,
+		})
+		if sub.Status != domain.SubscriptionTrialing {
+			t.Fatalf("setup: expected trialing, got %q", sub.Status)
+		}
+		canceled, err := svc.Cancel(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("cancel from trialing: %v", err)
+		}
+		if canceled.Status != domain.SubscriptionCanceled {
+			t.Errorf("status: got %q, want canceled", canceled.Status)
+		}
+		// Trial-end timestamp is historical evidence — preserved on
+		// cancel so reporting can answer "did this customer cancel
+		// during their trial or after?"
+		if canceled.TrialEndAt == nil {
+			t.Error("trial_end_at must be preserved across cancel for historical record")
+		}
+	})
+
+	t.Run("cancel from paused", func(t *testing.T) {
+		svc := NewService(newMemStore(), nil)
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-paused", DisplayName: "Paused", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, StartNow: true,
+		})
+		_, _ = svc.Pause(ctx, "t1", sub.ID)
+		canceled, err := svc.Cancel(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("cancel from paused: %v", err)
+		}
+		if canceled.Status != domain.SubscriptionCanceled {
+			t.Errorf("status: got %q, want canceled", canceled.Status)
+		}
+	})
+
+	t.Run("rejects cancel from canceled (already terminated)", func(t *testing.T) {
+		svc := NewService(newMemStore(), nil)
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-2x", DisplayName: "Twice", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, StartNow: true,
+		})
+		_, _ = svc.Cancel(ctx, "t1", sub.ID)
+		_, err := svc.Cancel(ctx, "t1", sub.ID)
+		if err == nil {
+			t.Fatal("expected InvalidState on double-cancel")
 		}
 	})
 }
