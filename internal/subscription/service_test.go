@@ -799,6 +799,24 @@ func (f *fakeBiller) BillOnCancel(_ context.Context, _ domain.Subscription) erro
 	return f.cancelErr
 }
 
+// fakeDispatcher captures outbound-webhook Dispatch calls so tests
+// can assert on the event type + payload without standing up the
+// webhook outbox.
+type fakeDispatcher struct {
+	events []struct {
+		eventType string
+		payload   map[string]any
+	}
+}
+
+func (f *fakeDispatcher) Dispatch(_ context.Context, _ string, eventType string, payload map[string]any) error {
+	f.events = append(f.events, struct {
+		eventType string
+		payload   map[string]any
+	}{eventType, payload})
+	return nil
+}
+
 // fakePlanReader returns plans by id — lets tests stub plan intervals
 // for the yearly-vs-monthly period-anchoring branches without standing
 // up the full pricing package.
@@ -1772,6 +1790,41 @@ func TestProcessExpiredTrialsForClock(t *testing.T) {
 		}
 	})
 
+	t.Run("fires subscription.trial_ended webhook on activation", func(t *testing.T) {
+		// Mirrors the engine auto-flip path's webhook dispatch so
+		// consumers see one event per trial transition regardless of
+		// which path activated the sub.
+		svc := NewService(newMemStore(), clock.NewFake(createdAt))
+		svc.SetBiller(&fakeBiller{})
+		fd := &fakeDispatcher{}
+		svc.SetEventDispatcher(fd)
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-webhook", DisplayName: "Webhook", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, TrialDays: 14,
+		})
+		mem := svc.store.(*memStore)
+		seeded := mem.subs[sub.ID]
+		seeded.TestClockID = "tclk_1"
+		mem.subs[sub.ID] = seeded
+		frozen := sub.TrialEndAt.Add(24 * time.Hour)
+		if _, errs := svc.ProcessExpiredTrialsForClock(ctx, "t1", "tclk_1", frozen); len(errs) != 0 {
+			t.Fatalf("unexpected errors: %v", errs)
+		}
+		if len(fd.events) != 1 {
+			t.Fatalf("expected 1 webhook event, got %d", len(fd.events))
+		}
+		ev := fd.events[0]
+		if ev.eventType != domain.EventSubscriptionTrialEnded {
+			t.Errorf("event type: got %q, want %q", ev.eventType, domain.EventSubscriptionTrialEnded)
+		}
+		if ev.payload["triggered_by"] != "schedule" {
+			t.Errorf("triggered_by: got %v, want schedule", ev.payload["triggered_by"])
+		}
+		if ev.payload["subscription_id"] != sub.ID {
+			t.Errorf("subscription_id: got %v, want %v", ev.payload["subscription_id"], sub.ID)
+		}
+	})
+
 	t.Run("operator-EndTrial race: row already active is silently skipped", func(t *testing.T) {
 		// The scan's SELECT and the per-sub UPDATE aren't in the same
 		// tx; an operator EndTrial between them moves the row out of
@@ -2127,6 +2180,64 @@ func TestPeriodAnchoring(t *testing.T) {
 		}
 		if !sub.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
 			t.Errorf("period_end: got %v, want %v (full year, NOT 1 month)", sub.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+	})
+
+	t.Run("Create rejects mixed monthly + yearly items (Stripe parity)", func(t *testing.T) {
+		// Stripe / Lago / Chargebee all reject mixed intervals on the
+		// same sub because the period anchor is per-sub and a monthly +
+		// yearly mix has no coherent cycle. Velox should too.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_monthly": {ID: "p_monthly", BillingInterval: domain.BillingMonthly},
+			"p_yearly":  {ID: "p_yearly", BillingInterval: domain.BillingYearly},
+		}})
+		_, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{
+				{PlanID: "p_monthly"},
+				{PlanID: "p_yearly"},
+			},
+			StartNow: true,
+		})
+		if err == nil {
+			t.Fatal("expected error for mixed monthly + yearly items")
+		}
+	})
+
+	t.Run("Create allows multiple items with same interval", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p1": {ID: "p1", BillingInterval: domain.BillingMonthly},
+			"p2": {ID: "p2", BillingInterval: domain.BillingMonthly},
+		}})
+		_, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p1"}, {PlanID: "p2"}},
+			StartNow: true,
+		})
+		if err != nil {
+			t.Errorf("expected success for matching-interval items: %v", err)
+		}
+	})
+
+	t.Run("AddItem rejects mismatched interval against existing sub", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_monthly": {ID: "p_monthly", BillingInterval: domain.BillingMonthly},
+			"p_yearly":  {ID: "p_yearly", BillingInterval: domain.BillingYearly},
+		}})
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p_monthly"}},
+			StartNow: true,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		_, err = svc.AddItem(ctx, "t1", sub.ID, AddItemInput{PlanID: "p_yearly"})
+		if err == nil {
+			t.Fatal("expected error when adding yearly item to monthly sub")
 		}
 	})
 

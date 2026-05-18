@@ -1,0 +1,204 @@
+# ADR-037: Trial-end and activation period anchoring
+
+**Date:** 2026-05-18
+**Status:** Accepted
+
+## Context
+
+A 2026-05-18 deep audit of every time-aware subscription flow surfaced a
+related cluster of period-anchoring bugs that share one root cause: the
+service layer's trial-end and activation paths each had their own
+inline period math, and none of them honored the full
+`(billing_time, plan.billing_interval)` matrix correctly. The
+operator-visible symptoms covered the full lifecycle:
+
+| # | Bug | Effect (calendar billing, sub created Nov 29, 14d trial) |
+|---|---|---|
+| 1 | `Create + trial + calendar` dropped the stub period | trial_end=Dec 13, but `current_period_start=Jan 1` — 19 unbilled days (revenue leak) |
+| 2 | `EndTrial-early` didn't reset period boundaries | Operator EndTrial Dec 5 → status flips to active but next charge still fires Jan 1 (8 unbilled days Dec 5 → Dec 13) |
+| 6 | `in_advance + trial` first paid period was never billed | engine auto-flip at cycle close bills in_advance items for the NEXT period; the trial-end period went unbilled (revenue leak specific to in_advance) |
+| 8 | `status='trialing'` hung past `trial_end_at` | Status hung at trialing for the gap between actual trial-end and the first chargeable cycle close — up to ~30 days for calendar billing |
+| 10 | Yearly + trial first cycle was 1 month, not 1 year | Customer paid 1/12 of yearly fee for an off-cycle first invoice, then full year invoices thereafter — 13 months of service for 13/12 of yearly fee |
+| 11 | `Activate` (draft → active) backdated `period_start` to month-start, ignored `billing_time` | Sub activated Nov 29 was billed for the full Nov cycle including days it was a draft; anniversary draft activated mid-month still got calendar periods |
+
+Each bug looked self-contained but they all sat on the same defect:
+the period-anchoring helpers were duplicated inline in each entry
+point with subtle differences. Fix scope crossed Create / Activate /
+EndTrial / ExtendTrial + the engine's auto-flip path + the catchup
+orchestrator + the wall-clock cron tick.
+
+**Industry verification** (the period-anchoring shapes were verified
+across two reference platforms before settling on the contract):
+
+- **[Stripe — Subscription billing-cycle](https://docs.stripe.com/billing/subscriptions/billing-cycle)**:
+  "Subscriptions with trials use the `trial_end` timestamp as the
+  billing cycle anchor." First chargeable cycle starts at trial-end,
+  prorated through the next billing-cycle anchor (e.g. month start
+  for calendar). Trial-end transitions emit `customer.subscription.trial_will_end`
+  at trial-end minus 3 days and `customer.subscription.updated` with
+  `status='active'` at trial-end exactly.
+
+- **[Lago — Billing time](https://doc.getlago.com/guide/subscriptions/billing-time)**:
+  "For calendar billing-time, the first chargeable period anchors at
+  the start of the next calendar period." Trial-end equivalent
+  (`ending_at`) flips status without waiting for cycle close.
+
+- **Both platforms** force anniversary semantics for yearly billing —
+  neither ships a "calendar yearly" model where a stub bridges to a
+  fixed annual anchor.
+
+## Decision
+
+Centralize period-anchor computation in two helpers, gated on
+`(billing_time, plan.billing_interval)`, and route every entry point
+through them. Pair the anchor computation with state-machine
+guarantees: trial transitions are atomic and stamp their period at
+the same instant the status flips.
+
+**Helpers** (in `internal/subscription/service.go`):
+
+- `firstPeriodAfterTrial(trialEnd, billingTime, interval, loc) → (ps, pe)`
+  - Yearly: `ps = trialEnd (day-snapped), pe = ps + 1 year`.
+    `billingTime` is ignored — Stripe and Lago both force anniversary
+    on yearly.
+  - Monthly + calendar: `ps = trialEnd (day-snapped), pe = next-month-start`.
+    Edge case: `ps == pe` (trial_end already on a calendar boundary)
+    collapses the stub and promotes `pe` to the following month.
+  - Monthly + anniversary: `ps = trialEnd, pe = ps + 1 month`.
+
+- `firstPeriodForActivate(at, billingTime, interval, loc) → (ps, pe)`
+  - Same matrix as above but anchored on the activation instant `at`
+    instead of `trialEnd`.
+
+`interval` is resolved per-sub from `items[0].plan.BillingInterval`
+via a new `PlanReader` interface on `subscription.Service` (wired in
+`router.go` to the pricing store). Mixed-interval items on a single
+sub are rejected at `Create` and `AddItem` (Stripe / Lago / Chargebee
+all reject this).
+
+**State-machine guarantees:**
+
+- `Service.Create` — trial branch + start_now branch use the helpers.
+- `Service.Activate` (draft → active) — uses `firstPeriodForActivate`.
+  Pre-fix hardcoded `beginningOfMonth(now)` for `period_start`,
+  backdating to first-of-month and ignoring `billing_time`.
+- `Service.EndTrial` — early end resets period: new store atomic
+  `EndTrialEarly(at, ps, pe, next_billing)` truncates `trial_end_at=at`,
+  flips status, and re-anchors the period in one UPDATE.
+- `Service.ExtendTrial` — recomputes anchor on `new_trial_end`. Store
+  signature expanded: `ExtendTrial(at, ps, pe, next_billing)`.
+- `Service.ProcessExpiredTrialsForClock` (catchup Phase 0.5) and
+  `Service.ProcessExpiredTrials` (wall-clock cron phase 0.9) — both
+  call `ActivateAfterTrial(at=trial_end_at)` so the status flips at
+  the actual trial-end instant, not at the deferred cycle close.
+  Both also fire `BillOnCreate` to cover the in_advance first paid
+  period and dispatch `subscription.trial_ended` to match the
+  engine auto-flip path's webhook.
+- `engine.billOnePeriod` trial-elapsed branch — kept as a defensive
+  fallback. With Phases 0.5 / 0.9 wired, the engine branch's
+  `status='trialing'` guard naturally skips already-flipped subs.
+
+## Why this design
+
+- **One source of truth.** Pre-fix every entry point computed its own
+  anchor with subtle differences; the bugs came from drift. The
+  helpers are pure functions; tests pin every cell of the
+  `(billing_time × interval)` matrix exactly.
+- **Trial transitions happen at `trial_end_at`, not at cycle close.**
+  The catchup-orchestrator and wall-clock-cron phases (`Phase 0.5` /
+  `phase 0.9`) ensure status flips when the trial actually ends,
+  matching Stripe / Lago's `subscription.trial_ended` semantics.
+  The engine's existing cycle-close auto-flip branch is the
+  defensive fallback.
+- **`feedback_billing_accuracy`** — financial logic must be correct
+  first time; the full matrix is exercised by `TestPeriodAnchoring`'s
+  11 scenarios.
+- **`feedback_stripe_parity_framing`** — the chosen design is a
+  superset that contains Stripe's behavior as a configuration:
+  Velox's `billing_time` lets the operator pick calendar vs
+  anniversary, but for yearly plans (where neither platform ships
+  a meaningful calendar variant) anniversary is forced.
+
+## Alternatives considered
+
+- **A. Keep inline math at every entry point, fix each bug
+  separately.** Rejected: drift is the root cause, fixing each
+  symptom would leave the next entry point exposed to the same class
+  of bug (see `feedback_long_term_means_cross_flow_audit`).
+- **B. Cycle-close-only trial transitions (status='trialing' until
+  next_billing_at fires).** Rejected: Bug #8 — dashboard lies about
+  lifecycle state for the gap between trial-end and cycle close (up
+  to ~30 days for calendar billing). Webhook consumers would also
+  receive `subscription.trial_ended` weeks late.
+- **C. Stub-to-next-Jan-1 for yearly + calendar.** Rejected: no
+  industry analog. Stripe and Lago both force anniversary for
+  yearly. A partial-year first invoice followed by full-year
+  cycles is a Velox-specific oddity with no operator demand.
+- **D. Reject `billing_time=calendar` for yearly plans at Create.**
+  Rejected: would force operators to think about the interaction
+  when only one combination is meaningful. Forcing anniversary
+  semantics silently and ignoring the `billing_time` field for
+  yearly is friendlier and matches the implementations of
+  reference platforms.
+
+## Consequences
+
+### Positive
+
+- Revenue leaks closed for calendar+trial (Bug #1), early-EndTrial
+  (Bug #2), in_advance+trial (Bug #6), and yearly+trial (Bug #10).
+- Status correctness for the trial → active transition (Bug #8),
+  ending the gap between actual trial-end and visible status flip.
+- Operator UX improvements (PR-3): the subscription detail page
+  renders trial-aware timeline dots and a "Trial period" stat card
+  while `status='trialing'`.
+- Webhook consumers see `subscription.trial_ended` events fired at
+  `trial_end_at` (or at activation for operator-EndTrial),
+  regardless of which path activated the sub.
+
+### Risks / open items
+
+- The `firstPlanInterval` helper falls open to `BillingMonthly` on
+  any PlanReader error (RLS gap, deleted plan, unwired reader). This
+  preserves narrow-test behavior at the cost of masking
+  configuration mistakes — a deleted plan id mid-life would silently
+  re-anchor as monthly. Considered acceptable because the period
+  helpers run BEFORE the sub is persisted at Create time (plan FK
+  failure surfaces downstream), and the runtime entry points
+  (`Activate`, `EndTrial`, `ExtendTrial`) operate on already-persisted
+  subs whose plan ids are FK-validated.
+- Mixed-interval validation is currently first-item-wins for already-
+  persisted subs (`UpdateItem` plan-change doesn't yet re-validate).
+  Separate follow-up.
+- True cycle-skip "hard pause" semantics are not implemented (Bug
+  #12). The dashboard's "Pause subscription" radio option was
+  removed in PR-6 rather than fixing the implementation, per
+  `feedback_pre_launch_scoping` — no named pressure for cycle-skip
+  pause semantics.
+- The wall-clock cron's `ProcessExpiredTrials` runs at the
+  scheduler's tick interval (typically 5 minutes), so wall-clock
+  status flips lag the actual `trial_end_at` by up to one tick.
+  The catchup-orchestrator path is exact (fires on operator Advance).
+
+## References
+
+- Related ADRs: [ADR-028](028-fully-disjoint-test-clock-flows.md)
+  (disjoint flows — clock-pinned vs wall-clock subs go through
+  separate scan paths), [ADR-029](029-fully-disjoint-test-clock-flows.md)
+  (catchup orchestrator phase ordering), [ADR-031](031-per-plan-base-bill-timing.md)
+  (in_advance bill-timing — Bug #6's BillOnCreate trigger ties back to
+  this), [ADR-035](035-per-fact-simulated-time-anchoring.md)
+  (per-fact sim-time anchoring — the bind-effective-now pattern this
+  ADR builds on).
+- Commits implementing this contract: `2233600` (Bug #1, #2, #11 +
+  ExtendTrial re-anchor), `7d26023` (Bug #6 — in_advance + trial
+  day-1), `e51face` (Bug #8 — catchup Phase 0.5), `af47996` (Bug #8 —
+  wall-clock cron phase 0.9), `786e299` (Bug #10 — yearly).
+- Memory pointers: `feedback_billing_accuracy`,
+  `feedback_long_term_means_cross_flow_audit`,
+  `feedback_stripe_parity_framing`,
+  `feedback_design_for_production`,
+  `feedback_verify_stripe_parity_claims`.
+- [Stripe — Subscription billing-cycle](https://docs.stripe.com/billing/subscriptions/billing-cycle)
+- [Lago — Billing time](https://doc.getlago.com/guide/subscriptions/billing-time)
+- [Stripe — Cancel a subscription](https://docs.stripe.com/api/subscriptions/cancel) (Bug #13 — trial-cancel parity)

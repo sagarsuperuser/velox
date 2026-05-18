@@ -236,6 +236,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		slog.Warn("webhook outbox DISABLED — using legacy direct-dispatch path (set VELOX_WEBHOOK_OUTBOX_ENABLED=true to re-enable)")
 	}
 	subH.SetEventDispatcher(eventDispatcher)
+	// Trial-expiry phases (catchup orchestrator + wall-clock cron)
+	// fire subscription.trial_ended via the subscription Service —
+	// matches the engine auto-flip path so webhook consumers see one
+	// event per trial transition regardless of which path activated
+	// the sub.
+	subSvc.SetEventDispatcher(eventDispatcher)
 	auditLogger := audit.NewLogger(db)
 	auditH := audit.NewHandler(auditLogger)
 	// Wire audit logging on the customer handler — currently used to
