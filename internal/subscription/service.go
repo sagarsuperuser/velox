@@ -163,6 +163,61 @@ func beginningOfMonthIn(t time.Time, loc *time.Location) time.Time {
 	return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc).UTC()
 }
 
+// firstPeriodAfterTrial computes (current_period_start, current_period_end)
+// for the first post-trial billing period anchored on a trial_end_at instant.
+//
+// Calendar billing: start = trial_end (day-snapped), end = first day of the
+// next calendar month. This produces a stub period (trial_end → next month
+// start) that bills the partial month at trial-end → Stripe / Lago parity.
+// If trial_end IS already a calendar month boundary, the stub vanishes and
+// the first period is a clean full cycle from that boundary.
+//
+// Anniversary billing: start = trial_end, end = trial_end + 1 month. No
+// stub — the cycle anchors on the trial-end instant.
+//
+// Subsequent cycles roll forward via billOnePeriod's per-cycle
+// advanceBillingPeriod call. This helper only sets the FIRST post-trial
+// period; the engine handles the rest.
+//
+// Plan interval is hardcoded to monthly here (matches the pre-existing
+// engine.advanceBillingPeriod default). Yearly-plan support requires
+// threading the plan interval through — tracked separately.
+func firstPeriodAfterTrial(trialEnd time.Time, billingTime domain.SubscriptionBillingTime, loc *time.Location) (time.Time, time.Time) {
+	ps := beginningOfDayIn(trialEnd, loc)
+	if billingTime == domain.BillingTimeCalendar {
+		pe := beginningOfMonthIn(trialEnd.AddDate(0, 1, 0), loc)
+		// Edge: trial_end fell exactly on a calendar boundary — the stub
+		// computation collapses (ps == pe). Promote to a clean full cycle
+		// from that boundary so the engine doesn't see a zero-length period.
+		if !ps.Before(pe) {
+			pe = beginningOfMonthIn(ps.AddDate(0, 1, 0), loc)
+		}
+		return ps, pe
+	}
+	return ps, ps.AddDate(0, 1, 0)
+}
+
+// firstPeriodForActivate computes the first billing period when a sub is
+// activated without a trial — either via StartNow on Create, or via the
+// operator's Activate on a draft sub. Mirrors Stripe's "billing starts
+// now" behavior: period begins at `at` (day-snapped in tenant TZ), and
+// ends at the next calendar boundary (calendar) or `at + 1 month`
+// (anniversary).
+//
+// Calendar billing produces a stub period if `at` falls mid-month, which
+// bills the partial cycle correctly via billOnePeriod's proration.
+// Anniversary anchors the cycle on `at` itself.
+//
+// Plan-interval-aware variant is deferred (same scope as
+// firstPeriodAfterTrial).
+func firstPeriodForActivate(at time.Time, billingTime domain.SubscriptionBillingTime, loc *time.Location) (time.Time, time.Time) {
+	ps := beginningOfDayIn(at, loc)
+	if billingTime == domain.BillingTimeCalendar {
+		return ps, beginningOfMonthIn(at.AddDate(0, 1, 0), loc)
+	}
+	return ps, ps.AddDate(0, 1, 0)
+}
+
 // CreateItemInput is a single priced line the caller wants on a new
 // subscription. At least one item is required; duplicate plan_ids are rejected
 // so the underlying UNIQUE (subscription_id, plan_id) never surfaces as a
@@ -282,41 +337,21 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		trialEnd = &te
 		status = domain.SubscriptionTrialing
 		startedAt = &now
-		if billingTime == domain.BillingTimeCalendar {
-			// Trial ends → period starts on first of next month after
-			// trial-end, snapped to 00:00 tenant TZ.
-			ps := beginningOfMonthIn(te.AddDate(0, 1, 0), loc)
-			pe := beginningOfMonthIn(ps.AddDate(0, 1, 0), loc)
-			periodStart = &ps
-			periodEnd = &pe
-			nextBilling = &pe
-		} else {
-			// Anniversary: period starts at trial-end snapped to 00:00.
-			ps := beginningOfDayIn(te, loc)
-			pe := ps.AddDate(0, 1, 0)
-			periodStart = &ps
-			periodEnd = &pe
-			nextBilling = &pe
-		}
+		// First post-trial period anchors on trial_end. Calendar billing
+		// produces the trial_end → next-month-start stub (Stripe parity);
+		// anniversary produces a full cycle from trial_end. See helper
+		// doc for edge cases.
+		ps, pe := firstPeriodAfterTrial(te, billingTime, loc)
+		periodStart = &ps
+		periodEnd = &pe
+		nextBilling = &pe
 	} else if input.StartNow {
 		status = domain.SubscriptionActive
 		startedAt = &now
-		if billingTime == domain.BillingTimeCalendar {
-			// Today's start-of-day in tenant TZ → first of next month
-			// at 00:00 in tenant TZ. A sub created at any time on May 1
-			// gets the full first day of May.
-			ps := beginningOfDayIn(now, loc)
-			pe := beginningOfMonthIn(now.AddDate(0, 1, 0), loc)
-			periodStart = &ps
-			periodEnd = &pe
-			nextBilling = &pe
-		} else {
-			ps := beginningOfDayIn(now, loc)
-			pe := ps.AddDate(0, 1, 0)
-			periodStart = &ps
-			periodEnd = &pe
-			nextBilling = &pe
-		}
+		ps, pe := firstPeriodForActivate(now, billingTime, loc)
+		periodStart = &ps
+		periodEnd = &pe
+		nextBilling = &pe
 	}
 
 	overageAction := input.OverageAction
@@ -390,9 +425,18 @@ func (s *Service) Activate(ctx context.Context, tenantID, id string) (domain.Sub
 	sub.StartedAt = &now
 
 	if sub.CurrentBillingPeriodStart == nil {
+		// Activate uses the same first-period helper as Create's
+		// StartNow branch: period begins at `now` (day-snapped) and
+		// ends at the next calendar boundary (calendar billing) or
+		// `now + 1 month` (anniversary). Pre-fix this hardcoded
+		// beginningOfMonth(now) which BACKDATED periodStart to the
+		// first of the current month — a sub activated Nov 29 was
+		// billed for the full Nov cycle including the days it was a
+		// draft. Pre-fix also ignored sub.BillingTime entirely — an
+		// anniversary draft activated mid-month still got calendar-
+		// anchored periods.
 		loc := s.tenantLocation(ctx, tenantID)
-		ps := beginningOfMonthIn(now, loc)
-		pe := beginningOfMonthIn(now.AddDate(0, 1, 0), loc)
+		ps, pe := firstPeriodForActivate(now, sub.BillingTime, loc)
 		sub.CurrentBillingPeriodStart = &ps
 		sub.CurrentBillingPeriodEnd = &pe
 		sub.NextBillingAt = &pe
@@ -745,7 +789,23 @@ func (s *Service) ResumeCollection(ctx context.Context, tenantID, id string) (do
 func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
 	ctx = s.bindForSub(ctx, tenantID, id)
 	now := s.clock.Now(ctx)
-	return s.store.ActivateAfterTrial(ctx, tenantID, id, now)
+
+	// Read sub for billing_time + status validation. Early-end resets
+	// the period anchor so billing starts immediately (Stripe parity);
+	// the engine-auto-flip path (billOnePeriod calling ActivateAfterTrial
+	// at cycle close) is the other transition path and leaves periods
+	// alone because they were already advanced to the cycle boundary.
+	sub, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if sub.Status != domain.SubscriptionTrialing {
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot end trial on %s subscription", sub.Status))
+	}
+
+	loc := s.tenantLocation(ctx, tenantID)
+	ps, pe := firstPeriodForActivate(now, sub.BillingTime, loc)
+	return s.store.EndTrialEarly(ctx, tenantID, id, now, ps, pe, pe)
 }
 
 // ExtendTrial pushes a trialing subscription's trial_end_at later. Used
@@ -773,7 +833,14 @@ func (s *Service) ExtendTrial(ctx context.Context, tenantID, id string, newTrial
 	if current.TrialEndAt != nil && !newTrialEnd.After(*current.TrialEndAt) {
 		return domain.Subscription{}, errs.Invalid("trial_end", "must be after the current trial_end_at — use end-trial to shorten")
 	}
-	return s.store.ExtendTrial(ctx, tenantID, id, newTrialEnd.UTC())
+
+	// Re-anchor the first chargeable cycle on the new trial_end. Without
+	// this, extending past the old current_period_end silently drops a
+	// stub (same bug class as the pre-fix calendar+trial Create branch).
+	loc := s.tenantLocation(ctx, tenantID)
+	newEnd := newTrialEnd.UTC()
+	ps, pe := firstPeriodAfterTrial(newEnd, current.BillingTime, loc)
+	return s.store.ExtendTrial(ctx, tenantID, id, newEnd, ps, pe, pe)
 }
 
 // ItemThresholdInput is one configured per-item usage cap on a subscription.

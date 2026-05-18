@@ -549,13 +549,68 @@ func (s *PostgresStore) ActivateAfterTrial(ctx context.Context, tenantID, id str
 	return sub, nil
 }
 
-// ExtendTrial atomically updates trial_end_at on a 'trialing' row. The
-// caller (Service.ExtendTrial) validates that newTrialEnd makes sense
-// (in the future, after the existing trial_end_at). Returns
-// errs.InvalidState if the row's status is not 'trialing' at UPDATE
-// time — distinguishes operator-already-ended / hard-paused / canceled
-// from missing-row by re-querying status when no row matches.
-func (s *PostgresStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd time.Time) (domain.Subscription, error) {
+// EndTrialEarly atomically flips status 'trialing' → 'active', stamps
+// activated_at, truncates trial_end_at to `at` (historical evidence
+// that the operator ended the trial before its scheduled end), and
+// resets the period anchor to (periodStart, periodEnd) so the first
+// chargeable cycle starts immediately. The caller (Service.EndTrial)
+// computes periodStart/periodEnd via firstPeriodForActivate so the
+// reset honors billing_time. Returns errs.InvalidState if status is
+// not 'trialing' at UPDATE time.
+func (s *PostgresStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET status = 'active',
+		    activated_at = COALESCE(activated_at, $1),
+		    trial_end_at = $1,
+		    current_billing_period_start = $2,
+		    current_billing_period_end = $3,
+		    next_billing_at = $4,
+		    updated_at = $1
+		WHERE id = $5 AND status = 'trialing'
+		RETURNING `+subCols,
+		at, periodStart, periodEnd, nextBilling, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		var currentStatus string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
+		if err2 == sql.ErrNoRows {
+			return domain.Subscription{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.Subscription{}, err2
+		}
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot end trial on %s subscription", currentStatus))
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
+		return domain.Subscription{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+// ExtendTrial atomically updates trial_end_at AND the period anchor on
+// a 'trialing' row. The caller (Service.ExtendTrial) validates that
+// newTrialEnd makes sense (in the future, after the existing
+// trial_end_at) and computes the new period via firstPeriodAfterTrial.
+// Returns errs.InvalidState if the row's status is not 'trialing' at
+// UPDATE time — distinguishes operator-already-ended / hard-paused /
+// canceled from missing-row by re-querying status when no row matches.
+func (s *PostgresStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Subscription{}, err
@@ -566,10 +621,14 @@ func (s *PostgresStore) ExtendTrial(ctx context.Context, tenantID, id string, ne
 	var sub domain.Subscription
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
-		SET trial_end_at = $1, updated_at = $2
-		WHERE id = $3 AND status = 'trialing'
+		SET trial_end_at = $1,
+		    current_billing_period_start = $2,
+		    current_billing_period_end = $3,
+		    next_billing_at = $4,
+		    updated_at = $5
+		WHERE id = $6 AND status = 'trialing'
 		RETURNING `+subCols,
-		newTrialEnd, now, id,
+		newTrialEnd, periodStart, periodEnd, nextBilling, now, id,
 	), &sub)
 	if err == sql.ErrNoRows {
 		var currentStatus string
