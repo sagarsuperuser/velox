@@ -128,6 +128,13 @@ func serve() {
 	if server.InvoiceSvc != nil {
 		scheduler.SetTaxRetrier(server.InvoiceSvc)
 	}
+	if server.SubscriptionSvc != nil {
+		// Wall-clock trial expiry (Bug #8 — non-clock-pinned subs):
+		// each tick, flip trialing subs to active at trial_end_at so
+		// the dashboard doesn't lie about lifecycle state for up to
+		// ~30 days past actual trial-end.
+		scheduler.SetTrialExpirer(server.SubscriptionSvc)
+	}
 	if server.PaymentReconciler != nil {
 		scheduler.SetPaymentReconciler(server.PaymentReconciler)
 	}
