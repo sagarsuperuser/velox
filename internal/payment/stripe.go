@@ -319,7 +319,25 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 	// callers (scheduler + operator click) read the same UpdatedAt
 	// and dedupe correctly: Stripe returns the same PI to both, no
 	// double-charge.
+	//
+	// The `purpose` suffix prevents key collisions between the initial
+	// finalize-time auto-charge (purpose="") and the first dunning
+	// retry (purpose="dunning_retry"). Without it, both calls use
+	// inv.UpdatedAt = T1 (the dunning retry reads the inv with
+	// updated_at still pinned to the initial-charge-fail moment
+	// because no UpdatePayment runs between them), but the metadata
+	// differs because the retry path adds velox_purpose=dunning_retry.
+	// Stripe sees "same key, different parameters" → 409. Surfaced
+	// 2026-05-19 from a clock-pinned dunning workflow; the bug exists
+	// on wall-clock too in theory but is masked because invoice
+	// metadata typically doesn't change between consecutive
+	// chargeInvoice/ChargeInvoiceForDunningRetry calls in production
+	// (they sit far enough apart in time for UpdatedAt to drift via
+	// other writes).
 	idempotencyKey := fmt.Sprintf("velox_inv_%s_%d", inv.ID, inv.UpdatedAt.UnixNano())
+	if purpose != "" {
+		idempotencyKey += "_" + purpose
+	}
 	params := PaymentIntentParams{
 		AmountCents:    inv.AmountDueCents,
 		Currency:       inv.Currency,
