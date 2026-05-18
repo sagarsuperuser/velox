@@ -406,7 +406,14 @@ export default function SubscriptionDetailPage() {
       {/* Subscription Timeline */}
       {(() => {
         const timelinePoints: { label: string; date: string; isPast: boolean }[] = []
-        const now = new Date()
+
+        // "now" baseline must read from the test clock for clock-pinned
+        // subs — otherwise every dot reads as past for any sub whose
+        // sim time is older than wall-clock (the common case during a
+        // catchup demo). Same pattern the ExpiryBadge uses.
+        const now = sub.test_clock_id && testClock?.frozen_time
+          ? new Date(testClock.frozen_time)
+          : new Date()
 
         timelinePoints.push({
           label: 'Created',
@@ -414,31 +421,56 @@ export default function SubscriptionDetailPage() {
           isPast: true,
         })
 
-        if (sub.current_billing_period_start) {
-          const periodStart = new Date(sub.current_billing_period_start)
-          timelinePoints.push({
-            label: sub.status === 'active' ? 'Period Start' : 'Last Period',
-            date: formatDate(sub.current_billing_period_start),
-            isPast: periodStart <= now,
-          })
-        }
+        if (sub.status === 'trialing') {
+          // Trialing subs get distinct dots: Trial ends + First charge.
+          // Pre-fix the period_start/period_end labels read "Last Period"
+          // and "Period End" for trialing subs — misleading, because
+          // there's no "last" period yet (the sub is still trialing) and
+          // the period_end IS the first chargeable cycle close. Stripe /
+          // Lago surface trial dates explicitly in trialing state.
+          if (sub.trial_end_at) {
+            const trialEnd = new Date(sub.trial_end_at)
+            timelinePoints.push({
+              label: 'Trial ends',
+              date: formatDate(sub.trial_end_at),
+              isPast: trialEnd <= now,
+            })
+          }
+          if (sub.next_billing_at) {
+            const firstCharge = new Date(sub.next_billing_at)
+            timelinePoints.push({
+              label: 'First charge',
+              date: formatDate(sub.next_billing_at),
+              isPast: firstCharge <= now,
+            })
+          }
+        } else {
+          if (sub.current_billing_period_start) {
+            const periodStart = new Date(sub.current_billing_period_start)
+            timelinePoints.push({
+              label: sub.status === 'active' ? 'Period Start' : 'Last Period',
+              date: formatDate(sub.current_billing_period_start),
+              isPast: periodStart <= now,
+            })
+          }
 
-        if (sub.current_billing_period_end) {
-          const periodEnd = new Date(sub.current_billing_period_end)
-          timelinePoints.push({
-            label: 'Period End',
-            date: formatDate(sub.current_billing_period_end),
-            isPast: periodEnd <= now,
-          })
-        }
+          if (sub.current_billing_period_end) {
+            const periodEnd = new Date(sub.current_billing_period_end)
+            timelinePoints.push({
+              label: 'Period End',
+              date: formatDate(sub.current_billing_period_end),
+              isPast: periodEnd <= now,
+            })
+          }
 
-        if (sub.next_billing_at) {
-          const nextBilling = new Date(sub.next_billing_at)
-          timelinePoints.push({
-            label: 'Next Billing',
-            date: formatDate(sub.next_billing_at),
-            isPast: nextBilling <= now,
-          })
+          if (sub.next_billing_at) {
+            const nextBilling = new Date(sub.next_billing_at)
+            timelinePoints.push({
+              label: 'Next Billing',
+              date: formatDate(sub.next_billing_at),
+              isPast: nextBilling <= now,
+            })
+          }
         }
 
         if (timelinePoints.length < 2) return null
@@ -520,12 +552,28 @@ export default function SubscriptionDetailPage() {
               )}
             </div>
             <div className="flex-1 px-6 py-4">
-              <p className="text-sm text-muted-foreground">Billing Period</p>
-              <p className="text-lg font-semibold text-foreground mt-1">
-                {sub.current_billing_period_start && sub.current_billing_period_end
-                  ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
-                  : '\u2014'}
-              </p>
+              {sub.status === 'trialing' && sub.trial_start_at && sub.trial_end_at ? (
+                <>
+                  <p className="text-sm text-muted-foreground">Trial period</p>
+                  <p className="text-lg font-semibold text-foreground mt-1">
+                    {formatDate(sub.trial_start_at)} {'\u2014'} {formatDate(sub.trial_end_at)}
+                  </p>
+                  {sub.current_billing_period_start && sub.current_billing_period_end && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      First billing: {formatDate(sub.current_billing_period_start)} {'\u2014'} {formatDate(sub.current_billing_period_end)}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground">Billing Period</p>
+                  <p className="text-lg font-semibold text-foreground mt-1">
+                    {sub.current_billing_period_start && sub.current_billing_period_end
+                      ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
+                      : '\u2014'}
+                  </p>
+                </>
+              )}
             </div>
             <div className="flex-1 px-6 py-4">
               <p className="text-sm text-muted-foreground">Status</p>
@@ -711,8 +759,18 @@ export default function SubscriptionDetailPage() {
                 <span className="text-sm text-foreground">{sub.billing_time === 'anniversary' ? 'Anniversary' : 'Calendar'}</span>
               </div>
             )}
+            {sub.status === 'trialing' && sub.trial_start_at && sub.trial_end_at && (
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground w-40 shrink-0">Trial period</span>
+                <span className="text-sm text-foreground">
+                  {formatDate(sub.trial_start_at)} {'\u2014'} {formatDate(sub.trial_end_at)}
+                </span>
+              </div>
+            )}
             <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground w-40 shrink-0">Billing Period</span>
+              <span className="text-sm text-muted-foreground w-40 shrink-0">
+                {sub.status === 'trialing' ? 'First billing period' : 'Billing Period'}
+              </span>
               <span className="text-sm text-foreground">
                 {sub.current_billing_period_start && sub.current_billing_period_end
                   ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
