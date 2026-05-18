@@ -1355,6 +1355,28 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				"subscription_id", sub.ID,
 				"tenant_id", sub.TenantID,
 			)
+			// ADR-031 trial-end coverage: BillOnCreate fires for the
+			// just-opened paid period [current_period_start,
+			// current_period_end] so in_advance items don't slip
+			// through. Without this, billOnePeriod's normal cycle
+			// billing below charges in_advance items for the NEXT
+			// period (periodEnd → nextPeriodEnd) and the trial-end
+			// stub goes unbilled — revenue leak specific to in_advance
+			// + trial. In_arrears items are unaffected (the cycle
+			// billing below charges them for the just-closed period
+			// normally). No-op when no item is in_advance.
+			//
+			// Idempotent via the (sub_id, period_start, period_end)
+			// UNIQUE constraint — repeated catchup ticks don't
+			// double-bill. Best-effort: failures log but don't abort
+			// the cycle; the next Advance retries.
+			if _, advErr := e.BillOnCreate(ctx, sub); advErr != nil {
+				slog.Warn("trial-end first-invoice failed; in_advance base fee will be deferred",
+					"subscription_id", sub.ID,
+					"tenant_id", sub.TenantID,
+					"error", advErr,
+				)
+			}
 			if e.events != nil {
 				_ = e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionTrialEnded, map[string]any{
 					"subscription_id": sub.ID,

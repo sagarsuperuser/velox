@@ -2510,3 +2510,83 @@ func TestRunCycle_Trial_Ended_AutoActivatesAndBills(t *testing.T) {
 		t.Errorf("triggered_by: got %v, want schedule", trialEndedEvent["triggered_by"])
 	}
 }
+
+// TestRunCycle_Trial_Ended_InAdvance_CoversTrialEndPeriod locks in the
+// PR-2.5 fix for Bug #6: when an in_advance + trial sub auto-flips at
+// cycle close, the trial-end period must be covered by a BillOnCreate-
+// style invoice. Pre-fix, billOnePeriod's normal billing for in_advance
+// items charged for the NEXT period (periodEnd → nextPeriodEnd) and
+// the trial-end period (periodStart → periodEnd) went unbilled — a
+// revenue leak specific to in_advance + trial.
+//
+// Post-fix expect TWO invoices at cycle close:
+//   - BillOnCreate-style invoice covering the trial-end period
+//     [periodStart, periodEnd] (the period the sub just exited)
+//   - Normal cycle invoice covering the next period [periodEnd,
+//     nextPeriodEnd] (the upcoming pre-pay)
+func TestRunCycle_Trial_Ended_InAdvance_CoversTrialEndPeriod(t *testing.T) {
+	periodStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC) // past, so cycle scan picks it up
+	trialEnd := time.Date(2026, 2, 15, 0, 0, 0, 0, time.UTC) // past: trial elapsed before now
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status:                    domain.SubscriptionTrialing,
+				BillingTime:               domain.BillingTimeCalendar,
+				TrialEndAt:                &trialEnd,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {
+				ID: "pln_1", Currency: "USD", BillingInterval: domain.BillingMonthly,
+				BaseAmountCents: 4900,
+				BaseBillTiming:  domain.BillInAdvance,
+			},
+		},
+	}
+	invoices := &mockInvoices{}
+	clk := clock.NewFake(periodEnd.Add(time.Nanosecond))
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, clk))
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	if len(invoices.invoices) != 2 {
+		t.Fatalf("expected 2 invoices (trial-end coverage + next-period pre-pay), got %d", len(invoices.invoices))
+	}
+
+	// Identify each invoice by its billing-period stamp. BillOnCreate
+	// fires first (right after ActivateAfterTrial) and covers the
+	// trial-end period; the normal cycle invoice fires next and covers
+	// the upcoming period.
+	var trialEndInv, nextPeriodInv *domain.Invoice
+	for i := range invoices.invoices {
+		inv := invoices.invoices[i]
+		switch inv.BillingPeriodStart {
+		case periodStart:
+			trialEndInv = &inv
+		case periodEnd:
+			nextPeriodInv = &inv
+		}
+	}
+	if trialEndInv == nil {
+		t.Errorf("missing trial-end coverage invoice (period_start=%v) — Bug #6 regression", periodStart)
+	}
+	if nextPeriodInv == nil {
+		t.Errorf("missing next-period pre-pay invoice (period_start=%v)", periodEnd)
+	}
+	updated := subs.subs["sub_1"]
+	if updated.Status != domain.SubscriptionActive {
+		t.Errorf("status: got %q, want active", updated.Status)
+	}
+}
