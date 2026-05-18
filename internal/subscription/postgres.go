@@ -233,28 +233,14 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 	return sub, nil
 }
 
-func (s *PostgresStore) PauseAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	return s.transitionAtomic(ctx, tenantID, id, transitionSpec{
-		targetStatus:  string(domain.SubscriptionPaused),
-		allowedFrom:   []string{string(domain.SubscriptionActive)},
-		wrongStateMsg: "can only pause active subscriptions, current status: %s",
-	})
-}
-
-func (s *PostgresStore) ResumeAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	return s.transitionAtomic(ctx, tenantID, id, transitionSpec{
-		targetStatus:  string(domain.SubscriptionActive),
-		allowedFrom:   []string{string(domain.SubscriptionPaused)},
-		wrongStateMsg: "can only resume paused subscriptions, current status: %s",
-	})
-}
-
 // CancelAtomic terminates a subscription. Cancellation is allowed from
 // every non-terminal status — draft (operator scrapping a never-activated
 // row), trialing (customer abandoning during trial — by far the dominant
 // industry cancel path; Stripe / Lago / Recurly / Chargebee all allow it),
-// active, and paused. Only canceled/archived are rejected (the row already
-// terminated).
+// and active. Only canceled/archived are rejected (the row already
+// terminated). Note: the `paused` source state was removed in PR-8
+// when the hard-pause API was deleted — no path now produces
+// status='paused', so it's not in allowedFrom.
 func (s *PostgresStore) CancelAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
 	return s.transitionAtomic(ctx, tenantID, id, transitionSpec{
 		targetStatus: string(domain.SubscriptionCanceled),
@@ -262,7 +248,6 @@ func (s *PostgresStore) CancelAtomic(ctx context.Context, tenantID, id string) (
 			string(domain.SubscriptionDraft),
 			string(domain.SubscriptionTrialing),
 			string(domain.SubscriptionActive),
-			string(domain.SubscriptionPaused),
 		},
 		setCanceledAt: true,
 		wrongStateMsg: "cannot cancel %s subscription (already terminated)",

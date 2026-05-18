@@ -74,53 +74,6 @@ func TestCancelAtomic_OneWinnerUnderContention(t *testing.T) {
 	}
 }
 
-// TestPauseAtomic_OneWinnerUnderContention pins the same race for Pause:
-// under contention, exactly one caller wins and the rest see the current
-// (now "paused") status in a conflict error rather than silently succeeding.
-func TestPauseAtomic_OneWinnerUnderContention(t *testing.T) {
-	db := testutil.SetupTestDB(t)
-	ctx := postgres.WithLivemode(context.Background(), false)
-
-	store := subscription.NewPostgresStore(db)
-	svc := subscription.NewService(store, nil)
-	tenantID := testutil.CreateTestTenant(t, db, "Sub Pause Race")
-	subID := seedActiveSubscription(t, db, tenantID, "cus_pause_race", "plan_pause_race", "sub-pause-race")
-
-	const goroutines = 20
-	var (
-		wg        sync.WaitGroup
-		successes atomic.Int64
-	)
-
-	for g := 0; g < goroutines; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := svc.Pause(ctx, tenantID, subID)
-			if err == nil {
-				successes.Add(1)
-				return
-			}
-			if !strings.Contains(err.Error(), "can only pause active") {
-				t.Errorf("unexpected error: %v", err)
-			}
-		}()
-	}
-	wg.Wait()
-
-	if got := successes.Load(); got != 1 {
-		t.Fatalf("expected exactly 1 successful pause, got %d", got)
-	}
-
-	final, err := svc.Get(ctx, tenantID, subID)
-	if err != nil {
-		t.Fatalf("get final sub: %v", err)
-	}
-	if final.Status != domain.SubscriptionPaused {
-		t.Fatalf("final status = %s, want paused", final.Status)
-	}
-}
-
 // TestTransitionAtomic_NotFoundVsWrongState verifies the two-bucket error
 // contract: unknown IDs return ErrNotFound (HTTP 404 upstream), while
 // known IDs in a disallowed state return a conflict message with the
@@ -132,23 +85,10 @@ func TestTransitionAtomic_NotFoundVsWrongState(t *testing.T) {
 	store := subscription.NewPostgresStore(db)
 	svc := subscription.NewService(store, nil)
 	tenantID := testutil.CreateTestTenant(t, db, "Sub Transitions")
-	subID := seedActiveSubscription(t, db, tenantID, "cus_trans", "plan_trans", "sub-trans")
-
-	// Resume an active subscription — wrong source state.
-	_, err := svc.Resume(ctx, tenantID, subID)
-	if err == nil {
-		t.Fatal("expected error resuming active subscription")
-	}
-	if !strings.Contains(err.Error(), "can only resume paused") {
-		t.Errorf("expected paused-state error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), string(domain.SubscriptionActive)) {
-		t.Errorf("error should include current status, got: %v", err)
-	}
 
 	// Cancel a nonexistent subscription — must be ErrNotFound, not a
 	// status-mismatch message that would leak the schema to callers.
-	_, err = svc.Cancel(ctx, tenantID, "vlx_sub_does_not_exist")
+	_, err := svc.Cancel(ctx, tenantID, "vlx_sub_does_not_exist")
 	if err == nil {
 		t.Fatal("expected ErrNotFound for unknown id")
 	}

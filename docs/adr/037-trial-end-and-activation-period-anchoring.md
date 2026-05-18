@@ -1,7 +1,7 @@
 # ADR-037: Trial-end and activation period anchoring
 
 **Date:** 2026-05-18
-**Status:** Accepted (amended 2026-05-18 — invoice-shape verification for `in_advance` + metered usage)
+**Status:** Accepted (amended 2026-05-18 — invoice-shape verification for `in_advance` + metered usage; hard-pause API removed in PR-8 with corrected industry framing)
 
 ## Context
 
@@ -221,6 +221,43 @@ stat card (renamed 2026-05-18 from "Billing Period" — same data,
 clearer label) refers to `current_period_start/end` which is the
 consumption window, agnostic of when each line on the corresponding
 invoice fires.
+
+## Amendment 2026-05-18 (PR-8): hard-pause API removed; industry framing corrected
+
+PR-6 removed the dashboard's "Pause subscription" radio option on the
+grounds that the implementation's "freezes the cycle entirely"
+description was a lie: paused subs were filtered out of the cycle
+scan, but on resume the engine caught up by billing every "missed"
+cycle — the opposite of a freeze. The earlier framing said *"no
+industry analog"* for true cycle-skip hard pause. **That claim was
+wrong.** Re-verification on 2026-05-18:
+
+- **[Chargebee — Pause Subscription](https://www.chargebee.com/docs/billing/2.0/subscriptions/pause-subscription)**: ships full hard-pause with cycle skip. *"Pause at the end of the current term, and resume automatically after the set number of billing cycles (in `skip_billing_cycles`) have been skipped."* Three pause-options (end_of_term / scheduled / immediate); three resume-options (after-cycles / on-date / indefinite); three unbilled-charges strategies (invoice / defer / discard).
+- **[Recurly — Pause subscription](https://docs.recurly.com/docs/pause-subscription)**: also ships it. *"This allows you to freeze billing for a specified number of cycles at the next renewal date."* Auto-resume after `remaining_pause_cycles`; cycle anchor resets on resume.
+- **Stripe**: only `pause_collection` (keep_as_draft / void / mark_uncollectible). No cycle-skip hard pause.
+- **Lago**: no documented pause feature.
+
+So the honest framing: **hard pause exists in industry (Chargebee, Recurly), Velox deferred for scope, not absence**.
+
+**PR-8 removes the entire hard-pause surface:**
+- Routes: `POST /v1/subscriptions/:id/pause` + `/resume`
+- Handlers: `Handler.pause` + `Handler.resume`
+- Service: `Service.Pause` + `Service.Resume`
+- Store: `Store.PauseAtomic` + `Store.ResumeAtomic` (interface + postgres + mem)
+- Events: `EventSubscriptionPaused` + `EventSubscriptionResumed` enum constants
+- SDK: `api.pauseSubscription` + `api.resumeSubscription` in `web-v2/src/lib/api.ts`
+- Dashboard: dead `resumeMutation` + `status === 'paused'` Resume button block
+- Status enum: `domain.SubscriptionPaused` removed
+- Schema: migration **0090** drops `'paused'` from `subscriptions.status` CHECK (with a safety guard that errors loudly if any row IS in 'paused' state — pre-launch zero data, so moot in practice)
+- OpenAPI spec: removed `paused` from the status enum (and re-added missing `trialing`, fixing a stale gap from migration 0053)
+- Generated types regenerated via `make gen`
+
+The Chargebee/Recurly e2e shape (paused_at + resume_at + remaining_pause_cycles + unbilled-charges decision tree) is documented in the body of this ADR as the **future re-implementation target** when a design partner names the need. The pre-launch decision is to ship truth over feature-count: `pause_collection` covers the legitimate "operator wants to freeze charging" use case for Velox's wedge market (AI infra Series A-B), and rebuilding hard-pause properly is a 3-5 day project that should be designed against a real customer's requirements.
+
+**Updated risks/open items:**
+
+- If a DP asks for hard pause, the design starting point is Chargebee/Recurly's API shape outlined above. Don't reinherit the old `/pause` endpoint — design the new one to take `pause_option` / `resume_option` / `unbilled_charges` upfront.
+- The in_advance scheduled-cancel-at-period-end overcharge (flagged separately in the cancel-flow audit) is the same shape of bug that a future hard-pause implementation would need to guard against: in_advance base lines should NOT be emitted at a cycle close where the sub is about to transition out (cancel or pause activation). Single fix would cover both cases.
 
 ## References
 

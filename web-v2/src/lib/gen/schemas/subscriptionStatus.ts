@@ -13,8 +13,8 @@ export type SubscriptionStatus = typeof SubscriptionStatus[keyof typeof Subscrip
 
 export const SubscriptionStatus = {
   draft: 'draft',
+  trialing: 'trialing',
   active: 'active',
-  paused: 'paused',
   canceled: 'canceled',
   archived: 'archived',
 } as const;

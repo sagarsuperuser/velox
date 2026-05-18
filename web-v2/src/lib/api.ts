@@ -261,10 +261,6 @@ export const api = {
     apiRequest<Subscription>('GET', `/subscriptions/${id}`),
   activateSubscription: (id: string) =>
     apiRequest<Subscription>('POST', `/subscriptions/${id}/activate`),
-  pauseSubscription: (id: string) =>
-    apiRequest<Subscription>('POST', `/subscriptions/${id}/pause`),
-  resumeSubscription: (id: string) =>
-    apiRequest<Subscription>('POST', `/subscriptions/${id}/resume`),
   cancelSubscription: (id: string) =>
     apiRequest<Subscription>('POST', `/subscriptions/${id}/cancel`),
   scheduleSubscriptionCancel: (id: string, body: { at_period_end: true } | { cancel_at: string }) =>

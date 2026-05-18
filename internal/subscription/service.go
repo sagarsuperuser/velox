@@ -782,18 +782,6 @@ func (s *Service) RemoveItem(ctx context.Context, tenantID, subscriptionID, item
 	return s.store.RemoveItem(ctx, tenantID, itemID)
 }
 
-// Pause pauses an active subscription. Can be resumed later.
-func (s *Service) Pause(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	ctx = s.bindForSub(ctx, tenantID, id)
-	return s.store.PauseAtomic(ctx, tenantID, id)
-}
-
-// Resume resumes a paused subscription.
-func (s *Service) Resume(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	ctx = s.bindForSub(ctx, tenantID, id)
-	return s.store.ResumeAtomic(ctx, tenantID, id)
-}
-
 func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
 	ctx = s.bindForSub(ctx, tenantID, id)
 	canceled, err := s.store.CancelAtomic(ctx, tenantID, id)

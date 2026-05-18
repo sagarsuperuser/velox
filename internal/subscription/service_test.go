@@ -97,34 +97,6 @@ func (m *memStore) UpdateBillingCycle(ctx context.Context, _, _ string, _, _, _ 
 	return nil
 }
 
-func (m *memStore) PauseAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	s, ok := m.subs[id]
-	if !ok || s.TenantID != tenantID {
-		return domain.Subscription{}, errs.ErrNotFound
-	}
-	if s.Status != domain.SubscriptionActive {
-		return domain.Subscription{}, fmt.Errorf("can only pause active subscriptions, current status: %s", s.Status)
-	}
-	s.Status = domain.SubscriptionPaused
-	s.UpdatedAt = clock.Now(ctx)
-	m.subs[id] = s
-	return s, nil
-}
-
-func (m *memStore) ResumeAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	s, ok := m.subs[id]
-	if !ok || s.TenantID != tenantID {
-		return domain.Subscription{}, errs.ErrNotFound
-	}
-	if s.Status != domain.SubscriptionPaused {
-		return domain.Subscription{}, fmt.Errorf("can only resume paused subscriptions, current status: %s", s.Status)
-	}
-	s.Status = domain.SubscriptionActive
-	s.UpdatedAt = clock.Now(ctx)
-	m.subs[id] = s
-	return s, nil
-}
-
 func (m *memStore) CancelAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
@@ -1022,22 +994,6 @@ func TestCancel_NonTerminalStatuses(t *testing.T) {
 		}
 	})
 
-	t.Run("cancel from paused", func(t *testing.T) {
-		svc := NewService(newMemStore(), nil)
-		sub, _ := svc.Create(ctx, "t1", CreateInput{
-			Code: "sub-paused", DisplayName: "Paused", CustomerID: "c",
-			Items: []CreateItemInput{{PlanID: "p"}}, StartNow: true,
-		})
-		_, _ = svc.Pause(ctx, "t1", sub.ID)
-		canceled, err := svc.Cancel(ctx, "t1", sub.ID)
-		if err != nil {
-			t.Fatalf("cancel from paused: %v", err)
-		}
-		if canceled.Status != domain.SubscriptionCanceled {
-			t.Errorf("status: got %q, want canceled", canceled.Status)
-		}
-	})
-
 	t.Run("rejects cancel from canceled (already terminated)", func(t *testing.T) {
 		svc := NewService(newMemStore(), nil)
 		sub, _ := svc.Create(ctx, "t1", CreateInput{
@@ -1263,45 +1219,6 @@ func TestAddRemoveItem(t *testing.T) {
 		err := svc.RemoveItem(ctx, "t1", sub.ID, fresh.Items[0].ID)
 		if err == nil {
 			t.Fatal("expected error removing last item from active sub")
-		}
-	})
-}
-
-func TestPauseAndResume(t *testing.T) {
-	svc := NewService(newMemStore(), nil)
-	ctx := context.Background()
-
-	sub, _ := svc.Create(ctx, "t1", CreateInput{
-		Code: "sub-pause", DisplayName: "Test", CustomerID: "c",
-		Items:    []CreateItemInput{{PlanID: "p"}},
-		StartNow: true,
-	})
-
-	t.Run("pause active", func(t *testing.T) {
-		paused, err := svc.Pause(ctx, "t1", sub.ID)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if paused.Status != domain.SubscriptionPaused {
-			t.Errorf("status: got %q, want paused", paused.Status)
-		}
-	})
-
-	t.Run("resume paused", func(t *testing.T) {
-		resumed, err := svc.Resume(ctx, "t1", sub.ID)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if resumed.Status != domain.SubscriptionActive {
-			t.Errorf("status: got %q, want active", resumed.Status)
-		}
-	})
-
-	t.Run("cannot pause non-active", func(t *testing.T) {
-		_, _ = svc.Cancel(ctx, "t1", sub.ID)
-		_, err := svc.Pause(ctx, "t1", sub.ID)
-		if err == nil {
-			t.Fatal("expected error pausing canceled sub")
 		}
 	})
 }
@@ -2713,28 +2630,6 @@ func TestSubMutators_StampSimTimeOnClockPinnedSub(t *testing.T) {
 		}
 		if out.CanceledAt == nil || !out.CanceledAt.Equal(frozen) {
 			t.Errorf("canceled_at: got %v, want %v (frozen)", out.CanceledAt, frozen)
-		}
-		if !out.UpdatedAt.Equal(frozen) {
-			t.Errorf("updated_at: got %v, want %v (frozen)", out.UpdatedAt, frozen)
-		}
-	})
-
-	t.Run("Pause", func(t *testing.T) {
-		svc, sub := newPinned(t, domain.SubscriptionActive)
-		out, err := svc.Pause(context.Background(), "t1", sub.ID)
-		if err != nil {
-			t.Fatalf("Pause: %v", err)
-		}
-		if !out.UpdatedAt.Equal(frozen) {
-			t.Errorf("updated_at: got %v, want %v (frozen)", out.UpdatedAt, frozen)
-		}
-	})
-
-	t.Run("Resume", func(t *testing.T) {
-		svc, sub := newPinned(t, domain.SubscriptionPaused)
-		out, err := svc.Resume(context.Background(), "t1", sub.ID)
-		if err != nil {
-			t.Fatalf("Resume: %v", err)
 		}
 		if !out.UpdatedAt.Equal(frozen) {
 			t.Errorf("updated_at: got %v, want %v (frozen)", out.UpdatedAt, frozen)

@@ -1958,7 +1958,7 @@ export interface components {
             customer_id?: string;
             plan_id?: string;
             /** @enum {string} */
-            status?: "draft" | "active" | "paused" | "canceled" | "archived";
+            status?: "draft" | "trialing" | "active" | "canceled" | "archived";
             /** @enum {string} */
             billing_time?: "calendar" | "anniversary";
             /** Format: date-time */
