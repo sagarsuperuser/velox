@@ -86,8 +86,6 @@ const (
 	EventSubscriptionCreated                = "subscription.created"
 	EventSubscriptionActivated              = "subscription.activated"
 	EventSubscriptionCanceled               = "subscription.canceled"
-	EventSubscriptionPaused                 = "subscription.paused"
-	EventSubscriptionResumed                = "subscription.resumed"
 	EventSubscriptionItemAdded              = "subscription.item.added"
 	EventSubscriptionItemUpdated            = "subscription.item.updated"
 	EventSubscriptionItemRemoved            = "subscription.item.removed"

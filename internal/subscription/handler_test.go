@@ -496,46 +496,6 @@ func TestHandler_Cancel_FiresSubscriptionCanceled(t *testing.T) {
 	}
 }
 
-func TestHandler_PauseResume_FireLifecycleEvents(t *testing.T) {
-	ctx := context.Background()
-	tenantID := "t1"
-	store := newMemStore()
-	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
-	svc := NewService(store, nil)
-
-	dispatcher := &capturingDispatcher{}
-	h := NewHandler(svc)
-	h.SetEventDispatcher(dispatcher)
-
-	tenantCtx := context.WithValue(ctx, auth.TestTenantIDKey(), tenantID)
-	routeCtx := chi.NewRouteContext()
-	routeCtx.URLParams.Add("id", subID)
-
-	// Pause
-	pauseReq := httptest.NewRequest(http.MethodPost, "/subscriptions/"+subID+"/pause", nil).
-		WithContext(context.WithValue(tenantCtx, chi.RouteCtxKey, routeCtx))
-	pauseRR := httptest.NewRecorder()
-	h.pause(pauseRR, pauseReq)
-	if pauseRR.Code != http.StatusOK {
-		t.Fatalf("pause status: got %d, want 200. body=%s", pauseRR.Code, pauseRR.Body.String())
-	}
-	if _, ok := dispatcher.firstOfType(domain.EventSubscriptionPaused); !ok {
-		t.Errorf("expected %s after pause, got types=%v", domain.EventSubscriptionPaused, eventTypes(dispatcher.events))
-	}
-
-	// Resume
-	resumeReq := httptest.NewRequest(http.MethodPost, "/subscriptions/"+subID+"/resume", nil).
-		WithContext(context.WithValue(tenantCtx, chi.RouteCtxKey, routeCtx))
-	resumeRR := httptest.NewRecorder()
-	h.resume(resumeRR, resumeReq)
-	if resumeRR.Code != http.StatusOK {
-		t.Fatalf("resume status: got %d, want 200. body=%s", resumeRR.Code, resumeRR.Body.String())
-	}
-	if _, ok := dispatcher.firstOfType(domain.EventSubscriptionResumed); !ok {
-		t.Errorf("expected %s after resume, got types=%v", domain.EventSubscriptionResumed, eventTypes(dispatcher.events))
-	}
-}
-
 func TestHandler_UpdateItem_ImmediatePlanChangeFiresItemUpdated(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "t1"

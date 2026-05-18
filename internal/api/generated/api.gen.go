@@ -429,7 +429,7 @@ const (
 	SubscriptionStatusArchived SubscriptionStatus = "archived"
 	SubscriptionStatusCanceled SubscriptionStatus = "canceled"
 	SubscriptionStatusDraft    SubscriptionStatus = "draft"
-	SubscriptionStatusPaused   SubscriptionStatus = "paused"
+	SubscriptionStatusTrialing SubscriptionStatus = "trialing"
 )
 
 // Valid indicates whether the value is a known member of the SubscriptionStatus enum.
@@ -443,7 +443,7 @@ func (e SubscriptionStatus) Valid() bool {
 		return true
 	case SubscriptionStatusDraft:
 		return true
-	case SubscriptionStatusPaused:
+	case SubscriptionStatusTrialing:
 		return true
 	default:
 		return false

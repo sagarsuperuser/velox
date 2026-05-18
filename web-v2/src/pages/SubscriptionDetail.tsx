@@ -150,12 +150,6 @@ export default function SubscriptionDetailPage() {
     onError: (err) => showApiError(err, 'Failed to activate'),
   })
 
-  const resumeMutation = useMutation({
-    mutationFn: () => api.resumeSubscription(id!),
-    onSuccess: () => { invalidateAll(); toast.success('Subscription resumed') },
-    onError: (err) => showApiError(err, 'Failed to resume'),
-  })
-
   const cancelMutation = useMutation({
     mutationFn: () => api.cancelSubscription(id!),
     onSuccess: () => { invalidateAll(); toast.success('Subscription canceled'); setShowCancelConfirm(false) },
@@ -211,7 +205,6 @@ export default function SubscriptionDetailPage() {
 
   const acting =
     activateMutation.isPending ||
-    resumeMutation.isPending ||
     cancelMutation.isPending ||
     scheduleCancelMutation.isPending ||
     clearScheduledCancelMutation.isPending ||
@@ -313,16 +306,6 @@ export default function SubscriptionDetailPage() {
                 End trial now
               </Button>
               <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelChoice(true)} disabled={acting}>
-                Cancel
-              </Button>
-            </>
-          )}
-          {sub.status === 'paused' && (
-            <>
-              <Button variant="outline" className="border-emerald-300 text-emerald-600 hover:bg-emerald-50" onClick={() => resumeMutation.mutate()} disabled={acting}>
-                Resume
-              </Button>
-              <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelConfirm(true)} disabled={acting}>
                 Cancel
               </Button>
             </>

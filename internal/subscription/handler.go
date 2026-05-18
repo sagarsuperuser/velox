@@ -187,8 +187,6 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/", h.list)
 	r.Get("/{id}", h.get)
 	r.Post("/{id}/activate", h.activate)
-	r.Post("/{id}/pause", h.pause)
-	r.Post("/{id}/resume", h.resume)
 	r.Post("/{id}/cancel", h.cancel)
 	r.Post("/{id}/schedule-cancel", h.scheduleCancel)
 	r.Delete("/{id}/scheduled-cancel", h.clearScheduledCancel)
@@ -290,36 +288,6 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionActivated, sub, nil)
-
-	respond.JSON(w, r, http.StatusOK, sub)
-}
-
-func (h *Handler) pause(w http.ResponseWriter, r *http.Request) {
-	tenantID := auth.TenantID(r.Context())
-	id := chi.URLParam(r, "id")
-
-	sub, err := h.svc.Pause(r.Context(), tenantID, id)
-	if err != nil {
-		respond.FromError(w, r, err, "subscription")
-		return
-	}
-
-	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionPaused, sub, nil)
-
-	respond.JSON(w, r, http.StatusOK, sub)
-}
-
-func (h *Handler) resume(w http.ResponseWriter, r *http.Request) {
-	tenantID := auth.TenantID(r.Context())
-	id := chi.URLParam(r, "id")
-
-	sub, err := h.svc.Resume(r.Context(), tenantID, id)
-	if err != nil {
-		respond.FromError(w, r, err, "subscription")
-		return
-	}
-
-	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionResumed, sub, nil)
 
 	respond.JSON(w, r, http.StatusOK, sub)
 }
