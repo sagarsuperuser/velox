@@ -2590,3 +2590,74 @@ func TestRunCycle_Trial_Ended_InAdvance_CoversTrialEndPeriod(t *testing.T) {
 		t.Errorf("status: got %q, want active", updated.Status)
 	}
 }
+
+// TestRunCycle_InAdvance_ScheduledCancelAtPeriodEnd_NoOvercharge locks in
+// the PR-9 fix: when a scheduled cancel is set to fire at the upcoming
+// period boundary, the cycle-close invoice MUST NOT include an in_advance
+// base line for the upcoming (about-to-cancel) period. Pre-fix, the cycle
+// close emitted the next-period base ($100 example) and THEN
+// advanceCycleOrCancel fired the cancel — leaving the customer billed for
+// a period they wouldn't use.
+//
+// Post-fix expected at cycle close on an in_advance sub with
+// cancel_at_period_end=true:
+//   - No base line (in_advance + about-to-terminate → skip)
+//   - Usage line for the just-elapsed period (in-arrears for usage is
+//     always correct, captures final consumption)
+//   - Then the scheduled cancel fires
+func TestRunCycle_InAdvance_ScheduledCancelAtPeriodEnd_NoOvercharge(t *testing.T) {
+	periodStart := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+				CancelAtPeriodEnd:         true,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {
+				ID: "pln_1", Currency: "USD", BillingInterval: domain.BillingMonthly,
+				BaseAmountCents: 10000,
+				BaseBillTiming:  domain.BillInAdvance,
+			},
+		},
+	}
+	invoices := &mockInvoices{}
+	clk := clock.NewFake(periodEnd.Add(time.Nanosecond))
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, clk))
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	// Sub must have been canceled by advanceCycleOrCancel.
+	if subs.subs["sub_1"].Status != domain.SubscriptionCanceled {
+		t.Errorf("status: got %q, want canceled", subs.subs["sub_1"].Status)
+	}
+
+	// Pre-fix expected failure: customer billed $10000 for the upcoming
+	// (will-not-be-used) period. Post-fix: in_advance base line is
+	// skipped at cycle close because the cancel is about to fire. Any
+	// invoice that DOES land must have total = 0 (no overcharge), not
+	// $10000. The current engine still emits an empty cycle-close
+	// invoice in this case — separate concern from this bug, and not
+	// a correctness problem at the customer level (no charge attempt
+	// on a $0 invoice).
+	for _, inv := range invoices.invoices {
+		if inv.TotalAmountCents > 0 {
+			t.Errorf("expected $0 invoice (in_advance base skipped, no usage), got total=%d cents on period %v→%v",
+				inv.TotalAmountCents, inv.BillingPeriodStart, inv.BillingPeriodEnd)
+		}
+	}
+}

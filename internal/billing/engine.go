@@ -1485,6 +1485,21 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// account for the ±1h tolerance, which Round absorbs.
 	periodDays := roundDays(periodEnd.Sub(periodStart))
 
+	// At cycle close, check whether the scheduled cancel will fire at
+	// this boundary. If yes, in_advance base lines for the UPCOMING
+	// period MUST be skipped — the sub is about to terminate, the
+	// customer won't consume the upcoming period, and emitting the
+	// line would overcharge by one full prepayment. The cycle-close
+	// invoice still bills usage from the just-elapsed period
+	// (in-arrears for usage is always correct) and any in_arrears
+	// base for the just-elapsed period. After this invoice fires,
+	// advanceCycleOrCancel below fires the scheduled cancel.
+	// (audit finding flagged during the 2026-05-18 cancel-flow walk
+	// through; same bug class would re-appear if hard-pause is ever
+	// re-added — paused subs at pause-activation should likewise
+	// skip the next-period in_advance base line.)
+	terminalCycleClose := shouldFireScheduledCancel(sub, periodEnd, now)
+
 	// Base fee line item per item — quantity-multiplied and prorated for partial
 	// periods. One line per item so the invoice clearly shows what each plan
 	// contributes (mirrors Stripe's per-item invoice layout).
@@ -1513,6 +1528,15 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		baseStart, baseEnd := periodStart, periodEnd
 		isAdvance := plan.BaseBillTiming == domain.BillInAdvance
 		if isAdvance {
+			if terminalCycleClose {
+				// Sub is about to cancel at this period boundary —
+				// don't emit a pre-pay line for a period that won't
+				// be used. Usage from the just-elapsed period (the
+				// in-arrears usage section below) still fires
+				// normally, so the final invoice captures what the
+				// customer actually consumed before terminating.
+				continue
+			}
 			baseStart = periodEnd
 			baseEnd = advanceBillingPeriod(periodEnd, plan.BillingInterval)
 		}
@@ -2217,6 +2241,356 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 	slog.Info("subscription_create invoice generated",
 		"invoice_id", inv.ID,
 		"subscription_id", sub.ID,
+		"total_cents", totalWithTax,
+		"line_items", len(lineItems),
+	)
+	return inv, nil
+}
+
+// BillFinalOnImmediateCancel emits the final partial-period invoice
+// for a sub that was canceled mid-period via the operator's immediate
+// Cancel action. Pre-PR-10, mid-period immediate cancels generated NO
+// final invoice — partial-period usage was never billed (revenue leak:
+// customer could rack up usage and cancel for free). For in_arrears
+// plans, the partial-period base was also never billed.
+//
+// Scope of the invoice:
+//   - Period: [current_period_start, canceled_at] — the elapsed
+//     portion of the just-canceled cycle.
+//   - Lines:
+//     • in_arrears base items: prorated by `elapsed / full_cycle`.
+//     • in_advance base items: skipped (already paid up-front; the
+//       refund of the unused portion is BillOnCancel's job — credit
+//       grant to balance).
+//     • Usage: aggregated for [periodStart, canceled_at] across every
+//       meter referenced by every item. Same shape as a normal cycle
+//       invoice's usage section, just with a truncated period_end.
+//   - billing_reason = subscription_cancel (distinguishes from the
+//     normal subscription_cycle invoice and from subscription_create).
+//
+// No-op when:
+//   - sub.Status != canceled (defensive — caller should have flipped it)
+//   - no current period set / canceled_at missing
+//   - canceled_at AT or AFTER current_period_end (clean cancel at
+//     boundary; the cycle close already fired or will fire normally)
+//   - canceled_at AT or BEFORE current_period_start (defensive)
+//   - computed subtotal rounds to zero (no in_arrears base AND no
+//     usage events; matches BillOnCreate's $0-invoice-skip pattern)
+//
+// Idempotent via the standard (subscription_id, period_start,
+// period_end) UNIQUE constraint — the period_end is canceled_at which
+// is durably stamped, so a retry against the same canceled sub
+// returns the existing-invoice idempotent skip.
+//
+// Auto-charge: attempted synchronously when a PM is ready, mirrors
+// BillOnCreate's post-finalize path. Without a PM, the invoice is
+// marked auto_charge_pending and the no-PM notifier fires. Dunning
+// takes over from there on a failed charge.
+func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subscription) (domain.Invoice, error) {
+	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillFinalOnImmediateCancel",
+		trace.WithAttributes(
+			attribute.String("subscription_id", sub.ID),
+			attribute.String("tenant_id", sub.TenantID),
+		),
+	)
+	defer span.End()
+
+	if sub.Status != domain.SubscriptionCanceled {
+		return domain.Invoice{}, nil
+	}
+	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
+		return domain.Invoice{}, nil
+	}
+	if sub.CanceledAt == nil {
+		return domain.Invoice{}, nil
+	}
+	periodStart := *sub.CurrentBillingPeriodStart
+	periodEnd := *sub.CurrentBillingPeriodEnd
+	canceledAt := *sub.CanceledAt
+
+	// Only mid-period cancels need a final invoice. canceled_at at or
+	// after period_end means the cycle close handles the period
+	// normally; canceled_at at or before period_start is defensive.
+	if !canceledAt.After(periodStart) || !canceledAt.Before(periodEnd) {
+		return domain.Invoice{}, nil
+	}
+
+	// Resolve plans for every item — needed for in_arrears proration
+	// math, currency resolution, and usage-meter discovery.
+	plans := make(map[string]domain.Plan, len(sub.Items))
+	for _, it := range sub.Items {
+		if _, ok := plans[it.PlanID]; ok {
+			continue
+		}
+		pl, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
+		if err != nil {
+			return domain.Invoice{}, fmt.Errorf("get plan %s: %w", it.PlanID, err)
+		}
+		plans[it.PlanID] = pl
+	}
+	if len(sub.Items) == 0 {
+		return domain.Invoice{}, nil
+	}
+
+	// Invoice currency: billing profile > tenant settings > first
+	// item's plan currency > "usd". Same precedence as billOnePeriod
+	// and BillOnCreate.
+	invoiceCurrency := plans[sub.Items[0].PlanID].Currency
+	if e.profiles != nil {
+		if bp, err := e.profiles.GetBillingProfile(ctx, sub.TenantID, sub.CustomerID); err == nil && bp.Currency != "" {
+			invoiceCurrency = bp.Currency
+		}
+	}
+	if invoiceCurrency == "" && e.settings != nil {
+		if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil && ts.DefaultCurrency != "" {
+			invoiceCurrency = ts.DefaultCurrency
+		}
+	}
+	if invoiceCurrency == "" {
+		invoiceCurrency = "usd"
+	}
+
+	// Build base lines: in_arrears only, prorated by elapsed days.
+	// in_advance items are explicitly skipped — their base for the
+	// just-canceled period was already paid at period start (BillOnCreate
+	// or prior cycle), and the unused portion will be refunded by
+	// BillOnCancel as a credit grant.
+	lineItems := make([]domain.InvoiceLineItem, 0, len(sub.Items))
+	subtotal := int64(0)
+	elapsedDays := roundDays(canceledAt.Sub(periodStart))
+	for _, it := range sub.Items {
+		plan := plans[it.PlanID]
+		if plan.BaseAmountCents <= 0 || plan.BaseBillTiming == domain.BillInAdvance {
+			continue
+		}
+		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart))
+		if elapsedDays <= 0 || fullCycleDays <= 0 {
+			continue
+		}
+		baseFee := money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(elapsedDays), int64(fullCycleDays))
+		if baseFee <= 0 {
+			continue
+		}
+		description := fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days, canceled mid-period)",
+			plan.Name, it.Quantity, elapsedDays, fullCycleDays)
+		unitAmount := plan.BaseAmountCents
+		if it.Quantity > 0 {
+			unitAmount = money.RoundHalfToEven(baseFee, it.Quantity)
+		}
+		baseStart := periodStart
+		baseEnd := canceledAt
+		lineItems = append(lineItems, domain.InvoiceLineItem{
+			LineType:           domain.LineTypeBaseFee,
+			Description:        description,
+			Quantity:           it.Quantity,
+			UnitAmountCents:    unitAmount,
+			AmountCents:        baseFee,
+			TotalAmountCents:   baseFee,
+			Currency:           invoiceCurrency,
+			TaxCode:            plan.TaxCode,
+			BillingPeriodStart: &baseStart,
+			BillingPeriodEnd:   &baseEnd,
+		})
+		subtotal += baseFee
+	}
+
+	// Build usage lines: aggregate every meter referenced by every
+	// item's plan for [periodStart, canceledAt]. Same aggregation
+	// surface the cycle path uses; only the period boundaries differ.
+	meterAggs := make(map[string]string)
+	for _, it := range sub.Items {
+		for _, meterID := range plans[it.PlanID].MeterIDs {
+			if _, ok := meterAggs[meterID]; ok {
+				continue
+			}
+			m, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
+			if err == nil {
+				meterAggs[meterID] = m.Aggregation
+			} else {
+				meterAggs[meterID] = "sum"
+			}
+		}
+	}
+	usageTotals := make(map[string]decimal.Decimal)
+	if len(meterAggs) > 0 {
+		totals, err := e.usage.AggregateForBillingPeriodByAgg(ctx, sub.TenantID, sub.CustomerID, meterAggs, periodStart, canceledAt)
+		if err != nil {
+			return domain.Invoice{}, fmt.Errorf("aggregate usage on cancel: %w", err)
+		}
+		usageTotals = totals
+	}
+
+	seenMeters := make(map[string]struct{})
+	for _, it := range sub.Items {
+		plan := plans[it.PlanID]
+		for _, meterID := range plan.MeterIDs {
+			if _, ok := seenMeters[meterID]; ok {
+				continue
+			}
+			seenMeters[meterID] = struct{}{}
+			quantity, ok := usageTotals[meterID]
+			if !ok || quantity.IsZero() {
+				continue
+			}
+			meter, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
+			if err != nil {
+				return domain.Invoice{}, fmt.Errorf("get meter %s on cancel: %w", meterID, err)
+			}
+			if meter.RatingRuleVersionID == "" {
+				continue
+			}
+			linkedRule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, meter.RatingRuleVersionID)
+			if err != nil {
+				return domain.Invoice{}, fmt.Errorf("get rating rule for meter %s on cancel: %w", meterID, err)
+			}
+			rule, err := e.pricing.GetLatestRuleByKey(ctx, sub.TenantID, linkedRule.RuleKey)
+			if err != nil {
+				rule = linkedRule
+			}
+			override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, rule.ID)
+			if overrideErr == nil && override.Active {
+				rule = override.ToRatingRule()
+			}
+			amount, err := domain.ComputeAmountCents(rule, quantity)
+			if err != nil {
+				return domain.Invoice{}, fmt.Errorf("compute amount for meter %s on cancel: %w", meterID, err)
+			}
+			unitAmount := decimal.NewFromInt(amount).Div(quantity).RoundBank(0).IntPart()
+			usageStart := periodStart
+			usageEnd := canceledAt
+			lineItems = append(lineItems, domain.InvoiceLineItem{
+				LineType:            domain.LineTypeUsage,
+				MeterID:             meterID,
+				Description:         fmt.Sprintf("%s (%s) - canceled mid-period", meter.Name, meter.Unit),
+				Quantity:            quantity.IntPart(),
+				UnitAmountCents:     unitAmount,
+				AmountCents:         amount,
+				TotalAmountCents:    amount,
+				Currency:            invoiceCurrency,
+				PricingMode:         string(rule.Mode),
+				RatingRuleVersionID: rule.ID,
+				BillingPeriodStart:  &usageStart,
+				BillingPeriodEnd:    &usageEnd,
+			})
+			subtotal += amount
+		}
+	}
+
+	if subtotal <= 0 {
+		// Nothing to bill — no in_arrears base AND no usage. The
+		// customer canceled before they consumed anything billable.
+		// Skip the $0 invoice (matches BillOnCreate's behavior).
+		return domain.Invoice{}, nil
+	}
+
+	// Apply tax.
+	taxApp, err := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, 0, lineItems)
+	if err != nil {
+		return domain.Invoice{}, fmt.Errorf("apply tax on cancel: %w", err)
+	}
+
+	netDays := 0
+	if e.settings != nil {
+		if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil && ts.NetPaymentTerms > 0 {
+			netDays = ts.NetPaymentTerms
+		}
+	}
+	now := e.effectiveNow(ctx, sub)
+	dueAt := now.AddDate(0, 0, netDays)
+	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxApp.TaxAmountCents
+
+	invoiceNumber, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID)
+	if err != nil {
+		return domain.Invoice{}, fmt.Errorf("mint invoice number on cancel: %w", err)
+	}
+
+	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
+		TenantID:           sub.TenantID,
+		CustomerID:         sub.CustomerID,
+		SubscriptionID:     sub.ID,
+		InvoiceNumber:      invoiceNumber,
+		Status:             domain.InvoiceFinalized,
+		PaymentStatus:      domain.PaymentPending,
+		Currency:           invoiceCurrency,
+		SubtotalCents:      taxApp.SubtotalCents,
+		DiscountCents:      taxApp.DiscountCents,
+		TaxRateBP:          taxApp.TaxRateBP,
+		TaxName:            taxApp.TaxName,
+		TaxCountry:         taxApp.TaxCountry,
+		TaxID:              taxApp.TaxID,
+		TaxAmountCents:     taxApp.TaxAmountCents,
+		TaxProvider:        taxApp.TaxProvider,
+		TaxCalculationID:   taxApp.TaxCalculationID,
+		TaxReverseCharge:   taxApp.TaxReverseCharge,
+		TaxExemptReason:    taxApp.TaxExemptReason,
+		TaxStatus:          taxApp.TaxStatus,
+		TaxDeferredAt:      taxApp.TaxDeferredAt,
+		TaxPendingReason:   taxApp.TaxPendingReason,
+		TaxErrorCode:       taxApp.TaxErrorCode,
+		TotalAmountCents:   totalWithTax,
+		AmountDueCents:     totalWithTax,
+		BillingPeriodStart: periodStart,
+		BillingPeriodEnd:   canceledAt,
+		IssuedAt:           &now,
+		DueAt:              &dueAt,
+		CreatedAt:          now,
+		NetPaymentTermDays: netDays,
+		BillingReason:      domain.BillingReasonSubscriptionCancel,
+	}, lineItems)
+	if err != nil {
+		if errors.Is(err, errs.ErrAlreadyExists) {
+			slog.Info("subscription_cancel final invoice already exists (idempotent skip)",
+				"subscription_id", sub.ID,
+				"period_start", periodStart,
+				"canceled_at", canceledAt,
+			)
+			return domain.Invoice{}, nil
+		}
+		return domain.Invoice{}, fmt.Errorf("create final-on-cancel invoice: %w", err)
+	}
+
+	if inv.TaxProvider != "" && inv.TaxCalculationID != "" {
+		if err := e.CommitTax(ctx, sub.TenantID, inv.ID, inv.TaxCalculationID); err != nil {
+			slog.Warn("tax: commit failed after final-on-cancel invoice",
+				"error", err, "tenant_id", sub.TenantID, "invoice_id", inv.ID)
+		}
+	}
+
+	// Auto-charge: mirrors the post-finalize block in billOnePeriod /
+	// BillOnCreate. PM ready → synchronous attempt; no PM → queue +
+	// notify (dunning takes over on a real failure).
+	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
+		ps, psErr := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID)
+		pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != ""
+		if pmReady {
+			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
+			if err == nil && chargeInv.AmountDueCents > 0 {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, ps.StripeCustomerID); err != nil {
+					slog.Warn("final-on-cancel auto-charge failed, marking for retry",
+						"invoice_id", inv.ID, "error", err)
+					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+				}
+			}
+		} else {
+			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+			if e.noPMNotifier != nil {
+				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
+					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
+						slog.Warn("final-on-cancel no-PM notification failed",
+							"invoice_id", inv.ID, "error", err)
+					}
+				}
+			}
+		}
+	}
+
+	slog.Info("subscription_cancel final invoice generated",
+		"invoice_id", inv.ID,
+		"subscription_id", sub.ID,
+		"period_start", periodStart,
+		"canceled_at", canceledAt,
 		"total_cents", totalWithTax,
 		"line_items", len(lineItems),
 	)
