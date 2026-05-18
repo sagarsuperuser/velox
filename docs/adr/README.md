@@ -68,7 +68,7 @@ messages + CHANGELOG.md, not here.
 | [034](034-plan-billing-field-immutability.md) | 2026-05-15 | Accepted | Plan billing-field immutability once a live sub attaches |
 | [035](035-per-fact-simulated-time-anchoring.md) | 2026-05-16 | Accepted | Per-fact simulated-time anchoring under test-clock catchup |
 | [036](036-dunning-campaigns-model.md) | 2026-05-16 | Accepted (amended 2026-05-16) | Dunning campaigns model (multi-policy-per-tenant) |
-| [037](037-trial-end-and-activation-period-anchoring.md) | 2026-05-18 | Accepted | Trial-end and activation period anchoring (centralized helpers + Phase 0.5/0.9 trial-expiry) |
+| [037](037-trial-end-and-activation-period-anchoring.md) | 2026-05-18 | Accepted (amended 2026-05-18) | Trial-end and activation period anchoring (centralized helpers + Phase 0.5/0.9 trial-expiry) |
 
 ## Writing a new ADR
 

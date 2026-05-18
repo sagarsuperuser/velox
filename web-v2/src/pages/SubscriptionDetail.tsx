@@ -565,7 +565,7 @@ export default function SubscriptionDetailPage() {
                 </>
               ) : (
                 <>
-                  <p className="text-sm text-muted-foreground">Billing Period</p>
+                  <p className="text-sm text-muted-foreground">Current period</p>
                   <p className="text-lg font-semibold text-foreground mt-1">
                     {sub.current_billing_period_start && sub.current_billing_period_end
                       ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
@@ -768,7 +768,7 @@ export default function SubscriptionDetailPage() {
             )}
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground w-40 shrink-0">
-                {sub.status === 'trialing' ? 'First billing period' : 'Billing Period'}
+                {sub.status === 'trialing' ? 'First billing period' : 'Current period'}
               </span>
               <span className="text-sm text-foreground">
                 {sub.current_billing_period_start && sub.current_billing_period_end

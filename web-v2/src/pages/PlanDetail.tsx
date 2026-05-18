@@ -332,7 +332,7 @@ export default function PlanDetailPage() {
                   <TableHead>Name</TableHead>
                   <TableHead>Customer</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Billing Period</TableHead>
+                  <TableHead>Current period</TableHead>
                   <TableHead>Created</TableHead>
                 </TableRow>
               </TableHeader>
