@@ -2221,6 +2221,46 @@ func TestPeriodAnchoring(t *testing.T) {
 		}
 	})
 
+	t.Run("UpdateItem rejects plan-change that would mix intervals on a multi-item sub", func(t *testing.T) {
+		// On a multi-item sub, swapping ONE item's plan to a different
+		// interval would create a mix. Reject. Single-item plan-change
+		// (e.g. only item swaps monthly → yearly) is NOT covered by
+		// this guard — that's a clean interval swap, not a mix, and
+		// other platforms permit it.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_monthly_a": {ID: "p_monthly_a", BillingInterval: domain.BillingMonthly},
+			"p_monthly_b": {ID: "p_monthly_b", BillingInterval: domain.BillingMonthly},
+			"p_yearly":    {ID: "p_yearly", BillingInterval: domain.BillingYearly},
+		}})
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p_monthly_a"}, {PlanID: "p_monthly_b"}},
+			StartNow: true,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		// Immediate plan-change to yearly while the OTHER item stays monthly → mix.
+		_, err = svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_yearly",
+			Immediate: true,
+		})
+		if err == nil {
+			t.Error("expected error on immediate plan-change that would mix intervals")
+		}
+		// Scheduled plan-change should also be rejected at request time
+		// (Stripe parity — you can't queue a state that would be
+		// invalid when it lands).
+		_, err = svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_yearly",
+			Immediate: false,
+		})
+		if err == nil {
+			t.Error("expected error on scheduled plan-change that would mix intervals")
+		}
+	})
+
 	t.Run("AddItem rejects mismatched interval against existing sub", func(t *testing.T) {
 		svc := NewService(newMemStore(), clock.NewFake(now))
 		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
