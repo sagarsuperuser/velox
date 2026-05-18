@@ -239,7 +239,34 @@ func (m *memStore) ActivateAfterTrial(ctx context.Context, tenantID, id string, 
 	return s, nil
 }
 
-func (m *memStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd time.Time) (domain.Subscription, error) {
+func (m *memStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status != domain.SubscriptionTrialing {
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot end trial on %s subscription", s.Status))
+	}
+	s.Status = domain.SubscriptionActive
+	if s.ActivatedAt == nil {
+		t := at
+		s.ActivatedAt = &t
+	}
+	te := at
+	s.TrialEndAt = &te
+	ps := periodStart
+	pe := periodEnd
+	nb := nextBilling
+	s.CurrentBillingPeriodStart = &ps
+	s.CurrentBillingPeriodEnd = &pe
+	s.NextBillingAt = &nb
+	s.UpdatedAt = clock.Now(ctx)
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
+	return s, nil
+}
+
+func (m *memStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
 		return domain.Subscription{}, errs.ErrNotFound
@@ -248,7 +275,13 @@ func (m *memStore) ExtendTrial(ctx context.Context, tenantID, id string, newTria
 		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot extend trial on %s subscription", s.Status))
 	}
 	t := newTrialEnd
+	ps := periodStart
+	pe := periodEnd
+	nb := nextBilling
 	s.TrialEndAt = &t
+	s.CurrentBillingPeriodStart = &ps
+	s.CurrentBillingPeriodEnd = &pe
+	s.NextBillingAt = &nb
 	s.UpdatedAt = clock.Now(ctx)
 	m.subs[id] = s
 	s.Items = m.hydrateItems(id)
@@ -1509,6 +1542,237 @@ func TestExtendTrial(t *testing.T) {
 		future := now.AddDate(0, 0, 30)
 		if _, err := svc.ExtendTrial(context.Background(), "t1", sub.ID, future); err == nil {
 			t.Error("expected error when extending trial on non-trialing sub")
+		}
+	})
+}
+
+// TestPeriodAnchoring locks in the post-Bug-1/2/11 contract for how the
+// first billing period anchors across every entry point (Create with
+// trial / Create with start_now / Activate from draft / EndTrial-early /
+// ExtendTrial). Calendar billing must produce a stub period bounded by
+// the next calendar month; anniversary must produce a full cycle from
+// the anchor instant. Pre-fix Create+trial+calendar dropped the stub
+// silently (revenue leak); pre-fix Activate hardcoded calendar and
+// backdated to month-start; pre-fix EndTrial / ExtendTrial left
+// period boundaries pointing at the original (now-wrong) anchor.
+func TestPeriodAnchoring(t *testing.T) {
+	// Pick a mid-month "now" so the calendar-billing branch produces a
+	// non-trivial stub. UTC for all snaps — no tenant TZ surprises.
+	now := time.Date(2025, 11, 29, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	t.Run("Create + trial + calendar → stub period from trial_end to next month start", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, TrialDays: 14,
+			BillingTime: domain.BillingTimeCalendar,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		// trial_end = now + 14d = Dec 13, 2025
+		wantTrialEnd := time.Date(2025, 12, 13, 12, 0, 0, 0, time.UTC)
+		if !sub.TrialEndAt.Equal(wantTrialEnd) {
+			t.Errorf("trial_end_at: got %v, want %v", sub.TrialEndAt, wantTrialEnd)
+		}
+		// First chargeable period: stub from Dec 13 → Jan 1 (calendar
+		// anchors first full cycle at month boundary).
+		wantPeriodStart := time.Date(2025, 12, 13, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		if !sub.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v (stub)", sub.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if !sub.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v (next month boundary)", sub.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+		if !sub.NextBillingAt.Equal(wantPeriodEnd) {
+			t.Errorf("next_billing_at: got %v, want %v", sub.NextBillingAt, wantPeriodEnd)
+		}
+	})
+
+	t.Run("Create + trial + anniversary → full cycle from trial_end", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, TrialDays: 14,
+			BillingTime: domain.BillingTimeAnniversary,
+		})
+		// Anniversary: period_start = trial_end snapped to day, period_end = +1mo
+		wantPeriodStart := time.Date(2025, 12, 13, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2026, 1, 13, 0, 0, 0, 0, time.UTC)
+		if !sub.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v", sub.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if !sub.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v", sub.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+	})
+
+	t.Run("Create + trial + calendar — trial_end exactly on calendar boundary → no stub", func(t *testing.T) {
+		// Sub created Nov 1, 30-day trial → trial_end = Dec 1 (exact
+		// month boundary). The stub computation collapses; promote to
+		// full cycle Dec 1 → Jan 1.
+		anchor := time.Date(2025, 11, 1, 0, 0, 0, 0, time.UTC)
+		svc := NewService(newMemStore(), clock.NewFake(anchor))
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, TrialDays: 30,
+			BillingTime: domain.BillingTimeCalendar,
+		})
+		wantPeriodStart := time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		if !sub.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v", sub.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if !sub.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v (full cycle, stub collapsed)", sub.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+	})
+
+	t.Run("Activate draft + calendar → period starts at activation day, NOT month start", func(t *testing.T) {
+		// Pre-fix Activate hardcoded beginningOfMonth(now) for period_start,
+		// backdating to Nov 1 and billing the customer for the full Nov
+		// cycle including days the sub was a draft.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, // no StartNow, no TrialDays → draft
+			BillingTime: domain.BillingTimeCalendar,
+		})
+		if sub.Status != domain.SubscriptionDraft {
+			t.Fatalf("precondition: want draft, got %q", sub.Status)
+		}
+		activated, err := svc.Activate(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("Activate: %v", err)
+		}
+		// period_start = day-snapped activation instant (Nov 29 00:00),
+		// NOT beginningOfMonth (Nov 1).
+		wantPeriodStart := time.Date(2025, 11, 29, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC)
+		if !activated.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v (NOT backdated to Nov 1)", activated.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if !activated.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v", activated.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+	})
+
+	t.Run("Activate draft + anniversary → period starts at activation day, ends +1 month", func(t *testing.T) {
+		// Pre-fix Activate ignored sub.BillingTime entirely — an
+		// anniversary draft activated mid-month still got calendar-
+		// anchored periods. Lock the fix.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:       []CreateItemInput{{PlanID: "p"}},
+			BillingTime: domain.BillingTimeAnniversary,
+		})
+		activated, _ := svc.Activate(ctx, "t1", sub.ID)
+		wantPeriodStart := time.Date(2025, 11, 29, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2025, 12, 29, 0, 0, 0, 0, time.UTC)
+		if !activated.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v", activated.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if !activated.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v (anniversary cycle, NOT calendar)", activated.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+	})
+
+	t.Run("EndTrial early + calendar → period resets to activation day, trial_end truncated", func(t *testing.T) {
+		// Sub created Nov 29 + 14d trial = trial_end Dec 13. Operator
+		// EndTrial at Dec 5 (8 days into trial, 8 days before scheduled
+		// end). Pre-fix: trial_end stayed Dec 13, period stayed Dec 13 →
+		// Jan 1, customer got 8 free days (Dec 5 → Dec 13). Post-fix:
+		// trial_end truncates to Dec 5, period anchors at Dec 5 → Jan 1.
+		earlyEnd := time.Date(2025, 12, 5, 9, 0, 0, 0, time.UTC)
+		// Create with the original `now` clock (Nov 29), then build a
+		// fresh Service over the same memStore with an earlyEnd-pinned
+		// clock so EndTrial reads `now = earlyEnd`. NewService doesn't
+		// expose a SetClock, so the two-service shape is the cleanest
+		// way to advance the test clock between Create and EndTrial.
+		mem := newMemStore()
+		svc2 := NewService(mem, clock.NewFake(now))
+		sub, _ := svc2.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, TrialDays: 14,
+			BillingTime: domain.BillingTimeCalendar,
+		})
+		// Now switch the service clock to earlyEnd before EndTrial.
+		// NewService doesn't expose a SetClock — easiest is build a
+		// fresh service over the same memStore.
+		svc3 := NewService(mem, clock.NewFake(earlyEnd))
+		out, err := svc3.EndTrial(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("EndTrial: %v", err)
+		}
+		if out.Status != domain.SubscriptionActive {
+			t.Errorf("status: got %q, want active", out.Status)
+		}
+		// trial_end_at truncated to the early-end instant — historical
+		// evidence "trial ended early on Dec 5", not the original Dec 13.
+		if !out.TrialEndAt.Equal(earlyEnd) {
+			t.Errorf("trial_end_at: got %v, want %v (truncated)", out.TrialEndAt, earlyEnd)
+		}
+		// Period anchors at the activation instant (Dec 5 day-snapped),
+		// NOT the original trial-end anchor (Dec 13).
+		wantPeriodStart := time.Date(2025, 12, 5, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		if !out.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v (reset to activation)", out.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if !out.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v", out.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+	})
+
+	t.Run("ExtendTrial + calendar → period re-anchors on new trial_end", func(t *testing.T) {
+		// Sub created Nov 29 + 14d trial = trial_end Dec 13, period
+		// Dec 13 → Jan 1. Operator extends trial to Mar 15. Period must
+		// re-anchor to Mar 15 → Apr 1 (stub) so the engine doesn't
+		// silently drop the Mar 1 → Mar 15 partial-month at trial-end.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, TrialDays: 14,
+			BillingTime: domain.BillingTimeCalendar,
+		})
+		newEnd := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+		out, err := svc.ExtendTrial(ctx, "t1", sub.ID, newEnd)
+		if err != nil {
+			t.Fatalf("ExtendTrial: %v", err)
+		}
+		if !out.TrialEndAt.Equal(newEnd) {
+			t.Errorf("trial_end_at: got %v, want %v", out.TrialEndAt, newEnd)
+		}
+		// Period anchors on the new trial_end: Mar 15 → Apr 1 stub.
+		wantPeriodStart := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+		if !out.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v (re-anchored)", out.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if !out.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v", out.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+	})
+
+	t.Run("ExtendTrial + anniversary → period re-anchors at new trial_end + 1mo", func(t *testing.T) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		sub, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}}, TrialDays: 14,
+			BillingTime: domain.BillingTimeAnniversary,
+		})
+		newEnd := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+		out, _ := svc.ExtendTrial(ctx, "t1", sub.ID, newEnd)
+		wantPeriodStart := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+		wantPeriodEnd := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+		if !out.CurrentBillingPeriodStart.Equal(wantPeriodStart) {
+			t.Errorf("period_start: got %v, want %v", out.CurrentBillingPeriodStart, wantPeriodStart)
+		}
+		if !out.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
+			t.Errorf("period_end: got %v, want %v (anniversary, NOT month-end snap)", out.CurrentBillingPeriodEnd, wantPeriodEnd)
 		}
 	})
 }

@@ -99,19 +99,46 @@ type Store interface {
 	// ActivateAfterTrial atomically transitions a subscription from
 	// 'trialing' to 'active'. Sets activated_at = `at` if the column is
 	// still NULL (preserves the original activation timestamp on
-	// re-runs). Returns errs.InvalidState if the row's status is not
-	// 'trialing' at UPDATE time. Called by the billing engine at cycle
-	// scan when the trial window has elapsed, and by the operator-facing
-	// EndTrial action.
+	// re-runs). Does NOT touch period boundaries — the caller (the
+	// billing engine's cycle-close path) has already advanced them to
+	// the right cycle. For operator-driven early-EndTrial use
+	// EndTrialEarly which resets the period anchor to the activation
+	// instant.
 	ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
 
-	// ExtendTrial atomically updates trial_end_at on a 'trialing' row.
-	// Returns errs.InvalidState if the row's status is not 'trialing' at
-	// UPDATE time (operator already ended the trial, or the row was never
-	// trialing). The service layer is responsible for rejecting newTrialEnd
-	// values that don't make sense (in the past, or before the existing
-	// trial_end_at — those callers should use EndTrial instead).
-	ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd time.Time) (domain.Subscription, error)
+	// EndTrialEarly is the operator-driven counterpart to
+	// ActivateAfterTrial. In one atomic UPDATE it: flips status to
+	// 'active', stamps activated_at if currently NULL, truncates
+	// trial_end_at to `at` (historical record: the trial ended early),
+	// and replaces the period anchor with (periodStart, periodEnd,
+	// nextBilling) — the caller computes these via firstPeriodForActivate
+	// so the new period reflects "billing starts now."
+	//
+	// Pre-fix, EndTrial called ActivateAfterTrial and left period
+	// boundaries pointing at the original post-trial anchor — a Dec 5
+	// EndTrial on a sub whose period was Dec 13 → Jan 1 produced no
+	// billing until Jan 1 (8 unbilled days during the bridge from
+	// early-end to original-anchor).
+	//
+	// Returns errs.InvalidState if the row's status is not 'trialing'
+	// at UPDATE time.
+	EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error)
+
+	// ExtendTrial atomically updates trial_end_at AND recomputes the
+	// period anchor on a 'trialing' row. Mirrors EndTrialEarly's shape
+	// for the opposite operator action: pushing trial_end later moves
+	// the first-chargeable-cycle anchor to match. Without the period
+	// recompute, extending past the original current_period_end would
+	// silently drop the stub between new_trial_end and the next cycle
+	// close (same bug class as the pre-fix calendar+trial Create
+	// branch).
+	//
+	// The service layer is responsible for rejecting newTrialEnd values
+	// that don't make sense (in the past, or before the existing
+	// trial_end_at — those callers should use EndTrialEarly instead).
+	// Returns errs.InvalidState if the row's status is not 'trialing'
+	// at UPDATE time.
+	ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error)
 
 	// ---- Subscription items ----
 
