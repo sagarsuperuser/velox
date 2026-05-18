@@ -59,6 +59,7 @@ type Service struct {
 	plans     PlanReader
 	biller    Biller
 	resolver  clock.Resolver
+	events    domain.EventDispatcher
 }
 
 func NewService(store Store, clk clock.Clock) *Service {
@@ -94,6 +95,18 @@ func (s *Service) SetCustomerReader(r CustomerReader) {
 // router.go.
 func (s *Service) SetPlanReader(r PlanReader) {
 	s.plans = r
+}
+
+// SetEventDispatcher wires the outbound-webhook dispatcher used by
+// the trial-expiry scan paths (ProcessExpiredTrialsForClock +
+// ProcessExpiredTrials) to fire `subscription.trial_ended` events
+// when status flips at trial_end_at. Engine auto-flip path emits
+// the same event from billing/engine.go; this setter brings the
+// catchup-orchestrator and wall-clock-cron paths into parity so
+// webhook consumers see one event per trial transition regardless
+// of which path activated the sub.
+func (s *Service) SetEventDispatcher(d domain.EventDispatcher) {
+	s.events = d
 }
 
 // SetBiller wires the billing engine for the in_advance first-invoice
@@ -243,6 +256,49 @@ func firstPeriodForActivate(at time.Time, billingTime domain.SubscriptionBilling
 	return ps, ps.AddDate(0, 1, 0)
 }
 
+// rejectMixedItemIntervals validates that every item's plan shares
+// the same BillingInterval. Returns errs.Invalid("items", ...) on
+// mismatch — Stripe / Lago / Chargebee all reject mixed intervals
+// on a single sub because the period anchor is per-sub and a
+// monthly + yearly mix has no coherent cycle.
+//
+// Empty BillingInterval on a plan is treated as monthly (the
+// engine's advanceBillingPeriod default), matching the lenient
+// stance taken elsewhere — old plans created before the column
+// existed still validate cleanly.
+//
+// Plan-fetch errors (RLS gap / deleted plan) surface as
+// errs.Invalid so the operator gets a clean 400 instead of a 500.
+func (s *Service) rejectMixedItemIntervals(ctx context.Context, tenantID string, items []domain.SubscriptionItem) error {
+	if len(items) < 2 {
+		return nil
+	}
+	first, err := s.plans.GetPlan(ctx, tenantID, items[0].PlanID)
+	if err != nil {
+		return errs.Invalid("items", fmt.Sprintf("plan %q not found", items[0].PlanID))
+	}
+	firstInterval := first.BillingInterval
+	if firstInterval == "" {
+		firstInterval = domain.BillingMonthly
+	}
+	for _, it := range items[1:] {
+		plan, err := s.plans.GetPlan(ctx, tenantID, it.PlanID)
+		if err != nil {
+			return errs.Invalid("items", fmt.Sprintf("plan %q not found", it.PlanID))
+		}
+		other := plan.BillingInterval
+		if other == "" {
+			other = domain.BillingMonthly
+		}
+		if other != firstInterval {
+			return errs.Invalid("items", fmt.Sprintf(
+				"all items must share the same billing interval (plan %q is %s, plan %q is %s)",
+				items[0].PlanID, firstInterval, it.PlanID, other))
+		}
+	}
+	return nil
+}
+
 // firstPlanInterval returns the BillingInterval to use for period
 // anchoring on a sub. Reads the first item's plan via PlanReader; on
 // any failure (reader not wired, plan deleted, RLS gap) defaults to
@@ -334,6 +390,17 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	}
 	if billingTime != domain.BillingTimeCalendar && billingTime != domain.BillingTimeAnniversary {
 		return domain.Subscription{}, errs.Invalid("billing_time", "must be calendar or anniversary")
+	}
+
+	// Reject mixed billing intervals across items (Stripe / Lago parity).
+	// All items on a sub must share an interval — the period anchor is
+	// per-sub, so a monthly + yearly mix has no coherent cycle. Skipped
+	// when PlanReader isn't wired (narrow unit tests) or when there's
+	// only one item.
+	if s.plans != nil && len(items) > 1 {
+		if err := s.rejectMixedItemIntervals(ctx, tenantID, items); err != nil {
+			return domain.Subscription{}, err
+		}
 	}
 
 	// Customer-level test-clock attach (ADR-027, Stripe parity): a
@@ -554,6 +621,18 @@ func (s *Service) AddItem(ctx context.Context, tenantID, subscriptionID string, 
 	}
 	if sub.Status == domain.SubscriptionCanceled || sub.Status == domain.SubscriptionArchived {
 		return domain.SubscriptionItem{}, errs.InvalidState(fmt.Sprintf("cannot add items to %s subscriptions", sub.Status))
+	}
+
+	// Mixed-interval guard: new item's plan must match the sub's
+	// existing item intervals. Same rationale as Create — the period
+	// anchor is per-sub, so adding a yearly item to a monthly sub
+	// would have no coherent cycle. Skipped when PlanReader isn't
+	// wired (narrow unit tests).
+	if s.plans != nil && len(sub.Items) > 0 {
+		newPlusExisting := append([]domain.SubscriptionItem{{PlanID: input.PlanID}}, sub.Items...)
+		if err := s.rejectMixedItemIntervals(ctx, tenantID, newPlusExisting); err != nil {
+			return domain.SubscriptionItem{}, err
+		}
 	}
 
 	ctx = s.bindForSub(ctx, tenantID, subscriptionID)
@@ -940,6 +1019,17 @@ func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, cl
 					"error", err)
 			}
 		}
+		// Fire subscription.trial_ended webhook to match the engine
+		// auto-flip path. triggered_by="schedule" signals it was the
+		// catchup orchestrator (not the operator's EndTrial action).
+		if s.events != nil {
+			_ = s.events.Dispatch(bound, tenantID, domain.EventSubscriptionTrialEnded, map[string]any{
+				"subscription_id": activated.ID,
+				"customer_id":     activated.CustomerID,
+				"ended_at":        trialEndAt.UTC(),
+				"triggered_by":    "schedule",
+			})
+		}
 		processed++
 	}
 	return processed, batchErrs
@@ -997,6 +1087,14 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 					"tenant_id", activated.TenantID,
 					"error", err)
 			}
+		}
+		if s.events != nil {
+			_ = s.events.Dispatch(ctx, activated.TenantID, domain.EventSubscriptionTrialEnded, map[string]any{
+				"subscription_id": activated.ID,
+				"customer_id":     activated.CustomerID,
+				"ended_at":        trialEndAt.UTC(),
+				"triggered_by":    "schedule",
+			})
 		}
 		processed++
 	}
