@@ -462,6 +462,7 @@ func (s *Service) AddItem(ctx context.Context, tenantID, subscriptionID string, 
 		return domain.SubscriptionItem{}, errs.InvalidState(fmt.Sprintf("cannot add items to %s subscriptions", sub.Status))
 	}
 
+	ctx = s.bindForSub(ctx, tenantID, subscriptionID)
 	return s.store.AddItem(ctx, tenantID, domain.SubscriptionItem{
 		SubscriptionID: subscriptionID,
 		PlanID:         input.PlanID,
@@ -561,6 +562,7 @@ func (s *Service) CancelPendingItemChange(ctx context.Context, tenantID, subscri
 	if item.PendingPlanID == "" {
 		return item, nil
 	}
+	ctx = s.bindForSub(ctx, tenantID, subscriptionID)
 	return s.store.ClearItemPendingPlan(ctx, tenantID, itemID)
 }
 
@@ -583,20 +585,24 @@ func (s *Service) RemoveItem(ctx context.Context, tenantID, subscriptionID, item
 	if sub.Status == domain.SubscriptionActive && len(sub.Items) <= 1 {
 		return errs.InvalidState("cannot remove the last item from an active subscription; cancel the subscription instead")
 	}
+	ctx = s.bindForSub(ctx, tenantID, subscriptionID)
 	return s.store.RemoveItem(ctx, tenantID, itemID)
 }
 
 // Pause pauses an active subscription. Can be resumed later.
 func (s *Service) Pause(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	ctx = s.bindForSub(ctx, tenantID, id)
 	return s.store.PauseAtomic(ctx, tenantID, id)
 }
 
 // Resume resumes a paused subscription.
 func (s *Service) Resume(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	ctx = s.bindForSub(ctx, tenantID, id)
 	return s.store.ResumeAtomic(ctx, tenantID, id)
 }
 
 func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	ctx = s.bindForSub(ctx, tenantID, id)
 	canceled, err := s.store.CancelAtomic(ctx, tenantID, id)
 	if err != nil {
 		return domain.Subscription{}, err
