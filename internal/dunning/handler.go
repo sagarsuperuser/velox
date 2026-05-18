@@ -15,6 +15,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // InvoiceUpdater updates invoice status when dunning is resolved.
@@ -268,7 +269,11 @@ func (h *Handler) resolveRun(w http.ResponseWriter, r *http.Request) {
 	if h.invoices != nil && run.InvoiceID != "" {
 		switch domain.DunningResolution(input.Resolution) {
 		case domain.ResolutionPaymentRecovered:
-			now := time.Now().UTC()
+			// MarkPaid stamps invoice.paid_at — for invoices on
+			// clock-pinned subs that ought to land in sim-time
+			// (ADR-030). clock.Now(ctx) falls back to wall-clock
+			// for unbound ctx (production dunning resolutions).
+			now := clock.Now(r.Context())
 			if _, err := h.invoices.MarkPaid(r.Context(), tenantID, run.InvoiceID, "", now); err != nil {
 				slog.WarnContext(r.Context(), "failed to mark invoice as paid after dunning resolution", "invoice_id", run.InvoiceID, "error", err)
 			}

@@ -39,6 +39,12 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Fixed
 
+- **Sim-time on credit notes, dunning resolution paid_at, customer price overrides (PR-12 Round 2+3 — ADR-030 sweep continued).**
+  - `internal/creditnote/postgres.go` — 5 timestamp writes (`Create`, `UpdateStatus`, `SetTaxTransaction`, `UpdateRefundStatus`, `CreateLineItem`) all now use `clock.Now(ctx)`. Credit notes against invoices on clock-pinned subs inherit sim-time stamps.
+  - `internal/creditnote/service.go:224` — the `now` used as `issued_at` / `voided_at` / `created_at` in the credit-note creation path also now `clock.Now(ctx)`. `time` import removed.
+  - `internal/dunning/handler.go:271` — `invoices.MarkPaid(ctx, ..., now)` was wall-clock. Now `clock.Now(ctx)` so dunning resolutions on clock-pinned invoices stamp `invoice.paid_at` in sim-time.
+  - `internal/pricing/override.go:28` — `customer_price_overrides.created_at` / `updated_at` now `clock.Now(ctx)`. Overrides on clock-pinned customers stamp sim-time. `time` import removed.
+  - All fallback to wall-clock when ctx is unbound (production paths unchanged).
 - **Sim-time audit + proration timestamps across the subscription handler (PR-12, ADR-030 Round 1).** Continuing the PR-11 audit sweep, three more wall-clock leaks fixed on clock-pinned subs:
   - **Audit middleware catch-all** (`internal/api/middleware/audit.go:389`) — was unconditionally `time.Now().UTC()`. Now reads `clock.Now(parentCtx)` so audit rows from handlers that bound effective-now (e.g. customer mutations on clock-pinned customers, future invoice manual ops) get the sim-time stamp. Fallback path is unchanged for unbound ctx — no regression.
   - **Subscription handler proration math** — `remainingPeriodFactor(sub, time.Now())` ran in wall-clock at 3 sites (AddItem / UpdateItem / RemoveItem), producing wrong proration factors for clock-pinned subs whose `current_period_end` is in the simulated future. New `Handler.bindForSub(ctx, tenantID, subID)` helper binds effective-now from the sub pin via a wired `clock.Resolver` (`subH.SetResolver(engine)` in `router.go`); every proration path now does `ctx := h.bindForSub(r.Context(), tenantID, id); r = r.WithContext(ctx)` at entry, and downstream `time.Now()` calls become `clock.Now(ctx)`.

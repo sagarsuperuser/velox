@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
@@ -221,7 +221,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		}
 	}
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var cnNumber string
 	if s.numbers != nil {
 		num, err := s.numbers.NextCreditNoteNumber(ctx, tenantID)

@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -25,7 +25,10 @@ func (s *PostgresStore) CreateOverride(ctx context.Context, tenantID string, o d
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_cpo")
-	now := time.Now().UTC()
+	// Honors ctx-bound effective-now (ADR-030) — overrides on
+	// clock-pinned customers stamp sim-time. Fallback to wall-clock
+	// otherwise.
+	now := clock.Now(ctx)
 	tiersJSON, _ := json.Marshal(o.GraduatedTiers)
 
 	err = tx.QueryRowContext(ctx, `

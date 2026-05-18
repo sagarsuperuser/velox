@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -28,7 +29,10 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.C
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_cn")
-	now := time.Now().UTC()
+	// Honors ctx-bound effective-now (ADR-030) — credit notes against
+	// invoices on clock-pinned subs inherit sim-time. Falls back to
+	// wall-clock for unbound ctx (production credit notes).
+	now := clock.Now(ctx)
 	metaJSON, _ := json.Marshal(cn.Metadata)
 	if cn.Metadata == nil {
 		metaJSON = []byte("{}")
@@ -175,7 +179,7 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 	}
 	defer postgres.Rollback(tx)
 
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	var issuedAt, voidedAt *time.Time
 	if status == domain.CreditNoteIssued {
 		issuedAt = &now
@@ -211,7 +215,7 @@ func (s *PostgresStore) SetTaxTransaction(ctx context.Context, tenantID, id stri
 
 	_, err = tx.ExecContext(ctx, `
 		UPDATE credit_notes SET tax_transaction_id = $1, updated_at = $2 WHERE id = $3`,
-		taxTransactionID, time.Now().UTC(), id)
+		taxTransactionID, clock.Now(ctx), id)
 	if err != nil {
 		return err
 	}
@@ -229,7 +233,7 @@ func (s *PostgresStore) UpdateRefundStatus(ctx context.Context, tenantID, id str
 		UPDATE credit_notes SET refund_status=$1, stripe_refund_id=COALESCE(NULLIF($2,''), stripe_refund_id),
 			updated_at=$3
 		WHERE id=$4`,
-		status, stripeRefundID, time.Now().UTC(), id)
+		status, stripeRefundID, clock.Now(ctx), id)
 	if err != nil {
 		return err
 	}
@@ -244,7 +248,7 @@ func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, ite
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_cnli")
-	now := time.Now().UTC()
+	now := clock.Now(ctx)
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO credit_note_line_items (id, credit_note_id, tenant_id,
 			invoice_line_item_id, description, quantity, unit_amount_cents, amount_cents, created_at)
