@@ -512,6 +512,7 @@ Default `base_bill_timing=in_arrears`: the recurring base + any usage settles at
 
 - [ ] Trial 7 days → no charge during trial; status flips to active AT `trial_end_at` (Phase 0.5 / cron, ADR-037); first invoice fires at activation for in_advance items or at the post-trial cycle close for in_arrears. Full coverage in FLOW TC6.
 - [ ] Pause button on a `status=active` sub → opens **Pause collection** confirm dialog (the hard-pause radio option was removed in PR-6). Click through → cycle keeps drafting invoices, auto-charge is suppressed, no dunning fires on the resulting drafts. Resume collection → next cycle bills normally; drafts stay drafts unless operator finalizes them manually.
+- [ ] Pause Collection confirm dialog description includes the bolded line **"On resume, the full current period bills — paused days are not pro-rated. Issue a credit grant after resuming if you want to offset them."** (truth-in-labelling fix shipped 2026-05-18; pause_collection is about charging, not about cycle-skip — full month bills on resume).
 - [ ] Cancel from `status=trialing` works (PR-1.5 — Stripe parity) — `trial_end_at` is preserved across cancel for historical reporting, `canceled_at` stamps in simulated time on clock-pinned subs (PR-1).
 - [ ] Cancel on `in_arrears` plan → confirm dialog → status canceled, no future billing, no credit grant.
 - [ ] Cancel on `in_advance` plan mid-period → confirm dialog → status canceled AND a credit grant lands on the customer's balance for the unused portion of the already-billed period. Description: `Cancel proration — unused portion of <sub_code> base fee (period <start> to <end>, canceled <date>)`. See B17 for the full flow.
@@ -630,6 +631,14 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] Cancel on a pure `in_arrears` sub → no proration credit (nothing was prebilled).
 - [ ] Mixed sub (one in_advance item + one in_arrears item) → credit covers only the in_advance item's unused portion.
 - [ ] Future invoices on this customer auto-apply the credit (C1 behavior).
+
+## FLOW B19: Cancel-flow billing artifacts (PR-9 + PR-10)
+
+- [ ] **Mid-period immediate cancel, `in_arrears` plan (PR-10):** sub `in_arrears` $100/mo created Nov 1, customer logs 50 usage events Nov 1–15, operator clicks Cancel Nov 15 (mid-period). Result: final invoice with `billing_reason='subscription_cancel'`, `billing_period_start=Nov 1`, `billing_period_end=Nov 15`, lines = prorated base ($100 × 14/30 ≈ $46.67) + usage line (50 × $1 = $50). Total $96.67. Pre-PR-10 this invoice didn't exist (customer used 50 units for free).
+- [ ] **Mid-period immediate cancel, `in_advance` plan (PR-10):** sub `in_advance` $100/mo, day-1 invoice paid (B15), 50 usage events Nov 1–15, Cancel Nov 15. Result: TWO artifacts — (a) final invoice `billing_reason='subscription_cancel'` with usage line only (no base — already paid), total $50; (b) credit grant for unused base portion ≈ $53.33 (B17 unchanged). Independent: invoice doesn't pre-apply the credit.
+- [ ] **Clean cancel at-or-after period_end:** Cancel Nov 30 with current_period_end=Dec 1 → BillFinalOnImmediateCancel no-op. The cycle close already billed (or will bill) the period; no second final invoice fires. Credit grant also no-op for in_advance (clean cancel, period used in full).
+- [ ] **Scheduled cancel at period_end on `in_advance` (PR-9):** sub `in_advance` $100/mo, operator `schedule-cancel at_period_end=true` mid-Nov. At Dec 1 cycle close: cycle-close invoice contains **NO upcoming-period base line** ($100 NOT charged for Dec 1–Jan 1 that won't be used). Usage line for Nov 1–Dec 1 still bills normally. Then scheduled cancel fires; sub.status=canceled. Pre-PR-9 the customer paid $100 for a period they wouldn't use.
+- [ ] **Scheduled cancel at period_end on `in_arrears`:** same setup with in_arrears plan. Cycle-close invoice for Nov 1–Dec 1 has full base ($100) + usage (correct — customer consumed the just-elapsed period). Cancel fires after. No overcharge — in_arrears was never affected by PR-9.
 
 ## FLOW B18: Meter Detail page
 
