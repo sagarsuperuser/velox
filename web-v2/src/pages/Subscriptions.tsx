@@ -1,13 +1,9 @@
 import { useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useForm, useFieldArray } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { z } from 'zod'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { api, formatDate, formatDateTime } from '@/lib/api'
+import { api, formatDate } from '@/lib/api'
 import type { Customer, Subscription } from '@/lib/api'
-import { applyApiError } from '@/lib/formErrors'
 import { downloadServerCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
@@ -16,21 +12,12 @@ import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 import { TestClockBadge } from '@/components/TestClockBadge'
+import { CreateSubscriptionDialog } from '@/components/CreateSubscriptionDialog'
 
 import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
-import { Checkbox } from '@/components/ui/checkbox'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import {
   Table,
   TableBody,
@@ -47,46 +34,11 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from '@/components/ui/pagination'
-import {
-  Form,
-  FormControl,
-  FormDescription,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
-import { Separator } from '@/components/ui/separator'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Repeat, Trash2 } from 'lucide-react'
+import { Plus, Search, Download, ArrowUpDown, ArrowUp, ArrowDown, Repeat } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
-
-// Items are modeled as an array so the form can bind a dynamic number of
-// priced lines. Quantity is a string in form state to keep the input
-// controlled cleanly across empty/partial entry; it's coerced to a number at
-// submit time. We enforce min-1, positive qty, and no-duplicate-plan on the
-// schema to surface the same constraints the backend enforces at API level.
-const createSubSchema = z.object({
-  code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
-  display_name: z.string().min(1, 'Display name is required'),
-  customer_id: z.string().min(1, 'Customer is required'),
-  items: z.array(z.object({
-    plan_id: z.string().min(1, 'Plan is required'),
-    quantity: z.string().refine(v => v === '' || (Number.isInteger(Number(v)) && Number(v) >= 1), 'Quantity must be a positive integer'),
-  })).min(1, 'At least one item is required').refine(
-    (items) => new Set(items.map(i => i.plan_id)).size === items.length,
-    { message: 'Each plan can only appear once per subscription' },
-  ),
-  start_now: z.boolean(),
-  billing_time: z.string(),
-  trial_days: z.string(),
-  usage_cap_units: z.string(),
-  overage_action: z.string(),
-})
-
-type CreateSubData = z.infer<typeof createSubSchema>
 
 const PAGE_SIZE = 25
 
@@ -127,18 +79,6 @@ export default function SubscriptionsPage() {
   const page = Math.max(1, parseInt(urlState.page) || 1)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-
-  const form = useForm<CreateSubData>({
-    resolver: zodResolver(createSubSchema),
-    defaultValues: {
-      code: '', display_name: '', customer_id: '',
-      items: [{ plan_id: '', quantity: '1' }],
-      start_now: true,
-      billing_time: 'calendar', trial_days: '',
-      usage_cap_units: '', overage_action: 'charge',
-    },
-  })
-  const itemsArray = useFieldArray({ control: form.control, name: 'items' })
 
   const queryParams = useMemo(() => {
     const params = new URLSearchParams()
@@ -185,9 +125,9 @@ export default function SubscriptionsPage() {
     return m
   }, [testClocksData])
   // Clock id → name lookup for the customer-inherits-clock hint
-  // (ADR-027). When the operator selects a pinned customer in the
-  // Create dialog, we surface "inherits — <clock name>" so they
-  // know the new sub will run on simulated time.
+  // (ADR-027). Surfaced inside the Create dialog when the picked
+  // customer is pinned to a clock so the operator knows the new
+  // sub will bill on simulated time.
   const clockNameMap = useMemo(() => {
     const m: Record<string, string> = {}
     ;(testClocksData?.data ?? []).forEach(c => { m[c.id] = c.name || c.id })
@@ -204,32 +144,6 @@ export default function SubscriptionsPage() {
     return cMap
   }, [customers])
   const plans = plansData?.data ?? []
-
-  const createMutation = useMutation({
-    mutationFn: (data: CreateSubData) => api.createSubscription({
-      code: data.code,
-      display_name: data.display_name,
-      customer_id: data.customer_id,
-      items: data.items.map(it => ({
-        plan_id: it.plan_id,
-        ...(it.quantity ? { quantity: parseInt(it.quantity) } : {}),
-      })),
-      start_now: data.start_now,
-      billing_time: data.billing_time,
-      ...(data.trial_days ? { trial_days: parseInt(data.trial_days) } : {}),
-      ...(data.usage_cap_units ? { usage_cap_units: parseInt(data.usage_cap_units) } : {}),
-      ...(data.overage_action !== 'charge' ? { overage_action: data.overage_action } : {}),
-    }),
-    onSuccess: (created) => {
-      queryClient.invalidateQueries({ queryKey: ['subscriptions'] })
-      toast.success(`Subscription "${created.display_name}" created`)
-      setShowCreate(false)
-      form.reset()
-    },
-    onError: (err) => {
-      applyApiError(form, err, ['code', 'display_name', 'customer_id', 'items', 'billing_time', 'trial_days', 'usage_cap_units', 'overage_action'])
-    },
-  })
 
   // Client-side search on current page data
   const filtered = useMemo(() => {
@@ -252,10 +166,6 @@ export default function SubscriptionsPage() {
   const sorted = filtered
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
-
-  const onSubmit = form.handleSubmit((data: CreateSubData) => {
-    createMutation.mutate(data)
-  })
 
   // Server-side streaming export: full tenant dataset (every column
   // on Subscription including item plan_ids, trial/started/canceled
@@ -510,302 +420,18 @@ export default function SubscriptionsPage() {
         </CardContent>
       </Card>
 
-      {/* Create Subscription Dialog */}
-      <Dialog open={showCreate} onOpenChange={(open) => {
-        setShowCreate(open)
-        if (!open) { form.reset() }
-      }}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Create Subscription</DialogTitle>
-            <DialogDescription>
-              Add a new subscription to start billing a customer.
-            </DialogDescription>
-          </DialogHeader>
-          <Form {...form}>
-            <form onSubmit={onSubmit} noValidate className="space-y-5">
-              {/* Basic info */}
-              <div className="grid grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="display_name"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Display Name</FormLabel>
-                      <FormControl>
-                        <Input placeholder="Acme Pro Monthly" maxLength={255} {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="code"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Code</FormLabel>
-                      <FormControl>
-                        <Input placeholder="acme-pro" maxLength={100} className="font-mono" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-
-              <FormField
-                control={form.control}
-                name="customer_id"
-                render={({ field }) => {
-                  // ADR-027: when the chosen customer is pinned to a
-                  // test clock, the new sub auto-inherits. Surface the
-                  // hint inline so the operator isn't surprised that
-                  // the sub bills on simulated time. Stripe's create-
-                  // sub flow renders the equivalent indicator.
-                  const selected = field.value ? customerMap[field.value] : null
-                  const inheritedClockName = selected?.test_clock_id
-                    ? (clockNameMap[selected.test_clock_id] || selected.test_clock_id)
-                    : ''
-                  return (
-                    <FormItem>
-                      <FormLabel>Customer</FormLabel>
-                      <FormControl>
-                        <select
-                          value={field.value}
-                          onChange={field.onChange}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        >
-                          <option value="">Select customer...</option>
-                          {customers.map(c => (
-                            <option key={c.id} value={c.id}>{c.display_name}</option>
-                          ))}
-                        </select>
-                      </FormControl>
-                      {inheritedClockName && (
-                        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 mt-2">
-                          This subscription will inherit the customer's test clock — <span className="font-medium">{inheritedClockName}</span>.
-                        </div>
-                      )}
-                      <FormMessage />
-                    </FormItem>
-                  )
-                }}
-              />
-
-              {/* Items — dynamic array. Each row is a plan+qty pair. Backend
-                  rejects duplicate plan_ids so we surface the same in zod. */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <FormLabel>Plans</FormLabel>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => itemsArray.append({ plan_id: '', quantity: '1' })}
-                  >
-                    <Plus size={14} className="mr-1.5" />
-                    Add Item
-                  </Button>
-                </div>
-                <div className="space-y-2">
-                  {itemsArray.fields.map((field, idx) => (
-                    <div key={field.id} className="flex items-start gap-2">
-                      <FormField
-                        control={form.control}
-                        name={`items.${idx}.plan_id`}
-                        render={({ field }) => (
-                          <FormItem className="flex-1">
-                            <FormControl>
-                              <select
-                                value={field.value}
-                                onChange={field.onChange}
-                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                              >
-                                <option value="">Select plan...</option>
-                                {plans.map(p => (
-                                  <option key={p.id} value={p.id}>{p.name}</option>
-                                ))}
-                              </select>
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                      <FormField
-                        control={form.control}
-                        name={`items.${idx}.quantity`}
-                        render={({ field }) => (
-                          <FormItem className="w-24">
-                            <FormControl>
-                              <Input
-                                type="number"
-                                min={1}
-                                placeholder="Qty"
-                                {...field}
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                      {/* shadcn Tooltip — native `title` unreliable on
-                          disabled-button-in-span. */}
-                      {itemsArray.fields.length <= 1 ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="inline-block cursor-not-allowed">
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="ghost"
-                                className="h-9 px-2 text-muted-foreground hover:text-destructive"
-                                disabled
-                              >
-                                <Trash2 size={14} />
-                              </Button>
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent>A subscription requires at least one item.</TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              className="h-9 px-2 text-muted-foreground hover:text-destructive"
-                              onClick={() => itemsArray.remove(idx)}
-                            >
-                              <Trash2 size={14} />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Remove</TooltipContent>
-                        </Tooltip>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                {form.formState.errors.items?.root && (
-                  <p className="text-xs text-destructive">{form.formState.errors.items.root.message}</p>
-                )}
-                {form.formState.errors.items?.message && (
-                  <p className="text-xs text-destructive">{form.formState.errors.items.message}</p>
-                )}
-              </div>
-
-              {/* Billing config */}
-              <Separator />
-              <div className="grid grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="billing_time"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Billing Cycle</FormLabel>
-                      <FormControl>
-                        <select
-                          value={field.value}
-                          onChange={field.onChange}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        >
-                          <option value="calendar">Calendar (month start)</option>
-                          <option value="anniversary">Anniversary (sub start)</option>
-                        </select>
-                      </FormControl>
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="trial_days"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Trial Period</FormLabel>
-                      <FormControl>
-                        <Input type="number" min={0} placeholder="0 days" {...field} />
-                      </FormControl>
-                    </FormItem>
-                  )}
-                />
-              </div>
-
-              <FormField
-                control={form.control}
-                name="start_now"
-                render={({ field }) => (
-                  <FormItem className="flex flex-row items-center gap-2 rounded-md border border-input px-3 py-2.5">
-                    <FormControl>
-                      <Checkbox
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                    <div>
-                      <FormLabel className="text-sm font-medium">Start immediately</FormLabel>
-                      <p className="text-xs text-muted-foreground">Activate and set the first billing period now</p>
-                    </div>
-                  </FormItem>
-                )}
-              />
-
-              {/* Usage limits */}
-              <Separator />
-              <div className="grid grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="usage_cap_units"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Usage Cap</FormLabel>
-                      <FormControl>
-                        <Input type="number" min={0} placeholder="Unlimited" {...field} />
-                      </FormControl>
-                      <FormDescription>Max units per period</FormDescription>
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="overage_action"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Over-limit Action</FormLabel>
-                      <FormControl>
-                        <select
-                          value={field.value}
-                          onChange={field.onChange}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        >
-                          <option value="charge">Charge overage</option>
-                          <option value="block">Cap at limit</option>
-                        </select>
-                      </FormControl>
-                    </FormItem>
-                  )}
-                />
-              </div>
-
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setShowCreate(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={createMutation.isPending}>
-                  {createMutation.isPending ? (
-                    <>
-                      <Loader2 size={14} className="animate-spin mr-2" />
-                      Creating...
-                    </>
-                  ) : (
-                    'Create Subscription'
-                  )}
-                </Button>
-              </DialogFooter>
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
+      <CreateSubscriptionDialog
+        open={showCreate}
+        onOpenChange={setShowCreate}
+        plans={plans}
+        customers={customers}
+        clockNameMap={clockNameMap}
+        onCreated={(created) => {
+          queryClient.invalidateQueries({ queryKey: ['subscriptions'] })
+          toast.success(`Subscription "${created.display_name}" created`)
+          setShowCreate(false)
+        }}
+      />
     </Layout>
   )
 }
