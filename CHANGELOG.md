@@ -40,6 +40,13 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Fixed
 
+- **Five sub-mutating Service methods missing the sub-pin bind (ADR-030 follow-up — found via activity-timeline audit).** PR-11 fixed the audit-log write path to honor `clock.Now(ctx)`; PR-12 fixed the middleware catch-all and proration math. But the `auditCtxForSub` helper binds effective-now from `sub.UpdatedAt` — which is only correct when `Service.X` itself bound ctx via `bindForSub` before calling the store (so the store stamps `sub.UpdatedAt = sim-time`). Five Service entry points were quietly missing that bind, so their store calls ran wall-clock, stamped `sub.UpdatedAt` wall-clock, and the audit row faithfully propagated wall-clock through `auditCtxForSub`. The "Resume Collection" path is the symptom the user surfaced on the activity timeline; the other four are latent regressions waiting to bite:
+  - `Service.ResumeCollection` — no bind at all
+  - `Service.PauseCollection` — bind was conditional on `input.ResumesAt != nil`; the common no-resumes_at path stamped wall-clock
+  - `Service.ClearScheduledCancel` — no bind
+  - `Service.SetBillingThresholds` — no bind (also affects the inline `s.store.Get` read)
+  - `Service.ClearBillingThresholds` — no bind
+  - All five now call `ctx = s.bindForSub(ctx, tenantID, id)` at the top. Existing `Cancel` / `ScheduleCancel` / `Activate` / `AddItem` / `UpdateItem` / `RemoveItem` / `CancelPendingItemChange` / `EndTrial` / `ExtendTrial` paths were already binding correctly.
 - **Pause button no longer renders alongside the Resume Collection banner.** When an operator paused collection on an active sub, the Pause button (top-right action bar) and the Resume Collection banner (top of detail) showed at the same time — the Pause button gated only on `status === 'active'`, while Stripe-style soft pause keeps the sub at `status=active` by design. Pause is now hidden when `pause_collection` is set; the banner's Resume Collection button is the only control to toggle the pause state.
 - **Sim-time on credit notes, dunning resolution paid_at, customer price overrides (PR-12 Round 2+3 — ADR-030 sweep continued).**
   - `internal/creditnote/postgres.go` — 5 timestamp writes (`Create`, `UpdateStatus`, `SetTaxTransaction`, `UpdateRefundStatus`, `CreateLineItem`) all now use `clock.Now(ctx)`. Credit notes against invoices on clock-pinned subs inherit sim-time stamps.
