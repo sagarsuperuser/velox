@@ -40,6 +40,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Fixed
 
+- **Pause button no longer renders alongside the Resume Collection banner.** When an operator paused collection on an active sub, the Pause button (top-right action bar) and the Resume Collection banner (top of detail) showed at the same time — the Pause button gated only on `status === 'active'`, while Stripe-style soft pause keeps the sub at `status=active` by design. Pause is now hidden when `pause_collection` is set; the banner's Resume Collection button is the only control to toggle the pause state.
 - **Sim-time on credit notes, dunning resolution paid_at, customer price overrides (PR-12 Round 2+3 — ADR-030 sweep continued).**
   - `internal/creditnote/postgres.go` — 5 timestamp writes (`Create`, `UpdateStatus`, `SetTaxTransaction`, `UpdateRefundStatus`, `CreateLineItem`) all now use `clock.Now(ctx)`. Credit notes against invoices on clock-pinned subs inherit sim-time stamps.
   - `internal/creditnote/service.go:224` — the `now` used as `issued_at` / `voided_at` / `created_at` in the credit-note creation path also now `clock.Now(ctx)`. `time` import removed.

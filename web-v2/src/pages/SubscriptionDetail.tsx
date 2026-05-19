@@ -283,9 +283,17 @@ export default function SubscriptionDetailPage() {
           )}
           {sub.status === 'active' && (
             <>
-              <Button variant="outline" className="border-amber-300 text-amber-600 hover:bg-amber-50" onClick={() => setShowPauseConfirm(true)} disabled={acting}>
-                Pause
-              </Button>
+              {/* Pause hidden when collection is already paused — the
+                  Resume Collection banner below owns the toggle once a
+                  pause is in effect. Stripe-style soft pause keeps
+                  status=active, so without this guard both the Pause
+                  button and the Resume Collection banner would render
+                  simultaneously. */}
+              {!sub.pause_collection && (
+                <Button variant="outline" className="border-amber-300 text-amber-600 hover:bg-amber-50" onClick={() => setShowPauseConfirm(true)} disabled={acting}>
+                  Pause
+                </Button>
+              )}
               <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelChoice(true)} disabled={acting}>
                 Cancel
               </Button>
