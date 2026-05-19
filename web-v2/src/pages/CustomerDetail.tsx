@@ -5,7 +5,7 @@ import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForPaymentSetup, type Customer, type BillingProfile, type Invoice, type PaymentSetup, type DunningPolicyWithCount, type CustomerCouponAssignment } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForPaymentSetup, type Customer, type BillingProfile, type Invoice, type PaymentSetup, type DunningPolicyWithCount, type CustomerCouponAssignment, type Subscription } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { CostDashboard } from '@/components/CostDashboard'
@@ -32,7 +32,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 
-import { Loader2, Pencil, CreditCard, Archive, Wand2, Ticket, FilePlus2, Plus, Trash2, Code2, RotateCw } from 'lucide-react'
+import { Loader2, Pencil, CreditCard, Archive, Wand2, Ticket, FilePlus2, Plus, Trash2, Code2, RotateCw, ChevronDown, ChevronRight } from 'lucide-react'
 import { Textarea } from '@/components/ui/textarea'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
@@ -85,6 +85,40 @@ function sentEmailLabel(emailType: string): string {
     case 'dunning_escalation': return 'Retries exhausted'
     default: return emailType
   }
+}
+
+// Subscription sort + bucketing on the customer detail page. Anchored
+// to Stripe / Lago / Orb / Recurly customer-page conventions: active
+// states surface first, terminal states collapse under a toggle, and
+// each row is a single line with the next-event date as meta.
+const SUB_STATUS_RANK: Record<string, number> = {
+  trialing: 0, active: 1, past_due: 2, canceled: 3, ended: 4,
+}
+
+function subIsTerminal(status: string): boolean {
+  return status === 'canceled' || status === 'ended'
+}
+
+function subMeta(sub: Subscription): string {
+  if (sub.status === 'trialing' && sub.trial_end_at) {
+    return `Trial ends ${formatDate(sub.trial_end_at)}`
+  }
+  if (sub.cancel_at_period_end && sub.cancel_at) {
+    return `Cancels ${formatDate(sub.cancel_at)}`
+  }
+  if (sub.status === 'past_due' && sub.next_billing_at) {
+    return `Past due · retry ${formatDate(sub.next_billing_at)}`
+  }
+  if (sub.status === 'active' && sub.next_billing_at) {
+    return `Renews ${formatDate(sub.next_billing_at)}`
+  }
+  if (sub.status === 'canceled' && sub.canceled_at) {
+    return `Canceled ${formatDate(sub.canceled_at)}`
+  }
+  if (sub.status === 'ended' && sub.current_billing_period_end) {
+    return `Ended ${formatDate(sub.current_billing_period_end)}`
+  }
+  return ''
 }
 
 function sentEmailStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
@@ -170,6 +204,29 @@ export default function CustomerDetailPage() {
     queryFn: () => api.listSubscriptions().then(r => r.data.filter(s => s.customer_id === id)),
     enabled: !!id,
   })
+
+  // Split subs into active-ish (trialing/active/past_due) and terminal
+  // (canceled/ended), sorted within each bucket by status priority then
+  // most-recent first. Lets the card render active states front-and-
+  // center and tuck terminal history under a toggle.
+  const subBuckets = useMemo(() => {
+    const sorted = [...(allSubs ?? [])].sort((a, b) => {
+      const ra = SUB_STATUS_RANK[a.status] ?? 99
+      const rb = SUB_STATUS_RANK[b.status] ?? 99
+      if (ra !== rb) return ra - rb
+      return (b.created_at ?? '').localeCompare(a.created_at ?? '')
+    })
+    return {
+      active: sorted.filter(s => !subIsTerminal(s.status)),
+      terminal: sorted.filter(s => subIsTerminal(s.status)),
+    }
+  }, [allSubs])
+  const [showAllActiveSubs, setShowAllActiveSubs] = useState(false)
+  const [showTerminalSubs, setShowTerminalSubs] = useState(false)
+  const SUB_VISIBLE_CAP = 5
+  const activeSubsToShow = showAllActiveSubs
+    ? subBuckets.active
+    : subBuckets.active.slice(0, SUB_VISIBLE_CAP)
 
   // Polls during an active update flow (setup_status='pending') so the
   // operator returning from a Stripe Checkout tab sees the new card
@@ -872,7 +929,11 @@ export default function CustomerDetailPage() {
 
       {/* Subscriptions & Invoices grid */}
       <div className="grid grid-cols-2 gap-6 mt-6">
-        {/* Subscriptions */}
+        {/* Subscriptions — compact one-line rows, sorted by status
+            priority (trialing → active → past_due). Terminal subs
+            (canceled / ended) collapse under a toggle so they don't
+            inflate the card on heavy-use customers. Anchored to
+            Stripe / Lago / Orb / Recurly customer-page conventions. */}
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -882,20 +943,49 @@ export default function CustomerDetailPage() {
           </CardHeader>
           <CardContent className="p-0">
             <div className="divide-y divide-border">
-              {allSubs?.map(sub => (
-                <Link key={sub.id} to={`/subscriptions/${sub.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-accent/50 transition-colors">
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-medium text-foreground">{sub.display_name}</p>
-                      {sub.test_clock_id && (
-                        <TestClockBadge testClockId={sub.test_clock_id} />
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground">{sub.code}</p>
+              {activeSubsToShow.map(sub => (
+                <Link key={sub.id} to={`/subscriptions/${sub.id}`} className="flex items-center justify-between gap-3 px-6 py-2.5 hover:bg-accent/50 transition-colors">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <Badge variant={statusVariant(sub.status)} className="shrink-0">{sub.status}</Badge>
+                    <span className="text-sm font-medium text-foreground truncate">{sub.display_name}</span>
+                    {sub.test_clock_id && <TestClockBadge testClockId={sub.test_clock_id} />}
                   </div>
-                  <Badge variant={statusVariant(sub.status)}>{sub.status}</Badge>
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">{subMeta(sub)}</span>
                 </Link>
               ))}
+              {subBuckets.active.length > SUB_VISIBLE_CAP && !showAllActiveSubs && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllActiveSubs(true)}
+                  className="flex items-center gap-1 w-full px-6 py-2 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+                >
+                  <ChevronDown className="h-3 w-3" />
+                  Show {subBuckets.active.length - SUB_VISIBLE_CAP} more
+                </button>
+              )}
+              {subBuckets.terminal.length > 0 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowTerminalSubs(v => !v)}
+                    aria-expanded={showTerminalSubs}
+                    className="flex items-center gap-1 w-full px-6 py-2 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+                  >
+                    {showTerminalSubs ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                    {subBuckets.terminal.length} past {subBuckets.terminal.length === 1 ? 'subscription' : 'subscriptions'}
+                  </button>
+                  {showTerminalSubs && subBuckets.terminal.map(sub => (
+                    <Link key={sub.id} to={`/subscriptions/${sub.id}`} className="flex items-center justify-between gap-3 px-6 py-2.5 hover:bg-accent/50 transition-colors">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <Badge variant={statusVariant(sub.status)} className="shrink-0">{sub.status}</Badge>
+                        <span className="text-sm font-medium text-muted-foreground truncate">{sub.display_name}</span>
+                        {sub.test_clock_id && <TestClockBadge testClockId={sub.test_clock_id} />}
+                      </div>
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">{subMeta(sub)}</span>
+                    </Link>
+                  ))}
+                </>
+              )}
               {(!allSubs || allSubs.length === 0) && (
                 <p className="px-6 py-6 text-sm text-muted-foreground text-center">No subscriptions</p>
               )}
