@@ -124,6 +124,32 @@ func (m *memStore) GetByStripeInvoiceID(_ context.Context, tenantID, stripeInvoi
 	return domain.Invoice{}, errs.ErrNotFound
 }
 
+func (m *memStore) FindBaseInvoiceForPeriod(_ context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error) {
+	var best domain.Invoice
+	found := false
+	for _, inv := range m.invoices {
+		if inv.TenantID != tenantID || inv.SubscriptionID != subscriptionID {
+			continue
+		}
+		if inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible {
+			continue
+		}
+		for _, li := range m.lineItems[inv.ID] {
+			if li.LineType == domain.LineTypeBaseFee && li.BillingPeriodStart != nil && li.BillingPeriodStart.Equal(periodStart) {
+				if !found || inv.CreatedAt.After(best.CreatedAt) {
+					best = inv
+					found = true
+				}
+				break
+			}
+		}
+	}
+	if !found {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	return best, nil
+}
+
 func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error) {
 	inv, ok := m.invoices[id]
 	if !ok || inv.TenantID != tenantID {

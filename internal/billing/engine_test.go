@@ -8,6 +8,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -713,6 +714,42 @@ func (m *mockInvoices) UpdateTaxAtomic(_ context.Context, tenantID, invoiceID st
 	inv.AmountDueCents = due
 	m.invoices[idx] = inv
 	return inv, nil
+}
+
+// fakeCreditGranter records Grant calls. Backs the BillOnCancel
+// paid-check unit tests — they assert the grant fires (or doesn't)
+// based on the source invoice's payment_status.
+type fakeCreditGranter struct {
+	grants []credit.GrantInput
+}
+
+func (g *fakeCreditGranter) Grant(_ context.Context, _ string, in credit.GrantInput) (domain.CreditLedgerEntry, error) {
+	g.grants = append(g.grants, in)
+	return domain.CreditLedgerEntry{ID: fmt.Sprintf("vlx_cle_%d", len(g.grants))}, nil
+}
+
+func (m *mockInvoices) FindBaseInvoiceForPeriod(_ context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error) {
+	// Mock: search the invoices slice for one whose subscription matches
+	// and that has a line item (in the flat m.lineItems slice) with
+	// billing_period_start = periodStart. Mirrors the postgres semantics
+	// for tests that explicitly seed in_advance invoices.
+	for _, inv := range m.invoices {
+		if inv.TenantID != tenantID || inv.SubscriptionID != subscriptionID {
+			continue
+		}
+		if inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible {
+			continue
+		}
+		for _, li := range m.lineItems {
+			if li.InvoiceID != inv.ID {
+				continue
+			}
+			if li.LineType == domain.LineTypeBaseFee && li.BillingPeriodStart != nil && li.BillingPeriodStart.Equal(periodStart) {
+				return inv, nil
+			}
+		}
+	}
+	return domain.Invoice{}, errs.ErrNotFound
 }
 
 // ---------------------------------------------------------------------------
@@ -2728,4 +2765,102 @@ func TestRunCycle_InAdvance_ScheduledCancelAtPeriodEnd_NoOvercharge(t *testing.T
 				inv.TotalAmountCents, inv.BillingPeriodStart, inv.BillingPeriodEnd)
 		}
 	}
+}
+
+// TestBillOnCancel_PaidCheck locks in the industry-standard paid-check
+// gate on cancel-proration credits. The customer must have actually
+// PAID the in_advance invoice for the current period before a
+// "refund-style" credit makes sense — otherwise we'd be granting
+// credit against money the customer never put in. Industry parity:
+// Chargebee Refundable (paid) vs Adjustment (unpaid); Stripe warns
+// to disable proration with unpaid latest invoice.
+func TestBillOnCancel_PaidCheck(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	cancelAt := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC) // mid-period
+
+	makeSub := func() domain.Subscription {
+		return domain.Subscription{
+			ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", Code: "starter",
+			Status: domain.SubscriptionCanceled,
+			Items: []domain.SubscriptionItem{{
+				PlanID: "pln_advance", Quantity: 1,
+			}},
+			CurrentBillingPeriodStart: &periodStart,
+			CurrentBillingPeriodEnd:   &periodEnd,
+			CanceledAt:                &cancelAt,
+		}
+	}
+	makePricing := func() *mockPricing {
+		return &mockPricing{plans: map[string]domain.Plan{
+			"pln_advance": {ID: "pln_advance", Name: "Advance", Currency: "USD",
+				BillingInterval: domain.BillingMonthly, BaseAmountCents: 6000,
+				BaseBillTiming: domain.BillInAdvance},
+		}}
+	}
+
+	t.Run("source invoice paid → credit issued (current correct behavior)", func(t *testing.T) {
+		paidStart := periodStart
+		paid := domain.Invoice{
+			ID: "inv_1", TenantID: "t1", SubscriptionID: "sub_1",
+			Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentSucceeded,
+		}
+		paidLine := domain.InvoiceLineItem{
+			ID: "ili_1", InvoiceID: "inv_1", LineType: domain.LineTypeBaseFee,
+			BillingPeriodStart: &paidStart,
+		}
+		inv := &mockInvoices{invoices: []domain.Invoice{paid}, lineItems: []domain.InvoiceLineItem{paidLine}}
+		granter := &fakeCreditGranter{}
+
+		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
+		engine.SetCreditGranter(granter)
+
+		if err := engine.BillOnCancel(context.Background(), makeSub()); err != nil {
+			t.Fatalf("BillOnCancel: %v", err)
+		}
+		if len(granter.grants) != 1 {
+			t.Fatalf("expected 1 credit grant (source paid), got %d", len(granter.grants))
+		}
+	})
+
+	t.Run("source invoice UNPAID → credit suppressed", func(t *testing.T) {
+		unpaidStart := periodStart
+		unpaid := domain.Invoice{
+			ID: "inv_1", TenantID: "t1", SubscriptionID: "sub_1",
+			Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
+		}
+		unpaidLine := domain.InvoiceLineItem{
+			ID: "ili_1", InvoiceID: "inv_1", LineType: domain.LineTypeBaseFee,
+			BillingPeriodStart: &unpaidStart,
+		}
+		inv := &mockInvoices{invoices: []domain.Invoice{unpaid}, lineItems: []domain.InvoiceLineItem{unpaidLine}}
+		granter := &fakeCreditGranter{}
+
+		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
+		engine.SetCreditGranter(granter)
+
+		if err := engine.BillOnCancel(context.Background(), makeSub()); err != nil {
+			t.Fatalf("BillOnCancel: %v", err)
+		}
+		if len(granter.grants) != 0 {
+			t.Errorf("expected no credit grant on unpaid source invoice, got %d grants (would have credited customer for unpaid period)", len(granter.grants))
+		}
+	})
+
+	t.Run("source invoice missing → credit suppressed", func(t *testing.T) {
+		// e.g. tenant manually deleted invoice, or cancel fires before any
+		// invoice was emitted for this period. Safest default: don't grant.
+		inv := &mockInvoices{}
+		granter := &fakeCreditGranter{}
+
+		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
+		engine.SetCreditGranter(granter)
+
+		if err := engine.BillOnCancel(context.Background(), makeSub()); err != nil {
+			t.Fatalf("BillOnCancel: %v", err)
+		}
+		if len(granter.grants) != 0 {
+			t.Errorf("expected no credit grant when source invoice missing, got %d", len(granter.grants))
+		}
+	})
 }

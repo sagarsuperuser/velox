@@ -135,6 +135,24 @@ type Store interface {
 	// stripe_invoice_id the dedup key for imported rows. Returns
 	// errs.ErrNotFound when no invoice carries that Stripe id.
 	GetByStripeInvoiceID(ctx context.Context, tenantID, stripeInvoiceID string) (domain.Invoice, error)
+
+	// FindBaseInvoiceForPeriod returns the most-recent NON-VOIDED invoice
+	// carrying a base-fee line item with billing_period_start = the given
+	// periodStart for the given subscription. Used by proration-credit
+	// paths (BillOnCancel + handleItemProration on downgrade) to verify
+	// the customer actually paid for the current period before granting
+	// a "refund" — industry standard (Chargebee distinguishes Refundable
+	// vs Adjustment credit notes based on this; Stripe warns operators
+	// to disable proration when the latest invoice is unpaid).
+	//
+	// For in_advance plans, the cycle-close invoice from the prior period
+	// (or BillOnCreate's day-1 invoice for new subs) carries the base
+	// line whose billing_period_start matches the now-being-canceled
+	// period's start. For in_arrears plans no such line exists —
+	// callers shouldn't be granting unpaid-period credits to in_arrears
+	// subs in the first place. Returns errs.ErrNotFound when no
+	// matching invoice exists.
+	FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error)
 }
 
 type ListFilter struct {
