@@ -292,6 +292,14 @@ type InvoiceWriter interface {
 	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
 	ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 	GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error)
+	// FindBaseInvoiceForPeriod returns the invoice carrying the in_advance
+	// base-fee line for a subscription's period (line's
+	// billing_period_start = periodStart). Gates proration-credit emission
+	// in BillOnCancel — only paid in_advance invoices warrant a refund-
+	// style credit. Industry-aligned: Chargebee distinguishes Refundable
+	// (paid source) vs Adjustment (unpaid source) credits; Stripe warns
+	// to disable proration when the source invoice is unpaid.
+	FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error)
 	ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error)
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
@@ -2725,6 +2733,42 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) erro
 
 	if totalUnused <= 0 {
 		return nil
+	}
+
+	// Paid-check gate: a "refund-style" credit only makes financial sense
+	// if the customer actually paid the in_advance invoice for this
+	// period. Without this gate, a cancel on an in_advance sub whose
+	// day-1 invoice was never paid (failed card, no PM yet) would still
+	// emit a credit grant that applies against future invoices — giving
+	// the customer money they never put in. Industry parity: Chargebee
+	// Adjustment credit shape (reduces unpaid invoice) and Stripe's
+	// `proration_behavior=none` recommendation for unpaid latest invoice.
+	//
+	// Velox's pre-launch choice: skip the credit grant entirely when the
+	// source invoice is missing or not paid. The unpaid invoice will be
+	// voided / uncollected through the normal dunning path; operator
+	// can manually issue a credit grant if needed. Defaulting to "no
+	// credit when in doubt" matches feedback_billing_accuracy.
+	if e.invoices != nil {
+		src, lookupErr := e.invoices.FindBaseInvoiceForPeriod(ctx, sub.TenantID, sub.ID, periodStart)
+		if lookupErr != nil {
+			slog.WarnContext(ctx, "cancel proration: source in_advance invoice not found; skipping credit grant",
+				"subscription_id", sub.ID,
+				"customer_id", sub.CustomerID,
+				"period_start", periodStart,
+				"error", lookupErr,
+			)
+			return nil
+		}
+		if src.PaymentStatus != domain.PaymentSucceeded {
+			slog.InfoContext(ctx, "cancel proration: source in_advance invoice not paid; skipping credit grant",
+				"subscription_id", sub.ID,
+				"customer_id", sub.CustomerID,
+				"source_invoice_id", src.ID,
+				"source_payment_status", src.PaymentStatus,
+			)
+			return nil
+		}
 	}
 
 	_, err := e.creditGranter.Grant(ctx, sub.TenantID, credit.GrantInput{

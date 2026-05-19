@@ -1653,6 +1653,50 @@ func (s *PostgresStore) GetByStripeInvoiceID(ctx context.Context, tenantID, stri
 	return inv, err
 }
 
+// FindBaseInvoiceForPeriod is the proration-credit gate: returns the
+// invoice carrying an in_advance base line for the given subscription
+// period. The line's `billing_period_start` matches the period the
+// base fee covers (industry-standard semantic — Stripe / Lago / Orb /
+// Chargebee align). Caller reads invoice.PaymentStatus to decide
+// whether a "refundable" credit (Chargebee Refundable) or "skip /
+// adjust unpaid invoice" (Chargebee Adjustment / Stripe none) shape
+// applies.
+//
+// Voided / uncollectible invoices are filtered out — they don't
+// represent revenue the customer paid for, even if their line items
+// match the period. ORDER BY created_at DESC + LIMIT 1 surfaces the
+// most-recent matching invoice (relevant for plan-swap chains within
+// the same period that re-issued the base line).
+func (s *PostgresStore) FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error) {
+	if subscriptionID == "" {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `
+		SELECT `+invCols+` FROM invoices i
+		WHERE i.subscription_id = $1
+		  AND i.status NOT IN ('voided', 'uncollectible')
+		  AND EXISTS (
+		    SELECT 1 FROM invoice_line_items li
+		    WHERE li.invoice_id = i.id
+		      AND li.line_type = 'base_fee'
+		      AND li.billing_period_start = $2
+		  )
+		ORDER BY i.created_at DESC
+		LIMIT 1
+	`, subscriptionID, periodStart).Scan(scanInvDest(&inv)...)
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	return inv, err
+}
+
 // invoiceOrderBy returns the ORDER BY clause for the invoice list,
 // validating sort + dir against a closed set. Anything outside the
 // allow-list silently falls back to the default — never interpolate

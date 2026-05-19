@@ -82,6 +82,10 @@ func (a *invoiceWriterAdapter) UpdateTaxAtomic(ctx context.Context, tenantID, in
 	return a.store.UpdateTaxAtomic(ctx, tenantID, invoiceID, update, lineItems)
 }
 
+func (a *invoiceWriterAdapter) FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error) {
+	return a.store.FindBaseInvoiceForPeriod(ctx, tenantID, subscriptionID, periodStart)
+}
+
 // creditGrantAdapter bridges credit.Service → creditnote.CreditGranter.
 type creditGrantAdapter struct {
 	svc *credit.Service

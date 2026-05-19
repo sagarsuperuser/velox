@@ -182,6 +182,10 @@ func (a *invoiceStoreAdapter) UpdateTaxAtomic(ctx context.Context, tenantID, inv
 	return a.store.UpdateTaxAtomic(ctx, tenantID, invoiceID, update, lineItems)
 }
 
+func (a *invoiceStoreAdapter) FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error) {
+	return a.store.FindBaseInvoiceForPeriod(ctx, tenantID, subscriptionID, periodStart)
+}
+
 // TestFullBillingCycle_E2E tests the complete flow against real Postgres:
 // tenant → customer → meter → rating rule → plan → subscription → usage → billing engine → invoice
 func TestFullBillingCycle_E2E(t *testing.T) {
