@@ -40,6 +40,11 @@ type ProrationInvoiceCreator interface {
 	CreateInvoiceWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
 	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.Invoice, error)
 	NextInvoiceNumber(ctx context.Context, tenantID string) (string, error)
+	// FindBaseInvoiceForPeriod gates immediate in_advance proration on
+	// whether the source invoice was actually paid. Mirrors the engine's
+	// BillOnCancel paid-check; same industry rationale (Chargebee
+	// Refundable vs Adjustment / Stripe proration_behavior=none).
+	FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error)
 }
 
 // ProrationCreditGranter grants credits for downgrade proration. Dedup key is
@@ -1176,6 +1181,63 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 	}
 	if effectivePlan.ID == "" {
 		return nil, fmt.Errorf("proration spec resolved no plan; cannot price item mutation")
+	}
+
+	// Industry-standard gates on immediate proration emission. Two
+	// scenarios must NOT produce an immediate invoice or credit grant:
+	//
+	// (1) effective plan is in_arrears: the customer hasn't paid for
+	//     the current period yet (in_arrears bills at cycle close).
+	//     Emitting an immediate proration invoice + cycle-close full-
+	//     period billing double-counts the new rate. Emitting an
+	//     immediate credit gives "refund" against money never paid.
+	//     Industry-aligned: Stripe `proration_behavior=none` for this
+	//     case; Lago defers downgrades entirely. Velox defers the
+	//     proration to cycle close (cycle bills at the NEW plan/qty
+	//     full-period — slight imprecision vs. true segment math, but
+	//     no double-counting and no phantom credit).
+	//
+	// (2) effective plan is in_advance BUT the source invoice for the
+	//     current period was not paid: the would-be credit is against
+	//     money the customer never put in (Chargebee "Adjustment" credit
+	//     case; Stripe explicitly warns about this). Skip immediate
+	//     emission; if the operator wants to settle, void the unpaid
+	//     invoice or wait for dunning.
+	//
+	// Both gates are silent-defer (logged at info, no error). The
+	// downstream item change itself still applies — just no proration
+	// artifact.
+	if effectivePlan.BaseBillTiming != domain.BillInAdvance {
+		slog.InfoContext(ctx, "item proration deferred: in_arrears plan; cycle close bills under new plan/qty",
+			"subscription_id", sub.ID,
+			"item_id", spec.itemID,
+			"change_type", spec.changeType,
+			"effective_plan_id", effectivePlan.ID,
+		)
+		return nil, nil
+	}
+	if h.invoices != nil && sub.CurrentBillingPeriodStart != nil {
+		src, lookupErr := h.invoices.FindBaseInvoiceForPeriod(ctx, tenantID, sub.ID, *sub.CurrentBillingPeriodStart)
+		if lookupErr != nil {
+			slog.InfoContext(ctx, "item proration deferred: in_advance source invoice not found for current period",
+				"subscription_id", sub.ID,
+				"item_id", spec.itemID,
+				"change_type", spec.changeType,
+				"period_start", *sub.CurrentBillingPeriodStart,
+				"error", lookupErr,
+			)
+			return nil, nil
+		}
+		if src.PaymentStatus != domain.PaymentSucceeded {
+			slog.InfoContext(ctx, "item proration deferred: in_advance source invoice not paid",
+				"subscription_id", sub.ID,
+				"item_id", spec.itemID,
+				"change_type", spec.changeType,
+				"source_invoice_id", src.ID,
+				"source_payment_status", src.PaymentStatus,
+			)
+			return nil, nil
+		}
 	}
 
 	oldAmount := oldPlan.BaseAmountCents * spec.oldQuantity

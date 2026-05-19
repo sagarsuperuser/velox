@@ -42,6 +42,12 @@ type invoicesMock struct {
 	lookupInvoice       domain.Invoice
 	lookupInvoiceErr    error
 	existingCreateCalls int
+	// sourceInvoice is what FindBaseInvoiceForPeriod returns. Tests
+	// that exercise the paid-check gate pre-seed this with a paid
+	// in_advance invoice; tests that don't care leave it zero — the
+	// gate will skip emission (matching production-safe default).
+	sourceInvoice    domain.Invoice
+	sourceInvoiceErr error
 }
 
 func (m *invoicesMock) CreateInvoiceWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
@@ -69,6 +75,13 @@ func (m *invoicesMock) NextInvoiceNumber(_ context.Context, _ string) (string, e
 		return "", m.nextNumberErr
 	}
 	return "VLX-000042", nil
+}
+
+func (m *invoicesMock) FindBaseInvoiceForPeriod(_ context.Context, _, _ string, _ time.Time) (domain.Invoice, error) {
+	if m.sourceInvoiceErr != nil {
+		return domain.Invoice{}, m.sourceInvoiceErr
+	}
+	return m.sourceInvoice, nil
 }
 
 type creditsMock struct {
@@ -142,12 +155,15 @@ func TestUpdateItem_ProrationFailureSurfacesAs500(t *testing.T) {
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
-		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
 	// NextInvoiceNumber fails → proration generation fails after the plan
 	// change has already committed.
-	invoices := &invoicesMock{nextNumberErr: errors.New("sequence unavailable")}
+	invoices := &invoicesMock{
+		nextNumberErr: errors.New("sequence unavailable"),
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
+	}
 	credits := &creditsMock{}
 
 	h := NewHandler(svc)
@@ -205,8 +221,8 @@ func TestUpdateItem_ProrationDedup_UpgradeReturnsExisting(t *testing.T) {
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
-		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
 
 	existingAt := time.Now().UTC().Add(-time.Minute)
@@ -226,6 +242,7 @@ func TestUpdateItem_ProrationDedup_UpgradeReturnsExisting(t *testing.T) {
 	invoices := &invoicesMock{
 		createInvoiceErr: errs.ErrAlreadyExists,
 		lookupInvoice:    existingInvoice,
+		sourceInvoice:    domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
 	}
 	credits := &creditsMock{}
 
@@ -280,8 +297,8 @@ func TestUpdateItem_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
 
 	// Downgrade: Pro (3000) → Basic (1000).
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_pro":   {ID: "plan_pro", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
-		"plan_basic": {ID: "plan_basic", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
+		"plan_pro":   {ID: "plan_pro", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_basic": {ID: "plan_basic", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
 
 	existingEntry := domain.CreditLedgerEntry{
@@ -294,7 +311,9 @@ func TestUpdateItem_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
 		SourceSubscriptionItemID: itemID,
 	}
 
-	invoices := &invoicesMock{}
+	invoices := &invoicesMock{
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
+	}
 	credits := &creditsMock{
 		grantErr:    errs.ErrAlreadyExists,
 		lookupEntry: existingEntry,
@@ -367,11 +386,13 @@ func TestUpdateItem_ProrationAppliesTax(t *testing.T) {
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
-		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
 
-	invoices := &invoicesMock{}
+	invoices := &invoicesMock{
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
+	}
 	credits := &creditsMock{}
 	taxMock := &prorationTaxApplierMock{
 		result: ProrationTaxResult{
@@ -505,8 +526,8 @@ func TestHandler_UpdateItem_ImmediatePlanChangeFiresItemUpdated(t *testing.T) {
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
-		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
 	invoices := &invoicesMock{}
 	credits := &creditsMock{}
@@ -553,8 +574,8 @@ func TestHandler_UpdateItem_ScheduledPlanChangeFiresPendingChangeScheduled(t *te
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
-		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
 	invoices := &invoicesMock{}
 	credits := &creditsMock{}
@@ -639,8 +660,8 @@ func TestHandler_CancelPendingItemChange_FiresPendingChangeCanceled(t *testing.T
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
-		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD"},
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
 
 	// Stage a scheduled change first so CancelPendingItemChange has something
@@ -701,8 +722,13 @@ func removeItemURL(ctx context.Context, subID, itemID string) *http.Request {
 
 // TestAddItem_ProratesMidCycle verifies that adding a priced line to an active
 // subscription mid-period emits a proration invoice for the partial-period
-// portion of the new item's cost. Prior behaviour was silent skip — the
-// customer got the new item for free until next cycle close.
+// portion of the new item's cost on an in_advance sub with a paid source
+// invoice. Prior behaviour was silent skip — the customer got the new item
+// for free until next cycle close.
+//
+// Uses in_advance plans + a paid source invoice because the post-fix
+// proration gates require both (in_arrears defers to cycle close;
+// in_advance unpaid also defers — see TestAddItem_DefersProration_*).
 func TestAddItem_ProratesMidCycle(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "t1"
@@ -712,10 +738,12 @@ func TestAddItem_ProratesMidCycle(t *testing.T) {
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_existing": {ID: "plan_existing", Name: "Basic", BaseAmountCents: 1000, Currency: "USD"},
-		"plan_new":      {ID: "plan_new", Name: "Add-on", BaseAmountCents: 2000, Currency: "USD"},
+		"plan_existing": {ID: "plan_existing", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_new":      {ID: "plan_new", Name: "Add-on", BaseAmountCents: 2000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
-	invoices := &invoicesMock{}
+	invoices := &invoicesMock{
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
+	}
 	credits := &creditsMock{}
 
 	h := NewHandler(svc)
@@ -767,9 +795,11 @@ func TestUpdateItem_QuantityIncreaseProratesAsInvoice(t *testing.T) {
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_seats": {ID: "plan_seats", Name: "Seat", BaseAmountCents: 1000, Currency: "USD"},
+		"plan_seats": {ID: "plan_seats", Name: "Seat", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
-	invoices := &invoicesMock{}
+	invoices := &invoicesMock{
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
+	}
 	credits := &creditsMock{}
 
 	h := NewHandler(svc)
@@ -822,9 +852,11 @@ func TestUpdateItem_QuantityDecreaseProratesAsCredit(t *testing.T) {
 	}
 
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_seats": {ID: "plan_seats", Name: "Seat", BaseAmountCents: 1000, Currency: "USD"},
+		"plan_seats": {ID: "plan_seats", Name: "Seat", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
-	invoices := &invoicesMock{}
+	invoices := &invoicesMock{
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
+	}
 	credits := &creditsMock{}
 
 	h := NewHandler(svc)
@@ -873,10 +905,12 @@ func TestRemoveItem_ProratesAsCredit(t *testing.T) {
 	}
 
 	plans := &plansMock{plans: map[string]domain.Plan{
-		"plan_a": {ID: "plan_a", Name: "Base A", BaseAmountCents: 2000, Currency: "USD"},
-		"plan_b": {ID: "plan_b", Name: "Base B", BaseAmountCents: 1000, Currency: "USD"},
+		"plan_a": {ID: "plan_a", Name: "Base A", BaseAmountCents: 2000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_b": {ID: "plan_b", Name: "Base B", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
-	invoices := &invoicesMock{}
+	invoices := &invoicesMock{
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
+	}
 	credits := &creditsMock{}
 
 	h := NewHandler(svc)
@@ -906,6 +940,90 @@ func TestRemoveItem_ProratesAsCredit(t *testing.T) {
 	// plan_a is $20/period, half-period → ~$10 credit.
 	if call.AmountCents < 800 || call.AmountCents > 1200 {
 		t.Errorf("credit amount: got %d, want ~1000", call.AmountCents)
+	}
+}
+
+// TestHandleItemProration_DefersOnInArrears locks in the industry-standard
+// gate: in_arrears items must NOT emit an immediate proration invoice or
+// credit at mutation time. Pre-fix Velox emitted both, then also billed
+// full-period at cycle close → ~half-plan over/undercharge per change.
+// Post-fix: silent defer with info log; cycle close handles the math.
+func TestHandleItemProration_DefersOnInArrears(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+
+	// Both plans in_arrears (empty BaseBillTiming would also work — defaults
+	// to in_arrears in the gate's lenient fallback).
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 5000, Currency: "USD", BaseBillTiming: domain.BillInArrears},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 10000, Currency: "USD", BaseBillTiming: domain.BillInArrears},
+	}}
+	invoices := &invoicesMock{}
+	credits := &creditsMock{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+	if len(invoices.createdInvoices) != 0 {
+		t.Errorf("in_arrears upgrade must NOT emit immediate proration invoice; got %d", len(invoices.createdInvoices))
+	}
+	if len(credits.grantCalls) != 0 {
+		t.Errorf("in_arrears upgrade must NOT emit immediate proration credit; got %d", len(credits.grantCalls))
+	}
+}
+
+// TestHandleItemProration_DefersOnInAdvanceUnpaid locks in the gate for
+// in_advance items where the source invoice for the current period is
+// unpaid. Pre-fix, Velox emitted a credit against money the customer
+// never put in (Chargebee Refundable on unpaid source — wrong shape).
+// Post-fix: defer.
+func TestHandleItemProration_DefersOnInAdvanceUnpaid(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_pro")
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_pro":   {ID: "plan_pro", Name: "Pro", BaseAmountCents: 10000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_basic": {ID: "plan_basic", Name: "Basic", BaseAmountCents: 5000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+	}}
+	// Source invoice exists but UNPAID — the gate must short-circuit.
+	invoices := &invoicesMock{
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentPending},
+	}
+	credits := &creditsMock{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+
+	// Downgrade — would normally emit a credit.
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_basic", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+	if len(credits.grantCalls) != 0 {
+		t.Errorf("unpaid in_advance source must suppress credit; got %d grants (would have credited unpaid money)", len(credits.grantCalls))
+	}
+	if len(invoices.createdInvoices) != 0 {
+		t.Errorf("unpaid in_advance source must suppress invoice; got %d", len(invoices.createdInvoices))
 	}
 }
 
