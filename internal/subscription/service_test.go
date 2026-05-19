@@ -2262,6 +2262,107 @@ func TestPeriodAnchoring(t *testing.T) {
 		}
 	})
 
+	t.Run("Create rejects mixed in_arrears + in_advance items", func(t *testing.T) {
+		// Bill-timing mix on the same sub would emit inconsistent
+		// invoice lines (arrears-close + advance-open under different
+		// rules). Velox's hybrid invoice shape assumes a uniform
+		// bill_timing across items, so reject at request time.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_arrears": {ID: "p_arrears", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears},
+			"p_advance": {ID: "p_advance", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInAdvance},
+		}})
+		_, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items: []CreateItemInput{
+				{PlanID: "p_arrears"},
+				{PlanID: "p_advance"},
+			},
+			StartNow: true,
+		})
+		if err == nil {
+			t.Fatal("expected error for mixed in_arrears + in_advance items")
+		}
+	})
+
+	t.Run("UpdateItem rejects plan-swap that changes bill_timing on single-item sub (immediate=false)", func(t *testing.T) {
+		// User's exact scenario: clock-pinned active sub on Plan A
+		// (in_arrears $29/mo). Schedule a swap to Plan B
+		// (in_advance $49/mo). The cross-bill-timing boundary swap
+		// path is not exercised end-to-end, so reject at request
+		// time and steer the operator to cancel + recreate.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_arrears": {ID: "p_arrears", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears},
+			"p_advance": {ID: "p_advance", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInAdvance},
+		}})
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p_arrears"}},
+			StartNow: true,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		_, err = svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_advance",
+			Immediate: false,
+		})
+		if err == nil {
+			t.Error("expected error on scheduled plan-swap that changes bill_timing")
+		}
+	})
+
+	t.Run("UpdateItem rejects plan-swap that changes bill_timing on single-item sub (immediate=true)", func(t *testing.T) {
+		// Immediate swaps additionally require cross-bill-timing
+		// proration math that isn't exercised — same reject stance.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_arrears": {ID: "p_arrears", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears},
+			"p_advance": {ID: "p_advance", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInAdvance},
+		}})
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p_arrears"}},
+			StartNow: true,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		_, err = svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_advance",
+			Immediate: true,
+		})
+		if err == nil {
+			t.Error("expected error on immediate plan-swap that changes bill_timing")
+		}
+	})
+
+	t.Run("UpdateItem allows plan-swap when bill_timing matches", func(t *testing.T) {
+		// Same-timing swap (in_arrears $29 → in_arrears $49) is the
+		// vanilla supported path. Must not regress.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_arrears_a": {ID: "p_arrears_a", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears},
+			"p_arrears_b": {ID: "p_arrears_b", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears},
+		}})
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p_arrears_a"}},
+			StartNow: true,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		_, err = svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_arrears_b",
+			Immediate: false,
+		})
+		if err != nil {
+			t.Errorf("same-timing swap should succeed, got: %v", err)
+		}
+	})
+
 	t.Run("Create + start_now + yearly plan → first period is 1 year from now (no calendar stub)", func(t *testing.T) {
 		// Yearly billing ignores billing_time — Stripe doesn't ship
 		// calendar yearly either. Even with billing_time=calendar, a
