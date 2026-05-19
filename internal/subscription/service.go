@@ -262,15 +262,21 @@ func firstPeriodForActivate(at time.Time, billingTime domain.SubscriptionBilling
 }
 
 // rejectMixedItemIntervals validates that every item's plan shares
-// the same BillingInterval. Returns errs.Invalid("items", ...) on
-// mismatch — Stripe / Lago / Chargebee all reject mixed intervals
-// on a single sub because the period anchor is per-sub and a
-// monthly + yearly mix has no coherent cycle.
+// the same BillingInterval AND the same BaseBillTiming. Returns
+// errs.Invalid("items", ...) on mismatch.
 //
-// Empty BillingInterval on a plan is treated as monthly (the
-// engine's advanceBillingPeriod default), matching the lenient
-// stance taken elsewhere — old plans created before the column
-// existed still validate cleanly.
+//   - Interval mix: Stripe / Lago / Chargebee all reject mixed
+//     intervals on a single sub because the period anchor is per-sub
+//     and a monthly + yearly mix has no coherent cycle.
+//   - Bill-timing mix: in_arrears and in_advance carry different
+//     invoice-shape semantics (close elapsed vs open upcoming) and
+//     mixing them on the same sub would emit inconsistent lines on the
+//     same invoice. Velox's hybrid invoice shape assumes a uniform
+//     bill_timing across items.
+//
+// Empty BillingInterval defaults to monthly; empty BaseBillTiming
+// defaults to in_arrears — matching the engine's lenient defaults so
+// pre-ADR-031 plans validate cleanly.
 //
 // Plan-fetch errors (RLS gap / deleted plan) surface as
 // errs.Invalid so the operator gets a clean 400 instead of a 500.
@@ -286,19 +292,32 @@ func (s *Service) rejectMixedItemIntervals(ctx context.Context, tenantID string,
 	if firstInterval == "" {
 		firstInterval = domain.BillingMonthly
 	}
+	firstTiming := first.BaseBillTiming
+	if firstTiming == "" {
+		firstTiming = domain.BillInArrears
+	}
 	for _, it := range items[1:] {
 		plan, err := s.plans.GetPlan(ctx, tenantID, it.PlanID)
 		if err != nil {
 			return errs.Invalid("items", fmt.Sprintf("plan %q not found", it.PlanID))
 		}
-		other := plan.BillingInterval
-		if other == "" {
-			other = domain.BillingMonthly
+		otherInterval := plan.BillingInterval
+		if otherInterval == "" {
+			otherInterval = domain.BillingMonthly
 		}
-		if other != firstInterval {
+		if otherInterval != firstInterval {
 			return errs.Invalid("items", fmt.Sprintf(
 				"all items must share the same billing interval (plan %q is %s, plan %q is %s)",
-				items[0].PlanID, firstInterval, it.PlanID, other))
+				items[0].PlanID, firstInterval, it.PlanID, otherInterval))
+		}
+		otherTiming := plan.BaseBillTiming
+		if otherTiming == "" {
+			otherTiming = domain.BillInArrears
+		}
+		if otherTiming != firstTiming {
+			return errs.Invalid("items", fmt.Sprintf(
+				"all items must share the same bill_timing (plan %q is %s, plan %q is %s)",
+				items[0].PlanID, firstTiming, it.PlanID, otherTiming))
 		}
 	}
 	return nil
@@ -706,12 +725,20 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, subscriptionID, item
 		return ItemChangeResult{}, errs.Invalid("new_plan_id", "new plan is the same as current plan")
 	}
 
-	// Mixed-interval guard on plan-change. Composes the post-change
-	// item set (other items unchanged + the new plan on this item)
-	// and asserts every interval matches. Same rationale as Create /
-	// AddItem — the period anchor is per-sub and would drift if a
-	// single item swapped to a different interval. Skipped when
-	// PlanReader is unwired (narrow unit tests).
+	// Mixed-interval / mixed-bill-timing guard on plan-change. Composes
+	// the post-change item set (other items unchanged + the new plan on
+	// this item) and asserts every interval AND every bill_timing
+	// matches. Same rationale as Create / AddItem — the period anchor
+	// and invoice shape are per-sub and would drift if a single item
+	// swapped to a different cadence. Skipped when PlanReader is
+	// unwired (narrow unit tests).
+	//
+	// The multi-item check catches mixes; the inline single-item guard
+	// below catches the case where swapping the only item changes the
+	// sub's bill_timing (e.g. in_arrears $29 → in_advance $49). The
+	// engine's hybrid-invoice shape assumes a uniform bill_timing per
+	// sub; cross-bill-timing swaps are not exercised end-to-end, so
+	// rejecting at request time is the pre-launch safe stance.
 	if s.plans != nil {
 		hypothetical := make([]domain.SubscriptionItem, 0, len(sub.Items))
 		for _, existing := range sub.Items {
@@ -723,6 +750,33 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, subscriptionID, item
 		}
 		if err := s.rejectMixedItemIntervals(ctx, tenantID, hypothetical); err != nil {
 			return ItemChangeResult{}, err
+		}
+
+		// Single-item bill_timing-change guard. The multi-item check
+		// above can't fire when len(items)==1, so explicitly compare
+		// the current item's plan timing against the new plan's
+		// timing. Both legs default to in_arrears for pre-ADR-031
+		// plans to match the engine's lenient defaults.
+		currentPlan, err := s.plans.GetPlan(ctx, tenantID, item.PlanID)
+		if err != nil {
+			return ItemChangeResult{}, errs.Invalid("items", fmt.Sprintf("plan %q not found", item.PlanID))
+		}
+		newPlan, err := s.plans.GetPlan(ctx, tenantID, input.NewPlanID)
+		if err != nil {
+			return ItemChangeResult{}, errs.Invalid("new_plan_id", fmt.Sprintf("plan %q not found", input.NewPlanID))
+		}
+		currentTiming := currentPlan.BaseBillTiming
+		if currentTiming == "" {
+			currentTiming = domain.BillInArrears
+		}
+		newTiming := newPlan.BaseBillTiming
+		if newTiming == "" {
+			newTiming = domain.BillInArrears
+		}
+		if currentTiming != newTiming {
+			return ItemChangeResult{}, errs.Invalid("new_plan_id", fmt.Sprintf(
+				"bill_timing change is not supported on plan-swap (current %s, new %s); cancel the subscription and start a new one with the target plan",
+				currentTiming, newTiming))
 		}
 	}
 
