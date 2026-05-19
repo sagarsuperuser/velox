@@ -1817,6 +1817,55 @@ func (s *PostgresStore) CountLiveSubsByPlan(ctx context.Context, tenantID, planI
 	return count, nil
 }
 
+// ListItemChangesInPeriod returns every subscription_item_changes row
+// for the given subscription whose changed_at falls within
+// (periodStart, periodEnd]. Drives segment-aware cycle-close billing —
+// each row demarcates a [pre-change, post-change] boundary the engine
+// uses to bill each segment at its own plan + quantity rate.
+//
+// Range is exclusive-left, inclusive-right: a change exactly at
+// periodEnd (a scheduled plan swap firing at the boundary) belongs to
+// the closing period, NOT the next period. ORDER BY changed_at, id
+// gives a stable walk even when two changes share a timestamp.
+func (s *PostgresStore) ListItemChangesInPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.SubscriptionItemChange, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, tenant_id, subscription_id,
+		       COALESCE(subscription_item_id, ''), change_type,
+		       COALESCE(from_plan_id, ''), COALESCE(to_plan_id, ''),
+		       COALESCE(from_quantity, 0), COALESCE(to_quantity, 0),
+		       changed_at, created_at
+		FROM subscription_item_changes
+		WHERE subscription_id = $1
+		  AND changed_at > $2
+		  AND changed_at <= $3
+		ORDER BY changed_at ASC, id ASC
+	`, subscriptionID, periodStart, periodEnd)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.SubscriptionItemChange
+	for rows.Next() {
+		var c domain.SubscriptionItemChange
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.SubscriptionID,
+			&c.SubscriptionItemID, &c.ChangeType,
+			&c.FromPlanID, &c.ToPlanID,
+			&c.FromQuantity, &c.ToQuantity,
+			&c.ChangedAt, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // Subscription scan now includes PlanChangedAt on items, but the bytes
 // exchange via JSON. pgx returns bytea for JSONB by default; store/consume
 // raw bytes on the Metadata field so the caller owns the encoding policy.

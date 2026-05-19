@@ -230,6 +230,10 @@ func (m *mockSettings) Get(_ context.Context, _ string) (domain.TenantSettings, 
 type mockSubs struct {
 	subs         map[string]domain.Subscription
 	cycleUpdated map[string]bool
+	// itemChanges feeds ListItemChangesInPeriod. Tests that exercise
+	// segment-aware billing seed this with the change rows the DB
+	// trigger would have produced (migration 0029).
+	itemChanges []domain.SubscriptionItemChange
 }
 
 func (m *mockSubs) GetDueBilling(_ context.Context, before time.Time, limit int) ([]domain.Subscription, error) {
@@ -354,12 +358,29 @@ func (m *mockSubs) ApplyDuePendingItemPlansAtomic(_ context.Context, _, id strin
 		if it.PendingPlanID == "" || it.PendingPlanEffectiveAt == nil || it.PendingPlanEffectiveAt.After(now) {
 			continue
 		}
+		oldPlan := it.PlanID
 		it.PlanID = it.PendingPlanID
 		it.PlanChangedAt = &now
 		it.PendingPlanID = ""
 		it.PendingPlanEffectiveAt = nil
 		s.Items[i] = it
 		applied = append(applied, it)
+		// Mirror the DB trigger from migration 0029: the UPDATE on
+		// subscription_items emits a 'plan' change row so segment-
+		// aware billing sees the boundary swap.
+		m.itemChanges = append(m.itemChanges, domain.SubscriptionItemChange{
+			ID:                 fmt.Sprintf("vlx_sic_%d", len(m.itemChanges)+1),
+			TenantID:           s.TenantID,
+			SubscriptionID:     s.ID,
+			SubscriptionItemID: it.ID,
+			ChangeType:         "plan",
+			FromPlanID:         oldPlan,
+			ToPlanID:           it.PlanID,
+			FromQuantity:       it.Quantity,
+			ToQuantity:         it.Quantity,
+			ChangedAt:          now,
+			CreatedAt:          now,
+		})
 	}
 	m.subs[id] = s
 	return applied, nil
@@ -375,6 +396,20 @@ func (m *mockSubs) ListWithThresholds(_ context.Context, _ bool, _ int) ([]domai
 	// returns the configured candidate set). Returning empty here keeps
 	// existing tests compatible without exercising the threshold path.
 	return nil, nil
+}
+
+func (m *mockSubs) ListItemChangesInPeriod(_ context.Context, _, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.SubscriptionItemChange, error) {
+	var out []domain.SubscriptionItemChange
+	for _, c := range m.itemChanges {
+		if c.SubscriptionID != subscriptionID {
+			continue
+		}
+		if !c.ChangedAt.After(periodStart) || c.ChangedAt.After(periodEnd) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, nil
 }
 
 type mockUsage struct {
@@ -2863,4 +2898,144 @@ func TestBillOnCancel_PaidCheck(t *testing.T) {
 			t.Errorf("expected no credit grant when source invoice missing, got %d", len(granter.grants))
 		}
 	})
+}
+
+// TestRunCycle_SegmentAware_InArrears_MidPeriodPlanChange locks in the
+// Lago / Chargebee / Orb shape: when a customer changes plan mid-cycle
+// on an in_arrears sub, the closing invoice emits one line per segment
+// at the segment's own plan rate × duration fraction.
+//
+// Setup: 31-day cycle (March). On day 15 the item swaps from plan_a
+// ($30/mo) to plan_b ($60/mo), both monthly in_arrears. The closing
+// invoice should have two base lines: 14 days of plan_a (~$13.5) +
+// 17 days of plan_b (~$32.9) ≈ $46. Pre-fix (single-line billing):
+// $60 for the full month at the new rate. Pre-segment math: even
+// bigger overcharge with immediate proration + cycle close double-
+// counting.
+func TestRunCycle_SegmentAware_InArrears_MidPeriodPlanChange(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	changeAt := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{{
+					ID: "it_1", PlanID: "pln_b", Quantity: 1,
+				}},
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt: &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+		// Seed the change row that the DB trigger would have emitted
+		// at the immediate plan swap on day 15.
+		itemChanges: []domain.SubscriptionItemChange{{
+			ID:                 "vlx_sic_1",
+			TenantID:           "t1",
+			SubscriptionID:     "sub_1",
+			SubscriptionItemID: "it_1",
+			ChangeType:         "plan",
+			FromPlanID:         "pln_a",
+			ToPlanID:           "pln_b",
+			FromQuantity:       1,
+			ToQuantity:         1,
+			ChangedAt:          changeAt,
+		}},
+	}
+
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_a": {ID: "pln_a", Name: "A", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 3000, BaseBillTiming: domain.BillInArrears},
+			"pln_b": {ID: "pln_b", Name: "B", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 6000, BaseBillTiming: domain.BillInArrears},
+		},
+	}
+
+	invoices := &mockInvoices{}
+	usage := &mockUsage{totals: map[string]int64{}}
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, billingTestClock()))
+
+	count, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if count != 1 {
+		t.Fatalf("invoices generated: got %d, want 1", count)
+	}
+
+	inv := invoices.invoices[0]
+	// March has 31 days. Segment 1: [Mar 1, Mar 15) = 14 days × pln_a
+	// ($30/31 × 14) ≈ 1355¢. Segment 2: [Mar 15, Apr 1) = 17 days
+	// × pln_b ($60/31 × 17) ≈ 3290¢. Total ≈ 4645¢. Tolerance 4500-
+	// 4800 absorbs day-rounding edges.
+	if inv.SubtotalCents < 4500 || inv.SubtotalCents > 4800 {
+		t.Errorf("segment-aware total: got %d cents, want ~4645 (14d @ pln_a $30 + 17d @ pln_b $60)", inv.SubtotalCents)
+	}
+
+	// Two base-fee lines expected: one per segment.
+	baseLineCount := 0
+	for _, li := range invoices.lineItems {
+		if li.InvoiceID != inv.ID {
+			continue
+		}
+		if li.LineType == domain.LineTypeBaseFee {
+			baseLineCount++
+		}
+	}
+	if baseLineCount != 2 {
+		t.Errorf("expected 2 base-fee line items (one per segment), got %d", baseLineCount)
+	}
+}
+
+// TestRunCycle_SegmentAware_NoChanges_FullPeriodLine verifies the no-
+// regress path: a sub with NO mid-period changes still emits a single
+// full-period base line at the current plan/qty (segments collapse).
+func TestRunCycle_SegmentAware_NoChanges_FullPeriodLine(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{{ID: "it_1", PlanID: "pln_a", Quantity: 1}},
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt: &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+		// No itemChanges seeded.
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_a": {ID: "pln_a", Name: "A", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 3000, BaseBillTiming: domain.BillInArrears},
+		},
+	}
+	invoices := &mockInvoices{}
+	usage := &mockUsage{totals: map[string]int64{}}
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, billingTestClock()))
+
+	count, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if count != 1 {
+		t.Fatalf("invoices generated: got %d, want 1", count)
+	}
+	inv := invoices.invoices[0]
+	if inv.SubtotalCents != 3000 {
+		t.Errorf("no-change full-period: got %d cents, want 3000 (full month @ $30)", inv.SubtotalCents)
+	}
+	baseLineCount := 0
+	for _, li := range invoices.lineItems {
+		if li.InvoiceID == inv.ID && li.LineType == domain.LineTypeBaseFee {
+			baseLineCount++
+		}
+	}
+	if baseLineCount != 1 {
+		t.Errorf("expected 1 base-fee line (no segments), got %d", baseLineCount)
+	}
 }

@@ -96,6 +96,27 @@ type SubscriptionItem struct {
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
+// SubscriptionItemChange is one row from the subscription_item_changes
+// audit table (migration 0029). Captures every plan/quantity mutation
+// on a subscription_item with both before- and after-state. Drives the
+// segment-aware base-fee billing at cycle close: each row demarcates
+// a [pre-change, post-change] boundary the engine uses to bill each
+// segment at its own plan + quantity rate. Matches the Lago /
+// Chargebee / Orb shape for mid-period proration.
+type SubscriptionItemChange struct {
+	ID                 string    `json:"id"`
+	TenantID           string    `json:"tenant_id"`
+	SubscriptionID     string    `json:"subscription_id"`
+	SubscriptionItemID string    `json:"subscription_item_id,omitempty"`
+	ChangeType         string    `json:"change_type"` // add | remove | plan | quantity
+	FromPlanID         string    `json:"from_plan_id,omitempty"`
+	ToPlanID           string    `json:"to_plan_id,omitempty"`
+	FromQuantity       int64     `json:"from_quantity,omitempty"`
+	ToQuantity         int64     `json:"to_quantity,omitempty"`
+	ChangedAt          time.Time `json:"changed_at"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
 type Subscription struct {
 	ID           string                  `json:"id"`
 	TenantID     string                  `json:"tenant_id,omitempty"`

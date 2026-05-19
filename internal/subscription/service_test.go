@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -16,8 +17,9 @@ import (
 // does — it covers just the behaviour the service layer depends on (item CRUD,
 // atomic transitions, and pending-item bookkeeping).
 type memStore struct {
-	subs  map[string]domain.Subscription
-	items map[string]domain.SubscriptionItem
+	subs        map[string]domain.Subscription
+	items       map[string]domain.SubscriptionItem
+	itemChanges []domain.SubscriptionItemChange
 }
 
 func newMemStore() *memStore {
@@ -48,10 +50,31 @@ func (m *memStore) Create(ctx context.Context, tenantID string, s domain.Subscri
 		it.UpdatedAt = now
 		m.items[it.ID] = it
 		hydrated = append(hydrated, it)
+		m.recordChange(it, "add", "", it.PlanID, 0, it.Quantity, now)
 	}
 	s.Items = hydrated
 	m.subs[s.ID] = s
 	return s, nil
+}
+
+// recordChange mirrors the DB trigger that fills
+// subscription_item_changes (migration 0029). Each mutation through
+// the mem store appends a change row so tests that exercise
+// segment-aware billing see the same audit log shape as production.
+func (m *memStore) recordChange(it domain.SubscriptionItem, changeType, fromPlanID, toPlanID string, fromQty, toQty int64, at time.Time) {
+	m.itemChanges = append(m.itemChanges, domain.SubscriptionItemChange{
+		ID:                 fmt.Sprintf("vlx_sic_%d", len(m.itemChanges)+1),
+		TenantID:           it.TenantID,
+		SubscriptionID:     it.SubscriptionID,
+		SubscriptionItemID: it.ID,
+		ChangeType:         changeType,
+		FromPlanID:         fromPlanID,
+		ToPlanID:           toPlanID,
+		FromQuantity:       fromQty,
+		ToQuantity:         toQty,
+		ChangedAt:          at,
+		CreatedAt:          at,
+	})
 }
 
 func (m *memStore) Get(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
@@ -343,6 +366,7 @@ func (m *memStore) AddItem(ctx context.Context, tenantID string, item domain.Sub
 	item.CreatedAt = now
 	item.UpdatedAt = now
 	m.items[item.ID] = item
+	m.recordChange(item, "add", "", item.PlanID, 0, item.Quantity, now)
 	return item, nil
 }
 
@@ -351,9 +375,11 @@ func (m *memStore) UpdateItemQuantity(ctx context.Context, tenantID, itemID stri
 	if !ok || it.TenantID != tenantID {
 		return domain.SubscriptionItem{}, errs.ErrNotFound
 	}
+	prevQty := it.Quantity
 	it.Quantity = quantity
 	it.UpdatedAt = clock.Now(ctx)
 	m.items[itemID] = it
+	m.recordChange(it, "quantity", it.PlanID, it.PlanID, prevQty, quantity, it.UpdatedAt)
 	return it, nil
 }
 
@@ -362,12 +388,14 @@ func (m *memStore) ApplyItemPlanImmediately(ctx context.Context, tenantID, itemI
 	if !ok || it.TenantID != tenantID {
 		return domain.SubscriptionItem{}, errs.ErrNotFound
 	}
+	oldPlan := it.PlanID
 	it.PlanID = newPlanID
 	it.PlanChangedAt = &changedAt
 	it.PendingPlanID = ""
 	it.PendingPlanEffectiveAt = nil
 	it.UpdatedAt = changedAt
 	m.items[itemID] = it
+	m.recordChange(it, "plan", oldPlan, newPlanID, it.Quantity, it.Quantity, changedAt)
 	return it, nil
 }
 
@@ -404,6 +432,7 @@ func (m *memStore) ApplyDuePendingItemPlansAtomic(ctx context.Context, tenantID,
 		if it.PendingPlanID == "" || it.PendingPlanEffectiveAt == nil || it.PendingPlanEffectiveAt.After(now) {
 			continue
 		}
+		oldPlan := it.PlanID
 		it.PlanID = it.PendingPlanID
 		it.PlanChangedAt = &now
 		it.PendingPlanID = ""
@@ -411,6 +440,7 @@ func (m *memStore) ApplyDuePendingItemPlansAtomic(ctx context.Context, tenantID,
 		it.UpdatedAt = now
 		m.items[id] = it
 		applied = append(applied, it)
+		m.recordChange(it, "plan", oldPlan, it.PlanID, it.Quantity, it.Quantity, now)
 	}
 	return applied, nil
 }
@@ -421,6 +451,7 @@ func (m *memStore) RemoveItem(ctx context.Context, tenantID, itemID string) erro
 		return errs.ErrNotFound
 	}
 	delete(m.items, itemID)
+	m.recordChange(it, "remove", it.PlanID, "", it.Quantity, 0, clock.Now(ctx))
 	return nil
 }
 
@@ -460,6 +491,26 @@ func (m *memStore) ClearBillingThresholds(ctx context.Context, tenantID, id stri
 // interface contract.
 func (m *memStore) ListWithThresholdsForClock(ctx context.Context, _, _ string, _ int) ([]domain.Subscription, error) {
 	return nil, nil
+}
+
+func (m *memStore) ListItemChangesInPeriod(_ context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.SubscriptionItemChange, error) {
+	var out []domain.SubscriptionItemChange
+	for _, c := range m.itemChanges {
+		if c.TenantID != tenantID || c.SubscriptionID != subscriptionID {
+			continue
+		}
+		if !c.ChangedAt.After(periodStart) || c.ChangedAt.After(periodEnd) {
+			continue
+		}
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].ChangedAt.Equal(out[j].ChangedAt) {
+			return out[i].ChangedAt.Before(out[j].ChangedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
 }
 
 func (m *memStore) ListWithThresholds(ctx context.Context, _ bool, _ int) ([]domain.Subscription, error) {
