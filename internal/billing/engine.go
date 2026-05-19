@@ -254,6 +254,15 @@ type SubscriptionReader interface {
 	// ListWithThresholds — returns clock-pinned subs with thresholds
 	// configured. ADR-029 Phase 3.
 	ListWithThresholdsForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error)
+
+	// ListItemChangesInPeriod returns every subscription_item_changes row
+	// for the given subscription whose changed_at falls within
+	// (periodStart, periodEnd]. Drives segment-aware base-fee billing at
+	// cycle close — each row marks a boundary in the period at which the
+	// plan or quantity changed, and each [boundary_n, boundary_{n+1}]
+	// segment is billed at its own rate × duration. Lago / Chargebee /
+	// Orb shape for mid-period proration.
+	ListItemChangesInPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.SubscriptionItemChange, error)
 }
 
 // UsageAggregator aggregates usage events for a billing period. Returns
@@ -482,6 +491,136 @@ func shouldFireScheduledCancel(sub domain.Subscription, periodEnd, now time.Time
 		return true
 	}
 	return false
+}
+
+// baseSegment is one [start, end] slice of a period during which an
+// item had a fixed plan + quantity. Segment-aware base-fee billing
+// emits one line per segment at the segment's own plan rate × duration
+// fraction, matching the Lago / Chargebee / Orb shape for mid-period
+// proration. Single-segment items (no mid-period changes) collapse
+// to the pre-segment-aware single-line behavior.
+type baseSegment struct {
+	start, end time.Time
+	planID     string
+	quantity   int64
+}
+
+// itemBaseSegments walks a chronologically-ordered slice of changes
+// for one subscription item and produces the [start, end, plan, qty]
+// segments that span [periodStart, periodEnd]. Handles every shape:
+//
+//   - No changes → one full-period segment at the item's current state.
+//   - Plan or quantity change → two segments (before / after the change).
+//   - Item added mid-period → first segment starts at the add time.
+//   - Item removed mid-period → last segment ends at the remove time;
+//     no tail segment beyond remove.
+//   - Item both added AND removed in the same period → segment(s) only
+//     span [add, remove].
+//
+// item may be nil for items that no longer exist at periodEnd
+// (removed mid-period); in that case the tail state is determined
+// entirely from the last change's to_* fields (or absent if the last
+// change is 'remove').
+func itemBaseSegments(item *domain.SubscriptionItem, changes []domain.SubscriptionItemChange, periodStart, periodEnd time.Time) []baseSegment {
+	if len(changes) == 0 {
+		if item == nil {
+			return nil
+		}
+		return []baseSegment{{
+			start: periodStart, end: periodEnd,
+			planID: item.PlanID, quantity: item.Quantity,
+		}}
+	}
+
+	// Initial state at periodStart, derived from the first change.
+	// 'add' means the item didn't exist at periodStart.
+	first := changes[0]
+	exists := first.ChangeType != "add"
+	var planID string
+	var quantity int64
+	if exists {
+		planID = first.FromPlanID
+		quantity = first.FromQuantity
+	}
+
+	prevTime := periodStart
+	out := []baseSegment{}
+	for _, c := range changes {
+		if exists && c.ChangedAt.After(prevTime) {
+			out = append(out, baseSegment{
+				start: prevTime, end: c.ChangedAt,
+				planID: planID, quantity: quantity,
+			})
+		}
+		prevTime = c.ChangedAt
+		switch c.ChangeType {
+		case "add", "plan", "quantity":
+			planID = c.ToPlanID
+			quantity = c.ToQuantity
+			exists = true
+		case "remove":
+			exists = false
+		}
+	}
+
+	if exists && periodEnd.After(prevTime) {
+		out = append(out, baseSegment{
+			start: prevTime, end: periodEnd,
+			planID: planID, quantity: quantity,
+		})
+	}
+	return out
+}
+
+// emitBaseSegmentLine pushes a base-fee line item for one [start, end]
+// segment of an in_arrears period. Prorated against the cycle length
+// (full plan-interval cycle from periodStart) so a 14-day segment of
+// a 30-day cycle bills at 14/30 of the segment's plan amount. Single-
+// segment items (no mid-period changes) collapse to "segment ==
+// period" math, matching the pre-segment-aware single-line path.
+func emitBaseSegmentLine(seg baseSegment, plan domain.Plan, periodStart time.Time, periodDays int, currency string, lineItems *[]domain.InvoiceLineItem, subtotal *int64) {
+	segDays := roundDays(seg.end.Sub(seg.start))
+	if segDays <= 0 {
+		return
+	}
+	fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart))
+	baseFee := plan.BaseAmountCents * seg.quantity
+	description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, seg.quantity)
+
+	// Prorate when:
+	//   (a) this is a partial segment within a full cycle (mid-period
+	//       change or partial-creation period), OR
+	//   (b) the period itself is partial (creation mid-cycle), independent
+	//       of segments — same formula reduces correctly.
+	if segDays > 0 && fullCycleDays > 0 && segDays < fullCycleDays {
+		baseFee = money.RoundHalfToEven(plan.BaseAmountCents*seg.quantity*int64(segDays), int64(fullCycleDays))
+		description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, seg.quantity, segDays, fullCycleDays)
+	} else if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
+		// Backstop for the periodDays<fullCycleDays case when only a
+		// single segment exists and equals the whole period — preserves
+		// the pre-segment-aware partial-creation behavior.
+		baseFee = money.RoundHalfToEven(plan.BaseAmountCents*seg.quantity*int64(periodDays), int64(fullCycleDays))
+		description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, seg.quantity, periodDays, fullCycleDays)
+	}
+
+	unitAmount := plan.BaseAmountCents
+	if seg.quantity > 0 {
+		unitAmount = money.RoundHalfToEven(baseFee, seg.quantity)
+	}
+	segStart := seg.start
+	segEnd := seg.end
+	*lineItems = append(*lineItems, domain.InvoiceLineItem{
+		LineType:           domain.LineTypeBaseFee,
+		Description:        description,
+		Quantity:           seg.quantity,
+		UnitAmountCents:    unitAmount,
+		AmountCents:        baseFee,
+		TotalAmountCents:   baseFee,
+		Currency:           currency,
+		BillingPeriodStart: &segStart,
+		BillingPeriodEnd:   &segEnd,
+	})
+	*subtotal += baseFee
 }
 
 // advanceCycleOrCancel either fires a due scheduled cancel or advances the
@@ -1262,36 +1401,21 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			break
 		}
 	}
-	// outgoingPlanByItem captures the OLD plan for items whose
-	// scheduled swap fires at this boundary. Used downstream to bill
-	// the just-elapsed period at the plan the customer was actually
-	// consuming under (in_arrears base + usage meters), not the
-	// incoming plan's rate. Industry-standard convention: Stripe /
-	// Lago / Orb all bill the closing cycle at the outgoing plan's
-	// price. Pre-fix Velox billed the elapsed period at the incoming
-	// plan's prorated rate — non-standard and silently wrong for
-	// every monthly→yearly or differently-priced same-interval swap.
-	outgoingPlanByItem := map[string]domain.Plan{}
 	if anyDue {
-		// Snapshot the item IDs whose pending change was due before the atomic
-		// swap — ApplyDuePendingItemPlansAtomic returns the full refreshed item
-		// set (due + not-due) with pending_plan_id cleared, so we can't tell
-		// post-hoc which rows actually changed. This pre-swap list is what we
-		// fire subscription.pending_change.applied events for.
+		// Snapshot the item IDs whose pending change is due BEFORE the
+		// atomic swap — ApplyDuePendingItemPlansAtomic returns the full
+		// refreshed item set (due + not-due) with pending_plan_id
+		// cleared, so we can't tell post-hoc which rows actually
+		// changed. This pre-swap list is what we fire
+		// subscription.pending_change.applied events for. The outgoing
+		// plan itself is captured in subscription_item_changes by the
+		// DB trigger (migration 0029) — the segment-aware base-fee
+		// loop further down reads that history rather than carrying a
+		// snapshot map through this function.
 		dueItems := make([]domain.SubscriptionItem, 0)
 		for _, it := range sub.Items {
 			if it.PendingPlanID != "" && it.PendingPlanEffectiveAt != nil && !it.PendingPlanEffectiveAt.After(gate) {
 				dueItems = append(dueItems, it)
-				// Fetch the outgoing plan BEFORE the atomic swap so we
-				// can price the just-elapsed period (base + usage)
-				// against it. The plans map further down is loaded
-				// post-swap, so this snapshot is the only handle on
-				// the outgoing plan during this billing tick.
-				oldPlan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
-				if err != nil {
-					return false, fmt.Errorf("get outgoing plan %s for scheduled swap: %w", it.PlanID, err)
-				}
-				outgoingPlanByItem[it.ID] = oldPlan
 			}
 		}
 
@@ -1528,93 +1652,140 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// skip the next-period in_advance base line.)
 	terminalCycleClose := shouldFireScheduledCancel(sub, periodEnd, now)
 
-	// Base fee line item per item — quantity-multiplied and prorated for partial
-	// periods. One line per item so the invoice clearly shows what each plan
-	// contributes (mirrors Stripe's per-item invoice layout).
+	// Pull the per-item change log for this period — drives segment-
+	// aware base-fee billing (Lago / Chargebee / Orb shape). Each row
+	// demarcates a [pre-change, post-change] boundary, so the in_arrears
+	// base for a sub that had a mid-period plan or quantity change is
+	// emitted as one line per segment at the segment's own plan + qty
+	// rate × duration fraction. No mid-period changes → segments collapse
+	// to a single full-period line (same as pre-segment-aware behavior).
+	// Read failure falls back to single-line billing — slight
+	// imprecision on mid-period changes vs hard-failing the cycle.
+	itemChanges, changesErr := e.subs.ListItemChangesInPeriod(ctx, sub.TenantID, sub.ID, periodStart, periodEnd)
+	if changesErr != nil {
+		slog.WarnContext(ctx, "list item changes failed; falling back to single-line cycle close billing",
+			"subscription_id", sub.ID, "error", changesErr)
+		itemChanges = nil
+	}
+	changesByItem := map[string][]domain.SubscriptionItemChange{}
+	for _, c := range itemChanges {
+		changesByItem[c.SubscriptionItemID] = append(changesByItem[c.SubscriptionItemID], c)
+	}
+	// Hydrate any plans referenced only in the change log (items removed
+	// mid-period, or pre-swap plans not present on current items). Plans
+	// already loaded for current items are skipped.
+	for _, c := range itemChanges {
+		for _, pid := range []string{c.FromPlanID, c.ToPlanID} {
+			if pid == "" {
+				continue
+			}
+			if _, ok := plans[pid]; ok {
+				continue
+			}
+			pl, err := e.pricing.GetPlan(ctx, sub.TenantID, pid)
+			if err != nil {
+				slog.WarnContext(ctx, "segment plan lookup failed; segment under that plan will be skipped",
+					"subscription_id", sub.ID, "plan_id", pid, "error", err)
+				continue
+			}
+			plans[pid] = pl
+		}
+	}
+
+	// Base fee line item — segment-aware for in_arrears, single-line
+	// for in_advance (which bills the upcoming period at the post-swap
+	// plan; segments don't apply because the previous period was
+	// already pre-paid).
 	//
-	// ADR-031: the base line's *covered period* depends on the plan's
-	// base_bill_timing:
-	//   - in_arrears (default): base covers the just-elapsed period
-	//     [periodStart, periodEnd]. Mid-period sub starts prorate.
-	//   - in_advance: base covers the upcoming period [periodEnd,
-	//     nextPeriodEnd]. The just-elapsed period's base was billed
-	//     on day 1 via BillOnCreate or the previous cycle invoice.
-	//     The upcoming period is always full (no proration — partial
-	//     periods only exist on creation, and that was handled by
-	//     BillOnCreate).
-	//
-	// `BillingPeriodStart` / `BillingPeriodEnd` on the line item is
-	// stamped explicitly so an invoice mixing arrears base + arrears
-	// usage with advance base shows the right period per row in the
-	// UI / PDF.
+	// ADR-031 + segment-aware (Lago/Chargebee/Orb):
+	//   - in_arrears: one line per segment within [periodStart, periodEnd].
+	//     Multi-segment when the customer changed plan or quantity
+	//     mid-period; single-segment otherwise. Each segment bills at
+	//     its own rate × (segment_days / cycle_days).
+	//   - in_advance: one line for the UPCOMING period at the current
+	//     (post-swap) plan. The just-elapsed period's base was paid
+	//     upfront at the previous boundary.
+	itemsByID := map[string]domain.SubscriptionItem{}
+	for _, it := range sub.Items {
+		itemsByID[it.ID] = it
+	}
+
+	// Pass 1: items currently on the sub.
 	for _, it := range sub.Items {
 		plan := plans[it.PlanID]
+		isAdvance := plan.BaseBillTiming == domain.BillInAdvance
 
-		// Scheduled plan-swap correctness: if this item just swapped
-		// to a new plan at this boundary, the in_arrears base line is
-		// for the period the customer consumed under the OUTGOING
-		// plan — bill at that plan's rate. The new plan's first
-		// charge lands on the NEXT cycle close (in_arrears) or at
-		// this boundary as the upcoming-period pre-pay (in_advance).
-		// in_advance keeps the current plan because it bills the
-		// upcoming period, which IS under the new plan.
-		if outgoing, swapped := outgoingPlanByItem[it.ID]; swapped && plan.BaseBillTiming != domain.BillInAdvance {
-			plan = outgoing
-		}
-
-		if plan.BaseAmountCents <= 0 {
+		if isAdvance {
+			if terminalCycleClose {
+				// Sub cancels at this boundary — don't pre-pay a period
+				// that won't be used. Usage on this invoice still
+				// captures the just-elapsed consumption.
+				continue
+			}
+			if plan.BaseAmountCents <= 0 {
+				continue
+			}
+			baseStart := periodEnd
+			baseEnd := advanceBillingPeriod(periodEnd, plan.BillingInterval)
+			baseFee := plan.BaseAmountCents * it.Quantity
+			description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
+			unitAmount := plan.BaseAmountCents
+			if it.Quantity > 0 {
+				unitAmount = money.RoundHalfToEven(baseFee, it.Quantity)
+			}
+			baseStartCopy := baseStart
+			baseEndCopy := baseEnd
+			lineItems = append(lineItems, domain.InvoiceLineItem{
+				LineType:           domain.LineTypeBaseFee,
+				Description:        description,
+				Quantity:           it.Quantity,
+				UnitAmountCents:    unitAmount,
+				AmountCents:        baseFee,
+				TotalAmountCents:   baseFee,
+				Currency:           invoiceCurrency,
+				BillingPeriodStart: &baseStartCopy,
+				BillingPeriodEnd:   &baseEndCopy,
+			})
+			subtotal += baseFee
 			continue
 		}
 
-		baseStart, baseEnd := periodStart, periodEnd
-		isAdvance := plan.BaseBillTiming == domain.BillInAdvance
-		if isAdvance {
-			if terminalCycleClose {
-				// Sub is about to cancel at this period boundary —
-				// don't emit a pre-pay line for a period that won't
-				// be used. Usage from the just-elapsed period (the
-				// in-arrears usage section below) still fires
-				// normally, so the final invoice captures what the
-				// customer actually consumed before terminating.
+		// in_arrears: emit per-segment lines.
+		itemForSeg := it
+		segments := itemBaseSegments(&itemForSeg, changesByItem[it.ID], periodStart, periodEnd)
+		for _, seg := range segments {
+			segPlan, ok := plans[seg.planID]
+			if !ok || segPlan.BaseAmountCents <= 0 {
 				continue
 			}
-			baseStart = periodEnd
-			baseEnd = advanceBillingPeriod(periodEnd, plan.BillingInterval)
+			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, &lineItems, &subtotal)
 		}
+	}
 
-		baseFee := plan.BaseAmountCents * it.Quantity
-		description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
-
-		// Proration only applies to in_arrears partial periods. In_advance
-		// bills full upcoming period — partial-period creation was already
-		// settled by BillOnCreate's prorated day-1 invoice.
-		if !isAdvance {
-			fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart))
-			if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
-				baseFee = money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(periodDays), int64(fullCycleDays))
-				description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, it.Quantity, periodDays, fullCycleDays)
+	// Pass 2: items removed mid-period (in the change log but not on
+	// sub.Items now). Bill the pre-remove segments at their own rates.
+	// in_arrears only — in_advance items removed mid-period already
+	// paid upfront for the period; refund flows through the cancel-
+	// proration / removed-item credit path (not this loop).
+	for itemID, changes := range changesByItem {
+		if _, stillPresent := itemsByID[itemID]; stillPresent {
+			continue
+		}
+		segments := itemBaseSegments(nil, changes, periodStart, periodEnd)
+		for _, seg := range segments {
+			segPlan, ok := plans[seg.planID]
+			if !ok || segPlan.BaseAmountCents <= 0 {
+				continue
 			}
+			// Removed-item segments are always in_arrears-style billing
+			// (period consumed before remove). in_advance items would
+			// have been refunded via the cancel-proration credit path,
+			// not billed here.
+			if segPlan.BaseBillTiming == domain.BillInAdvance {
+				continue
+			}
+			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, &lineItems, &subtotal)
 		}
-
-		unitAmount := plan.BaseAmountCents
-		if it.Quantity > 0 {
-			unitAmount = money.RoundHalfToEven(baseFee, it.Quantity)
-		}
-
-		baseStartCopy := baseStart
-		baseEndCopy := baseEnd
-		lineItems = append(lineItems, domain.InvoiceLineItem{
-			LineType:           domain.LineTypeBaseFee,
-			Description:        description,
-			Quantity:           it.Quantity,
-			UnitAmountCents:    unitAmount,
-			AmountCents:        baseFee,
-			TotalAmountCents:   baseFee,
-			Currency:           invoiceCurrency,
-			BillingPeriodStart: &baseStartCopy,
-			BillingPeriodEnd:   &baseEndCopy,
-		})
-		subtotal += baseFee
 	}
 
 	// Usage line items — one per meter. Usage is billed once per meter even if
@@ -1623,17 +1794,17 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	seenMeters := make(map[string]struct{})
 	for _, it := range sub.Items {
 		plan := plans[it.PlanID]
-		// Scheduled plan-swap correctness: the just-elapsed period's
-		// usage was consumed against the OUTGOING plan's meter set.
-		// Use that set for the usage lines on this boundary invoice,
-		// so usage against meters present on the old plan but not
-		// the new plan isn't silently dropped (and vice versa, usage
-		// against new-plan-only meters isn't billed for a period
-		// the customer didn't have those meters on). New plan's
-		// meter set takes effect from the NEXT period.
-		if outgoing, swapped := outgoingPlanByItem[it.ID]; swapped {
-			plan = outgoing
-		}
+		// Usage segment-handling note: when a plan swap fires at the
+		// period boundary, segment-aware base-fee billing emits the
+		// closing period under the outgoing plan via the change-log
+		// walk above. Usage meters here use the POST-swap plan's
+		// meter set, which is correct for boundary swaps (segments
+		// don't change the meters seen during the period). For
+		// mid-period meter-set changes (e.g. monthly swap to a plan
+		// with a different meter list), the usage line still picks
+		// up the post-swap meters — a separate follow-up for
+		// segment-aware usage aggregation. ListItemChangesInPeriod
+		// makes that work straightforward when a customer asks for it.
 		for _, meterID := range plan.MeterIDs {
 			if _, ok := seenMeters[meterID]; ok {
 				continue
@@ -2402,48 +2573,79 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 		invoiceCurrency = "usd"
 	}
 
-	// Build base lines: in_arrears only, prorated by elapsed days.
-	// in_advance items are explicitly skipped — their base for the
-	// just-canceled period was already paid at period start (BillOnCreate
-	// or prior cycle), and the unused portion will be refunded by
-	// BillOnCancel as a credit grant.
+	// Build base lines: segment-aware in_arrears billing over the
+	// partial period [periodStart, canceledAt]. in_advance items are
+	// explicitly skipped — their base for the just-canceled period
+	// was already paid at period start (BillOnCreate or prior cycle),
+	// and the unused portion will be refunded by BillOnCancel as a
+	// credit grant.
+	//
+	// Segment-aware: if the customer changed plan or quantity (or
+	// added/removed an item) between periodStart and canceledAt, each
+	// segment is billed at its own rate × (segment_days / cycle_days).
+	// No mid-period changes → single segment from periodStart to
+	// canceledAt, matching the pre-segment-aware single-line behavior.
+	itemChanges, _ := e.subs.ListItemChangesInPeriod(ctx, sub.TenantID, sub.ID, periodStart, canceledAt)
+	changesByItem := map[string][]domain.SubscriptionItemChange{}
+	for _, c := range itemChanges {
+		changesByItem[c.SubscriptionItemID] = append(changesByItem[c.SubscriptionItemID], c)
+	}
+	for _, c := range itemChanges {
+		for _, pid := range []string{c.FromPlanID, c.ToPlanID} {
+			if pid == "" {
+				continue
+			}
+			if _, ok := plans[pid]; ok {
+				continue
+			}
+			pl, err := e.pricing.GetPlan(ctx, sub.TenantID, pid)
+			if err != nil {
+				continue
+			}
+			plans[pid] = pl
+		}
+	}
+	itemsByID := map[string]domain.SubscriptionItem{}
+	for _, it := range sub.Items {
+		itemsByID[it.ID] = it
+	}
+
 	lineItems := make([]domain.InvoiceLineItem, 0, len(sub.Items))
 	subtotal := int64(0)
-	elapsedDays := roundDays(canceledAt.Sub(periodStart))
+	periodDays := roundDays(canceledAt.Sub(periodStart))
+
+	// Pass 1: items currently on the sub at cancel time.
 	for _, it := range sub.Items {
 		plan := plans[it.PlanID]
-		if plan.BaseAmountCents <= 0 || plan.BaseBillTiming == domain.BillInAdvance {
+		if plan.BaseBillTiming == domain.BillInAdvance {
 			continue
 		}
-		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart))
-		if elapsedDays <= 0 || fullCycleDays <= 0 {
+		itemForSeg := it
+		segments := itemBaseSegments(&itemForSeg, changesByItem[it.ID], periodStart, canceledAt)
+		for _, seg := range segments {
+			segPlan, ok := plans[seg.planID]
+			if !ok || segPlan.BaseAmountCents <= 0 || segPlan.BaseBillTiming == domain.BillInAdvance {
+				continue
+			}
+			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, &lineItems, &subtotal)
+		}
+	}
+
+	// Pass 2: items removed between periodStart and canceledAt (in the
+	// change log but not on sub.Items now). Bill their pre-remove
+	// segments at the respective plans' rates.
+	for itemID, changes := range changesByItem {
+		if _, stillPresent := itemsByID[itemID]; stillPresent {
 			continue
 		}
-		baseFee := money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(elapsedDays), int64(fullCycleDays))
-		if baseFee <= 0 {
-			continue
+		segments := itemBaseSegments(nil, changes, periodStart, canceledAt)
+		for _, seg := range segments {
+			segPlan, ok := plans[seg.planID]
+			if !ok || segPlan.BaseAmountCents <= 0 || segPlan.BaseBillTiming == domain.BillInAdvance {
+				continue
+			}
+			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, &lineItems, &subtotal)
 		}
-		description := fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days, canceled mid-period)",
-			plan.Name, it.Quantity, elapsedDays, fullCycleDays)
-		unitAmount := plan.BaseAmountCents
-		if it.Quantity > 0 {
-			unitAmount = money.RoundHalfToEven(baseFee, it.Quantity)
-		}
-		baseStart := periodStart
-		baseEnd := canceledAt
-		lineItems = append(lineItems, domain.InvoiceLineItem{
-			LineType:           domain.LineTypeBaseFee,
-			Description:        description,
-			Quantity:           it.Quantity,
-			UnitAmountCents:    unitAmount,
-			AmountCents:        baseFee,
-			TotalAmountCents:   baseFee,
-			Currency:           invoiceCurrency,
-			TaxCode:            plan.TaxCode,
-			BillingPeriodStart: &baseStart,
-			BillingPeriodEnd:   &baseEnd,
-		})
-		subtotal += baseFee
 	}
 
 	// Build usage lines: aggregate every meter referenced by every

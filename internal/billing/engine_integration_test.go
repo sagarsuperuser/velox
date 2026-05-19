@@ -68,6 +68,10 @@ func (a *subStoreAdapter) ListWithThresholdsForClock(ctx context.Context, tenant
 	return a.store.ListWithThresholdsForClock(ctx, tenantID, clockID, limit)
 }
 
+func (a *subStoreAdapter) ListItemChangesInPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.SubscriptionItemChange, error) {
+	return a.store.ListItemChangesInPeriod(ctx, tenantID, subscriptionID, periodStart, periodEnd)
+}
+
 // pricingStoreAdapter wraps pricing.PostgresStore to implement billing.PricingReader
 type pricingStoreAdapter struct {
 	store *pricing.PostgresStore
