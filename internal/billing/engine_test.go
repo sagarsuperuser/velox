@@ -413,12 +413,24 @@ func (m *mockSubs) ListItemChangesInPeriod(_ context.Context, _, subscriptionID 
 }
 
 type mockUsage struct {
-	totals map[string]int64 // meterID -> quantity (test inputs stay int for readability)
+	totals map[string]int64 // meterID -> quantity for the full-period default
+	// perInterval lets segment-aware usage tests stub different
+	// quantities per [from, to]. Key is "meterID|fromRFC3339|toRFC3339".
+	// Missing keys fall back to totals.
+	perInterval map[string]int64
 }
 
-func (m *mockUsage) AggregateForBillingPeriod(_ context.Context, _, _ string, meterIDs []string, _, _ time.Time) (map[string]decimal.Decimal, error) {
+func mockIntervalKey(meterID string, from, to time.Time) string {
+	return meterID + "|" + from.UTC().Format(time.RFC3339Nano) + "|" + to.UTC().Format(time.RFC3339Nano)
+}
+
+func (m *mockUsage) AggregateForBillingPeriod(_ context.Context, _, _ string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	result := make(map[string]decimal.Decimal)
 	for _, id := range meterIDs {
+		if qty, ok := m.perInterval[mockIntervalKey(id, from, to)]; ok {
+			result[id] = decimal.NewFromInt(qty)
+			continue
+		}
 		if qty, ok := m.totals[id]; ok {
 			result[id] = decimal.NewFromInt(qty)
 		}
@@ -426,9 +438,13 @@ func (m *mockUsage) AggregateForBillingPeriod(_ context.Context, _, _ string, me
 	return result, nil
 }
 
-func (m *mockUsage) AggregateForBillingPeriodByAgg(_ context.Context, _, _ string, meters map[string]string, _, _ time.Time) (map[string]decimal.Decimal, error) {
+func (m *mockUsage) AggregateForBillingPeriodByAgg(_ context.Context, _, _ string, meters map[string]string, from, to time.Time) (map[string]decimal.Decimal, error) {
 	result := make(map[string]decimal.Decimal)
 	for id := range meters {
+		if qty, ok := m.perInterval[mockIntervalKey(id, from, to)]; ok {
+			result[id] = decimal.NewFromInt(qty)
+			continue
+		}
 		if qty, ok := m.totals[id]; ok {
 			result[id] = decimal.NewFromInt(qty)
 		}
@@ -2986,6 +3002,142 @@ func TestRunCycle_SegmentAware_InArrears_MidPeriodPlanChange(t *testing.T) {
 	}
 	if baseLineCount != 2 {
 		t.Errorf("expected 2 base-fee line items (one per segment), got %d", baseLineCount)
+	}
+}
+
+// TestRunCycle_SegmentAware_UsageMetersDifferPerSegment verifies the
+// Orb-shape segment-aware usage billing: when a mid-period plan
+// change introduces a new meter set, each meter bills ONLY for the
+// segment it was active on the sub.
+//
+// Setup: 31-day March cycle. On day 15 the item swaps from plan_a
+// (meter X only, $5/unit) to plan_b (meter Y only, $10/unit), both
+// in_arrears. Usage:
+//   - Segment 1 [Mar 1, Mar 15): 100 units of meter X
+//   - Segment 2 [Mar 15, Apr 1): 50 units of meter Y
+//
+// Expected: usage lines = X × 100 × $0.05 = $5 + Y × 50 × $0.10 = $5
+// = $10 total. Pre-fix: meter Y's plan would bill BOTH X (whole
+// period) and Y (whole period) regardless of segment timing —
+// off by the meter that didn't exist on Plan A or B during its
+// segment. With per-interval aggregation cache + mockUsage's
+// perInterval stub, the meters bill exactly the segment quantities.
+func TestRunCycle_SegmentAware_UsageMetersDifferPerSegment(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	changeAt := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{{
+					ID: "it_1", PlanID: "pln_b", Quantity: 1,
+				}},
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt: &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+		itemChanges: []domain.SubscriptionItemChange{{
+			ID:                 "vlx_sic_1",
+			TenantID:           "t1",
+			SubscriptionID:     "sub_1",
+			SubscriptionItemID: "it_1",
+			ChangeType:         "plan",
+			FromPlanID:         "pln_a",
+			ToPlanID:           "pln_b",
+			FromQuantity:       1,
+			ToQuantity:         1,
+			ChangedAt:          changeAt,
+		}},
+	}
+
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			// Zero base fees so the test isolates the usage assertion.
+			"pln_a": {ID: "pln_a", Name: "A", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 0, BaseBillTiming: domain.BillInArrears, MeterIDs: []string{"mtr_x"}},
+			"pln_b": {ID: "pln_b", Name: "B", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 0, BaseBillTiming: domain.BillInArrears, MeterIDs: []string{"mtr_y"}},
+		},
+		meters: map[string]domain.Meter{
+			"mtr_x": {ID: "mtr_x", Name: "Meter X", Unit: "unit", Aggregation: "sum", RatingRuleVersionID: "rrv_x"},
+			"mtr_y": {ID: "mtr_y", Name: "Meter Y", Unit: "unit", Aggregation: "sum", RatingRuleVersionID: "rrv_y"},
+		},
+		rules: map[string]domain.RatingRuleVersion{
+			"rrv_x": {ID: "rrv_x", RuleKey: "x_key", Version: 1, Mode: domain.PricingFlat, FlatAmountCents: 5},
+			"rrv_y": {ID: "rrv_y", RuleKey: "y_key", Version: 1, Mode: domain.PricingFlat, FlatAmountCents: 10},
+		},
+	}
+
+	// perInterval stubs the segment-specific aggregator responses.
+	// Anything outside these stubs returns nothing (zero usage).
+	usage := &mockUsage{
+		perInterval: map[string]int64{
+			mockIntervalKey("mtr_x", periodStart, changeAt): 100,
+			mockIntervalKey("mtr_y", changeAt, periodEnd):   50,
+			// Full-period aggregator calls (for the cap-math precheck)
+			// return zero so they don't pollute the segment math.
+		},
+	}
+
+	invoices := &mockInvoices{}
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, billingTestClock()))
+
+	count, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if count != 1 {
+		t.Fatalf("invoices generated: got %d, want 1", count)
+	}
+
+	inv := invoices.invoices[0]
+	// X × 100 × $0.05 = 500¢ + Y × 50 × $0.10 = 500¢ = 1000¢ total.
+	if inv.SubtotalCents != 1000 {
+		t.Errorf("segment-aware usage: got %d cents, want 1000 (X×100×$0.05 + Y×50×$0.10)", inv.SubtotalCents)
+	}
+
+	// Two usage line items expected — one per (meter, segment) pair.
+	usageLineCount := 0
+	xCount, yCount := 0, 0
+	for _, li := range invoices.lineItems {
+		if li.InvoiceID != inv.ID {
+			continue
+		}
+		if li.LineType == domain.LineTypeUsage {
+			usageLineCount++
+			if li.MeterID == "mtr_x" {
+				xCount++
+				if li.AmountCents != 500 {
+					t.Errorf("meter X line amount: got %d, want 500 (100 units × $0.05)", li.AmountCents)
+				}
+				if li.BillingPeriodStart == nil || !li.BillingPeriodStart.Equal(periodStart) {
+					t.Errorf("meter X segment start: got %v, want %v", li.BillingPeriodStart, periodStart)
+				}
+				if li.BillingPeriodEnd == nil || !li.BillingPeriodEnd.Equal(changeAt) {
+					t.Errorf("meter X segment end: got %v, want %v (change point)", li.BillingPeriodEnd, changeAt)
+				}
+			}
+			if li.MeterID == "mtr_y" {
+				yCount++
+				if li.AmountCents != 500 {
+					t.Errorf("meter Y line amount: got %d, want 500 (50 units × $0.10)", li.AmountCents)
+				}
+				if li.BillingPeriodStart == nil || !li.BillingPeriodStart.Equal(changeAt) {
+					t.Errorf("meter Y segment start: got %v, want %v (change point)", li.BillingPeriodStart, changeAt)
+				}
+				if li.BillingPeriodEnd == nil || !li.BillingPeriodEnd.Equal(periodEnd) {
+					t.Errorf("meter Y segment end: got %v, want %v", li.BillingPeriodEnd, periodEnd)
+				}
+			}
+		}
+	}
+	if usageLineCount != 2 {
+		t.Errorf("expected 2 usage line items (one per meter-segment), got %d", usageLineCount)
+	}
+	if xCount != 1 || yCount != 1 {
+		t.Errorf("expected exactly 1 line for each of meter X (got %d) and meter Y (got %d)", xCount, yCount)
 	}
 }
 

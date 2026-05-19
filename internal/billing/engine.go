@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -568,6 +569,41 @@ func itemBaseSegments(item *domain.SubscriptionItem, changes []domain.Subscripti
 			start: prevTime, end: periodEnd,
 			planID: planID, quantity: quantity,
 		})
+	}
+	return out
+}
+
+// usageInterval is one [start, end) range during which a meter was
+// active for the subscription. Built per-segment from the same
+// itemBaseSegments walk used for base-fee billing — Orb-shape
+// segment-aware metering. Multiple items with overlapping segments on
+// the same meter get merged so the meter is billed once per disjoint
+// active range, not double-counted per item.
+type usageInterval struct {
+	start, end time.Time
+}
+
+// mergeUsageIntervals collapses overlapping or touching ranges into
+// disjoint intervals. Sorted by start. Keeps the segment-aware usage
+// loop from emitting two overlapping lines for the same meter when
+// two items happen to share a segment range.
+func mergeUsageIntervals(ivs []usageInterval) []usageInterval {
+	if len(ivs) == 0 {
+		return nil
+	}
+	sort.Slice(ivs, func(i, j int) bool { return ivs[i].start.Before(ivs[j].start) })
+	out := []usageInterval{ivs[0]}
+	for _, iv := range ivs[1:] {
+		last := &out[len(out)-1]
+		// Touching or overlapping intervals merge — covers the
+		// boundary-swap case where seg1.end == seg2.start.
+		if !iv.start.After(last.end) {
+			if iv.end.After(last.end) {
+				last.end = iv.end
+			}
+			continue
+		}
+		out = append(out, iv)
 	}
 	return out
 }
@@ -1691,6 +1727,25 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			plans[pid] = pl
 		}
 	}
+	// Augment meterAggs with meters from hydrated change-log plans —
+	// segment-aware usage needs every meter that was active at ANY
+	// point during the period, not just meters on current items'
+	// plans. Without this, a meter that existed on plan_A (now
+	// swapped out) wouldn't be aggregated in the [seg.start, seg.end)
+	// window where plan_A was still active.
+	for _, pl := range plans {
+		for _, meterID := range pl.MeterIDs {
+			if _, ok := meterAggs[meterID]; ok {
+				continue
+			}
+			m, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
+			if err == nil {
+				meterAggs[meterID] = m.Aggregation
+			} else {
+				meterAggs[meterID] = "sum"
+			}
+		}
+	}
 
 	// Base fee line item — segment-aware for in_arrears, single-line
 	// for in_advance (which bills the upcoming period at the post-swap
@@ -1788,31 +1843,127 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		}
 	}
 
-	// Usage line items — one per meter. Usage is billed once per meter even if
-	// multiple items' plans reference the same meter; quantity on a usage line
-	// is the metered count, not the item's seat quantity.
-	seenMeters := make(map[string]struct{})
+	// Segment-aware usage billing (Orb shape): each meter is billed
+	// once per disjoint [start, end) range during which it was
+	// active on the sub. For subs with no mid-period changes, every
+	// meter has exactly one full-period interval — output collapses
+	// to the pre-segment-aware single-line behavior. For subs where
+	// a mid-period plan change adds/removes meters, each meter
+	// bills only for the time it was actually on the sub.
+	//
+	// Cap math is preserved: the period's totalUsage (pre-cap) and
+	// the capScale derived from it apply uniformly across all
+	// (meter, interval) pairs.
+	capScale := decimal.New(1, 0)
+	if sub.UsageCapUnits != nil && *sub.UsageCapUnits > 0 && sub.OverageAction == "block" {
+		// usageTotals here is already post-cap (the existing block
+		// above scaled it in place). Recover the scale by comparing
+		// to a re-aggregated full-period total — but simpler: the
+		// cap-scale block above sets a stable factor we can re-derive
+		// from sub.UsageCapUnits + sum of post-cap totals.
+		postCapTotal := decimal.Zero
+		for _, qty := range usageTotals {
+			postCapTotal = postCapTotal.Add(qty)
+		}
+		capDec := decimal.NewFromInt(*sub.UsageCapUnits)
+		if postCapTotal.Equal(capDec) && !postCapTotal.IsZero() {
+			// Cap actually fired (post-cap total == cap). Compute the
+			// pre-cap total by re-aggregating, then derive scale.
+			preCapTotals, err := e.usage.AggregateForBillingPeriodByAgg(ctx, sub.TenantID, sub.CustomerID, meterAggs, periodStart, periodEnd)
+			if err == nil {
+				preCapTotal := decimal.Zero
+				for _, qty := range preCapTotals {
+					preCapTotal = preCapTotal.Add(qty)
+				}
+				if preCapTotal.GreaterThan(capDec) && !preCapTotal.IsZero() {
+					capScale = capDec.Div(preCapTotal)
+				}
+			}
+		}
+	}
+
+	// Build (meter, intervals) map from item segments + removed-item
+	// segments. Each item × segment contributes [seg.start, seg.end]
+	// to every meter in its segment's plan.
+	meterIntervals := map[string][]usageInterval{}
+	addMeterInterval := func(mid string, start, end time.Time) {
+		meterIntervals[mid] = append(meterIntervals[mid], usageInterval{start, end})
+	}
 	for _, it := range sub.Items {
-		plan := plans[it.PlanID]
-		// Usage segment-handling note: when a plan swap fires at the
-		// period boundary, segment-aware base-fee billing emits the
-		// closing period under the outgoing plan via the change-log
-		// walk above. Usage meters here use the POST-swap plan's
-		// meter set, which is correct for boundary swaps (segments
-		// don't change the meters seen during the period). For
-		// mid-period meter-set changes (e.g. monthly swap to a plan
-		// with a different meter list), the usage line still picks
-		// up the post-swap meters — a separate follow-up for
-		// segment-aware usage aggregation. ListItemChangesInPeriod
-		// makes that work straightforward when a customer asks for it.
-		for _, meterID := range plan.MeterIDs {
-			if _, ok := seenMeters[meterID]; ok {
+		itemForSeg := it
+		segments := itemBaseSegments(&itemForSeg, changesByItem[it.ID], periodStart, periodEnd)
+		if len(segments) == 0 {
+			// Item present at period_end but no segments (e.g. zero-duration
+			// boundary swap collapsed by the helper). Treat the post-change
+			// plan's meters as active for the full period — defensive
+			// fallback that preserves pre-segment-aware behavior.
+			for _, mid := range plans[it.PlanID].MeterIDs {
+				addMeterInterval(mid, periodStart, periodEnd)
+			}
+			continue
+		}
+		for _, seg := range segments {
+			segPlan, ok := plans[seg.planID]
+			if !ok {
 				continue
 			}
-			seenMeters[meterID] = struct{}{}
+			for _, mid := range segPlan.MeterIDs {
+				addMeterInterval(mid, seg.start, seg.end)
+			}
+		}
+	}
+	for itemID, changes := range changesByItem {
+		if _, stillPresent := itemsByID[itemID]; stillPresent {
+			continue
+		}
+		segments := itemBaseSegments(nil, changes, periodStart, periodEnd)
+		for _, seg := range segments {
+			segPlan, ok := plans[seg.planID]
+			if !ok {
+				continue
+			}
+			for _, mid := range segPlan.MeterIDs {
+				addMeterInterval(mid, seg.start, seg.end)
+			}
+		}
+	}
 
-			quantity, ok := usageTotals[meterID]
-			if !ok || quantity.IsZero() {
+	// Cache per-interval aggregation so a meter active across N
+	// non-overlapping intervals incurs at most N queries (and 1 query
+	// when N == 1 and the interval equals the full period — we use
+	// the precomputed usageTotals in that case).
+	intervalAggCache := map[string]map[string]decimal.Decimal{}
+	intervalKey := func(iv usageInterval) string {
+		return iv.start.UTC().Format(time.RFC3339Nano) + "|" + iv.end.UTC().Format(time.RFC3339Nano)
+	}
+
+	for meterID, ivs := range meterIntervals {
+		merged := mergeUsageIntervals(ivs)
+		for _, iv := range merged {
+			var quantity decimal.Decimal
+			fullPeriod := iv.start.Equal(periodStart) && iv.end.Equal(periodEnd)
+			if fullPeriod {
+				quantity = usageTotals[meterID]
+			} else {
+				key := intervalKey(iv)
+				totals, cached := intervalAggCache[key]
+				if !cached {
+					t, err := e.usage.AggregateForBillingPeriodByAgg(ctx, sub.TenantID, sub.CustomerID, meterAggs, iv.start, iv.end)
+					if err != nil {
+						return false, fmt.Errorf("aggregate usage for segment [%v, %v): %w", iv.start, iv.end, err)
+					}
+					totals = t
+					intervalAggCache[key] = t
+				}
+				quantity = totals[meterID]
+				// Apply cap scale to sub-period quantities so the
+				// per-interval sum matches the cap-scaled full-period
+				// total. Cap doesn't apply if capScale == 1.
+				if !capScale.Equal(decimal.New(1, 0)) {
+					quantity = quantity.Mul(capScale)
+				}
+			}
+			if quantity.IsZero() {
 				continue
 			}
 
@@ -1820,46 +1971,33 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			if err != nil {
 				return false, fmt.Errorf("get meter %s: %w", meterID, err)
 			}
-
 			if meter.RatingRuleVersionID == "" {
 				continue
 			}
-
 			linkedRule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, meter.RatingRuleVersionID)
 			if err != nil {
 				return false, fmt.Errorf("get rating rule for meter %s: %w", meterID, err)
 			}
-
 			rule, err := e.pricing.GetLatestRuleByKey(ctx, sub.TenantID, linkedRule.RuleKey)
 			if err != nil {
 				rule = linkedRule
 			}
-
 			override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, rule.ID)
 			if overrideErr == nil && override.Active {
 				rule = override.ToRatingRule()
 			}
-
 			amount, err := domain.ComputeAmountCents(rule, quantity)
 			if err != nil {
 				return false, fmt.Errorf("compute amount for meter %s: %w", meterID, err)
 			}
-
-			// Per-unit amount on the invoice line is informational; the
-			// authoritative number is amount_cents from the rule. Compute as
-			// amount/quantity in decimal space, banker-round to int cents.
-			// Quantity here is decimal (fractional usage allowed) and cannot
-			// be zero — the IsZero check above already short-circuited.
 			unitAmount := decimal.NewFromInt(amount).Div(quantity).RoundBank(0).IntPart()
 
+			ivStart := iv.start
+			ivEnd := iv.end
 			lineItems = append(lineItems, domain.InvoiceLineItem{
-				LineType:    domain.LineTypeUsage,
-				MeterID:     meterID,
-				Description: fmt.Sprintf("%s (%s)", meter.Name, meter.Unit),
-				// Quantity is truncated to int for the line item — fractional
-				// quantities (e.g. 1.5 GPU-hours) are supported in pricing
-				// math but the line item display column is still integer.
-				// Followup: widen InvoiceLineItem.Quantity to NUMERIC.
+				LineType:            domain.LineTypeUsage,
+				MeterID:             meterID,
+				Description:         fmt.Sprintf("%s (%s)", meter.Name, meter.Unit),
 				Quantity:            quantity.IntPart(),
 				UnitAmountCents:     unitAmount,
 				AmountCents:         amount,
@@ -1867,8 +2005,8 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				Currency:            invoiceCurrency,
 				PricingMode:         string(rule.Mode),
 				RatingRuleVersionID: rule.ID,
-				BillingPeriodStart:  &periodStart,
-				BillingPeriodEnd:    &periodEnd,
+				BillingPeriodStart:  &ivStart,
+				BillingPeriodEnd:    &ivEnd,
 			})
 			subtotal += amount
 		}
@@ -2649,11 +2787,14 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 	}
 
 	// Build usage lines: aggregate every meter referenced by every
-	// item's plan for [periodStart, canceledAt]. Same aggregation
-	// surface the cycle path uses; only the period boundaries differ.
+	// plan that was active at any point in [periodStart, canceledAt].
+	// Same aggregation surface the cycle path uses; only the period
+	// boundaries differ. Iterates the full `plans` map (current items'
+	// plans + hydrated change-log plans) so segment-aware billing
+	// picks up meters that existed on now-removed plans.
 	meterAggs := make(map[string]string)
-	for _, it := range sub.Items {
-		for _, meterID := range plans[it.PlanID].MeterIDs {
+	for _, pl := range plans {
+		for _, meterID := range pl.MeterIDs {
 			if _, ok := meterAggs[meterID]; ok {
 				continue
 			}
@@ -2674,16 +2815,74 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 		usageTotals = totals
 	}
 
-	seenMeters := make(map[string]struct{})
+	// Segment-aware usage billing over the partial period
+	// [periodStart, canceledAt]. Mirrors the billOnePeriod shape:
+	// each meter bills only for the time it was active on the sub.
+	meterIntervals := map[string][]usageInterval{}
+	addMeterInterval := func(mid string, start, end time.Time) {
+		meterIntervals[mid] = append(meterIntervals[mid], usageInterval{start, end})
+	}
 	for _, it := range sub.Items {
-		plan := plans[it.PlanID]
-		for _, meterID := range plan.MeterIDs {
-			if _, ok := seenMeters[meterID]; ok {
+		itemForSeg := it
+		segments := itemBaseSegments(&itemForSeg, changesByItem[it.ID], periodStart, canceledAt)
+		if len(segments) == 0 {
+			for _, mid := range plans[it.PlanID].MeterIDs {
+				addMeterInterval(mid, periodStart, canceledAt)
+			}
+			continue
+		}
+		for _, seg := range segments {
+			segPlan, ok := plans[seg.planID]
+			if !ok {
 				continue
 			}
-			seenMeters[meterID] = struct{}{}
-			quantity, ok := usageTotals[meterID]
-			if !ok || quantity.IsZero() {
+			for _, mid := range segPlan.MeterIDs {
+				addMeterInterval(mid, seg.start, seg.end)
+			}
+		}
+	}
+	for itemID, changes := range changesByItem {
+		if _, stillPresent := itemsByID[itemID]; stillPresent {
+			continue
+		}
+		segments := itemBaseSegments(nil, changes, periodStart, canceledAt)
+		for _, seg := range segments {
+			segPlan, ok := plans[seg.planID]
+			if !ok {
+				continue
+			}
+			for _, mid := range segPlan.MeterIDs {
+				addMeterInterval(mid, seg.start, seg.end)
+			}
+		}
+	}
+
+	intervalAggCache := map[string]map[string]decimal.Decimal{}
+	intervalKey := func(iv usageInterval) string {
+		return iv.start.UTC().Format(time.RFC3339Nano) + "|" + iv.end.UTC().Format(time.RFC3339Nano)
+	}
+
+	for meterID, ivs := range meterIntervals {
+		merged := mergeUsageIntervals(ivs)
+		for _, iv := range merged {
+			var quantity decimal.Decimal
+			fullPeriod := iv.start.Equal(periodStart) && iv.end.Equal(canceledAt)
+			if fullPeriod {
+				quantity = usageTotals[meterID]
+			} else {
+				key := intervalKey(iv)
+				totals, cached := intervalAggCache[key]
+				if !cached {
+					t, err := e.usage.AggregateForBillingPeriodByAgg(ctx, sub.TenantID, sub.CustomerID, meterAggs, iv.start, iv.end)
+					if err != nil {
+						return domain.Invoice{}, fmt.Errorf("aggregate usage on cancel for segment [%v, %v): %w", iv.start, iv.end, err)
+					}
+					totals = t
+					intervalAggCache[key] = t
+				}
+				quantity = totals[meterID]
+			}
+			if quantity.IsZero() {
 				continue
 			}
 			meter, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
@@ -2710,8 +2909,8 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 				return domain.Invoice{}, fmt.Errorf("compute amount for meter %s on cancel: %w", meterID, err)
 			}
 			unitAmount := decimal.NewFromInt(amount).Div(quantity).RoundBank(0).IntPart()
-			usageStart := periodStart
-			usageEnd := canceledAt
+			ivStart := iv.start
+			ivEnd := iv.end
 			lineItems = append(lineItems, domain.InvoiceLineItem{
 				LineType:            domain.LineTypeUsage,
 				MeterID:             meterID,
@@ -2723,8 +2922,8 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 				Currency:            invoiceCurrency,
 				PricingMode:         string(rule.Mode),
 				RatingRuleVersionID: rule.ID,
-				BillingPeriodStart:  &usageStart,
-				BillingPeriodEnd:    &usageEnd,
+				BillingPeriodStart:  &ivStart,
+				BillingPeriodEnd:    &ivEnd,
 			})
 			subtotal += amount
 		}
