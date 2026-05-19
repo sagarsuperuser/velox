@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -1452,6 +1453,12 @@ type timelineEvent struct {
 	EventType   string `json:"event_type"`
 	Status      string `json:"status"`
 	Description string `json:"description"`
+	// Detail renders as a sub-line beneath the description (mirrors
+	// invoice timeline's same-named field). Used for the
+	// human-meaningful context that doesn't belong in the main line:
+	// "At end of current period", "New trial end: …", "Amount ≥ …",
+	// "Plan: … → …", "After next cycle close", etc.
+	Detail      string `json:"detail,omitempty"`
 	ActorType   string `json:"actor_type,omitempty"`
 	ActorName   string `json:"actor_name,omitempty"`
 	ActorID     string `json:"actor_id,omitempty"`
@@ -1466,57 +1473,151 @@ type timelineEvent struct {
 }
 
 // describeSubscriptionAction maps audit_log action + metadata to a
-// human-readable sentence + a status tag the UI colors by. Unknown
-// actions pass through with a neutral info tag rather than hiding —
-// the feed should never silently drop an event.
-func describeSubscriptionAction(action string, meta map[string]any) (string, string) {
+// human-readable sentence + sub-line + status tag the UI colors by.
+// Unknown actions pass through with a neutral info tag rather than
+// hiding — the feed should never silently drop an event.
+//
+// Detail is the optional sub-line beneath the main description. Used
+// for human-meaningful context (dates, counts, plan IDs) that bloats
+// the title if inlined. Mirrors the invoice timeline shape.
+func describeSubscriptionAction(action string, meta map[string]any) (desc, detail, status string) {
 	switch action {
 	case domain.AuditActionCreate:
-		return "Subscription created", "info"
+		return "Subscription created", "", "info"
 	case domain.AuditActionActivate:
-		return "Subscription activated", "succeeded"
-	case domain.AuditActionPause:
-		return "Subscription paused", "warning"
-	case domain.AuditActionResume:
-		return "Subscription resumed", "succeeded"
+		return "Subscription activated", "", "succeeded"
 	case domain.AuditActionCancel:
 		by := ""
 		if v, ok := meta["canceled_by"].(string); ok && v != "" {
 			by = " by " + v
 		}
-		return "Subscription canceled" + by, "canceled"
+		return "Subscription canceled" + by, "", "canceled"
 	case domain.AuditActionUpdate:
-		// Item-level mutations (plan change, quantity change, add, remove)
-		// and the cancel-schedule mutations all land on AuditActionUpdate
-		// with a metadata discriminator. Read the most-useful field if
-		// present; otherwise stay generic.
-		if a, ok := meta["action"].(string); ok {
-			switch a {
-			case "cancel_scheduled":
-				if v, ok := meta["cancel_at_period_end"].(bool); ok && v {
-					return "Cancellation scheduled at period end", "warning"
-				}
-				return "Cancellation scheduled", "warning"
-			case "cancel_cleared":
-				return "Scheduled cancellation cleared", "info"
+		// AuditActionUpdate is a catch-all bucket; the meaningful
+		// discriminator is meta["action"]. Every operator-driven
+		// mutation that doesn't have its own audit action (cancel,
+		// activate, create) routes through here with a sub-action tag.
+		a, _ := meta["action"].(string)
+		switch a {
+		case "cancel_scheduled":
+			if v, ok := meta["cancel_at_period_end"].(bool); ok && v {
+				return "Cancellation scheduled", "At end of current period", "warning"
 			}
-		}
-		if t, ok := meta["change_type"].(string); ok && t != "" {
-			switch t {
-			case "plan":
-				return "Plan changed", "info"
-			case "quantity":
-				return "Quantity updated", "info"
-			case "add":
-				return "Item added", "info"
-			case "remove":
-				return "Item removed", "info"
+			if t, ok := meta["cancel_at"].(string); ok && t != "" {
+				return "Cancellation scheduled", "On " + formatAuditTimestamp(t), "warning"
 			}
+			return "Cancellation scheduled", "", "warning"
+		case "cancel_cleared":
+			return "Scheduled cancellation cleared", "", "info"
+		case "collection_paused":
+			d := ""
+			if r, ok := meta["resumes_at"].(string); ok && r != "" {
+				d = "Auto-resumes " + formatAuditTimestamp(r)
+			} else {
+				d = "Cycle keeps drafting; no charge until resumed"
+			}
+			return "Collection paused", d, "warning"
+		case "collection_resumed":
+			return "Collection resumed", "", "succeeded"
+		case "trial_ended":
+			return "Trial ended early", "", "info"
+		case "trial_extended":
+			d := ""
+			if t, ok := meta["trial_end"].(string); ok && t != "" {
+				d = "New trial end: " + formatAuditTimestamp(t)
+			}
+			return "Trial extended", d, "info"
+		case "billing_thresholds_set":
+			parts := []string{}
+			if v, ok := meta["amount_gte"].(float64); ok && v > 0 {
+				parts = append(parts, fmt.Sprintf("Amount ≥ %d¢", int64(v)))
+			}
+			if v, ok := meta["item_threshold_count"].(float64); ok && v > 0 {
+				parts = append(parts, fmt.Sprintf("%d item threshold%s", int(v), plural(int(v))))
+			}
+			return "Billing thresholds set", strings.Join(parts, " · "), "info"
+		case "billing_thresholds_cleared":
+			return "Billing thresholds cleared", "", "info"
+		case "item_added":
+			parts := []string{}
+			if v, ok := meta["plan_id"].(string); ok && v != "" {
+				parts = append(parts, "Plan "+v)
+			}
+			if q, ok := meta["quantity"].(float64); ok && q > 0 {
+				parts = append(parts, fmt.Sprintf("qty %d", int(q)))
+			}
+			return "Item added", strings.Join(parts, " · "), "info"
+		case "item_removed":
+			d := ""
+			if v, ok := meta["item_id"].(string); ok && v != "" {
+				d = "Item " + v
+			}
+			return "Item removed", d, "info"
+		case "cancel_pending_item_plan_change":
+			return "Pending plan change canceled", "", "info"
 		}
-		return "Subscription updated", "info"
+		// Unknown sub-action — surface the bucket label rather than
+		// hiding the row. Better than silently dropping audit context.
+		return "Subscription updated", "", "info"
+	case "subscription.item_updated":
+		// Item-level plan + quantity changes go through this dedicated
+		// action (not AuditActionUpdate) so the metadata discriminator
+		// lives in meta["action"]: "item_plan_changed" or
+		// "item_quantity_changed".
+		a, _ := meta["action"].(string)
+		immediate, _ := meta["immediate"].(bool)
+		when := "At next period"
+		if immediate {
+			when = "Immediate"
+		}
+		switch a {
+		case "item_plan_changed":
+			parts := []string{}
+			oldPlan, _ := meta["old_plan_id"].(string)
+			newPlan, _ := meta["new_plan_id"].(string)
+			if oldPlan != "" && newPlan != "" {
+				parts = append(parts, oldPlan+" → "+newPlan)
+			}
+			parts = append(parts, when)
+			return "Plan changed", strings.Join(parts, " · "), "info"
+		case "item_quantity_changed":
+			parts := []string{}
+			if q, ok := meta["quantity"].(float64); ok {
+				parts = append(parts, fmt.Sprintf("To qty %d", int(q)))
+			}
+			parts = append(parts, when)
+			return "Quantity changed", strings.Join(parts, " · "), "info"
+		}
+		return "Item updated", "", "info"
+	case "subscription.proration_failed":
+		d := ""
+		if e, ok := meta["error"].(string); ok && e != "" {
+			d = e
+		}
+		return "Proration failed", d, "warning"
 	default:
-		return action, "info"
+		return action, "", "info"
 	}
+}
+
+// plural returns "s" for n != 1, else "". Tiny helper to avoid the
+// "1 thresholds" / "2 threshold" pluralization mistake.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// formatAuditTimestamp humanizes an RFC3339 timestamp from audit
+// metadata for sub-line rendering. Returns the input unchanged on
+// parse failure — better than dropping the value entirely.
+func formatAuditTimestamp(raw string) string {
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return raw
+	}
+	return t.UTC().Format("Jan 2, 2006 3:04 PM") + " UTC"
 }
 
 func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
@@ -1562,13 +1663,14 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 		})
 		if err == nil {
 			for _, e := range entries {
-				desc, status := describeSubscriptionAction(e.Action, e.Metadata)
+				desc, detail, status := describeSubscriptionAction(e.Action, e.Metadata)
 				events = append(events, timelineEvent{
 					Timestamp:   e.CreatedAt.UTC().Format(time.RFC3339),
 					Source:      "audit",
 					EventType:   e.Action,
 					Status:      status,
 					Description: desc,
+					Detail:      detail,
 					ActorType:   e.ActorType,
 					ActorName:   e.ActorName,
 					ActorID:     e.ActorID,

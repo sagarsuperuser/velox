@@ -40,6 +40,22 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Added
 
+- **Per-event detail sub-lines on subscription activity timeline.** Previously every `update`-action row rendered as "Subscription updated" — operators couldn't tell pause from resume from schedule from threshold change. `describeSubscriptionAction` now exhaustively maps every meta `action` discriminator written by the handler to a meaningful pair of (description, detail sub-line), mirroring the invoice timeline shape:
+  - `cancel_scheduled` → "Cancellation scheduled" · "At end of current period" / "On {date}"
+  - `cancel_cleared` → "Scheduled cancellation cleared"
+  - `collection_paused` → "Collection paused" · "Auto-resumes {date}" / "Cycle keeps drafting; no charge until resumed"
+  - `collection_resumed` → "Collection resumed"
+  - `trial_ended` → "Trial ended early"
+  - `trial_extended` → "Trial extended" · "New trial end: {date}"
+  - `billing_thresholds_set` → "Billing thresholds set" · "Amount ≥ N¢ · M item thresholds"
+  - `billing_thresholds_cleared` → "Billing thresholds cleared"
+  - `item_added` → "Item added" · "Plan {plan_id} · qty N"
+  - `item_removed` → "Item removed" · "Item {item_id}"
+  - `cancel_pending_item_plan_change` → "Pending plan change canceled"
+  - `subscription.item_updated` (plan changed) → "Plan changed" · "{old_plan_id} → {new_plan_id} · Immediate | At next period"
+  - `subscription.item_updated` (quantity changed) → "Quantity changed" · "To qty N · Immediate | At next period"
+  - `subscription.proration_failed` → "Proration failed" · {error}
+  - New `Detail` field on the backend `timelineEvent` struct (matches invoice shape); frontend renders it as a sub-line below the description with the same styling as InvoiceDetail.tsx. RFC3339 timestamps in meta (`cancel_at`, `resumes_at`, `trial_end`) humanize via `formatAuditTimestamp` to `Jan 2, 2006 3:04 PM UTC`. Dead `AuditActionPause` / `AuditActionResume` cases removed (hard pause was deleted in PR-8). Unknown meta actions fall through to "Subscription updated" — feed never silently drops a row.
 - **"simulated" chip on subscription activity timeline rows (matches invoice timeline shape).** Backend stamps `is_simulated` on each timeline event — `true` for audit-sourced rows on a clock-pinned sub (their `created_at` is in frozen-time via PR-11/12 + b46bdee), `false` on wall-clock subs. SPA renders the existing amber-tinted "simulated" pill on flagged rows, identical to `InvoiceDetail.tsx`. Authoritative backend flag — no client-side timestamp heuristic, per `feedback_no_heuristic_proxies`. Caveat acknowledged in the handler comment: pre-PR-11 audit rows in the DB were stamped wall-clock and will be incorrectly flagged simulated; pre-launch DB-only issue, no migration needed since the operator can spot wall-clock timestamps at a glance.
 
 ### Fixed

@@ -942,6 +942,9 @@ export default function SubscriptionDetailPage() {
                       </div>
                       <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.timestamp)}</span>
                     </div>
+                    {event.detail && (
+                      <p className="text-xs text-muted-foreground mt-0.5">{event.detail}</p>
+                    )}
                     {(event.actor_name || event.actor_type) && (
                       <p className="text-xs text-muted-foreground mt-0.5">
                         by {event.actor_name || event.actor_type}
