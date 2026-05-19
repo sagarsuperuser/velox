@@ -498,6 +498,10 @@ func (a *prorationInvoiceCreatorAdapter) NextInvoiceNumber(ctx context.Context, 
 	return a.numberer.NextInvoiceNumber(ctx, tenantID)
 }
 
+func (a *prorationInvoiceCreatorAdapter) FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error) {
+	return a.store.FindBaseInvoiceForPeriod(ctx, tenantID, subscriptionID, periodStart)
+}
+
 // prorationTaxApplierAdapter bridges billing.Engine → subscription.ProrationTaxApplier.
 // Narrow translation: same signature, different named return type so the
 // subscription package doesn't import billing.
