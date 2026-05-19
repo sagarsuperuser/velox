@@ -778,6 +778,31 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, subscriptionID, item
 				"bill_timing change is not supported on plan-swap (current %s, new %s); cancel the subscription and start a new one with the target plan",
 				currentTiming, newTiming))
 		}
+
+		// Cross-interval immediate-swap guard. The proration math
+		// (`(newAmount-oldAmount) * remainingPeriodFactor`) only
+		// produces a coherent number when both plans share an
+		// interval — comparing a monthly $29 to a yearly $588 inside
+		// a "remaining-month proportion" factor charges the customer
+		// 2/3 of the YEARLY delta for the rest of a month. Industry-
+		// standard: Stripe requires aligned schedules; Lago / Orb
+		// don't allow immediate cross-interval. Scheduled (immediate=
+		// false) is fine — the swap fires at the boundary, the
+		// engine bills the closing period under the outgoing plan,
+		// and the new yearly cycle starts clean.
+		currentInterval := currentPlan.BillingInterval
+		if currentInterval == "" {
+			currentInterval = domain.BillingMonthly
+		}
+		newInterval := newPlan.BillingInterval
+		if newInterval == "" {
+			newInterval = domain.BillingMonthly
+		}
+		if input.Immediate && currentInterval != newInterval {
+			return ItemChangeResult{}, errs.Invalid("immediate", fmt.Sprintf(
+				"immediate plan-swap across billing intervals is not supported (current %s, new %s); set immediate=false to schedule the swap at the next period boundary, where the closing invoice bills under the outgoing plan and the new interval cycle starts cleanly",
+				currentInterval, newInterval))
+		}
 	}
 
 	if !input.Immediate {
