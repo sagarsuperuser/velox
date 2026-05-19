@@ -944,6 +944,7 @@ func (s *Service) ScheduleCancel(ctx context.Context, tenantID, id string, input
 // ClearScheduledCancel undoes any prior schedule. Idempotent — a row
 // without a schedule returns unchanged.
 func (s *Service) ClearScheduledCancel(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	ctx = s.bindForSub(ctx, tenantID, id)
 	return s.store.ClearScheduledCancellation(ctx, tenantID, id)
 }
 
@@ -975,10 +976,17 @@ func (s *Service) PauseCollection(ctx context.Context, tenantID, id string, inpu
 			"only 'keep_as_draft' is supported in v1; mark_uncollectible and void require an uncollectible invoice status that does not yet exist")
 	}
 
+	// Bind to the sub pin upfront so the store's sub.UpdatedAt stamp +
+	// any downstream clock.Now reads honor simulated time on
+	// clock-pinned subs. Pre-fix the bind was only inside the
+	// `if input.ResumesAt != nil` branch, so the common no-resumes_at
+	// path stamped wall-clock UpdatedAt — which then propagated through
+	// auditCtxForSub to wall-clock audit rows.
+	ctx = s.bindForSub(ctx, tenantID, id)
+
 	pc := domain.PauseCollection{Behavior: input.Behavior}
 	if input.ResumesAt != nil {
 		ts := input.ResumesAt.UTC()
-		ctx = s.bindForSub(ctx, tenantID, id)
 		if !ts.After(s.clock.Now(ctx)) {
 			return domain.Subscription{}, errs.Invalid("resumes_at", "must be in the future")
 		}
@@ -992,6 +1000,7 @@ func (s *Service) PauseCollection(ctx context.Context, tenantID, id string, inpu
 // without an active pause returns unchanged. Distinct from Resume (which
 // flips status from paused back to active).
 func (s *Service) ResumeCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	ctx = s.bindForSub(ctx, tenantID, id)
 	return s.store.ClearPauseCollection(ctx, tenantID, id)
 }
 
@@ -1269,6 +1278,7 @@ func (s *Service) SetBillingThresholds(ctx context.Context, tenantID, id string,
 		return domain.Subscription{}, errs.Invalid("amount_gte", "must be > 0")
 	}
 
+	ctx = s.bindForSub(ctx, tenantID, id)
 	sub, err := s.store.Get(ctx, tenantID, id)
 	if err != nil {
 		return domain.Subscription{}, err
@@ -1332,5 +1342,6 @@ func (s *Service) SetBillingThresholds(ctx context.Context, tenantID, id string,
 // subscription. Idempotent — clearing on a sub that has no threshold returns
 // the unchanged subscription.
 func (s *Service) ClearBillingThresholds(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	ctx = s.bindForSub(ctx, tenantID, id)
 	return s.store.ClearBillingThresholds(ctx, tenantID, id)
 }
