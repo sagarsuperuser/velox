@@ -1455,6 +1455,14 @@ type timelineEvent struct {
 	ActorType   string `json:"actor_type,omitempty"`
 	ActorName   string `json:"actor_name,omitempty"`
 	ActorID     string `json:"actor_id,omitempty"`
+	// IsSimulated marks events whose timestamp is in the simulated-
+	// time domain. On a clock-pinned sub, operator audit actions
+	// stamp audit_log.created_at via clock.Now(boundCtx) (PR-11/12
+	// + b46bdee), so the row's timestamp IS in sim-time. Mirrors the
+	// invoice timeline's same-named field — authoritative flag,
+	// SPA renders the chip purely off this. Wall-clock subs ship
+	// false and no chip renders.
+	IsSimulated bool `json:"is_simulated,omitempty"`
 }
 
 // describeSubscriptionAction maps audit_log action + metadata to a
@@ -1517,8 +1525,10 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 
 	// Verify the subscription exists + belongs to this tenant before
 	// leaking a 200 with empty events — otherwise a bad id returns the
-	// same shape as a real sub that just has no audit yet.
-	if _, err := h.svc.Get(r.Context(), tenantID, id); err != nil {
+	// same shape as a real sub that just has no audit yet. Sub is
+	// also used to compute is_simulated below.
+	sub, err := h.svc.Get(r.Context(), tenantID, id)
+	if err != nil {
 		if errors.Is(err, errs.ErrNotFound) {
 			respond.NotFound(w, r, "subscription")
 			return
@@ -1526,6 +1536,17 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 		respond.InternalError(w, r)
 		return
 	}
+	// Audit rows on clock-pinned subs stamp audit_log.created_at via
+	// clock.Now(boundCtx) (PR-11/12 + b46bdee), so each row's
+	// timestamp IS sim-time. Marking every audit-sourced row
+	// is_simulated=true on a clock-pinned sub mirrors the invoice
+	// timeline's lifecycle-row convention.
+	//
+	// Caveat: pre-fix audit rows (written before PR-11/12 landed)
+	// were stamped wall-clock and will be incorrectly flagged.
+	// Acceptable — the timestamp itself reads as recent wall-clock,
+	// which is obvious to the operator, and pre-launch DBs only.
+	subOnClock := sub.TestClockID != ""
 
 	events := []timelineEvent{}
 
@@ -1551,6 +1572,7 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 					ActorType:   e.ActorType,
 					ActorName:   e.ActorName,
 					ActorID:     e.ActorID,
+					IsSimulated: subOnClock,
 				})
 			}
 		} else {

@@ -922,7 +922,24 @@ export default function SubscriptionDetailPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <p className="text-sm text-foreground">{event.description}</p>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <p className="text-sm text-foreground">{event.description}</p>
+                        {/* Simulated chip mirrors the invoice timeline
+                            shape — backend stamps is_simulated=true on
+                            events that landed in frozen-time (operator
+                            audit actions on a clock-pinned sub, after
+                            PR-11/12 + b46bdee). Wall-clock events ship
+                            false. Authoritative flag; no client-side
+                            timestamp heuristic. */}
+                        {event.is_simulated && (
+                          <span
+                            title="Timestamp came from a test-clock-bound action, not wall-clock"
+                            className="inline-flex shrink-0 items-center rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-800 dark:text-amber-300"
+                          >
+                            simulated
+                          </span>
+                        )}
+                      </div>
                       <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.timestamp)}</span>
                     </div>
                     {(event.actor_name || event.actor_type) && (
