@@ -2338,6 +2338,45 @@ func TestPeriodAnchoring(t *testing.T) {
 		}
 	})
 
+	t.Run("UpdateItem rejects immediate cross-interval plan-swap", func(t *testing.T) {
+		// `(newAmount-oldAmount) * factor` proration math only works
+		// within an interval — comparing a monthly $29 to a yearly
+		// $588 inside "remaining-month proportion" charges the
+		// customer 2/3 of the YEARLY delta for the rest of a month.
+		// Stripe / Lago / Orb don't allow immediate cross-interval.
+		// Scheduled is fine (closing invoice bills outgoing plan;
+		// new interval cycle starts clean at the boundary).
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_monthly": {ID: "p_monthly", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears},
+			"p_yearly":  {ID: "p_yearly", BillingInterval: domain.BillingYearly, BaseBillTiming: domain.BillInArrears},
+		}})
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:    []CreateItemInput{{PlanID: "p_monthly"}},
+			StartNow: true,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		_, err = svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_yearly",
+			Immediate: true,
+		})
+		if err == nil {
+			t.Error("expected error on immediate cross-interval plan-swap")
+		}
+		// Scheduled is still allowed — engine handles outgoing-plan billing
+		// at the boundary.
+		_, err = svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_yearly",
+			Immediate: false,
+		})
+		if err != nil {
+			t.Errorf("scheduled cross-interval should be allowed, got: %v", err)
+		}
+	})
+
 	t.Run("UpdateItem allows plan-swap when bill_timing matches", func(t *testing.T) {
 		// Same-timing swap (in_arrears $29 → in_arrears $49) is the
 		// vanilla supported path. Must not regress.

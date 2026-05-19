@@ -1122,12 +1122,19 @@ func TestRunCycle_AppliesScheduledPlanChangeAtBoundary(t *testing.T) {
 		t.Fatalf("got %d invoices, want 1", count)
 	}
 
+	// The just-elapsed period was consumed under pln_old ($10/mo),
+	// so the closing invoice bills at the OUTGOING plan's rate even
+	// though the item now points to pln_new ($30/mo) post-swap.
+	// Industry-standard (Stripe / Lago / Orb): closing cycle bills
+	// under the outgoing plan; new plan takes effect next cycle.
 	inv := invoices.invoices[0]
-	if inv.SubtotalCents != 3000 {
-		t.Errorf("billed on wrong plan: subtotal %d cents, want 3000 (new plan)", inv.SubtotalCents)
+	if inv.SubtotalCents != 1000 {
+		t.Errorf("billed on wrong plan: subtotal %d cents, want 1000 (outgoing plan, just-elapsed period)", inv.SubtotalCents)
 	}
 
-	// Item row must reflect the swap.
+	// Item row must reflect the swap. The DB swap fires regardless
+	// of billing — pricing the closing period uses the outgoing-plan
+	// snapshot, but the durable item.plan_id is pln_new going forward.
 	got := subs.subs["sub_1"]
 	if len(got.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(got.Items))
@@ -1142,6 +1149,67 @@ func TestRunCycle_AppliesScheduledPlanChangeAtBoundary(t *testing.T) {
 	}
 	if it.PlanChangedAt == nil {
 		t.Error("plan_changed_at should be set after swap")
+	}
+}
+
+// TestRunCycle_ScheduledPlanSwap_CrossInterval_BillsElapsedAtOutgoingPlan
+// locks in the contract for the monthly → yearly scheduled swap case.
+// Pre-fix, the engine billed the just-elapsed monthly period at the
+// new yearly plan's prorated rate (588 * 30/365 ≈ 48), wildly wrong.
+// Post-fix, the closing invoice bills under the outgoing monthly
+// plan's full price; the new yearly cycle starts clean at periodEnd.
+func TestRunCycle_ScheduledPlanSwap_CrossInterval_BillsElapsedAtOutgoingPlan(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	effectiveAt := periodEnd
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{{
+					PlanID:                 "pln_monthly",
+					Quantity:               1,
+					PendingPlanID:          "pln_yearly",
+					PendingPlanEffectiveAt: &effectiveAt,
+				}},
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt: &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_monthly": {ID: "pln_monthly", Name: "Monthly", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 2900},
+			"pln_yearly":  {ID: "pln_yearly", Name: "Yearly", Currency: "USD", BillingInterval: domain.BillingYearly, BaseAmountCents: 58800},
+		},
+	}
+
+	invoices := &mockInvoices{}
+	usage := &mockUsage{totals: map[string]int64{}}
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, billingTestClock()))
+
+	count, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if count != 1 {
+		t.Fatalf("got %d invoices, want 1", count)
+	}
+
+	inv := invoices.invoices[0]
+	if inv.SubtotalCents != 2900 {
+		t.Errorf("cross-interval swap: closing invoice should bill outgoing monthly plan ($29 = 2900¢), got %d¢ (pre-fix would have been ~4833 from prorated yearly)", inv.SubtotalCents)
+	}
+
+	// The durable item.plan_id is the new yearly plan going forward,
+	// so the next cycle anchors yearly.
+	got := subs.subs["sub_1"]
+	if got.Items[0].PlanID != "pln_yearly" {
+		t.Errorf("item plan_id after swap: got %q, want pln_yearly", got.Items[0].PlanID)
 	}
 }
 

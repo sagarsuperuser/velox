@@ -1254,6 +1254,16 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			break
 		}
 	}
+	// outgoingPlanByItem captures the OLD plan for items whose
+	// scheduled swap fires at this boundary. Used downstream to bill
+	// the just-elapsed period at the plan the customer was actually
+	// consuming under (in_arrears base + usage meters), not the
+	// incoming plan's rate. Industry-standard convention: Stripe /
+	// Lago / Orb all bill the closing cycle at the outgoing plan's
+	// price. Pre-fix Velox billed the elapsed period at the incoming
+	// plan's prorated rate — non-standard and silently wrong for
+	// every monthly→yearly or differently-priced same-interval swap.
+	outgoingPlanByItem := map[string]domain.Plan{}
 	if anyDue {
 		// Snapshot the item IDs whose pending change was due before the atomic
 		// swap — ApplyDuePendingItemPlansAtomic returns the full refreshed item
@@ -1264,6 +1274,16 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		for _, it := range sub.Items {
 			if it.PendingPlanID != "" && it.PendingPlanEffectiveAt != nil && !it.PendingPlanEffectiveAt.After(gate) {
 				dueItems = append(dueItems, it)
+				// Fetch the outgoing plan BEFORE the atomic swap so we
+				// can price the just-elapsed period (base + usage)
+				// against it. The plans map further down is loaded
+				// post-swap, so this snapshot is the only handle on
+				// the outgoing plan during this billing tick.
+				oldPlan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
+				if err != nil {
+					return false, fmt.Errorf("get outgoing plan %s for scheduled swap: %w", it.PlanID, err)
+				}
+				outgoingPlanByItem[it.ID] = oldPlan
 			}
 		}
 
@@ -1521,6 +1541,19 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// UI / PDF.
 	for _, it := range sub.Items {
 		plan := plans[it.PlanID]
+
+		// Scheduled plan-swap correctness: if this item just swapped
+		// to a new plan at this boundary, the in_arrears base line is
+		// for the period the customer consumed under the OUTGOING
+		// plan — bill at that plan's rate. The new plan's first
+		// charge lands on the NEXT cycle close (in_arrears) or at
+		// this boundary as the upcoming-period pre-pay (in_advance).
+		// in_advance keeps the current plan because it bills the
+		// upcoming period, which IS under the new plan.
+		if outgoing, swapped := outgoingPlanByItem[it.ID]; swapped && plan.BaseBillTiming != domain.BillInAdvance {
+			plan = outgoing
+		}
+
 		if plan.BaseAmountCents <= 0 {
 			continue
 		}
@@ -1582,6 +1615,17 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	seenMeters := make(map[string]struct{})
 	for _, it := range sub.Items {
 		plan := plans[it.PlanID]
+		// Scheduled plan-swap correctness: the just-elapsed period's
+		// usage was consumed against the OUTGOING plan's meter set.
+		// Use that set for the usage lines on this boundary invoice,
+		// so usage against meters present on the old plan but not
+		// the new plan isn't silently dropped (and vice versa, usage
+		// against new-plan-only meters isn't billed for a period
+		// the customer didn't have those meters on). New plan's
+		// meter set takes effect from the NEXT period.
+		if outgoing, swapped := outgoingPlanByItem[it.ID]; swapped {
+			plan = outgoing
+		}
 		for _, meterID := range plan.MeterIDs {
 			if _, ok := seenMeters[meterID]; ok {
 				continue
