@@ -149,6 +149,21 @@ func (h *Handler) bindForSub(ctx context.Context, tenantID, subID string) contex
 	return bound
 }
 
+// subAuditMeta builds the standard metadata map for subscription
+// audit-log entries. Always sets resource_label = sub.Code so the
+// /audit-logs page renders "Updated arrears-mon" instead of the
+// generic "Updated subscription" fallback when resource_label is
+// empty. Call sites pass their specific keys via extra; resource_label
+// always wins over any extra-supplied value (single source of truth).
+func subAuditMeta(sub domain.Subscription, extra map[string]any) map[string]any {
+	m := make(map[string]any, len(extra)+1)
+	for k, v := range extra {
+		m[k] = v
+	}
+	m["resource_label"] = sub.Code
+	return m
+}
+
 // auditCtxForSub returns ctx with effective-now bound to the entity's
 // UpdatedAt timestamp when the sub is clock-pinned, so audit.Logger.Log
 // stamps `created_at` in simulated time (ADR-030 — simulated time
@@ -299,10 +314,10 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	// the mixed-domain timestamp shows up on the embedded activity
 	// timeline next to the sim-time "Created" header on the same page.
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionCreate, "subscription", sub.ID, map[string]any{
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionCreate, "subscription", sub.ID, subAuditMeta(sub, map[string]any{
 			"customer_id": sub.CustomerID,
 			"plan_ids":    planIDsForAudit(sub),
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCreated, sub, nil)
@@ -370,9 +385,9 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 	// subs (auditCtxForSub binds from sub.UpdatedAt) — same rationale as
 	// the create handler above.
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionActivate, "subscription", sub.ID, map[string]any{
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionActivate, "subscription", sub.ID, subAuditMeta(sub, map[string]any{
 			"customer_id": sub.CustomerID,
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionActivated, sub, nil)
@@ -405,7 +420,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		if prorationCreditCents > 0 {
 			meta["prorated_credit_cents"] = prorationCreditCents
 		}
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionCancel, "subscription", sub.ID, meta)
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionCancel, "subscription", sub.ID, subAuditMeta(sub, meta))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCanceled, sub, nil)
@@ -443,7 +458,7 @@ func (h *Handler) scheduleCancel(w http.ResponseWriter, r *http.Request) {
 		if sub.CancelAt != nil {
 			meta["cancel_at"] = sub.CancelAt.UTC()
 		}
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, meta)
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, subAuditMeta(sub, meta))
 	}
 
 	extra := map[string]any{"cancel_at_period_end": sub.CancelAtPeriodEnd}
@@ -485,7 +500,7 @@ func (h *Handler) pauseCollection(w http.ResponseWriter, r *http.Request) {
 		if sub.PauseCollection != nil && sub.PauseCollection.ResumesAt != nil {
 			meta["resumes_at"] = sub.PauseCollection.ResumesAt.UTC()
 		}
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, meta)
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, subAuditMeta(sub, meta))
 	}
 
 	extra := map[string]any{"behavior": string(input.Behavior)}
@@ -513,10 +528,10 @@ func (h *Handler) endTrial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, subAuditMeta(sub, map[string]any{
 			"action":      "trial_ended",
 			"customer_id": sub.CustomerID,
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionTrialEnded, sub, map[string]any{
@@ -554,11 +569,11 @@ func (h *Handler) extendTrial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, subAuditMeta(sub, map[string]any{
 			"action":      "trial_extended",
 			"customer_id": sub.CustomerID,
 			"trial_end":   body.TrialEnd.UTC(),
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionTrialExtended, sub, map[string]any{
@@ -584,10 +599,10 @@ func (h *Handler) resumeCollection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, subAuditMeta(sub, map[string]any{
 			"action":      "collection_resumed",
 			"customer_id": sub.CustomerID,
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCollectionResumed, sub, nil)
@@ -662,7 +677,7 @@ func (h *Handler) setBillingThresholds(w http.ResponseWriter, r *http.Request) {
 			"amount_gte":           input.AmountGTE,
 			"item_threshold_count": len(input.ItemThresholds),
 		}
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, meta)
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, subAuditMeta(sub, meta))
 	}
 
 	respond.JSON(w, r, http.StatusOK, sub)
@@ -683,10 +698,10 @@ func (h *Handler) clearBillingThresholds(w http.ResponseWriter, r *http.Request)
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, subAuditMeta(sub, map[string]any{
 			"action":      "billing_thresholds_cleared",
 			"customer_id": sub.CustomerID,
-		})
+		}))
 	}
 
 	respond.JSON(w, r, http.StatusOK, sub)
@@ -706,10 +721,10 @@ func (h *Handler) clearScheduledCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, map[string]any{
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, subAuditMeta(sub, map[string]any{
 			"action":      "cancel_cleared",
 			"customer_id": sub.CustomerID,
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCancelCleared, sub, nil)
