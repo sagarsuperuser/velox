@@ -35,9 +35,10 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { Loader2, Plus } from 'lucide-react'
+import { Loader2, Plus, HelpCircle } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 const statusVariant = statusBadgeVariant
 
@@ -577,12 +578,28 @@ export default function SubscriptionDetailPage() {
                 </>
               ) : (
                 <>
-                  <p className="text-sm text-muted-foreground">Current period</p>
+                  {/* Industry-standard pattern (Recurly "Renews On",
+                      Chargebee "Next Billing Date", Stripe's
+                      current_period_end). Surfacing the next-renewal
+                      date as a concrete primary label eliminates the
+                      "is this a bug?" confusion when the period
+                      anchor doesn't match `billing_time` (e.g., a
+                      sub that started yearly and swapped to monthly
+                      preserves its day-of-month anchor \u2014 industry-
+                      standard behavior, but the dates alone don't
+                      explain it). The full period range stays as a
+                      muted secondary line for completeness. */}
+                  <p className="text-sm text-muted-foreground">Billing cycle</p>
                   <p className="text-lg font-semibold text-foreground mt-1">
-                    {sub.current_billing_period_start && sub.current_billing_period_end
-                      ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
+                    {sub.current_billing_period_end
+                      ? `Renews ${formatDate(sub.current_billing_period_end)}`
                       : '\u2014'}
                   </p>
+                  {sub.current_billing_period_start && sub.current_billing_period_end && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Period: {formatDate(sub.current_billing_period_start)} {'\u2014'} {formatDate(sub.current_billing_period_end)}
+                    </p>
+                  )}
                 </>
               )}
             </div>
@@ -766,7 +783,25 @@ export default function SubscriptionDetailPage() {
             </div>
             {sub.billing_time && (
               <div className="flex items-center justify-between px-6 py-3">
-                <span className="text-sm text-muted-foreground w-40 shrink-0">Billing Time</span>
+                <span className="text-sm text-muted-foreground w-40 shrink-0 inline-flex items-center gap-1.5">
+                  Billing alignment
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex cursor-help">
+                        <HelpCircle size={13} className="text-muted-foreground/70" />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs">
+                      <p className="text-xs">
+                        <strong>{sub.billing_time === 'anniversary' ? 'Anniversary' : 'Calendar'}</strong> is the alignment chosen at activation.{' '}
+                        {sub.billing_time === 'calendar'
+                          ? 'For monthly plans, the first period runs from the activation day to the next 1st of the month, then bills on the 1st thereafter.'
+                          : 'The period anchors on the activation day-of-month and rolls forward by the plan interval.'}
+                        {' '}Plan-interval changes (e.g. yearly → monthly) preserve the existing day-of-month anchor — they don't snap back to the calendar boundary. To re-anchor, cancel and recreate the subscription.
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
                 <span className="text-sm text-foreground">{sub.billing_time === 'anniversary' ? 'Anniversary' : 'Calendar'}</span>
               </div>
             )}
@@ -776,6 +811,12 @@ export default function SubscriptionDetailPage() {
                 <span className="text-sm text-foreground">
                   {formatDate(sub.trial_start_at)} {'\u2014'} {formatDate(sub.trial_end_at)}
                 </span>
+              </div>
+            )}
+            {sub.status !== 'trialing' && sub.current_billing_period_end && (
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground w-40 shrink-0">Renews on</span>
+                <span className="text-sm text-foreground">{formatDate(sub.current_billing_period_end)}</span>
               </div>
             )}
             <div className="flex items-center justify-between px-6 py-3">
