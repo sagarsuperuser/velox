@@ -259,11 +259,38 @@ export function DatePicker({ value, onChange, placeholder = 'Pick a date', class
             showOutsideDays
             className="velox-cal"
             disabled={minDate ? { before: minDate } : undefined}
+            // captionLayout="dropdown" gives month + year dropdowns
+            // next to the prev/next arrows (Stripe / Linear / Vercel
+            // pattern). Without this, jumping to a year far from
+            // today requires clicking the arrow ~12 times per year,
+            // which is what the user hit on the pause-collection
+            // resume-date field.
+            captionLayout="dropdown"
+            // startMonth / endMonth bound the year dropdown. Anchor
+            // the lower bound to minDate when provided so disabled
+            // years don't pollute the menu; otherwise default to a
+            // 5-year past + 10-year future window from today. The
+            // upper bound is generous because annual-billing trial
+            // extensions and credit-grant expiries reach years out.
+            startMonth={minDate ? new Date(minDate.getFullYear(), 0) : new Date(new Date().getFullYear() - 5, 0)}
+            endMonth={new Date(new Date().getFullYear() + 10, 11)}
           />
           <style>{`
             .velox-cal { --accent: var(--primary); }
             .velox-cal .rdp-month_caption { display:flex; align-items:center; justify-content:center; padding:0 0 8px; }
             .velox-cal .rdp-caption_label { font-size:14px; font-weight:600; color:var(--foreground); }
+            /* Dropdown caption (captionLayout="dropdown"). Native <select>
+               theming differs across browsers; we strip the OS chrome and
+               style a compact pill that matches the rest of the popover.
+               .rdp-dropdowns is the flex row holding both selects; each
+               select is wrapped in a .rdp-dropdown_root span by the lib. */
+            .velox-cal .rdp-dropdowns { display:flex; gap:6px; align-items:center; }
+            .velox-cal .rdp-dropdown_root { position:relative; }
+            .velox-cal .rdp-dropdown { appearance:none; -webkit-appearance:none; background:transparent; border:1px solid var(--border); border-radius:6px; padding:4px 22px 4px 8px; font-size:13px; font-weight:600; color:var(--foreground); cursor:pointer; outline:none; }
+            .velox-cal .rdp-dropdown:hover { border-color:var(--ring); }
+            .velox-cal .rdp-dropdown:focus-visible { border-color:var(--ring); box-shadow:0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent); }
+            .velox-cal .rdp-dropdown_root::after { content:''; position:absolute; right:8px; top:50%; transform:translateY(-25%); width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:4px solid var(--muted-foreground); pointer-events:none; }
+            .velox-cal .rdp-caption_label[aria-hidden='true'] { display:none; }
             .velox-cal .rdp-button_previous, .velox-cal .rdp-button_next { position:absolute; top:12px; padding:6px; border-radius:6px; color:var(--muted-foreground); cursor:pointer; border:none; background:none; display:flex; }
             .velox-cal .rdp-button_previous:hover, .velox-cal .rdp-button_next:hover { background:var(--accent); color:var(--primary-foreground); }
             .velox-cal .rdp-button_previous { left:12px; }
