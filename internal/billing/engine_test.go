@@ -2868,19 +2868,59 @@ func TestRunCycle_InAdvance_ScheduledCancelAtPeriodEnd_NoOvercharge(t *testing.T
 		t.Errorf("status: got %q, want canceled", subs.subs["sub_1"].Status)
 	}
 
-	// Pre-fix expected failure: customer billed $10000 for the upcoming
-	// (will-not-be-used) period. Post-fix: in_advance base line is
-	// skipped at cycle close because the cancel is about to fire. Any
-	// invoice that DOES land must have total = 0 (no overcharge), not
-	// $10000. The current engine still emits an empty cycle-close
-	// invoice in this case — separate concern from this bug, and not
-	// a correctness problem at the customer level (no charge attempt
-	// on a $0 invoice).
-	for _, inv := range invoices.invoices {
-		if inv.TotalAmountCents > 0 {
-			t.Errorf("expected $0 invoice (in_advance base skipped, no usage), got total=%d cents on period %v→%v",
-				inv.TotalAmountCents, inv.BillingPeriodStart, inv.BillingPeriodEnd)
-		}
+	// Pre-PR-9: customer billed $10000 for the upcoming (will-not-be-
+	// used) period. PR-9: in_advance base line is skipped at cycle
+	// close because the cancel is about to fire. Post-empty-skip
+	// fix: when there's no base AND no usage to bill, the engine
+	// skips emitting the cycle-close invoice entirely (matches Stripe
+	// / Lago / Chargebee / Orb — $0 cycle invoices aren't emitted).
+	// The cancel still fires correctly via advanceCycleOrCancel.
+	if len(invoices.invoices) != 0 {
+		t.Errorf("expected zero cycle-close invoices (in_advance base skipped + no usage = nothing to bill), got %d", len(invoices.invoices))
+	}
+}
+
+// TestRunCycle_SkipEmptyCycleInvoice_NoChargeAttempt locks in the
+// industry-standard "don't emit $0 cycle invoices" behavior. When
+// the base+usage assembly produces zero line items, the engine
+// advances the cycle but does NOT persist an invoice — no number
+// burned, no draft cluttering the customer's invoice list. Stripe
+// / Lago / Chargebee / Orb all behave this way.
+func TestRunCycle_SkipEmptyCycleInvoice_NoChargeAttempt(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				// Free plan + no usage = zero billable lines.
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_free", Quantity: 1}},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt: &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_free": {ID: "pln_free", Name: "Free", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 0, BaseBillTiming: domain.BillInArrears},
+		},
+	}
+	invoices := &mockInvoices{}
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, billingTestClock()))
+
+	count, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	// count == invoices_generated count
+	if count != 0 {
+		t.Errorf("expected zero invoices generated for empty cycle, got %d", count)
+	}
+	if len(invoices.invoices) != 0 {
+		t.Errorf("no invoice should be persisted for zero-line cycle, got %d", len(invoices.invoices))
 	}
 }
 
