@@ -194,8 +194,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "coupon", cpn.ID, map[string]any{
-			"resource_label":  cpn.Code,
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "coupon", cpn.ID, cpn.Code, map[string]any{
 			"type":            cpn.Type,
 			"amount_off":      cpn.AmountOff,
 			"percent_off_bp":  cpn.PercentOffBP,
@@ -366,8 +365,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "coupon", cpn.ID, map[string]any{
-			"resource_label": cpn.Code,
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "coupon", cpn.ID, cpn.Code, map[string]any{
 			"changed_fields": changedFields(wire),
 			"version":        cpn.Version,
 		})
@@ -390,7 +388,7 @@ func (h *Handler) archive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionArchive, "coupon", id, nil)
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionArchive, "coupon", id, "", nil)
 	}
 	h.fireCouponEvent(r.Context(), tenantID, domain.EventCouponArchived, map[string]any{
 		"coupon_id": id,
@@ -409,7 +407,7 @@ func (h *Handler) unarchive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUnarchive, "coupon", id, nil)
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUnarchive, "coupon", id, "", nil)
 	}
 	h.fireCouponEvent(r.Context(), tenantID, domain.EventCouponUnarchived, map[string]any{
 		"coupon_id": id,
@@ -481,7 +479,7 @@ func (h *Handler) redeem(w http.ResponseWriter, r *http.Request) {
 	// original redemption and not again on idempotent retries.
 	if !res.Replay {
 		if h.auditLogger != nil {
-			_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRedeem, "coupon", res.Redemption.CouponID, map[string]any{
+			_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRedeem, "coupon", res.Redemption.CouponID, "", map[string]any{
 				"redemption_id":   res.Redemption.ID,
 				"customer_id":     res.Redemption.CustomerID,
 				"subscription_id": res.Redemption.SubscriptionID,
@@ -653,7 +651,7 @@ func (h *Handler) attachCustomerAssignment(w http.ResponseWriter, r *http.Reques
 
 	if !res.Replay {
 		if h.auditLogger != nil {
-			_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "customer_coupon_assignment", res.Discount.ID, map[string]any{
+			_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "customer_coupon_assignment", res.Discount.ID, "", map[string]any{
 				"customer_id": customerID,
 				"coupon_id":   res.Discount.CouponID,
 				"code":        res.Coupon.Code,
@@ -700,7 +698,7 @@ func (h *Handler) revokeCustomerAssignment(w http.ResponseWriter, r *http.Reques
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRevoke, "customer_coupon_assignment", revoked.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRevoke, "customer_coupon_assignment", revoked.ID, "", map[string]any{
 			"customer_id": customerID,
 			"coupon_id":   revoked.CouponID,
 			"code":        code,

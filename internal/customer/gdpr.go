@@ -279,9 +279,8 @@ func (s *GDPRService) DeleteCustomerData(ctx context.Context, tenantID, customer
 
 	// Record audit entry for compliance
 	if s.auditLogger != nil {
-		_ = s.auditLogger.Log(ctx, tenantID, "gdpr.delete", "customer", customerID, map[string]any{
-			"original_display_name": cust.DisplayName,
-			"reason":                "GDPR right-to-erasure request",
+		_ = s.auditLogger.Log(ctx, tenantID, "gdpr.delete", "customer", customerID, cust.DisplayName, map[string]any{
+			"reason": "GDPR right-to-erasure request",
 		})
 	}
 

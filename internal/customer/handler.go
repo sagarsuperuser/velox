@@ -292,7 +292,7 @@ func (h *Handler) rotateCostDashboardToken(w http.ResponseWriter, r *http.Reques
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRotate, "customer", id, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRotate, "customer", id, "", map[string]any{
 			"surface": "cost_dashboard_token",
 		})
 	}
