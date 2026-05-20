@@ -470,22 +470,16 @@ func (h *Handler) pauseCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// triggered_by tag distinguishes operator-driven pauses from
+	// dunning-driven pauses in the Activity timeline. The audit write
+	// itself now happens inside Service.PauseCollection so the dunning
+	// adapter path (which bypasses this handler) also produces an entry.
+	input.TriggeredBy = "operator"
+
 	sub, err := h.svc.PauseCollection(r.Context(), tenantID, id, input)
 	if err != nil {
 		respond.FromError(w, r, err, "subscription")
 		return
-	}
-
-	if h.auditLogger != nil {
-		meta := map[string]any{
-			"action":      "collection_paused",
-			"customer_id": sub.CustomerID,
-			"behavior":    string(input.Behavior),
-		}
-		if sub.PauseCollection != nil && sub.PauseCollection.ResumesAt != nil {
-			meta["resumes_at"] = sub.PauseCollection.ResumesAt.UTC()
-		}
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, meta)
 	}
 
 	extra := map[string]any{"behavior": string(input.Behavior)}
@@ -583,12 +577,11 @@ func (h *Handler) resumeCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
-			"action":      "collection_resumed",
-			"customer_id": sub.CustomerID,
-		})
-	}
+	// Audit write now lives in Service.ResumeCollection so any future
+	// non-handler caller also produces an entry. The service stamps
+	// triggered_by="operator" because today's only caller is this
+	// handler; engine's cycle-scan auto-resume writes its own audit row
+	// with triggered_by="schedule" directly via Engine.SetAuditLogger.
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCollectionResumed, sub, nil)
 
@@ -1633,7 +1626,11 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 			} else {
 				d = "Cycle keeps drafting; no charge until resumed"
 			}
-			return "Collection paused", d, "warning"
+			title := "Collection paused"
+			if tb, _ := meta["triggered_by"].(string); tb == "dunning" {
+				title = "Collection paused by dunning"
+			}
+			return title, d, "warning"
 		case "collection_resumed":
 			if tb, _ := meta["triggered_by"].(string); tb == "schedule" {
 				return "Collection auto-resumed", "Scheduled resume date reached", "succeeded"

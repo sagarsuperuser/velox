@@ -496,6 +496,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	subH.SetAuditLogger(auditLogger)
 	creditNoteH.SetAuditLogger(auditLogger)
 	couponH.SetAuditLogger(auditLogger)
+	// Service-level audit logger so state-changing service calls reachable
+	// from multiple entry points (operator handler + dunning adapter + any
+	// future caller) produce a single canonical audit row.
+	subSvc.SetAuditLogger(auditLogger)
 	couponH.SetEventDispatcher(eventDispatcher)
 
 	// Feature flags (created before billing engine to gate Stripe Tax)
