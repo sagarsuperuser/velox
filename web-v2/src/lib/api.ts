@@ -335,6 +335,11 @@ export const api = {
   setDefaultDunningPolicy: (id: string) => apiRequest<{ status: string }>('POST', `/dunning/policies/${id}/set-default`),
   listDunningRuns: (params?: string) => apiRequest<{ data: DunningRun[]; total: number }>('GET', `/dunning/runs${params ? '?' + params : ''}`),
   getDunningRun: (id: string) => apiRequest<{ run: DunningRun; events: DunningEvent[] }>('GET', `/dunning/runs/${id}`),
+  // Aggregate counts + at-risk sum for the dashboard stat cards.
+  // Server-side query so the cards stay accurate regardless of how
+  // many runs exist (the paginated /runs list can't be trusted as
+  // the source for counts).
+  getDunningStats: () => apiRequest<DunningStats>('GET', '/dunning/stats'),
   resolveDunningRun: (id: string, resolution: string) => apiRequest<DunningRun>('POST', `/dunning/runs/${id}/resolve`, { resolution }),
 
   // Credit Notes
@@ -1289,6 +1294,17 @@ export interface DunningEvent {
   reason: string
   attempt_count: number
   created_at: string
+}
+
+// Backend-computed aggregate counts + at-risk sum across ALL dunning
+// runs for the tenant. Source of truth for the dashboard stat cards;
+// computing these client-side from a paginated /runs response
+// undercounts as soon as runs exceed the page size.
+export interface DunningStats {
+  active_count: number
+  escalated_count: number
+  resolved_count: number
+  at_risk_cents: number
 }
 
 export interface CreditNote {
