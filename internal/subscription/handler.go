@@ -1549,15 +1549,35 @@ type timelineEvent struct {
 	IsSimulated bool `json:"is_simulated,omitempty"`
 }
 
+// planLabel renders an operator-facing plan reference: prefer the
+// human-readable plan name from planNames, fall back to "Plan {id}"
+// only when the lookup is empty (deleted plan, lookup failure, or
+// the description is generated outside the timeline handler where
+// the map isn't populated). Industry standard — Stripe / Lago /
+// Chargebee / Orb all show plan names in activity feeds, never raw
+// "plan_xxx" tokens.
+func planLabel(planID string, planNames map[string]string) string {
+	if name, ok := planNames[planID]; ok && name != "" {
+		return name
+	}
+	return planID
+}
+
 // describeSubscriptionAction maps audit_log action + metadata to a
 // human-readable sentence + sub-line + status tag the UI colors by.
 // Unknown actions pass through with a neutral info tag rather than
 // hiding — the feed should never silently drop an event.
 //
 // Detail is the optional sub-line beneath the main description. Used
-// for human-meaningful context (dates, counts, plan IDs) that bloats
-// the title if inlined. Mirrors the invoice timeline shape.
-func describeSubscriptionAction(action string, meta map[string]any) (desc, detail, status string) {
+// for human-meaningful context (dates, counts, plan names) that
+// bloats the title if inlined. Mirrors the invoice timeline shape.
+//
+// planNames is a lookup from plan_id → plan.Name used to resolve
+// raw IDs in metadata to operator-friendly labels. The caller
+// (activityTimeline) batch-fetches every plan_id referenced in the
+// audit entries before invoking this function. Missing entries fall
+// back to the raw ID (deleted plan / lookup miss).
+func describeSubscriptionAction(action string, meta map[string]any, planNames map[string]string) (desc, detail, status string) {
 	switch action {
 	case domain.AuditActionCreate:
 		return "Subscription created", "", "info"
@@ -1618,18 +1638,17 @@ func describeSubscriptionAction(action string, meta map[string]any) (desc, detai
 		case "item_added":
 			parts := []string{}
 			if v, ok := meta["plan_id"].(string); ok && v != "" {
-				parts = append(parts, "Plan "+v)
+				parts = append(parts, planLabel(v, planNames))
 			}
 			if q, ok := meta["quantity"].(float64); ok && q > 0 {
 				parts = append(parts, fmt.Sprintf("qty %d", int(q)))
 			}
 			return "Item added", strings.Join(parts, " · "), "info"
 		case "item_removed":
-			d := ""
-			if v, ok := meta["item_id"].(string); ok && v != "" {
-				d = "Item " + v
-			}
-			return "Item removed", d, "info"
+			// item_id was operator-illegible noise on the row; drop
+			// it entirely. "Item removed" is enough — operators
+			// reading the timeline don't think in vlx_si_ tokens.
+			return "Item removed", "", "info"
 		case "cancel_pending_item_plan_change":
 			return "Pending plan change canceled", "", "info"
 		}
@@ -1653,7 +1672,7 @@ func describeSubscriptionAction(action string, meta map[string]any) (desc, detai
 			oldPlan, _ := meta["old_plan_id"].(string)
 			newPlan, _ := meta["new_plan_id"].(string)
 			if oldPlan != "" && newPlan != "" {
-				parts = append(parts, oldPlan+" → "+newPlan)
+				parts = append(parts, planLabel(oldPlan, planNames)+" → "+planLabel(newPlan, planNames))
 			}
 			parts = append(parts, when)
 			return "Plan changed", strings.Join(parts, " · "), "info"
@@ -1739,8 +1758,39 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 			Limit:        200,
 		})
 		if err == nil {
+			// Plan-name lookup so the timeline shows "Pro Monthly" instead
+			// of "vlx_pln_d83g2obmajdtlif0mk00". Collect every plan_id
+			// referenced in metadata (plan_id, old_plan_id, new_plan_id)
+			// across all entries, batch-fetch via the wired PlanReader,
+			// hand the map to describeSubscriptionAction. Missing plans
+			// (deleted, RLS gap, unwired reader) fall back to the raw
+			// ID per planLabel's contract — operators still see
+			// something rather than a blank.
+			planNames := map[string]string{}
+			if h.plans != nil {
+				wanted := map[string]struct{}{}
+				for _, e := range entries {
+					for _, key := range []string{"plan_id", "old_plan_id", "new_plan_id"} {
+						if v, ok := e.Metadata[key].(string); ok && v != "" {
+							wanted[v] = struct{}{}
+						}
+					}
+					if arr, ok := e.Metadata["plan_ids"].([]any); ok {
+						for _, v := range arr {
+							if s, ok := v.(string); ok && s != "" {
+								wanted[s] = struct{}{}
+							}
+						}
+					}
+				}
+				for pid := range wanted {
+					if p, err := h.plans.GetPlan(r.Context(), tenantID, pid); err == nil {
+						planNames[pid] = p.Name
+					}
+				}
+			}
 			for _, e := range entries {
-				desc, detail, status := describeSubscriptionAction(e.Action, e.Metadata)
+				desc, detail, status := describeSubscriptionAction(e.Action, e.Metadata, planNames)
 				events = append(events, timelineEvent{
 					Timestamp:   e.CreatedAt.UTC().Format(time.RFC3339),
 					Source:      "audit",
