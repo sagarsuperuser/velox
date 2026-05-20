@@ -86,6 +86,23 @@ func (m *memStore) HasSucceededInvoice(_ context.Context, tenantID, customerID s
 	return false, nil
 }
 
+func (m *memStore) GetOutstandingBalance(_ context.Context, tenantID, customerID string) (OutstandingBalance, error) {
+	var out OutstandingBalance
+	for _, inv := range m.invoices {
+		if inv.TenantID != tenantID || inv.CustomerID != customerID {
+			continue
+		}
+		if inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible || inv.Status == domain.InvoiceDraft {
+			continue
+		}
+		if inv.PaymentStatus == domain.PaymentPending || inv.PaymentStatus == domain.PaymentFailed || inv.PaymentStatus == domain.PaymentUnknown {
+			out.TotalCents += inv.AmountDueCents
+			out.UnpaidCount++
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) SetPublicToken(_ context.Context, tenantID, invoiceID, token string) error {
 	inv, ok := m.invoices[invoiceID]
 	if !ok || inv.TenantID != tenantID {
