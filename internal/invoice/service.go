@@ -80,7 +80,27 @@ type Service struct {
 	taxRetrier     TaxRetrier
 	paymentMethods PaymentMethodReader
 	stripeChecker  StripeChecker
+	audit          AuditLogger
+	events         domain.EventDispatcher
 }
+
+// AuditLogger is the narrow audit-write interface the service uses to
+// record state-changing operations that are reachable from multiple
+// entry points (HTTP handler + dunning adapter MarkUncollectible
+// final-action + the ResolveRun(invoice_not_collectible) operator
+// flow). Same pattern as subscription.Service — single canonical
+// audit row regardless of which path triggered the transition.
+type AuditLogger interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
+// SetAuditLogger wires the audit logger.
+func (s *Service) SetAuditLogger(l AuditLogger) { s.audit = l }
+
+// SetEventDispatcher wires outbound webhook dispatch for state-
+// transitioning service methods (MarkUncollectible, RecordPayment).
+// Optional — unset paths skip dispatch.
+func (s *Service) SetEventDispatcher(d domain.EventDispatcher) { s.events = d }
 
 func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service {
 	if clk == nil {
@@ -387,7 +407,101 @@ func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (d
 	case domain.InvoiceUncollectible:
 		return domain.Invoice{}, errs.InvalidState("invoice is already uncollectible")
 	}
-	return s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceUncollectible)
+	updated, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceUncollectible)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if s.audit != nil {
+		_ = s.audit.Log(ctx, tenantID, domain.AuditActionUpdate, "invoice", updated.ID, updated.InvoiceNumber, map[string]any{
+			"action":      "marked_uncollectible",
+			"customer_id": updated.CustomerID,
+			"amount_due_cents": updated.AmountDueCents,
+			"currency":    updated.Currency,
+		})
+	}
+	if s.events != nil {
+		_ = s.events.Dispatch(ctx, tenantID, domain.EventInvoiceMarkedUncollectible, map[string]any{
+			"invoice_id":       updated.ID,
+			"invoice_number":   updated.InvoiceNumber,
+			"customer_id":      updated.CustomerID,
+			"amount_due_cents": updated.AmountDueCents,
+			"currency":         updated.Currency,
+		})
+	}
+	return updated, nil
+}
+
+// RecordOfflinePayment is the operator-driven Stripe-parity offline-
+// recovery path. Lets the operator mark an unpaid invoice as paid
+// without going through a PaymentIntent — for cheque, wire, cash,
+// or any out-of-band collection. Mirrors Stripe's "Pay outside of
+// Stripe" / paid_out_of_band=true affordance.
+//
+// Allowed source states: finalized (any payment_status that isn't
+// already succeeded or processing) AND uncollectible (the Stripe-
+// parity recovery transition — "we wrote it off but the customer
+// paid after all"). Rejects paid (idempotent — nothing to do) and
+// voided (terminal).
+//
+// note is a short operator memo persisted in the audit metadata
+// (e.g. "Cheque #1234", "Wire 2026-05-20"). Not surfaced in
+// customer-facing payloads. Empty string is permitted.
+func (s *Service) RecordOfflinePayment(ctx context.Context, tenantID, id, note string) (domain.Invoice, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, id)
+	inv, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	switch inv.Status {
+	case domain.InvoicePaid:
+		return domain.Invoice{}, errs.InvalidState("invoice is already paid")
+	case domain.InvoiceVoided:
+		return domain.Invoice{}, errs.InvalidState("cannot record payment on a voided invoice")
+	case domain.InvoiceDraft:
+		return domain.Invoice{}, errs.InvalidState("finalize the invoice before recording a payment")
+	}
+	if inv.PaymentStatus == domain.PaymentProcessing {
+		return domain.Invoice{}, errs.InvalidState("a charge is already in flight on this invoice — wait for it to settle or cancel it before recording an offline payment")
+	}
+	now := s.clock.Now(ctx)
+	// Use a synthetic out-of-band marker in the PaymentIntent field so
+	// reports and the PaymentIntent column can distinguish engine-
+	// collected charges from operator-recorded ones. Stripe encodes the
+	// same distinction via paid_out_of_band; we use a string prefix
+	// rather than a dedicated column to keep the schema small.
+	// MarkPaid atomically flips status='paid', payment_status='succeeded',
+	// amount_paid=amount_due, amount_due=0 — same end-state as a
+	// successful engine charge, so downstream reports / customer
+	// balance / dunning scans treat the recovery identically.
+	updated, err := s.store.MarkPaid(ctx, tenantID, id, "out_of_band:"+now.UTC().Format(time.RFC3339), now)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if s.audit != nil {
+		meta := map[string]any{
+			"action":      "payment_recorded",
+			"customer_id": updated.CustomerID,
+			"amount_cents": updated.AmountDueCents,
+			"currency":    updated.Currency,
+			"recovered_from_status": string(inv.Status),
+		}
+		if note != "" {
+			meta["note"] = note
+		}
+		_ = s.audit.Log(ctx, tenantID, domain.AuditActionUpdate, "invoice", updated.ID, updated.InvoiceNumber, meta)
+	}
+	if s.events != nil {
+		_ = s.events.Dispatch(ctx, tenantID, domain.EventInvoicePaymentRecorded, map[string]any{
+			"invoice_id":      updated.ID,
+			"invoice_number":  updated.InvoiceNumber,
+			"customer_id":     updated.CustomerID,
+			"amount_cents":    updated.AmountDueCents,
+			"currency":        updated.Currency,
+			"recovered_from":  string(inv.Status),
+			"recorded_at":     now.UTC(),
+		})
+	}
+	return updated, nil
 }
 
 func (s *Service) RecordPayment(ctx context.Context, tenantID, id string, stripePaymentIntentID string) (domain.Invoice, error) {

@@ -211,18 +211,24 @@ export default function InvoiceDetailPage() {
   })
   const hasPaymentMethod = paymentSetup?.setup_status === 'ready'
 
-  // Dunning runs for this invoice — only fetched when the invoice is in a
-  // pending-like state where dunning context is actionable. Drafts and paid
-  // invoices have no operator-debugging context to surface; voided invoices
-  // surface the card only when they carry a payment failure (Velox's
-  // uncollectible stand-in), not when an operator voided them cleanly.
+  // Dunning runs + operator-context (diagnosis/resolution) card. Shown
+  // only when the invoice is in an actionable mid-flight state — the
+  // operator can still influence outcome by retrying tax, attaching a
+  // PM, or charging. Hidden on:
+  //   - draft (no PaymentIntent exists; diagnosis is a category error)
+  //   - paid (resolved)
+  //   - voided (operator cancelled — no further collection context)
+  //   - uncollectible (operator wrote off as bad debt — Stripe parity
+  //     says further diagnosis/resolution framing contradicts the
+  //     terminal decision and confuses the page)
+  // Tax pending/failed always shows (independent of status — tax can
+  // block finalize on draft, or appear on a finalized invoice).
   const showOperatorContext =
     invoice?.tax_status === 'pending' ||
     invoice?.tax_status === 'failed' ||
     (invoice?.status === 'finalized' &&
       invoice?.payment_status !== 'succeeded' &&
-      invoice?.payment_status !== 'processing') ||
-    (invoice?.status === 'voided' && !!invoice?.last_payment_error)
+      invoice?.payment_status !== 'processing')
   const { data: dunningRunsData } = useQuery({
     queryKey: ['invoice-dunning-runs', id],
     queryFn: () => api.listDunningRuns(`invoice_id=${id}`).then(r => r.data || []),
@@ -272,6 +278,34 @@ export default function InvoiceDetailPage() {
     mutationFn: () => api.collectPayment(id!),
     onSuccess: () => { invalidateAll(); toast.success('Payment initiated') },
     onError: (err) => showApiError(err, 'Payment failed'),
+  })
+
+  // Stripe-parity operator actions on finalized / uncollectible invoices.
+  // markUncollectibleMutation halts dunning + flips status to bad debt.
+  // recordPaymentMutation accepts an operator-recorded out-of-band payment
+  // (cheque, wire, cash) — works on both finalized-unpaid AND uncollectible
+  // (the Stripe "we wrote it off but they paid after all" recovery path).
+  const [showMarkUncollectibleConfirm, setShowMarkUncollectibleConfirm] = useState(false)
+  const [showRecordPaymentDialog, setShowRecordPaymentDialog] = useState(false)
+  const [recordPaymentNote, setRecordPaymentNote] = useState('')
+  const markUncollectibleMutation = useMutation({
+    mutationFn: () => api.markInvoiceUncollectible(id!),
+    onSuccess: () => {
+      invalidateAll()
+      setShowMarkUncollectibleConfirm(false)
+      toast.success(`Invoice ${invoice?.invoice_number} marked uncollectible`)
+    },
+    onError: (err) => showApiError(err, 'Failed to mark uncollectible'),
+  })
+  const recordPaymentMutation = useMutation({
+    mutationFn: () => api.recordOfflineInvoicePayment(id!, { note: recordPaymentNote.trim() || undefined }),
+    onSuccess: () => {
+      invalidateAll()
+      setShowRecordPaymentDialog(false)
+      setRecordPaymentNote('')
+      toast.success(`Payment recorded — invoice ${invoice?.invoice_number} marked paid`)
+    },
+    onError: (err) => showApiError(err, 'Failed to record payment'),
   })
 
   const rotatePublicTokenMutation = useMutation({
@@ -442,10 +476,37 @@ export default function InvoiceDetailPage() {
             </Button>
           )}
 
-          {(invoice.status === 'finalized' || invoice.status === 'paid') && (
+          {/* Issue Credit — valid against any post-finalize invoice
+              that wasn't fully voided. Stripe + Chargebee + Recurly
+              all allow credit notes on uncollectible (the customer
+              still owes the bookkeeping reduction even if we wrote
+              off the receivable). */}
+          {(invoice.status === 'finalized' || invoice.status === 'paid' || invoice.status === 'uncollectible') && (
             <Button variant="outline" size="sm" onClick={() => setShowCreditModal(true)} disabled={acting}>
               <CreditCard size={14} className="mr-1.5" />
               Issue Credit
+            </Button>
+          )}
+
+          {/* Record offline payment — Stripe-parity operator path for
+              cheque / wire / cash. Available on finalized-unpaid AND
+              uncollectible (the "we gave up but they paid after all"
+              recovery transition). Hidden while a charge is in flight
+              to avoid double-recording. */}
+          {((invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0) ||
+            invoice.status === 'uncollectible') && (
+            <Button variant="outline" size="sm" onClick={() => setShowRecordPaymentDialog(true)} disabled={acting}>
+              Record Payment
+            </Button>
+          )}
+
+          {/* Mark uncollectible — Stripe-parity bad-debt write-off.
+              Surfaced for finalized invoices that haven't paid yet.
+              Direct operator action; the dunning automated path
+              reaches the same Service.MarkUncollectible. */}
+          {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && (
+            <Button variant="outline" size="sm" className="border-amber-500 text-amber-700 hover:bg-amber-500/10" onClick={() => setShowMarkUncollectibleConfirm(true)} disabled={acting}>
+              Mark Uncollectible
             </Button>
           )}
 
@@ -484,13 +545,17 @@ export default function InvoiceDetailPage() {
             </>
           )}
 
-          {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.amount_due_cents > 0 && (
+          {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0 && (
             // Disabled-with-tooltip when the customer has no PM ready.
             // Calling Collect Payment with no PM would 4xx; the
             // attention banner already surfaces the path forward
             // (Add payment method). Tooltip cross-links the constraint
             // so the disabled button isn't a dead-end. Same pattern as
             // Finalize-disabled-on-tax-failure.
+            // Also hidden when payment_status === 'processing' — a
+            // charge is in flight; firing another would race the
+            // webhook and could double-charge if the first attempt
+            // completes between click and dispatch.
             !hasPaymentMethod ? (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -539,6 +604,34 @@ export default function InvoiceDetailPage() {
           the activity feed (finalize, dunning) reflect simulated time. */}
       {subscription?.test_clock_id && (
         <TestClockBanner testClockId={subscription.test_clock_id} />
+      )}
+
+      {/* Uncollectible status banner — Stripe-parity bad-debt
+          framing. Stands in for the operator-context card (which is
+          intentionally hidden on uncollectible) so the page still
+          explains the state clearly. Surfaces the accounting
+          consequence + the recovery paths so the operator isn't
+          left wondering why most buttons disappeared. */}
+      {invoice.status === 'uncollectible' && (
+        <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 h-2 w-2 rounded-full bg-amber-500 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground">Marked uncollectible</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Recorded as bad debt. Dunning automation has halted and no further collection is attempted.
+                The invoice stays on the books for audit. The subscription remains <strong>active</strong> —
+                {' '}{subscription?.id ? (
+                  <Link to={`/subscriptions/${subscription.id}`} className="text-primary hover:underline">cancel it separately</Link>
+                ) : 'cancel it separately'} if you also want to stop future billing.
+              </p>
+              <p className="text-xs text-muted-foreground mt-2">
+                If the customer pays after all, use <strong>Record Payment</strong> above. To reclassify as
+                cancelled (rather than written-off), use <strong>Void</strong>.
+              </p>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Unified attention banner — typed reason + prescribed actions
@@ -1021,11 +1114,26 @@ export default function InvoiceDetailPage() {
         open={showVoidConfirm}
         onOpenChange={setShowVoidConfirm}
         title="Void Invoice"
-        description="Voiding reverses this invoice and marks it uncollectible. This action cannot be undone."
+        description="Voiding annuls the invoice — it'll be treated as if it was never owed. Any applied credits are returned, any in-flight charge is cancelled. Use this when the invoice was created in error. For 'we tried to collect and failed', use Mark Uncollectible instead. This action cannot be undone."
         confirmWord="VOID"
         confirmLabel="Void Invoice"
         onConfirm={() => voidMutation.mutate()}
         loading={voidMutation.isPending}
+      />
+
+      {/* Mark Uncollectible Confirm — Stripe-parity bad-debt write-off.
+          Distinct from Void: invoice stays on the books, halts
+          dunning, no credits reversed, no PaymentIntent cancelled.
+          Subscription stays active (operator decides separately). */}
+      <TypedConfirmDialog
+        open={showMarkUncollectibleConfirm}
+        onOpenChange={setShowMarkUncollectibleConfirm}
+        title="Mark Invoice Uncollectible"
+        description="Records this invoice as bad debt. The invoice stays on the books for audit, but dunning automation halts and no further collection is attempted. Subscription stays active — cancel it separately if you also want to stop future billing. The invoice can later transition to paid (Record Payment) or void if circumstances change."
+        confirmWord="WRITE OFF"
+        confirmLabel="Mark Uncollectible"
+        onConfirm={() => markUncollectibleMutation.mutate()}
+        loading={markUncollectibleMutation.isPending}
       />
 
       {/* Rotate public-token Confirm — defensive affordance for when the
@@ -1042,6 +1150,48 @@ export default function InvoiceDetailPage() {
         onConfirm={() => rotatePublicTokenMutation.mutate()}
         loading={rotatePublicTokenMutation.isPending}
       />
+
+      {/* Record Payment Dialog — Stripe-parity operator path for
+          out-of-band collection. Amount is implicit (full amount_due);
+          the optional note captures the operator's recording method
+          (cheque #, wire reference, etc) for the audit trail. */}
+      {showRecordPaymentDialog && (
+        <Dialog open onOpenChange={(open) => { if (!open) { setShowRecordPaymentDialog(false); setRecordPaymentNote('') } }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Record offline payment</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <p className="text-sm text-muted-foreground">
+                Mark this invoice as paid based on an out-of-band collection
+                (cheque, wire, cash). The full {formatCents(invoice.amount_due_cents)} will be recorded
+                as paid. Use this for payments received outside Velox's
+                Stripe-attached charge flow.
+              </p>
+              <div className="space-y-1.5">
+                <Label htmlFor="record-payment-note">Reference (optional)</Label>
+                <Input
+                  id="record-payment-note"
+                  value={recordPaymentNote}
+                  onChange={(e) => setRecordPaymentNote(e.target.value)}
+                  placeholder="Cheque #1234, Wire 2026-05-20, etc."
+                  maxLength={200}
+                  disabled={recordPaymentMutation.isPending}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Surfaces in the audit trail for finance reconciliation.
+                </p>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setShowRecordPaymentDialog(false); setRecordPaymentNote('') }} disabled={recordPaymentMutation.isPending}>Cancel</Button>
+              <Button onClick={() => recordPaymentMutation.mutate()} disabled={recordPaymentMutation.isPending}>
+                {recordPaymentMutation.isPending ? 'Recording…' : 'Record Payment'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* Email Modal */}
       {showEmailModal && (

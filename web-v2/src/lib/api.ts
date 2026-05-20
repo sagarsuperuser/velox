@@ -177,6 +177,18 @@ export const api = {
     apiRequest<Invoice>('POST', `/invoices/${id}/finalize`),
   voidInvoice: (id: string) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/void`),
+  // markInvoiceUncollectible is the Stripe-parity bad-debt write-off.
+  // Halts dunning, halts collection, leaves the invoice on the books.
+  // Subscription is NOT auto-cancelled; that's a separate decision.
+  // Transitionable forward to paid (via recordOfflinePayment) or void.
+  markInvoiceUncollectible: (id: string) =>
+    apiRequest<Invoice>('POST', `/invoices/${id}/mark-uncollectible`),
+  // recordOfflineInvoicePayment marks an unpaid (or uncollectible)
+  // invoice as paid based on out-of-band collection. Stripe-parity:
+  // paid_out_of_band=true on /v1/invoices/{id}/pay. note is a free-
+  // form operator memo (cheque number, wire ref, etc).
+  recordOfflineInvoicePayment: (id: string, data: { note?: string }) =>
+    apiRequest<Invoice>('POST', `/invoices/${id}/record-payment`, data),
   rotateInvoicePublicToken: (id: string) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/rotate-public-token`),
   applyInvoiceCoupon: (id: string, data: { code: string; idempotency_key?: string }) =>

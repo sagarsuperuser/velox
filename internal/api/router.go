@@ -500,6 +500,16 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// from multiple entry points (operator handler + dunning adapter + any
 	// future caller) produce a single canonical audit row.
 	subSvc.SetAuditLogger(auditLogger)
+	// Invoice service audit + event dispatch: MarkUncollectible is
+	// reachable both via the operator dashboard AND via dunning's
+	// terminal action AND via ResolveRun(invoice_not_collectible).
+	// All three paths share the service entry, so wiring at the
+	// service layer guarantees a single audit row + a single
+	// invoice.marked_uncollectible webhook event regardless of
+	// trigger. RecordOfflinePayment uses the same wiring for its
+	// invoice.payment_recorded event.
+	invoiceSvc.SetAuditLogger(auditLogger)
+	invoiceSvc.SetEventDispatcher(eventDispatcher)
 	couponH.SetEventDispatcher(eventDispatcher)
 
 	// Feature flags (created before billing engine to gate Stripe Tax)

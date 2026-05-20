@@ -16,6 +16,15 @@ type Store interface {
 	List(ctx context.Context, filter ListFilter) ([]domain.Invoice, int, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error)
 	UpdatePayment(ctx context.Context, tenantID, id string, paymentStatus domain.InvoicePaymentStatus, stripePaymentIntentID, lastPaymentError string, paidAt *time.Time) (domain.Invoice, error)
+	// MarkPaid flips status='paid', payment_status='succeeded',
+	// amount_paid=amount_due, amount_due=0 in one transaction. Used by
+	// the engine's zero-amount auto-pay path, the billing threshold
+	// scan, and the operator-driven Record Offline Payment flow. The
+	// store is the right place to atomically mutate all four fields
+	// — Service.RecordOfflinePayment calls this so an out-of-band
+	// collection produces the same invoice end-state as a successful
+	// engine charge.
+	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
 	ApplyCreditNote(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 	ApplyCredits(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 

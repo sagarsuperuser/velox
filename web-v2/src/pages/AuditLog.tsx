@@ -37,7 +37,14 @@ function describeAction(entry: AuditEntry): string {
   const metaAction = (entry.metadata?.action as string) || ''
   switch (entry.action) {
     case 'create': return `Created ${label || entry.resource_type}`
-    case 'update': return `Updated ${label || entry.resource_type}`
+    case 'update':
+      // Sub-action discriminator for the update bucket: surface a
+      // descriptive label per metadata.action when the bucket carries
+      // a known transition. Falls through to generic "Updated X" for
+      // anything not enumerated.
+      if (entry.resource_type === 'invoice' && metaAction === 'marked_uncollectible') return `Marked ${label || 'invoice'} uncollectible`
+      if (entry.resource_type === 'invoice' && metaAction === 'payment_recorded') return `Recorded offline payment on ${label || 'invoice'}`
+      return `Updated ${label || entry.resource_type}`
     case 'delete': return `Deleted ${label || entry.resource_type}`
     case 'activate': return `Activated ${label || 'subscription'}`
     case 'cancel': return `Canceled ${label || 'subscription'}`

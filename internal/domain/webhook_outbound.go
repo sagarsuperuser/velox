@@ -81,6 +81,20 @@ const (
 	EventInvoiceFinalized                   = "invoice.finalized"
 	EventInvoicePaid                        = "invoice.paid"
 	EventInvoiceVoided                      = "invoice.voided"
+	// EventInvoiceMarkedUncollectible matches Stripe's same-named event
+	// (https://docs.stripe.com/api/events/types#event_types-invoice.marked_uncollectible).
+	// Fired when an invoice transitions to status=uncollectible —
+	// either via dunning's mark_uncollectible final-action or via the
+	// operator-driven ResolveRun(invoice_not_collectible) + the direct
+	// API call. Subscribers should treat this as a bad-debt write-off
+	// signal: stop expecting payment, exclude from AR/revenue rollups.
+	EventInvoiceMarkedUncollectible         = "invoice.marked_uncollectible"
+	// EventInvoicePaymentRecorded fires when an operator records an
+	// out-of-band payment (cheque, wire, cash). Distinct from
+	// invoice.paid (engine-collected via PaymentIntent) so analytics
+	// can tell the two apart — Stripe-parity (their paid_out_of_band
+	// flag on the invoice surfaces the same distinction).
+	EventInvoicePaymentRecorded             = "invoice.payment_recorded"
 	EventPaymentSucceeded                   = "payment.succeeded"
 	EventPaymentFailed                      = "payment.failed"
 	EventSubscriptionCreated                = "subscription.created"
