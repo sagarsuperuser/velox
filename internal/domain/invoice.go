@@ -72,6 +72,34 @@ const (
 	InvoiceTaxFailed  InvoiceTaxStatus = "failed"
 )
 
+// InvoiceFinalizationStatus returns the invoice Status that must be
+// stamped at creation time given the tax + pause-collection state.
+// Single source of truth across all four invoice-emitting paths
+// (engine.billOnePeriod, engine.BillOnCreate,
+// engine.BillFinalOnImmediateCancel, subscription.handleItemProration)
+// so the rule "tax_status=pending OR pause_collection set → draft"
+// can't drift between flows.
+//
+//   - Tax pending: a finalized invoice implies authoritative amounts.
+//     With tax deferred, the TotalAmountCents reflects subtotal +
+//     zero tax — incorrect at finalize time. The retry worker
+//     transitions draft → finalized when calculation succeeds.
+//   - Pause-collection set: Stripe-parity behavior — cycle continues
+//     and line items are captured, but the operator/customer-facing
+//     finalize/charge/dunn flow is skipped until pause is cleared.
+//
+// pauseCollection is the *PauseCollection pointer from the
+// subscription (nil = collection running normally).
+func InvoiceFinalizationStatus(taxStatus InvoiceTaxStatus, pauseCollection *PauseCollection) InvoiceStatus {
+	if taxStatus == InvoiceTaxPending {
+		return InvoiceDraft
+	}
+	if pauseCollection != nil {
+		return InvoiceDraft
+	}
+	return InvoiceFinalized
+}
+
 type Invoice struct {
 	ID             string               `json:"id"`
 	TenantID       string               `json:"tenant_id,omitempty"`

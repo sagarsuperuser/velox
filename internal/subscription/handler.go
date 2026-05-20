@@ -75,6 +75,14 @@ type ProrationTaxResult struct {
 	TaxID          string
 	SubtotalCents  int64
 	DiscountCents  int64
+	// TaxStatus signals whether the provider's tax calculation
+	// succeeded (ok) or was deferred (pending / failed). Drives the
+	// proration invoice's finalized-vs-draft decision via
+	// domain.InvoiceFinalizationStatus — consistent with the engine's
+	// billOnePeriod + BillOnCreate gates. Pre-fix proration invoices
+	// finalized regardless of tax status, lying about authoritative
+	// amounts when calculation was deferred.
+	TaxStatus domain.InvoiceTaxStatus
 }
 
 // ProrationTaxApplier resolves and applies tax against a proration invoice's
@@ -1320,9 +1328,15 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 		changeAt := spec.changeAt
 		invoice := domain.Invoice{
-			CustomerID:         sub.CustomerID,
-			SubscriptionID:     sub.ID,
-			Status:             domain.InvoiceFinalized,
+			CustomerID:     sub.CustomerID,
+			SubscriptionID: sub.ID,
+			// Tax-deferred + pause-collection gate (matches
+			// engine.billOnePeriod + BillOnCreate). Pre-fix the
+			// proration invoice hardcoded Finalized regardless of
+			// tax; if Stripe Tax returned customer_data_invalid the
+			// invoice finalized with TaxAmountCents=0, lying about
+			// authoritative amounts.
+			Status:             domain.InvoiceFinalizationStatus(taxResult.TaxStatus, sub.PauseCollection),
 			PaymentStatus:      domain.PaymentPending,
 			Currency:           effectivePlan.Currency,
 			SubtotalCents:      taxResult.SubtotalCents,
@@ -1332,6 +1346,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			TaxCountry:         taxResult.TaxCountry,
 			TaxID:              taxResult.TaxID,
 			TaxAmountCents:     taxResult.TaxAmountCents,
+			TaxStatus:          taxResult.TaxStatus,
 			TotalAmountCents:   netProrated,
 			AmountDueCents:     netProrated,
 			BillingPeriodStart: periodStart,

@@ -2087,24 +2087,13 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxAmountCents
 	dueAt := now.AddDate(0, 0, netDays)
 
-	// When tax was deferred the invoice must stay in draft: a finalized
-	// invoice implies the amounts (including tax) are authoritative, which
-	// they are not until the retry worker completes the calculation. The
-	// retry worker lifts the block and transitions draft → finalized.
-	//
-	// pause_collection (Stripe parity): when a sub has pause_collection set
-	// (still non-nil after the auto-resume check above), force draft. The
-	// engine still runs the cycle and produces line items so the period is
-	// captured and aging behaves normally; the operator/customer flow that
-	// would finalize, charge, and dunn is skipped until pause is cleared.
-	invStatus := domain.InvoiceFinalized
-	if taxApp.TaxStatus == domain.InvoiceTaxPending {
-		invStatus = domain.InvoiceDraft
-	}
+	// Single source of truth for the draft/finalized decision —
+	// shared across all four invoice-emitting paths (cycle close,
+	// BillOnCreate, BillFinalOnImmediateCancel, handleItemProration).
+	// Encodes: tax pending → draft; pause_collection set → draft;
+	// otherwise finalized. See domain.InvoiceFinalizationStatus.
+	invStatus := domain.InvoiceFinalizationStatus(taxApp.TaxStatus, sub.PauseCollection)
 	collectionPaused := sub.PauseCollection != nil
-	if collectionPaused {
-		invStatus = domain.InvoiceDraft
-	}
 
 	// ADR-031: when ANY plan on the sub is in_advance, the cycle
 	// invoice's header period shifts to the UPCOMING period. The base
@@ -2513,7 +2502,11 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		CustomerID:         sub.CustomerID,
 		SubscriptionID:     sub.ID,
 		InvoiceNumber:      invoiceNumber,
-		Status:             domain.InvoiceFinalized,
+		// Tax-deferred + pause-collection gate (matches billOnePeriod).
+		// Pre-fix this path hardcoded Finalized regardless of tax;
+		// invoices with tax_status=pending finalized with
+		// TaxAmountCents=0, lying about authoritative amounts.
+		Status:             domain.InvoiceFinalizationStatus(taxApp.TaxStatus, sub.PauseCollection),
 		PaymentStatus:      domain.PaymentPending,
 		Currency:           invoiceCurrency,
 		SubtotalCents:      taxApp.SubtotalCents,
@@ -2962,7 +2955,11 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 		CustomerID:         sub.CustomerID,
 		SubscriptionID:     sub.ID,
 		InvoiceNumber:      invoiceNumber,
-		Status:             domain.InvoiceFinalized,
+		// Tax-deferred + pause-collection gate (matches billOnePeriod).
+		// Pre-fix this path hardcoded Finalized regardless of tax;
+		// invoices with tax_status=pending finalized with
+		// TaxAmountCents=0, lying about authoritative amounts.
+		Status:             domain.InvoiceFinalizationStatus(taxApp.TaxStatus, sub.PauseCollection),
 		PaymentStatus:      domain.PaymentPending,
 		Currency:           invoiceCurrency,
 		SubtotalCents:      taxApp.SubtotalCents,
