@@ -210,21 +210,13 @@ func (s *Service) tenantLocation(ctx context.Context, tenantID string) *time.Loc
 	return loc
 }
 
-// beginningOfDayIn snaps `t` to 00:00:00 on its calendar date in `loc`,
-// returned as a UTC instant for storage. Day-grade billing requires
-// this to align UI-displayed dates with proration math (Chargebee /
-// Lago / Recurly default).
+// beginningOfDayIn is a package-local alias for domain.BeginningOfDayIn
+// so existing callers in this file don't need updates. Calendar-month
+// snapping flows through domain.NextBillingPeriodEnd (called via
+// firstPeriodForActivate / firstPeriodAfterTrial), so no local
+// beginningOfMonthIn helper is needed.
 func beginningOfDayIn(t time.Time, loc *time.Location) time.Time {
-	local := t.In(loc)
-	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc).UTC()
-}
-
-// beginningOfMonthIn is a package-local alias for domain.BeginningOfMonthIn
-// so existing callers in this file don't need updates. The canonical
-// helper lives in domain so billing.Engine can use the same boundary
-// math at cycle close without duplicating logic.
-func beginningOfMonthIn(t time.Time, loc *time.Location) time.Time {
-	return domain.BeginningOfMonthIn(t, loc)
+	return domain.BeginningOfDayIn(t, loc)
 }
 
 // firstPeriodAfterTrial computes (current_period_start, current_period_end)
@@ -249,20 +241,15 @@ func beginningOfMonthIn(t time.Time, loc *time.Location) time.Time {
 // advanceBillingPeriod call (which is already interval-aware).
 func firstPeriodAfterTrial(trialEnd time.Time, billingTime domain.SubscriptionBillingTime, interval domain.BillingInterval, loc *time.Location) (time.Time, time.Time) {
 	ps := beginningOfDayIn(trialEnd, loc)
-	if interval == domain.BillingYearly {
-		return ps, ps.AddDate(1, 0, 0)
+	pe := domain.NextBillingPeriodEnd(ps, billingTime, interval, loc)
+	// Edge: trial_end fell exactly on a calendar boundary — the stub
+	// computation could collapse (ps == pe). Promote to a clean full
+	// cycle from that boundary so the engine doesn't see a zero-length
+	// period.
+	if !ps.Before(pe) {
+		pe = domain.NextBillingPeriodEnd(pe, billingTime, interval, loc)
 	}
-	if billingTime == domain.BillingTimeCalendar {
-		pe := beginningOfMonthIn(trialEnd.AddDate(0, 1, 0), loc)
-		// Edge: trial_end fell exactly on a calendar boundary — the stub
-		// computation collapses (ps == pe). Promote to a clean full cycle
-		// from that boundary so the engine doesn't see a zero-length period.
-		if !ps.Before(pe) {
-			pe = beginningOfMonthIn(ps.AddDate(0, 1, 0), loc)
-		}
-		return ps, pe
-	}
-	return ps, ps.AddDate(0, 1, 0)
+	return ps, pe
 }
 
 // firstPeriodForActivate computes the first billing period when a sub is
@@ -279,13 +266,8 @@ func firstPeriodAfterTrial(trialEnd time.Time, billingTime domain.SubscriptionBi
 // Monthly + anniversary: full month from `at`.
 func firstPeriodForActivate(at time.Time, billingTime domain.SubscriptionBillingTime, interval domain.BillingInterval, loc *time.Location) (time.Time, time.Time) {
 	ps := beginningOfDayIn(at, loc)
-	if interval == domain.BillingYearly {
-		return ps, ps.AddDate(1, 0, 0)
-	}
-	if billingTime == domain.BillingTimeCalendar {
-		return ps, beginningOfMonthIn(at.AddDate(0, 1, 0), loc)
-	}
-	return ps, ps.AddDate(0, 1, 0)
+	pe := domain.NextBillingPeriodEnd(ps, billingTime, interval, loc)
+	return ps, pe
 }
 
 // rejectMixedItemIntervals validates that every item's plan shares
