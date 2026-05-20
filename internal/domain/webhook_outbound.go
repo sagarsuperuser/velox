@@ -107,6 +107,12 @@ const (
 	EventSubscriptionPendingChangeApplied   = "subscription.pending_change.applied"
 	EventSubscriptionPendingChangeCanceled  = "subscription.pending_change.canceled"
 	EventSubscriptionCancelScheduled        = "subscription.cancel_scheduled"
+	// EventSubscriptionBillingCycleReset fires when an operator
+	// resets the billing-cycle anchor (Stripe-parity "Bill today
+	// instead" / Chargebee "Change Next Billing Date" / Recurly
+	// "Update billing date"). Carries the old + new period
+	// boundaries + any proration credit issued.
+	EventSubscriptionBillingCycleReset      = "subscription.billing_cycle_reset"
 	EventSubscriptionCancelCleared          = "subscription.cancel_cleared"
 	EventSubscriptionCollectionPaused       = "subscription.collection_paused"
 	EventSubscriptionCollectionResumed      = "subscription.collection_resumed"

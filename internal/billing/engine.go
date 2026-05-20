@@ -3214,6 +3214,115 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 	return totalUnused, nil
 }
 
+// BillOnCycleReset issues the proration credit owed when an operator
+// truncates the current billing period mid-cycle to reset the anchor
+// (analog of Stripe "Bill today instead" / Chargebee "Change Next
+// Billing Date" / Recurly "Update billing date"). For in_advance
+// items already billed for the full current period, the (periodEnd −
+// anchorAt) portion was paid but won't be consumed under the new
+// anchor — refunded as a credit grant.
+//
+// Same paid-check gate as BillOnCancel: a refund-style credit only
+// makes financial sense if the source in_advance invoice was actually
+// paid. Unpaid sources skip the credit entirely (industry shape;
+// matches Chargebee Adjustment / Stripe proration_behavior=none).
+//
+// In_arrears items are unaffected — they bill at cycle close anyway,
+// and the truncated period bills naturally via the engine's existing
+// cycle-close path when the new anchor is reached.
+//
+// Returns (credit_cents, error). Zero credit + nil error is the
+// no-op case (anchor at period end / past period end / no in_advance
+// items / source invoice unpaid).
+func (e *Engine) BillOnCycleReset(ctx context.Context, sub domain.Subscription, oldPeriodStart, oldPeriodEnd, anchorAt time.Time) (int64, error) {
+	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillOnCycleReset",
+		trace.WithAttributes(
+			attribute.String("subscription_id", sub.ID),
+			attribute.String("tenant_id", sub.TenantID),
+		),
+	)
+	defer span.End()
+
+	if e.creditGranter == nil {
+		return 0, nil
+	}
+	if !anchorAt.Before(oldPeriodEnd) || !anchorAt.After(oldPeriodStart) {
+		return 0, nil
+	}
+
+	periodNanos := oldPeriodEnd.Sub(oldPeriodStart).Nanoseconds()
+	unusedNanos := oldPeriodEnd.Sub(anchorAt).Nanoseconds()
+	if periodNanos <= 0 || unusedNanos <= 0 {
+		return 0, nil
+	}
+
+	totalUnused := int64(0)
+	for _, it := range sub.Items {
+		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
+		if err != nil {
+			return 0, fmt.Errorf("get plan %s: %w", it.PlanID, err)
+		}
+		if plan.BaseBillTiming != domain.BillInAdvance || plan.BaseAmountCents <= 0 {
+			continue
+		}
+		baseFee := plan.BaseAmountCents * it.Quantity
+		unused := money.RoundHalfToEven(baseFee*unusedNanos, periodNanos)
+		if unused > 0 {
+			totalUnused += unused
+		}
+	}
+	if totalUnused <= 0 {
+		return 0, nil
+	}
+
+	if e.invoices != nil {
+		src, lookupErr := e.invoices.FindBaseInvoiceForPeriod(ctx, sub.TenantID, sub.ID, oldPeriodStart)
+		if lookupErr != nil {
+			slog.WarnContext(ctx, "cycle-reset proration: source in_advance invoice not found; skipping credit grant",
+				"subscription_id", sub.ID,
+				"customer_id", sub.CustomerID,
+				"period_start", oldPeriodStart,
+				"error", lookupErr,
+			)
+			return 0, nil
+		}
+		if src.PaymentStatus != domain.PaymentSucceeded {
+			slog.InfoContext(ctx, "cycle-reset proration: source in_advance invoice not paid; skipping credit grant",
+				"subscription_id", sub.ID,
+				"customer_id", sub.CustomerID,
+				"source_invoice_id", src.ID,
+				"source_payment_status", src.PaymentStatus,
+			)
+			return 0, nil
+		}
+	}
+
+	_, err := e.creditGranter.Grant(ctx, sub.TenantID, credit.GrantInput{
+		CustomerID:           sub.CustomerID,
+		AmountCents:          totalUnused,
+		SourceSubscriptionID: sub.ID,
+		Description: fmt.Sprintf("Billing-cycle reset — unused portion of %s base fee (period %s to %s, re-anchored %s)",
+			sub.Code,
+			oldPeriodStart.UTC().Format("2006-01-02"),
+			oldPeriodEnd.UTC().Format("2006-01-02"),
+			anchorAt.UTC().Format("2006-01-02")),
+		At: anchorAt,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("cycle-reset proration credit grant: %w", err)
+	}
+
+	slog.Info("cycle-reset proration credit issued",
+		"subscription_id", sub.ID,
+		"customer_id", sub.CustomerID,
+		"amount_cents", totalUnused,
+		"old_period_start", oldPeriodStart,
+		"old_period_end", oldPeriodEnd,
+		"anchor_at", anchorAt,
+	)
+	return totalUnused, nil
+}
+
 // RetryPendingCharges picks up invoices flagged for auto-charge retry
 // and attempts to charge them. CRON path — the wall-clock scheduler
 // calls this every tick. ADR-029 Phase 1: clock-pinned invoices are
