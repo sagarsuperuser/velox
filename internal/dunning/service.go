@@ -873,6 +873,10 @@ func (s *Service) ListRuns(ctx context.Context, filter RunListFilter) ([]domain.
 	return s.store.ListRuns(ctx, filter)
 }
 
+func (s *Service) GetStats(ctx context.Context, tenantID string) (Stats, error) {
+	return s.store.GetStats(ctx, tenantID)
+}
+
 // enqueueDunningWarning resolves the customer's email + invoice context
 // and synchronously enqueues a dunning-warning email via the outbox.
 // Synchronous on purpose — `SendDunningWarning` is a fast DB INSERT;

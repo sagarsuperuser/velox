@@ -37,6 +37,14 @@ type Store interface {
 	CreateEvent(ctx context.Context, tenantID string, event domain.InvoiceDunningEvent) (domain.InvoiceDunningEvent, error)
 	ListEvents(ctx context.Context, tenantID, runID string) ([]domain.InvoiceDunningEvent, error)
 
+	// Stats returns aggregate counts per state + at-risk sum across
+	// ALL runs for the tenant. Backs the dashboard's stat cards;
+	// computing these client-side from a paginated /runs response
+	// undercounts as soon as runs exceed the page size. Single
+	// COUNT(*) GROUP BY state + SUM(amount_due_cents) LEFT JOIN
+	// invoices, scoped by RLS tenant.
+	GetStats(ctx context.Context, tenantID string) (Stats, error)
+
 	// Multi-policy-per-tenant (ADR-036, campaigns model).
 	//
 	// GetPolicy returns the singleton tenant policy was REMOVED — every
@@ -49,6 +57,17 @@ type Store interface {
 	DeletePolicy(ctx context.Context, tenantID, id string) error
 	SetDefaultPolicy(ctx context.Context, tenantID, id string) error
 	CountCustomersOnPolicy(ctx context.Context, tenantID, policyID string) (int, error)
+}
+
+// Stats is the dashboard-card payload — aggregate counts of dunning
+// runs by state + total at-risk amount (sum of amount_due_cents on
+// the invoices behind active+escalated runs). Computed server-side so
+// the cards stay correct regardless of how many runs exist.
+type Stats struct {
+	ActiveCount    int   `json:"active_count"`
+	EscalatedCount int   `json:"escalated_count"`
+	ResolvedCount  int   `json:"resolved_count"`
+	AtRiskCents    int64 `json:"at_risk_cents"`
 }
 
 type RunListFilter struct {

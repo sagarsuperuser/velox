@@ -212,6 +212,27 @@ func (m *memStore) ListEvents(_ context.Context, _, runID string) ([]domain.Invo
 	return result, nil
 }
 
+func (m *memStore) GetStats(_ context.Context, tenantID string) (Stats, error) {
+	var s Stats
+	for _, r := range m.runs {
+		if r.TenantID != tenantID {
+			continue
+		}
+		switch r.State {
+		case "active":
+			s.ActiveCount++
+		case "escalated":
+			s.EscalatedCount++
+		case "resolved":
+			s.ResolvedCount++
+		}
+		// At-risk: mem mock doesn't carry invoice amount_due,
+		// service-layer tests don't assert the sum. Postgres impl
+		// is verified via integration test.
+	}
+	return s, nil
+}
+
 type noopRetrier struct{}
 
 func (n *noopRetrier) RetryPayment(_ context.Context, _, _, _ string) error { return nil }

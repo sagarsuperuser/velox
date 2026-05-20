@@ -160,6 +160,16 @@ function RunsTab() {
     }),
   })
 
+  // Aggregate stats for the dashboard cards. Comes from a backend
+  // COUNT(*) GROUP BY state + SUM(amount_due_cents) query — accurate
+  // regardless of pagination or filter on the runs list. Deriving
+  // counts from the paginated `runs` slice silently undercounts as
+  // soon as total runs exceed the page size.
+  const { data: stats } = useQuery({
+    queryKey: ['dunning-stats'],
+    queryFn: () => api.getDunningStats(),
+  })
+
   const runs = runsData?.runs ?? []
   const total = runsData?.total ?? 0
   const invoiceMap = runsData?.invoiceMap ?? {}
@@ -185,21 +195,11 @@ function RunsTab() {
     }
   }
 
-  const stats = useMemo(() => {
-    const active = runs.filter(r => r.state === 'active').length
-    const escalated = runs.filter(r => r.state === 'escalated').length
-    const resolved = runs.filter(r => r.state === 'resolved').length
-    const atRiskCents = runs
-      .filter(r => r.state === 'active' || r.state === 'escalated')
-      .reduce((sum, r) => sum + (invoiceMap[r.invoice_id]?.amount_due_cents || 0), 0)
-    return { active, escalated, resolved, atRiskCents }
-  }, [runs, invoiceMap])
-
   const statCards = [
-    { label: 'Active', value: stats.active, color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-500/10', ring: 'ring-blue-200 dark:ring-blue-500/20' },
-    { label: 'Escalated', value: stats.escalated, color: 'text-violet-600', bg: 'bg-violet-50 dark:bg-violet-500/10', ring: 'ring-violet-200 dark:ring-violet-500/20' },
-    { label: 'Recovered', value: stats.resolved, color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-500/10', ring: 'ring-emerald-200 dark:ring-emerald-500/20' },
-    { label: 'At risk', value: stats.atRiskCents, color: 'text-red-600', bg: 'bg-red-50 dark:bg-red-500/10', ring: 'ring-red-200 dark:ring-red-500/20', isCurrency: true },
+    { label: 'Active', value: stats?.active_count ?? 0, color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-500/10', ring: 'ring-blue-200 dark:ring-blue-500/20' },
+    { label: 'Escalated', value: stats?.escalated_count ?? 0, color: 'text-violet-600', bg: 'bg-violet-50 dark:bg-violet-500/10', ring: 'ring-violet-200 dark:ring-violet-500/20' },
+    { label: 'Recovered', value: stats?.resolved_count ?? 0, color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-500/10', ring: 'ring-emerald-200 dark:ring-emerald-500/20' },
+    { label: 'At risk', value: stats?.at_risk_cents ?? 0, color: 'text-red-600', bg: 'bg-red-50 dark:bg-red-500/10', ring: 'ring-red-200 dark:ring-red-500/20', isCurrency: true },
   ]
 
   const totalPages = Math.ceil(total / RUNS_PAGE_SIZE)

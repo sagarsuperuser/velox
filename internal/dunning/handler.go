@@ -82,7 +82,22 @@ func (h *Handler) Routes() chi.Router {
 		r.Post("/{id}/resolve", h.resolveRun)
 	})
 
+	// /stats backs the dashboard's stat cards. Aggregate query — no
+	// pagination, no client-side derivation from a sliced /runs list.
+	r.Get("/stats", h.getStats)
+
 	return r
+}
+
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	stats, err := h.svc.GetStats(r.Context(), tenantID)
+	if err != nil {
+		respond.InternalError(w, r)
+		slog.ErrorContext(r.Context(), "get dunning stats", "error", err)
+		return
+	}
+	respond.JSON(w, r, http.StatusOK, stats)
 }
 
 func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request) {

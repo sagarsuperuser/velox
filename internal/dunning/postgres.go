@@ -634,6 +634,37 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID, runID string) 
 	return events, rows.Err()
 }
 
+// GetStats computes the dashboard-card payload in one round trip:
+// COUNT(*) GROUP BY state for the three states we surface (active,
+// escalated, resolved) + SUM(amount_due_cents) on the invoices behind
+// active+escalated runs (the at-risk total).
+//
+// Single tenant-scoped query (RLS handles tenant_id), no pagination,
+// no client-side derivation. Cards stay accurate regardless of how
+// many runs exist.
+func (s *PostgresStore) GetStats(ctx context.Context, tenantID string) (Stats, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var stats Stats
+	err = tx.QueryRowContext(ctx, `
+		SELECT
+		    COUNT(*) FILTER (WHERE r.state = 'active')                                AS active_count,
+		    COUNT(*) FILTER (WHERE r.state = 'escalated')                             AS escalated_count,
+		    COUNT(*) FILTER (WHERE r.state = 'resolved')                              AS resolved_count,
+		    COALESCE(SUM(i.amount_due_cents) FILTER (WHERE r.state IN ('active','escalated')), 0) AS at_risk_cents
+		FROM invoice_dunning_runs r
+		LEFT JOIN invoices i ON i.id = r.invoice_id
+	`).Scan(&stats.ActiveCount, &stats.EscalatedCount, &stats.ResolvedCount, &stats.AtRiskCents)
+	if err != nil {
+		return Stats{}, err
+	}
+	return stats, nil
+}
+
 // Customer dunning overrides (GetCustomerOverride / UpsertCustomerOverride
 // / DeleteCustomerOverride) were removed in ADR-036. Per-customer
 // differentiation now flows through customers.dunning_policy_id
