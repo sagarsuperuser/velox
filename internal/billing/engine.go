@@ -66,16 +66,6 @@ type Engine struct {
 	testClocks    TestClockReader
 	events        domain.EventDispatcher
 	noPMNotifier  NoPaymentMethodNotifier
-	audit         AuditLogger
-}
-
-// AuditLogger is the narrow audit-write interface the engine uses when
-// the cycle scan auto-mutates a subscription (auto-resume of
-// pause_collection). Matches *audit.Logger.Log so the wiring is just
-// SetAuditLogger(auditLogger). Optional — unset paths skip the write
-// the same way unset events skip dispatch.
-type AuditLogger interface {
-	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
 }
 
 // SetCreditGranter wires the credit-grant issuer used by BillOnCancel
@@ -479,14 +469,6 @@ func (e *Engine) SetEventDispatcher(d domain.EventDispatcher) {
 // the NoPaymentMethodNotifier doc-comment for the full rationale.
 func (e *Engine) SetNoPaymentMethodNotifier(n NoPaymentMethodNotifier) {
 	e.noPMNotifier = n
-}
-
-// SetAuditLogger wires the audit logger used by the cycle scan when it
-// auto-mutates subscriptions (currently: auto-resume of pause_collection).
-// Without this, auto-resume is invisible in the Activity timeline even
-// though manual resume is recorded — Stripe parity expects both.
-func (e *Engine) SetAuditLogger(l AuditLogger) {
-	e.audit = l
 }
 
 // shouldFireScheduledCancel reports whether a sub's soft-cancel intent has
@@ -1397,44 +1379,16 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		now = *sub.NextBillingAt
 	}
 
-	// Auto-resume pause_collection if resumes_at has passed. Stripe parity:
-	// the cycle scan checks resumes_at at cycle time (not via a separate
-	// timer) — when this period closes, if the pause was set to expire
-	// somewhere inside it, the next period bills normally. The clear
-	// updates sub.PauseCollection in-memory so the rest of this call
-	// generates a finalized (not draft) invoice as if no pause had ever
-	// been set.
-	if sub.PauseCollection != nil && sub.PauseCollection.ResumesAt != nil && !sub.PauseCollection.ResumesAt.After(now) {
-		updated, err := e.subs.ClearPauseCollection(ctx, sub.TenantID, sub.ID)
-		if err != nil {
-			slog.Warn("auto-resume pause_collection failed",
-				"subscription_id", sub.ID,
-				"error", err,
-			)
-		} else {
-			sub = updated
-			slog.Info("auto-resumed pause_collection",
-				"subscription_id", sub.ID,
-				"tenant_id", sub.TenantID,
-			)
-			if e.audit != nil {
-				_ = e.audit.Log(ctx, sub.TenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
-					"action":       "collection_resumed",
-					"customer_id":  sub.CustomerID,
-					"resumed_at":   now.UTC(),
-					"triggered_by": "schedule",
-				})
-			}
-			if e.events != nil {
-				_ = e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
-					"subscription_id": sub.ID,
-					"customer_id":     sub.CustomerID,
-					"resumed_at":      now.UTC(),
-					"triggered_by":    "schedule",
-				})
-			}
-		}
-	}
+	// Pause auto-resume is no longer evaluated here — it now runs as a
+	// dedicated phase BEFORE this loop (Scheduler.pauseResumer for
+	// wall-clock, testclock orchestrator Phase 0.7 for clock-pinned).
+	// That phase clears pause_collection at resumes_at directly,
+	// matching Stripe-parity "resume AT resumes_at" semantics; by the
+	// time we reach this code the pause has either already been
+	// cleared or it's still genuinely in force. The old in-cycle gate
+	// silently leaked any sub whose next_billing_at was further out
+	// than resumes_at — first surfaced by a test-clock advance past
+	// resumes_at on a sub whose cycle wasn't due. See ADR-038.
 
 	// If any item has a scheduled plan change whose effective_at falls
 	// within (or at) the cycle being processed, apply them all BEFORE

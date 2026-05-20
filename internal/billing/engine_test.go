@@ -2531,84 +2531,13 @@ func TestRunCycle_PauseCollection_GeneratesDraft(t *testing.T) {
 	}
 }
 
-// TestRunCycle_PauseCollection_AutoResumesWhenResumesAtPasses verifies the
-// cycle scan auto-clears pause_collection when resumes_at <= effectiveNow.
-// After the clear, the rest of the billing run treats the sub as fully
-// resumed: the invoice is finalized (not draft), and a
-// subscription.collection_resumed event fires with triggered_by="schedule"
-// so analytics can distinguish auto-resume from operator-triggered resume.
-func TestRunCycle_PauseCollection_AutoResumesWhenResumesAtPasses(t *testing.T) {
-	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	resumesAt := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC) // earlier than periodEnd (= "now")
-
-	subs := &mockSubs{
-		subs: map[string]domain.Subscription{
-			"sub_1": {
-				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
-				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
-				Status:                    domain.SubscriptionActive,
-				BillingTime:               domain.BillingTimeCalendar,
-				CurrentBillingPeriodStart: &periodStart,
-				CurrentBillingPeriodEnd:   &periodEnd,
-				NextBillingAt:             &periodEnd,
-				PauseCollection: &domain.PauseCollection{
-					Behavior:  domain.PauseCollectionKeepAsDraft,
-					ResumesAt: &resumesAt,
-				},
-			},
-		},
-		cycleUpdated: make(map[string]bool),
-	}
-	pricing := &mockPricing{
-		plans: map[string]domain.Plan{
-			"pln_1": {
-				ID: "pln_1", Name: "Pro", Currency: "USD",
-				BillingInterval: domain.BillingMonthly,
-				BaseAmountCents: 4900,
-			},
-		},
-	}
-	invoices := &mockInvoices{}
-	dispatcher := &capturingEventDispatcher{}
-	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, billingTestClock()))
-	engine.SetEventDispatcher(dispatcher)
-
-	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
-		t.Fatalf("unexpected errors: %v", errs)
-	}
-
-	if len(invoices.invoices) != 1 {
-		t.Fatalf("got %d invoices, want 1", len(invoices.invoices))
-	}
-	got := invoices.invoices[0]
-	if got.Status != domain.InvoiceFinalized {
-		t.Errorf("invoice status after auto-resume: got %q, want %q (pause cleared, treat as normal)", got.Status, domain.InvoiceFinalized)
-	}
-
-	updated := subs.subs["sub_1"]
-	if updated.PauseCollection != nil {
-		t.Errorf("PauseCollection should be cleared after auto-resume, got %+v", updated.PauseCollection)
-	}
-
-	var resumeEvent map[string]any
-	for _, ev := range dispatcher.events {
-		if ev.eventType == domain.EventSubscriptionCollectionResumed {
-			resumeEvent = ev.payload
-			break
-		}
-	}
-	if resumeEvent == nil {
-		types := make([]string, 0, len(dispatcher.events))
-		for _, ev := range dispatcher.events {
-			types = append(types, ev.eventType)
-		}
-		t.Fatalf("expected %s event, got types=%v", domain.EventSubscriptionCollectionResumed, types)
-	}
-	if resumeEvent["triggered_by"] != "schedule" {
-		t.Errorf("triggered_by: got %v, want schedule", resumeEvent["triggered_by"])
-	}
-}
+// Auto-resume of pause_collection is no longer evaluated inside the
+// engine cycle scan — the scheduler runs Service.ProcessExpiredPause-
+// Collections as a dedicated phase BEFORE the cycle scan now (the
+// catchup orchestrator does the equivalent at Phase 0.7). The old
+// in-cycle gate test (TestRunCycle_PauseCollection_AutoResumesWhen-
+// ResumesAtPasses) has been removed; the new contract is covered by
+// service-level tests in the subscription package.
 
 // TestRunCycle_Trial_Active_SkipsBillingAndAdvancesCycle covers case (a) of
 // the trial state machine: the cycle scan visits a trialing sub whose trial

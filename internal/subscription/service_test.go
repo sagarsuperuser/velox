@@ -316,6 +316,54 @@ func (m *memStore) ListExpiredTrialsForClock(_ context.Context, tenantID, clockI
 	return out, nil
 }
 
+func (m *memStore) ListExpiredPauseCollections(_ context.Context, before time.Time, limit int) ([]domain.Subscription, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []domain.Subscription
+	for _, s := range m.subs {
+		if s.TestClockID != "" {
+			continue
+		}
+		if s.PauseCollection == nil || s.PauseCollection.ResumesAt == nil {
+			continue
+		}
+		if s.PauseCollection.ResumesAt.After(before) {
+			continue
+		}
+		s.Items = m.hydrateItems(s.ID)
+		out = append(out, s)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) ListExpiredPauseCollectionsForClock(_ context.Context, tenantID, clockID string, frozen time.Time, limit int) ([]domain.Subscription, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []domain.Subscription
+	for _, s := range m.subs {
+		if s.TenantID != tenantID || s.TestClockID != clockID {
+			continue
+		}
+		if s.PauseCollection == nil || s.PauseCollection.ResumesAt == nil {
+			continue
+		}
+		if s.PauseCollection.ResumesAt.After(frozen) {
+			continue
+		}
+		s.Items = m.hydrateItems(s.ID)
+		out = append(out, s)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
@@ -2933,6 +2981,99 @@ func TestSubMutators_StampSimTimeOnClockPinnedSub(t *testing.T) {
 		}
 		if !item.UpdatedAt.Equal(frozen) {
 			t.Errorf("updated_at: got %v, want %v (frozen)", item.UpdatedAt, frozen)
+		}
+	})
+}
+
+// captureAudit lets the test inspect what Service writes when pause /
+// resume auto-clears via the new scan phases.
+type captureAudit struct {
+	entries []capturedAuditEntry
+}
+
+type capturedAuditEntry struct {
+	action       string
+	resourceID   string
+	metadata     map[string]any
+	resourceType string
+}
+
+func (c *captureAudit) Log(_ context.Context, _, action, resourceType, resourceID, _ string, metadata map[string]any) error {
+	c.entries = append(c.entries, capturedAuditEntry{
+		action: action, resourceType: resourceType, resourceID: resourceID, metadata: metadata,
+	})
+	return nil
+}
+
+// TestProcessExpiredPauseCollections covers the new wall-clock scan
+// that replaces the engine's in-cycle auto-resume gate. The gate
+// only fired when a cycle was due; the scan runs every scheduler
+// tick and is the Stripe-parity "resume AT resumes_at" mechanism.
+func TestProcessExpiredPauseCollections(t *testing.T) {
+	t.Run("resumes wall-clock subs whose resumes_at has passed", func(t *testing.T) {
+		now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+		mem := newMemStore()
+		svc := NewService(mem, clock.NewFake(now))
+		audit := &captureAudit{}
+		svc.SetAuditLogger(audit)
+
+		// One sub paused with resumes_at in the past — should resume.
+		// One sub paused with resumes_at in the future — should NOT.
+		// One sub paused with no resumes_at — should NOT (indefinite).
+		// Past-resumes_at is set by poking the store directly: the
+		// Service.PauseCollection contract rejects past timestamps
+		// (operator should never queue an already-elapsed resume), so
+		// we simulate state that arose from the clock advancing past
+		// a previously-future resumes_at.
+		past := now.Add(-24 * time.Hour)
+		future := now.Add(24 * time.Hour)
+		ctx := context.Background()
+		mkSub := func(code string, pc *domain.PauseCollection) string {
+			s, _ := svc.Create(ctx, "t1", CreateInput{Code: code, DisplayName: code, CustomerID: "c", Items: []CreateItemInput{{PlanID: "p"}}, StartNow: true})
+			_, _ = svc.Activate(ctx, "t1", s.ID)
+			if pc != nil {
+				row := mem.subs[s.ID]
+				row.PauseCollection = pc
+				mem.subs[s.ID] = row
+			}
+			return s.ID
+		}
+		dueID := mkSub("due", &domain.PauseCollection{Behavior: domain.PauseCollectionKeepAsDraft, ResumesAt: &past})
+		futureID := mkSub("future", &domain.PauseCollection{Behavior: domain.PauseCollectionKeepAsDraft, ResumesAt: &future})
+		indefiniteID := mkSub("indef", &domain.PauseCollection{Behavior: domain.PauseCollectionKeepAsDraft})
+
+		audit.entries = nil // discard setup pauses
+		processed, errs := svc.ProcessExpiredPauseCollections(ctx, 50)
+		if len(errs) > 0 {
+			t.Fatalf("unexpected errors: %v", errs)
+		}
+		if processed != 1 {
+			t.Errorf("processed: got %d, want 1 (only the past-resumes_at sub)", processed)
+		}
+
+		got, _ := svc.Get(ctx, "t1", dueID)
+		if got.PauseCollection != nil {
+			t.Errorf("due sub should be resumed, got pause %+v", got.PauseCollection)
+		}
+		stillPaused, _ := svc.Get(ctx, "t1", futureID)
+		if stillPaused.PauseCollection == nil {
+			t.Error("future-resumes_at sub should still be paused")
+		}
+		indef, _ := svc.Get(ctx, "t1", indefiniteID)
+		if indef.PauseCollection == nil {
+			t.Error("indefinite-pause sub should still be paused")
+		}
+
+		// Audit row written with triggered_by=schedule.
+		if len(audit.entries) != 1 {
+			t.Fatalf("audit entries: got %d, want 1", len(audit.entries))
+		}
+		e := audit.entries[0]
+		if e.metadata["action"] != "collection_resumed" {
+			t.Errorf("audit action: got %v, want collection_resumed", e.metadata["action"])
+		}
+		if e.metadata["triggered_by"] != "schedule" {
+			t.Errorf("audit triggered_by: got %v, want schedule", e.metadata["triggered_by"])
 		}
 	})
 }

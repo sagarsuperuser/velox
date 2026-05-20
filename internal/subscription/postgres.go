@@ -830,6 +830,109 @@ func (s *PostgresStore) GetDueBillingForClock(ctx context.Context, tenantID, clo
 	return subs, nil
 }
 
+// ListExpiredPauseCollections returns wall-clock subs whose
+// pause_collection_resumes_at has passed. Used by the scheduler's
+// pause-resume tick (the dedicated scan that pairs with the trial-
+// expiry scan — independent of cycle billing). Excludes clock-
+// pinned subs to honor ADR-028 disjoint flows; those are processed
+// by ListExpiredPauseCollectionsForClock instead.
+//
+// Stripe-parity rationale: Stripe resumes collection AT resumes_at
+// rather than at the next cycle close. Before this method existed,
+// the engine's auto-resume gate lived inside billOnePeriod and only
+// fired when a cycle was due — so a sub whose resumes_at had passed
+// but whose next_billing_at was still in the future would stay
+// paused indefinitely. The new scan closes that gap.
+func (s *PostgresStore) ListExpiredPauseCollections(ctx context.Context, before time.Time, limit int) ([]domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
+		WHERE s.livemode = $1
+		  AND s.test_clock_id IS NULL
+		  AND s.pause_collection_resumes_at IS NOT NULL
+		  AND s.pause_collection_resumes_at <= $2
+		ORDER BY s.pause_collection_resumes_at ASC LIMIT $3
+		FOR UPDATE OF s SKIP LOCKED
+	`, postgres.Livemode(ctx), before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var subs []domain.Subscription
+	for rows.Next() {
+		var sub domain.Subscription
+		if err := scanSubRow(rows, &sub); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range subs {
+		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
+			return nil, err
+		}
+	}
+	return subs, nil
+}
+
+// ListExpiredPauseCollectionsForClock is the clock-scoped counterpart.
+// Per ADR-028 disjoint flows: invoked from the catchup orchestrator
+// inside an Advance window, never by the wall-clock cron. Uses the
+// clock's frozen_time as the cutoff so an Advance that crosses
+// resumes_at picks the row up in the same advance window.
+func (s *PostgresStore) ListExpiredPauseCollectionsForClock(ctx context.Context, tenantID, clockID string, frozen time.Time, limit int) ([]domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
+		WHERE s.test_clock_id = $1
+		  AND s.pause_collection_resumes_at IS NOT NULL
+		  AND s.pause_collection_resumes_at <= $2
+		ORDER BY s.pause_collection_resumes_at ASC LIMIT $3
+		FOR UPDATE OF s SKIP LOCKED
+	`, clockID, frozen, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var subs []domain.Subscription
+	for rows.Next() {
+		var sub domain.Subscription
+		if err := scanSubRow(rows, &sub); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range subs {
+		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
+			return nil, err
+		}
+	}
+	return subs, nil
+}
+
 func (s *PostgresStore) UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

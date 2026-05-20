@@ -1302,6 +1302,103 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 	return processed, batchErrs
 }
 
+// ProcessExpiredPauseCollectionsForClock is the catchup-orchestrator
+// entry point that scans clock-pinned subs whose
+// pause_collection_resumes_at has passed in simulated time, clears the
+// pause, writes audit (triggered_by=schedule), and dispatches
+// `subscription.collection_resumed`. Runs as a dedicated catchup phase
+// BEFORE cycle billing — so when the cycle scan evaluates the sub, the
+// pause has already been cleared and the invoice generates as
+// finalized rather than draft.
+//
+// Stripe-parity rationale: Stripe resumes collection AT resumes_at,
+// not at the next cycle close. The pre-fix gate inside billOnePeriod
+// only fired when a cycle was due, so a sub whose resumes_at had
+// passed but whose next_billing_at was still in the future stayed
+// paused indefinitely — first surfaced by an operator running a test
+// clock past resumes_at and observing the pause hadn't lifted.
+func (s *Service) ProcessExpiredPauseCollectionsForClock(ctx context.Context, tenantID, clockID string, frozen time.Time) (int, []error) {
+	expired, err := s.store.ListExpiredPauseCollectionsForClock(ctx, tenantID, clockID, frozen, 100)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list expired pause collections: %w", err)}
+	}
+	var (
+		processed int
+		batchErrs []error
+	)
+	for _, sub := range expired {
+		bound := s.bindForSub(ctx, tenantID, sub.ID)
+		cleared, err := s.store.ClearPauseCollection(bound, tenantID, sub.ID)
+		if err != nil {
+			batchErrs = append(batchErrs, fmt.Errorf("clear pause %s: %w", sub.ID, err))
+			continue
+		}
+		if s.audit != nil {
+			_ = s.audit.Log(bound, tenantID, domain.AuditActionUpdate, "subscription", cleared.ID, cleared.Code, map[string]any{
+				"action":       "collection_resumed",
+				"customer_id":  cleared.CustomerID,
+				"resumed_at":   frozen.UTC(),
+				"triggered_by": "schedule",
+			})
+		}
+		if s.events != nil {
+			_ = s.events.Dispatch(bound, tenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
+				"subscription_id": cleared.ID,
+				"customer_id":     cleared.CustomerID,
+				"resumed_at":      frozen.UTC(),
+				"triggered_by":    "schedule",
+			})
+		}
+		processed++
+	}
+	return processed, batchErrs
+}
+
+// ProcessExpiredPauseCollections is the wall-clock cron counterpart —
+// scans non-clock-pinned subs whose pause_collection_resumes_at has
+// elapsed in wall-clock time. Same shape as the catchup entry above.
+// Per ADR-028 disjoint flows, the store query explicitly excludes
+// clock-pinned rows.
+func (s *Service) ProcessExpiredPauseCollections(ctx context.Context, batch int) (int, []error) {
+	if batch <= 0 {
+		batch = 100
+	}
+	now := s.clock.Now(ctx)
+	expired, err := s.store.ListExpiredPauseCollections(ctx, now, batch)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list expired pause collections: %w", err)}
+	}
+	var (
+		processed int
+		batchErrs []error
+	)
+	for _, sub := range expired {
+		cleared, err := s.store.ClearPauseCollection(ctx, sub.TenantID, sub.ID)
+		if err != nil {
+			batchErrs = append(batchErrs, fmt.Errorf("clear pause %s: %w", sub.ID, err))
+			continue
+		}
+		if s.audit != nil {
+			_ = s.audit.Log(ctx, sub.TenantID, domain.AuditActionUpdate, "subscription", cleared.ID, cleared.Code, map[string]any{
+				"action":       "collection_resumed",
+				"customer_id":  cleared.CustomerID,
+				"resumed_at":   now.UTC(),
+				"triggered_by": "schedule",
+			})
+		}
+		if s.events != nil {
+			_ = s.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
+				"subscription_id": cleared.ID,
+				"customer_id":     cleared.CustomerID,
+				"resumed_at":      now.UTC(),
+				"triggered_by":    "schedule",
+			})
+		}
+		processed++
+	}
+	return processed, batchErrs
+}
+
 // ExtendTrial pushes a trialing subscription's trial_end_at later. Used
 // when sales/ops grant an existing free-trial customer more time before
 // the auto-flip-and-bill fires. newTrialEnd must be strictly in the
