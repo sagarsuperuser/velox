@@ -98,6 +98,19 @@ type TrialExpirer interface {
 	ProcessExpiredTrialsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time) (int, []error)
 }
 
+// PauseResumer is the narrow hook the catchup orchestrator uses to
+// auto-resume subs whose pause_collection_resumes_at has elapsed.
+// Implemented by *subscription.Service via
+// ProcessExpiredPauseCollectionsForClock. Runs as Phase 0.7 (after
+// trial expiry, before cycle billing) so a sub whose pause expires
+// inside this Advance window unpauses BEFORE the cycle scan evaluates
+// it — giving Stripe-parity "resume at resumes_at" semantics. Without
+// this phase, the auto-resume only fires inside billOnePeriod, which
+// is silent on subs whose next_billing_at is still in the future.
+type PauseResumer interface {
+	ProcessExpiredPauseCollectionsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time) (int, []error)
+}
+
 // TaxRetrier is the narrow hook the catchup orchestrator uses to drive
 // the per-clock tax-retry phase. Implemented by *invoice.Service via
 // RetryPendingTaxForClock. ADR-029 Phase 2.
@@ -148,6 +161,7 @@ type Service struct {
 	queue         CatchupQueue
 	customers     CustomerReader
 	trialExpirer  TrialExpirer
+	pauseResumer  PauseResumer
 	taxRetry      TaxRetrier
 	creditExpirer CreditExpirer
 	dunning       DunningProcessor
@@ -230,6 +244,16 @@ func (s *Service) SetTaxRetrier(t TaxRetrier) {
 // cycle close (Bug #8 regression).
 func (s *Service) SetTrialExpirer(t TrialExpirer) {
 	s.trialExpirer = t
+}
+
+// SetPauseResumer wires the per-clock pause-resume phase (Phase 0.7).
+// Optional — without it, clock-pinned subs whose
+// pause_collection_resumes_at has elapsed stay paused until a cycle
+// happens to be due (the engine's defensive in-cycle gate). Production
+// wires the subscription Service so resume-at-resumes_at parity with
+// Stripe holds across all subs, not just those with imminent cycles.
+func (s *Service) SetPauseResumer(r PauseResumer) {
+	s.pauseResumer = r
 }
 
 type CreateInput struct {
@@ -507,6 +531,19 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
 				_, trialErrs := s.trialExpirer.ProcessExpiredTrialsForClock(ctx, job.TenantID, job.ClockID, trialExpiryFrozen)
 				runErrs = append(runErrs, trialErrs...)
 			}
+		}
+
+		// Phase 0.7: auto-resume any sub whose
+		// pause_collection_resumes_at has elapsed in simulated time —
+		// BEFORE Phase 1 reads the due list, so the cycle scan sees
+		// the sub as un-paused and bills its now-finalized invoice
+		// instead of leaving a draft. Stripe-parity (resume AT
+		// resumes_at, not at next cycle close). frozen_time was
+		// already read above for Phase 0.5; reuse it. Skips silently
+		// if the wiring is absent.
+		if s.pauseResumer != nil && !trialExpiryFrozen.IsZero() {
+			_, pauseErrs := s.pauseResumer.ProcessExpiredPauseCollectionsForClock(ctx, job.TenantID, job.ClockID, trialExpiryFrozen)
+			runErrs = append(runErrs, pauseErrs...)
 		}
 
 		// Phase 1 (ADR-028): generate any newly-due periods. Multi-period

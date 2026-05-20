@@ -134,6 +134,12 @@ func serve() {
 		// the dashboard doesn't lie about lifecycle state for up to
 		// ~30 days past actual trial-end.
 		scheduler.SetTrialExpirer(server.SubscriptionSvc)
+		// Wall-clock pause-resume — clear pause_collection on subs
+		// whose resumes_at has elapsed BEFORE the cycle scan reads the
+		// due list. Stripe-parity (resume AT resumes_at, not next cycle
+		// close). Without this, a paused sub whose next_billing_at is
+		// in the future stays paused indefinitely.
+		scheduler.SetPauseResumer(server.SubscriptionSvc)
 	}
 	if server.PaymentReconciler != nil {
 		scheduler.SetPaymentReconciler(server.PaymentReconciler)

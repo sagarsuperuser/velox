@@ -54,6 +54,18 @@ type TrialExpirer interface {
 	ProcessExpiredTrials(ctx context.Context, batch int) (int, []error)
 }
 
+// PauseResumer is the narrow hook the scheduler uses to auto-resume
+// non-clock-pinned subs whose pause_collection_resumes_at has
+// elapsed in wall-clock time. Implemented by *subscription.Service
+// via ProcessExpiredPauseCollections. Stripe-parity: resume happens
+// AT resumes_at, not at the next cycle close. Without this, a
+// production sub whose resumes_at is past but whose next_billing_at
+// is in the future stays paused indefinitely — the engine's in-cycle
+// gate would only fire when a cycle was actually due.
+type PauseResumer interface {
+	ProcessExpiredPauseCollections(ctx context.Context, batch int) (int, []error)
+}
+
 // TokenCleaner cleans up expired payment update tokens.
 type TokenCleaner interface {
 	Cleanup(ctx context.Context) (int, error)
@@ -94,6 +106,7 @@ type Scheduler struct {
 	idempotencyClean  IdempotencyCleaner
 	taxRetrier        TaxRetrier
 	trialExpirer      TrialExpirer
+	pauseResumer      PauseResumer
 	paymentReconciler PaymentReconciler
 	locker            Locker
 	billingLockKey    int64
@@ -159,6 +172,14 @@ func (s *Scheduler) SetTaxRetrier(r TaxRetrier) {
 // calendar billing that's the next month boundary, ~30 days late.
 func (s *Scheduler) SetTrialExpirer(t TrialExpirer) {
 	s.trialExpirer = t
+}
+
+// SetPauseResumer wires the wall-clock pause-resume phase. Without it,
+// non-clock-pinned subs whose pause_collection_resumes_at has elapsed
+// stay paused until a cycle is independently due — diverging from
+// Stripe's "resume AT resumes_at" semantics.
+func (s *Scheduler) SetPauseResumer(p PauseResumer) {
+	s.pauseResumer = p
 }
 
 // SetPaymentReconciler wires a resolver for PaymentUnknown invoices. Runs
@@ -337,6 +358,21 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		}
 		for _, err := range tErrs {
 			slog.Error("trial expiry error", "mode", mode, "error", err)
+		}
+	}
+
+	// 0.95 Pause auto-resume — clear pause_collection on any sub
+	// whose resumes_at has elapsed, BEFORE the cycle scan reads the
+	// due list. Stripe-parity (resume AT resumes_at, not next cycle
+	// close). Wall-clock counterpart to the catchup orchestrator's
+	// Phase 0.7. Clock-pinned subs are excluded per ADR-028.
+	if s.pauseResumer != nil {
+		resumed, pErrs := s.pauseResumer.ProcessExpiredPauseCollections(ctx, s.batch)
+		if resumed > 0 || len(pErrs) > 0 {
+			slog.Info("pause auto-resume", "mode", mode, "resumed", resumed, "errors", len(pErrs))
+		}
+		for _, err := range pErrs {
+			slog.Error("pause auto-resume error", "mode", mode, "error", err)
 		}
 	}
 
