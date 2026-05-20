@@ -10,6 +10,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/tax"
@@ -153,6 +154,71 @@ func TestRetryPendingCharges_DispatchesToCorrectQuery(t *testing.T) {
 		// is verified in the postgres integration test.
 		_, _ = engine.RetryPendingChargesForClock(context.Background(), "t1", "tc_1", 50)
 	})
+}
+
+// TestRetryPendingCharges_CardDeclineDoesNotEscalate locks in the
+// expected-vs-fatal classification fix. A Stripe card decline is a
+// routine business outcome handled by dunning (ChargeInvoice fires
+// inline StartDunning + stamps payment_status=failed on the invoice),
+// NOT a catchup-infrastructure failure. Pre-fix the decline error
+// bubbled up through processAutoCharge → RetryPendingChargesForClock
+// → testclock catchup → clock flipped to internal_failure on the
+// first declined invoice.
+func TestRetryPendingCharges_CardDeclineDoesNotEscalate(t *testing.T) {
+	inv := &mockInvoices{
+		invoices: []domain.Invoice{{
+			ID: "inv_decline", TenantID: "t1", CustomerID: "cus_1",
+			Status:            domain.InvoiceFinalized,
+			PaymentStatus:     domain.PaymentPending,
+			AutoChargePending: true,
+			AmountDueCents:    1000,
+		}},
+	}
+	subs := &mockSubs{cycleUpdated: make(map[string]bool)}
+	pricing := &mockPricing{}
+	pms := &fakePaymentSetups{ready: true, stripeCustomerID: "cus_stripe_1"}
+	charger := &fakeChargerDecline{}
+
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{}, pricing, inv, nil, &mockSettings{}, pms, charger, billingTestClock()))
+
+	charged, errs := engine.RetryPendingCharges(context.Background(), 50)
+	if charged != 0 {
+		t.Errorf("charged: got %d, want 0 (card declined)", charged)
+	}
+	if len(errs) != 0 {
+		t.Errorf("decline must not escalate; got %d errors: %v", len(errs), errs)
+	}
+	// AutoChargePending must be cleared so the next catchup tick doesn't
+	// re-pick the same invoice — dunning's retry schedule drives the
+	// next attempt.
+	if inv.invoices[0].AutoChargePending {
+		t.Error("AutoChargePending should be cleared after decline (dunning takes over)")
+	}
+}
+
+// fakeChargerDecline returns a *payment.PaymentError with DeclineCode
+// set — the canonical "card declined" Stripe outcome.
+type fakeChargerDecline struct{}
+
+func (c *fakeChargerDecline) ChargeInvoice(_ context.Context, _ string, inv domain.Invoice, _ string) (domain.Invoice, error) {
+	return inv, &payment.PaymentError{Message: "Card was declined.", DeclineCode: "card_declined"}
+}
+
+// fakePaymentSetups returns a static "ready" setup for any customer.
+type fakePaymentSetups struct {
+	ready            bool
+	stripeCustomerID string
+}
+
+func (f *fakePaymentSetups) GetPaymentSetup(_ context.Context, _, _ string) (domain.CustomerPaymentSetup, error) {
+	status := domain.PaymentSetupMissing
+	if f.ready {
+		status = domain.PaymentSetupReady
+	}
+	return domain.CustomerPaymentSetup{
+		SetupStatus:      status,
+		StripeCustomerID: f.stripeCustomerID,
+	}, nil
 }
 
 // TestBillSubscription_LoopsUntilCaughtUp asserts the per-sub

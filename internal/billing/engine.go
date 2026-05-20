@@ -16,6 +16,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/money"
@@ -3234,6 +3235,22 @@ func (e *Engine) RetryPendingChargesForClock(ctx context.Context, tenantID, cloc
 // processAutoCharge is the shared body of RetryPendingCharges and
 // RetryPendingChargesForClock — once the candidate list is fetched,
 // the per-invoice charge loop is identical for cron and catchup.
+//
+// Error classification: a card decline (Stripe 402 with a typed
+// decline_code) is an EXPECTED business outcome, not a catchup
+// failure. ChargeInvoice already inline-fires StartDunning for the
+// declined invoice and stamps invoice.payment_status='failed' →
+// dunning takes over from there. Returning the decline as an error
+// would push the test-clock catchup into 'internal_failure' for what
+// is supposed to be a normal payment-failure flow.
+//
+// Only Unknown (5xx, network drop, timeout — outcome unresolved) and
+// non-Stripe errors (config, infrastructure) escalate to the caller.
+// Unknown errors return because the reconciler needs to follow up on
+// the ambiguous PaymentIntent; the catchup orchestrator surfaces them
+// to the operator. Industry parity: Stripe Test Clocks don't fail
+// when a tester uses a decline-card; they record the decline and
+// move on.
 func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice) (int, []error) {
 	charged := 0
 	var errs []error
@@ -3245,8 +3262,34 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 
 		chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if _, err := e.charger.ChargeInvoice(chargeCtx, inv.TenantID, inv, ps.StripeCustomerID); err != nil {
-			errs = append(errs, fmt.Errorf("charge invoice %s: %w", inv.ID, err))
 			cancel()
+			// Card decline: expected outcome. ChargeInvoice already
+			// stamped invoice.payment_status='failed' and fired
+			// inline StartDunning (closes the Phase 3 → Phase 5
+			// webhook race per stripe.go:401-426). Don't push the
+			// catchup to internal_failure for a normal payment
+			// failure. SetAutoChargePending(false) too so the next
+			// catchup run doesn't pick the same invoice — dunning's
+			// own retry schedule drives subsequent attempts.
+			var pe *payment.PaymentError
+			if errors.As(err, &pe) && pe.DeclineCode != "" {
+				_ = e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false)
+				slog.Info("auto-charge declined; dunning will retry on schedule",
+					"invoice_id", inv.ID, "decline_code", pe.DeclineCode)
+				continue
+			}
+			// Transient (breaker open / pre-Stripe timeout): skip
+			// this tick without bumping dunning. The next catchup
+			// will retry.
+			if errors.Is(err, payment.ErrPaymentTransient) {
+				slog.Info("auto-charge skipped; transient breaker/timeout",
+					"invoice_id", inv.ID)
+				continue
+			}
+			// Everything else (Unknown PaymentError or non-Stripe
+			// error) escalates — the catchup operator gets visible
+			// feedback to investigate.
+			errs = append(errs, fmt.Errorf("charge invoice %s: %w", inv.ID, err))
 			continue
 		}
 		cancel()
