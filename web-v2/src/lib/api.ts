@@ -853,6 +853,12 @@ export interface TimelineEvent {
   // event types may add their own contextual detail later.
   // ADR-020.
   detail?: string
+  // RFC3339 timestamp the detail prefix refers to (e.g. for the
+  // "Auto-resumes" / "On" / "New trial end:" cases). When set, the
+  // renderer formats it in tenant TZ via formatDateTime so the sub-
+  // line stays consistent with the main row timestamp instead of
+  // mixing the operator's TZ with backend-baked UTC.
+  detail_timestamp?: string
   // Audit-sourced events carry the actor who performed the action. The
   // invoice payment timeline never populates these (webhook + dunning are
   // system-driven) so they're strictly optional.

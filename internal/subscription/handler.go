@@ -1539,9 +1539,17 @@ type timelineEvent struct {
 	// "At end of current period", "New trial end: …", "Amount ≥ …",
 	// "Plan: … → …", "After next cycle close", etc.
 	Detail      string `json:"detail,omitempty"`
-	ActorType   string `json:"actor_type,omitempty"`
-	ActorName   string `json:"actor_name,omitempty"`
-	ActorID     string `json:"actor_id,omitempty"`
+	// DetailTimestamp ships the RFC3339 timestamp that the detail
+	// prefix refers to (e.g. "Auto-resumes" → resumes_at). When set,
+	// the frontend formats it in tenant TZ via formatDateTime so the
+	// sub-line stays consistent with the main row timestamp. Pre-fix
+	// the backend formatted the timestamp inline in UTC, producing
+	// rows that mixed the operator's TZ (main row) with UTC (sub-line)
+	// — confusing on first read.
+	DetailTimestamp string `json:"detail_timestamp,omitempty"`
+	ActorType       string `json:"actor_type,omitempty"`
+	ActorName       string `json:"actor_name,omitempty"`
+	ActorID         string `json:"actor_id,omitempty"`
 	// IsSimulated marks events whose timestamp is in the simulated-
 	// time domain. On a clock-pinned sub, operator audit actions
 	// stamp audit_log.created_at via clock.Now(boundCtx) (PR-11/12
@@ -1580,12 +1588,12 @@ func planLabel(planID string, planNames map[string]string) string {
 // (activityTimeline) batch-fetches every plan_id referenced in the
 // audit entries before invoking this function. Missing entries fall
 // back to the raw ID (deleted plan / lookup miss).
-func describeSubscriptionAction(action string, meta map[string]any, planNames map[string]string) (desc, detail, status string) {
+func describeSubscriptionAction(action string, meta map[string]any, planNames map[string]string) (desc, detail, detailTimestamp, status string) {
 	switch action {
 	case domain.AuditActionCreate:
-		return "Subscription created", "", "info"
+		return "Subscription created", "", "", "info"
 	case domain.AuditActionActivate:
-		return "Subscription activated", "", "succeeded"
+		return "Subscription activated", "", "", "succeeded"
 	case domain.AuditActionCancel:
 		by := ""
 		if v, ok := meta["canceled_by"].(string); ok && v != "" {
@@ -1601,7 +1609,7 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 		if v, ok := meta["prorated_credit_cents"].(float64); ok && v > 0 {
 			d = fmt.Sprintf("Prorated credit issued: $%.2f", v/100)
 		}
-		return "Subscription canceled" + by, d, "canceled"
+		return "Subscription canceled" + by, d, "", "canceled"
 	case domain.AuditActionUpdate:
 		// AuditActionUpdate is a catch-all bucket; the meaningful
 		// discriminator is meta["action"]. Every operator-driven
@@ -1611,18 +1619,20 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 		switch a {
 		case "cancel_scheduled":
 			if v, ok := meta["cancel_at_period_end"].(bool); ok && v {
-				return "Cancellation scheduled", "At end of current period", "warning"
+				return "Cancellation scheduled", "At end of current period", "", "warning"
 			}
 			if t, ok := meta["cancel_at"].(string); ok && t != "" {
-				return "Cancellation scheduled", "On " + formatAuditTimestamp(t), "warning"
+				return "Cancellation scheduled", "On", t, "warning"
 			}
-			return "Cancellation scheduled", "", "warning"
+			return "Cancellation scheduled", "", "", "warning"
 		case "cancel_cleared":
-			return "Scheduled cancellation cleared", "", "info"
+			return "Scheduled cancellation cleared", "", "", "info"
 		case "collection_paused":
 			d := ""
+			ts := ""
 			if r, ok := meta["resumes_at"].(string); ok && r != "" {
-				d = "Auto-resumes " + formatAuditTimestamp(r)
+				d = "Auto-resumes"
+				ts = r
 			} else {
 				d = "Cycle keeps drafting; no charge until resumed"
 			}
@@ -1630,20 +1640,22 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 			if tb, _ := meta["triggered_by"].(string); tb == "dunning" {
 				title = "Collection paused by dunning"
 			}
-			return title, d, "warning"
+			return title, d, ts, "warning"
 		case "collection_resumed":
 			if tb, _ := meta["triggered_by"].(string); tb == "schedule" {
-				return "Collection auto-resumed", "Scheduled resume date reached", "succeeded"
+				return "Collection auto-resumed", "Scheduled resume date reached", "", "succeeded"
 			}
-			return "Collection resumed", "", "succeeded"
+			return "Collection resumed", "", "", "succeeded"
 		case "trial_ended":
-			return "Trial ended early", "", "info"
+			return "Trial ended early", "", "", "info"
 		case "trial_extended":
 			d := ""
+			ts := ""
 			if t, ok := meta["trial_end"].(string); ok && t != "" {
-				d = "New trial end: " + formatAuditTimestamp(t)
+				d = "New trial end:"
+				ts = t
 			}
-			return "Trial extended", d, "info"
+			return "Trial extended", d, ts, "info"
 		case "billing_thresholds_set":
 			parts := []string{}
 			if v, ok := meta["amount_gte"].(float64); ok && v > 0 {
@@ -1652,9 +1664,9 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 			if v, ok := meta["item_threshold_count"].(float64); ok && v > 0 {
 				parts = append(parts, fmt.Sprintf("%d item threshold%s", int(v), plural(int(v))))
 			}
-			return "Billing thresholds set", strings.Join(parts, " · "), "info"
+			return "Billing thresholds set", strings.Join(parts, " · "), "", "info"
 		case "billing_thresholds_cleared":
-			return "Billing thresholds cleared", "", "info"
+			return "Billing thresholds cleared", "", "", "info"
 		case "item_added":
 			parts := []string{}
 			if v, ok := meta["plan_id"].(string); ok && v != "" {
@@ -1663,18 +1675,18 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 			if q, ok := meta["quantity"].(float64); ok && q > 0 {
 				parts = append(parts, fmt.Sprintf("qty %d", int(q)))
 			}
-			return "Item added", strings.Join(parts, " · "), "info"
+			return "Item added", strings.Join(parts, " · "), "", "info"
 		case "item_removed":
 			// item_id was operator-illegible noise on the row; drop
 			// it entirely. "Item removed" is enough — operators
 			// reading the timeline don't think in vlx_si_ tokens.
-			return "Item removed", "", "info"
+			return "Item removed", "", "", "info"
 		case "cancel_pending_item_plan_change":
-			return "Pending plan change canceled", "", "info"
+			return "Pending plan change canceled", "", "", "info"
 		}
 		// Unknown sub-action — surface the bucket label rather than
 		// hiding the row. Better than silently dropping audit context.
-		return "Subscription updated", "", "info"
+		return "Subscription updated", "", "", "info"
 	case "subscription.item_updated":
 		// Item-level plan + quantity changes go through this dedicated
 		// action (not AuditActionUpdate) so the metadata discriminator
@@ -1695,24 +1707,24 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 				parts = append(parts, planLabel(oldPlan, planNames)+" → "+planLabel(newPlan, planNames))
 			}
 			parts = append(parts, when)
-			return "Plan changed", strings.Join(parts, " · "), "info"
+			return "Plan changed", strings.Join(parts, " · "), "", "info"
 		case "item_quantity_changed":
 			parts := []string{}
 			if q, ok := meta["quantity"].(float64); ok {
 				parts = append(parts, fmt.Sprintf("To qty %d", int(q)))
 			}
 			parts = append(parts, when)
-			return "Quantity changed", strings.Join(parts, " · "), "info"
+			return "Quantity changed", strings.Join(parts, " · "), "", "info"
 		}
-		return "Item updated", "", "info"
+		return "Item updated", "", "", "info"
 	case "subscription.proration_failed":
 		d := ""
 		if e, ok := meta["error"].(string); ok && e != "" {
 			d = e
 		}
-		return "Proration failed", d, "warning"
+		return "Proration failed", d, "", "warning"
 	default:
-		return action, "", "info"
+		return action, "", "", "info"
 	}
 }
 
@@ -1723,17 +1735,6 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
-}
-
-// formatAuditTimestamp humanizes an RFC3339 timestamp from audit
-// metadata for sub-line rendering. Returns the input unchanged on
-// parse failure — better than dropping the value entirely.
-func formatAuditTimestamp(raw string) string {
-	t, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		return raw
-	}
-	return t.UTC().Format("Jan 2, 2006 3:04 PM") + " UTC"
 }
 
 func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
@@ -1810,18 +1811,19 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			for _, e := range entries {
-				desc, detail, status := describeSubscriptionAction(e.Action, e.Metadata, planNames)
+				desc, detail, detailTS, status := describeSubscriptionAction(e.Action, e.Metadata, planNames)
 				events = append(events, timelineEvent{
-					Timestamp:   e.CreatedAt.UTC().Format(time.RFC3339),
-					Source:      "audit",
-					EventType:   e.Action,
-					Status:      status,
-					Description: desc,
-					Detail:      detail,
-					ActorType:   e.ActorType,
-					ActorName:   e.ActorName,
-					ActorID:     e.ActorID,
-					IsSimulated: subOnClock,
+					Timestamp:       e.CreatedAt.UTC().Format(time.RFC3339),
+					Source:          "audit",
+					EventType:       e.Action,
+					Status:          status,
+					Description:     desc,
+					Detail:          detail,
+					DetailTimestamp: detailTS,
+					ActorType:       e.ActorType,
+					ActorName:       e.ActorName,
+					ActorID:         e.ActorID,
+					IsSimulated:     subOnClock,
 				})
 			}
 		} else {
