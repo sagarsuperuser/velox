@@ -23,6 +23,17 @@ const (
 	BillingTimeAnniversary SubscriptionBillingTime = "anniversary"
 )
 
+// BeginningOfDayIn snaps `t` to 00:00:00 on its calendar date in `loc`,
+// returned as a UTC instant for storage. Day-grade billing requires
+// this to align UI-displayed dates with proration math.
+func BeginningOfDayIn(t time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := t.In(loc)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc).UTC()
+}
+
 // BeginningOfMonthIn snaps `t` to the first-of-month-at-00:00 in `loc`,
 // returned as UTC. Calendar-billing anchor helper. Shared between
 // subscription.Service (initial activation / trial-end / reset) and
@@ -62,7 +73,23 @@ func NextBillingPeriodEnd(periodEnd time.Time, billingTime SubscriptionBillingTi
 		return periodEnd.AddDate(1, 0, 0)
 	}
 	if billingTime == BillingTimeCalendar {
-		return BeginningOfMonthIn(periodEnd.AddDate(0, 1, 0), loc)
+		// Add the month in LOCAL TZ so the resulting "1st of next
+		// month" is the next calendar boundary in the tenant's zone,
+		// not in UTC. UTC AddDate can shift the local day across the
+		// month boundary when the local-vs-UTC offset crosses
+		// midnight — e.g. periodEnd = Jun 19 18:30 UTC is Jun 20 IST,
+		// AddDate in UTC gives Jul 19 18:30 UTC = Jul 20 IST, then
+		// BeginningOfMonth in IST snaps to Jul 1 (correct). But for
+		// periodEnd = Apr 30 18:30 UTC = May 1 IST, AddDate in UTC
+		// gives May 30 18:30 UTC = May 31 IST, then BeginningOfMonth
+		// in IST snaps to May 1 (WRONG — caller expected Jun 1).
+		// Adding the month in local TZ avoids the off-by-one.
+		if loc == nil {
+			loc = time.UTC
+		}
+		local := periodEnd.In(loc)
+		next := local.AddDate(0, 1, 0)
+		return time.Date(next.Year(), next.Month(), 1, 0, 0, 0, 0, loc).UTC()
 	}
 	return periodEnd.AddDate(0, 1, 0)
 }

@@ -1057,6 +1057,79 @@ func TestRunCycle_CalendarMonthly_AutoRealignsOnCycleClose(t *testing.T) {
 	}
 }
 
+// TestRunCycle_PlanIntervalChange_CalendarSnaps locks in the
+// root-cause fix: when a sub has a pending plan-change applied at
+// cycle close that switches yearly→monthly (the actual path that
+// creates the day-N anchor drift), the new period MUST anchor to
+// the next calendar boundary on calendar billing — not preserve
+// the yearly anniversary day-of-month for the rest of the sub's
+// life.
+//
+// Pre-fix advanceBillingPeriod was interval-only and would compute
+// `periodEnd + 1 month` = (yearly anniv + 1 month), persisting the
+// drift. The new domain.NextBillingPeriodEnd snaps to the calendar
+// boundary, so the first post-swap cycle is a stub (anniv → 1st)
+// followed by clean day-1 cycles forever.
+func TestRunCycle_PlanIntervalChange_CalendarSnaps(t *testing.T) {
+	// Yearly period anchored on day-20 (one year before close).
+	periodStart := time.Date(2028, 5, 20, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2029, 5, 20, 0, 0, 0, 0, time.UTC)
+	// Pending plan change effective at the cycle close — yearly → monthly.
+	effective := periodEnd
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{
+					{
+						ID:                     "si_1",
+						PlanID:                 "pln_yearly",
+						Quantity:               1,
+						PendingPlanID:          "pln_monthly",
+						PendingPlanEffectiveAt: &effective,
+					},
+				},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_yearly":  {ID: "pln_yearly", Name: "Yr", Currency: "USD", BillingInterval: domain.BillingYearly, BaseAmountCents: 12000},
+			"pln_monthly": {ID: "pln_monthly", Name: "Mo", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 1000},
+		},
+	}
+	fakeClk := clock.NewFake(periodEnd.Add(time.Nanosecond))
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, &mockInvoices{}, nil, &mockSettings{}, nil, nil, fakeClk))
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	updated := subs.subs["sub_1"]
+	// After the cycle close + pending-plan apply, the new period must
+	// snap to the next calendar boundary (Jun 1) under the new monthly
+	// plan — NOT preserve the yearly anniversary day-20 (which would
+	// give us Jun 20, the bug).
+	wantStart := time.Date(2029, 5, 20, 0, 0, 0, 0, time.UTC)
+	wantEnd := time.Date(2029, 6, 1, 0, 0, 0, 0, time.UTC)
+	if !updated.CurrentBillingPeriodStart.Equal(wantStart) {
+		t.Errorf("new period start: got %v, want %v", updated.CurrentBillingPeriodStart, wantStart)
+	}
+	if !updated.CurrentBillingPeriodEnd.Equal(wantEnd) {
+		t.Errorf("new period end: got %v, want %v (calendar-snap after yearly→monthly swap)", updated.CurrentBillingPeriodEnd, wantEnd)
+	}
+	// Item plan_id must have flipped to the new monthly plan.
+	if updated.Items[0].PlanID != "pln_monthly" {
+		t.Errorf("pending plan not applied: item plan_id = %v, want pln_monthly", updated.Items[0].PlanID)
+	}
+}
+
 // TestRunCycle_AnniversaryMonthly_PreservesDayOfMonth is the negative
 // guard: anniversary billing must NOT snap to calendar boundary. The
 // configured anchor is the sub-start day-of-month; cycle close rolls

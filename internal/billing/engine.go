@@ -1508,7 +1508,12 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	if sub.Status == domain.SubscriptionTrialing {
 		trialOver := sub.TrialEndAt == nil || !now.Before(*sub.TrialEndAt)
 		if !trialOver {
-			nextBilling := advanceBillingPeriod(periodEnd, domain.BillingMonthly)
+			// Trial-active cycle advance: honors billing_time so calendar
+			// subs with an extended-past-period trial stay calendar-aligned.
+			// Interval is hardcoded monthly here (plans not yet fetched);
+			// trial-extended-past-yearly-cycle is an edge case that the
+			// pre-existing hardcoded `monthly` already approximated.
+			nextBilling := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, domain.BillingMonthly, e.tenantLocation(ctx, sub.TenantID))
 			slog.Info("skipping billing (trial active)", "subscription_id", sub.ID)
 			return false, e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, periodEnd, nextBilling, nextBilling)
 		}
@@ -1762,7 +1767,12 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				continue
 			}
 			baseStart := periodEnd
-			baseEnd := advanceBillingPeriod(periodEnd, plan.BillingInterval)
+			// In_advance base-fee line item label MUST match what the
+			// engine will use as the next billing period — uses the
+			// billing_time-aware helper so calendar+monthly subs show
+			// the calendar-aligned next period on the line item, not
+			// the day-of-month-preserved drifted period.
+			baseEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID))
 			baseFee := plan.BaseAmountCents * it.Quantity
 			description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
 			unitAmount := plan.BaseAmountCents
@@ -2122,7 +2132,12 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	for _, it := range sub.Items {
 		if plans[it.PlanID].BaseBillTiming == domain.BillInAdvance {
 			invoicePeriodStart = periodEnd
-			invoicePeriodEnd = advanceBillingPeriod(periodEnd, plans[it.PlanID].BillingInterval)
+			// Invoice header for an in_advance sub covers the upcoming
+			// period — must match what the sub's next current_period_*
+			// will be set to (computed via NextBillingPeriodEnd below
+			// at cycle close). Diverging here would leave the invoice
+			// header period and the sub's tracked period out of sync.
+			invoicePeriodEnd = domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[it.PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID))
 			break
 		}
 	}
@@ -2261,9 +2276,10 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				slog.Warn("failed to mark fully-credited invoice as paid", "invoice_id", inv.ID, "error", err)
 			} else {
 				slog.Info("invoice fully covered by credits, marked as paid", "invoice_id", inv.ID)
-				// Still advance the billing cycle
+				// Still advance the billing cycle (billing_time-aware
+				// so calendar subs auto-realign on credit-paid cycles too).
 				nextPeriodStart := periodEnd
-				nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
+				nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID))
 				if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
 					return true, fmt.Errorf("advance billing cycle: %w", err)
 				}
