@@ -320,7 +320,14 @@ const docBaseURL = "https://docs.velox.dev/errors/"
 // generic awaiting_payment classification — backwards-compat for
 // internal call sites that don't have a PaymentMethodReader handy.
 func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
-	if inv.Status == InvoicePaid || inv.Status == InvoiceVoided {
+	// Terminal-ish statuses produce no attention surface. Uncollectible
+	// is technically forward-transitionable (operator can still record
+	// an offline payment or void it) but Stripe-parity treats it as a
+	// settled state for dunning/diagnostic purposes — the operator has
+	// already acknowledged "we're not collecting this." Surfacing a
+	// payment_failed attention banner on top of that contradicts the
+	// operator's decision.
+	if inv.Status == InvoicePaid || inv.Status == InvoiceVoided || inv.Status == InvoiceUncollectible {
 		return nil
 	}
 	switch {

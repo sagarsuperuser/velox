@@ -715,6 +715,24 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 }
 
 // ResolveRun marks a dunning run as resolved (e.g., after manual payment).
+//
+// When resolution is invoice_not_collectible, the underlying invoice is
+// ALSO flipped to status=uncollectible — same downstream contract as
+// the automated mark_uncollectible final-action. Pre-fix the two flows
+// diverged: an operator picking "Write off invoice" in the resolve
+// dialog only updated the dunning_runs row, leaving the invoice in
+// status=finalized + payment_status=failed and every UI gate keyed
+// off invoice.status still treating it as live. Cross-flow audit per
+// feedback_audit_overlapping_flows: same operator intent ("we're not
+// collecting"), same end state required.
+//
+// The invoice-side write is best-effort and logged on failure rather
+// than rolled back — the run's resolved state is itself useful for the
+// dunning history view, and a wrapper transaction across two domains
+// is heavier than the rarity warrants. If MarkUncollectible 4xxs
+// (e.g. invoice was already paid via webhook between dialog open and
+// submit), we surface the error to the caller and the operator can
+// reconcile.
 func (s *Service) ResolveRun(ctx context.Context, tenantID, runID string, resolution domain.DunningResolution) (domain.InvoiceDunningRun, error) {
 	run, err := s.store.GetRun(ctx, tenantID, runID)
 	if err != nil {
@@ -737,7 +755,24 @@ func (s *Service) ResolveRun(ctx context.Context, tenantID, runID string, resolu
 		CreatedAt: now,
 	})
 
-	return s.store.UpdateRun(ctx, tenantID, run)
+	updated, err := s.store.UpdateRun(ctx, tenantID, run)
+	if err != nil {
+		return domain.InvoiceDunningRun{}, err
+	}
+
+	if resolution == domain.ResolutionInvoiceNotCollectible && s.invoiceUncollect != nil {
+		if err := s.invoiceUncollect.MarkUncollectible(ctx, tenantID, run.InvoiceID); err != nil {
+			// Already-uncollectible is benign (race with automated
+			// final_action). Surface other errors so the operator
+			// knows the dunning run was resolved but the invoice
+			// didn't transition.
+			if !errors.Is(err, errs.ErrInvalidState) {
+				return updated, fmt.Errorf("mark invoice uncollectible: %w", err)
+			}
+		}
+	}
+
+	return updated, nil
 }
 
 // ResolveByInvoice resolves any active dunning run for the given invoice.

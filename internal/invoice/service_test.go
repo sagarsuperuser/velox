@@ -191,6 +191,21 @@ func (m *memStore) UpdatePayment(_ context.Context, tenantID, id string, ps doma
 	return inv, nil
 }
 
+func (m *memStore) MarkPaid(_ context.Context, tenantID, id, stripeID string, paidAt time.Time) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv.Status = domain.InvoicePaid
+	inv.PaymentStatus = domain.PaymentSucceeded
+	inv.StripePaymentIntentID = stripeID
+	inv.AmountPaidCents = inv.AmountDueCents
+	inv.AmountDueCents = 0
+	inv.PaidAt = &paidAt
+	m.invoices[id] = inv
+	return inv, nil
+}
+
 func (m *memStore) ApplyCreditNote(_ context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
 	inv, ok := m.invoices[id]
 	if !ok || inv.TenantID != tenantID {
@@ -796,6 +811,180 @@ func TestRecordPayment(t *testing.T) {
 		}
 		if failed.LastPaymentError != "card_declined" {
 			t.Errorf("got error %q, want card_declined", failed.LastPaymentError)
+		}
+	})
+}
+
+// captureAudit + captureEvents let the tests assert that the service-
+// layer audit + webhook emit fire on state transitions.
+type captureAuditInvoice struct {
+	entries []capturedAuditEntryInvoice
+}
+
+type capturedAuditEntryInvoice struct {
+	action       string
+	resourceID   string
+	resourceType string
+	metadata     map[string]any
+}
+
+func (c *captureAuditInvoice) Log(_ context.Context, _, action, resourceType, resourceID, _ string, metadata map[string]any) error {
+	c.entries = append(c.entries, capturedAuditEntryInvoice{
+		action: action, resourceType: resourceType, resourceID: resourceID, metadata: metadata,
+	})
+	return nil
+}
+
+type captureEvents struct {
+	events []capturedEvent
+}
+
+type capturedEvent struct {
+	eventType string
+	payload   map[string]any
+}
+
+func (c *captureEvents) Dispatch(_ context.Context, _, eventType string, payload map[string]any) error {
+	c.events = append(c.events, capturedEvent{eventType: eventType, payload: payload})
+	return nil
+}
+
+// TestMarkUncollectible_WritesAuditAndDispatchesEvent locks in the
+// Stripe-parity contract: MarkUncollectible must produce both an
+// audit row (so Activity surfaces the transition) AND a webhook
+// dispatch (invoice.marked_uncollectible — Stripe-matched name).
+// Both fire from the service layer so any caller (HTTP handler,
+// dunning final-action adapter, ResolveRun cross-flow) gets them.
+func TestMarkUncollectible_WritesAuditAndDispatchesEvent(t *testing.T) {
+	svc := NewService(newMemStore(), nil, newMemNumberer())
+	audit := &captureAuditInvoice{}
+	events := &captureEvents{}
+	svc.SetAuditLogger(audit)
+	svc.SetEventDispatcher(events)
+	ctx := context.Background()
+
+	inv, _ := svc.Create(ctx, "t1", CreateInput{
+		CustomerID: "c", SubscriptionID: "s",
+		BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+	})
+	if _, err := svc.Finalize(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	out, err := svc.MarkUncollectible(ctx, "t1", inv.ID)
+	if err != nil {
+		t.Fatalf("MarkUncollectible: %v", err)
+	}
+	if out.Status != domain.InvoiceUncollectible {
+		t.Errorf("status: got %q, want uncollectible", out.Status)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("audit entries: got %d, want 1", len(audit.entries))
+	}
+	if a := audit.entries[0]; a.metadata["action"] != "marked_uncollectible" {
+		t.Errorf("audit metadata.action: got %v, want marked_uncollectible", a.metadata["action"])
+	}
+	if len(events.events) != 1 || events.events[0].eventType != domain.EventInvoiceMarkedUncollectible {
+		t.Errorf("events: got %+v, want one invoice.marked_uncollectible", events.events)
+	}
+}
+
+// TestRecordOfflinePayment exercises the Stripe-parity offline-recovery
+// transition: finalized-unpaid → paid AND uncollectible → paid. Both
+// must (a) succeed, (b) write audit with the originating status in
+// metadata, (c) dispatch invoice.payment_recorded. Voided + already-
+// paid are rejected.
+func TestRecordOfflinePayment(t *testing.T) {
+	mkSvc := func() (*Service, *captureAuditInvoice, *captureEvents) {
+		svc := NewService(newMemStore(), nil, newMemNumberer())
+		audit := &captureAuditInvoice{}
+		events := &captureEvents{}
+		svc.SetAuditLogger(audit)
+		svc.SetEventDispatcher(events)
+		return svc, audit, events
+	}
+	ctx := context.Background()
+	mkFinalized := func(svc *Service) domain.Invoice {
+		inv, _ := svc.Create(ctx, "t1", CreateInput{
+			CustomerID: "c", SubscriptionID: "s",
+			BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+		})
+		final, _ := svc.Finalize(ctx, "t1", inv.ID)
+		return final
+	}
+
+	t.Run("finalized → paid", func(t *testing.T) {
+		svc, audit, events := mkSvc()
+		inv := mkFinalized(svc)
+		out, err := svc.RecordOfflinePayment(ctx, "t1", inv.ID, "Cheque #1234")
+		if err != nil {
+			t.Fatalf("RecordOfflinePayment: %v", err)
+		}
+		if out.PaymentStatus != domain.PaymentSucceeded {
+			t.Errorf("payment_status: got %q, want succeeded", out.PaymentStatus)
+		}
+		if out.PaidAt == nil {
+			t.Error("paid_at should be set")
+		}
+		if len(audit.entries) != 1 || audit.entries[0].metadata["action"] != "payment_recorded" {
+			t.Errorf("audit: got %+v", audit.entries)
+		}
+		if audit.entries[0].metadata["recovered_from_status"] != string(domain.InvoiceFinalized) {
+			t.Errorf("audit recovered_from_status: got %v, want finalized", audit.entries[0].metadata["recovered_from_status"])
+		}
+		if audit.entries[0].metadata["note"] != "Cheque #1234" {
+			t.Errorf("audit note: got %v, want Cheque #1234", audit.entries[0].metadata["note"])
+		}
+		if len(events.events) != 1 || events.events[0].eventType != domain.EventInvoicePaymentRecorded {
+			t.Errorf("events: got %+v", events.events)
+		}
+	})
+
+	t.Run("uncollectible → paid (Stripe recovery)", func(t *testing.T) {
+		svc, _, _ := mkSvc()
+		inv := mkFinalized(svc)
+		if _, err := svc.MarkUncollectible(ctx, "t1", inv.ID); err != nil {
+			t.Fatalf("setup mark uncollectible: %v", err)
+		}
+		out, err := svc.RecordOfflinePayment(ctx, "t1", inv.ID, "")
+		if err != nil {
+			t.Fatalf("RecordOfflinePayment from uncollectible: %v", err)
+		}
+		if out.Status != domain.InvoicePaid {
+			t.Errorf("status: got %q, want paid (recovery from uncollectible)", out.Status)
+		}
+	})
+
+	t.Run("rejects already paid", func(t *testing.T) {
+		svc, _, _ := mkSvc()
+		inv := mkFinalized(svc)
+		if _, err := svc.RecordOfflinePayment(ctx, "t1", inv.ID, ""); err != nil {
+			t.Fatalf("first record: %v", err)
+		}
+		if _, err := svc.RecordOfflinePayment(ctx, "t1", inv.ID, ""); err == nil {
+			t.Error("expected error on already-paid invoice")
+		}
+	})
+
+	t.Run("rejects voided", func(t *testing.T) {
+		svc, _, _ := mkSvc()
+		inv := mkFinalized(svc)
+		if _, err := svc.Void(ctx, "t1", inv.ID); err != nil {
+			t.Fatalf("setup void: %v", err)
+		}
+		if _, err := svc.RecordOfflinePayment(ctx, "t1", inv.ID, ""); err == nil {
+			t.Error("expected error on voided invoice")
+		}
+	})
+
+	t.Run("rejects draft", func(t *testing.T) {
+		svc, _, _ := mkSvc()
+		inv, _ := svc.Create(ctx, "t1", CreateInput{
+			CustomerID: "c", SubscriptionID: "s",
+			BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+		})
+		if _, err := svc.RecordOfflinePayment(ctx, "t1", inv.ID, ""); err == nil {
+			t.Error("expected error on draft invoice")
 		}
 	})
 }

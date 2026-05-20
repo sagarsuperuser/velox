@@ -276,6 +276,17 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/{id}/apply-coupon", h.applyCoupon)
 	r.Post("/{id}/retry-tax", h.retryTax)
 	r.Post("/{id}/rotate-public-token", h.rotatePublicToken)
+	// Stripe-parity offline-payment recovery. Lets the operator mark
+	// an unpaid (or uncollectible) invoice as paid without going
+	// through a PaymentIntent — for cheque, wire, cash, or any
+	// out-of-band collection. Stripe's equivalent is the
+	// paid_out_of_band=true flag on POST /v1/invoices/{id}/pay.
+	r.Post("/{id}/record-payment", h.recordOfflinePayment)
+	// Stripe-parity uncollectible mark — operator-driven path. The
+	// dunning automation reaches this same service method via the
+	// mark_uncollectible final-action; this endpoint lets the
+	// operator do it directly without waiting for retries.
+	r.Post("/{id}/mark-uncollectible", h.markUncollectible)
 	r.Get("/{id}/payment-timeline", h.paymentTimeline)
 	return r
 }
@@ -546,6 +557,87 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventInvoiceVoided, inv)
+
+	respond.JSON(w, r, http.StatusOK, inv)
+}
+
+// markUncollectible is the operator-driven Stripe-parity bad-debt
+// write-off. Service-layer write + event already happen inside
+// invoice.Service.MarkUncollectible (so the dunning automated path
+// and ResolveRun(invoice_not_collectible) get the same contract);
+// this handler adds the side-effects that only fire on the direct
+// operator action: resolve any active dunning run so retry
+// automation halts immediately.
+//
+// Industry parity: Stripe + Recurly both halt all dunning activity
+// when an invoice is marked uncollectible / failed. We resolve the
+// active dunning run with ResolutionRetriesExhausted-shape semantics
+// (NOT invoice_not_collectible, which would loop back into the
+// "also mark invoice uncollectible" branch we just executed).
+func (h *Handler) markUncollectible(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	inv, err := h.svc.MarkUncollectible(r.Context(), tenantID, id)
+	if err != nil {
+		respond.FromError(w, r, err, "invoice")
+		return
+	}
+
+	// Halt dunning automation. Best-effort — failure is logged not
+	// surfaced; the invoice transition is the authoritative state
+	// change, and dunning runs scan the invoice status on next tick
+	// anyway. Using ResolutionManuallyResolved (not the
+	// invoice_not_collectible resolution) because the invoice flip
+	// already happened above; passing the matching resolution would
+	// recurse via ResolveRun's cross-flow branch we just added.
+	if h.dunning != nil {
+		if err := h.dunning.ResolveByInvoice(r.Context(), tenantID, id, domain.ResolutionManuallyResolved); err != nil {
+			slog.WarnContext(r.Context(), "failed to resolve dunning on mark-uncollectible", "invoice_id", id, "error", err)
+		}
+	}
+
+	respond.JSON(w, r, http.StatusOK, inv)
+}
+
+// recordOfflinePayment flips an unpaid (or uncollectible) invoice to
+// paid based on operator-recorded out-of-band collection (cheque,
+// wire, cash). Stripe-parity: their paid_out_of_band=true flag on
+// POST /v1/invoices/{id}/pay surfaces the same recovery path.
+//
+// Body shape: { "note": "Cheque #1234" } — single optional string.
+// Amount is implicit (full amount_due); partial payments deferred to
+// when a customer asks. Date stamps as clock.Now (sim-time on
+// clock-pinned invoices).
+//
+// Side-effects: resolves any active dunning run with
+// ResolutionPaymentRecovered so the dashboard reflects the recovery
+// in the dunning history view.
+func (h *Handler) recordOfflinePayment(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	var input struct {
+		Note string `json:"note"`
+	}
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			respond.BadRequest(w, r, "invalid JSON body")
+			return
+		}
+	}
+
+	inv, err := h.svc.RecordOfflinePayment(r.Context(), tenantID, id, input.Note)
+	if err != nil {
+		respond.FromError(w, r, err, "invoice")
+		return
+	}
+
+	if h.dunning != nil {
+		if err := h.dunning.ResolveByInvoice(r.Context(), tenantID, id, domain.ResolutionPaymentRecovered); err != nil {
+			slog.WarnContext(r.Context(), "failed to resolve dunning on record-payment", "invoice_id", id, "error", err)
+		}
+	}
 
 	respond.JSON(w, r, http.StatusOK, inv)
 }

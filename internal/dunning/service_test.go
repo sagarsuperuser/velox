@@ -589,6 +589,74 @@ func TestResolveRun(t *testing.T) {
 	}
 }
 
+// capturingUncollect records calls to MarkUncollectible so the
+// cross-flow test below can assert the dunning resolve path actually
+// reaches the invoice service.
+type capturingUncollect struct {
+	calls []string // invoice IDs
+	err   error
+}
+
+func (c *capturingUncollect) MarkUncollectible(_ context.Context, _, invoiceID string) error {
+	c.calls = append(c.calls, invoiceID)
+	return c.err
+}
+
+// TestResolveRun_InvoiceNotCollectible_CascadesToInvoice locks in the
+// cross-flow contract: picking "Write off invoice" in the resolve
+// dialog must reach Invoice.MarkUncollectible so the underlying
+// invoice transitions to status=uncollectible — not just update the
+// dunning_runs row. Pre-fix the two flows diverged, leaving the
+// invoice in finalized+failed state with every UI gate still treating
+// it as live.
+func TestResolveRun_InvoiceNotCollectible_CascadesToInvoice(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &noopRetrier{}, nil)
+	uncollect := &capturingUncollect{}
+	svc.SetInvoiceUncollectibleMarker(uncollect)
+	ctx := context.Background()
+
+	run, _ := svc.StartDunning(ctx, "t1", "inv_42", "cus_1", time.Now())
+
+	resolved, err := svc.ResolveRun(ctx, "t1", run.ID, domain.ResolutionInvoiceNotCollectible)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved.Resolution != domain.ResolutionInvoiceNotCollectible {
+		t.Errorf("resolution: got %q, want invoice_not_collectible", resolved.Resolution)
+	}
+	if len(uncollect.calls) != 1 || uncollect.calls[0] != "inv_42" {
+		t.Errorf("MarkUncollectible calls: got %v, want [inv_42]", uncollect.calls)
+	}
+}
+
+// TestResolveRun_OtherResolutionsDoNotCascade ensures the cross-flow
+// branch is gated exclusively to invoice_not_collectible. The other
+// resolutions (payment_recovered, manually_resolved, retries_exhausted)
+// must leave the invoice alone — they're audit signals, not state
+// transitions on the invoice.
+func TestResolveRun_OtherResolutionsDoNotCascade(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &noopRetrier{}, nil)
+	uncollect := &capturingUncollect{}
+	svc.SetInvoiceUncollectibleMarker(uncollect)
+	ctx := context.Background()
+
+	for _, res := range []domain.DunningResolution{
+		domain.ResolutionPaymentRecovered,
+		domain.ResolutionManuallyResolved,
+		domain.ResolutionRetriesExhausted,
+	} {
+		run, _ := svc.StartDunning(ctx, "t1", "inv_"+string(res), "cus_1", time.Now())
+		if _, err := svc.ResolveRun(ctx, "t1", run.ID, res); err != nil {
+			t.Fatalf("ResolveRun(%s): %v", res, err)
+		}
+	}
+	if len(uncollect.calls) != 0 {
+		t.Errorf("non-uncollectible resolutions leaked into MarkUncollectible: %v", uncollect.calls)
+	}
+}
+
 func TestUpsertPolicy(t *testing.T) {
 	store := newMemStore()
 	svc := NewService(store, &noopRetrier{}, nil)

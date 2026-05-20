@@ -532,7 +532,7 @@ function ResolveDialog({ run, invoiceMap, onClose, onResolved }: {
   const resolutionOptions = [
     { value: 'payment_recovered', label: 'Payment recovered', description: 'Customer has paid -- mark invoice as paid and close dunning.', variant: 'default' as const },
     { value: 'manually_resolved', label: 'Manually resolved', description: 'Issue resolved through other means (offline payment, negotiation, etc.)', variant: 'default' as const },
-    { value: 'invoice_not_collectible', label: 'Write off invoice', description: 'Mark the invoice as uncollectible. This will void the invoice.', variant: 'destructive' as const },
+    { value: 'invoice_not_collectible', label: 'Write off invoice', description: 'Marks the invoice as uncollectible (bad debt). Halts dunning automation. The invoice stays on the books for audit. Subscription stays active — cancel separately if needed.', variant: 'destructive' as const },
   ]
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -595,9 +595,9 @@ function ResolveDialog({ run, invoiceMap, onClose, onResolved }: {
           </div>
 
           {resolution === 'invoice_not_collectible' && (
-            <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
-              <p className="text-xs font-medium text-destructive">
-                This action will void the invoice, reverse any credits applied, and cancel the Stripe payment intent. This cannot be undone.
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+              <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                Marks the invoice <strong>uncollectible</strong> — recorded as bad debt. No refund, no credit reversal, no void. The invoice can still be recovered later via Record Payment (Stripe-parity uncollectible → paid) or reclassified via Void if the situation changes.
               </p>
             </div>
           )}
