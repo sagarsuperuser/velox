@@ -520,10 +520,15 @@ Default `base_bill_timing=in_arrears`: the recurring base + any usage settles at
 
 ## FLOW B7: Plan change + proration
 
-- [ ] Active sub on Starter → change to Enterprise "immediately" → proration invoice generated.
-- [ ] Downgrade immediately → credits to balance.
-- [ ] Plan change without immediately → no proration; applies at next period boundary.
-- [ ] **Plan change across `base_bill_timing` is rejected with 400.** Swapping a single-item sub from an `in_arrears` plan to an `in_advance` plan (or vice versa) via the dashboard's Change Plan dialog — both immediate and scheduled — returns `bill_timing change is not supported on plan-swap`. Same rejection at the API (`PATCH /v1/subscriptions/{id}/items/{item_id}`). Operator path is cancel + recreate on the target plan. Multi-item rejection at Create / AddItem: mixing `in_arrears` + `in_advance` items on the same sub → 400 with `all items must share the same bill_timing`.
+- [ ] In_arrears sub upgrade immediately → no immediate proration invoice/credit; cycle close emits per-segment lines (FLOW B20).
+- [ ] In_arrears sub downgrade immediately → no immediate credit grant; cycle close emits per-segment lines.
+- [ ] In_advance sub upgrade immediately + source invoice paid → immediate proration invoice for the delta lands in customer's invoices.
+- [ ] In_advance sub downgrade immediately + source invoice paid → immediate credit grant lands in `customer_credit_ledger`.
+- [ ] In_advance sub upgrade/downgrade immediately + source invoice **unpaid** → no immediate artifact (operator must wait for source invoice to clear OR void it).
+- [ ] Scheduled plan change (`immediate=false`) → no immediate artifact; engine emits closing invoice under OUTGOING plan at period boundary (FLOW B20).
+- [ ] Plan change across `base_bill_timing` rejected with 400 (`bill_timing change is not supported on plan-swap`) — both immediate and scheduled. Operator path: cancel + recreate.
+- [ ] Immediate cross-interval plan-swap (monthly → yearly) rejected with 400 (`immediate plan-swap across billing intervals is not supported`). Scheduled cross-interval still allowed.
+- [ ] Plan billing-fields immutability (ADR-034): live-sub plans reject `PATCH` to `base_amount_cents` / `base_bill_timing` / `meter_ids` with 422; `name` / `description` / `tax_code` / `status` mutate cleanly.
 - [ ] **Plan billing-fields immutability (ADR-034)**: with at least one live sub on a plan, `PATCH /v1/plans/{id}` with a different `base_amount_cents`, `base_bill_timing`, or `meter_ids` → **422** with message naming the blocked field(s) + live-sub count + "Create a new plan instead." Display-only fields (`name`, `description`, `tax_code`, `status`) STILL mutate cleanly on the same call. On a plan with zero live subs, all fields are mutable (covers typo correction at plan creation). Canceled / archived subs do NOT count as live for the guard.
 
 ## FLOW B8: Usage caps
@@ -621,7 +626,7 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 
 ## FLOW B17: `in_advance` cancel proration credit
 
-- [ ] Setup: customer with PM, sub on `pro-advance` ($49/mo), day-1 invoice paid (B15).
+- [ ] Setup: customer with PM, sub on `pro-advance` ($49/mo), day-1 invoice **paid** (B15).
 - [ ] Cancel mid-period (e.g. day 15 of a 30-day period) → status `canceled`.
 - [ ] Customer Detail → Credits tab → new ledger entry:
   - `entry_type = grant`
@@ -631,6 +636,7 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] Cancel on a pure `in_arrears` sub → no proration credit (nothing was prebilled).
 - [ ] Mixed sub (one in_advance item + one in_arrears item) → credit covers only the in_advance item's unused portion.
 - [ ] Future invoices on this customer auto-apply the credit (C1 behavior).
+- [ ] **Source invoice paid-check (Chargebee Refundable vs Adjustment shape):** repeat the setup but DON'T pay the day-1 invoice (`payment_status='pending'`). Cancel mid-period → status `canceled` but **NO credit ledger entry**. Server log: `cancel proration: source in_advance invoice not paid; skipping credit grant`. The unpaid invoice flows through dunning as normal (void or uncollectible); operator manually grants credit if needed.
 
 ## FLOW B19: Cancel-flow billing artifacts (PR-9 + PR-10)
 
@@ -639,6 +645,16 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] **Clean cancel at-or-after period_end:** Cancel Nov 30 with current_period_end=Dec 1 → BillFinalOnImmediateCancel no-op. The cycle close already billed (or will bill) the period; no second final invoice fires. Credit grant also no-op for in_advance (clean cancel, period used in full).
 - [ ] **Scheduled cancel at period_end on `in_advance` (PR-9):** sub `in_advance` $100/mo, operator `schedule-cancel at_period_end=true` mid-Nov. At Dec 1 cycle close: cycle-close invoice contains **NO upcoming-period base line** ($100 NOT charged for Dec 1–Jan 1 that won't be used). Usage line for Nov 1–Dec 1 still bills normally. Then scheduled cancel fires; sub.status=canceled. Pre-PR-9 the customer paid $100 for a period they wouldn't use.
 - [ ] **Scheduled cancel at period_end on `in_arrears`:** same setup with in_arrears plan. Cycle-close invoice for Nov 1–Dec 1 has full base ($100) + usage (correct — customer consumed the just-elapsed period). Cancel fires after. No overcharge — in_arrears was never affected by PR-9.
+
+## FLOW B20: Segment-aware billing at cycle close (Lago / Orb shape)
+
+- [ ] **Mid-period plan swap (in_arrears, same interval):** sub on Plan A ($30/mo in_arrears), day 15 of March operator UpdateItem to Plan B ($60/mo in_arrears, immediate=true). At April 1 cycle close: invoice has **two base-fee lines** — `Plan A - base fee (qty 1, prorated 14/31 days)` ≈ $13.55 + `Plan B - base fee (qty 1, prorated 17/31 days)` ≈ $32.90. Total ≈ $46.45 (vs. pre-segment $60 or pre-defer $85).
+- [ ] **Mid-period plan swap, different meter sets:** Plan A has meter X only ($0.05/unit), Plan B has meter Y only ($0.10/unit). Swap day 15. Ingest 100 units of X in [Mar 1, Mar 15) and 50 units of Y in [Mar 15, Apr 1). Cycle close invoice has TWO usage lines: `Meter X (unit)` with `billing_period_start=Mar 1, billing_period_end=Mar 15`, $5.00; `Meter Y (unit)` with `billing_period_start=Mar 15, billing_period_end=Apr 1`, $5.00. Total usage $10.
+- [ ] **No mid-period changes (no-regress):** sub with no UpdateItem / AddItem / RemoveItem during the cycle → cycle-close invoice has exactly one base-fee line at the current plan, billing_period equals the full period.
+- [ ] **Scheduled plan-swap at boundary:** schedule UpdateItem with `immediate=false` from Plan A ($30) to Plan B ($60). At cycle close: invoice has **one** base-fee line at Plan A's $30 (not $60). New plan B takes effect for the next cycle.
+- [ ] **Mid-period item add:** sub with one item, AddItem on day 15. Cycle close: first item's full-period line + added item's segment line from day 15 to period_end. Added item's `billing_period_start` on the line equals add-time, NOT period_start.
+- [ ] **Mid-period item remove (in_arrears):** sub with one item-A + one item-B, RemoveItem on B day 15. Cycle close: item-A full-period line + item-B segment line from period_start to day 15. No credit grant emitted (in_arrears removed item was never prepaid).
+- [ ] **Immediate cancel after mid-period plan swap:** UpdateItem Plan A → Plan B day 10, Cancel day 20. `BillFinalOnImmediateCancel` invoice has TWO segment base lines: Plan A for [day 1, day 10) + Plan B for [day 10, day 20). Plus usage lines per (meter, segment).
 
 ## FLOW B18: Meter Detail page
 
