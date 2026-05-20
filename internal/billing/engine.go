@@ -2014,7 +2014,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// burning one on a phantom invoice creates audit gaps).
 	if subtotal == 0 && len(lineItems) == 0 {
 		nextPeriodStart := periodEnd
-		nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
+		nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID))
 		if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
 			return false, fmt.Errorf("advance billing cycle (no-op invoice): %w", err)
 		}
@@ -2182,7 +2182,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			)
 			// Still advance the billing cycle in case it was missed
 			nextPeriodStart := periodEnd
-			nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
+			nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID))
 			_ = e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now)
 			return false, nil
 		}
@@ -2330,9 +2330,14 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		}
 	}
 
-	// Advance billing cycle (or fire scheduled cancel if due)
+	// Advance billing cycle (or fire scheduled cancel if due). Uses
+	// domain.NextBillingPeriodEnd (NOT the legacy interval-only
+	// advanceBillingPeriod) so calendar-billing subs whose anchor day
+	// drifted from a prior plan-interval change auto-re-align to the
+	// next calendar boundary instead of carrying the drifted day
+	// forward forever.
 	nextPeriodStart := periodEnd
-	nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
+	nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID))
 
 	if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
 		return false, fmt.Errorf("advance billing cycle: %w", err)
@@ -3692,6 +3697,15 @@ func nextTaxRetry(ctx context.Context, status domain.InvoiceTaxStatus, errCode s
 	return &t
 }
 
+// advanceBillingPeriod is the legacy interval-only roll-forward —
+// preserves the input timestamp's day-of-month for monthly intervals.
+// Kept for non-cycle-close contexts (segment-length computation,
+// in_advance base coverage projection, cancel-proration math) where
+// we want the natural interval roll regardless of billing_time.
+//
+// **Cycle-close MUST use domain.NextBillingPeriodEnd instead** — that
+// helper honors billing_time so calendar-billing subs auto-re-anchor
+// after plan-interval changes drift the anchor day-of-month.
 func advanceBillingPeriod(from time.Time, interval domain.BillingInterval) time.Time {
 	switch interval {
 	case domain.BillingYearly:
@@ -3699,4 +3713,23 @@ func advanceBillingPeriod(from time.Time, interval domain.BillingInterval) time.
 	default:
 		return from.AddDate(0, 1, 0)
 	}
+}
+
+// tenantLocation resolves the tenant's preferred timezone for cycle-
+// close calendar-boundary snapping. Mirrors subscription.Service's
+// tenantLocation. Failures collapse to UTC — the snap is a UX
+// alignment, not a correctness invariant.
+func (e *Engine) tenantLocation(ctx context.Context, tenantID string) *time.Location {
+	if e.settings == nil {
+		return time.UTC
+	}
+	ts, err := e.settings.Get(ctx, tenantID)
+	if err != nil || ts.Timezone == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(ts.Timezone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
