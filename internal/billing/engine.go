@@ -2013,6 +2013,39 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		}
 	}
 
+	// Skip empty cycle-close invoices — matches BillOnCreate's and
+	// BillFinalOnImmediateCancel's existing zero-subtotal guards and
+	// the Stripe / Lago / Chargebee / Orb convention of NOT emitting
+	// a $0 invoice when there's literally nothing to bill. Common
+	// triggers in practice:
+	//
+	//   - in_advance plan + scheduled cancel-at-period-end (PR-9):
+	//     upcoming-period base line is skipped because the customer
+	//     won't use the period; if there's no usage to bill for the
+	//     just-elapsed period either, the result is zero line items.
+	//   - in_arrears item removed mid-period: pre-remove segment
+	//     emits, but post-remove there's no current item, so the
+	//     next cycle's invoice may have zero base lines.
+	//   - Pure-trial period closure: nothing to bill yet.
+	//
+	// Still advance the cycle so the period anchor moves forward —
+	// the absence of an invoice doesn't mean the period didn't pass.
+	// No invoice number is consumed (NextInvoiceNumber is monotonic;
+	// burning one on a phantom invoice creates audit gaps).
+	if subtotal == 0 && len(lineItems) == 0 {
+		nextPeriodStart := periodEnd
+		nextPeriodEnd := advanceBillingPeriod(periodEnd, plans[sub.Items[0].PlanID].BillingInterval)
+		if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
+			return false, fmt.Errorf("advance billing cycle (no-op invoice): %w", err)
+		}
+		slog.Info("cycle close skipped — no billable lines",
+			"subscription_id", sub.ID,
+			"period_start", periodStart,
+			"period_end", periodEnd,
+		)
+		return false, nil
+	}
+
 	// Create invoice — pull settings for payment terms + tax, then allocate the
 	// invoice number as a strictly monotonic per-tenant sequence. No fallback:
 	// a collision-prone number is worse than a failed billing tick since the
