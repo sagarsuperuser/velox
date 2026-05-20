@@ -380,12 +380,13 @@ Yearly-sub and future-dated `cancel_at` variants are impractical to verify on wa
 
 ## FLOW TC9: Pause collection auto-resume (via catchup)
 
-The ONLY end-to-end manual-test coverage of `pause_collection` with `resumes_at` auto-resume. B6's "Pause → Resume" line tests the dashboard's Pause button (which now routes to the same `pause_collection` mechanism after PR-6 removed the hard-pause radio); this flow exercises the auto-resume path that the operator-facing button doesn't expose.
+End-to-end coverage of `pause_collection` with `resumes_at` auto-resume. The dashboard's Pause Collection dialog now exposes the "Auto-resume on" date input (Stripe-parity — Stripe's pause-collection modal has the same field). API path is still available for SDK callers.
 
-- [ ] Setup: clock-pinned active sub. `POST /subscriptions/:id/pause-collection` with `resumes_at = frozen+7d`, `behavior=keep_as_draft`.
-- [ ] Sub `pause_collection_resumes_at = frozen+7d`, `pause_collection_behavior=keep_as_draft`.
+- [ ] Setup: clock-pinned active sub. Open Pause Collection dialog → enter `Auto-resume on = frozen+7d` → confirm. Toast: "Collection paused — auto-resumes on the date you picked".
+- [ ] Sub row in DB: `pause_collection_resumes_at = frozen+7d`, `pause_collection_behavior=keep_as_draft`.
 - [ ] Advance clock through a cycle boundary while paused → invoice generated but stays DRAFT (no finalize, no charge, no dunning) — engine respects pause_collection.
 - [ ] Advance clock past `resumes_at` → catchup auto-clears `pause_collection_*` columns; next cycle bills normally; previously-draft invoice can be finalized manually if intended.
+- [ ] API parity: `POST /v1/subscriptions/{id}/pause-collection` with `{"behavior":"keep_as_draft","resumes_at":"..."}` produces the same sub state as the dialog path.
 
 ## FLOW TC10: Credit grant expiry firing (via catchup)
 
