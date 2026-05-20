@@ -37,7 +37,11 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { Loader2, Mail, CreditCard, Link2, RotateCw, Info } from 'lucide-react'
+import { Loader2, Mail, CreditCard, Link2, RotateCw, Info, MoreHorizontal, Download, Eye, XCircle, Receipt, AlertOctagon } from 'lucide-react'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
@@ -419,6 +423,16 @@ export default function InvoiceDetailPage() {
             </p>
           )}
         </div>
+        {/* Action surface — Stripe / Linear / Vercel dashboard pattern.
+            One primary CTA per state + an overflow menu ⋯ for everything
+            else. Replaces the prior 8-10 buttons flowing across the
+            header which crowded the page and obscured the next action.
+
+            Draft is the exception: Add Line Item / Apply Coupon are
+            inline EDIT actions (mutating the line items table just
+            below); keeping them as flat header buttons preserves the
+            "you're editing this draft" affordance. Everything else
+            sits in the overflow. */}
         <div className="flex items-center gap-2">
           {invoice.status === 'draft' && (
             <>
@@ -430,144 +444,49 @@ export default function InvoiceDetailPage() {
                   Apply Coupon
                 </Button>
               )}
-              {/* Finalize is server-blocked when tax_status != 'ok'
-                  (sending an invoice with wrong/missing tax creates
-                  compliance exposure). Mirror the server gate on the
-                  UI so operators see the constraint without clicking
-                  through to a 409 toast. Stripe Dashboard does the
-                  same on drafts with automatic_tax.status !=
-                  complete. See ADR-009 / FLOW I5b. */}
-              {(() => {
-                const taxBlocked = invoice.tax_status === 'pending' || invoice.tax_status === 'failed'
-                if (!taxBlocked) {
-                  return (
-                    <Button size="sm" onClick={() => finalizeMutation.mutate()} disabled={acting}>
-                      Finalize
-                    </Button>
-                  )
-                }
-                const reason = invoice.tax_status === 'pending'
-                  ? 'Tax calculation is still pending — retry in progress. Finalize unblocks once tax_status = ok.'
-                  : 'Tax calculation has failed after retries. Resolve the customer billing profile or retry tax before finalizing.'
-                return (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="inline-block cursor-not-allowed">
-                        <Button size="sm" disabled>Finalize</Button>
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>{reason}</TooltipContent>
-                  </Tooltip>
-                )
-              })()}
             </>
           )}
 
-          {invoice.status !== 'voided' && invoice.status !== 'paid' && (
-            <Button variant="outline" size="sm" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowVoidConfirm(true)} disabled={acting}>
-              Void
-            </Button>
-          )}
-
-          {invoice.status !== 'voided' && (
-            <Button variant="outline" size="sm" onClick={() => setShowEmailModal(true)} disabled={acting}>
-              <Mail size={14} className="mr-1.5" />
-              Email
-            </Button>
-          )}
-
-          {/* Issue Credit — valid against any post-finalize invoice
-              that wasn't fully voided. Stripe + Chargebee + Recurly
-              all allow credit notes on uncollectible (the customer
-              still owes the bookkeeping reduction even if we wrote
-              off the receivable). */}
-          {(invoice.status === 'finalized' || invoice.status === 'paid' || invoice.status === 'uncollectible') && (
-            <Button variant="outline" size="sm" onClick={() => setShowCreditModal(true)} disabled={acting}>
-              <CreditCard size={14} className="mr-1.5" />
-              Issue Credit
-            </Button>
-          )}
-
-          {/* Record offline payment — Stripe-parity operator path for
-              cheque / wire / cash. Available on finalized-unpaid AND
-              uncollectible (the "we gave up but they paid after all"
-              recovery transition). Hidden while a charge is in flight
-              to avoid double-recording. */}
-          {((invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0) ||
-            invoice.status === 'uncollectible') && (
-            <Button variant="outline" size="sm" onClick={() => setShowRecordPaymentDialog(true)} disabled={acting}>
-              Record Payment
-            </Button>
-          )}
-
-          {/* Mark uncollectible — Stripe-parity bad-debt write-off.
-              Surfaced for finalized invoices that haven't paid yet.
-              Direct operator action; the dunning automated path
-              reaches the same Service.MarkUncollectible. */}
-          {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && (
-            <Button variant="outline" size="sm" className="border-amber-500 text-amber-700 hover:bg-amber-500/10" onClick={() => setShowMarkUncollectibleConfirm(true)} disabled={acting}>
-              Mark Uncollectible
-            </Button>
-          )}
-
-          {/* Hosted-invoice URL actions: only visible when the invoice has
-              a public token — i.e. it's been finalized (drafts have none)
-              and hasn't been pre-addendum-finalized without a rotate. */}
-          {invoice.public_token && invoice.status !== 'draft' && (
-            <>
+          {/* Primary CTA — the state-specific "next step." Operators
+              should see one obvious green action. Other actions
+              (including secondary destructive ones like Void) live
+              behind the overflow menu. */}
+          {invoice.status === 'draft' && (() => {
+            // Server gates Finalize when tax_status != 'ok'. Mirror
+            // the gate on the UI so operators see the constraint
+            // before clicking. Stripe Dashboard does the same.
+            const taxBlocked = invoice.tax_status === 'pending' || invoice.tax_status === 'failed'
+            if (!taxBlocked) {
+              return (
+                <Button size="sm" onClick={() => finalizeMutation.mutate()} disabled={acting}>
+                  Finalize
+                </Button>
+              )
+            }
+            const reason = invoice.tax_status === 'pending'
+              ? 'Tax calculation is still pending — retry in progress. Finalize unblocks once tax_status = ok.'
+              : 'Tax calculation has failed after retries. Resolve the customer billing profile or retry tax before finalizing.'
+            return (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="outline" size="sm" onClick={copyPublicLink} disabled={acting}>
-                    <Link2 size={14} className="mr-1.5" />
-                    Copy Link
-                  </Button>
+                  <span className="inline-block cursor-not-allowed">
+                    <Button size="sm" disabled>Finalize</Button>
+                  </span>
                 </TooltipTrigger>
-                <TooltipContent className="max-w-md break-all">{publicInvoiceURL}</TooltipContent>
+                <TooltipContent>{reason}</TooltipContent>
               </Tooltip>
-              {/* Rotate is unpaid-only. The hosted URL on a paid invoice
-                  acts as the customer's receipt page; rotation rarely
-                  matters once paid (no scenario where a stale URL is
-                  abused — the page just reads "Paid"). Hidden here
-                  matches Stripe; operators who genuinely need to
-                  invalidate a paid-receipt URL can hit
-                  POST /v1/invoices/{id}/rotate-public-token directly. */}
-              {invoice.status !== 'paid' && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button variant="outline" size="sm" onClick={() => setShowRotatePublicTokenConfirm(true)} disabled={acting}>
-                      <RotateCw size={14} className="mr-1.5" />
-                      Rotate
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Invalidate the current URL and mint a new one</TooltipContent>
-                </Tooltip>
-              )}
-            </>
-          )}
+            )
+          })()}
 
           {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0 && (
-            // Disabled-with-tooltip when the customer has no PM ready.
-            // Calling Collect Payment with no PM would 4xx; the
-            // attention banner already surfaces the path forward
-            // (Add payment method). Tooltip cross-links the constraint
-            // so the disabled button isn't a dead-end. Same pattern as
-            // Finalize-disabled-on-tax-failure.
-            // Also hidden when payment_status === 'processing' — a
-            // charge is in flight; firing another would race the
-            // webhook and could double-charge if the first attempt
-            // completes between click and dispatch.
             !hasPaymentMethod ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="inline-block cursor-not-allowed">
-                    <Button size="sm" disabled className="pointer-events-none">
-                      Collect Payment
-                    </Button>
+                    <Button size="sm" disabled className="pointer-events-none">Collect Payment</Button>
                   </span>
                 </TooltipTrigger>
-                <TooltipContent>
-                  Attach a payment method first.
-                </TooltipContent>
+                <TooltipContent>Attach a payment method first.</TooltipContent>
               </Tooltip>
             ) : (
               <Button size="sm" onClick={() => collectMutation.mutate()} disabled={acting}>
@@ -576,26 +495,123 @@ export default function InvoiceDetailPage() {
             )
           )}
 
-          <Button
-            variant="outline" size="sm"
-            onClick={async () => {
-              try {
-                const res = await fetch(`/v1/invoices/${invoice.id}/pdf`, {
-                  credentials: 'same-origin',
-                })
-                const blob = await res.blob()
-                const url = URL.createObjectURL(blob)
-                setPdfPreviewUrl(url)
-              } catch {
-                toast.error('Failed to load PDF preview')
-              }
-            }}
-          >
-            Preview PDF
-          </Button>
-          <Button size="sm" onClick={() => downloadPDF(invoice.id, invoice.invoice_number)}>
-            Download PDF
-          </Button>
+          {/* Terminal states default to Download PDF as the visible
+              primary — the most common operator action when the
+              invoice is settled is "give me the receipt." Keeps the
+              header from collapsing to a single ⋯ trigger which
+              feels empty. */}
+          {(invoice.status === 'paid' || invoice.status === 'voided' || invoice.status === 'uncollectible') && (
+            <Button size="sm" onClick={() => downloadPDF(invoice.id, invoice.invoice_number)}>
+              <Download size={14} className="mr-1.5" />
+              Download PDF
+            </Button>
+          )}
+
+          {/* Overflow menu — everything else. Ordered by frequency of
+              use within each group, with the destructive Void at the
+              bottom under a separator (Stripe / Linear / GitHub
+              convention for destructive actions in menus).
+
+              Items are grouped by intent:
+                1. Recovery / state-change (Record Payment, Mark
+                   Uncollectible) — operator drives the invoice
+                   toward a terminal state.
+                2. Customer-facing (Email, Copy Link, Rotate) —
+                   surfaces or sends to the customer.
+                3. Document (Preview PDF, Download PDF, Issue Credit) —
+                   reference + bookkeeping actions.
+                4. Destructive (Void) — last, separated.
+
+              The menu always renders (even on draft where most rows
+              are hidden) so the trigger position stays stable. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" disabled={acting}>
+                <MoreHorizontal size={16} />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {((invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0) ||
+                invoice.status === 'uncollectible') && (
+                <DropdownMenuItem onClick={() => setShowRecordPaymentDialog(true)} disabled={acting}>
+                  <Receipt size={14} className="mr-2" />
+                  Record offline payment
+                </DropdownMenuItem>
+              )}
+              {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && (
+                <DropdownMenuItem onClick={() => setShowMarkUncollectibleConfirm(true)} disabled={acting} className="text-amber-700 dark:text-amber-400">
+                  <AlertOctagon size={14} className="mr-2" />
+                  Mark uncollectible
+                </DropdownMenuItem>
+              )}
+              {((invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0) ||
+                invoice.status === 'uncollectible' ||
+                (invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing')) && (
+                <DropdownMenuSeparator />
+              )}
+
+              {invoice.status !== 'voided' && (
+                <DropdownMenuItem onClick={() => setShowEmailModal(true)} disabled={acting}>
+                  <Mail size={14} className="mr-2" />
+                  Email invoice
+                </DropdownMenuItem>
+              )}
+              {invoice.public_token && invoice.status !== 'draft' && (
+                <DropdownMenuItem onClick={copyPublicLink} disabled={acting}>
+                  <Link2 size={14} className="mr-2" />
+                  Copy public link
+                </DropdownMenuItem>
+              )}
+              {invoice.public_token && invoice.status !== 'draft' && invoice.status !== 'paid' && (
+                <DropdownMenuItem onClick={() => setShowRotatePublicTokenConfirm(true)} disabled={acting}>
+                  <RotateCw size={14} className="mr-2" />
+                  Rotate public link
+                </DropdownMenuItem>
+              )}
+              {(invoice.status !== 'voided' || invoice.public_token) && <DropdownMenuSeparator />}
+
+              <DropdownMenuItem
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`/v1/invoices/${invoice.id}/pdf`, { credentials: 'same-origin' })
+                    const blob = await res.blob()
+                    const url = URL.createObjectURL(blob)
+                    setPdfPreviewUrl(url)
+                  } catch {
+                    toast.error('Failed to load PDF preview')
+                  }
+                }}
+                disabled={acting}
+              >
+                <Eye size={14} className="mr-2" />
+                Preview PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => downloadPDF(invoice.id, invoice.invoice_number)} disabled={acting}>
+                <Download size={14} className="mr-2" />
+                Download PDF
+              </DropdownMenuItem>
+              {(invoice.status === 'finalized' || invoice.status === 'paid' || invoice.status === 'uncollectible') && (
+                <DropdownMenuItem onClick={() => setShowCreditModal(true)} disabled={acting}>
+                  <CreditCard size={14} className="mr-2" />
+                  Issue credit note
+                </DropdownMenuItem>
+              )}
+
+              {invoice.status !== 'voided' && invoice.status !== 'paid' && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => setShowVoidConfirm(true)}
+                    disabled={acting}
+                    className="text-destructive focus:text-destructive focus:bg-destructive/10"
+                  >
+                    <XCircle size={14} className="mr-2" />
+                    Void invoice
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
