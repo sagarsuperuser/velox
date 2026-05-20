@@ -753,7 +753,7 @@ func TestCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		if _, err := svcWithBiller.Cancel(ctx, "t1", sub.ID); err != nil {
+		if _, _, err := svcWithBiller.Cancel(ctx, "t1", sub.ID); err != nil {
 			t.Fatalf("cancel: %v", err)
 		}
 		if fb.finalCalls != 1 {
@@ -783,7 +783,7 @@ func TestCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		canceled, err := svcWithBiller.Cancel(ctx, "t1", sub.ID)
+		canceled, _, err := svcWithBiller.Cancel(ctx, "t1", sub.ID)
 		if err != nil {
 			t.Errorf("Cancel should not fail when BillFinalOnImmediateCancel errors: %v", err)
 		}
@@ -805,7 +805,7 @@ func TestCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		if _, err := svcWithBiller.Cancel(ctx, "t1", sub.ID); err != nil {
+		if _, _, err := svcWithBiller.Cancel(ctx, "t1", sub.ID); err != nil {
 			t.Fatalf("cancel: %v", err)
 		}
 		if fb.cancelCalls != 1 {
@@ -826,7 +826,7 @@ func TestCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		canceled, err := svcWithBiller.Cancel(ctx, "t1", sub.ID)
+		canceled, _, err := svcWithBiller.Cancel(ctx, "t1", sub.ID)
 		if err != nil {
 			t.Fatalf("biller error should not fail cancel: %v", err)
 		}
@@ -863,12 +863,13 @@ func TestCreate(t *testing.T) {
 // fakeBiller captures BillOnCreate / BillOnCancel invocations for
 // ADR-031 tests.
 type fakeBiller struct {
-	calls           int
-	finalCalls      int
-	cancelCalls     int
-	err             error
-	finalCancelErr  error
-	cancelErr       error
+	calls              int
+	finalCalls         int
+	cancelCalls        int
+	err                error
+	finalCancelErr     error
+	cancelErr          error
+	cancelCreditCents  int64
 }
 
 func (f *fakeBiller) BillOnCreate(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
@@ -881,9 +882,9 @@ func (f *fakeBiller) BillFinalOnImmediateCancel(_ context.Context, _ domain.Subs
 	return domain.Invoice{}, f.finalCancelErr
 }
 
-func (f *fakeBiller) BillOnCancel(_ context.Context, _ domain.Subscription) error {
+func (f *fakeBiller) BillOnCancel(_ context.Context, _ domain.Subscription) (int64, error) {
 	f.cancelCalls++
-	return f.cancelErr
+	return f.cancelCreditCents, f.cancelErr
 }
 
 // fakeDispatcher captures outbound-webhook Dispatch calls so tests
@@ -1036,7 +1037,7 @@ func TestActivateAndCancel(t *testing.T) {
 	})
 
 	t.Run("cancel active", func(t *testing.T) {
-		canceled, err := svc.Cancel(ctx, "t1", sub.ID)
+		canceled, _, err := svc.Cancel(ctx, "t1", sub.ID)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1046,7 +1047,7 @@ func TestActivateAndCancel(t *testing.T) {
 	})
 
 	t.Run("cannot cancel canceled", func(t *testing.T) {
-		_, err := svc.Cancel(ctx, "t1", sub.ID)
+		_, _, err := svc.Cancel(ctx, "t1", sub.ID)
 		if err == nil {
 			t.Fatal("expected error canceling already canceled")
 		}
@@ -1072,7 +1073,7 @@ func TestCancel_NonTerminalStatuses(t *testing.T) {
 		if sub.Status != domain.SubscriptionDraft {
 			t.Fatalf("setup: expected draft, got %q", sub.Status)
 		}
-		canceled, err := svc.Cancel(ctx, "t1", sub.ID)
+		canceled, _, err := svc.Cancel(ctx, "t1", sub.ID)
 		if err != nil {
 			t.Fatalf("cancel from draft: %v", err)
 		}
@@ -1094,7 +1095,7 @@ func TestCancel_NonTerminalStatuses(t *testing.T) {
 		if sub.Status != domain.SubscriptionTrialing {
 			t.Fatalf("setup: expected trialing, got %q", sub.Status)
 		}
-		canceled, err := svc.Cancel(ctx, "t1", sub.ID)
+		canceled, _, err := svc.Cancel(ctx, "t1", sub.ID)
 		if err != nil {
 			t.Fatalf("cancel from trialing: %v", err)
 		}
@@ -1115,8 +1116,8 @@ func TestCancel_NonTerminalStatuses(t *testing.T) {
 			Code: "sub-2x", DisplayName: "Twice", CustomerID: "c",
 			Items: []CreateItemInput{{PlanID: "p"}}, StartNow: true,
 		})
-		_, _ = svc.Cancel(ctx, "t1", sub.ID)
-		_, err := svc.Cancel(ctx, "t1", sub.ID)
+		_, _, _ = svc.Cancel(ctx, "t1", sub.ID)
+		_, _, err := svc.Cancel(ctx, "t1", sub.ID)
 		if err == nil {
 			t.Fatal("expected InvalidState on double-cancel")
 		}
@@ -2552,7 +2553,7 @@ func TestSetBillingThresholds(t *testing.T) {
 	t.Run("rejects on canceled sub", func(t *testing.T) {
 		svc, sub := newSubFixture(t)
 		// Cancel the subscription so we can verify the terminal-state guard.
-		if _, err := svc.Cancel(ctx, "t1", sub.ID); err != nil {
+		if _, _, err := svc.Cancel(ctx, "t1", sub.ID); err != nil {
 			t.Fatalf("setup cancel: %v", err)
 		}
 		_, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{
@@ -2879,7 +2880,7 @@ func TestSubMutators_StampSimTimeOnClockPinnedSub(t *testing.T) {
 	// CanceledAt) on the returned domain object must equal frozen.
 	t.Run("Cancel", func(t *testing.T) {
 		svc, sub := newPinned(t, domain.SubscriptionActive)
-		out, err := svc.Cancel(context.Background(), "t1", sub.ID)
+		out, _, err := svc.Cancel(context.Background(), "t1", sub.ID)
 		if err != nil {
 			t.Fatalf("Cancel: %v", err)
 		}

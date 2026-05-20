@@ -200,7 +200,7 @@ type subscriptionCancelerAdapter struct {
 }
 
 func (a *subscriptionCancelerAdapter) Cancel(ctx context.Context, tenantID, id string) error {
-	_, err := a.svc.Cancel(ctx, tenantID, id)
+	_, _, err := a.svc.Cancel(ctx, tenantID, id)
 	return err
 }
 

@@ -40,7 +40,9 @@ type InvoiceService interface {
 type SubscriptionService interface {
 	List(ctx context.Context, filter subscription.ListFilter) ([]domain.Subscription, int, error)
 	Get(ctx context.Context, tenantID, id string) (domain.Subscription, error)
-	Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, error)
+	// Cancel returns the canceled sub + the cents amount of any
+	// cancel-proration credit granted (0 when none).
+	Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, int64, error)
 }
 
 // CustomerGetter resolves customer and billing profile data for PDF rendering.
@@ -416,7 +418,7 @@ func (h *Handler) cancelSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	canceled, err := h.subscriptions.Cancel(r.Context(), tenantID, id)
+	canceled, _, err := h.subscriptions.Cancel(r.Context(), tenantID, id)
 	if err != nil {
 		respond.FromError(w, r, err, "subscription")
 		return
