@@ -65,6 +65,25 @@ type Service struct {
 	biller    Biller
 	resolver  clock.Resolver
 	events    domain.EventDispatcher
+	audit     AuditLogger
+}
+
+// AuditLogger is the narrow audit-write interface the service uses to
+// record state-changing operations that are reachable from multiple
+// callers (operator-driven via Handler + system-driven via the dunning
+// adapter, etc). Pre-fix the audit-write lived only in Handler — which
+// meant dunning's auto-pause path bypassed it entirely, leaving the
+// Activity timeline blank for any sub paused by exhausted dunning.
+// Matches *audit.Logger.Log so SetAuditLogger(auditLogger) wires it.
+type AuditLogger interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
+// SetAuditLogger wires the audit logger used by state-changing service
+// methods (PauseCollection / ResumeCollection today). Optional — without
+// it those methods skip the audit write (test-friendly).
+func (s *Service) SetAuditLogger(l AuditLogger) {
+	s.audit = l
 }
 
 func NewService(store Store, clk clock.Clock) *Service {
@@ -993,9 +1012,16 @@ func (s *Service) ClearScheduledCancel(ctx context.Context, tenantID, id string)
 // ResumesAt is optional; when set, the cycle scan auto-clears the pause
 // at the start of the period containing or after that timestamp so that
 // period bills normally. When nil, only an explicit DELETE clears it.
+//
+// TriggeredBy is set by the caller (handler / dunning adapter / future
+// callers) so the audit trail can distinguish operator-driven pauses
+// from system-driven ones. Not exposed in JSON so the field can't be
+// spoofed by an API client. Defaults to "operator" inside the service
+// if empty.
 type PauseCollectionInput struct {
-	Behavior  domain.PauseCollectionBehavior `json:"behavior"`
-	ResumesAt *time.Time                     `json:"resumes_at,omitempty"`
+	Behavior    domain.PauseCollectionBehavior `json:"behavior"`
+	ResumesAt   *time.Time                     `json:"resumes_at,omitempty"`
+	TriggeredBy string                         `json:"-"`
 }
 
 // PauseCollection sets the Stripe-parity collection-pause state. Distinct
@@ -1033,15 +1059,55 @@ func (s *Service) PauseCollection(ctx context.Context, tenantID, id string, inpu
 		pc.ResumesAt = &ts
 	}
 
-	return s.store.SetPauseCollection(ctx, tenantID, id, pc)
+	sub, err := s.store.SetPauseCollection(ctx, tenantID, id, pc)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	if s.audit != nil {
+		triggeredBy := input.TriggeredBy
+		if triggeredBy == "" {
+			triggeredBy = "operator"
+		}
+		meta := map[string]any{
+			"action":       "collection_paused",
+			"customer_id":  sub.CustomerID,
+			"behavior":     string(input.Behavior),
+			"triggered_by": triggeredBy,
+		}
+		if sub.PauseCollection != nil && sub.PauseCollection.ResumesAt != nil {
+			meta["resumes_at"] = sub.PauseCollection.ResumesAt.UTC()
+		}
+		_ = s.audit.Log(ctx, tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, meta)
+	}
+
+	return sub, nil
 }
 
 // ResumeCollection clears any active collection-pause. Idempotent — a row
 // without an active pause returns unchanged. Distinct from Resume (which
 // flips status from paused back to active).
+//
+// All current callers of this method are operator-driven (handler);
+// the engine's cycle-scan auto-resume writes its own audit row with
+// triggered_by="schedule" via Engine.SetAuditLogger and does not call
+// this service method. If a future system path resumes via the service
+// (e.g. webhook callback from PSP), thread a TriggeredBy param the same
+// way PauseCollection does today.
 func (s *Service) ResumeCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
 	ctx = s.bindForSub(ctx, tenantID, id)
-	return s.store.ClearPauseCollection(ctx, tenantID, id)
+	sub, err := s.store.ClearPauseCollection(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if s.audit != nil {
+		_ = s.audit.Log(ctx, tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
+			"action":       "collection_resumed",
+			"customer_id":  sub.CustomerID,
+			"triggered_by": "operator",
+		})
+	}
+	return sub, nil
 }
 
 // EndTrial transitions a 'trialing' subscription to 'active' immediately,

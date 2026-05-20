@@ -187,7 +187,8 @@ type subscriptionPauserAdapter struct {
 
 func (a *subscriptionPauserAdapter) PauseCollection(ctx context.Context, tenantID, id string) error {
 	_, err := a.svc.PauseCollection(ctx, tenantID, id, subscription.PauseCollectionInput{
-		Behavior: domain.PauseCollectionKeepAsDraft,
+		Behavior:    domain.PauseCollectionKeepAsDraft,
+		TriggeredBy: "dunning",
 	})
 	return err
 }
