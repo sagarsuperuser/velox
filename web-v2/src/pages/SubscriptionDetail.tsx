@@ -68,6 +68,7 @@ export default function SubscriptionDetailPage() {
   const [showPauseConfirm, setShowPauseConfirm] = useState(false)
   const [showExtendTrial, setShowExtendTrial] = useState(false)
   const [extendTrialDate, setExtendTrialDate] = useState('')
+  const [pauseResumesAt, setPauseResumesAt] = useState('')
   const [itemDialog, setItemDialog] = useState<ItemDialogState>(null)
   const [showThresholdsDialog, setShowThresholdsDialog] = useState(false)
 
@@ -169,8 +170,22 @@ export default function SubscriptionDetailPage() {
   })
 
   const pauseCollectionMutation = useMutation({
-    mutationFn: () => api.pauseSubscriptionCollection(id!, { behavior: 'keep_as_draft' }),
-    onSuccess: () => { invalidateAll(); toast.success('Collection paused — invoices will draft only'); setShowPauseConfirm(false) },
+    mutationFn: () => {
+      const body: { behavior: 'keep_as_draft'; resumes_at?: string } = { behavior: 'keep_as_draft' }
+      // resumes_at takes the date input as-is (operator-local). The
+      // API expects RFC3339; datetime-local emits "2026-05-27T15:30"
+      // which Date(...).toISOString() converts to UTC RFC3339.
+      if (pauseResumesAt.trim() !== '') {
+        body.resumes_at = new Date(pauseResumesAt).toISOString()
+      }
+      return api.pauseSubscriptionCollection(id!, body)
+    },
+    onSuccess: () => {
+      invalidateAll()
+      toast.success(pauseResumesAt ? 'Collection paused — auto-resumes on the date you picked' : 'Collection paused — invoices will draft only')
+      setShowPauseConfirm(false)
+      setPauseResumesAt('')
+    },
     onError: (err) => showApiError(err, 'Failed to pause collection'),
   })
 
@@ -958,27 +973,46 @@ export default function SubscriptionDetailPage() {
         </Card>
       )}
 
-      {/* Pause collection confirm (Stripe-style soft pause). Cycle keeps
-          drafting invoices on schedule; new invoices land at status=draft
-          with payment_status=collection_paused and skip auto-charge until
-          collection is resumed. Operators can still see what billing
-          would have happened. */}
-      <AlertDialog open={showPauseConfirm} onOpenChange={setShowPauseConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Pause collection</AlertDialogTitle>
-            <AlertDialogDescription>
+      {/* Pause collection (Stripe-style soft pause). Cycle keeps
+          drafting invoices on schedule; new invoices land at
+          status=draft and skip auto-charge until collection is
+          resumed. The "Resume on" input is optional — blank means
+          indefinite pause (operator manually resumes via Resume
+          Collection); filled means the catchup orchestrator
+          auto-clears pause_collection at that timestamp. Matches
+          Stripe's dashboard UX where the same modal exposes both
+          options. */}
+      <Dialog open={showPauseConfirm} onOpenChange={(open) => { if (!open) { setShowPauseConfirm(false); setPauseResumesAt('') } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Pause collection</DialogTitle>
+            <DialogDescription>
               Future invoices on this subscription will be created as drafts and skip auto-charge until collection is resumed. The billing cycle keeps running so you can still see what was owed across the pause. <strong>On resume, the full current period bills — paused days are not pro-rated. Issue a credit grant after resuming if you want to offset them.</strong>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep active</AlertDialogCancel>
-            <AlertDialogAction onClick={() => pauseCollectionMutation.mutate()} disabled={pauseCollectionMutation.isPending}>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="pause-resumes-at">Auto-resume on (optional)</Label>
+            <Input
+              id="pause-resumes-at"
+              type="datetime-local"
+              value={pauseResumesAt}
+              onChange={(e) => setPauseResumesAt(e.target.value)}
+              disabled={pauseCollectionMutation.isPending}
+            />
+            <p className="text-xs text-muted-foreground">
+              Leave blank to pause indefinitely; you can resume manually any time. Set a date to auto-resume — the next cycle on or after this date bills normally.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setShowPauseConfirm(false); setPauseResumesAt('') }} disabled={pauseCollectionMutation.isPending}>
+              Keep active
+            </Button>
+            <Button onClick={() => pauseCollectionMutation.mutate()} disabled={pauseCollectionMutation.isPending}>
               Pause collection
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Cancel Confirm */}
       <TypedConfirmDialog
