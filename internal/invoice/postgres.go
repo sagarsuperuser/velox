@@ -607,6 +607,32 @@ func (s *PostgresStore) HasSucceededInvoice(ctx context.Context, tenantID, custo
 	return found, nil
 }
 
+// GetOutstandingBalance computes the customer's AR exposure: sum of
+// amount_due_cents + count across all finalized invoices in
+// payment_status pending/failed/unknown, excluding voided +
+// uncollectible. Single tenant-scoped aggregate query; powers the
+// "Outstanding balance" card on customer detail.
+func (s *PostgresStore) GetOutstandingBalance(ctx context.Context, tenantID, customerID string) (OutstandingBalance, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return OutstandingBalance{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var out OutstandingBalance
+	err = tx.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(amount_due_cents), 0), COUNT(*)
+		FROM invoices
+		WHERE customer_id = $1
+		  AND payment_status IN ('pending', 'failed', 'unknown')
+		  AND status NOT IN ('voided', 'uncollectible', 'draft')
+	`, customerID).Scan(&out.TotalCents, &out.UnpaidCount)
+	if err != nil {
+		return OutstandingBalance{}, err
+	}
+	return out, nil
+}
+
 // ListApproachingDue — CRON path. ADR-029 Phase 6: clock-pinned
 // invoices are excluded; the catchup orchestrator drives per-clock
 // reminder dispatch via ListApproachingDueForClock against the clock's

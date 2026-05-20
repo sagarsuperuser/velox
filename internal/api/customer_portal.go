@@ -102,9 +102,19 @@ func (h *customerPortalHandler) overview(w http.ResponseWriter, r *http.Request)
 		invoices = []domain.Invoice{}
 	}
 
+	// Outstanding balance — accounts-receivable exposure for this
+	// customer. Aggregate over ALL their unpaid invoices, not just
+	// the 5 most-recent in the recent_invoices slice. Industry parity:
+	// Stripe / Lago / Chargebee / Recurly all surface this on the
+	// customer page so operators see total AR at a glance instead of
+	// summing it manually. Read failure surfaces as zero (best-effort);
+	// the rest of the overview still renders.
+	outstanding, _ := h.invoices.GetOutstandingBalance(r.Context(), tenantID, customerID)
+
 	respond.JSON(w, r, http.StatusOK, map[string]any{
-		"customer_id":          customerID,
-		"active_subscriptions": subs,
-		"recent_invoices":      invoices,
+		"customer_id":              customerID,
+		"active_subscriptions":     subs,
+		"recent_invoices":          invoices,
+		"outstanding_balance":      outstanding,
 	})
 }

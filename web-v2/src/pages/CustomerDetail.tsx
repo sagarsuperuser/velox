@@ -507,6 +507,26 @@ export default function CustomerDetailPage() {
               <p className="text-sm text-muted-foreground">Credit Balance</p>
               <p className={cn('text-sm font-medium mt-1', balance > 0 ? 'text-emerald-600' : 'text-foreground')}>{formatCents(balance)}</p>
             </Link>
+            {/* Outstanding balance — accounts-receivable exposure for
+                this customer (Stripe / Lago / Chargebee / Recurly all
+                surface this on the customer page). Distinct from
+                Credit Balance (positive credit owed TO the customer);
+                this is unpaid invoices owed BY the customer. Links to
+                invoices filtered to their unpaid list so the operator
+                can drill into resolution. Hidden when there's no
+                exposure — keeps the row uncluttered on healthy
+                customers. */}
+            {(overview?.outstanding_balance?.total_cents ?? 0) > 0 && (
+              <Link to={`/invoices?customer=${id}`} className="flex-1 px-6 py-4 hover:bg-accent/50 transition-colors">
+                <p className="text-sm text-muted-foreground">Outstanding</p>
+                <p className="text-sm font-medium mt-1 text-red-600">
+                  {formatCents(overview?.outstanding_balance?.total_cents ?? 0)}
+                  <span className="text-xs text-muted-foreground ml-1.5 font-normal">
+                    · {overview?.outstanding_balance?.unpaid_count} invoice{overview?.outstanding_balance?.unpaid_count === 1 ? '' : 's'}
+                  </span>
+                </p>
+              </Link>
+            )}
             <div className="flex-1 px-6 py-4">
               <p className="text-sm text-muted-foreground">Subscriptions</p>
               <p className="text-sm font-medium text-foreground mt-1">{allSubs?.length ?? 0}</p>

@@ -902,6 +902,15 @@ export interface CustomerOverview {
   customer_id: string
   active_subscriptions: Subscription[]
   recent_invoices: Invoice[]
+  // Aggregate AR exposure — sum + count of unpaid finalized invoices
+  // (pending / failed / unknown payment_status, excluding voided +
+  // uncollectible). Industry-standard customer-page surface
+  // (Stripe / Lago / Chargebee / Recurly) so operators see total
+  // outstanding at a glance instead of summing per-invoice.
+  outstanding_balance?: {
+    total_cents: number
+    unpaid_count: number
+  }
 }
 
 export interface Meter {

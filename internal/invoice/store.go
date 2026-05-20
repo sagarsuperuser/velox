@@ -109,6 +109,16 @@ type Store interface {
 	// paging full history.
 	HasSucceededInvoice(ctx context.Context, tenantID, customerID string) (bool, error)
 
+	// GetOutstandingBalance returns the customer's accounts-receivable
+	// exposure: SUM(amount_due_cents) + COUNT(*) of finalized invoices
+	// in payment_status pending/failed/unknown, excluding voided +
+	// uncollectible (those are either canceled or written off as bad
+	// debt). Powers the "Outstanding balance" card on customer detail —
+	// industry-standard surface (Stripe customer overview tile, Lago /
+	// Chargebee / Recurly customer page) that operators rely on to see
+	// total AR exposure for a customer at a glance.
+	GetOutstandingBalance(ctx context.Context, tenantID, customerID string) (OutstandingBalance, error)
+
 	// SetPublicToken writes (or overwrites) the hosted-invoice-URL token for
 	// an invoice. Called from Service.Finalize at first generation and from
 	// the rotate-public-token endpoint for explicit rotation. Invoice must
@@ -153,6 +163,15 @@ type Store interface {
 	// subs in the first place. Returns errs.ErrNotFound when no
 	// matching invoice exists.
 	FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error)
+}
+
+// OutstandingBalance is the customer-AR snapshot — total cents owed
+// across all unpaid (pending / failed / unknown) finalized invoices,
+// excluding voided + uncollectible. UnpaidCount is the cardinality
+// of those invoices so the UI can show "$X across N unpaid invoices."
+type OutstandingBalance struct {
+	TotalCents  int64 `json:"total_cents"`
+	UnpaidCount int   `json:"unpaid_count"`
 }
 
 type ListFilter struct {
