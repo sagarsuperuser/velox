@@ -1635,6 +1635,9 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 			}
 			return "Collection paused", d, "warning"
 		case "collection_resumed":
+			if tb, _ := meta["triggered_by"].(string); tb == "schedule" {
+				return "Collection auto-resumed", "Scheduled resume date reached", "succeeded"
+			}
 			return "Collection resumed", "", "succeeded"
 		case "trial_ended":
 			return "Trial ended early", "", "info"

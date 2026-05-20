@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, type Subscription, type SubscriptionItem, type Plan, type ItemChangeResult } from '@/lib/api'
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
+import { api, formatCents, formatDate, formatDateTime, getTenantTimezone, type Subscription, type SubscriptionItem, type Plan, type ItemChangeResult } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { TestClockBanner } from '@/components/TestClockBanner'
@@ -18,6 +19,7 @@ import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { DatePicker } from '@/components/ui/date-picker'
+import { DateTimePicker } from '@/components/ui/datetime-picker'
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
@@ -69,6 +71,7 @@ export default function SubscriptionDetailPage() {
   const [showPauseConfirm, setShowPauseConfirm] = useState(false)
   const [showExtendTrial, setShowExtendTrial] = useState(false)
   const [extendTrialDate, setExtendTrialDate] = useState('')
+  const [extendTrialTime, setExtendTrialTime] = useState('')
   const [pauseResumesAt, setPauseResumesAt] = useState('')
   const [itemDialog, setItemDialog] = useState<ItemDialogState>(null)
   const [showThresholdsDialog, setShowThresholdsDialog] = useState(false)
@@ -209,6 +212,7 @@ export default function SubscriptionDetailPage() {
       toast.success('Trial extended')
       setShowExtendTrial(false)
       setExtendTrialDate('')
+      setExtendTrialTime('')
     },
     onError: (err) => showApiError(err, 'Failed to extend trial'),
   })
@@ -318,10 +322,11 @@ export default function SubscriptionDetailPage() {
           {sub.status === 'trialing' && (
             <>
               <Button variant="outline" onClick={() => {
+                const tz = getTenantTimezone() || 'UTC'
                 const seed = sub.trial_end_at ? new Date(sub.trial_end_at) : new Date()
                 seed.setDate(seed.getDate() + 7)
-                seed.setSeconds(0, 0)
-                setExtendTrialDate(seed.toISOString().slice(0, 16))
+                setExtendTrialDate(formatInTimeZone(seed, tz, 'yyyy-MM-dd'))
+                setExtendTrialTime(formatInTimeZone(seed, tz, 'HH:mm'))
                 setShowExtendTrial(true)
               }} disabled={acting}>
                 Extend trial
@@ -1099,14 +1104,17 @@ export default function SubscriptionDetailPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 py-2">
-            <Label htmlFor="extend-trial-date">New trial end</Label>
-            <Input
-              id="extend-trial-date"
-              type="datetime-local"
-              value={extendTrialDate}
-              onChange={(e) => setExtendTrialDate(e.target.value)}
-              disabled={acting}
+            <Label>New trial end</Label>
+            <DateTimePicker
+              date={extendTrialDate}
+              time={extendTrialTime}
+              onDateChange={setExtendTrialDate}
+              onTimeChange={setExtendTrialTime}
+              minDate={sub.trial_end_at ? new Date(sub.trial_end_at) : new Date()}
             />
+            <p className="text-xs text-muted-foreground">
+              Times are in your tenant timezone ({getTenantTimezone() || 'UTC'}).
+            </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowExtendTrial(false)} disabled={acting}>
@@ -1114,11 +1122,12 @@ export default function SubscriptionDetailPage() {
             </Button>
             <Button
               onClick={() => {
-                if (!extendTrialDate) return
-                const iso = new Date(extendTrialDate).toISOString()
+                if (!extendTrialDate || !/^\d{2}:\d{2}$/.test(extendTrialTime)) return
+                const tz = getTenantTimezone() || 'UTC'
+                const iso = fromZonedTime(`${extendTrialDate}T${extendTrialTime}:00`, tz).toISOString()
                 extendTrialMutation.mutate(iso)
               }}
-              disabled={acting || !extendTrialDate}
+              disabled={acting || !extendTrialDate || !/^\d{2}:\d{2}$/.test(extendTrialTime)}
             >
               Extend
             </Button>

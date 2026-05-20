@@ -386,6 +386,7 @@ End-to-end coverage of `pause_collection` with `resumes_at` auto-resume. The das
 - [ ] Sub row in DB: `pause_collection_resumes_at = frozen+7d`, `pause_collection_behavior=keep_as_draft`.
 - [ ] Advance clock through a cycle boundary while paused → invoice generated but stays DRAFT (no finalize, no charge, no dunning) — engine respects pause_collection.
 - [ ] Advance clock past `resumes_at` → catchup auto-clears `pause_collection_*` columns; next cycle bills normally; previously-draft invoice can be finalized manually if intended.
+- [ ] Activity timeline shows "Collection auto-resumed — Scheduled resume date reached" for the schedule-driven resume (distinct from "Collection resumed" emitted by manual API call).
 - [ ] API parity: `POST /v1/subscriptions/{id}/pause-collection` with `{"behavior":"keep_as_draft","resumes_at":"..."}` produces the same sub state as the dialog path.
 
 ## FLOW TC10: Credit grant expiry firing (via catchup)

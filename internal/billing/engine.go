@@ -66,6 +66,16 @@ type Engine struct {
 	testClocks    TestClockReader
 	events        domain.EventDispatcher
 	noPMNotifier  NoPaymentMethodNotifier
+	audit         AuditLogger
+}
+
+// AuditLogger is the narrow audit-write interface the engine uses when
+// the cycle scan auto-mutates a subscription (auto-resume of
+// pause_collection). Matches *audit.Logger.Log so the wiring is just
+// SetAuditLogger(auditLogger). Optional — unset paths skip the write
+// the same way unset events skip dispatch.
+type AuditLogger interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
 }
 
 // SetCreditGranter wires the credit-grant issuer used by BillOnCancel
@@ -469,6 +479,14 @@ func (e *Engine) SetEventDispatcher(d domain.EventDispatcher) {
 // the NoPaymentMethodNotifier doc-comment for the full rationale.
 func (e *Engine) SetNoPaymentMethodNotifier(n NoPaymentMethodNotifier) {
 	e.noPMNotifier = n
+}
+
+// SetAuditLogger wires the audit logger used by the cycle scan when it
+// auto-mutates subscriptions (currently: auto-resume of pause_collection).
+// Without this, auto-resume is invisible in the Activity timeline even
+// though manual resume is recorded — Stripe parity expects both.
+func (e *Engine) SetAuditLogger(l AuditLogger) {
+	e.audit = l
 }
 
 // shouldFireScheduledCancel reports whether a sub's soft-cancel intent has
@@ -1399,6 +1417,14 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				"subscription_id", sub.ID,
 				"tenant_id", sub.TenantID,
 			)
+			if e.audit != nil {
+				_ = e.audit.Log(ctx, sub.TenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
+					"action":       "collection_resumed",
+					"customer_id":  sub.CustomerID,
+					"resumed_at":   now.UTC(),
+					"triggered_by": "schedule",
+				})
+			}
 			if e.events != nil {
 				_ = e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
 					"subscription_id": sub.ID,
