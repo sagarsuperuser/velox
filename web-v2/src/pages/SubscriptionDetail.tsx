@@ -17,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { DatePicker } from '@/components/ui/date-picker'
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
@@ -172,11 +173,11 @@ export default function SubscriptionDetailPage() {
   const pauseCollectionMutation = useMutation({
     mutationFn: () => {
       const body: { behavior: 'keep_as_draft'; resumes_at?: string } = { behavior: 'keep_as_draft' }
-      // resumes_at takes the date input as-is (operator-local). The
-      // API expects RFC3339; datetime-local emits "2026-05-27T15:30"
-      // which Date(...).toISOString() converts to UTC RFC3339.
+      // DatePicker emits yyyy-MM-dd (date-only). Append start-of-day in
+      // the operator's local zone so the catchup orchestrator picks the
+      // pause back up on the right cycle close.
       if (pauseResumesAt.trim() !== '') {
-        body.resumes_at = new Date(pauseResumesAt).toISOString()
+        body.resumes_at = new Date(pauseResumesAt + 'T00:00:00').toISOString()
       }
       return api.pauseSubscriptionCollection(id!, body)
     },
@@ -992,12 +993,11 @@ export default function SubscriptionDetailPage() {
           </DialogHeader>
           <div className="space-y-2 py-2">
             <Label htmlFor="pause-resumes-at">Auto-resume on (optional)</Label>
-            <Input
-              id="pause-resumes-at"
-              type="datetime-local"
+            <DatePicker
               value={pauseResumesAt}
-              onChange={(e) => setPauseResumesAt(e.target.value)}
-              disabled={pauseCollectionMutation.isPending}
+              onChange={setPauseResumesAt}
+              placeholder="Pick a date"
+              minDate={new Date()}
             />
             <p className="text-xs text-muted-foreground">
               Leave blank to pause indefinitely; you can resume manually any time. Set a date to auto-resume — the next cycle on or after this date bills normally.
