@@ -381,6 +381,21 @@ Yearly-sub and future-dated `cancel_at` variants are impractical to verify on wa
 - [ ] No new invoice generated for the period after cancellation.
 - [ ] Future-dated `cancel_at` variant (set `cancel_at = frozen+200d` on a yearly sub): advance to before → sub still active. Advance past → sub canceled at the simulated `cancel_at` instant.
 
+## FLOW SUB-RESET: Operator-driven billing-cycle re-anchor (Stripe/Chargebee/Recurly parity)
+
+Setup: active sub with anchor drifted to mid-month (e.g., post-yearly→monthly plan swap → period anchored on day-20). Calendar billing configured.
+
+- [ ] Sub detail page → "Reset cycle" button → dialog opens with three options.
+- [ ] **"Start of next month"** is the default selection. Pick → confirm. Toast: "Billing cycle reset" (+ `— proration credit $X.YY issued` if in_advance). Activity timeline: "Billing cycle reset — Proration credit $X.YY issued · Renews <date>". Period card shows new `Renews on <1st of next month>` + period range starts on the previous "now" and ends at the 1st of next month.
+- [ ] Re-open dialog → pick **"Today"** → confirm. Period re-anchors immediately; new period start = now, end = next calendar boundary (calendar billing) or now + interval (anniversary).
+- [ ] Re-open dialog → pick **"Custom date"** → pick a date BEFORE the current period end → confirm. Period re-anchors to that date.
+- [ ] Re-open dialog → pick "Custom date" → pick a date AFTER current period end → Reset button disabled with inline error "Anchor must be before <period end>".
+- [ ] For an in_advance sub with the source invoice **paid**: credit grant appears on the customer's ledger with description "Billing-cycle reset — unused portion of <code> base fee...". Customer Outstanding Balance reflects the credit.
+- [ ] For an in_advance sub with the source invoice **NOT paid** (failed card / pending): no credit issued, server log "cycle-reset proration: source in_advance invoice not paid; skipping credit grant" (paid-check gate, matches cancel-proration semantics).
+- [ ] For an in_arrears sub: no proration credit (in_arrears bills at cycle close anyway); period dates update; new period bills normally at the new cycle close.
+- [ ] On a **canceled** sub: Reset cycle button hidden (only renders for active subs).
+- [ ] Webhook subscribers receive `subscription.billing_cycle_reset` with old + new period boundaries + proration_credit_cents.
+
 ## FLOW TC9: Pause collection auto-resume (via catchup)
 
 End-to-end coverage of `pause_collection` with `resumes_at` auto-resume. The dashboard's Pause Collection dialog now exposes the "Auto-resume on" date input (Stripe-parity — Stripe's pause-collection modal has the same field). API path is still available for SDK callers.

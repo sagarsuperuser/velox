@@ -116,7 +116,15 @@ func (m *memStore) GetDueBilling(ctx context.Context, _ time.Time, _ int) ([]dom
 	return nil, nil
 }
 
-func (m *memStore) UpdateBillingCycle(ctx context.Context, _, _ string, _, _, _ time.Time) error {
+func (m *memStore) UpdateBillingCycle(_ context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time) error {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	s.CurrentBillingPeriodStart = &periodStart
+	s.CurrentBillingPeriodEnd = &periodEnd
+	s.NextBillingAt = &nextBillingAt
+	m.subs[id] = s
 	return nil
 }
 
@@ -911,13 +919,16 @@ func TestCreate(t *testing.T) {
 // fakeBiller captures BillOnCreate / BillOnCancel invocations for
 // ADR-031 tests.
 type fakeBiller struct {
-	calls              int
-	finalCalls         int
-	cancelCalls        int
-	err                error
-	finalCancelErr     error
-	cancelErr          error
-	cancelCreditCents  int64
+	calls                 int
+	finalCalls            int
+	cancelCalls           int
+	cycleResetCalls       int
+	err                   error
+	finalCancelErr        error
+	cancelErr             error
+	cycleResetErr         error
+	cancelCreditCents     int64
+	cycleResetCreditCents int64
 }
 
 func (f *fakeBiller) BillOnCreate(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
@@ -933,6 +944,11 @@ func (f *fakeBiller) BillFinalOnImmediateCancel(_ context.Context, _ domain.Subs
 func (f *fakeBiller) BillOnCancel(_ context.Context, _ domain.Subscription) (int64, error) {
 	f.cancelCalls++
 	return f.cancelCreditCents, f.cancelErr
+}
+
+func (f *fakeBiller) BillOnCycleReset(_ context.Context, _ domain.Subscription, _, _, _ time.Time) (int64, error) {
+	f.cycleResetCalls++
+	return f.cycleResetCreditCents, f.cycleResetErr
 }
 
 // fakeDispatcher captures outbound-webhook Dispatch calls so tests
@@ -3074,6 +3090,137 @@ func TestProcessExpiredPauseCollections(t *testing.T) {
 		}
 		if e.metadata["triggered_by"] != "schedule" {
 			t.Errorf("audit triggered_by: got %v, want schedule", e.metadata["triggered_by"])
+		}
+	})
+}
+
+// TestResetBillingCycle covers the Stripe/Chargebee/Recurly-parity
+// operator-driven re-anchor. Validates the four guard conditions, the
+// new-period math (calendar-snap vs anniversary-roll), the biller
+// call, and the audit/event emit.
+func TestResetBillingCycle(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	mkSvc := func() (*Service, *fakeBiller, *captureAudit, *fakeDispatcher) {
+		mem := newMemStore()
+		svc := NewService(mem, clock.NewFake(now))
+		fb := &fakeBiller{}
+		audit := &captureAudit{}
+		disp := &fakeDispatcher{}
+		svc.SetBiller(fb)
+		svc.SetAuditLogger(audit)
+		svc.SetEventDispatcher(disp)
+		return svc, fb, audit, disp
+	}
+	ctx := context.Background()
+	mkActiveSub := func(svc *Service, billingTime domain.SubscriptionBillingTime) domain.Subscription {
+		s, _ := svc.Create(ctx, "t1", CreateInput{
+			Code: "sub-reset", DisplayName: "Reset",
+			CustomerID:  "c",
+			Items:       []CreateItemInput{{PlanID: "p"}},
+			StartNow:    true,
+			BillingTime: billingTime,
+		})
+		stored, _ := svc.Get(ctx, "t1", s.ID)
+		return stored
+	}
+
+	t.Run("calendar-monthly snaps next period to month start", func(t *testing.T) {
+		svc, fb, audit, disp := mkSvc()
+		sub := mkActiveSub(svc, domain.BillingTimeCalendar)
+		// Current period is May 20 → Jun 1 (calendar stub). Operator
+		// picks anchor May 25 → new period May 25 → Jun 1 (still
+		// calendar-snapped per firstPeriodForActivate).
+		anchor := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
+		fb.cycleResetCreditCents = 0 // no in_advance plans wired in the test fixture
+		out, credit, err := svc.ResetBillingCycle(ctx, "t1", sub.ID, anchor)
+		if err != nil {
+			t.Fatalf("ResetBillingCycle: %v", err)
+		}
+		if !out.CurrentBillingPeriodStart.Equal(anchor) {
+			t.Errorf("new period start: got %v, want %v", out.CurrentBillingPeriodStart, anchor)
+		}
+		wantEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+		if !out.CurrentBillingPeriodEnd.Equal(wantEnd) {
+			t.Errorf("new period end: got %v, want %v (calendar-snap)", out.CurrentBillingPeriodEnd, wantEnd)
+		}
+		if fb.cycleResetCalls != 1 {
+			t.Errorf("biller calls: got %d, want 1", fb.cycleResetCalls)
+		}
+		if credit != 0 {
+			t.Errorf("credit: got %d, want 0", credit)
+		}
+		if len(audit.entries) != 1 {
+			t.Fatalf("audit: got %d entries, want 1", len(audit.entries))
+		}
+		if audit.entries[0].metadata["action"] != "billing_cycle_reset" {
+			t.Errorf("audit action: got %v, want billing_cycle_reset", audit.entries[0].metadata["action"])
+		}
+		if len(disp.events) != 1 || disp.events[0].eventType != domain.EventSubscriptionBillingCycleReset {
+			t.Errorf("events: got %+v, want one billing_cycle_reset", disp.events)
+		}
+	})
+
+	t.Run("anniversary-monthly rolls by interval from anchor", func(t *testing.T) {
+		svc, _, _, _ := mkSvc()
+		sub := mkActiveSub(svc, domain.BillingTimeAnniversary)
+		// Anniversary: new period = anchor → anchor+1month.
+		anchor := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
+		out, _, err := svc.ResetBillingCycle(ctx, "t1", sub.ID, anchor)
+		if err != nil {
+			t.Fatalf("ResetBillingCycle: %v", err)
+		}
+		wantEnd := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+		if !out.CurrentBillingPeriodEnd.Equal(wantEnd) {
+			t.Errorf("new period end: got %v, want %v (anniversary +1mo)", out.CurrentBillingPeriodEnd, wantEnd)
+		}
+	})
+
+	t.Run("rejects past anchor", func(t *testing.T) {
+		svc, _, _, _ := mkSvc()
+		sub := mkActiveSub(svc, domain.BillingTimeCalendar)
+		past := now.Add(-24 * time.Hour)
+		if _, _, err := svc.ResetBillingCycle(ctx, "t1", sub.ID, past); err == nil {
+			t.Error("expected error for past anchor")
+		}
+	})
+
+	t.Run("rejects anchor at or after current period end", func(t *testing.T) {
+		svc, _, _, _ := mkSvc()
+		sub := mkActiveSub(svc, domain.BillingTimeCalendar)
+		// Current period end is Jun 1 (calendar stub from May 20).
+		// Anchor at Jul 1 (past period end) — must reject.
+		future := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+		if _, _, err := svc.ResetBillingCycle(ctx, "t1", sub.ID, future); err == nil {
+			t.Error("expected error for anchor after current period end")
+		}
+	})
+
+	t.Run("rejects non-active sub", func(t *testing.T) {
+		svc, _, _, _ := mkSvc()
+		sub := mkActiveSub(svc, domain.BillingTimeCalendar)
+		if _, _, err := svc.Cancel(ctx, "t1", sub.ID); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+		anchor := now.Add(24 * time.Hour)
+		if _, _, err := svc.ResetBillingCycle(ctx, "t1", sub.ID, anchor); err == nil {
+			t.Error("expected error for canceled sub")
+		}
+	})
+
+	t.Run("biller failure logs but doesn't abort", func(t *testing.T) {
+		svc, fb, _, _ := mkSvc()
+		sub := mkActiveSub(svc, domain.BillingTimeCalendar)
+		fb.cycleResetErr = fmt.Errorf("credit ledger down")
+		anchor := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
+		out, credit, err := svc.ResetBillingCycle(ctx, "t1", sub.ID, anchor)
+		if err != nil {
+			t.Fatalf("ResetBillingCycle should not abort on biller failure: %v", err)
+		}
+		if credit != 0 {
+			t.Errorf("credit on biller failure: got %d, want 0", credit)
+		}
+		if !out.CurrentBillingPeriodStart.Equal(anchor) {
+			t.Error("period should still be updated despite biller failure")
 		}
 	})
 }

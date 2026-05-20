@@ -48,6 +48,13 @@ type Biller interface {
 	// (clean cancel, cycle close handles it).
 	BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subscription) (domain.Invoice, error)
 	BillOnCancel(ctx context.Context, sub domain.Subscription) (int64, error)
+	// BillOnCycleReset emits the proration credit for an in_advance
+	// item when the operator truncates the current period mid-cycle
+	// to re-anchor the billing cycle (Stripe "Bill today instead" /
+	// Chargebee "Change Next Billing Date" / Recurly "Update billing
+	// date" parity). Returns credit_cents (zero when no in_advance
+	// items or anchor is at/after period end).
+	BillOnCycleReset(ctx context.Context, sub domain.Subscription, oldPeriodStart, oldPeriodEnd, anchorAt time.Time) (int64, error)
 }
 
 // PlanReader (defined in handler.go) is also used at sub-lifecycle
@@ -1082,6 +1089,114 @@ func (s *Service) PauseCollection(ctx context.Context, tenantID, id string, inpu
 	}
 
 	return sub, nil
+}
+
+// ResetBillingCycle is the operator-driven re-anchor — Stripe "Bill
+// today instead" / Chargebee "Change Next Billing Date" / Recurly
+// "Update billing date" parity. Three reference platforms surface
+// this as a dashboard button; Velox needed an escape hatch because
+// after a yearly→monthly plan swap the anchor day-of-month preserves
+// (industry-standard per Stripe flexible / Lago / Chargebee), and
+// operators have no way to snap back to a calendar boundary without it.
+//
+// Truncates the current period at anchorAt. The new period anchors
+// at anchorAt via the same firstPeriodForActivate helper that runs
+// at sub create / Activate / EndTrialEarly — so calendar-billing
+// snaps to the next calendar boundary and anniversary billing rolls
+// by interval. In_advance items billed for the original full period
+// receive a proration credit for the unused (anchorAt → oldPeriodEnd)
+// portion via the biller's BillOnCycleReset (same paid-check gate as
+// cancel proration). In_arrears items naturally bill at the new
+// period's close.
+//
+// Returns (sub, proration_credit_cents, error). Validation rejects:
+//   - non-active status (canceled / hard-paused are terminal-ish)
+//   - anchorAt at-or-before clock.Now (must be future)
+//   - anchorAt at-or-after current_period_end (use natural cycle close instead)
+//   - missing current_billing_period_* (corrupt state)
+//
+// Side effects: audit row, subscription.billing_cycle_reset webhook.
+// Best-effort biller call — failure logs but doesn't abort the
+// period update (the credit can be granted manually); matches the
+// cancel-proration pattern.
+func (s *Service) ResetBillingCycle(ctx context.Context, tenantID, id string, anchorAt time.Time) (domain.Subscription, int64, error) {
+	ctx = s.bindForSub(ctx, tenantID, id)
+	now := s.clock.Now(ctx)
+
+	sub, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, 0, err
+	}
+	if sub.Status != domain.SubscriptionActive {
+		return domain.Subscription{}, 0, errs.InvalidState(fmt.Sprintf("cannot reset billing cycle on %s subscription — only active subs", sub.Status))
+	}
+	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
+		return domain.Subscription{}, 0, errs.InvalidState("subscription has no billing period set")
+	}
+	if !anchorAt.After(now) {
+		return domain.Subscription{}, 0, errs.Invalid("anchor_at", "must be in the future")
+	}
+	if !anchorAt.Before(*sub.CurrentBillingPeriodEnd) {
+		return domain.Subscription{}, 0, errs.Invalid("anchor_at", "must be before the current period end — wait for the natural cycle close instead")
+	}
+
+	oldPS := *sub.CurrentBillingPeriodStart
+	oldPE := *sub.CurrentBillingPeriodEnd
+
+	// In_advance proration credit BEFORE updating the period so the
+	// biller still sees the original period boundaries. Best-effort;
+	// matches cancel-proration's "log and continue" stance.
+	var prorationCredit int64
+	if s.biller != nil {
+		amt, billErr := s.biller.BillOnCycleReset(ctx, sub, oldPS, oldPE, anchorAt)
+		if billErr != nil {
+			slog.WarnContext(ctx, "cycle-reset proration credit failed; manual credit may be required",
+				"subscription_id", sub.ID, "tenant_id", tenantID, "error", billErr)
+		} else {
+			prorationCredit = amt
+		}
+	}
+
+	// Compute the new period anchor. Same helper that runs at sub
+	// create / Activate / EndTrialEarly — honors billing_time + interval.
+	loc := s.tenantLocation(ctx, tenantID)
+	interval := s.firstPlanInterval(ctx, tenantID, sub.Items)
+	newPS, newPE := firstPeriodForActivate(anchorAt, sub.BillingTime, interval, loc)
+
+	if err := s.store.UpdateBillingCycle(ctx, tenantID, id, newPS, newPE, newPE); err != nil {
+		return domain.Subscription{}, prorationCredit, fmt.Errorf("update billing cycle: %w", err)
+	}
+	updated, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, prorationCredit, err
+	}
+
+	if s.audit != nil {
+		_ = s.audit.Log(ctx, tenantID, domain.AuditActionUpdate, "subscription", updated.ID, updated.Code, map[string]any{
+			"action":                   "billing_cycle_reset",
+			"customer_id":              updated.CustomerID,
+			"old_period_start":         oldPS.UTC(),
+			"old_period_end":           oldPE.UTC(),
+			"new_period_start":         newPS.UTC(),
+			"new_period_end":           newPE.UTC(),
+			"anchor_at":                anchorAt.UTC(),
+			"proration_credit_cents":   prorationCredit,
+		})
+	}
+	if s.events != nil {
+		_ = s.events.Dispatch(ctx, tenantID, domain.EventSubscriptionBillingCycleReset, map[string]any{
+			"subscription_id":         updated.ID,
+			"customer_id":             updated.CustomerID,
+			"old_period_start":        oldPS.UTC(),
+			"old_period_end":          oldPE.UTC(),
+			"new_period_start":        newPS.UTC(),
+			"new_period_end":          newPE.UTC(),
+			"anchor_at":               anchorAt.UTC(),
+			"proration_credit_cents":  prorationCredit,
+		})
+	}
+
+	return updated, prorationCredit, nil
 }
 
 // ResumeCollection clears any active collection-pause. Idempotent — a row
