@@ -990,6 +990,114 @@ func TestRunCycle_GeneratesInvoice(t *testing.T) {
 	}
 }
 
+// TestRunCycle_CalendarMonthly_AutoRealignsOnCycleClose locks in the
+// fix for the drifted-anchor case: a calendar-billing monthly sub
+// whose period anchored on day-20 (e.g. inherited from a prior
+// yearly→monthly plan swap) MUST auto-realign to the next calendar
+// boundary on its next cycle close, not preserve day-20 forever.
+//
+// Pre-fix advanceBillingPeriod was interval-only and silently
+// preserved the input timestamp's day-of-month. Now cycle close
+// calls domain.NextBillingPeriodEnd which honors billing_time —
+// calendar+monthly snaps to first-of-next-month.
+//
+// Anniversary subs are unaffected (covered by the existing day-20
+// → day-20 + 1mo cycle in setupEngine variants).
+func TestRunCycle_CalendarMonthly_AutoRealignsOnCycleClose(t *testing.T) {
+	// Period anchored mid-month (May 20 → Jun 20). Simulates the
+	// drifted-anchor state from a yearly→monthly plan swap.
+	periodStart := time.Date(2029, 5, 20, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2029, 6, 20, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {
+				ID: "pln_1", Name: "Mo", Currency: "USD",
+				BillingInterval: domain.BillingMonthly,
+				BaseAmountCents: 3000,
+			},
+		},
+	}
+	invoices := &mockInvoices{}
+	fakeClk := clock.NewFake(periodEnd.Add(time.Nanosecond))
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, fakeClk))
+
+	_, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	updated := subs.subs["sub_1"]
+	if updated.CurrentBillingPeriodStart == nil || updated.CurrentBillingPeriodEnd == nil {
+		t.Fatal("period should have advanced")
+	}
+	// New period start = the prior period end (Jun 20). New period end =
+	// first-of-next-month after Jun 20 = Jul 1. Calendar boundary
+	// restored — auto-realign worked.
+	wantStart := time.Date(2029, 6, 20, 0, 0, 0, 0, time.UTC)
+	wantEnd := time.Date(2029, 7, 1, 0, 0, 0, 0, time.UTC)
+	if !updated.CurrentBillingPeriodStart.Equal(wantStart) {
+		t.Errorf("new period start: got %v, want %v", updated.CurrentBillingPeriodStart, wantStart)
+	}
+	if !updated.CurrentBillingPeriodEnd.Equal(wantEnd) {
+		t.Errorf("new period end: got %v, want %v (calendar-snap)", updated.CurrentBillingPeriodEnd, wantEnd)
+	}
+}
+
+// TestRunCycle_AnniversaryMonthly_PreservesDayOfMonth is the negative
+// guard: anniversary billing must NOT snap to calendar boundary. The
+// configured anchor is the sub-start day-of-month; cycle close rolls
+// by +1 month preserving it.
+func TestRunCycle_AnniversaryMonthly_PreservesDayOfMonth(t *testing.T) {
+	periodStart := time.Date(2029, 5, 20, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2029, 6, 20, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:                     []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeAnniversary,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {ID: "pln_1", Name: "Mo", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 3000},
+		},
+	}
+	fakeClk := clock.NewFake(periodEnd.Add(time.Nanosecond))
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, &mockInvoices{}, nil, &mockSettings{}, nil, nil, fakeClk))
+
+	_, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	updated := subs.subs["sub_1"]
+	wantEnd := time.Date(2029, 7, 20, 0, 0, 0, 0, time.UTC) // Jun 20 + 1 month = Jul 20
+	if !updated.CurrentBillingPeriodEnd.Equal(wantEnd) {
+		t.Errorf("anniversary monthly should preserve day-20: got end %v, want %v", updated.CurrentBillingPeriodEnd, wantEnd)
+	}
+}
+
 func TestRunCycle_NoDueSubscriptions(t *testing.T) {
 	engine, subs, _, _, _ := setupEngine()
 

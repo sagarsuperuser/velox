@@ -23,6 +23,50 @@ const (
 	BillingTimeAnniversary SubscriptionBillingTime = "anniversary"
 )
 
+// BeginningOfMonthIn snaps `t` to the first-of-month-at-00:00 in `loc`,
+// returned as UTC. Calendar-billing anchor helper. Shared between
+// subscription.Service (initial activation / trial-end / reset) and
+// billing.Engine (cycle close re-anchoring) so both compute the same
+// boundary from the same inputs. loc=nil falls back to UTC.
+func BeginningOfMonthIn(t time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := t.In(loc)
+	return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc).UTC()
+}
+
+// NextBillingPeriodEnd computes the next period's end boundary at
+// cycle close, honoring billing_time + interval. The semantics:
+//
+//   - Yearly: always anniversary (periodEnd + 1 year). No industry analog
+//     for "calendar yearly stub to Jan 1"; Velox doesn't ship it either.
+//   - Calendar monthly: snap to first-of-next-month in tenant TZ. This
+//     auto-re-anchors subs whose day-of-month drifted from a prior
+//     plan-interval change (e.g. yearly→monthly preserves the yearly
+//     anniversary day at the swap; the next cycle close pulls the
+//     anchor back to the calendar boundary the operator configured).
+//   - Anniversary monthly: preserve day-of-month (periodEnd + 1 month).
+//
+// Returns the new periodEnd. The new periodStart = the old periodEnd
+// at every cycle close (continuous coverage). Caller passes
+// `next_billing_at = new periodEnd` so the scheduler picks the sub up
+// at the right boundary.
+//
+// Replaces the legacy interval-only `advanceBillingPeriod(from, interval)`
+// used in cycle close, which silently preserved a drifted anchor across
+// plan-interval changes (industry-standard per Stripe-flexible / Lago /
+// Chargebee but conflicts with the operator's calendar-billing intent).
+func NextBillingPeriodEnd(periodEnd time.Time, billingTime SubscriptionBillingTime, interval BillingInterval, loc *time.Location) time.Time {
+	if interval == BillingYearly {
+		return periodEnd.AddDate(1, 0, 0)
+	}
+	if billingTime == BillingTimeCalendar {
+		return BeginningOfMonthIn(periodEnd.AddDate(0, 1, 0), loc)
+	}
+	return periodEnd.AddDate(0, 1, 0)
+}
+
 // PauseCollectionBehavior controls what the engine does with the invoice it
 // would normally finalize during a paused-collection cycle. v1 supports
 // only KeepAsDraft; the other Stripe modes (mark_uncollectible, void) need

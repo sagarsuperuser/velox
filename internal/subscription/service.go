@@ -219,11 +219,12 @@ func beginningOfDayIn(t time.Time, loc *time.Location) time.Time {
 	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc).UTC()
 }
 
-// beginningOfMonthIn snaps `t` to the first-of-month-at-00:00 in `loc`,
-// returned as UTC. Calendar-billing anchor.
+// beginningOfMonthIn is a package-local alias for domain.BeginningOfMonthIn
+// so existing callers in this file don't need updates. The canonical
+// helper lives in domain so billing.Engine can use the same boundary
+// math at cycle close without duplicating logic.
 func beginningOfMonthIn(t time.Time, loc *time.Location) time.Time {
-	local := t.In(loc)
-	return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc).UTC()
+	return domain.BeginningOfMonthIn(t, loc)
 }
 
 // firstPeriodAfterTrial computes (current_period_start, current_period_end)
