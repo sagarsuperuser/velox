@@ -31,6 +31,10 @@ const PAGE_SIZE = 50
 
 function describeAction(entry: AuditEntry): string {
   const label = entry.resource_label || ''
+  // Item-level audit rows carry the meaningful discriminator in
+  // metadata.action (item_plan_changed / item_quantity_changed) —
+  // surface it cleanly instead of dumping the raw dotted action.
+  const metaAction = (entry.metadata?.action as string) || ''
   switch (entry.action) {
     case 'create': return `Created ${label || entry.resource_type}`
     case 'update': return `Updated ${label || entry.resource_type}`
@@ -49,6 +53,11 @@ function describeAction(entry: AuditEntry): string {
     case 'credit.deduction': return `Deducted credits${label ? ` from ${label}` : ''}`
     case 'credit_note.issued': return `Issued credit note ${label}`
     case 'subscription.plan_changed': return `Changed plan${label ? ` for ${label}` : ''}`
+    case 'subscription.item_updated':
+      if (metaAction === 'item_plan_changed') return `Changed plan${label ? ` for ${label}` : ''}`
+      if (metaAction === 'item_quantity_changed') return `Changed quantity${label ? ` for ${label}` : ''}`
+      return `Updated item${label ? ` on ${label}` : ''}`
+    case 'subscription.proration_failed': return `Proration failed${label ? ` on ${label}` : ''}`
     case 'revoke': return `Revoked API key ${label}`
     case 'run': return 'Billing cycle executed'
     case 'change_plan': return `Changed plan${label ? ` for ${label}` : ''}`
@@ -57,7 +66,7 @@ function describeAction(entry: AuditEntry): string {
 }
 
 const HIGH_SEVERITY = new Set(['void', 'cancel', 'delete', 'revoke', 'credit.deduction'])
-const MEDIUM_SEVERITY = new Set(['finalize', 'grant', 'issue', 'credit_note.issued', 'subscription.plan_changed', 'change_plan'])
+const MEDIUM_SEVERITY = new Set(['finalize', 'grant', 'issue', 'credit_note.issued', 'subscription.plan_changed', 'change_plan', 'subscription.item_updated'])
 
 function resourceLink(entry: AuditEntry): string | null {
   // Guard the empty-resource_id case — some audit rows (e.g. tenant-scope
