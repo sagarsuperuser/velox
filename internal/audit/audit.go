@@ -47,8 +47,15 @@ func NewLogger(db *postgres.DB) *Logger {
 // write fails. Callers may ignore the error when audit failure should
 // not block the business operation, but failures are always logged and
 // counted in metrics.
-func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resourceID string, metadata map[string]any) error {
-	label, _ := metadata["resource_label"].(string)
+//
+// resourceLabel is the human-readable name the /audit-logs page
+// renders ("Updated arrears-mon" instead of the generic "Updated
+// subscription"). Each caller passes the appropriate field — typically
+// sub.Code, invoice.InvoiceNumber, customer.DisplayName, plan.Code,
+// coupon.Code, etc. Pass "" when no label is available (event happens
+// before the resource is hydratable, or the resource has no operator-
+// facing name); the page falls back to the resource_type.
+func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error {
 	actorID := auth.KeyID(ctx)
 
 	writeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -93,7 +100,7 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 			resource_type, resource_id, resource_label, metadata, ip_address,
 			request_id, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, label, metaJSON,
+	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, resourceLabel, metaJSON,
 		nullIfEmpty(ipAddress), nullIfEmpty(requestID), clock.Now(writeCtx))
 	if err != nil {
 		auditWriteErrors.WithLabelValues(tenantID).Inc()

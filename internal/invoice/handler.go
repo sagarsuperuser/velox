@@ -410,7 +410,7 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionFinalize, "invoice", inv.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionFinalize, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
 			"invoice_number":     inv.InvoiceNumber,
 			"customer_id":        inv.CustomerID,
 			"total_amount_cents": inv.TotalAmountCents,
@@ -537,7 +537,7 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionVoid, "invoice", inv.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionVoid, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
 			"invoice_number":     inv.InvoiceNumber,
 			"customer_id":        inv.CustomerID,
 			"total_amount_cents": inv.TotalAmountCents,
@@ -589,7 +589,7 @@ func (h *Handler) rotatePublicToken(w http.ResponseWriter, r *http.Request) {
 		// plaintext tokens in the audit log would turn the log into an
 		// attractive target for credential harvesting. Record only that
 		// a rotation happened.
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRotate, "invoice", inv.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRotate, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
 			"invoice_number":           inv.InvoiceNumber,
 			"customer_id":              inv.CustomerID,
 			"field":                    "public_token",
@@ -784,7 +784,7 @@ func (h *Handler) refund(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRefund, "invoice", id, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRefund, "invoice", id, "", map[string]any{
 			"invoice_id":          id,
 			"credit_note_id":      cn.ID,
 			"credit_note_number":  cn.CreditNoteNumber,
@@ -838,7 +838,7 @@ func (h *Handler) applyCoupon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionApplyCoupon, "invoice", inv.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionApplyCoupon, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
 			"invoice_number":     inv.InvoiceNumber,
 			"customer_id":        inv.CustomerID,
 			"coupon_code":        body.Code,
@@ -889,7 +889,7 @@ func (h *Handler) retryTax(w http.ResponseWriter, r *http.Request) {
 		if inv.Attention != nil {
 			afterReason = string(inv.Attention.Reason)
 		}
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRetryTax, "invoice", inv.ID, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRetryTax, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
 			"invoice_number":   inv.InvoiceNumber,
 			"customer_id":      inv.CustomerID,
 			"tax_status":       inv.TaxStatus,

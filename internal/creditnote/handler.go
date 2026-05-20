@@ -286,7 +286,7 @@ func (h *Handler) auditLogCreditNote(r *http.Request, tenantID string, cn domain
 	if h.auditLogger == nil {
 		return
 	}
-	_ = h.auditLogger.Log(r.Context(), tenantID, "credit_note.issued", "credit_note", cn.ID, map[string]any{
+	_ = h.auditLogger.Log(r.Context(), tenantID, "credit_note.issued", "credit_note", cn.ID, cn.CreditNoteNumber, map[string]any{
 		"credit_note_number":  cn.CreditNoteNumber,
 		"invoice_id":          cn.InvoiceID,
 		"customer_id":         cn.CustomerID,
