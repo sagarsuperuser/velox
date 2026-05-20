@@ -74,18 +74,18 @@ func (f *fakeSubscriptionService) Get(_ context.Context, tenantID, id string) (d
 	return sub, nil
 }
 
-func (f *fakeSubscriptionService) Cancel(_ context.Context, tenantID, id string) (domain.Subscription, error) {
+func (f *fakeSubscriptionService) Cancel(_ context.Context, tenantID, id string) (domain.Subscription, int64, error) {
 	if f.cancelErr != nil {
-		return domain.Subscription{}, f.cancelErr
+		return domain.Subscription{}, 0, f.cancelErr
 	}
 	if f.cancelFunc != nil {
-		return f.cancelFunc(id), nil
+		return f.cancelFunc(id), 0, nil
 	}
 	sub := f.subs[id]
 	sub.Status = domain.SubscriptionCanceled
 	now := time.Now().UTC()
 	sub.CanceledAt = &now
-	return sub, nil
+	return sub, 0, nil
 }
 
 type fakeCustomerGetter struct {

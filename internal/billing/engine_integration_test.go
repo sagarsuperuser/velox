@@ -595,7 +595,7 @@ func TestBillTiming_InAdvance_E2E(t *testing.T) {
 	subRefreshed.Status = domain.SubscriptionCanceled
 	subRefreshed.CanceledAt = &cancelAt
 
-	if err := engine.BillOnCancel(ctx, subRefreshed); err != nil {
+	if _, err := engine.BillOnCancel(ctx, subRefreshed); err != nil {
 		t.Fatalf("BillOnCancel: %v", err)
 	}
 

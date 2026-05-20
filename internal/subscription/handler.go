@@ -384,7 +384,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	id := chi.URLParam(r, "id")
 
-	sub, err := h.svc.Cancel(r.Context(), tenantID, id)
+	sub, prorationCreditCents, err := h.svc.Cancel(r.Context(), tenantID, id)
 	if err != nil {
 		respond.FromError(w, r, err, "subscription")
 		return
@@ -392,10 +392,20 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 
 	if h.auditLogger != nil {
 		planIDs := planIDsFromItems(sub.Items)
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionCancel, "subscription", sub.ID, map[string]any{
+		meta := map[string]any{
 			"customer_id": sub.CustomerID,
 			"plan_ids":    planIDs,
-		})
+		}
+		// Surface the cancel-proration credit on the timeline so
+		// operators see "Subscription canceled · Prorated credit
+		// $X.XX" instead of having to cross-reference the customer's
+		// credit ledger. Industry standard — Stripe / Lago /
+		// Chargebee / Orb all link the credit to the cancel event
+		// on the subscription timeline.
+		if prorationCreditCents > 0 {
+			meta["prorated_credit_cents"] = prorationCreditCents
+		}
+		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionCancel, "subscription", sub.ID, meta)
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCanceled, sub, nil)
@@ -1588,7 +1598,17 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 		if v, ok := meta["canceled_by"].(string); ok && v != "" {
 			by = " by " + v
 		}
-		return "Subscription canceled" + by, "", "canceled"
+		// Surface cancel-proration credit (in_advance unused-base
+		// refund) on the timeline. Pre-fix the credit was only
+		// visible on the customer's credit ledger; operators had to
+		// cross-reference to learn how much was refunded for this
+		// specific cancel. Industry standard — Stripe / Lago /
+		// Chargebee / Orb link the credit to the subscription event.
+		d := ""
+		if v, ok := meta["prorated_credit_cents"].(float64); ok && v > 0 {
+			d = fmt.Sprintf("Prorated credit issued: $%.2f", v/100)
+		}
+		return "Subscription canceled" + by, d, "canceled"
 	case domain.AuditActionUpdate:
 		// AuditActionUpdate is a catch-all bucket; the meaningful
 		// discriminator is meta["action"]. Every operator-driven

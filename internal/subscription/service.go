@@ -47,7 +47,7 @@ type Biller interface {
 	// usage). No-op when canceled_at is at/after current_period_end
 	// (clean cancel, cycle close handles it).
 	BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subscription) (domain.Invoice, error)
-	BillOnCancel(ctx context.Context, sub domain.Subscription) error
+	BillOnCancel(ctx context.Context, sub domain.Subscription) (int64, error)
 }
 
 // PlanReader (defined in handler.go) is also used at sub-lifecycle
@@ -866,11 +866,19 @@ func (s *Service) RemoveItem(ctx context.Context, tenantID, subscriptionID, item
 	return s.store.RemoveItem(ctx, tenantID, itemID)
 }
 
-func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+// Cancel returns the canceled subscription, the cents-amount of any
+// cancel-proration credit granted (0 when none — in_arrears sub,
+// clean cancel, unpaid source invoice), and an error. The handler
+// surfaces the credit amount in the audit-log entry so the activity
+// timeline shows "Subscription canceled · Prorated credit $X.XX"
+// (industry standard — Stripe / Lago / Chargebee / Orb all surface
+// the credit on the subscription timeline, not just the customer's
+// credit balance).
+func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, int64, error) {
 	ctx = s.bindForSub(ctx, tenantID, id)
 	canceled, err := s.store.CancelAtomic(ctx, tenantID, id)
 	if err != nil {
-		return domain.Subscription{}, err
+		return domain.Subscription{}, 0, err
 	}
 
 	// PR-10: emit the final partial-period invoice for any mid-period
@@ -895,17 +903,24 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 	// ADR-031: in_advance plans get a cancel-proration credit for the
 	// unused portion of an already-billed period. Best-effort — logs
 	// on failure; operator can manually issue a credit grant from
-	// the dashboard if needed. No-op for in_arrears plans.
+	// the dashboard if needed. No-op for in_arrears plans. Returns
+	// the cents amount granted so the handler can stamp it onto the
+	// cancel audit-log entry (powers the timeline "Prorated credit
+	// $X.XX" detail line).
+	var prorationCreditCents int64
 	if s.biller != nil {
-		if err := s.biller.BillOnCancel(ctx, canceled); err != nil {
+		amt, err := s.biller.BillOnCancel(ctx, canceled)
+		if err != nil {
 			slog.Warn("cancel proration failed; manual credit may be required",
 				"subscription_id", canceled.ID,
 				"tenant_id", tenantID,
 				"error", err)
+		} else {
+			prorationCreditCents = amt
 		}
 	}
 
-	return canceled, nil
+	return canceled, prorationCreditCents, nil
 }
 
 // ScheduleCancelInput carries the soft-cancel intent. Exactly one of

@@ -3108,7 +3108,12 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 // already-canceled sub returns the existing canceled state before
 // reaching the biller (so BillOnCancel doesn't run twice in normal
 // retry).
-func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) error {
+// Returns (credit_cents, error). credit_cents is the cents-amount of
+// the cancel-proration credit granted (0 when no credit applied —
+// in_arrears sub, clean cancel, unpaid source invoice, etc.). The
+// caller surfaces this to the activity timeline so operators see the
+// "Cancel proration credit: $X.XX" line linked to the cancel event.
+func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int64, error) {
 	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillOnCancel",
 		trace.WithAttributes(
 			attribute.String("subscription_id", sub.ID),
@@ -3118,16 +3123,16 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) erro
 	defer span.End()
 
 	if e.creditGranter == nil {
-		return nil
+		return 0, nil
 	}
 	if sub.Status != domain.SubscriptionCanceled {
-		return nil
+		return 0, nil
 	}
 	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
-		return nil
+		return 0, nil
 	}
 	if sub.CanceledAt == nil {
-		return fmt.Errorf("canceled sub has no canceled_at")
+		return 0, fmt.Errorf("canceled sub has no canceled_at")
 	}
 
 	periodStart := *sub.CurrentBillingPeriodStart
@@ -3138,20 +3143,20 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) erro
 	// no unused portion. Cancel-before-period-start is defensive — you
 	// can't cancel before sub start.
 	if !cancelAt.Before(periodEnd) || !cancelAt.After(periodStart) {
-		return nil
+		return 0, nil
 	}
 
 	periodNanos := periodEnd.Sub(periodStart).Nanoseconds()
 	unusedNanos := periodEnd.Sub(cancelAt).Nanoseconds()
 	if periodNanos <= 0 || unusedNanos <= 0 {
-		return nil
+		return 0, nil
 	}
 
 	totalUnused := int64(0)
 	for _, it := range sub.Items {
 		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
 		if err != nil {
-			return fmt.Errorf("get plan %s: %w", it.PlanID, err)
+			return 0, fmt.Errorf("get plan %s: %w", it.PlanID, err)
 		}
 		if plan.BaseBillTiming != domain.BillInAdvance || plan.BaseAmountCents <= 0 {
 			continue
@@ -3164,7 +3169,7 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) erro
 	}
 
 	if totalUnused <= 0 {
-		return nil
+		return 0, nil
 	}
 
 	// Paid-check gate: a "refund-style" credit only makes financial sense
@@ -3190,7 +3195,7 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) erro
 				"period_start", periodStart,
 				"error", lookupErr,
 			)
-			return nil
+			return 0, nil
 		}
 		if src.PaymentStatus != domain.PaymentSucceeded {
 			slog.InfoContext(ctx, "cancel proration: source in_advance invoice not paid; skipping credit grant",
@@ -3199,13 +3204,14 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) erro
 				"source_invoice_id", src.ID,
 				"source_payment_status", src.PaymentStatus,
 			)
-			return nil
+			return 0, nil
 		}
 	}
 
 	_, err := e.creditGranter.Grant(ctx, sub.TenantID, credit.GrantInput{
-		CustomerID:  sub.CustomerID,
-		AmountCents: totalUnused,
+		CustomerID:           sub.CustomerID,
+		AmountCents:          totalUnused,
+		SourceSubscriptionID: sub.ID,
 		Description: fmt.Sprintf("Cancel proration — unused portion of %s base fee (period %s to %s, canceled %s)",
 			sub.Code,
 			periodStart.UTC().Format("2006-01-02"),
@@ -3214,7 +3220,7 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) erro
 		At: cancelAt,
 	})
 	if err != nil {
-		return fmt.Errorf("cancel proration credit grant: %w", err)
+		return 0, fmt.Errorf("cancel proration credit grant: %w", err)
 	}
 
 	slog.Info("cancel proration credit issued",
@@ -3225,7 +3231,7 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) erro
 		"period_end", periodEnd,
 		"canceled_at", cancelAt,
 	)
-	return nil
+	return totalUnused, nil
 }
 
 // RetryPendingCharges picks up invoices flagged for auto-charge retry

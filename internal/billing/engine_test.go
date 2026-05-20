@@ -2972,11 +2972,18 @@ func TestBillOnCancel_PaidCheck(t *testing.T) {
 		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
 		engine.SetCreditGranter(granter)
 
-		if err := engine.BillOnCancel(context.Background(), makeSub()); err != nil {
+		cents, err := engine.BillOnCancel(context.Background(), makeSub())
+		if err != nil {
 			t.Fatalf("BillOnCancel: %v", err)
 		}
 		if len(granter.grants) != 1 {
 			t.Fatalf("expected 1 credit grant (source paid), got %d", len(granter.grants))
+		}
+		if cents <= 0 {
+			t.Errorf("expected return cents > 0 (credit granted, paid source), got %d", cents)
+		}
+		if cents != granter.grants[0].AmountCents {
+			t.Errorf("return cents (%d) must match granter cents (%d) — timeline detail depends on this match", cents, granter.grants[0].AmountCents)
 		}
 	})
 
@@ -2996,7 +3003,7 @@ func TestBillOnCancel_PaidCheck(t *testing.T) {
 		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
 		engine.SetCreditGranter(granter)
 
-		if err := engine.BillOnCancel(context.Background(), makeSub()); err != nil {
+		if _, err := engine.BillOnCancel(context.Background(), makeSub()); err != nil {
 			t.Fatalf("BillOnCancel: %v", err)
 		}
 		if len(granter.grants) != 0 {
@@ -3013,7 +3020,7 @@ func TestBillOnCancel_PaidCheck(t *testing.T) {
 		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
 		engine.SetCreditGranter(granter)
 
-		if err := engine.BillOnCancel(context.Background(), makeSub()); err != nil {
+		if _, err := engine.BillOnCancel(context.Background(), makeSub()); err != nil {
 			t.Fatalf("BillOnCancel: %v", err)
 		}
 		if len(granter.grants) != 0 {
