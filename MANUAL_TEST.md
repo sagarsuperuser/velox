@@ -408,6 +408,7 @@ Setup: clock-pinned active sub with monthly plan + `billing_time=calendar`. Peri
 - [ ] Advance clock past Jul 1 → next cycle close → period = `(Jul 1, Aug 1)`. Day-1 anchored forever after (in_advance: full month upfront; in_arrears: bills at Aug 1).
 - [ ] **Anniversary negative guard**: repeat on a sub with `billing_time=anniversary`. Day-of-month preserved across cycle closes (`(May 20, Jun 20)` → `(Jun 20, Jul 20)` → `(Jul 20, Aug 20)`). No snap.
 - [ ] **Plan-interval-change path (the original drift source)**: schedule yearly→monthly plan-change with `immediate=false`. At cycle close (yearly anniv), the engine applies the pending plan AND computes new period via `domain.NextBillingPeriodEnd`. For calendar billing, new period snaps to first-of-next-month under the new monthly plan — drift avoided at the source.
+- [ ] **In_advance stub proration (2026-05-21 fix)**: for the in_advance case in the above scenario — calendar+monthly with yearly→monthly plan-change at cycle close produces a stub like (Jun 24, Jul 1) = 7 days. The cycle-close in_advance invoice MUST prorate the new monthly base by `stubDays / fullCycleDays`. Example: $70/mo plan with 7-day stub of 30-day cycle → $70 × 7/30 = **$16.33** (not the full $70). Line item description carries "prorated 7/30 days". Pre-fix this billed the full monthly base for the 7-day stub — same proration shape that `BillOnCreate` and `emitBaseSegmentLine` already implement, was missing from `billOnePeriod`'s in_advance branch.
 
 ## FLOW TC9: Pause collection auto-resume (via catchup)
 
