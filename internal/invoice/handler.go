@@ -1625,8 +1625,16 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	events = foldEmailIntoStripeFailed(events, 2*time.Minute)
 	events = mergeFailedPaymentTwins(events)
 
-	// Sort by timestamp ascending
-	sort.Slice(events, func(i, j int) bool {
+	// Sort by timestamp ascending. Use SliceStable so equal-timestamp
+	// events preserve insertion order — on a test-clock-pinned sub, the
+	// inline charge-fail-then-dunning-start cascade lands at the SAME
+	// simulated instant (cycle close) as the invoice's CreatedAt /
+	// IssuedAt, so the RFC3339 strings are identical. Unstable sort
+	// would render "Automatic retry scheduled" before "Invoice created"
+	// — which read as a bug even though it was a sort tiebreak. Events
+	// are inserted in lifecycle → email → stripe → dunning order
+	// upstream, which is the right rendering order on ties.
+	sort.SliceStable(events, func(i, j int) bool {
 		return events[i].Timestamp < events[j].Timestamp
 	})
 
