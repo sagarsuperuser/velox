@@ -1697,7 +1697,14 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 		case "billing_cycle_reset":
 			d := ""
 			ts := ""
-			if t, ok := meta["new_period_end"].(string); ok && t != "" {
+			// Post-2026-05-21 audit shape uses truncated_period_end as
+			// the next-renewal anchor. Older rows may have new_period_end
+			// (pre-redesign); fall back gracefully so historical timelines
+			// stay readable.
+			if t, ok := meta["truncated_period_end"].(string); ok && t != "" {
+				d = "Renews"
+				ts = t
+			} else if t, ok := meta["new_period_end"].(string); ok && t != "" {
 				d = "Renews"
 				ts = t
 			}
