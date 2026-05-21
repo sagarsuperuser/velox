@@ -3124,24 +3124,29 @@ func TestResetBillingCycle(t *testing.T) {
 		return stored
 	}
 
-	t.Run("calendar-monthly snaps next period to month start", func(t *testing.T) {
+	t.Run("truncates current period at anchor (calendar)", func(t *testing.T) {
 		svc, fb, audit, disp := mkSvc()
 		sub := mkActiveSub(svc, domain.BillingTimeCalendar)
-		// Current period is May 20 → Jun 1 (calendar stub). Operator
-		// picks anchor May 25 → new period May 25 → Jun 1 (still
-		// calendar-snapped per firstPeriodForActivate).
+		// Current period is May 20 → Jun 1 (calendar stub from StartNow
+		// on May 20). Operator picks anchor May 25 → period truncates
+		// to May 20 → May 25. period_start is unchanged; the current
+		// period stays the customer's "current" until the cycle close
+		// fires at May 25 (anchor).
 		anchor := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
 		fb.cycleResetCreditCents = 0 // no in_advance plans wired in the test fixture
 		out, credit, err := svc.ResetBillingCycle(ctx, "t1", sub.ID, anchor)
 		if err != nil {
 			t.Fatalf("ResetBillingCycle: %v", err)
 		}
-		if !out.CurrentBillingPeriodStart.Equal(anchor) {
-			t.Errorf("new period start: got %v, want %v", out.CurrentBillingPeriodStart, anchor)
+		wantStart := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+		if !out.CurrentBillingPeriodStart.Equal(wantStart) {
+			t.Errorf("period start should be unchanged: got %v, want %v", out.CurrentBillingPeriodStart, wantStart)
 		}
-		wantEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-		if !out.CurrentBillingPeriodEnd.Equal(wantEnd) {
-			t.Errorf("new period end: got %v, want %v (calendar-snap)", out.CurrentBillingPeriodEnd, wantEnd)
+		if !out.CurrentBillingPeriodEnd.Equal(anchor) {
+			t.Errorf("period end should be truncated to anchor: got %v, want %v", out.CurrentBillingPeriodEnd, anchor)
+		}
+		if out.NextBillingAt == nil || !out.NextBillingAt.Equal(anchor) {
+			t.Errorf("next_billing_at should be anchor: got %v, want %v", out.NextBillingAt, anchor)
 		}
 		if fb.cycleResetCalls != 1 {
 			t.Errorf("biller calls: got %d, want 1", fb.cycleResetCalls)
@@ -3160,18 +3165,19 @@ func TestResetBillingCycle(t *testing.T) {
 		}
 	})
 
-	t.Run("anniversary-monthly rolls by interval from anchor", func(t *testing.T) {
+	t.Run("truncates current period at anchor (anniversary)", func(t *testing.T) {
 		svc, _, _, _ := mkSvc()
 		sub := mkActiveSub(svc, domain.BillingTimeAnniversary)
-		// Anniversary: new period = anchor → anchor+1month.
+		// Anniversary: same truncation shape — period start unchanged,
+		// period end = anchor. The downstream cycle-close billing_time-
+		// aware computation handles "next period from anchor" naturally.
 		anchor := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
 		out, _, err := svc.ResetBillingCycle(ctx, "t1", sub.ID, anchor)
 		if err != nil {
 			t.Fatalf("ResetBillingCycle: %v", err)
 		}
-		wantEnd := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
-		if !out.CurrentBillingPeriodEnd.Equal(wantEnd) {
-			t.Errorf("new period end: got %v, want %v (anniversary +1mo)", out.CurrentBillingPeriodEnd, wantEnd)
+		if !out.CurrentBillingPeriodEnd.Equal(anchor) {
+			t.Errorf("period end should equal anchor: got %v, want %v", out.CurrentBillingPeriodEnd, anchor)
 		}
 	})
 
@@ -3219,8 +3225,10 @@ func TestResetBillingCycle(t *testing.T) {
 		if credit != 0 {
 			t.Errorf("credit on biller failure: got %d, want 0", credit)
 		}
-		if !out.CurrentBillingPeriodStart.Equal(anchor) {
-			t.Error("period should still be updated despite biller failure")
+		// Period end truncates at anchor regardless of biller failure.
+		// period_start stays at the original sub creation date.
+		if !out.CurrentBillingPeriodEnd.Equal(anchor) {
+			t.Error("period end should still be truncated despite biller failure")
 		}
 	})
 }
