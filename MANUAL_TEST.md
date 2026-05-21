@@ -395,6 +395,7 @@ Setup: active sub with anchor drifted to mid-month (e.g., post-yearly→monthly 
 - [ ] For an in_arrears sub: no proration credit (in_arrears bills at cycle close anyway); period dates update; new period bills normally at the new cycle close.
 - [ ] On a **canceled** sub: Reset cycle button hidden (only renders for active subs).
 - [ ] Webhook subscribers receive `subscription.billing_cycle_reset` with old + new period boundaries + proration_credit_cents.
+- [ ] **Test-clock-pinned sub**: open Reset cycle dialog on a sub with `test_clock_id` set. Preset dates ("Start of next month", "Today") compute against the test clock's `frozen_time`, not wall-clock — confirm via the displayed date in the "Start of next month" option (should reflect simulated month + 1, not real-month + 1). Custom date picker's minDate also honors simulated now. Server-side anchor validation runs against simulated `clock.Now(ctx)` (bound via the sub's clock pin), so the dialog and server agree on "is anchor in the future."
 
 ## FLOW TC9: Pause collection auto-resume (via catchup)
 
