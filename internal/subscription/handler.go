@@ -1896,8 +1896,12 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ascending order — CS reps read a timeline top-down, earliest first.
-	// audit.Logger.Query returns DESC so we flip.
-	sort.Slice(events, func(i, j int) bool {
+	// audit.Logger.Query returns DESC so we flip. SliceStable preserves
+	// insertion order for equal-timestamp events — on clock-pinned subs,
+	// multiple audit rows can land at the exact same simulated instant
+	// (e.g. activate + first-period bill), and Stable keeps the
+	// DB-query ordering rather than randomizing it.
+	sort.SliceStable(events, func(i, j int) bool {
 		return events[i].Timestamp < events[j].Timestamp
 	})
 
