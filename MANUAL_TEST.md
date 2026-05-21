@@ -381,6 +381,22 @@ Yearly-sub and future-dated `cancel_at` variants are impractical to verify on wa
 - [ ] No new invoice generated for the period after cancellation.
 - [ ] Future-dated `cancel_at` variant (set `cancel_at = frozen+200d` on a yearly sub): advance to before → sub still active. Advance past → sub canceled at the simulated `cancel_at` instant.
 
+## FLOW SUB-CARD: Subscription billing-cycle card surface
+
+Locks in the 2026-05-20 "Renews on" annotation + alignment tooltip (Stripe/Lago/Chargebee/Recurly converging UX pattern).
+
+- [ ] Active sub detail page → stat card row shows primary label **"Renews <date>"** (concrete next-renewal date) with a muted secondary line **"Period: <start> — <end>"**. The "Current period: <range>" pre-redesign labeling is gone.
+- [ ] Details panel below shows **"Renews on"** row above **"Current period"** row — both filled in for active subs.
+- [ ] **"Billing alignment"** row (renamed from "Billing Time") shows `Calendar` or `Anniversary` with a `?` hover tooltip explaining: (a) alignment is set at activation, (b) calendar+monthly anchors to first-of-next-month at first cycle close; (c) plan-interval changes (yearly→monthly) preserve the existing day-of-month anchor and don't auto-snap — operator should cancel+recreate to re-anchor if needed.
+- [ ] Trialing subs: stat card shows trial-specific labels instead (no "Renews on" until trial ends).
+
+## FLOW TIMELINE-ORDER: Activity timeline ordering (invoice + subscription)
+
+Locks in the 2026-05-21 `sort.SliceStable` fix. On a test-clock-pinned sub, the inline cycle close → charge fail → dunning start cascade stamps three audit events at the EXACT same simulated instant; pre-fix `sort.Slice` rendering order was undefined.
+
+- [ ] On invoice detail page activity for a clock-pinned in_arrears sub with a known-failed charge at cycle close: lifecycle events (Invoice created → Invoice finalized) render BEFORE dunning events (Automatic retry scheduled). Same-timestamp ties preserve insertion order, not random.
+- [ ] Activity timeline detail timestamps (e.g. "Auto-resumes Jun 20, 2029" on Collection paused, "On Jun 30, 2029" on Cancellation scheduled, "New trial end: Jul 1, 2029" on Trial extended) render in **tenant TZ**, matching the row's main timestamp — NOT in UTC. Regression check for the 2026-05-21 `formatAuditTimestamp` UTC-format bug.
+
 ## FLOW SUB-REALIGN: Calendar-billing subs auto-realign anchor at cycle close
 
 Locks in the 2026-05-21 fix: when a sub with `billing_time=calendar` has its period anchor drifted to mid-month (e.g., post-yearly→monthly plan swap preserves the yearly anniversary day-of-month, then monthly cycles preserved day-N indefinitely), the next cycle close MUST snap back to the next calendar boundary. Velox's stance partway between Stripe-flexible/Lago/Chargebee (always preserve day-of-month) and Stripe-legacy/Recurly (always re-anchor): honor the operator's configured `billing_time`.
@@ -388,8 +404,8 @@ Locks in the 2026-05-21 fix: when a sub with `billing_time=calendar` has its per
 Setup: clock-pinned active sub with monthly plan + `billing_time=calendar`. Period currently anchored on day-20 (e.g., May 20 → Jun 20).
 
 - [ ] Advance clock past current period end (Jun 20). Cycle close fires.
-- [ ] New period: `(Jun 20, Jul 1)` — 11-day stub. Calendar boundary snap-back, NOT day-of-month preservation. Invoice generated for the closed period (prorated 31/31 of cycle for in_arrears, or upcoming-period in_advance shape).
-- [ ] Advance clock past Jul 1 → next cycle close → period = `(Jul 1, Aug 1)`. Day-1 anchored forever after.
+- [ ] Closed period `(May 20, Jun 20)` bills normally (full month). New period: `(Jun 20, Jul 1)` — 11-day stub. Calendar boundary snap-back, NOT day-of-month preservation. For in_advance subs the cycle-close invoice covers the new 11-day stub period (prorated 11/30 of base under the new plan); for in_arrears, the new stub bills at its close on Jul 1.
+- [ ] Advance clock past Jul 1 → next cycle close → period = `(Jul 1, Aug 1)`. Day-1 anchored forever after (in_advance: full month upfront; in_arrears: bills at Aug 1).
 - [ ] **Anniversary negative guard**: repeat on a sub with `billing_time=anniversary`. Day-of-month preserved across cycle closes (`(May 20, Jun 20)` → `(Jun 20, Jul 20)` → `(Jul 20, Aug 20)`). No snap.
 - [ ] **Plan-interval-change path (the original drift source)**: schedule yearly→monthly plan-change with `immediate=false`. At cycle close (yearly anniv), the engine applies the pending plan AND computes new period via `domain.NextBillingPeriodEnd`. For calendar billing, new period snaps to first-of-next-month under the new monthly plan — drift avoided at the source.
 
