@@ -1123,11 +1123,20 @@ export default function SubscriptionDetailPage() {
             const periodEndISO = sub?.current_billing_period_end || ''
             const periodEnd = periodEndISO ? new Date(periodEndISO) : null
             // First-of-next-month in tenant TZ, anchored on simulated now.
+            // Compute the YYYY-MM-DD string directly from the tenant-TZ
+            // year/month, NOT via a browser-local Date round-trip. The
+            // prior code (`new Date(y, m, 1).toISOString().slice(0,10)`)
+            // built July 1 in BROWSER local time, then UTC-serialized it.
+            // When browser TZ is ahead of UTC (e.g. IST +5:30), the ISO
+            // date prefix shifted back a day to "2029-06-30" — the
+            // server then anchored the period on Jun 30 instead of
+            // Jul 1, and anniversary subs rolled to Jul 30 instead of
+            // Aug 1.
             const nowTZ = formatInTimeZone(now, tz, 'yyyy-MM-dd')
             const [y, m] = nowTZ.split('-').map(Number)
-            // m is 1-indexed; next month is m (since Date month is 0-indexed).
-            const nextMonthFirstLocal = new Date(y, m, 1)
-            const nextMonthFirstISO = nextMonthFirstLocal.toISOString().slice(0, 10)
+            const nextMonth = m === 12 ? 1 : m + 1
+            const nextMonthYear = m === 12 ? y + 1 : y
+            const nextMonthFirstISO = `${nextMonthYear}-${String(nextMonth).padStart(2, '0')}-01`
             const todayPlusOneMin = new Date(now.getTime() + 60_000)
             const todayPlusOneMinISO = todayPlusOneMin.toISOString()
 

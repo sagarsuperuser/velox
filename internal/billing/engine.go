@@ -3147,9 +3147,12 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 		return 0, nil
 	}
 
-	periodNanos := periodEnd.Sub(periodStart).Nanoseconds()
-	unusedNanos := periodEnd.Sub(cancelAt).Nanoseconds()
-	if periodNanos <= 0 || unusedNanos <= 0 {
+	// Day-based math to avoid int64 overflow. Nanosecond math overflows
+	// for ~$36+ base fees on a full-month proration. Same pattern as
+	// emitBaseSegmentLine + BillOnCycleReset.
+	periodDays := roundDays(periodEnd.Sub(periodStart))
+	unusedDays := roundDays(periodEnd.Sub(cancelAt))
+	if periodDays <= 0 || unusedDays <= 0 {
 		return 0, nil
 	}
 
@@ -3163,7 +3166,7 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 			continue
 		}
 		baseFee := plan.BaseAmountCents * it.Quantity
-		unused := money.RoundHalfToEven(baseFee*unusedNanos, periodNanos)
+		unused := money.RoundHalfToEven(baseFee*int64(unusedDays), int64(periodDays))
 		if unused > 0 {
 			totalUnused += unused
 		}
@@ -3271,9 +3274,14 @@ func (e *Engine) BillOnCycleReset(ctx context.Context, sub domain.Subscription, 
 		return 0, nil
 	}
 
-	periodNanos := oldPeriodEnd.Sub(oldPeriodStart).Nanoseconds()
-	unusedNanos := oldPeriodEnd.Sub(anchorAt).Nanoseconds()
-	if periodNanos <= 0 || unusedNanos <= 0 {
+	// Day-based math (NOT nanosecond) to avoid int64 overflow. Nanosecond
+	// math overflows for ~$36+ base fees on a full-month proration:
+	// baseFee * unusedNanos = e.g. 5900 cents * 20 days * 86400 * 1e9
+	// = 1.02e19, exceeding int64 max (~9.2e18). emitBaseSegmentLine
+	// already uses day-based math for the same reason.
+	periodDays := roundDays(oldPeriodEnd.Sub(oldPeriodStart))
+	unusedDays := roundDays(oldPeriodEnd.Sub(anchorAt))
+	if periodDays <= 0 || unusedDays <= 0 {
 		return 0, nil
 	}
 
@@ -3287,7 +3295,7 @@ func (e *Engine) BillOnCycleReset(ctx context.Context, sub domain.Subscription, 
 			continue
 		}
 		baseFee := plan.BaseAmountCents * it.Quantity
-		unused := money.RoundHalfToEven(baseFee*unusedNanos, periodNanos)
+		unused := money.RoundHalfToEven(baseFee*int64(unusedDays), int64(periodDays))
 		if unused > 0 {
 			totalUnused += unused
 		}
