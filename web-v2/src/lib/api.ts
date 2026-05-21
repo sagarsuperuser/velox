@@ -283,15 +283,6 @@ export const api = {
     apiRequest<Subscription>('PUT', `/subscriptions/${id}/pause-collection`, body),
   resumeSubscriptionCollection: (id: string) =>
     apiRequest<Subscription>('DELETE', `/subscriptions/${id}/pause-collection`),
-  // resetBillingCycle re-anchors the current period at a chosen
-  // anchor_at (RFC3339). Stripe "Bill today instead" / Chargebee
-  // "Change Next Billing Date" / Recurly "Update billing date"
-  // parity. Returns the updated sub + the proration credit issued
-  // (in_advance items only — refunded for the unused portion of
-  // the now-truncated period). anchor_at must be in the future and
-  // before current_billing_period_end.
-  resetSubscriptionBillingCycle: (id: string, body: { anchor_at: string }) =>
-    apiRequest<{ subscription: Subscription; proration_credit_cents: number }>('POST', `/subscriptions/${id}/reset-billing-cycle`, body),
   // Billing thresholds — Stripe-parity hard-cap config. PUT is replace-all
   // (omitted item_thresholds rows are deleted by the backend store);
   // DELETE removes the configuration entirely. The body must contain at
