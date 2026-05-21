@@ -393,53 +393,6 @@ Setup: clock-pinned active sub with monthly plan + `billing_time=calendar`. Peri
 - [ ] **Anniversary negative guard**: repeat on a sub with `billing_time=anniversary`. Day-of-month preserved across cycle closes (`(May 20, Jun 20)` → `(Jun 20, Jul 20)` → `(Jul 20, Aug 20)`). No snap.
 - [ ] **Plan-interval-change path (the original drift source)**: schedule yearly→monthly plan-change with `immediate=false`. At cycle close (yearly anniv), the engine applies the pending plan AND computes new period via `domain.NextBillingPeriodEnd`. For calendar billing, new period snaps to first-of-next-month under the new monthly plan — drift avoided at the source.
 
-## FLOW SUB-RESET: Operator-driven billing-cycle re-anchor (Stripe/Chargebee/Recurly parity)
-
-Setup: active sub with anchor drifted to mid-month (e.g., post-yearly→monthly plan swap → period anchored on day-20). Calendar billing configured. **Reset model (post-2026-05-21 redesign):** truncate the current period at the chosen anchor; in_advance unused portion refunded as a credit grant at reset time; new period billed naturally by the engine at anchor cycle close.
-
-**Dialog UX:**
-
-- [ ] Sub detail page (active sub) → "Reset cycle" button visible. On a `canceled` sub the button is hidden.
-- [ ] Dialog opens with three options: "Start of next month" (default), "Today", "Custom date".
-- [ ] Custom date → pick a date AFTER current period end → Reset button disabled with inline error "Anchor must be before <period end>".
-- [ ] Custom date → pick a date in the past → DatePicker minDate gate prevents selection.
-
-**Truncate behavior (period_start unchanged, period_end → anchor):**
-
-- [ ] Pick any preset → confirm → sub detail page shows: period_start UNCHANGED at the original value; period_end = chosen anchor; next_billing_at = anchor. Toast: "Billing cycle reset" (+ `— proration credit $X.YY issued` if in_advance had unused prepayment).
-- [ ] Activity timeline: "Billing cycle reset — Proration credit $X.YY issued · Renews <anchor>". For in_arrears subs the proration credit text is omitted.
-- [ ] Period card "Renews on" annotation reflects the new (anchor) date. Period range row shows truncated range.
-
-**In_advance proration credit (financial math; running example: $59 plan, period Jun 24 → Jul 24, reset to Jul 1):**
-
-- [ ] Source invoice **paid**: credit grant appears on customer's ledger with description `Billing-cycle reset — unused portion of <code> base fee (period <oldPS> to <oldPE>, re-anchored <anchor>)`. Amount = `baseFee × unusedDays / periodDays` rounded half-to-even. For the running example: `5900 × 23 / 30 = 4523 cents = $45.23`.
-- [ ] **Regression: plans > $36 base** — the int64-overflow fix on 2026-05-21 swapped nanosecond math for day-based math. Pre-fix any in_advance plan with base > ~$36 silently returned 0 credit. Run reset on a $59 plan; credit MUST be non-zero and within rounding of the expected ratio. Same regression applies to FLOW B17 cancel-proration.
-- [ ] Source invoice **NOT paid** (failed card / pending): no credit issued. Server log: `cycle-reset proration: source in_advance invoice not paid; skipping credit grant`. Paid-check gate — matches cancel-proration / Stripe `proration_behavior=none` shape.
-- [ ] Source invoice missing entirely (deleted / wrong period stamp): no credit issued. Server log: `cycle-reset proration: source in_advance invoice not found`.
-
-**At anchor cycle close (the natural-billing half — verify by advancing the clock past the anchor):**
-
-- [ ] For **in_advance** sub: at anchor cycle close, engine generates a NEW in_advance invoice for `(anchor, anchor+interval)`. Customer is billed for the new period at the natural rate. Combined with the refund issued at reset time, net cash math closes — running example: $59 (original) − $45.23 (credit) + $59 (new) = $72.77 over Jun 24 → Aug 1 (38 days) ≈ plan rate × days.
-- [ ] For **in_arrears** sub: at anchor cycle close, engine generates an invoice for the truncated `(oldPS, anchor)` period, prorated `oldDays / fullCycleDays` of base. No double-bill — natural cycle path handles it.
-- [ ] After cycle close: sub's `current_billing_period` advances to `(anchor, anchor+interval)`. Calendar billing snaps end to next-1st-of-month; anniversary rolls by interval. This is the existing post-cycle-close behavior — Reset just makes the cycle close fire earlier.
-
-**Edge cases:**
-
-- [ ] Past-anchor (anchor ≤ now): server returns 4xx "anchor_at must be in the future". Dialog's DatePicker minDate prevents picking from the calendar; "Today" preset sends now+1min so it's always valid.
-- [ ] At-or-past-period-end anchor: server returns 4xx "anchor_at must be before the current period end". Dialog's Reset button disables with inline error when the chosen date falls at-or-past period end.
-- [ ] Non-active sub (canceled / etc): server returns 4xx; dashboard hides the button.
-- [ ] **Multiple resets on the same source prepayment**: documented limitation. Each reset issues a fresh credit grant against the ORIGINAL prepayment, so back-to-back resets compound credits. Avoid; not enforced server-side today.
-
-**Test-clock-pinned sub:**
-
-- [ ] Open Reset cycle dialog on a sub with `test_clock_id` set. Preset dates ("Start of next month", "Today") compute against the test clock's `frozen_time`, not wall-clock — confirm via the displayed date in the "Start of next month" option (should reflect simulated month + 1, not real-month + 1). Custom date picker's `minDate` also honors simulated now.
-- [ ] **TZ correctness** — for a tenant with non-UTC TZ (e.g., Asia/Kolkata): "Start of next month" sends anchor = first-of-next-month in TENANT TZ, not in browser local then UTC-stringified. Verify the anchor displayed matches the actual 1st-of-next-month in the tenant's calendar (regression check for the 2026-05-21 `new Date(y, m, 1).toISOString().slice(0, 10)` browser-TZ bug).
-- [ ] Server-side anchor validation runs against simulated `clock.Now(ctx)` (bound via the sub's clock pin), so the dialog and server agree on "is anchor in the future."
-
-**Webhook:**
-
-- [ ] Subscribers receive `subscription.billing_cycle_reset` event with payload: `old_period_start`, `old_period_end`, `truncated_period_end` (= anchor), `anchor_at`, `proration_credit_cents`. Audit metadata mirrors the payload shape.
-
 ## FLOW TC9: Pause collection auto-resume (via catchup)
 
 End-to-end coverage of `pause_collection` with `resumes_at` auto-resume. The dashboard's Pause Collection dialog now exposes the "Auto-resume on" date input (Stripe-parity — Stripe's pause-collection modal has the same field). API path is still available for SDK callers.
@@ -702,7 +655,7 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] Mixed sub (one in_advance item + one in_arrears item) → credit covers only the in_advance item's unused portion.
 - [ ] Future invoices on this customer auto-apply the credit (C1 behavior).
 - [ ] **Source invoice paid-check (Chargebee Refundable vs Adjustment shape):** repeat the setup but DON'T pay the day-1 invoice (`payment_status='pending'`). Cancel mid-period → status `canceled` but **NO credit ledger entry**. Server log: `cancel proration: source in_advance invoice not paid; skipping credit grant`. The unpaid invoice flows through dunning as normal (void or uncollectible); operator manually grants credit if needed.
-- [ ] **Plans > ~$36 base** (regression for the 2026-05-21 int64-overflow fix): cancel a $59 in_advance sub mid-period (e.g., day 7 of 30-day cycle). Credit grant MUST be non-zero — `5900 × 23 / 30 = 4523 cents = $45.23`. Pre-fix the nanosecond-math overflowed int64 for plans > ~$36 and silently returned 0. Same fix applies to FLOW SUB-RESET's BillOnCycleReset.
+- [ ] **Plans > ~$36 base** (regression for the 2026-05-21 int64-overflow fix): cancel a $59 in_advance sub mid-period (e.g., day 7 of 30-day cycle). Credit grant MUST be non-zero — `5900 × 23 / 30 = 4523 cents = $45.23`. Pre-fix the nanosecond-math overflowed int64 for plans > ~$36 and silently returned 0.
 
 ## FLOW B19: Cancel-flow billing artifacts (PR-9 + PR-10)
 

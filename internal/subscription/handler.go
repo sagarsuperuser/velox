@@ -261,11 +261,6 @@ func (h *Handler) Routes() chi.Router {
 	r.Delete("/{id}/pause-collection", h.resumeCollection)
 	r.Post("/{id}/end-trial", h.endTrial)
 	r.Post("/{id}/extend-trial", h.extendTrial)
-	// Stripe-parity "Bill today instead" / Chargebee "Change Next
-	// Billing Date" / Recurly "Update billing date". Operator-driven
-	// re-anchor of the billing cycle with proration credit for any
-	// in_advance items already billed for the now-truncated period.
-	r.Post("/{id}/reset-billing-cycle", h.resetBillingCycle)
 
 	// Billing thresholds — Stripe-parity hard-cap config. PUT writes the full
 	// (amount, reset, items) triple; DELETE clears it. Idempotent.
@@ -591,49 +586,6 @@ func (h *Handler) resumeCollection(w http.ResponseWriter, r *http.Request) {
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCollectionResumed, sub, nil)
 
 	respond.JSON(w, r, http.StatusOK, sub)
-}
-
-// resetBillingCycle truncates the current billing period at a chosen
-// anchor and re-computes the next period boundary. Stripe-parity
-// "Bill today instead" / Chargebee "Change Next Billing Date" /
-// Recurly "Update billing date" surface.
-//
-// Body: { "anchor_at": "<RFC3339>" }. anchor_at must be in the future
-// (clock.Now-aware on test-clock-pinned subs) and before the current
-// period end. The new period is computed via firstPeriodForActivate,
-// so calendar-billing subs snap to the next calendar boundary and
-// anniversary-billing subs roll by interval from anchor_at.
-//
-// Response: { "subscription": ..., "proration_credit_cents": N }.
-// proration_credit_cents is the in_advance refund issued (zero for
-// in_arrears or when the source invoice wasn't paid — same paid-check
-// gate as cancel proration).
-func (h *Handler) resetBillingCycle(w http.ResponseWriter, r *http.Request) {
-	tenantID := auth.TenantID(r.Context())
-	id := chi.URLParam(r, "id")
-
-	var input struct {
-		AnchorAt time.Time `json:"anchor_at"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		respond.BadRequest(w, r, "invalid JSON body")
-		return
-	}
-	if input.AnchorAt.IsZero() {
-		respond.BadRequest(w, r, "anchor_at is required")
-		return
-	}
-
-	sub, creditCents, err := h.svc.ResetBillingCycle(r.Context(), tenantID, id, input.AnchorAt)
-	if err != nil {
-		respond.FromError(w, r, err, "subscription")
-		return
-	}
-
-	respond.JSON(w, r, http.StatusOK, map[string]any{
-		"subscription":           sub,
-		"proration_credit_cents": creditCents,
-	})
 }
 
 // setBillingThresholds writes the Stripe-parity hard-cap config onto a
@@ -1694,28 +1646,6 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 				return "Collection auto-resumed", "Scheduled resume date reached", "", "succeeded"
 			}
 			return "Collection resumed", "", "", "succeeded"
-		case "billing_cycle_reset":
-			d := ""
-			ts := ""
-			// Post-2026-05-21 audit shape uses truncated_period_end as
-			// the next-renewal anchor. Older rows may have new_period_end
-			// (pre-redesign); fall back gracefully so historical timelines
-			// stay readable.
-			if t, ok := meta["truncated_period_end"].(string); ok && t != "" {
-				d = "Renews"
-				ts = t
-			} else if t, ok := meta["new_period_end"].(string); ok && t != "" {
-				d = "Renews"
-				ts = t
-			}
-			if v, ok := meta["proration_credit_cents"].(float64); ok && v > 0 {
-				if d != "" {
-					d = fmt.Sprintf("Proration credit $%.2f issued · %s", v/100, d)
-				} else {
-					d = fmt.Sprintf("Proration credit $%.2f issued", v/100)
-				}
-			}
-			return "Billing cycle reset", d, ts, "info"
 		case "trial_ended":
 			return "Trial ended early", "", "", "info"
 		case "trial_extended":

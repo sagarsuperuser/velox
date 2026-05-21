@@ -70,14 +70,6 @@ export default function SubscriptionDetailPage() {
   // doesn't escalate. Operator picks "immediately" deliberately.
   const [cancelMode, setCancelMode] = useState<'period_end' | 'immediately'>('period_end')
   const [showPauseConfirm, setShowPauseConfirm] = useState(false)
-  // Reset billing cycle (Stripe/Chargebee/Recurly-parity re-anchor)
-  const [showResetCycleDialog, setShowResetCycleDialog] = useState(false)
-  // 'next_month_start' = snap to 1st of next month (calendar-fix);
-  // 'today' = re-anchor at clock.Now+1s; 'custom' = operator picks a
-  // date. Three preset options match the operator's most common
-  // intents (the user's exact case maps to 'next_month_start').
-  const [resetCyclePreset, setResetCyclePreset] = useState<'next_month_start' | 'today' | 'custom'>('next_month_start')
-  const [resetCycleCustomDate, setResetCycleCustomDate] = useState('')
   const [showExtendTrial, setShowExtendTrial] = useState(false)
   const [extendTrialDate, setExtendTrialDate] = useState('')
   const [extendTrialTime, setExtendTrialTime] = useState('')
@@ -208,20 +200,6 @@ export default function SubscriptionDetailPage() {
     onError: (err) => showApiError(err, 'Failed to resume collection'),
   })
 
-  const resetBillingCycleMutation = useMutation({
-    mutationFn: (anchorISO: string) => api.resetSubscriptionBillingCycle(id!, { anchor_at: anchorISO }),
-    onSuccess: (res) => {
-      invalidateAll()
-      setShowResetCycleDialog(false)
-      setResetCycleCustomDate('')
-      const creditCopy = res.proration_credit_cents > 0
-        ? ` — proration credit $${(res.proration_credit_cents / 100).toFixed(2)} issued`
-        : ''
-      toast.success(`Billing cycle reset${creditCopy}`)
-    },
-    onError: (err) => showApiError(err, 'Failed to reset billing cycle'),
-  })
-
   const endTrialMutation = useMutation({
     mutationFn: () => api.endSubscriptionTrial(id!),
     onSuccess: () => { invalidateAll(); toast.success('Trial ended — subscription is now active') },
@@ -253,7 +231,6 @@ export default function SubscriptionDetailPage() {
     clearScheduledCancelMutation.isPending ||
     pauseCollectionMutation.isPending ||
     resumeCollectionMutation.isPending ||
-    resetBillingCycleMutation.isPending ||
     endTrialMutation.isPending ||
     extendTrialMutation.isPending
 
@@ -338,9 +315,6 @@ export default function SubscriptionDetailPage() {
                   Pause
                 </Button>
               )}
-              <Button variant="outline" onClick={() => setShowResetCycleDialog(true)} disabled={acting}>
-                Reset cycle
-              </Button>
               <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelChoice(true)} disabled={acting}>
                 Cancel
               </Button>
@@ -1088,156 +1062,6 @@ export default function SubscriptionDetailPage() {
               Pause collection
             </Button>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Reset billing cycle (Stripe-/Chargebee-/Recurly-parity).
-          Three preset options match the most common operator intents:
-          - "Start of next month" (calendar-fix for the user's exact
-            case: post-yearly→monthly anchor drift)
-          - "Today" (Stripe "Bill today instead" parity)
-          - "Custom date" → DatePicker
-          For in_advance items, a proration credit fires automatically
-          for the unused portion of the now-truncated period. */}
-      <Dialog open={showResetCycleDialog} onOpenChange={(open) => { if (!open) { setShowResetCycleDialog(false); setResetCycleCustomDate('') } }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Reset billing cycle</DialogTitle>
-            <DialogDescription>
-              Sets the next renewal to your chosen date. The current period truncates there; at the anchor, the natural cycle close fires and the new period begins. For in_advance plans, the unused portion of the original prepayment is refunded as a credit grant now. This action can't be undone.
-            </DialogDescription>
-          </DialogHeader>
-          {(() => {
-            // Compute the three preset dates client-side. firstOfNextMonth uses
-            // tenant TZ (matches the backend's BeginningOfMonthIn). today is
-            // clock.Now+1s — server validates anchor > now. On a test-
-            // clock-pinned sub, "now" comes from the clock's frozen_time,
-            // NOT wall-clock — otherwise the operator picks May 21, 2026
-            // as "today" while the engine is at simulated 2029 and the
-            // server rejects the anchor as "must be in the future."
-            const tz = getTenantTimezone() || 'UTC'
-            const now = sub?.test_clock_id && testClock?.frozen_time
-              ? new Date(testClock.frozen_time)
-              : new Date()
-            // The current period end in tenant TZ for the "before period end" gate.
-            const periodEndISO = sub?.current_billing_period_end || ''
-            const periodEnd = periodEndISO ? new Date(periodEndISO) : null
-            // First-of-next-month in tenant TZ, anchored on simulated now.
-            // Compute the YYYY-MM-DD string directly from the tenant-TZ
-            // year/month, NOT via a browser-local Date round-trip. The
-            // prior code (`new Date(y, m, 1).toISOString().slice(0,10)`)
-            // built July 1 in BROWSER local time, then UTC-serialized it.
-            // When browser TZ is ahead of UTC (e.g. IST +5:30), the ISO
-            // date prefix shifted back a day to "2029-06-30" — the
-            // server then anchored the period on Jun 30 instead of
-            // Jul 1, and anniversary subs rolled to Jul 30 instead of
-            // Aug 1.
-            const nowTZ = formatInTimeZone(now, tz, 'yyyy-MM-dd')
-            const [y, m] = nowTZ.split('-').map(Number)
-            const nextMonth = m === 12 ? 1 : m + 1
-            const nextMonthYear = m === 12 ? y + 1 : y
-            const nextMonthFirstISO = `${nextMonthYear}-${String(nextMonth).padStart(2, '0')}-01`
-            const todayPlusOneMin = new Date(now.getTime() + 60_000)
-            const todayPlusOneMinISO = todayPlusOneMin.toISOString()
-
-            // Pick the preset value's ISO.
-            const computedAnchorISO = (() => {
-              if (resetCyclePreset === 'next_month_start') {
-                // Use start-of-day in tenant TZ.
-                return fromZonedTime(`${nextMonthFirstISO}T00:00:00`, tz).toISOString()
-              }
-              if (resetCyclePreset === 'today') {
-                return todayPlusOneMinISO
-              }
-              if (resetCycleCustomDate) {
-                return fromZonedTime(`${resetCycleCustomDate}T00:00:00`, tz).toISOString()
-              }
-              return ''
-            })()
-
-            const presetTooLate = periodEnd && (() => {
-              const anchor = new Date(computedAnchorISO)
-              return computedAnchorISO !== '' && !isNaN(anchor.getTime()) && anchor >= periodEnd
-            })()
-
-            return (
-              <div className="space-y-3 py-2">
-                <div className="space-y-2">
-                  <label className="flex items-start gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="reset-preset"
-                      checked={resetCyclePreset === 'next_month_start'}
-                      onChange={() => setResetCyclePreset('next_month_start')}
-                      className="mt-1"
-                    />
-                    <div>
-                      <p className="text-sm font-medium">Start of next month</p>
-                      <p className="text-xs text-muted-foreground">{formatDate(nextMonthFirstISO)} — recommended for fixing a drifted anchor on a calendar-billing sub.</p>
-                    </div>
-                  </label>
-                  <label className="flex items-start gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="reset-preset"
-                      checked={resetCyclePreset === 'today'}
-                      onChange={() => setResetCyclePreset('today')}
-                      className="mt-1"
-                    />
-                    <div>
-                      <p className="text-sm font-medium">Today</p>
-                      <p className="text-xs text-muted-foreground">Re-anchor immediately. Next period starts now and follows the configured alignment.</p>
-                    </div>
-                  </label>
-                  <label className="flex items-start gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="reset-preset"
-                      checked={resetCyclePreset === 'custom'}
-                      onChange={() => setResetCyclePreset('custom')}
-                      className="mt-1"
-                    />
-                    <div className="flex-1">
-                      <p className="text-sm font-medium">Custom date</p>
-                      {resetCyclePreset === 'custom' && (
-                        <div className="mt-1.5">
-                          <DatePicker
-                            value={resetCycleCustomDate}
-                            onChange={setResetCycleCustomDate}
-                            placeholder="Pick a date"
-                            minDate={now}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </label>
-                </div>
-                {periodEnd && (
-                  <p className="text-xs text-muted-foreground">
-                    Must be before the current period ends ({formatDate(periodEndISO)}). For dates after that, wait for the natural cycle close instead.
-                  </p>
-                )}
-                {presetTooLate && (
-                  <p className="text-xs text-destructive">Anchor must be before {formatDate(periodEndISO)}.</p>
-                )}
-                <DialogFooter>
-                  <Button variant="outline" onClick={() => { setShowResetCycleDialog(false); setResetCycleCustomDate('') }} disabled={resetBillingCycleMutation.isPending}>
-                    Cancel
-                  </Button>
-                  <Button
-                    onClick={() => resetBillingCycleMutation.mutate(computedAnchorISO)}
-                    disabled={
-                      resetBillingCycleMutation.isPending ||
-                      computedAnchorISO === '' ||
-                      !!presetTooLate
-                    }
-                  >
-                    {resetBillingCycleMutation.isPending ? 'Resetting…' : 'Reset cycle'}
-                  </Button>
-                </DialogFooter>
-              </div>
-            )
-          })()}
         </DialogContent>
       </Dialog>
 
