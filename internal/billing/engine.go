@@ -1775,6 +1775,19 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			baseEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID))
 			baseFee := plan.BaseAmountCents * it.Quantity
 			description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
+			// Prorate when the upcoming period is shorter than a full
+			// plan cycle — e.g. the calendar-snap stub produced after
+			// a yearly→monthly plan-change cycle close (new period =
+			// `(yearly_end, first-of-next-month)`, 1-30 days). Pre-fix
+			// this billed the full monthly base for a 7-day stub.
+			// Same shape as BillOnCreate's proration and
+			// emitBaseSegmentLine's segDays/fullCycleDays gate.
+			advanceDays := roundDays(baseEnd.Sub(baseStart))
+			fullCycleDays := roundDays(advanceBillingPeriod(baseStart, plan.BillingInterval).Sub(baseStart))
+			if advanceDays > 0 && fullCycleDays > 0 && advanceDays < fullCycleDays {
+				baseFee = money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(advanceDays), int64(fullCycleDays))
+				description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, it.Quantity, advanceDays, fullCycleDays)
+			}
 			unitAmount := plan.BaseAmountCents
 			if it.Quantity > 0 {
 				unitAmount = money.RoundHalfToEven(baseFee, it.Quantity)

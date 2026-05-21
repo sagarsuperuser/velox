@@ -1130,6 +1130,68 @@ func TestRunCycle_PlanIntervalChange_CalendarSnaps(t *testing.T) {
 	}
 }
 
+// TestRunCycle_PlanIntervalChange_InAdvance_StubProrated locks in
+// the proration of the in_advance NEXT-period base fee when the
+// calendar-snap stub is shorter than a full plan cycle. Pre-fix
+// (2026-05-21) the in_advance loop at cycle close billed the FULL
+// monthly base regardless of upcoming-period length: a yearly→
+// monthly plan-change cycle close on a calendar+monthly sub produces
+// a stub like (Jun 24, Jul 1) = 7 days, and the engine billed the
+// full $70 monthly base for it. Same proration shape that
+// BillOnCreate and emitBaseSegmentLine already had.
+func TestRunCycle_PlanIntervalChange_InAdvance_StubProrated(t *testing.T) {
+	periodStart := time.Date(2028, 6, 24, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2029, 6, 24, 0, 0, 0, 0, time.UTC)
+	effective := periodEnd
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{
+					{
+						ID:                     "si_1",
+						PlanID:                 "pln_yearly",
+						Quantity:               1,
+						PendingPlanID:          "pln_monthly",
+						PendingPlanEffectiveAt: &effective,
+					},
+				},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &periodEnd,
+				NextBillingAt:             &periodEnd,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_yearly":  {ID: "pln_yearly", Name: "Yr", Currency: "USD", BillingInterval: domain.BillingYearly, BaseAmountCents: 12000, BaseBillTiming: domain.BillInAdvance},
+			"pln_monthly": {ID: "pln_monthly", Name: "Mo", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 7000, BaseBillTiming: domain.BillInAdvance},
+		},
+	}
+	invoices := &mockInvoices{}
+	fakeClk := clock.NewFake(periodEnd.Add(time.Nanosecond))
+	engine := wireBaseTax(NewEngine(subs, &mockUsage{totals: map[string]int64{}}, pricing, invoices, nil, &mockSettings{}, nil, nil, fakeClk))
+
+	if _, errs := engine.RunCycle(context.Background(), 50); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	// New period: (Jun 24 2029, Jul 1 2029) — 7-day calendar-snap stub.
+	// In_advance base on new monthly plan ($70). Expected proration:
+	// 7000 × 7 / 30 = 1633 cents (round-half-to-even).
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("expected 1 invoice generated, got %d", len(invoices.invoices))
+	}
+	got := invoices.invoices[0]
+	wantSubtotal := int64(7000 * 7 / 30)
+	if got.SubtotalCents != wantSubtotal {
+		t.Errorf("stub-period in_advance subtotal: got %d, want %d (7000 × 7 / 30, prorated for 7-day calendar stub of 30-day cycle)", got.SubtotalCents, wantSubtotal)
+	}
+}
+
 // TestRunCycle_AnniversaryMonthly_PreservesDayOfMonth is the negative
 // guard: anniversary billing must NOT snap to calendar boundary. The
 // configured anchor is the sub-start day-of-month; cycle close rolls
