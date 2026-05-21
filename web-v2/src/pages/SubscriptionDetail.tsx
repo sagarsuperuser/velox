@@ -1109,19 +1109,26 @@ export default function SubscriptionDetailPage() {
           </DialogHeader>
           {(() => {
             // Compute the three preset dates client-side. firstOfNextMonth uses
-            // tenant TZ (matches the backend's beginningOfMonthIn). today is
-            // clock.Now+1s rounded — server validates anchor > now anyway.
+            // tenant TZ (matches the backend's BeginningOfMonthIn). today is
+            // clock.Now+1s — server validates anchor > now. On a test-
+            // clock-pinned sub, "now" comes from the clock's frozen_time,
+            // NOT wall-clock — otherwise the operator picks May 21, 2026
+            // as "today" while the engine is at simulated 2029 and the
+            // server rejects the anchor as "must be in the future."
             const tz = getTenantTimezone() || 'UTC'
+            const now = sub?.test_clock_id && testClock?.frozen_time
+              ? new Date(testClock.frozen_time)
+              : new Date()
             // The current period end in tenant TZ for the "before period end" gate.
             const periodEndISO = sub?.current_billing_period_end || ''
             const periodEnd = periodEndISO ? new Date(periodEndISO) : null
-            // First-of-next-month in tenant TZ.
-            const nowTZ = formatInTimeZone(new Date(), tz, 'yyyy-MM-dd')
+            // First-of-next-month in tenant TZ, anchored on simulated now.
+            const nowTZ = formatInTimeZone(now, tz, 'yyyy-MM-dd')
             const [y, m] = nowTZ.split('-').map(Number)
             // m is 1-indexed; next month is m (since Date month is 0-indexed).
             const nextMonthFirstLocal = new Date(y, m, 1)
             const nextMonthFirstISO = nextMonthFirstLocal.toISOString().slice(0, 10)
-            const todayPlusOneMin = new Date(Date.now() + 60_000)
+            const todayPlusOneMin = new Date(now.getTime() + 60_000)
             const todayPlusOneMinISO = todayPlusOneMin.toISOString()
 
             // Pick the preset value's ISO.
@@ -1189,7 +1196,7 @@ export default function SubscriptionDetailPage() {
                             value={resetCycleCustomDate}
                             onChange={setResetCycleCustomDate}
                             placeholder="Pick a date"
-                            minDate={new Date()}
+                            minDate={now}
                           />
                         </div>
                       )}
