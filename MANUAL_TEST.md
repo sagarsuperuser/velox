@@ -401,14 +401,32 @@ Locks in the 2026-05-21 `sort.SliceStable` fix. On a test-clock-pinned sub, the 
 
 Locks in the 2026-05-21 fix: when a sub with `billing_time=calendar` has its period anchor drifted to mid-month (e.g., post-yearly→monthly plan swap preserves the yearly anniversary day-of-month, then monthly cycles preserved day-N indefinitely), the next cycle close MUST snap back to the next calendar boundary. Velox's stance partway between Stripe-flexible/Lago/Chargebee (always preserve day-of-month) and Stripe-legacy/Recurly (always re-anchor): honor the operator's configured `billing_time`.
 
-Setup: clock-pinned active sub with monthly plan + `billing_time=calendar`. Period currently anchored on day-20 (e.g., May 20 → Jun 20).
+**Setup** — reproducing the drifted-anchor state from scratch (the only realistic path; you can't directly create a calendar+monthly sub anchored on day-20 because calendar billing always snaps to day-1 at activation):
 
-- [ ] Advance clock past current period end (Jun 20). Cycle close fires.
-- [ ] Closed period `(May 20, Jun 20)` bills normally (full month). New period: `(Jun 20, Jul 1)` — 11-day stub. Calendar boundary snap-back, NOT day-of-month preservation. For in_advance subs the cycle-close invoice covers the new 11-day stub period (prorated 11/30 of base under the new plan); for in_arrears, the new stub bills at its close on Jul 1.
-- [ ] Advance clock past Jul 1 → next cycle close → period = `(Jul 1, Aug 1)`. Day-1 anchored forever after (in_advance: full month upfront; in_arrears: bills at Aug 1).
-- [ ] **Anniversary negative guard**: repeat on a sub with `billing_time=anniversary`. Day-of-month preserved across cycle closes (`(May 20, Jun 20)` → `(Jun 20, Jul 20)` → `(Jul 20, Aug 20)`). No snap.
-- [ ] **Plan-interval-change path (the original drift source)**: schedule yearly→monthly plan-change with `immediate=false`. At cycle close (yearly anniv), the engine applies the pending plan AND computes new period via `domain.NextBillingPeriodEnd`. For calendar billing, new period snaps to first-of-next-month under the new monthly plan — drift avoided at the source.
-- [ ] **In_advance stub proration (2026-05-21 fix)**: for the in_advance case in the above scenario — calendar+monthly with yearly→monthly plan-change at cycle close produces a stub like (Jun 24, Jul 1) = 7 days. The cycle-close in_advance invoice MUST prorate the new monthly base by `stubDays / fullCycleDays`. Example: $70/mo plan with 7-day stub of 30-day cycle → $70 × 7/30 = **$16.33** (not the full $70). Line item description carries "prorated 7/30 days". Pre-fix this billed the full monthly base for the 7-day stub — same proration shape that `BillOnCreate` and `emitBaseSegmentLine` already implement, was missing from `billOnePeriod`'s in_advance branch.
+1. Create a test clock pinned at e.g. `2028-05-20 00:00 IST` (any non-month-start day works).
+2. Attach a customer to the clock.
+3. Create a yearly in_advance plan ($120/yr is fine for the math).
+4. Create a sub on that customer + yearly plan + `billing_time=calendar` + `start_now=true`. Yearly plans always anchor on the activation day-of-month regardless of `billing_time` (no industry analog for "calendar yearly stub to Jan 1"), so the period anchors on day-20: `(May 20 2028, May 20 2029)`. Day-1 invoice for $120 fires.
+5. Create a second monthly plan (e.g. $30/mo, in_advance).
+6. From the subscription detail page → Change Plan dialog → pick the monthly plan + leave **"Apply at next period boundary"** selected (i.e., `immediate=false`). This stages the swap to fire at the yearly cycle close.
+7. Advance the clock past `2029-05-20` (the yearly anniversary). Cycle close fires:
+   - Pending plan applies → item now on monthly $30.
+   - New period = `domain.NextBillingPeriodEnd(May 20 2029, calendar, monthly, IST)` = first-of-next-month = `Jun 1 2029`. So new period = `(May 20 2029, Jun 1 2029)` — **12-day calendar-snap stub**.
+   - In_advance invoice: `$30 × 12/30 = $12.00` prorated (the `0d03ebd` fix). Line item description carries `prorated 12/30 days`.
+
+If you skip steps 1-7 and want the drifted-but-not-yet-realigned shape (`(May 20, Jun 20)` mid-month period that hasn't seen its first cycle close yet), there's no direct UI path — would need a direct DB update which we explicitly avoid per `feedback_no_speculative_backfill`. The above setup gets you to the realistic post-swap state and immediately exercises the auto-realign.
+
+**Assertions after the setup completes:**
+
+- [ ] Sub's `current_billing_period` is `(May 20 2029, Jun 1 2029)` and `next_billing_at = Jun 1 2029` — verify in DB. period_start is the yearly anniv (= cycle-close instant); period_end is the calendar-snapped first-of-next-month.
+- [ ] **In_advance stub proration** (the `0d03ebd` regression check): cycle-close invoice line item description reads `Mo - base fee (qty 1, prorated 12/30 days)`. Amount = `$30 × 12 / 30 = $12.00` (not the full $30). Pre-fix this billed the full monthly base for the 12-day stub — same proration shape `BillOnCreate` and `emitBaseSegmentLine` already implement, was missing from `billOnePeriod`'s in_advance branch.
+- [ ] Advance clock past Jun 1 → next cycle close → new period = `(Jun 1, Jul 1)` full month. Now `next_billing_at = Jul 1`. In_advance invoice for $30 full (no proration; full cycle).
+- [ ] Advance clock past Jul 1 → next cycle close → `(Jul 1, Aug 1)`. Day-1 anchored forever after.
+
+**Anniversary negative guard** (repeat the setup with `billing_time=anniversary` at step 4):
+
+- [ ] After step 7, period = `(May 20 2029, Jun 20 2029)` — day-of-month preserved, NO calendar snap. Full monthly $30 invoice (not prorated; 30-day full cycle from anchor).
+- [ ] Advance past Jun 20 → `(Jun 20, Jul 20)`. Then `(Jul 20, Aug 20)`. Anniversary day-20 anchored forever.
 
 ## FLOW TC9: Pause collection auto-resume (via catchup)
 
