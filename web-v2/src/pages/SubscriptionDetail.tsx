@@ -1104,7 +1104,7 @@ export default function SubscriptionDetailPage() {
           <DialogHeader>
             <DialogTitle>Reset billing cycle</DialogTitle>
             <DialogDescription>
-              Truncates the current period at the chosen anchor and re-anchors the next period from there. For in_advance plans, any unused portion of the current period is refunded as a credit grant. This action can't be undone.
+              Sets the next renewal to your chosen date. The current period truncates there; at the anchor, the natural cycle close fires and the new period begins. For in_advance plans, the unused portion of the original prepayment is refunded as a credit grant now. This action can't be undone.
             </DialogDescription>
           </DialogHeader>
           {(() => {
