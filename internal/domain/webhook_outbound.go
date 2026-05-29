@@ -120,13 +120,5 @@ const (
 	EventDunningResolved                    = "dunning.resolved"
 	EventCreditGranted                      = "credit.granted"
 	EventCreditNoteIssued                   = "credit_note.issued"
-	EventCouponCreated                      = "coupon.created"
-	EventCouponUpdated                      = "coupon.updated"
-	EventCouponArchived                     = "coupon.archived"
-	EventCouponUnarchived                   = "coupon.unarchived"
-	EventCouponRedeemed                     = "coupon.redeemed"
-	EventCustomerCouponAttached             = "customer.coupon.attached"
-	EventCustomerCouponRevoked              = "customer.coupon.revoked"
-	EventInvoiceCouponApplied               = "invoice.coupon.applied"
 	EventBillingAlertTriggered              = "billing.alert.triggered"
 )

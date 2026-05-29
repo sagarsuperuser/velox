@@ -180,7 +180,7 @@ Single tenant-wide timezone used for date input and timestamp display
 (UTC for storage and billing math). Set in Settings → Account → Timezone.
 
 - [ ] Change timezone to `Asia/Kolkata` or `America/Los_Angeles` → dashboard timestamps shift, zone abbreviation appended (e.g. `2:14 PM PDT`).
-- [ ] API key expiry / coupon valid-until / list-page from-to filters interpret civil dates as start/end of day in tenant TZ.
+- [ ] API key expiry / list-page from-to filters interpret civil dates as start/end of day in tenant TZ.
 - [ ] Subscription billing math stays UTC ("monthly on the 5th" = 5th UTC).
 - [ ] Wire format always UTC ISO 8601 with `Z`.
 
@@ -216,7 +216,7 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] Top-right pill: amber "Test mode" default. Click → emerald "Live mode"; toast "Switched to live mode".
 - [ ] **Stays on the same page** (no nav). On `/customers`, `/invoices`, `/audit-log`, `/usage`, `/credits`, `/dunning`, `/webhooks/events` — the page rerenders with the new mode's rows in place.
 - [ ] **Back-and-forth is fast**: toggle Test→Live, scroll the list; toggle Live→Test → prior cache renders instantly (no spinner) before any background refetch.
-- [ ] Mode-scoped pages reflect the new mode after toggle (no stale rows): Customers, Invoices, Subscriptions, API Keys, Audit Log, Usage Events, Credits, Credit Notes, Dunning, Coupons, Pricing (plans / meters / rating rules), Webhooks (endpoints + event stream), Dashboard (MRR / active customers / recent invoices), **Settings → Payments** (Stripe credentials are keyed `(tenant_id, livemode)` — toggling swaps the connected-state card, masked secret, webhook-secret state, and the "Stripe — test/live mode" header).
+- [ ] Mode-scoped pages reflect the new mode after toggle (no stale rows): Customers, Invoices, Subscriptions, API Keys, Audit Log, Usage Events, Credits, Credit Notes, Dunning, Pricing (plans / meters / rating rules), Webhooks (endpoints + event stream), Dashboard (MRR / active customers / recent invoices), **Settings → Payments** (Stripe credentials are keyed `(tenant_id, livemode)` — toggling swaps the connected-state card, masked secret, webhook-secret state, and the "Stripe — test/live mode" header).
 - [ ] Mode-agnostic Settings tabs stay the same on toggle (one `tenant_settings` row per tenant, no `livemode` column): Settings → General, Settings → Invoicing, Settings → Tax. Recipes and Onboarding are likewise tenant-wide. Keyed remount still refetches but content is identical.
 - [ ] Test Clocks: sidebar entry visible only in test mode. Toggling to live mode hides it; navigating to `/test-clocks` redirects to `/`.
 - [ ] On a detail page (e.g. `/customers/cus_test_…`), toggle → page refetches and surfaces a 404 / "Not found" cleanly (entity doesn't exist in the other mode).
@@ -330,7 +330,7 @@ The headline test-clock use case — verifies the full Stripe-parity dunning sta
   - `mark_uncollectible` → the unpaid invoice flips to `status='uncollectible'` (NOT voided). Subscription itself stays untouched. Audit row `invoice.update` with `action=marked_uncollectible`. Webhook `invoice.marked_uncollectible` fires.
   - `manual_review` → run state=escalated; no sub/invoice mutation; operator notified.
 - [ ] **Operator-driven uncollectible from the dunning resolve dialog** — on an active dunning run, click Resolve → pick **Write off invoice** → confirm. The dunning run flips to `resolved` with `resolution=invoice_not_collectible` AND the underlying invoice flips to `status=uncollectible` (cross-flow per ADR-036 — pre-fix this only updated the run row). Invoice detail page reflects the change: status banner reads "Marked uncollectible — recorded as bad debt", Collect Payment / Mark Uncollectible buttons disappear, Record Payment + Void + Issue Credit remain.
-- [ ] **Uncollectible page UX (Stripe parity — verified across Stripe + Chargebee + Recurly 2026-05-20)** — on an `uncollectible` invoice: InvoiceAttention banner is hidden, OperatorContext/Diagnosis card is hidden, status banner explains the bad-debt classification + that the subscription stays active + recovery options. Buttons present: Void, Email, Issue Credit, Record Payment, Copy Link, Preview/Download PDF. Buttons absent: Collect Payment, Mark Uncollectible, Finalize, Add Line Item, Apply Coupon.
+- [ ] **Uncollectible page UX (Stripe parity — verified across Stripe + Chargebee + Recurly 2026-05-20)** — on an `uncollectible` invoice: InvoiceAttention banner is hidden, OperatorContext/Diagnosis card is hidden, status banner explains the bad-debt classification + that the subscription stays active + recovery options. Buttons present: Void, Email, Issue Credit, Record Payment, Copy Link, Preview/Download PDF. Buttons absent: Collect Payment, Mark Uncollectible, Finalize, Add Line Item.
 - [ ] **Stripe-parity offline recovery: uncollectible → paid** — click Record Payment on an uncollectible invoice, optionally enter a reference (e.g. "Cheque #1234"), confirm. Invoice flips to `status=paid`, `payment_status=succeeded`, `paid_at` set, `stripe_payment_intent_id` prefixed `out_of_band:` so reports can distinguish operator-recorded payments from engine charges. Audit row carries `recovered_from_status=uncollectible`. Webhook `invoice.payment_recorded` fires. Active dunning run (if any) resolves to `payment_recovered`.
 - [ ] **Audit timestamps: wall-clock primary, sim-time in metadata (ADR-030 amendment 2026-05-28)** — on the clock-pinned sub, click Cancel from the subscription detail page. Open `/audit-log`, find the just-written `subscription.cancel` row. `created_at` is wall-clock (within ~5s of system time the operator clicked) — NOT the test clock's simulated frozen_time. Row shows an amber **test clock** chip next to the action label. Expand the row: the "Timestamp" cell carries an amber subline reading "Effect on test clock `<clock_id>` at `<simulated frozen_time>`". `metadata.sim_effective_at` matches the sub's current period end (the simulated effect-time of the cancellation); `metadata.test_clock_id` matches the sub's pin.
 - [ ] **Dunning resolve on a clock-pinned invoice stamps simulated `paid_at`** — from an active dunning run on a clock-pinned invoice, click Resolve → Payment recovered. Reload invoice detail. `invoice.paid_at` lands in simulated time (the test clock's current frozen_time), NOT wall-clock. Pre-2026-05-28 this was wall-clock — verifies the dunning handler binds via the clock resolver before MarkPaid.
@@ -1025,15 +1025,16 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] CN > amount_due (unpaid) or > total_amount (paid) → error.
 - [ ] CN page: stat cards (Total Credited, Refunded, Applied to Balance, Issued); list rows show channel breakdown ("refund" / "credit" / "refund + credit" / etc.); CSV export has separate Refund/Credit/Out-of-band columns.
 
-## FLOW C3: Coupons
+## FLOW C3: Coupons (REMOVED 2026-05-30)
 
-- [ ] Create `PRO20` 20% off, restricted to Enterprise.
-- [ ] Redeem on Starter → "coupon is not valid for this plan". Enterprise → applied.
-- [ ] Coupon detail Edit dialog: change name → header h1 updates without refresh; audit log records `coupon.updated`.
-- [ ] Clear `expires_at` / `max_redemptions` → header tiles flip to "No expiry" / "N redeemed".
-- [ ] Restrictions: setting only `min_amount` collapses card to single row. Clearing all three → card disappears.
-- [ ] `min_amount: -50` → 422 inline on field.
-- [ ] Archived coupon → Edit hidden, Restore visible.
+Cut pre-launch per ADR-039. Velox is AI-native usage-based billing;
+coupons are a SaaS-era promotional construct that no AI-native peer
+emphasizes (Metronome ships none, Orb subordinates them, Lago's AI
+guidance explicitly recommends credits over coupons, Stripe Token
+Billing omits them). Discount intent flows through the credit ledger.
+Schema (`coupons` / `coupon_redemptions` / `customer_discounts`)
+left in place — cheap to keep, destructive to drop pre-launch.
+Rebuild trigger: first DP names a load-bearing promo-code use case.
 
 ---
 

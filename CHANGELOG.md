@@ -11,6 +11,21 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Removed
+
+- **Coupons cut completely pre-launch (2026-05-30, ADR-039).** Two rounds of industry research validated that coupons are a SaaS-era promotional construct vestigial for Velox's AI-native positioning. Traditional SaaS peers (Stripe Billing, Chargebee, Recurly, Lago) ship coupons as table-stakes with zero load-bearing customer-evidence in case studies. AI-native peers diverge sharply: Metronome ships no coupon product, Orb subordinates them to "adjustments," Lago's own AI billing pages explicitly recommend **credits over coupons** for usage-based billing, and Stripe Token Billing (their newest AI-native product) doesn't mention coupons at all. Lago wiki verbatim: *"A coupon is not a refund. It's an engagement to discount future invoices."* Velox already ships the better primitive — event-sourced credit ledger (`internal/credit`) with prepaid allowances, manual grants, three-channel CN allocation, atomic apply-to-invoice. Coupons duplicate the discount-intent surface without adding capability the credit ledger lacks.
+  - **Code deleted**: `internal/coupon/` (package, store, service, handler, errors, tests); `internal/api/coupon_idempotency_e2e_test.go`; `internal/creditnote/service_coupon_void_test.go`; `web-v2/src/pages/Coupons.tsx`; `web-v2/src/pages/CouponDetail.tsx`; `docs/coupons-semantics.md`. ~2k lines net.
+  - **Surface removed**: `/v1/coupons*`, `/v1/customers/{id}/coupon`, `/v1/invoices/{id}/apply-coupon`. Dashboard nav entry, command-palette entry, `CustomerDetail.tsx` Active Discount card + `AssignCouponDialog`, `InvoiceDetail.tsx` Apply Coupon button + `ApplyCouponDialog`. All `Coupon*` TypeScript types.
+  - **Engine hooks removed**: `CouponApplier` interface, `SetCouponApplier`, `RedeemForInvoice`, `MarkPeriodsApplied`, `MarkCustomerDiscountPeriodsApplied`, `ApplyCouponToInvoice`, redemption-tracking arrays in cycle close + threshold scan. Proration coupon applier from `internal/subscription`. Credit-note coupon-redemption voider.
+  - **Metric removed**: `RecordCouponRedemption` + `velox_coupon_redemptions_total` counter.
+  - **Audit / webhook constants removed**: `AuditActionApplyCoupon`, 8 `EventCoupon*` / `EventCustomerCoupon*` / `EventInvoiceCouponApplied` constants.
+  - **Schema NOT dropped**: `coupons` / `coupon_redemptions` / `customer_discounts` tables and migrations 0025 / 0042-0046 left in place per `feedback_no_speculative_backfill` — destructive drops have asymmetric risk pre-launch, the tables are cheap to keep, and a future rebuild starts from existing schema if a DP names a coupon use case.
+  - **Revisit trigger**: first DP names a load-bearing promo-code use case (referral codes, Black Friday, annual prepay discount). Until then the credit ledger covers every observed discount intent.
+  - **README** updated: coupons removed from shipped-primitives list, credit ledger highlighted as the discount mechanism.
+  - **MANUAL_TEST** FLOW C3 replaced with a placeholder pointing at ADR-039.
+  - **Pre-launch local DBs only** — production never ran the coupon code. Pre-cut audit_log rows carrying `action=apply_coupon` remain readable but render as unknown action types in the dashboard.
+  - **Phase B roadmap** for the AI-native primitives (LLM provider cost-table ingestion, embeddable cost dashboard, commits + draw-down, price-book versioning) drafted in `docs/roadmap-ai-native-2026.md`.
+
 ### Changed
 
 - **Velox→Stripe customer sync gap-closure, phase 2 (2026-05-29).** Three follow-on gaps closed in the same session as phase 1:

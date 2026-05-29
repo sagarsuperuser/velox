@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, Settings,
-  Receipt, AlertTriangle, ScrollText, Globe, Key, BarChart3, Ticket,
+  Receipt, AlertTriangle, ScrollText, Globe, Key, BarChart3,
   User, Hash, Zap, type LucideIcon,
 } from 'lucide-react'
 import { api, type Customer, type Invoice, type Plan, type Subscription, formatCents } from '@/lib/api'
@@ -38,7 +38,6 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'nav-subscriptions', title: 'Subscriptions', subtitle: 'Manage subscriptions', icon: CreditCard, href: '/subscriptions' },
   { id: 'nav-usage', title: 'Usage Events', subtitle: 'Usage metering', icon: BarChart3, href: '/usage' },
   { id: 'nav-pricing', title: 'Pricing', subtitle: 'Plans, meters, rules', icon: Tag, href: '/pricing' },
-  { id: 'nav-coupons', title: 'Coupons', subtitle: 'Discount codes', icon: Ticket, href: '/coupons' },
   { id: 'nav-credits', title: 'Credits', subtitle: 'Customer credits', icon: Wallet, href: '/credits' },
   { id: 'nav-credit-notes', title: 'Credit Notes', subtitle: 'Refunds & adjustments', icon: Receipt, href: '/credit-notes' },
   { id: 'nav-dunning', title: 'Dunning', subtitle: 'Payment recovery', icon: AlertTriangle, href: '/dunning' },

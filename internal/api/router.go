@@ -20,7 +20,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/billing"
-	"github.com/sagarsuperuser/velox/internal/coupon"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
@@ -219,13 +218,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	creditStore := credit.NewPostgresStore(db)
 	creditSvc := credit.NewService(creditStore)
 	creditH := credit.NewHandler(creditSvc)
-	couponSvc := coupon.NewService(coupon.NewPostgresStore(db))
-	couponH := coupon.NewHandler(couponSvc)
 	creditNoteStore := creditnote.NewPostgresStore(db)
 
 	// Wire proration dependencies for plan change invoicing
 	subH.SetProrationDeps(pricingSvc, &prorationInvoiceCreatorAdapter{store: invoiceStore, numberer: settingsStore}, &prorationCreditGranterAdapter{svc: creditSvc})
-	subH.SetProrationCouponApplier(couponSvc)
 
 	// Payment / webhook / checkout / refund handlers
 	stripeRefunder := payment.NewStripeRefunder(stripeClients)
@@ -344,7 +340,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	webhookH := payment.NewHandler(stripeAdapter, tenantStripeSvc)
 
 	invoiceSvc := invoice.NewService(invoiceStore, clk, settingsStore)
-	couponSvc.SetCustomerHistoryLookup(invoiceSvc)
 	// Mark-uncollectible adapter (ADR-036 amendment) — Stripe-standard
 	// dunning terminal action. Wires here because it depends on the
 	// invoice service which is defined just above; other dunning
@@ -538,7 +533,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	invoiceH.SetAuditLogger(auditLogger)
 	subH.SetAuditLogger(auditLogger)
 	creditNoteH.SetAuditLogger(auditLogger)
-	couponH.SetAuditLogger(auditLogger)
 	// Wire audit on paymentmethods.Service so attach/setDefault/detach
 	// surface in the operator Activity feed + AuditLog page. Without
 	// this, customer-driven card mutations are invisible to operators.
@@ -570,7 +564,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// invoice.payment_recorded event.
 	invoiceSvc.SetAuditLogger(auditLogger)
 	invoiceSvc.SetEventDispatcher(eventDispatcher)
-	couponH.SetEventDispatcher(eventDispatcher)
 
 	// Feature flags (created before billing engine to gate Stripe Tax)
 	featureSvc := feature.NewService(feature.NewPostgresStore(db))
@@ -769,12 +762,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// code path keeps the Reference uniqueness contract intact.
 	invoiceSvc.SetTaxReverser(engine)
 
-	// Operator-initiated apply-coupon-to-draft-invoice routes through the
-	// billing engine, which owns redeem → tax recompute → atomic persist
-	// → mark-periods orchestration. Keeps the HTTP surface on the invoice
-	// resource while the engine does the coordination.
-	invoiceSvc.SetCouponApplier(engine)
-
 	// Operator-initiated retry-tax routes through the billing engine,
 	// which owns provider resolve → recompute → atomic persist. Backs
 	// the "Retry tax" action surfaced by the unified Attention shape on
@@ -802,14 +789,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// tenant over-remitting tax. Manual/none providers receive the call
 	// but no-op.
 	creditNoteSvc.SetTaxReverser(engine)
-	// Full-credit/full-refund credit notes reverse coupon usage on the
-	// underlying invoice: voids the redemption rows, rolls back
-	// times_redeemed and periods_applied so "once" / "repeating" coupons
-	// aren't permanently burned by a refunded invoice.
-	creditNoteSvc.SetCouponRedemptionVoider(couponSvc)
-
-	// Coupon discount applier: billing engine consults redemptions at finalize time.
-	engine.SetCouponApplier(couponSvc)
 
 	// Proration invoices now share the billing engine's tax resolution path so
 	// plan upgrades aren't silently tax-free. The adapter translates between
@@ -1203,14 +1182,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// create/update/delete. Pre-fix the entire subtree was gated on
 		// PermCustomerRead, letting any read-tier key write.
 		r.With(auth.RequireMethod(auth.PermCustomerRead, auth.PermCustomerWrite)).Mount("/customers", customerH.Routes())
-		// Customer-scoped coupon assignment. Mounted as a sibling of
-		// /customers so GET/POST/DELETE can carry independent permission
-		// guards (attach/revoke need write, get needs read) without
-		// threading the coupon handler into the customer package.
-		r.Mount("/customers/{id}/coupon", couponH.CustomerAssignmentRoutes(
-			auth.Require(auth.PermCustomerRead),
-			auth.Require(auth.PermCustomerWrite),
-		))
 		// Customer-scoped usage view — composes usage aggregation with
 		// customer / subscription / pricing reads. PermUsageRead so the
 		// dashboard's read-only secret-tier key can call it without
@@ -1260,7 +1231,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.With(auth.RequireMethod(auth.PermInvoiceRead, auth.PermInvoiceWrite)).Mount("/invoices", invoiceH.Routes())
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/credit-notes", creditNoteH.Routes())
 		r.With(auth.Require(auth.PermPricingWrite)).Mount("/price-overrides", pricingH.OverrideRoutes())
-		r.With(auth.Require(auth.PermPricingWrite)).Mount("/coupons", couponH.Routes())
 		r.With(auth.Require(auth.PermCustomerWrite)).Mount("/credits", creditH.Routes())
 		r.With(auth.RequireMethod(auth.PermDunningRead, auth.PermDunningWrite)).Mount("/dunning", dunningH.Routes())
 		r.With(auth.Require(auth.PermInvoiceWrite)).Mount("/billing", billingH.Routes())

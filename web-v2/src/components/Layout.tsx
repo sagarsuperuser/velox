@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
-  Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3, Ticket,
+  Receipt, AlertTriangle, ScrollText, Globe, Key, Menu, X, BarChart3,
   Sun, Moon, Search, ChevronsUpDown, MessageSquareWarning, Sparkles, Loader2,
   Clock as ClockIcon, FlaskConical,
   type LucideIcon,
@@ -39,7 +39,6 @@ const billingNav = [
 const configNav = [
   { to: '/pricing', icon: Tag, label: 'Pricing' },
   { to: '/recipes', icon: Sparkles, label: 'Recipes' },
-  { to: '/coupons', icon: Ticket, label: 'Coupons' },
   { to: '/credits', icon: Wallet, label: 'Credits' },
   { to: '/credit-notes', icon: Receipt, label: 'Credit Notes' },
   { to: '/dunning', icon: AlertTriangle, label: 'Dunning' },

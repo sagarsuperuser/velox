@@ -274,7 +274,6 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/{id}/send", h.sendEmail)
 	r.Post("/{id}/collect", h.collectPayment)
 	r.Post("/{id}/refund", h.refund)
-	r.Post("/{id}/apply-coupon", h.applyCoupon)
 	r.Post("/{id}/retry-tax", h.retryTax)
 	r.Post("/{id}/rotate-public-token", h.rotatePublicToken)
 	// Stripe-parity offline-payment recovery. Lets the operator mark
@@ -953,60 +952,6 @@ func (h *Handler) refund(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, cn)
-}
-
-// applyCoupon applies a coupon code to a draft invoice. Stripe-style
-// flow: operator selects a coupon in the dashboard on an already-issued
-// (but unfinalized) invoice; Velox redeems the coupon, recomputes tax
-// against the post-discount base, and persists the snapshot atomically.
-// Accepts Idempotency-Key for safe retries — a repeat with the same key
-// returns the prior result with Idempotent-Replay: true.
-func (h *Handler) applyCoupon(w http.ResponseWriter, r *http.Request) {
-	tenantID := auth.TenantID(r.Context())
-	id := chi.URLParam(r, "id")
-
-	var body struct {
-		Code           string `json:"code"`
-		IdempotencyKey string `json:"idempotency_key,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		respond.BadRequest(w, r, "invalid JSON body")
-		return
-	}
-
-	// Header wins over body so CLI/API clients can set the key the standard
-	// way while the dashboard keeps a single body-only request shape (its
-	// apiRequest helper doesn't support custom headers). Matches the
-	// /customers/{id}/coupon pattern so two adjacent coupon endpoints don't
-	// diverge on request conventions.
-	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if idemKey == "" {
-		idemKey = strings.TrimSpace(body.IdempotencyKey)
-	}
-	inv, err := h.svc.ApplyCoupon(r.Context(), tenantID, id, body.Code, idemKey)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "invoice")
-		return
-	}
-	if err != nil {
-		respond.FromError(w, r, err, "invoice")
-		return
-	}
-
-	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionApplyCoupon, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
-			"invoice_number":     inv.InvoiceNumber,
-			"customer_id":        inv.CustomerID,
-			"coupon_code":        body.Code,
-			"discount_cents":     inv.DiscountCents,
-			"total_amount_cents": inv.TotalAmountCents,
-			"currency":           inv.Currency,
-		})
-	}
-
-	h.fireEvent(r.Context(), tenantID, domain.EventInvoiceCouponApplied, inv)
-
-	respond.JSON(w, r, http.StatusOK, inv)
 }
 
 // retryTax re-runs tax calculation against a draft invoice in
