@@ -46,16 +46,6 @@ type TaxReverser interface {
 	ReverseTax(ctx context.Context, tenantID string, req tax.ReversalRequest) (*tax.ReversalResult, error)
 }
 
-// CouponApplier is the narrow view into coupon+tax+invoice orchestration
-// the apply-coupon-to-draft-invoice endpoint depends on. Satisfied by
-// billing.Engine in production. Lives here (not in the coupon package) so
-// the invoice domain owns the surface it calls — coupon can't import
-// invoice (peer-import rule), and invoice can't import billing, so the
-// shared contract lives right where the handler consumes it.
-type CouponApplier interface {
-	ApplyCouponToInvoice(ctx context.Context, tenantID, invoiceID, code, idempotencyKey string) (domain.Invoice, error)
-}
-
 // TaxRetrier is the narrow view into tax recompute + persistence the
 // retry-tax endpoint depends on. Satisfied by billing.Engine in
 // production. Same rationale as CouponApplier — the contract lives
@@ -94,7 +84,6 @@ type Service struct {
 	numberer       InvoiceNumberer
 	taxCommitter   TaxCommitter
 	taxReverser    TaxReverser
-	couponApplier  CouponApplier
 	taxRetrier     TaxRetrier
 	paymentMethods PaymentMethodReader
 	stripeChecker  StripeChecker
@@ -181,12 +170,6 @@ func (s *Service) bindForCreate(ctx context.Context, tenantID string, input Crea
 func (s *Service) bindForInvoice(ctx context.Context, tenantID, invoiceID string) context.Context {
 	bound, _ := clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, InvoiceID: invoiceID})
 	return bound
-}
-
-// SetCouponApplier wires the orchestrator behind the apply-coupon endpoint.
-// Production passes billing.Engine; tests can pass any implementation.
-func (s *Service) SetCouponApplier(c CouponApplier) {
-	s.couponApplier = c
 }
 
 // SetTaxRetrier wires the orchestrator behind the retry-tax endpoint.
@@ -691,27 +674,6 @@ func (s *Service) ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]
 // the wall-clock cron tick.
 func (s *Service) ListApproachingDueForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, daysBeforeDue int) ([]domain.Invoice, error) {
 	return s.store.ListApproachingDueForClock(ctx, tenantID, clockID, frozenTime, daysBeforeDue)
-}
-
-// ApplyCoupon routes an operator-initiated coupon apply against an
-// already-issued draft invoice through the billing engine, which owns the
-// redeem → tax recompute → atomic persist → mark-periods orchestration.
-// Handlers call this so the HTTP surface stays tied to the invoice
-// resource even though the engine does the heavy lifting.
-func (s *Service) ApplyCoupon(ctx context.Context, tenantID, invoiceID, code, idempotencyKey string) (domain.Invoice, error) {
-	ctx = s.bindForInvoice(ctx, tenantID, invoiceID)
-	code = strings.TrimSpace(strings.ToUpper(code))
-	if code == "" {
-		return domain.Invoice{}, errs.Required("code")
-	}
-	if s.couponApplier == nil {
-		return domain.Invoice{}, errs.InvalidState("coupon application is not configured")
-	}
-	inv, err := s.couponApplier.ApplyCouponToInvoice(ctx, tenantID, invoiceID, code, idempotencyKey)
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-	return s.attachAttention(ctx, inv), nil
 }
 
 // RetryTax routes a "Retry tax" action through the billing engine.

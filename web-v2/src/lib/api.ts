@@ -194,8 +194,6 @@ export const api = {
     apiRequest<Invoice>('POST', `/invoices/${id}/record-payment`, data),
   rotateInvoicePublicToken: (id: string) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/rotate-public-token`),
-  applyInvoiceCoupon: (id: string, data: { code: string; idempotency_key?: string }) =>
-    apiRequest<Invoice>('POST', `/invoices/${id}/apply-coupon`, data),
   // retryInvoiceTax re-runs tax calculation against a draft invoice
   // currently in tax_status pending or failed. Backs the "Retry tax"
   // action surfaced by Attention. Returns the updated invoice with
@@ -388,36 +386,6 @@ export const api = {
   issueCreditNote: (id: string) => apiRequest<CreditNote>('POST', `/credit-notes/${id}/issue`),
   voidCreditNote: (id: string) => apiRequest<CreditNote>('POST', `/credit-notes/${id}/void`),
   retryCreditNoteRefund: (id: string) => apiRequest<CreditNote>('POST', `/credit-notes/${id}/retry-refund`),
-
-  // Coupons
-  listCoupons: (includeArchived?: boolean) =>
-    apiRequest<{ data: Coupon[] }>('GET', includeArchived ? '/coupons?include_archived=true' : '/coupons'),
-  getCoupon: (id: string) => apiRequest<Coupon>('GET', `/coupons/${id}`),
-  createCoupon: (data: { code: string; name: string; type: string; amount_off?: number; percent_off_bp?: number; currency?: string; max_redemptions?: number | null; expires_at?: string; plan_ids?: string[]; customer_id?: string; stackable?: boolean; duration?: 'once' | 'repeating' | 'forever'; duration_periods?: number; restrictions?: { min_amount_cents?: number; first_time_customer_only?: boolean; max_redemptions_per_customer?: number } }) =>
-    apiRequest<Coupon>('POST', '/coupons', data),
-  updateCoupon: (id: string, data: { name?: string; max_redemptions?: number | null; expires_at?: string | null; restrictions?: { min_amount_cents?: number; first_time_customer_only?: boolean; max_redemptions_per_customer?: number } }) =>
-    apiRequest<Coupon>('PATCH', `/coupons/${id}`, data),
-  archiveCoupon: (id: string) => apiRequest<{ status: string }>('POST', `/coupons/${id}/archive`),
-  unarchiveCoupon: (id: string) => apiRequest<{ status: string }>('POST', `/coupons/${id}/unarchive`),
-  previewCoupon: (data: { code: string; customer_id: string; subtotal_cents: number; subscription_id?: string; plan_id?: string; currency?: string }) =>
-    apiRequest<{ discount_cents: number; coupon: Coupon }>('POST', '/coupons/preview', data),
-  redeemCoupon: (data: { code: string; customer_id: string; subtotal_cents: number; subscription_id?: string; invoice_id?: string; plan_id?: string; currency?: string; idempotency_key?: string }) =>
-    apiRequest<CouponRedemption>('POST', '/coupons/redeem', data),
-  listCouponRedemptions: (id: string, params?: string) =>
-    apiRequest<{ data: CouponRedemption[]; has_more?: boolean; next_cursor?: string }>(
-      'GET',
-      `/coupons/${id}/redemptions${params ? '?' + params : ''}`,
-    ),
-
-  // Customer-scoped coupon assignment. Applies to every future invoice
-  // until revoked or the coupon's duration exhausts. 404 from
-  // getCustomerCoupon simply means "no active assignment".
-  getCustomerCoupon: (customerId: string) =>
-    apiRequest<CustomerCouponAssignment>('GET', `/customers/${customerId}/coupon`),
-  assignCustomerCoupon: (customerId: string, data: { code: string; idempotency_key?: string }) =>
-    apiRequest<CustomerCouponAssignment>('POST', `/customers/${customerId}/coupon`, data),
-  revokeCustomerCoupon: (customerId: string) =>
-    apiRequest<void>('DELETE', `/customers/${customerId}/coupon`),
 
   // Recipes (pricing templates) — see docs/design-recipes.md
   listRecipes: () => apiRequest<{ data: Recipe[] }>('GET', '/recipes'),
@@ -1385,54 +1353,6 @@ export interface CreditNote {
   issued_at?: string
   voided_at?: string
   created_at: string
-}
-
-export interface CouponRestrictions {
-  min_amount_cents?: number
-  first_time_customer_only?: boolean
-  max_redemptions_per_customer?: number
-}
-
-export interface Coupon {
-  id: string
-  code: string
-  name: string
-  type: 'percentage' | 'fixed_amount'
-  amount_off: number
-  percent_off_bp: number
-  currency: string
-  max_redemptions: number | null
-  times_redeemed: number
-  expires_at?: string
-  plan_ids?: string[]
-  archived_at?: string | null
-  customer_id?: string
-  stackable?: boolean
-  duration?: 'once' | 'repeating' | 'forever'
-  duration_periods?: number | null
-  restrictions?: CouponRestrictions
-  metadata?: Record<string, unknown>
-  created_at: string
-}
-
-export interface CouponRedemption {
-  id: string
-  coupon_id: string
-  customer_id: string
-  subscription_id: string
-  invoice_id: string
-  discount_cents: number
-  idempotency_key?: string
-  created_at: string
-}
-
-export interface CustomerCouponAssignment {
-  id: string
-  coupon_id: string
-  customer_id: string
-  periods_applied: number
-  created_at: string
-  coupon: Coupon
 }
 
 export interface AuditEntry {

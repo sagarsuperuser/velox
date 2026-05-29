@@ -104,8 +104,6 @@ const SettingsPage = lazy(() => import('@/pages/Settings'))
 const InvoicesPage = lazy(() => import('@/pages/Invoices'))
 const SubscriptionsPage = lazy(() => import('@/pages/Subscriptions'))
 const UsageEventsPage = lazy(() => import('@/pages/UsageEvents'))
-const CouponsPage = lazy(() => import('@/pages/Coupons'))
-const CouponDetailPage = lazy(() => import('@/pages/CouponDetail'))
 const CreditsPage = lazy(() => import('@/pages/Credits'))
 const CreditNotesPage = lazy(() => import('@/pages/CreditNotes'))
 const AuditLogPage = lazy(() => import('@/pages/AuditLog'))
@@ -156,8 +154,6 @@ const App = () => (
               <Route path="/invoices" element={<ProtectedRoute><InvoicesPage /></ProtectedRoute>} />
               <Route path="/subscriptions" element={<ProtectedRoute><SubscriptionsPage /></ProtectedRoute>} />
               <Route path="/usage" element={<ProtectedRoute><UsageEventsPage /></ProtectedRoute>} />
-              <Route path="/coupons" element={<ProtectedRoute><CouponsPage /></ProtectedRoute>} />
-              <Route path="/coupons/:id" element={<ProtectedRoute><CouponDetailPage /></ProtectedRoute>} />
               <Route path="/credits" element={<ProtectedRoute><CreditsPage /></ProtectedRoute>} />
               <Route path="/credit-notes" element={<ProtectedRoute><CreditNotesPage /></ProtectedRoute>} />
               <Route path="/audit-log" element={<ProtectedRoute><AuditLogPage /></ProtectedRoute>} />

@@ -308,10 +308,8 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		return false, fmt.Errorf("settings reader required for invoice numbering")
 	}
 
-	// Resolve the items' plan map for cycle-advance interval and the planIDs
-	// list (coupon plan eligibility).
+	// Resolve the items' plan map for cycle-advance interval.
 	plans := make(map[string]domain.Plan, len(sub.Items))
-	planIDs := make([]string, 0, len(sub.Items))
 	for _, it := range sub.Items {
 		if _, ok := plans[it.PlanID]; ok {
 			continue
@@ -321,7 +319,6 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 			return false, fmt.Errorf("get plan %s: %w", it.PlanID, err)
 		}
 		plans[it.PlanID] = pl
-		planIDs = append(planIDs, it.PlanID)
 	}
 
 	invoiceCurrency := eval.InvoiceCurrency
@@ -337,34 +334,10 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		}
 	}
 
-	// Coupon discount — same pattern as the cycle scan. Subscription scope
-	// wins over customer scope.
+	// Coupons removed 2026-05-29 (Phase A1). Discount stays at zero;
+	// discount intent flows through the credit ledger.
 	subtotal := eval.RunningSubtotal
 	var discountCents int64
-	var appliedRedemptionIDs []string
-	var appliedCustomerDiscountIDs []string
-	if e.coupons != nil && subtotal > 0 {
-		if sub.ID != "" {
-			d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, sub.CustomerID, invoiceCurrency, planIDs, subtotal)
-			if err != nil {
-				slog.Warn("threshold scan: coupon apply failed, proceeding without discount",
-					"error", err, "subscription_id", sub.ID)
-			} else {
-				discountCents = d.Cents
-				appliedRedemptionIDs = d.RedemptionIDs
-			}
-		}
-		if discountCents == 0 && sub.CustomerID != "" {
-			d, err := e.coupons.ApplyToInvoiceForCustomer(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, planIDs, subtotal)
-			if err != nil {
-				slog.Warn("threshold scan: customer coupon apply failed",
-					"error", err, "customer_id", sub.CustomerID)
-			} else {
-				discountCents = d.Cents
-				appliedCustomerDiscountIDs = d.RedemptionIDs
-			}
-		}
-	}
 
 	taxApp, _ := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, eval.LineItems)
 	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxApp.TaxAmountCents
@@ -441,22 +414,6 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		if err := e.CommitTax(ctx, sub.TenantID, inv.ID, inv.TaxCalculationID); err != nil {
 			slog.Warn("threshold scan: tax commit failed after invoice creation",
 				"error", err, "tenant_id", sub.TenantID, "invoice_id", inv.ID)
-		}
-	}
-
-	// Advance periods_applied on coupon redemptions. Same post-create timing
-	// rule as the cycle scan: do this only after the invoice is durably
-	// persisted.
-	if e.coupons != nil && len(appliedRedemptionIDs) > 0 {
-		if err := e.coupons.MarkPeriodsApplied(ctx, sub.TenantID, appliedRedemptionIDs); err != nil {
-			slog.Warn("threshold scan: coupon mark-periods-applied failed",
-				"invoice_id", inv.ID, "subscription_id", sub.ID, "error", err)
-		}
-	}
-	if e.coupons != nil && len(appliedCustomerDiscountIDs) > 0 {
-		if err := e.coupons.MarkCustomerDiscountPeriodsApplied(ctx, sub.TenantID, appliedCustomerDiscountIDs); err != nil {
-			slog.Warn("threshold scan: customer-discount mark-periods-applied failed",
-				"invoice_id", inv.ID, "customer_id", sub.CustomerID, "error", err)
 		}
 	}
 

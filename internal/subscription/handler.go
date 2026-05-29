@@ -67,16 +67,6 @@ type ProrationCreditGranter interface {
 	GrantProrationTx(ctx context.Context, tx *sql.Tx, tenantID string, input ProrationGrantInput) error
 }
 
-// ProrationCouponApplier computes a coupon discount against a proration
-// invoice's subtotal. planIDs is the full set of item plan_ids on the
-// subscription — the coupon's own plan gate is intersected against the full
-// item set (any match ⇒ eligible), matching how Stripe treats coupons on
-// multi-item subscriptions.
-type ProrationCouponApplier interface {
-	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, customerID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
-	MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
-}
-
 // ProrationTaxResult is what ApplyTaxToLineItems returns: invoice-level tax
 // totals plus per-line mutations to the supplied line-item slice. Duplicates
 // billing.TaxApplication so subscription package doesn't import billing.
@@ -123,7 +113,6 @@ type Handler struct {
 	plans       PlanReader
 	invoices    ProrationInvoiceCreator
 	credits     ProrationCreditGranter
-	coupons     ProrationCouponApplier
 	tax         ProrationTaxApplier
 	events      domain.EventDispatcher
 	auditLogger *audit.Logger
@@ -221,11 +210,6 @@ func (h *Handler) SetProrationDeps(plans PlanReader, invoices ProrationInvoiceCr
 	h.plans = plans
 	h.invoices = invoices
 	h.credits = credits
-}
-
-// SetProrationCouponApplier configures coupon resolution on proration invoices.
-func (h *Handler) SetProrationCouponApplier(c ProrationCouponApplier) {
-	h.coupons = c
 }
 
 // SetProrationTaxApplier configures tax resolution on proration invoices.
@@ -1571,17 +1555,6 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		}
 
 		var discountCents int64
-		var appliedRedemptionIDs []string
-		if h.coupons != nil {
-			d, err := h.coupons.ApplyToInvoice(ctx, tenantID, sub.ID, sub.CustomerID, effectivePlan.Currency, planIDsFromItems(sub.Items), proratedCents)
-			if err != nil {
-				slog.WarnContext(ctx, "coupon apply failed on proration, proceeding without discount",
-					"error", err, "subscription_id", sub.ID)
-			} else {
-				discountCents = d.Cents
-				appliedRedemptionIDs = d.RedemptionIDs
-			}
-		}
 		lineItem := domain.InvoiceLineItem{
 			LineType:         domain.LineTypeBaseFee,
 			Description:      memo,
@@ -1705,15 +1678,6 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 		detail.InvoiceID = inv.ID
 		detail.Type = "invoice"
-
-		if h.coupons != nil && len(appliedRedemptionIDs) > 0 {
-			if err := h.coupons.MarkPeriodsApplied(ctx, tenantID, appliedRedemptionIDs); err != nil {
-				slog.WarnContext(ctx, "coupon mark-periods-applied failed on proration",
-					"invoice_id", inv.ID,
-					"subscription_id", sub.ID,
-					"error", err)
-			}
-		}
 
 		slog.InfoContext(ctx, "proration invoice created",
 			"invoice_id", inv.ID,

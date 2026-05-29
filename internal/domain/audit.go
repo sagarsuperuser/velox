@@ -34,8 +34,7 @@ const (
 	AuditActionRefund      = "refund"
 	AuditActionArchive     = "archive"
 	AuditActionUnarchive   = "unarchive"
-	AuditActionRedeem      = "redeem"
-	AuditActionApplyCoupon = "apply_coupon"
+	AuditActionRedeem = "redeem"
 	// AuditActionRetryTax covers operator-initiated tax recompute on a
 	// pending/failed invoice. Persists the actor + before/after attention
 	// so post-mortems can see who retried what and whether it cleared.

@@ -61,7 +61,6 @@ type Engine struct {
 	customers     CustomerReader
 	taxProviders  TaxProviderResolver
 	taxCalcStore  TaxCalculationWriter
-	coupons       CouponApplier
 	clock         clock.Clock
 	testClocks    TestClockReader
 	events        domain.EventDispatcher
@@ -157,46 +156,6 @@ type CreditApplier interface {
 // Implemented by *credit.Service.
 type CreditGranter interface {
 	Grant(ctx context.Context, tenantID string, input credit.GrantInput) (domain.CreditLedgerEntry, error)
-}
-
-// CouponApplier computes the coupon discount to apply to an invoice's
-// gross subtotal for a given subscription, then — after the invoice
-// commits — is called to advance the periods_applied counter on every
-// redemption that contributed. ApplyToInvoice itself is side-effect-free;
-// the MarkPeriodsApplied step is what burns a period of a 'once' /
-// 'repeating' coupon, so it must run only when the invoice that consumed
-// the discount is durably persisted.
-type CouponApplier interface {
-	ApplyToInvoice(ctx context.Context, tenantID, subscriptionID, customerID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
-	// ApplyToInvoiceForCustomer is the customer-scoped fallback: when no
-	// subscription coupon applies (or the invoice has no subscription at
-	// all), the engine consults the customer's standing assignment so the
-	// operator's "apply this coupon to all future invoices" action takes
-	// effect. Subscription-scope wins when both exist (Stripe's rule).
-	// RedemptionIDs carries customer_discounts row IDs (distinct from the
-	// coupon_redemptions IDs returned by ApplyToInvoice) — the engine
-	// routes them to MarkCustomerDiscountPeriodsApplied after commit.
-	ApplyToInvoiceForCustomer(ctx context.Context, tenantID, customerID, invoiceCurrency string, planIDs []string, subtotalCents int64) (domain.CouponDiscountResult, error)
-	MarkPeriodsApplied(ctx context.Context, tenantID string, redemptionIDs []string) error
-	// MarkCustomerDiscountPeriodsApplied advances the periods_applied
-	// counter on each customer_discounts row. Kept separate from
-	// MarkPeriodsApplied so the two tables stay their own sources of
-	// truth — duration exhaustion on the customer-scope side doesn't
-	// reach into coupon_redemptions, and vice versa.
-	MarkCustomerDiscountPeriodsApplied(ctx context.Context, tenantID string, ids []string) error
-	// RedeemForInvoice commits a coupon against an already-issued draft
-	// invoice (the apply-coupon-after-issue flow). Engine calls this from
-	// ApplyCouponToInvoice and compensates with VoidRedemptionsForInvoice
-	// if the subsequent atomic-apply fails. PlanIDs carries the target
-	// subscription's full plan set so the PlanIDs restriction matches
-	// any-one-of rather than a single plan.
-	RedeemForInvoice(ctx context.Context, tenantID string, req domain.CouponRedeemRequest) (domain.CouponRedeemResult, error)
-	// VoidRedemptionsForInvoice reverses every coupon redemption tied to
-	// the invoice: marks each voided, decrements times_redeemed, rolls
-	// back periods_applied. Engine calls this as the compensating action
-	// when ApplyDiscountAtomic fails after a successful Redeem. Idempotent
-	// — already-voided rows are left alone.
-	VoidRedemptionsForInvoice(ctx context.Context, tenantID, invoiceID string) (int, error)
 }
 
 // BillingProfileReader reads customer billing profiles for tax exemption checks.
@@ -510,12 +469,6 @@ func (e *Engine) ReverseTax(ctx context.Context, tenantID string, req tax.Revers
 		return &tax.ReversalResult{}, nil
 	}
 	return provider.Reverse(ctx, req)
-}
-
-// SetCouponApplier sets the coupon service used during billing. When nil, the
-// engine skips coupon resolution entirely and invoice discount_cents remains 0.
-func (e *Engine) SetCouponApplier(c CouponApplier) {
-	e.coupons = c
 }
 
 // SetTestClockReader wires the test-clock resolver. Optional: when nil, the
@@ -2163,48 +2116,9 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		return false, fmt.Errorf("allocate invoice number: %w", err)
 	}
 
-	// Apply coupon discount — Stripe-style order: subtotal → discount → tax →
-	// total. Tax is computed against the post-discount amount so customers
-	// aren't taxed on money they didn't actually pay. A zero result here is
-	// the happy no-coupon path; a non-zero result is clamped to subtotal by
-	// the coupon service before reaching us, so no negative-total risk.
-	//
-	// appliedRedemptionIDs (subscription-scope) and appliedCustomerDiscountIDs
-	// (customer-scope) carry state across the invoice-create boundary: we
-	// must only advance periods_applied AFTER the invoice is durably
-	// persisted, otherwise a create failure would burn a period of a
-	// repeating coupon that the customer never actually got. The two lists
-	// feed separate writer methods because customer_discounts is its own
-	// table — see CouponApplier.MarkCustomerDiscountPeriodsApplied.
+	// Coupons removed 2026-05-29 (Phase A1). Discount stays at zero;
+	// AI-native discount intent flows through the credit ledger.
 	var discountCents int64
-	var appliedRedemptionIDs []string
-	var appliedCustomerDiscountIDs []string
-	if e.coupons != nil && subtotal > 0 {
-		if sub.ID != "" {
-			d, err := e.coupons.ApplyToInvoice(ctx, sub.TenantID, sub.ID, sub.CustomerID, invoiceCurrency, planIDs, subtotal)
-			if err != nil {
-				slog.Warn("coupon apply failed, proceeding without discount",
-					"error", err, "subscription_id", sub.ID)
-			} else {
-				discountCents = d.Cents
-				appliedRedemptionIDs = d.RedemptionIDs
-			}
-		}
-		// Customer-scope fallback: only runs when subscription-scope
-		// produced no discount (or there's no subscription at all).
-		// Stripe's rule — subscription.discount beats customer.discount on
-		// the same invoice, so we never stack the two.
-		if discountCents == 0 && sub.CustomerID != "" {
-			d, err := e.coupons.ApplyToInvoiceForCustomer(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, planIDs, subtotal)
-			if err != nil {
-				slog.Warn("customer coupon apply failed, proceeding without discount",
-					"error", err, "customer_id", sub.CustomerID)
-			} else {
-				discountCents = d.Cents
-				appliedCustomerDiscountIDs = d.RedemptionIDs
-			}
-		}
-	}
 	taxApp, _ := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, lineItems)
 	// In tax-inclusive mode the engine back-calculates net subtotal/discount
 	// from the gross inputs; in exclusive mode these pass through unchanged,
@@ -2325,30 +2239,6 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				"invoice_id", inv.ID,
 				"provider", inv.TaxProvider,
 				"tax_calculation_id", inv.TaxCalculationID)
-		}
-	}
-
-	// Advance periods_applied on every redemption that contributed to the
-	// discount. This MUST happen after CreateInvoiceWithLineItems succeeds
-	// (and only on the non-idempotent-skip path) so a coupon period is
-	// burned exactly once per real invoice. Per-redemption failures are
-	// logged and swallowed — the invoice already exists, so the worst case
-	// is a repeating coupon applying one extra cycle, which we'd rather
-	// have than refusing to bill the customer over a bookkeeping glitch.
-	if e.coupons != nil && len(appliedRedemptionIDs) > 0 {
-		if err := e.coupons.MarkPeriodsApplied(ctx, sub.TenantID, appliedRedemptionIDs); err != nil {
-			slog.Warn("coupon mark-periods-applied failed",
-				"invoice_id", inv.ID,
-				"subscription_id", sub.ID,
-				"error", err)
-		}
-	}
-	if e.coupons != nil && len(appliedCustomerDiscountIDs) > 0 {
-		if err := e.coupons.MarkCustomerDiscountPeriodsApplied(ctx, sub.TenantID, appliedCustomerDiscountIDs); err != nil {
-			slog.Warn("customer-discount mark-periods-applied failed",
-				"invoice_id", inv.ID,
-				"customer_id", sub.CustomerID,
-				"error", err)
 		}
 	}
 
@@ -3596,146 +3486,6 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 		slog.Info("auto-charge retry succeeded", "invoice_id", inv.ID)
 	}
 	return charged, errs
-}
-
-// ApplyCouponToInvoice applies a coupon to an already-issued draft
-// invoice (the operator-initiated "apply this coupon to this invoice"
-// flow). Orchestrates the full change:
-//
-//  1. Load the invoice and its line items, re-assert the state gates
-//     (draft, no existing discount, tax not yet committed upstream).
-//  2. If the invoice is tied to a subscription, resolve the full plan
-//     set so a PlanIDs-restricted coupon matches any-one-of.
-//  3. Redeem the coupon (creates redemption row + bumps times_redeemed).
-//  4. Recompute tax against (subtotal - discount). Inclusive mode's net
-//     carve flows back through TaxApplication.
-//  5. Persist the new discount + tax snapshot atomically via
-//     ApplyDiscountAtomic (lock + gate re-check inside the tx).
-//  6. Advance periods_applied on the redemption.
-//
-// Compensation: if step 5 fails, step 3 is rolled back via
-// VoidRedemptionsForInvoice so a failed apply doesn't burn a coupon
-// period or inflate times_redeemed. Replay path (idempotency-key hit
-// on the redemption) still runs through steps 4–6 because a prior
-// attempt may have crashed between Redeem and ApplyDiscountAtomic;
-// the atomic step itself re-asserts discount_cents=0 so a true double
-// apply surfaces as InvalidState, not silent overwrite.
-func (e *Engine) ApplyCouponToInvoice(ctx context.Context, tenantID, invoiceID, code, idempotencyKey string) (domain.Invoice, error) {
-	if e.coupons == nil {
-		return domain.Invoice{}, errs.InvalidState("coupon service not configured")
-	}
-
-	inv, err := e.invoices.GetInvoice(ctx, tenantID, invoiceID)
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-
-	if inv.Status != domain.InvoiceDraft {
-		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
-			"invoice must be draft to apply a coupon (current: %s)", inv.Status))
-	}
-	if inv.DiscountCents > 0 {
-		return domain.Invoice{}, errs.InvalidState("invoice already has a discount applied")
-	}
-	if inv.TaxTransactionID != "" {
-		return domain.Invoice{}, errs.InvalidState("invoice tax has already been committed upstream")
-	}
-	if inv.SubtotalCents <= 0 {
-		return domain.Invoice{}, errs.InvalidState("invoice has no subtotal to discount")
-	}
-
-	items, err := e.invoices.ListLineItems(ctx, tenantID, invoiceID)
-	if err != nil {
-		return domain.Invoice{}, fmt.Errorf("list line items: %w", err)
-	}
-
-	// Plan set is used by the coupon's PlanIDs restriction gate. Empty plan
-	// list (no subscription, or subscription-less invoice) disables the gate.
-	var planIDs []string
-	if inv.SubscriptionID != "" && e.subs != nil {
-		if sub, err := e.subs.Get(ctx, tenantID, inv.SubscriptionID); err == nil {
-			planIDs = make([]string, 0, len(sub.Items))
-			for _, it := range sub.Items {
-				planIDs = append(planIDs, it.PlanID)
-			}
-		}
-	}
-
-	redeemRes, err := e.coupons.RedeemForInvoice(ctx, tenantID, domain.CouponRedeemRequest{
-		Code:           code,
-		CustomerID:     inv.CustomerID,
-		SubscriptionID: inv.SubscriptionID,
-		InvoiceID:      inv.ID,
-		SubtotalCents:  inv.SubtotalCents,
-		Currency:       inv.Currency,
-		IdempotencyKey: idempotencyKey,
-		PlanIDs:        planIDs,
-	})
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-
-	discountCents := redeemRes.Redemption.DiscountCents
-	if discountCents <= 0 {
-		// Defence-in-depth: the service clamps zero-discount redemptions
-		// at the gate, so this should never fire. Void anything that did
-		// commit to keep times_redeemed honest.
-		if !redeemRes.Replay {
-			_, _ = e.coupons.VoidRedemptionsForInvoice(ctx, tenantID, invoiceID)
-		}
-		return domain.Invoice{}, errs.InvalidState("coupon produced zero discount")
-	}
-
-	taxApp, err := e.ApplyTaxToLineItems(ctx, tenantID, inv.CustomerID, inv.Currency,
-		inv.SubtotalCents, discountCents, items)
-	if err != nil {
-		if !redeemRes.Replay {
-			_, _ = e.coupons.VoidRedemptionsForInvoice(ctx, tenantID, invoiceID)
-		}
-		return domain.Invoice{}, fmt.Errorf("recompute tax: %w", err)
-	}
-
-	update := domain.InvoiceDiscountUpdate{
-		SubtotalCents:    taxApp.SubtotalCents,
-		DiscountCents:    taxApp.DiscountCents,
-		TaxAmountCents:   taxApp.TaxAmountCents,
-		TaxRateBP:        taxApp.TaxRateBP,
-		TaxName:          taxApp.TaxName,
-		TaxCountry:       taxApp.TaxCountry,
-		TaxID:            taxApp.TaxID,
-		TaxProvider:      taxApp.TaxProvider,
-		TaxCalculationID: taxApp.TaxCalculationID,
-		TaxReverseCharge: taxApp.TaxReverseCharge,
-		TaxExemptReason:  taxApp.TaxExemptReason,
-		TaxStatus:        taxApp.TaxStatus,
-		TaxDeferredAt:    taxApp.TaxDeferredAt,
-		TaxPendingReason: taxApp.TaxPendingReason,
-		TaxErrorCode:     taxApp.TaxErrorCode,
-	}
-
-	updated, err := e.invoices.ApplyDiscountAtomic(ctx, tenantID, invoiceID, update, items)
-	if err != nil {
-		if !redeemRes.Replay {
-			if _, vErr := e.coupons.VoidRedemptionsForInvoice(ctx, tenantID, invoiceID); vErr != nil {
-				slog.Error("coupon: compensating void after apply-coupon failure also failed",
-					"invoice_id", invoiceID, "apply_error", err, "void_error", vErr)
-			}
-		}
-		return domain.Invoice{}, fmt.Errorf("apply discount: %w", err)
-	}
-
-	// Advance periods_applied on the committed redemption. Failure here is
-	// logged, not surfaced — the invoice is already updated and the worst
-	// case is a repeating coupon applying one extra cycle, which is
-	// preferable to rolling back a durable financial mutation.
-	if !redeemRes.Replay && redeemRes.Redemption.ID != "" {
-		if err := e.coupons.MarkPeriodsApplied(ctx, tenantID, []string{redeemRes.Redemption.ID}); err != nil {
-			slog.Warn("coupon mark-periods-applied failed after apply-coupon",
-				"invoice_id", invoiceID, "redemption_id", redeemRes.Redemption.ID, "error", err)
-		}
-	}
-
-	return updated, nil
 }
 
 // RetryTaxForInvoice re-runs ApplyTaxToLineItems against an invoice

@@ -69,7 +69,7 @@ A coarser rule (`{"model": "gpt-4"}`) plus a finer override (`{"model": "gpt-4",
 
 ### Stripe-grade primitives (already shipped)
 - **Subscriptions** — trial state machine with atomic flips · pause-collection · scheduled cancellation · plan changes with proration
-- **Pricing & discounts** — per-customer price overrides · coupons with stacking, expiry, redemption caps
+- **Pricing & discounts** — per-customer price overrides · credit ledger (prepaid allowances, drawn against usage). Coupons cut pre-launch (ADR-039) — AI-native peers converge on credits, not promo codes.
 - **Invoicing & collection** — PDF invoices · hosted invoice page with secure tokens · branded multipart emails · dunning with breaker · invoice preview (`Invoice.upcoming` parity)
 - **Spend controls** — hard-cap thresholds with mid-cycle finalize
 - **Credits & refunds** — event-sourced credit ledger · credit notes + refunds
@@ -220,7 +220,7 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 - **Pricing recipes** — `anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`; recipe-picker UI; one-click uninstall
 - **`create_preview`, billing thresholds** — Stripe Tier-1 surfaces with multi-dim parity
 - **Embeddable cost dashboard** — `<VeloxCostDashboard customerId={…} />` plus token-authenticated public URL
-- **Stripe-grade billing primitives** — subscriptions (trial/pause/cancel/plan-change with proration), coupons, credit notes, dunning, hosted invoice page, transactional outbox
+- **Stripe-grade billing primitives** — subscriptions (trial/pause/cancel/plan-change with proration), credit notes, dunning, hosted invoice page, transactional outbox
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 
